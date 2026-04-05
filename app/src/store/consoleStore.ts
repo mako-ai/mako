@@ -80,6 +80,7 @@ interface ConsoleActions {
     databaseId?: string,
     chartSpec?: Record<string, unknown>,
     resultsViewMode?: string,
+    comment?: string,
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -442,6 +443,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         databaseId,
         chartSpec,
         resultsViewMode,
+        comment,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
@@ -460,6 +462,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 isSaved: true,
                 chartSpec: chartSpec ?? null,
                 resultsViewMode,
+                comment: comment ?? "",
               }),
             },
           );

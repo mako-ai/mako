@@ -9,6 +9,7 @@ import {
   SavedConsole,
   ConsoleFolder,
   IDatabaseConnection,
+  type ISavedConsole,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { workspaceService } from "../services/workspace.service";
@@ -30,6 +31,11 @@ import {
   checkPreviewQuerySafety,
 } from "../services/query-pagination.service";
 import { createStreamingExportResponse } from "../utils/query-export-stream";
+import {
+  createVersion,
+  listVersions,
+  getVersion,
+} from "../services/entity-version.service";
 
 /**
  * Map console language to query language for tracking
@@ -43,6 +49,28 @@ function mapConsoleLanguageToQueryLanguage(
 }
 
 const logger = loggers.api("consoles");
+
+function buildConsoleSnapshot(doc: ISavedConsole): Record<string, unknown> {
+  return {
+    name: doc.name,
+    description: doc.description,
+    code: doc.code,
+    language: doc.language,
+    connectionId: doc.connectionId?.toString(),
+    databaseName: doc.databaseName,
+    databaseId: doc.databaseId,
+    chartSpec: doc.chartSpec,
+    resultsViewMode: doc.resultsViewMode,
+    mongoOptions: doc.mongoOptions,
+    folderId: doc.folderId?.toString(),
+    access: doc.access,
+  };
+}
+
+async function getUserDisplayName(userId: string): Promise<string> {
+  const u = await User.findById(userId, { email: 1 }).lean();
+  return u?.email || userId;
+}
 
 function sanitizeDownloadFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
@@ -407,6 +435,25 @@ consoleRoutes.post("/", async (c: Context) => {
       });
     }
 
+    // Create version 1 for this new console
+    const freshDoc = await SavedConsole.findById(savedConsole._id).lean();
+    if (freshDoc) {
+      const displayName = await getUserDisplayName(user.id);
+      await createVersion({
+        entityType: "console",
+        entityId: savedConsole._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildConsoleSnapshot(freshDoc as ISavedConsole),
+        savedBy: user.id,
+        savedByName: displayName,
+        comment: body.comment ?? "",
+      });
+      await SavedConsole.updateOne(
+        { _id: savedConsole._id },
+        { $set: { version: 1 } },
+      );
+    }
+
     // Fire-and-forget: generate description + embedding for searchability
     if (isDescriptionGenAvailable() && content.trim()) {
       void (async () => {
@@ -569,6 +616,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           );
         }
 
+        const displayName = await getUserDisplayName(user.id);
+
         // Update with path information (use upsert in case console hasn't been auto-saved yet)
         const setFields: Record<string, any> = {
           code: body.content,
@@ -594,6 +643,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           },
           {
             $set: setFields,
+            $inc: { version: 1 },
             $setOnInsert: {
               createdBy: user.id,
               owner_id: user.id,
@@ -606,6 +656,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           },
           { upsert: true, new: true },
         );
+
+        // Create version record for the new state
+        await createVersion({
+          entityType: "console",
+          entityId: result._id,
+          workspaceId: new Types.ObjectId(workspaceId),
+          snapshot: buildConsoleSnapshot(result as ISavedConsole),
+          savedBy: user.id,
+          savedByName: displayName,
+          comment: body.comment ?? "",
+        });
 
         return c.json({
           success: true,
@@ -665,10 +726,23 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           },
           {
             $set: setFields,
+            $inc: { version: 1 },
             $setOnInsert: setOnInsertFields,
           },
           { upsert: true, new: true },
         );
+
+        // Create version record for the new state
+        const displayNameExplicit = await getUserDisplayName(user.id);
+        await createVersion({
+          entityType: "console",
+          entityId: result._id,
+          workspaceId: new Types.ObjectId(workspaceId),
+          snapshot: buildConsoleSnapshot(result as ISavedConsole),
+          savedBy: user.id,
+          savedByName: displayNameExplicit,
+          comment: body.comment ?? "",
+        });
 
         // Fire-and-forget: generate description + embedding on explicit save
         if (isDescriptionGenAvailable() && body.content?.trim()) {
@@ -790,6 +864,25 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         isPrivate: body.isPrivate,
       },
     );
+
+    // Create version record and increment version counter
+    const updatedForVersion = await SavedConsole.findByIdAndUpdate(
+      savedConsole._id,
+      { $inc: { version: 1 } },
+      { new: true },
+    ).lean();
+    if (updatedForVersion) {
+      const displayNamePath = await getUserDisplayName(user.id);
+      await createVersion({
+        entityType: "console",
+        entityId: savedConsole._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildConsoleSnapshot(updatedForVersion as ISavedConsole),
+        savedBy: user.id,
+        savedByName: displayNamePath,
+        comment: body.comment ?? "",
+      });
+    }
 
     // Fire-and-forget: regenerate description + embedding when content changes
     if (isDescriptionGenAvailable() && body.content.trim()) {
@@ -2032,5 +2125,200 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
       },
       500,
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Version history routes
+// ---------------------------------------------------------------------------
+
+// GET /api/workspaces/:workspaceId/consoles/:id/versions
+consoleRoutes.get("/:id/versions", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    const consoleDoc = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!consoleDoc) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    const limit = Math.min(
+      parseInt(c.req.query("limit") ?? "50", 10) || 50,
+      100,
+    );
+    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+
+    const result = await listVersions(
+      new Types.ObjectId(consoleId),
+      "console",
+      { limit, offset },
+    );
+
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("Error listing console versions", { error });
+    return c.json({ success: false, error: "Failed to list versions" }, 500);
+  }
+});
+
+// GET /api/workspaces/:workspaceId/consoles/:id/versions/:version
+consoleRoutes.get("/:id/versions/:version", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const versionNum = parseInt(c.req.param("version"), 10);
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
+      return c.json(
+        { success: false, error: "Invalid console ID or version" },
+        400,
+      );
+    }
+
+    const consoleDoc = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!consoleDoc) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    const version = await getVersion(consoleId, "console", versionNum);
+    if (!version) {
+      return c.json({ success: false, error: "Version not found" }, 404);
+    }
+
+    return c.json({ success: true, version });
+  } catch (error) {
+    logger.error("Error getting console version", { error });
+    return c.json({ success: false, error: "Failed to get version" }, 500);
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/:id/versions/:version/restore
+consoleRoutes.post("/:id/versions/:version/restore", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const versionNum = parseInt(c.req.param("version"), 10);
+    const body = await c.req.json().catch(() => ({}));
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
+      return c.json(
+        { success: false, error: "Invalid console ID or version" },
+        400,
+      );
+    }
+
+    const consoleDoc = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!consoleDoc) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    const member = await workspaceService.getMember(workspaceId, user.id);
+    const isAdmin = member?.role === "owner" || member?.role === "admin";
+    if (!ConsoleManager.canWrite(consoleDoc, user.id, isAdmin)) {
+      return c.json(
+        { success: false, error: "You do not have write access" },
+        403,
+      );
+    }
+
+    const oldVersion = await getVersion(consoleId, "console", versionNum);
+    if (!oldVersion) {
+      return c.json({ success: false, error: "Version not found" }, 404);
+    }
+
+    const snap = oldVersion.snapshot as Record<string, any>;
+
+    // Apply the snapshot to the console document
+    const restoreFields: Record<string, any> = {
+      code: snap.code,
+      name: snap.name,
+      language: snap.language,
+      description: snap.description,
+      chartSpec: snap.chartSpec,
+      resultsViewMode: snap.resultsViewMode,
+      mongoOptions: snap.mongoOptions,
+      connectionId: snap.connectionId
+        ? new Types.ObjectId(snap.connectionId)
+        : undefined,
+      databaseName: snap.databaseName,
+      databaseId: snap.databaseId,
+    };
+
+    const restored = await SavedConsole.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: restoreFields, $inc: { version: 1 } },
+      { new: true },
+    ).lean();
+
+    if (!restored) {
+      return c.json({ success: false, error: "Restore failed" }, 500);
+    }
+
+    const displayName = await getUserDisplayName(user.id);
+    const comment = body.comment ?? `Restored from version ${versionNum}`;
+    await createVersion({
+      entityType: "console",
+      entityId: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      snapshot: buildConsoleSnapshot(restored as ISavedConsole),
+      savedBy: user.id,
+      savedByName: displayName,
+      comment,
+      restoredFrom: versionNum,
+    });
+
+    return c.json({
+      success: true,
+      message: `Restored to version ${versionNum}`,
+      console: {
+        id: restored._id.toString(),
+        name: restored.name,
+        version: restored.version,
+      },
+    });
+  } catch (error) {
+    logger.error("Error restoring console version", { error });
+    return c.json({ success: false, error: "Failed to restore version" }, 500);
   }
 });

@@ -3,7 +3,9 @@ import {
   Dashboard,
   DashboardFolder,
   DatabaseConnection,
+  type IDashboard,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -25,12 +27,38 @@ import {
 } from "../services/dashboard-materialization-schedule.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { DashboardManager } from "../utils/dashboard-manager";
+import {
+  createVersion,
+  listVersions,
+  getVersion,
+} from "../services/entity-version.service";
 
 const logger = loggers.api("dashboards");
 
 const app = new Hono();
 
 const DASHBOARD_QUERY_LANGUAGES = new Set(["sql", "javascript", "mongodb"]);
+
+function buildDashboardSnapshot(
+  doc: IDashboard | Record<string, any>,
+): Record<string, unknown> {
+  return {
+    title: doc.title,
+    description: doc.description,
+    dataSources: doc.dataSources,
+    widgets: doc.widgets,
+    relationships: doc.relationships,
+    globalFilters: doc.globalFilters,
+    crossFilter: doc.crossFilter,
+    layout: doc.layout,
+    materializationSchedule: doc.materializationSchedule,
+  };
+}
+
+async function getDashboardUserDisplayName(userId: string): Promise<string> {
+  const u = await User.findById(userId, { email: 1 }).lean();
+  return u?.email || userId;
+}
 
 async function normalizeDashboardDataSources(
   workspaceId: string,
@@ -396,6 +424,19 @@ app.post("/", async (c: AuthenticatedContext) => {
     });
 
     await dashboard.save();
+
+    // Create version 1 for the new dashboard
+    const displayName = await getDashboardUserDisplayName(userId);
+    await createVersion({
+      entityType: "dashboard",
+      entityId: dashboard._id,
+      workspaceId: new Types.ObjectId(workspaceId),
+      snapshot: buildDashboardSnapshot(dashboard.toObject()),
+      savedBy: userId,
+      savedByName: displayName,
+      comment: body.comment ?? "",
+    });
+
     if (
       (dashboard.dataSources || []).length > 0 &&
       isDashboardMaterializationEnabled(dashboard.materializationSchedule)
@@ -626,6 +667,18 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
 
+    // Create version record for the new state
+    const putDisplayName = await getDashboardUserDisplayName(userId);
+    await createVersion({
+      entityType: "dashboard",
+      entityId: updated._id,
+      workspaceId: new Types.ObjectId(workspaceId),
+      snapshot: buildDashboardSnapshot(updated.toObject()),
+      savedBy: userId,
+      savedByName: putDisplayName,
+      comment: body.comment ?? "",
+    });
+
     if (
       didDashboardArtifactInputsChange(
         previousDataSources as any[],
@@ -822,6 +875,18 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       }
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
+
+    // Create version record for the new state
+    const patchDisplayName = await getDashboardUserDisplayName(userId);
+    await createVersion({
+      entityType: "dashboard",
+      entityId: dashboard._id,
+      workspaceId: new Types.ObjectId(workspaceId),
+      snapshot: buildDashboardSnapshot(dashboard.toObject()),
+      savedBy: userId,
+      savedByName: patchDisplayName,
+      comment: body.comment ?? "",
+    });
 
     if (
       didDashboardArtifactInputsChange(
@@ -1502,6 +1567,191 @@ app.patch("/:id/move", async (c: AuthenticatedContext) => {
       },
       500,
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Version history routes
+// ---------------------------------------------------------------------------
+
+// GET /api/workspaces/:workspaceId/dashboards/:id/versions
+app.get("/:id/versions", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const userId = c.get("user")?.id;
+
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    if (!Types.ObjectId.isValid(id)) {
+      return c.json({ success: false, error: "Invalid dashboard ID" }, 400);
+    }
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+    if (!DashboardManager.canRead(dashboard, userId)) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    const limit = Math.min(
+      parseInt(c.req.query("limit") ?? "50", 10) || 50,
+      100,
+    );
+    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+
+    const result = await listVersions(new Types.ObjectId(id), "dashboard", {
+      limit,
+      offset,
+    });
+
+    return c.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("Error listing dashboard versions", { error });
+    return c.json({ success: false, error: "Failed to list versions" }, 500);
+  }
+});
+
+// GET /api/workspaces/:workspaceId/dashboards/:id/versions/:version
+app.get("/:id/versions/:version", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const versionNum = parseInt(c.req.param("version"), 10);
+    const userId = c.get("user")?.id;
+
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    if (!Types.ObjectId.isValid(id) || isNaN(versionNum)) {
+      return c.json(
+        { success: false, error: "Invalid dashboard ID or version" },
+        400,
+      );
+    }
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+    if (!DashboardManager.canRead(dashboard, userId)) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    const version = await getVersion(id, "dashboard", versionNum);
+    if (!version) {
+      return c.json({ success: false, error: "Version not found" }, 404);
+    }
+
+    return c.json({ success: true, version });
+  } catch (error) {
+    logger.error("Error getting dashboard version", { error });
+    return c.json({ success: false, error: "Failed to get version" }, 500);
+  }
+});
+
+// POST /api/workspaces/:workspaceId/dashboards/:id/versions/:version/restore
+app.post("/:id/versions/:version/restore", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+    const versionNum = parseInt(c.req.param("version"), 10);
+    const body = await c.req.json().catch(() => ({}));
+    const userId = c.get("user")?.id;
+
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    if (!Types.ObjectId.isValid(id) || isNaN(versionNum)) {
+      return c.json(
+        { success: false, error: "Invalid dashboard ID or version" },
+        400,
+      );
+    }
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+      return c.json(
+        { success: false, error: "You do not have write access" },
+        403,
+      );
+    }
+
+    const oldVersion = await getVersion(id, "dashboard", versionNum);
+    if (!oldVersion) {
+      return c.json({ success: false, error: "Version not found" }, 404);
+    }
+
+    const snap = oldVersion.snapshot as Record<string, any>;
+
+    const restoreFields: Record<string, any> = {
+      title: snap.title,
+      description: snap.description,
+      dataSources: snap.dataSources,
+      widgets: snap.widgets,
+      relationships: snap.relationships,
+      globalFilters: snap.globalFilters,
+      crossFilter: snap.crossFilter,
+      layout: snap.layout,
+      materializationSchedule: snap.materializationSchedule,
+    };
+
+    const restored = await Dashboard.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      { $set: restoreFields, $inc: { version: 1 } },
+      { new: true },
+    );
+
+    if (!restored) {
+      return c.json({ success: false, error: "Restore failed" }, 500);
+    }
+
+    const displayName = await getDashboardUserDisplayName(userId);
+    const comment = body.comment ?? `Restored from version ${versionNum}`;
+    await createVersion({
+      entityType: "dashboard",
+      entityId: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+      snapshot: buildDashboardSnapshot(restored.toObject()),
+      savedBy: userId,
+      savedByName: displayName,
+      comment,
+      restoredFrom: versionNum,
+    });
+
+    return c.json({
+      success: true,
+      message: `Restored to version ${versionNum}`,
+      data: sanitizeDashboardResponse(
+        await hydrateDashboardArtifactUrls(restored.toObject() as any),
+      ),
+    });
+  } catch (error) {
+    logger.error("Error restoring dashboard version", { error });
+    return c.json({ success: false, error: "Failed to restore version" }, 500);
   }
 });
 

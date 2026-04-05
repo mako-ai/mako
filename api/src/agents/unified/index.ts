@@ -5,6 +5,7 @@ import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-t
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
+import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
 export const unifiedAgentMeta: AgentMeta = {
@@ -35,6 +36,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     workspaceId,
     context.toolExecutionContext,
   );
+  const versionHistoryTools = createVersionHistoryTools(workspaceId);
 
   const {
     list_connections: _flowListConnections,
@@ -65,6 +67,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...selfDirectiveTools,
       ...consoleSearchTools,
       ...dashboardSearchTools,
+      ...versionHistoryTools,
     } as Record<string, unknown>,
   };
 }

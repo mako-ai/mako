@@ -59,6 +59,8 @@ import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
 import FileExplorerDialog from "./FileExplorerDialog";
+import { SaveCommentDialog } from "./SaveCommentDialog";
+import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
@@ -333,6 +335,23 @@ function Editor({
     null,
   );
 
+  // Save comment dialog state (version commit message)
+  const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [pendingCommentSave, setPendingCommentSave] = useState<{
+    tabId: string;
+    content: string;
+    path: string;
+  } | null>(null);
+
+  // Version history panel state
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [versionHistoryTabId, setVersionHistoryTabId] = useState<string | null>(
+    null,
+  );
+  const [versionHistoryEntityType, setVersionHistoryEntityType] = useState<
+    "console" | "dashboard"
+  >("console");
+
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [conflictData, setConflictData] = useState<ConflictData | null>(null);
@@ -377,6 +396,7 @@ function Editor({
   const deleteConsole = useConsoleStore(state => state.deleteConsole);
   const openTab = useConsoleStore(state => state.openTab);
   const reorderTabs = useConsoleStore(state => state.reorderTabs);
+  const loadConsole = useConsoleStore(state => state.loadConsole);
   // useShallow prevents infinite re-renders: selectConsoleTabs returns a new
   // array on every call; without shallow comparison useSyncExternalStore would
   // detect a change every render and trigger a re-render loop.
@@ -993,36 +1013,17 @@ function Editor({
     await cancelQuery(currentWorkspace.id, executionId);
   };
 
-  const handleConsoleSave = async (
+  const executeConsoleSave = async (
     tabId: string,
     contentToSave: string,
-    currentPath?: string,
+    savePath: string,
+    comment: string,
   ): Promise<boolean> => {
-    if (!currentWorkspace) {
-      setErrorMessage("No workspace selected");
-      setErrorModalOpen(true);
-      return false;
-    }
-
+    if (!currentWorkspace) return false;
     setIsSaving(true);
     let success = false;
     try {
-      // Get the current tab info (needed for default filename and connection info)
       const currentTab = tabs[tabId];
-
-      const savePath = currentPath;
-      if (!savePath) {
-        // Open the folder navigator save dialog instead of prompt()
-        setSaveDialogMode("new");
-        setSaveDialogTabId(tabId);
-        setSaveDialogTargetId(tabId);
-        setSaveDialogContent(contentToSave);
-        setSaveDialogOpen(true);
-        setIsSaving(false);
-        return false;
-      }
-
-      // Get the current connection and database info for the tab
       const connectionId = currentTab?.connectionId;
       const databaseId = currentTab?.databaseId;
       const databaseName = currentTab?.databaseName;
@@ -1037,6 +1038,7 @@ function Editor({
         databaseId,
         tabChartSpecs[tabId] ?? undefined,
         tabViewModes[tabId],
+        comment,
       );
 
       // Handle conflict - show resolution dialog
@@ -1072,24 +1074,11 @@ function Editor({
 
         trackEvent("console_saved", {
           console_id: tabId,
-          is_new: !currentPath,
         });
 
-        setSnackbarMessage(
-          `Console saved ${!currentPath ? "as" : "to"} '${savePath}.js'`,
-        );
+        setSnackbarMessage(`Console saved to '${savePath}.js'`);
         setSnackbarOpen(true);
         success = true;
-
-        // Add the console to the tree
-        if (!currentPath) {
-          const { useConsoleTreeStore } = await import(
-            "../store/consoleTreeStore"
-          );
-          useConsoleTreeStore
-            .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
-        }
       } else {
         setErrorMessage(JSON.stringify(result.error, null, 2));
         setErrorModalOpen(true);
@@ -1101,6 +1090,50 @@ function Editor({
       setIsSaving(false);
     }
     return success;
+  };
+
+  const handleConsoleSave = async (
+    tabId: string,
+    contentToSave: string,
+    currentPath?: string,
+  ): Promise<boolean> => {
+    if (!currentWorkspace) {
+      setErrorMessage("No workspace selected");
+      setErrorModalOpen(true);
+      return false;
+    }
+
+    if (!currentPath) {
+      setSaveDialogMode("new");
+      setSaveDialogTabId(tabId);
+      setSaveDialogTargetId(tabId);
+      setSaveDialogContent(contentToSave);
+      setSaveDialogOpen(true);
+      return false;
+    }
+
+    // Show comment dialog before saving
+    setPendingCommentSave({ tabId, content: contentToSave, path: currentPath });
+    setCommentDialogOpen(true);
+    return false;
+  };
+
+  const handleCommentSaveConfirm = async (comment: string) => {
+    setCommentDialogOpen(false);
+    const pending = pendingCommentSave;
+    setPendingCommentSave(null);
+    if (!pending) return;
+    await executeConsoleSave(
+      pending.tabId,
+      pending.content,
+      pending.path,
+      comment,
+    );
+  };
+
+  const handleCommentSaveCancel = () => {
+    setCommentDialogOpen(false);
+    setPendingCommentSave(null);
   };
 
   // Conflict resolution handlers
@@ -1315,6 +1348,7 @@ function Editor({
             folderId: folderId || undefined,
             chartSpec: tabChartSpecs[saveDialogTabId] ?? null,
             resultsViewMode: tabViewModes[saveDialogTabId],
+            comment: "",
           }),
         },
       );
@@ -1778,6 +1812,15 @@ function Editor({
                         }
                         filePath={tab.filePath}
                         enableVersionControl={true}
+                        onHistoryClick={
+                          tab.isSaved
+                            ? () => {
+                                setVersionHistoryTabId(tab.id);
+                                setVersionHistoryEntityType("console");
+                                setVersionHistoryOpen(true);
+                              }
+                            : undefined
+                        }
                       />
                     </Panel>
 
@@ -1929,6 +1972,32 @@ function Editor({
         })()}
         isSaving={isSaving}
       />
+
+      {/* Save comment dialog (version commit message) */}
+      <SaveCommentDialog
+        open={commentDialogOpen}
+        onSave={handleCommentSaveConfirm}
+        onCancel={handleCommentSaveCancel}
+        title="Save Console"
+      />
+
+      {/* Version history panel */}
+      {versionHistoryTabId && (
+        <VersionHistoryPanel
+          open={versionHistoryOpen}
+          onClose={() => {
+            setVersionHistoryOpen(false);
+            setVersionHistoryTabId(null);
+          }}
+          entityType={versionHistoryEntityType}
+          entityId={versionHistoryTabId}
+          onRestore={() => {
+            if (currentWorkspace && versionHistoryTabId) {
+              loadConsole(currentWorkspace.id, versionHistoryTabId);
+            }
+          }}
+        />
+      )}
 
       {/* Success Snackbar */}
       <Snackbar

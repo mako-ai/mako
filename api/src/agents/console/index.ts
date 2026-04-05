@@ -15,6 +15,7 @@ import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
+import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
 
 /**
@@ -211,6 +212,7 @@ export const consoleAgentFactory: AgentFactory = (
     workspaceId,
     context.toolExecutionContext,
   );
+  const versionHistoryTools = createVersionHistoryTools(workspaceId);
 
   return {
     systemPrompt: [
@@ -230,6 +232,7 @@ export const consoleAgentFactory: AgentFactory = (
       ...tools,
       ...selfDirectiveTools,
       ...consoleSearchTools,
+      ...versionHistoryTools,
     } as Record<string, any>,
   };
 };
