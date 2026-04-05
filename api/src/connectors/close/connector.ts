@@ -1349,7 +1349,6 @@ export class CloseConnector extends BaseConnector {
               windowStart,
               upperBound,
               WINDOW_DAYS,
-              rateLimitDelay,
             );
             if (!nextStart) {
               // No more data until upperBound — done
@@ -1460,7 +1459,6 @@ export class CloseConnector extends BaseConnector {
     gapStart: string,
     upperBound: string,
     windowDays: number,
-    rateLimitDelay: number,
   ): Promise<string | null> {
     let lo = new Date(gapStart).getTime();
     let hi = new Date(upperBound).getTime();
@@ -1474,7 +1472,6 @@ export class CloseConnector extends BaseConnector {
       objectType,
       new Date(lo).toISOString(),
       new Date(hi).toISOString(),
-      rateLimitDelay,
     );
     if (!anyData) return null;
 
@@ -1486,7 +1483,6 @@ export class CloseConnector extends BaseConnector {
         objectType,
         new Date(lo).toISOString(),
         new Date(mid).toISOString(),
-        rateLimitDelay,
       );
 
       if (hasDataInLeft) {
@@ -1505,7 +1501,6 @@ export class CloseConnector extends BaseConnector {
     objectType: string,
     rangeStart: string,
     rangeEnd: string,
-    rateLimitDelay: number,
   ): Promise<boolean> {
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -1535,12 +1530,11 @@ export class CloseConnector extends BaseConnector {
           _fields: { [objectType]: ["id"] },
         });
 
-        await this.sleep(rateLimitDelay);
         return (resp.data?.data?.length ?? 0) > 0;
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 429) {
           const retryAfter = parseInt(
-            error.response.headers["retry-after"] || "5",
+            error.response.headers["retry-after"] || "60",
           );
           await this.sleep(retryAfter * 1000);
           continue;
