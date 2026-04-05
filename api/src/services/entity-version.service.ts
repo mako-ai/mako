@@ -4,6 +4,7 @@ import {
   type IEntityVersion,
   type VersionableEntityType,
 } from "../database/workspace-schema";
+import { User } from "../database/schema";
 import { loggers } from "../logging";
 
 const logger = loggers.api("entity-versions");
@@ -92,14 +93,24 @@ export async function createVersion(
 export async function listVersions(
   entityId: Types.ObjectId | string,
   entityType: VersionableEntityType,
-  opts: { limit?: number; offset?: number } = {},
+  opts: {
+    limit?: number;
+    offset?: number;
+    workspaceId?: Types.ObjectId | string;
+  } = {},
 ): Promise<{ versions: VersionListItem[]; total: number }> {
   const eid =
     typeof entityId === "string" ? new Types.ObjectId(entityId) : entityId;
   const limit = Math.min(opts.limit ?? 50, 100);
   const offset = opts.offset ?? 0;
 
-  const filter = { entityId: eid, entityType };
+  const filter: Record<string, unknown> = { entityId: eid, entityType };
+  if (opts.workspaceId) {
+    filter.workspaceId =
+      typeof opts.workspaceId === "string"
+        ? new Types.ObjectId(opts.workspaceId)
+        : opts.workspaceId;
+  }
 
   const [versions, total] = await Promise.all([
     EntityVersion.find(filter, {
@@ -124,12 +135,25 @@ export async function getVersion(
   entityId: Types.ObjectId | string,
   entityType: VersionableEntityType,
   version: number,
+  workspaceId?: Types.ObjectId | string,
 ): Promise<IEntityVersion | null> {
   const eid =
     typeof entityId === "string" ? new Types.ObjectId(entityId) : entityId;
-  return EntityVersion.findOne({
+  const filter: Record<string, unknown> = {
     entityId: eid,
     entityType,
     version,
-  }).lean();
+  };
+  if (workspaceId) {
+    filter.workspaceId =
+      typeof workspaceId === "string"
+        ? new Types.ObjectId(workspaceId)
+        : workspaceId;
+  }
+  return EntityVersion.findOne(filter).lean();
+}
+
+export async function getUserDisplayName(userId: string): Promise<string> {
+  const u = await User.findById(userId, { email: 1 }).lean();
+  return u?.email || userId;
 }

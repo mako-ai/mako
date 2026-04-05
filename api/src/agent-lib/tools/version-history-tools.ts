@@ -4,7 +4,7 @@ import {
   getVersion,
 } from "../../services/entity-version.service";
 
-export const createVersionHistoryTools = (_workspaceId: string) => ({
+export const createVersionHistoryTools = (workspaceId: string) => ({
   browse_version_history: {
     description:
       "Browse the version history of a saved console or dashboard. " +
@@ -35,6 +35,7 @@ export const createVersionHistoryTools = (_workspaceId: string) => ({
       try {
         const result = await listVersions(entityId, entityType, {
           limit: limit || 10,
+          workspaceId,
         });
         return {
           success: true as const,
@@ -85,7 +86,7 @@ export const createVersionHistoryTools = (_workspaceId: string) => ({
       version: number;
     }) => {
       try {
-        const v = await getVersion(entityId, entityType, version);
+        const v = await getVersion(entityId, entityType, version, workspaceId);
         if (!v) {
           return {
             success: false as const,

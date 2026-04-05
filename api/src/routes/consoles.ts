@@ -35,6 +35,7 @@ import {
   createVersion,
   listVersions,
   getVersion,
+  getUserDisplayName,
 } from "../services/entity-version.service";
 
 /**
@@ -65,11 +66,6 @@ function buildConsoleSnapshot(doc: ISavedConsole): Record<string, unknown> {
     folderId: doc.folderId?.toString(),
     access: doc.access,
   };
-}
-
-async function getUserDisplayName(userId: string): Promise<string> {
-  const u = await User.findById(userId, { email: 1 }).lean();
-  return u?.email || userId;
 }
 
 function sanitizeDownloadFilename(value: string): string {

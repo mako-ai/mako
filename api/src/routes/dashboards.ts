@@ -5,7 +5,6 @@ import {
   DatabaseConnection,
   type IDashboard,
 } from "../database/workspace-schema";
-import { User } from "../database/schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -31,6 +30,7 @@ import {
   createVersion,
   listVersions,
   getVersion,
+  getUserDisplayName,
 } from "../services/entity-version.service";
 
 const logger = loggers.api("dashboards");
@@ -53,11 +53,6 @@ function buildDashboardSnapshot(
     layout: doc.layout,
     materializationSchedule: doc.materializationSchedule,
   };
-}
-
-async function getDashboardUserDisplayName(userId: string): Promise<string> {
-  const u = await User.findById(userId, { email: 1 }).lean();
-  return u?.email || userId;
 }
 
 async function normalizeDashboardDataSources(
@@ -426,7 +421,7 @@ app.post("/", async (c: AuthenticatedContext) => {
     await dashboard.save();
 
     // Create version 1 for the new dashboard
-    const displayName = await getDashboardUserDisplayName(userId);
+    const displayName = await getUserDisplayName(userId);
     await createVersion({
       entityType: "dashboard",
       entityId: dashboard._id,
@@ -668,7 +663,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     }
 
     // Create version record for the new state
-    const putDisplayName = await getDashboardUserDisplayName(userId);
+    const putDisplayName = await getUserDisplayName(userId);
     await createVersion({
       entityType: "dashboard",
       entityId: updated._id,
@@ -877,7 +872,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
     }
 
     // Create version record for the new state
-    const patchDisplayName = await getDashboardUserDisplayName(userId);
+    const patchDisplayName = await getUserDisplayName(userId);
     await createVersion({
       entityType: "dashboard",
       entityId: dashboard._id,
@@ -1729,7 +1724,7 @@ app.post("/:id/versions/:version/restore", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Restore failed" }, 500);
     }
 
-    const displayName = await getDashboardUserDisplayName(userId);
+    const displayName = await getUserDisplayName(userId);
     const comment = body.comment ?? `Restored from version ${versionNum}`;
     await createVersion({
       entityType: "dashboard",
