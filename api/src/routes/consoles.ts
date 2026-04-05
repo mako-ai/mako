@@ -648,6 +648,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
               access: "private" as const,
               executionCount: 0,
               createdAt: now,
+              version: 0,
             },
           },
           { upsert: true, new: true },
@@ -709,6 +710,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           access: "private" as const,
           executionCount: 0,
           createdAt: now,
+          version: 0,
         };
         // Only add name to $setOnInsert if not already in $set (avoid MongoDB conflict)
         if (!setFields.name) {

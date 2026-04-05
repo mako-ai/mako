@@ -76,7 +76,10 @@ export const useVersionStore = create<VersionStoreState>((set, get) => ({
       set(state => {
         const existing = opts?.offset ? (state.versions[key] ?? []) : [];
         return {
-          versions: { ...state.versions, [key]: [...existing, ...data.versions] },
+          versions: {
+            ...state.versions,
+            [key]: [...existing, ...data.versions],
+          },
           totals: { ...state.totals, [key]: data.total },
           loading: { ...state.loading, [key]: false },
         };

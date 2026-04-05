@@ -341,6 +341,7 @@ function Editor({
     tabId: string;
     content: string;
     path: string;
+    resolve: (success: boolean) => void;
   } | null>(null);
 
   // Version history panel state
@@ -367,6 +368,7 @@ function Editor({
     connectionId?: string;
     databaseId?: string;
     databaseName?: string;
+    comment?: string;
   } | null>(null);
 
   // Refs for query cancellation (per-tab to support parallel queries)
@@ -396,7 +398,6 @@ function Editor({
   const deleteConsole = useConsoleStore(state => state.deleteConsole);
   const openTab = useConsoleStore(state => state.openTab);
   const reorderTabs = useConsoleStore(state => state.reorderTabs);
-  const loadConsole = useConsoleStore(state => state.loadConsole);
   const reloadConsole = useConsoleStore(state => state.reloadConsole);
   // useShallow prevents infinite re-renders: selectConsoleTabs returns a new
   // array on every call; without shallow comparison useSyncExternalStore would
@@ -1051,6 +1052,7 @@ function Editor({
           connectionId,
           databaseId,
           databaseName,
+          comment,
         });
         setConflictData(result.conflict);
         setConflictDialogOpen(true);
@@ -1113,10 +1115,15 @@ function Editor({
       return false;
     }
 
-    // Show comment dialog before saving
-    setPendingCommentSave({ tabId, content: contentToSave, path: currentPath });
-    setCommentDialogOpen(true);
-    return false;
+    return new Promise<boolean>(resolve => {
+      setPendingCommentSave({
+        tabId,
+        content: contentToSave,
+        path: currentPath,
+        resolve,
+      });
+      setCommentDialogOpen(true);
+    });
   };
 
   const handleCommentSaveConfirm = async (comment: string) => {
@@ -1124,17 +1131,20 @@ function Editor({
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     if (!pending) return;
-    await executeConsoleSave(
+    const success = await executeConsoleSave(
       pending.tabId,
       pending.content,
       pending.path,
       comment,
     );
+    pending.resolve(success);
   };
 
   const handleCommentSaveCancel = () => {
     setCommentDialogOpen(false);
+    const pending = pendingCommentSave;
     setPendingCommentSave(null);
+    pending?.resolve(false);
   };
 
   // Conflict resolution handlers
@@ -1199,6 +1209,7 @@ function Editor({
         pendingSaveData.databaseId,
         tabChartSpecs[pendingSaveData.tabId] ?? undefined,
         tabViewModes[pendingSaveData.tabId],
+        pendingSaveData.comment,
       );
 
       if (result.success) {

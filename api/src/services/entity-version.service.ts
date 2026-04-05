@@ -154,6 +154,6 @@ export async function getVersion(
 }
 
 export async function getUserDisplayName(userId: string): Promise<string> {
-  const u = await User.findById(userId, { name: 1, email: 1 }).lean();
-  return u?.name || u?.email || userId;
+  const u = await User.findById(userId, { email: 1 }).lean();
+  return u?.email || userId;
 }
