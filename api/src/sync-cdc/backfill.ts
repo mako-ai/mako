@@ -450,6 +450,11 @@ export class CdcBackfillService {
       event: { type: "PAUSE", reason: "Paused via API" },
     });
 
+    // Send cancel to Inngest so it stops the function between steps.
+    // Do NOT mark the FlowExecution as "cancelled" here — leave it as
+    // "running" so that hasActiveExecution() blocks any new startBackfill
+    // until the Inngest function has actually exited.  The function's own
+    // error/completion handler will mark it appropriately.
     const runningExecution = await FlowExecution.findOne({
       flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -459,23 +464,6 @@ export class CdcBackfillService {
       .lean();
 
     if (runningExecution) {
-      const now = new Date();
-      await FlowExecution.updateOne(
-        { _id: runningExecution._id, status: "running" },
-        {
-          $set: {
-            status: "cancelled",
-            success: false,
-            completedAt: now,
-            lastHeartbeat: now,
-            error: {
-              message: "Flow execution cancelled by pause",
-              code: "USER_CANCELLED",
-            },
-          },
-        },
-      );
-
       await inngest.send({
         name: "flow.cancel",
         data: {
