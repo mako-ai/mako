@@ -113,6 +113,10 @@ export function getVegaThemeConfig(
       filled: true,
     },
 
+    text: {
+      color: c.textPrimary,
+    },
+
     arc: {
       stroke: c.background,
       strokeWidth: 1,
