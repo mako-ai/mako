@@ -871,17 +871,18 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
 
-    // Create version record for the new state
-    const patchDisplayName = await getUserDisplayName(userId);
-    await createVersion({
-      entityType: "dashboard",
-      entityId: dashboard._id,
-      workspaceId: new Types.ObjectId(workspaceId),
-      snapshot: buildDashboardSnapshot(dashboard.toObject()),
-      savedBy: userId,
-      savedByName: patchDisplayName,
-      comment: body.comment ?? "",
-    });
+    if (typeof body.comment === "string") {
+      const patchDisplayName = await getUserDisplayName(userId);
+      await createVersion({
+        entityType: "dashboard",
+        entityId: dashboard._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildDashboardSnapshot(dashboard.toObject()),
+        savedBy: userId,
+        savedByName: patchDisplayName,
+        comment: body.comment,
+      });
+    }
 
     if (
       didDashboardArtifactInputsChange(

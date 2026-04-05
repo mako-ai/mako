@@ -397,6 +397,7 @@ function Editor({
   const openTab = useConsoleStore(state => state.openTab);
   const reorderTabs = useConsoleStore(state => state.reorderTabs);
   const loadConsole = useConsoleStore(state => state.loadConsole);
+  const reloadConsole = useConsoleStore(state => state.reloadConsole);
   // useShallow prevents infinite re-renders: selectConsoleTabs returns a new
   // array on every call; without shallow comparison useSyncExternalStore would
   // detect a change every render and trigger a re-render loop.
@@ -1993,7 +1994,7 @@ function Editor({
           entityId={versionHistoryTabId}
           onRestore={() => {
             if (currentWorkspace && versionHistoryTabId) {
-              loadConsole(currentWorkspace.id, versionHistoryTabId);
+              reloadConsole(currentWorkspace.id, versionHistoryTabId);
             }
           }}
         />

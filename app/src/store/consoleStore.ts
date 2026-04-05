@@ -65,6 +65,7 @@ interface ConsoleActions {
 
   // API operations
   loadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
+  reloadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
   fetchConsoleContent: (
     workspaceId: string,
     consoleId: string,
@@ -385,6 +386,37 @@ export const useConsoleStore = create<ConsoleStore>()(
           set(state => {
             delete state.loading[consoleId];
           });
+        }
+      },
+
+      reloadConsole: async (workspaceId, consoleId) => {
+        try {
+          const res = await apiClient.get<ConsoleContentResponse>(
+            `/workspaces/${workspaceId}/consoles/content`,
+            { id: consoleId },
+          );
+
+          if (res.success) {
+            const content = res.content || "";
+            const filePath = res.path || res.name;
+
+            get().openTab({
+              id: res.id,
+              title: res.name || res.path || "Console",
+              content,
+              isSaved: res.isSaved ?? !!filePath,
+              connectionId: res.connectionId,
+              databaseId: res.databaseId,
+              databaseName: res.databaseName,
+              filePath,
+              kind: "console",
+              chartSpec: res.chartSpec,
+              resultsViewMode: res.resultsViewMode,
+            });
+            get().setActiveTab(res.id);
+          }
+        } catch {
+          // silent
         }
       },
 
