@@ -25,12 +25,74 @@ const log = loggers.sync("cdc.backfill");
 
 const STALE_HEARTBEAT_MS = 10 * 60 * 1000; // 10 minutes
 
-async function hasActiveExecution(workspaceId: string, flowId: string) {
-  return FlowExecution.exists({
-    workspaceId: new Types.ObjectId(workspaceId),
-    flowId: new Types.ObjectId(flowId),
+const CANCEL_WAIT_POLL_MS = 1000;
+const CANCEL_WAIT_TIMEOUT_MS = 30_000;
+
+async function assertCanStartBackfill(
+  workspaceId: string,
+  flowId: string,
+): Promise<void> {
+  await abandonStaleExecutions(workspaceId, flowId);
+
+  const workspaceObjectId = new Types.ObjectId(workspaceId);
+  const flowObjectId = new Types.ObjectId(flowId);
+
+  const running = await FlowExecution.findOne({
+    workspaceId: workspaceObjectId,
+    flowId: flowObjectId,
     status: "running",
+  })
+    .sort({ startedAt: -1 })
+    .lean();
+
+  if (!running) return;
+
+  // If the backfill was paused (or cancelled), an Inngest cancel is already
+  // in-flight.  Wait for the worker to finish rather than rejecting — the
+  // user expects reset-entity / resume to work immediately after pause.
+  const flow = await Flow.findById(flowId)
+    .select("backfillState.status")
+    .lean();
+  const isPendingCancel =
+    flow?.backfillState?.status === "paused" ||
+    flow?.backfillState?.status === "error" ||
+    flow?.backfillState?.status === "completed" ||
+    flow?.backfillState?.status === "idle";
+
+  if (!isPendingCancel) {
+    throw new Error(
+      "Cannot start backfill while an execution is still running",
+    );
+  }
+
+  // Send cancel (idempotent) and poll until the execution finishes
+  log.info("Waiting for previous execution to finish before starting", {
+    flowId,
+    executionId: running._id?.toString(),
+    backfillStatus: flow?.backfillState?.status,
   });
+
+  await inngest.send({
+    name: "flow.cancel",
+    data: {
+      flowId,
+      executionId: running._id?.toString(),
+    },
+  });
+
+  const deadline = Date.now() + CANCEL_WAIT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, CANCEL_WAIT_POLL_MS));
+    const still = await FlowExecution.exists({
+      _id: running._id,
+      status: "running",
+    });
+    if (!still) return;
+  }
+
+  throw new Error(
+    "Timed out waiting for previous execution to finish (30s). Try again shortly.",
+  );
 }
 
 async function abandonStaleExecutions(
@@ -96,6 +158,8 @@ function normalizeEntities(entities: unknown[] | undefined): string[] {
 }
 
 export class CdcBackfillService {
+  assertCanStartBackfill = assertCanStartBackfill;
+
   async startBackfill(
     workspaceId: string,
     flowId: string,
@@ -131,12 +195,7 @@ export class CdcBackfillService {
           ? scopeFromFlow
           : [];
 
-    const running = await hasActiveExecution(workspaceId, flowId);
-    if (running) {
-      throw new Error(
-        "Backfill already running. Cancel or wait for the active execution before starting another backfill.",
-      );
-    }
+    await assertCanStartBackfill(workspaceId, flowId);
 
     const runId =
       shouldReuseRunId && flow.backfillState?.runId
@@ -146,7 +205,7 @@ export class CdcBackfillService {
     const previousFailures = flow.backfillState?.consecutiveFailures ?? 0;
     const now = new Date();
     flow.backfillState = {
-      active: true,
+      status: "running",
       runId,
       startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
       completedAt: undefined,
@@ -176,7 +235,7 @@ export class CdcBackfillService {
       workspaceId,
       flowId,
       event: { type: "START", reason },
-      context: { hasActiveRunLock: Boolean(running) },
+      context: { hasActiveRunLock: false },
     });
 
     await inngest.send({
@@ -218,14 +277,7 @@ export class CdcBackfillService {
       throw new Error("Resync requires syncEngine=cdc");
     }
 
-    await abandonStaleExecutions(workspaceId, flowId);
-
-    const running = await hasActiveExecution(workspaceId, flowId);
-    if (running) {
-      throw new Error(
-        "Cannot resync while a CDC execution is active (execution has a recent heartbeat — wait or cancel it from the Inngest dashboard)",
-      );
-    }
+    await assertCanStartBackfill(workspaceId, flowId);
 
     await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId });
     await CdcEntityState.deleteMany({
@@ -249,14 +301,12 @@ export class CdcBackfillService {
     }
 
     flow.streamState = "idle";
-    flow.syncState = "idle";
     flow.syncStateUpdatedAt = new Date();
     flow.syncStateMeta = {
       lastEvent: "RESYNC",
       lastReason: "Operator initiated resync",
     };
     flow.backfillState = {
-      active: false,
       status: "idle",
       runId: undefined,
       startedAt: undefined,
@@ -370,23 +420,7 @@ export class CdcBackfillService {
       throw new Error("Recover requires syncEngine=cdc");
     }
 
-    const abandoned = await abandonStaleExecutions(
-      params.workspaceId,
-      params.flowId,
-    );
-
-    const running = await hasActiveExecution(params.workspaceId, params.flowId);
-    if (running) {
-      throw new Error(
-        "Cannot recover while a CDC execution is active (execution has a recent heartbeat — wait or cancel it from the Inngest dashboard)",
-      );
-    }
-
-    if (abandoned > 0) {
-      await Flow.findByIdAndUpdate(params.flowId, {
-        $set: { "backfillState.active": false },
-      });
-    }
+    await assertCanStartBackfill(params.workspaceId, params.flowId);
 
     const streamResult = await cdcSyncStateService.applyStreamTransition({
       workspaceId: params.workspaceId,
@@ -450,6 +484,9 @@ export class CdcBackfillService {
       event: { type: "PAUSE", reason: "Paused via API" },
     });
 
+    // Send cancel to Inngest so it stops the function between steps.
+    // The FlowExecution stays "running" so assertCanStartBackfill()
+    // blocks new starts until the Inngest function actually exits.
     const runningExecution = await FlowExecution.findOne({
       flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -459,23 +496,6 @@ export class CdcBackfillService {
       .lean();
 
     if (runningExecution) {
-      const now = new Date();
-      await FlowExecution.updateOne(
-        { _id: runningExecution._id, status: "running" },
-        {
-          $set: {
-            status: "cancelled",
-            success: false,
-            completedAt: now,
-            lastHeartbeat: now,
-            error: {
-              message: "Flow execution cancelled by pause",
-              code: "USER_CANCELLED",
-            },
-          },
-        },
-      );
-
       await inngest.send({
         name: "flow.cancel",
         data: {
@@ -489,7 +509,6 @@ export class CdcBackfillService {
       { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
       {
         $set: {
-          "backfillState.active": false,
           "backfillState.status": "paused",
           "backfillState.completedAt": null,
         },
@@ -500,6 +519,61 @@ export class CdcBackfillService {
       paused: true,
       cancelledExecutionId: runningExecution?._id?.toString() || null,
       runId: flow.backfillState?.runId || null,
+    };
+  }
+
+  async cancelBackfill(workspaceId: string, flowId: string) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Cancel requires syncEngine=cdc");
+    }
+
+    await cdcSyncStateService.applyBackfillTransition({
+      workspaceId,
+      flowId,
+      event: { type: "CANCEL", reason: "Cancelled via API" },
+    });
+
+    const runningExecution = await FlowExecution.findOne({
+      flowId: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      status: "running",
+    })
+      .sort({ startedAt: -1 })
+      .lean();
+
+    if (runningExecution) {
+      await inngest.send({
+        name: "flow.cancel",
+        data: {
+          flowId: flow._id.toString(),
+          executionId: runningExecution._id.toString(),
+        },
+      });
+    }
+
+    await Flow.updateOne(
+      { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
+      {
+        $set: {
+          "backfillState.status": "idle",
+          "backfillState.completedAt": null,
+        },
+        $unset: {
+          "backfillState.runId": "",
+        },
+      },
+    );
+
+    return {
+      cancelled: true,
+      cancelledExecutionId: runningExecution?._id?.toString() || null,
     };
   }
 
@@ -976,7 +1050,12 @@ export class CdcBackfillService {
       const runId = flow.backfillState?.runId || "unknown";
       const failures = flow.backfillState?.consecutiveFailures ?? 0;
 
-      const activeExec = await hasActiveExecution(wId, fId);
+      await abandonStaleExecutions(wId, fId);
+      const activeExec = await FlowExecution.exists({
+        workspaceId: new Types.ObjectId(wId),
+        flowId: new Types.ObjectId(fId),
+        status: "running",
+      });
       if (activeExec) {
         log.info(
           `Startup recovery: "${flowLabel}" skipped — execution still active`,
@@ -1061,7 +1140,6 @@ export async function markCdcBackfillCompletedForFlow(params: {
     },
     {
       $set: {
-        "backfillState.active": false,
         "backfillState.status": "completed",
         "backfillState.completedAt": new Date(),
       },

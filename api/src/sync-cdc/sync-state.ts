@@ -20,7 +20,8 @@ type BackfillEventType =
   | "RESUME"
   | "COMPLETE"
   | "FAIL"
-  | "RECOVER";
+  | "RECOVER"
+  | "CANCEL";
 
 type StreamMachineEvent =
   | { type: "START"; reason?: string }
@@ -45,7 +46,8 @@ type BackfillMachineEvent =
       errorCode?: string;
       errorMessage?: string;
     }
-  | { type: "RECOVER"; reason?: string };
+  | { type: "RECOVER"; reason?: string }
+  | { type: "CANCEL"; reason?: string };
 
 const STREAM_TRANSITIONS: Record<
   StreamState,
@@ -81,11 +83,13 @@ const BACKFILL_TRANSITIONS: Record<
     PAUSE: "paused",
     COMPLETE: "completed",
     FAIL: "error",
+    CANCEL: "idle",
   },
   paused: {
     RESUME: "running",
     COMPLETE: "completed",
     FAIL: "error",
+    CANCEL: "idle",
   },
   completed: {
     START: "running",
@@ -234,10 +238,9 @@ class CdcSyncStateService {
       "errorMessage" in input.event ? input.event.errorMessage : undefined;
 
     if (!flow.backfillState) {
-      flow.backfillState = { active: false, status: "idle" };
+      flow.backfillState = { status: "idle" };
     }
     flow.backfillState.status = resolved;
-    flow.backfillState.active = resolved === "running";
     flow.syncStateUpdatedAt = now;
     flow.syncStateMeta = {
       lastEvent: `backfill:${input.event.type}`,

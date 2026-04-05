@@ -27,6 +27,7 @@ import {
 import {
   History as BackfillIcon,
   Pause as PauseIcon,
+  Stop as CancelIcon,
   PlayArrow as ResumeIcon,
   RestartAlt as ResyncIcon,
   Healing as RecoverIcon,
@@ -263,6 +264,7 @@ export function BackfillPanel({
     startCdcStream,
     pauseCdcStream,
     pauseCdcFlow,
+    cancelCdcBackfill,
     resumeCdcFlow,
     resetCdcEntityTable,
     resyncCdcFlow,
@@ -613,6 +615,15 @@ export function BackfillPanel({
         if (!ok) throw new Error("Failed to pause backfill");
       },
       { backfillStatus: "paused" },
+    );
+
+  const handleCancelBackfill = () =>
+    withBusy(
+      async () => {
+        const ok = await cancelCdcBackfill(workspaceId, flowId);
+        if (!ok) throw new Error("Failed to cancel backfill");
+      },
+      { backfillStatus: "idle" },
     );
 
   const handleResumeBackfill = () =>
@@ -1007,16 +1018,29 @@ export function BackfillPanel({
                   </Button>
                 )}
                 {bfStatus === "paused" && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
-                    onClick={handleResumeBackfill}
-                    disabled={busy}
-                    sx={{ textTransform: "none", fontSize: "0.72rem" }}
-                  >
-                    Resume
-                  </Button>
+                  <>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={<ResumeIcon sx={{ fontSize: 14 }} />}
+                      onClick={handleResumeBackfill}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Resume
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      startIcon={<CancelIcon sx={{ fontSize: 14 }} />}
+                      onClick={handleCancelBackfill}
+                      disabled={busy}
+                      sx={{ textTransform: "none", fontSize: "0.72rem" }}
+                    >
+                      Cancel
+                    </Button>
+                  </>
                 )}
                 {bfStatus === "error" && (
                   <Button

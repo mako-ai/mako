@@ -439,6 +439,7 @@ interface FlowStore extends FlowStoreState {
   startCdcStream: (workspaceId: string, flowId: string) => Promise<boolean>;
   pauseCdcStream: (workspaceId: string, flowId: string) => Promise<boolean>;
   pauseCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
+  cancelCdcBackfill: (workspaceId: string, flowId: string) => Promise<boolean>;
   resumeCdcFlow: (workspaceId: string, flowId: string) => Promise<boolean>;
   resyncCdcFlow: (
     workspaceId: string,
@@ -1004,6 +1005,26 @@ export const useFlowStore = create<FlowStore>()(
           }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/pause`);
           if (!response.success) {
             throw new Error(response.error || "Failed to pause CDC flow");
+          }
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      cancelCdcBackfill: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/cancel`,
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to cancel CDC backfill");
           }
           return true;
         } catch (error) {

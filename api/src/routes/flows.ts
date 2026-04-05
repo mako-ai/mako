@@ -682,7 +682,6 @@ flowRoutes.post("/", async c => {
           : undefined,
       syncMode: body.syncMode || "full",
       syncEngine: "legacy",
-      syncState: "idle",
       syncStateUpdatedAt: new Date(),
       enabled: true,
       createdBy: userId,
@@ -1382,7 +1381,6 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
 
     flow.syncEngine = syncEngine;
     if (syncEngine === "legacy") {
-      flow.syncState = "idle";
       flow.streamState = "idle";
       flow.syncStateUpdatedAt = new Date();
       flow.syncStateMeta = {
@@ -1390,7 +1388,6 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
         lastReason: "Switched to legacy engine",
       };
     } else {
-      flow.syncState = flow.syncState || "idle";
       flow.streamState = flow.streamState || "idle";
       flow.syncStateUpdatedAt = new Date();
       flow.syncStateMeta = {
@@ -1457,6 +1454,35 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/backfill/cancel
+flowRoutes.post("/:flowId/sync-cdc/backfill/cancel", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const result = await cdcBackfillService.cancelBackfill(workspaceId, flowId);
+
+    return c.json({
+      success: true,
+      message: "Backfill cancelled",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/reset-entity
 // Drop destination table for one entity, clear its CDC state, and start a fresh backfill.
 flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
@@ -1492,16 +1518,14 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
       );
     }
 
-    const running = await FlowExecution.exists({
-      flowId: new Types.ObjectId(flowId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      status: "running",
-    });
-    if (running) {
+    try {
+      await cdcBackfillService.assertCanStartBackfill(workspaceId, flowId);
+    } catch (error) {
       return c.json(
         {
           success: false,
-          error: "Cannot reset while a flow execution is running",
+          error:
+            error instanceof Error ? error.message : "Execution still running",
         },
         400,
       );
@@ -1673,17 +1697,16 @@ flowRoutes.post("/:flowId/sync-cdc/reset-column", async c => {
     }
 
     if (startBackfill) {
-      const running = await FlowExecution.exists({
-        flowId: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        status: "running",
-      });
-      if (running) {
+      try {
+        await cdcBackfillService.assertCanStartBackfill(workspaceId, flowId);
+      } catch (error) {
         return c.json(
           {
             success: false,
             error:
-              "Cannot reset column while a flow execution is running. Pause/stop it first.",
+              error instanceof Error
+                ? error.message
+                : "Execution still running",
           },
           400,
         );
@@ -2413,7 +2436,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     return c.json({
       success: true,
       data: {
-        syncState: flow.syncState || "idle",
+        syncState: flow.syncState ?? flow.streamState ?? "idle",
         streamState: flow.streamState || "idle",
         backfillStatus,
         consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
@@ -2928,7 +2951,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const successRate =
       terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
     const backfillActive = Boolean(
-      flow.backfillState?.active || runningFullSyncExecution,
+      flow.backfillState?.status === "running" || runningFullSyncExecution,
     );
 
     const stats = {
