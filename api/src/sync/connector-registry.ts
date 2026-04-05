@@ -23,7 +23,6 @@ interface ConnectorRegistryEntry {
  */
 class SyncConnectorRegistry {
   private connectors: Map<string, ConnectorRegistryEntry> = new Map();
-  private connectorInstances: Map<string, BaseConnector> = new Map();
   private initialized = false;
 
   constructor() {
@@ -215,19 +214,7 @@ class SyncConnectorRegistry {
       settings: dataSource.settings,
     };
 
-    // Cache connector instances so all chunks within a flow execution
-    // share the same HTTP client and request throttle.  The key
-    // includes a config fingerprint so injected queries (GraphQL/
-    // PostHog) or credential changes produce a new instance while
-    // repeated calls with identical config reuse the existing one.
-    const configFingerprint = JSON.stringify(dataSource.connection ?? {});
-    const cacheKey = `${dataSource.id}:${configFingerprint}`;
-    const cached = this.connectorInstances.get(cacheKey);
-    if (cached) return cached;
-
-    const instance = new entry.connectorClass(connectorDataSource);
-    this.connectorInstances.set(cacheKey, instance);
-    return instance;
+    return new entry.connectorClass(connectorDataSource);
   }
 
   /**
