@@ -248,7 +248,6 @@ export class CdcBackfillService {
     }
 
     flow.streamState = "idle";
-    flow.syncState = "idle";
     flow.syncStateUpdatedAt = new Date();
     flow.syncStateMeta = {
       lastEvent: "RESYNC",

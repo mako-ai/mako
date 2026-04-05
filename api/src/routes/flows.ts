@@ -682,7 +682,6 @@ flowRoutes.post("/", async c => {
           : undefined,
       syncMode: body.syncMode || "full",
       syncEngine: "legacy",
-      syncState: "idle",
       syncStateUpdatedAt: new Date(),
       enabled: true,
       createdBy: userId,
@@ -1382,7 +1381,6 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
 
     flow.syncEngine = syncEngine;
     if (syncEngine === "legacy") {
-      flow.syncState = "idle";
       flow.streamState = "idle";
       flow.syncStateUpdatedAt = new Date();
       flow.syncStateMeta = {
@@ -1390,7 +1388,6 @@ flowRoutes.post("/:flowId/sync-engine", async (c: AuthenticatedContext) => {
         lastReason: "Switched to legacy engine",
       };
     } else {
-      flow.syncState = flow.syncState || "idle";
       flow.streamState = flow.streamState || "idle";
       flow.syncStateUpdatedAt = new Date();
       flow.syncStateMeta = {
@@ -2410,7 +2407,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     return c.json({
       success: true,
       data: {
-        syncState: flow.syncState || "idle",
+        syncState: flow.syncState ?? flow.streamState ?? "idle",
         streamState: flow.streamState || "idle",
         backfillStatus,
         consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
