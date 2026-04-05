@@ -522,6 +522,61 @@ export class CdcBackfillService {
     };
   }
 
+  async cancelBackfill(workspaceId: string, flowId: string) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Cancel requires syncEngine=cdc");
+    }
+
+    await cdcSyncStateService.applyBackfillTransition({
+      workspaceId,
+      flowId,
+      event: { type: "CANCEL", reason: "Cancelled via API" },
+    });
+
+    const runningExecution = await FlowExecution.findOne({
+      flowId: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      status: "running",
+    })
+      .sort({ startedAt: -1 })
+      .lean();
+
+    if (runningExecution) {
+      await inngest.send({
+        name: "flow.cancel",
+        data: {
+          flowId: flow._id.toString(),
+          executionId: runningExecution._id.toString(),
+        },
+      });
+    }
+
+    await Flow.updateOne(
+      { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
+      {
+        $set: {
+          "backfillState.status": "idle",
+          "backfillState.completedAt": null,
+        },
+        $unset: {
+          "backfillState.runId": "",
+        },
+      },
+    );
+
+    return {
+      cancelled: true,
+      cancelledExecutionId: runningExecution?._id?.toString() || null,
+    };
+  }
+
   async resumeBackfill(workspaceId: string, flowId: string) {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(flowId),

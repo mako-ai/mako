@@ -1454,6 +1454,35 @@ flowRoutes.post("/:flowId/sync-cdc/backfill/start", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/backfill/cancel
+flowRoutes.post("/:flowId/sync-cdc/backfill/cancel", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const result = await cdcBackfillService.cancelBackfill(workspaceId, flowId);
+
+    return c.json({
+      success: true,
+      message: "Backfill cancelled",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/reset-entity
 // Drop destination table for one entity, clear its CDC state, and start a fresh backfill.
 flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
