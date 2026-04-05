@@ -215,16 +215,15 @@ class SyncConnectorRegistry {
       settings: dataSource.settings,
     };
 
-    // Return cached instance if one exists for this data source,
-    // ensuring a single connector (and API client) per data source.
-    // Always update the config so injected queries and changed
-    // credentials are reflected on the cached instance.
+    // Cache connector instances per data source so all chunks within a
+    // flow execution share the same HTTP client and request throttle.
+    // The API client (e.g. this.closeApi) is created lazily on first
+    // use and reuses the credentials from that point — credential
+    // changes require a process restart (acceptable on Cloud Run where
+    // deployments replace instances).
     const cacheKey = dataSource.id;
     const cached = this.connectorInstances.get(cacheKey);
-    if (cached) {
-      (cached as any).dataSource = connectorDataSource;
-      return cached;
-    }
+    if (cached) return cached;
 
     const instance = new entry.connectorClass(connectorDataSource);
     this.connectorInstances.set(cacheKey, instance);
