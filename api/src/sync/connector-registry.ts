@@ -207,12 +207,6 @@ class SyncConnectorRegistry {
       }
     }
 
-    // Return cached instance if one exists for this data source,
-    // ensuring a single connector (and API client) per data source.
-    const cacheKey = dataSource.id;
-    const cached = this.connectorInstances.get(cacheKey);
-    if (cached) return cached;
-
     const connectorDataSource = {
       _id: dataSource.id,
       name: dataSource.name,
@@ -221,16 +215,20 @@ class SyncConnectorRegistry {
       settings: dataSource.settings,
     };
 
+    // Return cached instance if one exists for this data source,
+    // ensuring a single connector (and API client) per data source.
+    // Always update the config so injected queries and changed
+    // credentials are reflected on the cached instance.
+    const cacheKey = dataSource.id;
+    const cached = this.connectorInstances.get(cacheKey);
+    if (cached) {
+      (cached as any).dataSource = connectorDataSource;
+      return cached;
+    }
+
     const instance = new entry.connectorClass(connectorDataSource);
     this.connectorInstances.set(cacheKey, instance);
     return instance;
-  }
-
-  /**
-   * Clear cached connector instance (e.g. when data source config changes)
-   */
-  clearConnectorInstance(dataSourceId: string): void {
-    this.connectorInstances.delete(dataSourceId);
   }
 
   /**
