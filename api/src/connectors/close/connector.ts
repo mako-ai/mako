@@ -135,6 +135,52 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
   ),
 );
 
+/**
+ * Per-API-key request gate shared across all CloseConnector instances.
+ * Multiple flows may use the same Close API key concurrently; without
+ * coordination they blast the shared rate-limit bucket and trigger 429s.
+ * This gate serializes requests per key with a minimum inter-request delay.
+ */
+const apiKeyGates = new Map<
+  string,
+  { chain: Promise<void>; minDelayMs: number }
+>();
+
+function getApiKeyGate(apiKey: string, minDelayMs: number) {
+  let gate = apiKeyGates.get(apiKey);
+  if (!gate) {
+    gate = { chain: Promise.resolve(), minDelayMs };
+    apiKeyGates.set(apiKey, gate);
+  }
+  return gate;
+}
+
+function throttledRequest<T>(
+  apiKey: string,
+  fn: () => Promise<T>,
+  minDelayMs: number,
+): Promise<T> {
+  const gate = getApiKeyGate(apiKey, minDelayMs);
+  const result = gate.chain.then(async () => {
+    const start = Date.now();
+    try {
+      return await fn();
+    } finally {
+      const elapsed = Date.now() - start;
+      const remaining = Math.max(0, minDelayMs - elapsed);
+      if (remaining > 0) {
+        await new Promise(r => setTimeout(r, remaining));
+      }
+    }
+  });
+  // Extend the chain so the next caller waits for this one + delay
+  gate.chain = result.then(
+    () => {},
+    () => {},
+  );
+  return result;
+}
+
 export class CloseConnector extends BaseConnector {
   private customFieldSchemaCache = new Map<string, CloseCustomField[]>();
 
@@ -538,10 +584,13 @@ export class CloseConnector extends BaseConnector {
         throw new Error("Close API key not configured");
       }
 
-      this.closeApi = axios.create({
+      const apiKey = this.dataSource.config.api_key;
+      const minDelayMs = this.getRateLimitDelay();
+
+      const rawClient = axios.create({
         baseURL: "https://api.close.com/api/v1",
         auth: {
-          username: this.dataSource.config.api_key,
+          username: apiKey,
           password: "",
         },
         headers: {
@@ -549,50 +598,63 @@ export class CloseConnector extends BaseConnector {
         },
       });
 
-      this.closeApi.interceptors.request.use(config => {
-        const requestId = `close_req_${Date.now()}_${++this.requestSeq}`;
-        (config as any).__makoMeta = {
-          requestId,
-          startedAt: Date.now(),
-        };
-        this.emitSyncLog("info", "Close API request sent", {
-          requestId,
-          method: (config.method || "get").toUpperCase(),
-          endpoint: config.url || "",
-        });
-        return config;
-      });
+      // Wrap get/post/put/patch/delete through the per-API-key throttle
+      // so concurrent flows sharing the same key don't blast the rate limit.
+      const emitLog = this.emitSyncLog.bind(this);
+      const seqRef = { seq: 0 };
 
-      this.closeApi.interceptors.response.use(
-        response => {
-          const meta = (response.config as any).__makoMeta;
-          this.emitSyncLog("info", "Close API response received", {
-            requestId: meta?.requestId,
-            method: (response.config.method || "get").toUpperCase(),
-            endpoint: response.config.url || "",
-            status: response.status,
-            durationMs: meta?.startedAt
-              ? Date.now() - Number(meta.startedAt)
-              : undefined,
-          });
-          return response;
+      this.closeApi = new Proxy(rawClient, {
+        get(target, prop, receiver) {
+          const val = Reflect.get(target, prop, receiver);
+          if (
+            typeof val === "function" &&
+            typeof prop === "string" &&
+            ["get", "post", "put", "patch", "delete"].includes(prop)
+          ) {
+            return (...args: unknown[]) =>
+              throttledRequest(
+                apiKey,
+                () => {
+                  const requestId = `close_req_${Date.now()}_${++seqRef.seq}`;
+                  emitLog("info", "Close API request sent", {
+                    requestId,
+                    method: prop.toUpperCase(),
+                    endpoint: typeof args[0] === "string" ? args[0] : "",
+                  });
+                  const startedAt = Date.now();
+
+                  return (val.apply(target, args) as Promise<any>).then(
+                    (response: any) => {
+                      emitLog("info", "Close API response received", {
+                        requestId,
+                        method: prop.toUpperCase(),
+                        endpoint: typeof args[0] === "string" ? args[0] : "",
+                        status: response.status,
+                        durationMs: Date.now() - startedAt,
+                      });
+                      return response;
+                    },
+                    (error: any) => {
+                      emitLog("warn", "Close API request failed", {
+                        requestId,
+                        method: prop.toUpperCase(),
+                        endpoint: typeof args[0] === "string" ? args[0] : "",
+                        status: error?.response?.status,
+                        durationMs: Date.now() - startedAt,
+                        error: axios.isAxiosError(error)
+                          ? error.message
+                          : String(error),
+                      });
+                      return Promise.reject(error);
+                    },
+                  );
+                },
+                minDelayMs,
+              );
+          }
+          return val;
         },
-        error => {
-          const config = error?.config || {};
-          const meta = (config as any).__makoMeta;
-          this.emitSyncLog("warn", "Close API request failed", {
-            requestId: meta?.requestId,
-            method: (config.method || "get").toUpperCase(),
-            endpoint: config.url || "",
-            status: error?.response?.status,
-            durationMs: meta?.startedAt
-              ? Date.now() - Number(meta.startedAt)
-              : undefined,
-            error: axios.isAxiosError(error) ? error.message : String(error),
-          });
-          return Promise.reject(error);
-        },
-      );
+      });
     }
     return this.closeApi;
   }
@@ -1279,9 +1341,34 @@ export class CloseConnector extends BaseConnector {
           pageCursor = null;
 
           if (data.length === 0) {
-            // Empty window — skip ahead without counting as an iteration,
-            // but still respect rate limits to avoid rapid-fire 429s
-            await this.sleep(rateLimitDelay);
+            // Empty window — binary-search forward to skip large gaps
+            // efficiently instead of probing one 7-day window at a time.
+            const nextStart = await this.findNextNonEmptyWindow(
+              api,
+              objectType,
+              windowStart,
+              upperBound,
+              WINDOW_DAYS,
+            );
+            if (!nextStart) {
+              // No more data until upperBound — done
+              return {
+                totalProcessed: recordCount,
+                hasMore: false,
+                iterationsInChunk: iterations,
+                metadata: {
+                  windowStart,
+                  windowEnd,
+                  pageCursor: null,
+                  lastSeenDateCreated,
+                },
+              };
+            }
+            windowStart = nextStart;
+            windowEnd = new Date(
+              new Date(windowStart).getTime() +
+                WINDOW_DAYS * 24 * 60 * 60 * 1000,
+            ).toISOString();
             continue;
           }
         }
@@ -1354,6 +1441,107 @@ export class CloseConnector extends BaseConnector {
       iterationsInChunk: iterations,
       metadata: { windowStart, windowEnd, pageCursor, lastSeenDateCreated },
     };
+  }
+
+  /**
+   * Binary-search forward to find the start of the next non-empty date region.
+   * Instead of scanning hundreds of 7-day empty windows one-by-one (each
+   * costing an API request), this narrows the gap in ~log2(gapDays/windowDays)
+   * lightweight `_limit: 1` probes.
+   *
+   * Returns the ISO timestamp of the start of the first window-aligned region
+   * that contains data, or `null` if the entire range up to `upperBound` is
+   * empty.
+   */
+  private async findNextNonEmptyWindow(
+    api: AxiosInstance,
+    objectType: string,
+    gapStart: string,
+    upperBound: string,
+    windowDays: number,
+  ): Promise<string | null> {
+    let lo = new Date(gapStart).getTime();
+    let hi = new Date(upperBound).getTime();
+    const windowMs = windowDays * 24 * 60 * 60 * 1000;
+
+    if (lo >= hi) return null;
+
+    // First check: is there ANY data in [lo, hi) at all?
+    const anyData = await this.probeSearchRange(
+      api,
+      objectType,
+      new Date(lo).toISOString(),
+      new Date(hi).toISOString(),
+    );
+    if (!anyData) return null;
+
+    // Binary search: invariant — data exists somewhere in [lo, hi)
+    while (hi - lo > windowMs) {
+      const mid = lo + Math.floor((hi - lo) / 2);
+      const hasDataInLeft = await this.probeSearchRange(
+        api,
+        objectType,
+        new Date(lo).toISOString(),
+        new Date(mid).toISOString(),
+      );
+
+      if (hasDataInLeft) {
+        hi = mid;
+      } else {
+        lo = mid;
+      }
+    }
+
+    return new Date(lo).toISOString();
+  }
+
+  /** Returns true if at least one record exists in [rangeStart, rangeEnd). */
+  private async probeSearchRange(
+    api: AxiosInstance,
+    objectType: string,
+    rangeStart: string,
+    rangeEnd: string,
+  ): Promise<boolean> {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        const resp = await api.post("/data/search/", {
+          query: {
+            negate: false,
+            type: "and",
+            queries: [
+              { negate: false, type: "object_type", object_type: objectType },
+              {
+                type: "field_condition",
+                field: {
+                  type: "regular_field",
+                  object_type: objectType,
+                  field_name: "date_created",
+                },
+                condition: {
+                  type: "moment_range",
+                  on_or_after: { type: "fixed_utc", value: rangeStart },
+                  before: { type: "fixed_utc", value: rangeEnd },
+                },
+              },
+            ],
+          },
+          _limit: 1,
+          _fields: { [objectType]: ["id"] },
+        });
+
+        return (resp.data?.data?.length ?? 0) > 0;
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          await this.sleep(retryAfter * 1000);
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
