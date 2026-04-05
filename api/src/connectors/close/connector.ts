@@ -162,18 +162,14 @@ function throttledRequest<T>(
 ): Promise<T> {
   const gate = getApiKeyGate(apiKey, minDelayMs);
   const result = gate.chain.then(async () => {
-    const start = Date.now();
     try {
       return await fn();
     } finally {
-      const elapsed = Date.now() - start;
-      const remaining = Math.max(0, minDelayMs - elapsed);
-      if (remaining > 0) {
-        await new Promise(r => setTimeout(r, remaining));
-      }
+      // Always wait minDelayMs AFTER each request completes before
+      // releasing the gate for the next one.
+      await new Promise(r => setTimeout(r, minDelayMs));
     }
   });
-  // Extend the chain so the next caller waits for this one + delay
   gate.chain = result.then(
     () => {},
     () => {},
@@ -585,7 +581,7 @@ export class CloseConnector extends BaseConnector {
       }
 
       const apiKey = this.dataSource.config.api_key;
-      const minDelayMs = this.getRateLimitDelay();
+      const minDelayMs = Math.max(500, this.getRateLimitDelay());
 
       const rawClient = axios.create({
         baseURL: "https://api.close.com/api/v1",
