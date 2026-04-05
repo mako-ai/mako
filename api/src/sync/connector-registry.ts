@@ -215,13 +215,13 @@ class SyncConnectorRegistry {
       settings: dataSource.settings,
     };
 
-    // Cache connector instances per data source so all chunks within a
-    // flow execution share the same HTTP client and request throttle.
-    // The API client (e.g. this.closeApi) is created lazily on first
-    // use and reuses the credentials from that point — credential
-    // changes require a process restart (acceptable on Cloud Run where
-    // deployments replace instances).
-    const cacheKey = dataSource.id;
+    // Cache connector instances so all chunks within a flow execution
+    // share the same HTTP client and request throttle.  The key
+    // includes a config fingerprint so injected queries (GraphQL/
+    // PostHog) or credential changes produce a new instance while
+    // repeated calls with identical config reuse the existing one.
+    const configFingerprint = JSON.stringify(dataSource.connection ?? {});
+    const cacheKey = `${dataSource.id}:${configFingerprint}`;
     const cached = this.connectorInstances.get(cacheKey);
     if (cached) return cached;
 
