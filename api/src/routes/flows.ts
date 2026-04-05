@@ -1492,16 +1492,14 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
       );
     }
 
-    const running = await FlowExecution.exists({
-      flowId: new Types.ObjectId(flowId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      status: "running",
-    });
-    if (running) {
+    try {
+      await cdcBackfillService.assertCanStartBackfill(workspaceId, flowId);
+    } catch (error) {
       return c.json(
         {
           success: false,
-          error: "Cannot reset while a flow execution is running",
+          error:
+            error instanceof Error ? error.message : "Execution still running",
         },
         400,
       );
@@ -1673,17 +1671,16 @@ flowRoutes.post("/:flowId/sync-cdc/reset-column", async c => {
     }
 
     if (startBackfill) {
-      const running = await FlowExecution.exists({
-        flowId: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        status: "running",
-      });
-      if (running) {
+      try {
+        await cdcBackfillService.assertCanStartBackfill(workspaceId, flowId);
+      } catch (error) {
         return c.json(
           {
             success: false,
             error:
-              "Cannot reset column while a flow execution is running. Pause/stop it first.",
+              error instanceof Error
+                ? error.message
+                : "Execution still running",
           },
           400,
         );

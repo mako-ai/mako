@@ -25,12 +25,21 @@ const log = loggers.sync("cdc.backfill");
 
 const STALE_HEARTBEAT_MS = 10 * 60 * 1000; // 10 minutes
 
-async function hasActiveExecution(workspaceId: string, flowId: string) {
-  return FlowExecution.exists({
+async function assertCanStartBackfill(
+  workspaceId: string,
+  flowId: string,
+): Promise<void> {
+  await abandonStaleExecutions(workspaceId, flowId);
+  const running = await FlowExecution.exists({
     workspaceId: new Types.ObjectId(workspaceId),
     flowId: new Types.ObjectId(flowId),
     status: "running",
   });
+  if (running) {
+    throw new Error(
+      "Cannot start backfill while an execution is still running",
+    );
+  }
 }
 
 async function abandonStaleExecutions(
@@ -96,6 +105,8 @@ function normalizeEntities(entities: unknown[] | undefined): string[] {
 }
 
 export class CdcBackfillService {
+  assertCanStartBackfill = assertCanStartBackfill;
+
   async startBackfill(
     workspaceId: string,
     flowId: string,
@@ -131,12 +142,7 @@ export class CdcBackfillService {
           ? scopeFromFlow
           : [];
 
-    const running = await hasActiveExecution(workspaceId, flowId);
-    if (running) {
-      throw new Error(
-        "Backfill already running. Cancel or wait for the active execution before starting another backfill.",
-      );
-    }
+    await assertCanStartBackfill(workspaceId, flowId);
 
     const runId =
       shouldReuseRunId && flow.backfillState?.runId
@@ -146,7 +152,7 @@ export class CdcBackfillService {
     const previousFailures = flow.backfillState?.consecutiveFailures ?? 0;
     const now = new Date();
     flow.backfillState = {
-      active: true,
+      status: "running",
       runId,
       startedAt: reusedRunId ? flow.backfillState?.startedAt || now : now,
       completedAt: undefined,
@@ -176,7 +182,7 @@ export class CdcBackfillService {
       workspaceId,
       flowId,
       event: { type: "START", reason },
-      context: { hasActiveRunLock: Boolean(running) },
+      context: { hasActiveRunLock: false },
     });
 
     await inngest.send({
@@ -218,14 +224,7 @@ export class CdcBackfillService {
       throw new Error("Resync requires syncEngine=cdc");
     }
 
-    await abandonStaleExecutions(workspaceId, flowId);
-
-    const running = await hasActiveExecution(workspaceId, flowId);
-    if (running) {
-      throw new Error(
-        "Cannot resync while a CDC execution is active (execution has a recent heartbeat — wait or cancel it from the Inngest dashboard)",
-      );
-    }
+    await assertCanStartBackfill(workspaceId, flowId);
 
     await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId });
     await CdcEntityState.deleteMany({
@@ -256,7 +255,6 @@ export class CdcBackfillService {
       lastReason: "Operator initiated resync",
     };
     flow.backfillState = {
-      active: false,
       status: "idle",
       runId: undefined,
       startedAt: undefined,
@@ -370,23 +368,7 @@ export class CdcBackfillService {
       throw new Error("Recover requires syncEngine=cdc");
     }
 
-    const abandoned = await abandonStaleExecutions(
-      params.workspaceId,
-      params.flowId,
-    );
-
-    const running = await hasActiveExecution(params.workspaceId, params.flowId);
-    if (running) {
-      throw new Error(
-        "Cannot recover while a CDC execution is active (execution has a recent heartbeat — wait or cancel it from the Inngest dashboard)",
-      );
-    }
-
-    if (abandoned > 0) {
-      await Flow.findByIdAndUpdate(params.flowId, {
-        $set: { "backfillState.status": "error" },
-      });
-    }
+    await assertCanStartBackfill(params.workspaceId, params.flowId);
 
     const streamResult = await cdcSyncStateService.applyStreamTransition({
       workspaceId: params.workspaceId,
@@ -451,10 +433,8 @@ export class CdcBackfillService {
     });
 
     // Send cancel to Inngest so it stops the function between steps.
-    // Do NOT mark the FlowExecution as "cancelled" here — leave it as
-    // "running" so that hasActiveExecution() blocks any new startBackfill
-    // until the Inngest function has actually exited.  The function's own
-    // error/completion handler will mark it appropriately.
+    // The FlowExecution stays "running" so assertCanStartBackfill()
+    // blocks new starts until the Inngest function actually exits.
     const runningExecution = await FlowExecution.findOne({
       flowId: new Types.ObjectId(flowId),
       workspaceId: new Types.ObjectId(workspaceId),
@@ -963,7 +943,12 @@ export class CdcBackfillService {
       const runId = flow.backfillState?.runId || "unknown";
       const failures = flow.backfillState?.consecutiveFailures ?? 0;
 
-      const activeExec = await hasActiveExecution(wId, fId);
+      await abandonStaleExecutions(wId, fId);
+      const activeExec = await FlowExecution.exists({
+        workspaceId: new Types.ObjectId(wId),
+        flowId: new Types.ObjectId(fId),
+        status: "running",
+      });
       if (activeExec) {
         log.info(
           `Startup recovery: "${flowLabel}" skipped — execution still active`,
