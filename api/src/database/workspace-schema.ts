@@ -639,8 +639,6 @@ export interface IFlow extends Document {
   typeCoercions?: ITypeCoercion[];
   batchSize?: number;
   backfillState?: {
-    /** @deprecated Use status instead */
-    active: boolean;
     status?: BackfillStatus;
     runId?: string;
     startedAt?: Date;
@@ -1778,7 +1776,6 @@ const FlowSchema = new Schema<IFlow>(
       max: 50000,
     },
     backfillState: {
-      active: { type: Boolean, default: false },
       status: {
         type: String,
         enum: ["idle", "running", "paused", "completed", "error"],

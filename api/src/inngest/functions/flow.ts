@@ -647,7 +647,7 @@ export const flowFunction = inngest.createFunction(
         await step.run("enable-webhook-backfill-gate", async () => {
           await Flow.findByIdAndUpdate(flowId, {
             $set: {
-              "backfillState.active": true,
+              "backfillState.status": "running",
               "backfillState.startedAt": new Date(),
               "backfillState.completedAt": null,
             },
@@ -679,7 +679,6 @@ export const flowFunction = inngest.createFunction(
         await step.run("mark-cdc-backfill-active", async () => {
           const now = new Date();
           const update: Record<string, unknown> = {
-            "backfillState.active": true,
             "backfillState.status": "running",
             "backfillState.startedAt": flow.backfillState?.startedAt || now,
             "backfillState.completedAt": null,
@@ -2233,7 +2232,7 @@ export const flowFunction = inngest.createFunction(
           await step.run("disable-webhook-backfill-gate", async () => {
             await Flow.findByIdAndUpdate(flowId, {
               $set: {
-                "backfillState.active": false,
+                "backfillState.status": "completed",
                 "backfillState.completedAt": new Date(),
               },
             });
@@ -2286,7 +2285,6 @@ export const flowFunction = inngest.createFunction(
           const now = new Date();
           await Flow.findByIdAndUpdate(flowId, {
             $set: {
-              "backfillState.active": false,
               "backfillState.completedAt": now,
               "backfillState.consecutiveFailures": 0,
             },
@@ -2613,7 +2611,6 @@ export const flowFunction = inngest.createFunction(
           });
           await step.run("mark-cdc-backfill-interrupted", async () => {
             const update: Record<string, unknown> = {
-              "backfillState.active": false,
               "backfillState.status": "error",
               "backfillState.completedAt": null,
             };
@@ -2636,7 +2633,6 @@ export const flowFunction = inngest.createFunction(
         await step.run("disable-webhook-backfill-gate-on-failure", async () => {
           await Flow.findByIdAndUpdate(flowId, {
             $set: {
-              "backfillState.active": false,
               "backfillState.status": "error",
               "backfillState.completedAt": new Date(),
             },
@@ -3022,15 +3018,13 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
           );
 
           if (staleGateFlowIds.length > 0) {
-            // Reset backfillState.active for any flow type (not just webhook)
             const gateResetResult = await Flow.updateMany(
               {
                 _id: { $in: staleGateFlowIds },
-                "backfillState.active": true,
+                "backfillState.status": "running",
               },
               {
                 $set: {
-                  "backfillState.active": false,
                   "backfillState.status": "error",
                 },
               },

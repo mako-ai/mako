@@ -2928,7 +2928,7 @@ flowRoutes.get("/:flowId/webhook/stats", async c => {
     const successRate =
       terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
     const backfillActive = Boolean(
-      flow.backfillState?.active || runningFullSyncExecution,
+      flow.backfillState?.status === "running" || runningFullSyncExecution,
     );
 
     const stats = {

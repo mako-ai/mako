@@ -384,7 +384,7 @@ export class CdcBackfillService {
 
     if (abandoned > 0) {
       await Flow.findByIdAndUpdate(params.flowId, {
-        $set: { "backfillState.active": false },
+        $set: { "backfillState.status": "error" },
       });
     }
 
@@ -477,7 +477,6 @@ export class CdcBackfillService {
       { _id: flow._id, workspaceId: new Types.ObjectId(workspaceId) },
       {
         $set: {
-          "backfillState.active": false,
           "backfillState.status": "paused",
           "backfillState.completedAt": null,
         },
@@ -1049,7 +1048,6 @@ export async function markCdcBackfillCompletedForFlow(params: {
     },
     {
       $set: {
-        "backfillState.active": false,
         "backfillState.status": "completed",
         "backfillState.completedAt": new Date(),
       },

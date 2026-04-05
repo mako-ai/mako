@@ -234,10 +234,9 @@ class CdcSyncStateService {
       "errorMessage" in input.event ? input.event.errorMessage : undefined;
 
     if (!flow.backfillState) {
-      flow.backfillState = { active: false, status: "idle" };
+      flow.backfillState = { status: "idle" };
     }
     flow.backfillState.status = resolved;
-    flow.backfillState.active = resolved === "running";
     flow.syncStateUpdatedAt = now;
     flow.syncStateMeta = {
       lastEvent: `backfill:${input.event.type}`,
