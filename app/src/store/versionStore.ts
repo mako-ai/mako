@@ -50,7 +50,7 @@ function buildBasePath(
   entityId: string,
 ) {
   const collection = entityType === "console" ? "consoles" : "dashboards";
-  return `/api/workspaces/${workspaceId}/${collection}/${entityId}/versions`;
+  return `/workspaces/${workspaceId}/${collection}/${entityId}/versions`;
 }
 
 export const useVersionStore = create<VersionStoreState>((set, get) => ({
@@ -73,11 +73,14 @@ export const useVersionStore = create<VersionStoreState>((set, get) => ({
         total: number;
       }>(buildBasePath(workspaceId, entityType, entityId), params);
 
-      set(state => ({
-        versions: { ...state.versions, [key]: data.versions },
-        totals: { ...state.totals, [key]: data.total },
-        loading: { ...state.loading, [key]: false },
-      }));
+      set(state => {
+        const existing = opts?.offset ? (state.versions[key] ?? []) : [];
+        return {
+          versions: { ...state.versions, [key]: [...existing, ...data.versions] },
+          totals: { ...state.totals, [key]: data.total },
+          loading: { ...state.loading, [key]: false },
+        };
+      });
     } catch {
       set(state => ({ loading: { ...state.loading, [key]: false } }));
     }

@@ -865,23 +865,23 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       },
     );
 
-    // Create version record and increment version counter
-    const updatedForVersion = await SavedConsole.findByIdAndUpdate(
-      savedConsole._id,
-      { $inc: { version: 1 } },
-      { new: true },
-    ).lean();
-    if (updatedForVersion) {
+    // Create version 1 for this new console
+    const freshDocPath = await SavedConsole.findById(savedConsole._id).lean();
+    if (freshDocPath) {
       const displayNamePath = await getUserDisplayName(user.id);
       await createVersion({
         entityType: "console",
         entityId: savedConsole._id,
         workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildConsoleSnapshot(updatedForVersion as ISavedConsole),
+        snapshot: buildConsoleSnapshot(freshDocPath as ISavedConsole),
         savedBy: user.id,
         savedByName: displayNamePath,
         comment: body.comment ?? "",
       });
+      await SavedConsole.updateOne(
+        { _id: savedConsole._id },
+        { $set: { version: 1 } },
+      );
     }
 
     // Fire-and-forget: regenerate description + embedding when content changes

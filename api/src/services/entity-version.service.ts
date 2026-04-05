@@ -41,31 +41,52 @@ export async function getLatestVersionNumber(
   return latest?.version ?? 0;
 }
 
+const MAX_VERSION_RETRIES = 3;
+
 export async function createVersion(
   params: CreateVersionParams,
 ): Promise<IEntityVersion> {
-  const nextVersion =
-    (await getLatestVersionNumber(params.entityId, params.entityType)) + 1;
+  for (let attempt = 0; attempt < MAX_VERSION_RETRIES; attempt++) {
+    const nextVersion =
+      (await getLatestVersionNumber(params.entityId, params.entityType)) + 1;
 
-  const doc = await EntityVersion.create({
-    workspaceId: params.workspaceId,
-    entityType: params.entityType,
-    entityId: params.entityId,
-    version: nextVersion,
-    snapshot: params.snapshot,
-    savedBy: params.savedBy,
-    savedByName: params.savedByName,
-    comment: params.comment,
-    restoredFrom: params.restoredFrom,
-  });
+    try {
+      const doc = await EntityVersion.create({
+        workspaceId: params.workspaceId,
+        entityType: params.entityType,
+        entityId: params.entityId,
+        version: nextVersion,
+        snapshot: params.snapshot,
+        savedBy: params.savedBy,
+        savedByName: params.savedByName,
+        comment: params.comment,
+        restoredFrom: params.restoredFrom,
+      });
 
-  logger.debug("Version created", {
-    entityType: params.entityType,
-    entityId: params.entityId.toString(),
-    version: nextVersion,
-  });
+      logger.debug("Version created", {
+        entityType: params.entityType,
+        entityId: params.entityId.toString(),
+        version: nextVersion,
+      });
 
-  return doc;
+      return doc;
+    } catch (err: unknown) {
+      const isDuplicateKey =
+        err instanceof Error &&
+        "code" in err &&
+        (err as { code: number }).code === 11000;
+      if (isDuplicateKey && attempt < MAX_VERSION_RETRIES - 1) {
+        logger.warn("Version conflict, retrying", {
+          entityId: params.entityId.toString(),
+          attempt: attempt + 1,
+        });
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error("Failed to create version after retries");
 }
 
 export async function listVersions(
