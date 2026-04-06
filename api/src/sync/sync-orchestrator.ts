@@ -947,11 +947,30 @@ async function performSyncChunkSql(
 
 const FLUSH_BATCH_SIZE = 5_000;
 
+/** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
+const MONGO_TO_PARQUET_CHUNK = 400;
+
+function syncMemorySnapshot(): {
+  heapUsedMb: number;
+  rssMb: number;
+  externalMb: number;
+} {
+  const m = process.memoryUsage();
+  return {
+    heapUsedMb: Math.round(m.heapUsed / 1024 / 1024),
+    rssMb: Math.round(m.rss / 1024 / 1024),
+    externalMb: Math.round(m.external / 1024 / 1024),
+  };
+}
+
 /**
  * Flush ALL rows from the temp collection to BQ staging in batches of
  * FLUSH_BATCH_SIZE.  Each batch builds its own parquet file and loads it
  * independently so peak memory stays bounded (Close leads with nested
  * contacts/opportunities/custom fields are large — 25k rows OOMs at 1 GB).
+ *
+ * Mongo rows are streamed into DuckDB in small chunks so we do not keep a full
+ * FLUSH_BATCH_SIZE copy in JS plus a second stripped copy (prior OOM pattern).
  */
 async function flushBulkBuffer(
   tempCollection: Collection,
@@ -970,55 +989,109 @@ async function flushBulkBuffer(
   logger?.log(
     "info",
     `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
-    { entity, totalCount, totalBatches, batchSize: FLUSH_BATCH_SIZE },
+    {
+      entity,
+      totalCount,
+      totalBatches,
+      batchSize: FLUSH_BATCH_SIZE,
+      mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
+      memoryBefore: syncMemorySnapshot(),
+    },
   );
 
   for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
-    const rawDocs: Array<Record<string, unknown>> = [];
+    const docIds: unknown[] = [];
     const cursor = tempCollection
       .find({}, { projection: { _bulkRunId: 0 } })
       .sort({ _id: 1 })
       .limit(FLUSH_BATCH_SIZE);
 
-    for await (const doc of cursor) {
-      rawDocs.push(doc as Record<string, unknown>);
-    }
-
-    if (rawDocs.length === 0) break;
-
-    const docIds = rawDocs.map(d => d._id as any);
-    const docs = rawDocs.map(({ _id, ...rest }) => rest);
+    const tParquetStart = Date.now();
+    logger?.log(
+      "info",
+      `${entity} flush: building parquet (Mongo cursor → DuckDB)`,
+      {
+        entity,
+        batch: batchNum + 1,
+        totalBatches,
+        memory: syncMemorySnapshot(),
+      },
+    );
 
     const parquet = await buildParquetFromBatches({
       filenameBase: `backfill-${entity}`,
       streamBatches: async insertBatch => {
-        const parquetBatchSize = 2500;
-        for (let j = 0; j < docs.length; j += parquetBatchSize) {
-          await insertBatch(docs.slice(j, j + parquetBatchSize));
+        let buffer: Record<string, unknown>[] = [];
+        for await (const doc of cursor) {
+          const d = doc as Record<string, unknown>;
+          const { _id, ...rest } = d;
+          docIds.push(_id);
+          buffer.push(rest);
+          if (buffer.length >= MONGO_TO_PARQUET_CHUNK) {
+            await insertBatch(buffer);
+            buffer = [];
+          }
+        }
+        if (buffer.length > 0) {
+          await insertBatch(buffer);
         }
       },
     });
 
+    const parquetMs = Date.now() - tParquetStart;
+
+    if (parquet.rowCount === 0) {
+      logger?.log(
+        "warn",
+        `${entity} flush: no rows read for this window (possible race), stopping flush loop`,
+        { entity, batch: batchNum + 1, totalBatches },
+      );
+      break;
+    }
+
+    logger?.log("info", `${entity} flush: parquet file built`, {
+      entity,
+      batch: batchNum + 1,
+      totalBatches,
+      parquetRows: parquet.rowCount,
+      parquetMb: Math.round(parquet.byteSize / 1024 / 1024),
+      durationParquetMs: parquetMs,
+      memoryAfterParquet: syncMemorySnapshot(),
+    });
+
+    const tLoadStart = Date.now();
     await cdcAdapter.loadStagingFromParquet!(
       parquet.filePath,
       cdcLayout,
       flowId,
       { stagingSuffix: "backfill_staging", skipDrop: true },
     );
+    const loadMs = Date.now() - tLoadStart;
 
-    await tempCollection.deleteMany({ _id: { $in: docIds } });
-    totalFlushed += rawDocs.length;
+    logger?.log("info", `${entity} flush: staging load finished`, {
+      entity,
+      batch: batchNum + 1,
+      durationLoadStagingMs: loadMs,
+      memoryAfterLoad: syncMemorySnapshot(),
+    });
+
+    const batchRows = docIds.length;
+    await tempCollection.deleteMany({ _id: { $in: docIds as any } });
+    totalFlushed += batchRows;
 
     logger?.log(
       "info",
-      `📦 ${entity} flush batch ${batchNum + 1}/${totalBatches} — ${rawDocs.length.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()})`,
+      `📦 ${entity} flush batch ${batchNum + 1}/${totalBatches} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()})`,
       {
         entity,
         batch: batchNum + 1,
         totalBatches,
-        batchRows: rawDocs.length,
+        batchRows,
         totalFlushed,
         totalCount,
+        durationParquetMs: parquetMs,
+        durationLoadStagingMs: loadMs,
+        memory: syncMemorySnapshot(),
       },
     );
   }
@@ -1026,7 +1099,12 @@ async function flushBulkBuffer(
   logger?.log(
     "info",
     `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
-    { entity, totalFlushed, batches: totalBatches },
+    {
+      entity,
+      totalFlushed,
+      batches: totalBatches,
+      memory: syncMemorySnapshot(),
+    },
   );
 }
 
