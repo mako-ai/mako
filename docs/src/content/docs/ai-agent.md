@@ -82,6 +82,19 @@ Active when you're working in a console tab. This is the core SQL client experie
 
 Active in the flow editor. Helps configure database-to-database sync flows — inspects source and destination schemas, writes extraction queries with template placeholders, and validates before applying.
 
+### Dashboard Agent
+
+Active when working on a dashboard. Dashboards combine saved queries (consoles) into interactive visualizations powered by in-browser DuckDB and Vega-Lite charts.
+
+Key capabilities:
+- **Data sources** — create dashboard-local query definitions materialized into a local DuckDB instance
+- **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local data
+- **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
+- **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
+- **Multi-dashboard** — multiple dashboards can be open simultaneously, each with its own isolated DuckDB instance
+
+The agent handles edit-mode locking, so concurrent users cannot conflict.
+
 ## AI Models
 
 Mako supports multiple providers. Configure API keys in `.env` and users select their preferred model in the UI:
