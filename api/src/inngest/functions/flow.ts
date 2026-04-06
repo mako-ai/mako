@@ -1769,10 +1769,17 @@ export const flowFunction = inngest.createFunction(
                   `flush-batch-${safeEntityStepId}-${flushIndex}`,
                   async () => {
                     await touchHeartbeat(executionId);
+                    const memFlush = process.memoryUsage();
                     void appendExecutionLog(
                       "info",
                       `Flushing ${entity} batch ${flushIndex} to staging (${tempCount} rows in temp)`,
-                      { entity, flushIndex, tempCount },
+                      {
+                        entity,
+                        flushIndex,
+                        tempCount,
+                        heapUsedMb: Math.round(memFlush.heapUsed / 1024 / 1024),
+                        rssMb: Math.round(memFlush.rss / 1024 / 1024),
+                      },
                     );
                     try {
                       await performBulkFlush(bulkSyncOptions as any);

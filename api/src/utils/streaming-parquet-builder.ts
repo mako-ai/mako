@@ -6,6 +6,9 @@ import { loggers } from "../logging";
 
 const logger = loggers.api("streaming-parquet-builder");
 
+/** Max rows per INSERT VALUES clause to cap peak JS heap (SQL string materialization). */
+const INSERT_MICRO_BATCH_ROWS = 120;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -280,18 +283,31 @@ export async function buildParquetFromBatches(
         }
       }
 
-      const valueRows = batch.map(
-        row =>
-          `(${columns.map(col => escapeDuckDBValue(row[col], columnTypeMap.get(col) ?? "VARCHAR")).join(", ")})`,
-      );
-
-      const CHUNK_SIZE = 1000;
-      for (let i = 0; i < valueRows.length; i += CHUNK_SIZE) {
-        const chunk = valueRows.slice(i, i + CHUNK_SIZE);
-        await connection.run(`INSERT INTO _data VALUES ${chunk.join(", ")}`);
+      let insertedInThisCall = 0;
+      for (
+        let offset = 0;
+        offset < batch.length;
+        offset += INSERT_MICRO_BATCH_ROWS
+      ) {
+        const room = limit - totalRows - insertedInThisCall;
+        if (room <= 0) break;
+        const sliceLen = Math.min(
+          INSERT_MICRO_BATCH_ROWS,
+          batch.length - offset,
+          room,
+        );
+        const slice = batch.slice(offset, offset + sliceLen);
+        const valueRows = slice.map(
+          row =>
+            `(${columns.map(col => escapeDuckDBValue(row[col], columnTypeMap.get(col) ?? "VARCHAR")).join(", ")})`,
+        );
+        await connection.run(
+          `INSERT INTO _data VALUES ${valueRows.join(", ")}`,
+        );
+        insertedInThisCall += slice.length;
       }
 
-      totalRows += batch.length;
+      totalRows += insertedInThisCall;
 
       if (options.onBatchInserted) {
         await options.onBatchInserted(totalRows);
