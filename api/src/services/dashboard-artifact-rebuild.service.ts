@@ -10,7 +10,10 @@ import {
   storeArtifact,
   withArtifactBuildLock,
 } from "./dashboard-cache.service";
-import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
+import {
+  buildParquetFromBatches,
+  type FieldMeta,
+} from "../utils/streaming-parquet-builder";
 import { generateSnapshotsForDataSource } from "./dashboard-snapshot.service";
 import {
   appendMaterializationRunEvent,
@@ -259,6 +262,31 @@ export async function rebuildDashboardArtifacts(
           );
         }
 
+        let fields: FieldMeta[] = [];
+        try {
+          const schemaResult =
+            await databaseConnectionService.getStreamingQueryFields(
+              database,
+              executableQuery,
+              {
+                databaseId: dataSource.query.databaseId as string | undefined,
+                databaseName: dataSource.query.databaseName as
+                  | string
+                  | undefined,
+              },
+            );
+          if (schemaResult.success && schemaResult.fields) {
+            fields = schemaResult.fields;
+          }
+        } catch {
+          logger.warn(
+            "Schema probe failed, falling back to runtime inference",
+            {
+              dataSourceId: dataSource.id,
+            },
+          );
+        }
+
         const parquetWriteStartedEvent = pushRunEvent(currentRun, {
           type: "parquet_write_started",
           message: "Started streaming parquet build",
@@ -276,6 +304,7 @@ export async function rebuildDashboardArtifacts(
         const parquetFile = await buildParquetFromBatches({
           filenameBase: `${dashboard._id}-${dataSource.id}`,
           rowLimit,
+          fields,
           onBatchInserted: async (totalRows: number) => {
             await updateMaterializationRunHeartbeat({
               runId: currentRun.runId,
