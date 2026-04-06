@@ -59,7 +59,18 @@ function resolveTargetBqType(
   liveType: string | undefined,
 ): string {
   const schemaField = entitySchema?.fields[column];
-  if (schemaField) return mapLogicalTypeToBigQuery(schemaField.type);
+  if (schemaField) {
+    const schemaType = mapLogicalTypeToBigQuery(schemaField.type);
+    if (liveType && liveType.toUpperCase() !== schemaType.toUpperCase()) {
+      log.warn(
+        "Live table column type differs from connector schema; using live type to avoid INSERT failure. " +
+          "Recreate the destination table to adopt the correct schema type.",
+        { column, schemaType, liveType },
+      );
+      return liveType;
+    }
+    return schemaType;
+  }
   if (SYSTEM_COLUMN_TYPES[column]) return SYSTEM_COLUMN_TYPES[column];
   if (liveType) return liveType;
   return "STRING";
