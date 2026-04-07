@@ -258,6 +258,7 @@ export const NOTE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   title: s(),
   note: s(),
   note_html: s(),
+  note_date_updated: ts(),
   source: s(),
   pinned: b(),
   pinned_at: ts(),

@@ -122,6 +122,11 @@ export interface SyncChunkOptions {
     requirePartitionFilter?: boolean;
   };
   entityClustering?: { fields: string[] };
+  /**
+   * Bulk BQ backfill only: max internal parquet→staging batches per call.
+   * Use `1` from Inngest so each step.run finishes within timeout (wide rows).
+   */
+  bulkFlushMaxBatches?: number;
 }
 
 /**
@@ -945,7 +950,8 @@ async function performSyncChunkSql(
   };
 }
 
-const FLUSH_BATCH_SIZE = 5_000;
+/** Rows per parquet file in bulk flush (lower = shorter Inngest steps for wide Meeting rows). */
+const FLUSH_BATCH_SIZE = 2_000;
 
 /** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
 const MONGO_TO_PARQUET_CHUNK = 400;
@@ -979,27 +985,34 @@ async function flushBulkBuffer(
   entity: string,
   flowId: string,
   logger?: SyncLogger,
+  flushOptions?: { maxBatches?: number },
 ): Promise<void> {
   const totalCount = await tempCollection.countDocuments();
   if (totalCount === 0) return;
 
+  const maxBatchesPerCall = flushOptions?.maxBatches;
   const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
+  const batchesThisRun =
+    maxBatchesPerCall != null
+      ? Math.min(totalBatches, maxBatchesPerCall)
+      : totalBatches;
   let totalFlushed = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
+    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""}${maxBatchesPerCall != null ? `, this call: ${batchesThisRun}` : ""})`,
     {
       entity,
       totalCount,
       totalBatches,
+      batchesThisRun,
       batchSize: FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
     },
   );
 
-  for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+  for (let batchNum = 0; batchNum < batchesThisRun; batchNum++) {
     const docIds: unknown[] = [];
     const cursor = tempCollection
       .find({}, { projection: { _bulkRunId: 0 } })
@@ -1096,16 +1109,30 @@ async function flushBulkBuffer(
     );
   }
 
-  logger?.log(
-    "info",
-    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
-    {
-      entity,
-      totalFlushed,
-      batches: totalBatches,
-      memory: syncMemorySnapshot(),
-    },
-  );
+  const remaining = await tempCollection.countDocuments();
+  if (remaining === 0) {
+    logger?.log(
+      "info",
+      `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
+      {
+        entity,
+        totalFlushed,
+        batches: totalBatches,
+        memory: syncMemorySnapshot(),
+      },
+    );
+  } else {
+    logger?.log(
+      "info",
+      `⏸️ ${entity} partial flush done (${totalFlushed.toLocaleString()} rows this call, ~${remaining.toLocaleString()} still in temp)`,
+      {
+        entity,
+        totalFlushedThisCall: totalFlushed,
+        remainingInTemp: remaining,
+        memory: syncMemorySnapshot(),
+      },
+    );
+  }
 }
 
 export async function performBulkFlush(
@@ -1157,6 +1184,9 @@ export async function performBulkFlush(
     entity,
     options.flowId!,
     options.logger,
+    options.bulkFlushMaxBatches != null
+      ? { maxBatches: options.bulkFlushMaxBatches }
+      : undefined,
   );
 }
 
