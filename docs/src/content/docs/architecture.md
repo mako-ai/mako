@@ -30,7 +30,9 @@ mono/
 | Routing   | React Router          |
 | Editor    | Monaco / CodeMirror   |
 
-Key UI: Console editor, Database explorer, Chat interface, Collection/View editors, Onboarding flow.
+Key UI: Console editor, Database explorer, Chat interface, Dashboard builder, Collection/View editors, Onboarding flow.
+
+Dashboard-specific: [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview) for in-browser SQL, [Mosaic](https://uwdata.github.io/mosaic/) for cross-filtering, [Vega-Lite](https://vega.github.io/vega-lite/) for charts.
 
 ### API Server (`api/`)
 
@@ -65,10 +67,23 @@ The console agent has access to real database schemas via `inspect_schema` and c
 
 Supports 9 database drivers through a unified interface:
 
-PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, Redshift, SQLite, Snowflake, Cloudflare D1.
+PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, Redshift, Cloud SQL (Postgres), Cloudflare D1, Cloudflare KV.
 
 Each driver implements `executeQuery()` and `inspectSchema()`. Connections are encrypted at rest and pooled per workspace.
 
+
+### Dashboard Engine (`app/src/dashboard-runtime/`, `api/src/services/dashboard-*`)
+
+The dashboard system uses a split architecture:
+
+| Layer   | Technology                  | Role                                               |
+| ------- | --------------------------- | -------------------------------------------------- |
+| Server  | DuckDB (`@duckdb/node-api`) | Executes source queries, builds Parquet artifacts   |
+| Browser | DuckDB-WASM                 | Loads Parquet files, runs widget SQL locally         |
+| Browser | Mosaic (`@uwdata/mosaic-core`) | Cross-filtering coordination between widgets     |
+| Browser | Vega-Lite                   | Chart rendering                                     |
+
+Data flows: database → server-side DuckDB → Parquet → browser DuckDB-WASM → Vega-Lite/tables/KPIs. See [Dashboards](/dashboards/) for the full breakdown.
 ### Authentication
 
 Lucia Auth with Arctic OAuth providers (Google, GitHub). Sessions stored in MongoDB. API key authentication available for programmatic access.

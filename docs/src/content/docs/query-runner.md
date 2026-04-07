@@ -16,8 +16,8 @@ The Query Runner is Mako's database abstraction layer. It provides a single inte
 | MySQL                | `mysql`             | Host/port                            |
 | ClickHouse           | `clickhouse`        | Host/port                            |
 | Redshift             | `redshift`          | Host/port (PostgreSQL wire protocol) |
-| SQLite               | `sqlite`            | File path                            |
 | Cloudflare D1        | `cloudflare-d1`     | Account ID + database ID             |
+| Cloudflare KV        | `cloudflare-kv`     | Account ID + namespace ID            |
 
 ## Adding a Database Connection
 
