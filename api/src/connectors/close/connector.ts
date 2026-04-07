@@ -1145,6 +1145,12 @@ export class CloseConnector extends BaseConnector {
       "new_status_id",
       "new_status_label",
       "new_status_type",
+      // Note (activity.note)
+      "note_date_updated",
+      "pinned",
+      "pinned_at",
+      "attachments",
+      "note_mentions",
     ];
 
     if (objectType.startsWith("activity.")) {

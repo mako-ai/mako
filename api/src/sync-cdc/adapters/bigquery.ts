@@ -58,6 +58,11 @@ function resolveTargetBqType(
   entitySchema: ConnectorEntitySchema | undefined,
   liveType: string | undefined,
 ): string {
+  // When the live table already existed, its types win so INSERT ... SELECT
+  // matches BigQuery (e.g. legacy STRING vs schema TIMESTAMP — avoids cast errors).
+  // When the table was just CREATE/ALTER'd from our schema, liveType comes from
+  // INFORMATION_SCHEMA after create (see mergeStagingToLive refresh) and matches schema.
+  if (liveType) return liveType;
   const schemaField = entitySchema?.fields[column];
   if (schemaField) {
     const schemaType = mapLogicalTypeToBigQuery(schemaField.type);
@@ -72,7 +77,6 @@ function resolveTargetBqType(
     return schemaType;
   }
   if (SYSTEM_COLUMN_TYPES[column]) return SYSTEM_COLUMN_TYPES[column];
-  if (liveType) return liveType;
   return "STRING";
 }
 
@@ -409,10 +413,33 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         Array.from(stagingCols),
         entitySchema,
       );
-      for (const col of stagingCols) {
-        liveCols.add(col);
-        liveTypes.set(col, resolveTargetBqType(col, entitySchema, undefined));
+      // Re-read live columns from BigQuery so types match the created table (connector
+      // schema). Do not infer types only in JS — reset-entity + fresh CREATE must use
+      // TIMESTAMP etc. as actually defined in BQ, same as ongoing merges use live types.
+      const refreshResult = await databaseConnectionService.executeQuery(
+        destination,
+        infoSchemaQuery,
+        { location: datasetLocation },
+      );
+      if (!refreshResult.success) {
+        throw new Error(
+          refreshResult.error ||
+            "INFORMATION_SCHEMA refresh failed after creating live table",
+        );
       }
+      for (const r of (refreshResult.data as any[]) || []) {
+        const tbl = r.table_name as string;
+        const col = r.column_name as string;
+        const dt = r.data_type as string;
+        if (tbl === liveTable) {
+          liveCols.add(col);
+          liveTypes.set(col, dt);
+        }
+      }
+      log.info("Live table types loaded from INFORMATION_SCHEMA after CREATE", {
+        liveTable,
+        columnCount: liveCols.size,
+      });
     }
 
     const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
