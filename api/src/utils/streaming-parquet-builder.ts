@@ -43,60 +43,36 @@ type DuckDBColumnType =
   | "VARCHAR";
 
 /**
- * Map a driver-reported type string and/or JS sample values to a DuckDB
- * column type.  The driver type string (from `getStreamingQueryFields` or
- * similar) is checked first; if absent or unrecognised we fall back to
- * inspecting the first non-null sample value.
+ * Map a driver-reported type string to a DuckDB column type.
+ * When no type is declared, defaults to VARCHAR — no guessing from values.
  */
 export function inferDuckDBType(
   driverType: string | undefined,
-  sampleValues: unknown[],
+  _sampleValues?: unknown[],
 ): DuckDBColumnType {
-  if (driverType) {
-    const ft = driverType.toLowerCase();
+  if (!driverType) return "VARCHAR";
 
-    if (ft.includes("bigint") || ft.includes("int8") || ft.includes("int64")) {
-      return "BIGINT";
-    }
-    if (ft.includes("int") || ft.includes("serial") || ft.includes("integer")) {
-      return "BIGINT";
-    }
-    if (
-      ft.includes("float") ||
-      ft.includes("double") ||
-      ft.includes("decimal") ||
-      ft.includes("numeric") ||
-      ft.includes("real") ||
-      ft.includes("money")
-    ) {
-      return "DOUBLE";
-    }
-    if (ft.includes("bool")) return "BOOLEAN";
-    if (
-      ft.includes("date") ||
-      ft.includes("time") ||
-      ft.includes("timestamp")
-    ) {
-      return "TIMESTAMP";
-    }
+  const ft = driverType.toLowerCase();
 
-    return "VARCHAR";
+  if (ft.includes("bigint") || ft.includes("int8") || ft.includes("int64")) {
+    return "BIGINT";
   }
-
-  for (const val of sampleValues) {
-    if (val == null) continue;
-    if (typeof val === "boolean") return "BOOLEAN";
-    if (typeof val === "bigint") return "BIGINT";
-    if (typeof val === "number") {
-      return Number.isInteger(val) ? "BIGINT" : "DOUBLE";
-    }
-    if (val instanceof Date) return "TIMESTAMP";
-    if (typeof val === "string") {
-      if (/^\d{4}-\d{2}-\d{2}/.test(val) && !isNaN(Date.parse(val))) {
-        return "TIMESTAMP";
-      }
-    }
-    break;
+  if (ft.includes("int") || ft.includes("serial") || ft.includes("integer")) {
+    return "BIGINT";
+  }
+  if (
+    ft.includes("float") ||
+    ft.includes("double") ||
+    ft.includes("decimal") ||
+    ft.includes("numeric") ||
+    ft.includes("real") ||
+    ft.includes("money")
+  ) {
+    return "DOUBLE";
+  }
+  if (ft.includes("bool")) return "BOOLEAN";
+  if (ft.includes("date") || ft.includes("time") || ft.includes("timestamp")) {
+    return "TIMESTAMP";
   }
 
   return "VARCHAR";
@@ -134,31 +110,17 @@ function resolveColumnSchema(
     if (seen.has(col)) continue;
     seen.add(col);
     ordered.push(col);
-    const samples: unknown[] = [];
-    const limit = Math.min(100, batch.length);
-    for (let i = 0; i < limit; i++) {
-      samples.push(batch[i]?.[col]);
-    }
-    typeMap.set(col, inferDuckDBType(undefined, samples));
+    typeMap.set(col, "VARCHAR");
   }
 
   return { columns: ordered, typeMap };
 }
 
-/**
- * Infer type for a single late-discovered column by sampling values from
- * the current batch.
- */
 function inferColumnFromBatch(
-  col: string,
-  batch: Record<string, unknown>[],
+  _col: string,
+  _batch: Record<string, unknown>[],
 ): DuckDBColumnType {
-  const samples: unknown[] = [];
-  const limit = Math.min(100, batch.length);
-  for (let i = 0; i < limit; i++) {
-    samples.push(batch[i]?.[col]);
-  }
-  return inferDuckDBType(undefined, samples);
+  return "VARCHAR";
 }
 
 // ---------------------------------------------------------------------------
