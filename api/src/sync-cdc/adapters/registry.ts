@@ -1,4 +1,8 @@
-import type { IFlow } from "../../database/workspace-schema";
+import type {
+  IFlow,
+  ITablePartitioning,
+  ITableClustering,
+} from "../../database/workspace-schema";
 import type { CdcStoredEvent } from "../events";
 import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
 import { BigQueryDestinationAdapter } from "./bigquery";
@@ -98,6 +102,68 @@ export function hasCdcDestinationAdapter(destinationType?: string): boolean {
   if (!destinationType) return false;
   const normalizedType = destinationType.toLowerCase();
   return normalizedType === "bigquery" || normalizedType === "postgresql";
+}
+
+export function hasStagingSupport(
+  adapter?: CdcDestinationAdapter,
+): adapter is CdcDestinationAdapter & {
+  loadStagingFromParquet: NonNullable<
+    CdcDestinationAdapter["loadStagingFromParquet"]
+  >;
+  mergeFromStaging: NonNullable<CdcDestinationAdapter["mergeFromStaging"]>;
+  cleanupStaging: NonNullable<CdcDestinationAdapter["cleanupStaging"]>;
+  prepareStaging: NonNullable<CdcDestinationAdapter["prepareStaging"]>;
+} {
+  return Boolean(
+    adapter?.loadStagingFromParquet &&
+      adapter?.mergeFromStaging &&
+      adapter?.cleanupStaging &&
+      adapter?.prepareStaging,
+  );
+}
+
+export function resolveEntityPartitioning(
+  entityLayout?: { partitionField?: string; partitionGranularity?: string },
+  tableDestination?: ITablePartitioning,
+): CdcEntityLayout["partitioning"] {
+  if (entityLayout?.partitionField) {
+    return {
+      type: "time",
+      field: entityLayout.partitionField,
+      granularity:
+        (entityLayout.partitionGranularity as
+          | "day"
+          | "hour"
+          | "month"
+          | "year") || "day",
+      requirePartitionFilter: tableDestination?.requirePartitionFilter,
+    };
+  }
+  if (tableDestination?.enabled) {
+    return {
+      type: tableDestination.type || "time",
+      field:
+        tableDestination.type === "ingestion"
+          ? "_syncedAt"
+          : tableDestination.field || "_syncedAt",
+      granularity: tableDestination.granularity || "day",
+      requirePartitionFilter: tableDestination.requirePartitionFilter,
+    };
+  }
+  return undefined;
+}
+
+export function resolveEntityClustering(
+  entityLayout?: { clusterFields?: string[] },
+  tableDestination?: ITableClustering,
+): CdcEntityLayout["clustering"] {
+  if (entityLayout?.clusterFields?.length) {
+    return { fields: entityLayout.clusterFields };
+  }
+  if (tableDestination?.enabled && tableDestination.fields?.length) {
+    return { fields: tableDestination.fields };
+  }
+  return undefined;
 }
 
 export function buildCdcEntityLayout(params: {
