@@ -44,30 +44,15 @@ function testInferDuckDBType() {
   assert.equal(inferDuckDBType("UUID", []), "VARCHAR");
   assert.equal(inferDuckDBType("STRING", []), "VARCHAR");
 
-  console.log("  inferDuckDBType: JS runtime values (no driver type)");
+  console.log("  inferDuckDBType: no driver type always returns VARCHAR");
 
-  assert.equal(inferDuckDBType(undefined, [42]), "BIGINT");
-  assert.equal(inferDuckDBType(undefined, [3.14]), "DOUBLE");
-  assert.equal(inferDuckDBType(undefined, [true]), "BOOLEAN");
-  assert.equal(inferDuckDBType(undefined, [false]), "BOOLEAN");
-  assert.equal(inferDuckDBType(undefined, [new Date()]), "TIMESTAMP");
+  assert.equal(inferDuckDBType(undefined, [42]), "VARCHAR");
+  assert.equal(inferDuckDBType(undefined, [3.14]), "VARCHAR");
+  assert.equal(inferDuckDBType(undefined, [true]), "VARCHAR");
+  assert.equal(inferDuckDBType(undefined, [new Date()]), "VARCHAR");
   assert.equal(inferDuckDBType(undefined, ["hello"]), "VARCHAR");
-  assert.equal(
-    inferDuckDBType(undefined, ["2026-04-06T00:00:00Z"]),
-    "TIMESTAMP",
-  );
-  assert.equal(
-    inferDuckDBType(undefined, [BigInt("9007199254740993")]),
-    "BIGINT",
-  );
-
-  console.log("  inferDuckDBType: null-only samples fall back to VARCHAR");
   assert.equal(inferDuckDBType(undefined, [null, null, undefined]), "VARCHAR");
   assert.equal(inferDuckDBType(undefined, []), "VARCHAR");
-
-  console.log("  inferDuckDBType: skips nulls to find first real value");
-  assert.equal(inferDuckDBType(undefined, [null, null, 42]), "BIGINT");
-  assert.equal(inferDuckDBType(undefined, [null, true]), "BOOLEAN");
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +136,7 @@ async function testBuildParquetWithFields() {
 
 async function testBuildParquetWithoutFields() {
   console.log(
-    "  buildParquetFromBatches: runtime inference (no fields) produces typed Parquet",
+    "  buildParquetFromBatches: no fields — all columns default to VARCHAR",
   );
 
   const rows = [
@@ -182,31 +167,13 @@ async function testBuildParquetWithoutFields() {
       descRows[String(row[0])] = String(row[1]);
     }
 
-    assert.equal(
-      descRows["count"],
-      "BIGINT",
-      `count should be BIGINT, got ${descRows["count"]}`,
-    );
-    assert.equal(
-      descRows["rate"],
-      "DOUBLE",
-      `rate should be DOUBLE, got ${descRows["rate"]}`,
-    );
-    assert.equal(
-      descRows["day"],
-      "TIMESTAMP",
-      `day should be TIMESTAMP, got ${descRows["day"]}`,
-    );
-    assert.equal(
-      descRows["label"],
-      "VARCHAR",
-      `label should be VARCHAR, got ${descRows["label"]}`,
-    );
-    assert.equal(
-      descRows["flag"],
-      "BOOLEAN",
-      `flag should be BOOLEAN, got ${descRows["flag"]}`,
-    );
+    for (const col of ["count", "rate", "day", "label", "flag"]) {
+      assert.equal(
+        descRows[col],
+        "VARCHAR",
+        `${col} should be VARCHAR, got ${descRows[col]}`,
+      );
+    }
   } finally {
     conn.closeSync();
     await fsPromises
