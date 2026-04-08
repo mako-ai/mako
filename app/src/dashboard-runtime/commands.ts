@@ -605,10 +605,12 @@ export async function refreshDashboardCommand(
 ): Promise<void> {
   const dashboard = getDashboardOrThrow(dashboardId);
   await disposeDashboardRuntime(dashboard._id);
-  await activateDashboardRuntime(dashboard, "viewer");
+  await fetchAndSyncMaterializationStatus(workspaceId, dashboard._id);
+  const refreshedDashboard = getDashboardOrThrow(dashboard._id);
+  await activateDashboardRuntime(refreshedDashboard, "viewer");
   await syncDashboardRuntime({
     workspaceId,
-    dashboard,
+    dashboard: refreshedDashboard,
     runtimeContext: "viewer",
   });
 }

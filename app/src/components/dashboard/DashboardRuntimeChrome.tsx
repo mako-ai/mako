@@ -59,6 +59,7 @@ interface DashboardRuntimeChromeProps {
   userId?: string;
   onClearLockError: () => void;
   onForceEditMode: () => void;
+  onDismissStaleLock: () => void;
   onEditModeToggle: (mode: "edit" | "view") => void;
   onReloadData: () => void;
   dataFreshness: { ageMs: number; label: string } | null;
@@ -77,6 +78,7 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
   userId,
   onClearLockError,
   onForceEditMode,
+  onDismissStaleLock,
   onEditModeToggle,
   onReloadData,
   dataFreshness,
@@ -191,31 +193,46 @@ const DashboardRuntimeChrome: React.FC<DashboardRuntimeChromeProps> = ({
               sx={{ borderRadius: 0 }}
               action={
                 <Box sx={{ display: "flex", gap: 0.5 }}>
-                  <Button
-                    color="inherit"
-                    size="small"
-                    onClick={
-                      isSelfLock
-                        ? onForceEditMode
-                        : () => onEditModeToggle("edit")
-                    }
-                  >
-                    {isSelfLock ? "Resume editing" : "Enter edit mode"}
-                  </Button>
-                  {!isSelfLock && (
-                    <Button
-                      color="inherit"
-                      size="small"
-                      onClick={onForceEditMode}
-                    >
-                      Force take over
-                    </Button>
+                  {isSelfLock ? (
+                    <>
+                      <Button
+                        color="inherit"
+                        size="small"
+                        onClick={onDismissStaleLock}
+                      >
+                        Dismiss
+                      </Button>
+                      <Button
+                        color="inherit"
+                        size="small"
+                        onClick={onForceEditMode}
+                      >
+                        Resume editing
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        color="inherit"
+                        size="small"
+                        onClick={() => onEditModeToggle("edit")}
+                      >
+                        Enter edit mode
+                      </Button>
+                      <Button
+                        color="inherit"
+                        size="small"
+                        onClick={onForceEditMode}
+                      >
+                        Force take over
+                      </Button>
+                    </>
                   )}
                 </Box>
               }
             >
               {isSelfLock
-                ? "You have unsaved changes from a previous session"
+                ? "You left an editing session open on this dashboard"
                 : `${editLock.userName} is currently editing this dashboard`}
             </Alert>
           );

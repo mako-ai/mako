@@ -48,9 +48,9 @@ async function normalizeDashboardDataSources(
   }
 
   const dataSources = inputDataSources as Array<Record<string, any>>;
-  const connectionIds = dataSources
-    .map(ds => ds?.query?.connectionId)
-    .filter(Boolean);
+  const connectionIds = [
+    ...new Set(dataSources.map(ds => ds?.query?.connectionId).filter(Boolean)),
+  ];
 
   for (const connectionId of connectionIds) {
     if (!Types.ObjectId.isValid(String(connectionId))) {

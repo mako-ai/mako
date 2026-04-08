@@ -246,6 +246,7 @@ async function loadParquetArtifactIntoTable(options: {
 }): Promise<number> {
   const response = await fetch(options.parquetUrl, {
     credentials: "include",
+    cache: "no-store",
   });
   if (!response.ok || !response.body) {
     throw new Error(response.statusText || "Failed to fetch parquet artifact");
