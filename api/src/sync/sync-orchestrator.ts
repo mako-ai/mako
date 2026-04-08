@@ -16,7 +16,10 @@ import {
   ITableDestination,
 } from "../database/workspace-schema";
 import { createDestinationWriter } from "../services/destination-writer.service";
-import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
+import {
+  buildParquetFromBatches,
+  type FieldMeta,
+} from "../utils/streaming-parquet-builder";
 import { Db, Collection } from "mongodb";
 import { Types } from "mongoose";
 import { ProgressReporter } from "./progress-reporter";
@@ -122,11 +125,6 @@ export interface SyncChunkOptions {
     requirePartitionFilter?: boolean;
   };
   entityClustering?: { fields: string[] };
-  /**
-   * Bulk BQ backfill only: max internal parquet→staging batches per call.
-   * Use `1` from Inngest so each step.run finishes within timeout (wide rows).
-   */
-  bulkFlushMaxBatches?: number;
 }
 
 /**
@@ -972,11 +970,10 @@ function syncMemorySnapshot(): {
 /**
  * Flush ALL rows from the temp collection to BQ staging in batches of
  * FLUSH_BATCH_SIZE.  Each batch builds its own parquet file and loads it
- * independently so peak memory stays bounded (Close leads with nested
- * contacts/opportunities/custom fields are large — 25k rows OOMs at 1 GB).
+ * independently so peak memory stays bounded.
  *
- * Mongo rows are streamed into DuckDB in small chunks so we do not keep a full
- * FLUSH_BATCH_SIZE copy in JS plus a second stripped copy (prior OOM pattern).
+ * This runs inside a single Inngest step — the internal loop handles memory
+ * via small parquet files but doesn't create additional Inngest steps.
  */
 async function flushBulkBuffer(
   tempCollection: Collection,
@@ -985,34 +982,28 @@ async function flushBulkBuffer(
   entity: string,
   flowId: string,
   logger?: SyncLogger,
-  flushOptions?: { maxBatches?: number },
-): Promise<void> {
+  schemaFields?: FieldMeta[],
+): Promise<{ flushed: number }> {
   const totalCount = await tempCollection.countDocuments();
-  if (totalCount === 0) return;
+  if (totalCount === 0) return { flushed: 0 };
 
-  const maxBatchesPerCall = flushOptions?.maxBatches;
   const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
-  const batchesThisRun =
-    maxBatchesPerCall != null
-      ? Math.min(totalBatches, maxBatchesPerCall)
-      : totalBatches;
   let totalFlushed = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""}${maxBatchesPerCall != null ? `, this call: ${batchesThisRun}` : ""})`,
+    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
     {
       entity,
       totalCount,
       totalBatches,
-      batchesThisRun,
       batchSize: FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
     },
   );
 
-  for (let batchNum = 0; batchNum < batchesThisRun; batchNum++) {
+  for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
     const docIds: unknown[] = [];
     const cursor = tempCollection
       .find({}, { projection: { _bulkRunId: 0 } })
@@ -1020,19 +1011,10 @@ async function flushBulkBuffer(
       .limit(FLUSH_BATCH_SIZE);
 
     const tParquetStart = Date.now();
-    logger?.log(
-      "info",
-      `${entity} flush: building parquet (Mongo cursor → DuckDB)`,
-      {
-        entity,
-        batch: batchNum + 1,
-        totalBatches,
-        memory: syncMemorySnapshot(),
-      },
-    );
 
     const parquet = await buildParquetFromBatches({
       filenameBase: `backfill-${entity}`,
+      fields: schemaFields,
       streamBatches: async insertBatch => {
         let buffer: Record<string, unknown>[] = [];
         for await (const doc of cursor) {
@@ -1056,21 +1038,11 @@ async function flushBulkBuffer(
     if (parquet.rowCount === 0) {
       logger?.log(
         "warn",
-        `${entity} flush: no rows read for this window (possible race), stopping flush loop`,
+        `${entity} flush: empty parquet (possible race), stopping flush loop`,
         { entity, batch: batchNum + 1, totalBatches },
       );
       break;
     }
-
-    logger?.log("info", `${entity} flush: parquet file built`, {
-      entity,
-      batch: batchNum + 1,
-      totalBatches,
-      parquetRows: parquet.rowCount,
-      parquetMb: Math.round(parquet.byteSize / 1024 / 1024),
-      durationParquetMs: parquetMs,
-      memoryAfterParquet: syncMemorySnapshot(),
-    });
 
     const tLoadStart = Date.now();
     await cdcAdapter.loadStagingFromParquet!(
@@ -1081,20 +1053,13 @@ async function flushBulkBuffer(
     );
     const loadMs = Date.now() - tLoadStart;
 
-    logger?.log("info", `${entity} flush: staging load finished`, {
-      entity,
-      batch: batchNum + 1,
-      durationLoadStagingMs: loadMs,
-      memoryAfterLoad: syncMemorySnapshot(),
-    });
-
     const batchRows = docIds.length;
     await tempCollection.deleteMany({ _id: { $in: docIds as any } });
     totalFlushed += batchRows;
 
     logger?.log(
       "info",
-      `📦 ${entity} flush batch ${batchNum + 1}/${totalBatches} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()})`,
+      `📦 ${entity} flush ${batchNum + 1}/${totalBatches} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}) [parquet ${parquetMs}ms, load ${loadMs}ms]`,
       {
         entity,
         batch: batchNum + 1,
@@ -1109,36 +1074,26 @@ async function flushBulkBuffer(
     );
   }
 
-  const remaining = await tempCollection.countDocuments();
-  if (remaining === 0) {
-    logger?.log(
-      "info",
-      `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
-      {
-        entity,
-        totalFlushed,
-        batches: totalBatches,
-        memory: syncMemorySnapshot(),
-      },
-    );
-  } else {
-    logger?.log(
-      "info",
-      `⏸️ ${entity} partial flush done (${totalFlushed.toLocaleString()} rows this call, ~${remaining.toLocaleString()} still in temp)`,
-      {
-        entity,
-        totalFlushedThisCall: totalFlushed,
-        remainingInTemp: remaining,
-        memory: syncMemorySnapshot(),
-      },
-    );
-  }
+  logger?.log(
+    "info",
+    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
+    {
+      entity,
+      totalFlushed,
+      batches: totalBatches,
+      memory: syncMemorySnapshot(),
+    },
+  );
+
+  return { flushed: totalFlushed };
 }
 
 export async function performBulkFlush(
   options: SyncChunkOptions,
-): Promise<void> {
-  if (!options.tableDestination?.connectionId || !options.flowId) return;
+): Promise<{ flushed: number }> {
+  if (!options.tableDestination?.connectionId || !options.flowId) {
+    return { flushed: 0 };
+  }
 
   const entity = options.entity;
   const entityTableName = getEntityTableName(
@@ -1163,7 +1118,7 @@ export async function performBulkFlush(
     },
   });
 
-  if (!cdcAdapter.loadStagingFromParquet) return;
+  if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
   const cdcLayout = buildCdcEntityLayout({
     entity,
@@ -1173,20 +1128,31 @@ export async function performBulkFlush(
   const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
   const tempCollection = db.collection(collName);
 
+  const entitySchema = await resolveEntitySchemaSafe({
+    entity,
+    dataSourceId: options.dataSourceId,
+    context: "performBulkFlush",
+  });
+  const schemaFields: FieldMeta[] | undefined = entitySchema
+    ? Object.entries(entitySchema.fields).map(([name, f]) => ({
+        name,
+        type: f.type,
+      }))
+    : undefined;
+
   orchestratorLogger.info("performBulkFlush: flushing buffer to staging", {
     entity,
     flowId: options.flowId,
+    hasSchema: !!entitySchema,
   });
-  await flushBulkBuffer(
+  return flushBulkBuffer(
     tempCollection,
     cdcAdapter,
     cdcLayout,
     entity,
     options.flowId!,
     options.logger,
-    options.bulkFlushMaxBatches != null
-      ? { maxBatches: options.bulkFlushMaxBatches }
-      : undefined,
+    schemaFields,
   );
 }
 

@@ -1739,7 +1739,7 @@ export const flowFunction = inngest.createFunction(
             state = chunkResult.state;
             completed = chunkResult.completed;
 
-            if (checkpointEnabled) {
+            if (checkpointEnabled && chunkIndex % 10 === 9) {
               await step.run(
                 `save-cdc-backfill-checkpoint-${safeEntityStepId}-${chunkIndex}`,
                 async () => {
@@ -1760,70 +1760,19 @@ export const flowFunction = inngest.createFunction(
                 flowId.toString(),
                 entity,
               );
-              if (tempCount >= 10_000) {
-                logger.info(
-                  `Temp buffer reached ${tempCount} rows, flushing batch ${flushIndex}`,
-                  { flowId, entity, tempCount, flushIndex },
-                );
-                let subFlush = 0;
-                let rowsInTemp = await getTempCollectionCount(
-                  flowId.toString(),
-                  entity,
-                );
-                while (rowsInTemp > 0) {
-                  const cnt = rowsInTemp;
-                  await step.run(
-                    `flush-batch-${safeEntityStepId}-${flushIndex}-${subFlush}`,
-                    async () => {
-                      await touchHeartbeat(executionId);
-                      const memFlush = process.memoryUsage();
-                      void appendExecutionLog(
-                        "info",
-                        `Flushing ${entity} batch ${flushIndex}-${subFlush} to staging (${cnt} rows in temp, one parquet chunk per step)`,
-                        {
-                          entity,
-                          flushIndex,
-                          subFlush,
-                          tempCount: cnt,
-                          heapUsedMb: Math.round(
-                            memFlush.heapUsed / 1024 / 1024,
-                          ),
-                          rssMb: Math.round(memFlush.rss / 1024 / 1024),
-                        },
-                      );
-                      try {
-                        await performBulkFlush({
-                          ...(bulkSyncOptions as object),
-                          bulkFlushMaxBatches: 1,
-                        } as any);
-                      } catch (err) {
-                        const msg =
-                          err instanceof Error ? err.message : String(err);
-                        await appendExecutionLog(
-                          "error",
-                          `Failed to flush ${entity} batch ${flushIndex}-${subFlush}: ${msg}`,
-                          { entity, flushIndex, subFlush },
-                        );
-                        throw err;
-                      }
-                      void appendExecutionLog(
-                        "info",
-                        `${entity} batch ${flushIndex}-${subFlush} parquet chunk flushed to staging`,
-                        { entity, flushIndex, subFlush },
-                      );
-                    },
-                  );
-                  subFlush++;
-                  if (subFlush > 500) {
-                    throw new Error(
-                      `Flush sub-step limit exceeded for ${entity} (mid-sync buffer)`,
+              if (tempCount >= 50_000) {
+                await step.run(
+                  `flush-batch-${safeEntityStepId}-${flushIndex}`,
+                  async () => {
+                    await touchHeartbeat(executionId);
+                    void appendExecutionLog(
+                      "info",
+                      `Flushing ${entity} buffer batch ${flushIndex} to staging (${tempCount} rows in temp)`,
+                      { entity, flushIndex, tempCount },
                     );
-                  }
-                  rowsInTemp = await getTempCollectionCount(
-                    flowId.toString(),
-                    entity,
-                  );
-                }
+                    await performBulkFlush(bulkSyncOptions as any);
+                  },
+                );
                 flushIndex++;
               }
             }
@@ -1842,72 +1791,20 @@ export const flowFunction = inngest.createFunction(
           });
 
           if (useBulkPath && bulkSyncOptions) {
-            logger.info(
-              `Flushing ${entity} remaining buffer to BigQuery staging`,
-              {
-                flowId,
-                entity,
-                flushIndex,
-              },
+            const finalRowsInTemp = await getTempCollectionCount(
+              flowId.toString(),
+              entity,
             );
-            try {
-              let finalSub = 0;
-              let finalRowsInTemp = await getTempCollectionCount(
-                flowId.toString(),
-                entity,
-              );
-              while (finalRowsInTemp > 0) {
-                const cnt = finalRowsInTemp;
-                await step.run(
-                  `flush-final-${safeEntityStepId}-${finalSub}`,
-                  async () => {
-                    await touchHeartbeat(executionId);
-                    void appendExecutionLog(
-                      "info",
-                      `Flushing ${entity} remaining buffer to BigQuery staging via Parquet (${cnt} rows in temp, one chunk per step)`,
-                      { entity, finalSub, tempCount: cnt },
-                    );
-                    try {
-                      await performBulkFlush({
-                        ...(bulkSyncOptions as object),
-                        bulkFlushMaxBatches: 1,
-                      } as any);
-                    } catch (err) {
-                      const msg =
-                        err instanceof Error ? err.message : String(err);
-                      await appendExecutionLog(
-                        "error",
-                        `Failed to flush ${entity} remaining buffer to staging: ${msg}`,
-                        { entity, finalSub },
-                      );
-                      throw err;
-                    }
-                    void appendExecutionLog(
-                      "info",
-                      `${entity} remaining buffer chunk flushed to staging table`,
-                      { entity, finalSub },
-                    );
-                  },
+            if (finalRowsInTemp > 0) {
+              await step.run(`flush-final-${safeEntityStepId}`, async () => {
+                await touchHeartbeat(executionId);
+                void appendExecutionLog(
+                  "info",
+                  `Flushing ${entity} remaining buffer to BigQuery staging (${finalRowsInTemp} rows)`,
+                  { entity, tempCount: finalRowsInTemp },
                 );
-                finalSub++;
-                if (finalSub > 500) {
-                  throw new Error(
-                    `Flush sub-step limit exceeded for ${entity} (final buffer)`,
-                  );
-                }
-                finalRowsInTemp = await getTempCollectionCount(
-                  flowId.toString(),
-                  entity,
-                );
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              await appendExecutionLog(
-                "error",
-                `Flush step failed for ${entity}: ${msg}`,
-                { entity },
-              );
-              throw err;
+                await performBulkFlush(bulkSyncOptions as any);
+              });
             }
             logger.info(`Merging ${entity} staging table to live`, {
               flowId,
