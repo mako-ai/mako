@@ -900,6 +900,10 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                 ds.cache?.parquetBuiltAt,
               );
               const sizeLabel = formatBytes(ds.cache?.byteSize);
+              const materializationError =
+                materializationStatus === "error"
+                  ? ds.cache?.parquetLastError || null
+                  : null;
               const diagnostics = [
                 runtimeDataSource?.activeSource
                   ? `source: ${runtimeDataSource.activeSource}`
@@ -910,8 +914,8 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                 runtimeDataSource?.loadPath
                   ? `path: ${runtimeDataSource.loadPath}`
                   : null,
-                runtimeDataSource?.materializationVersion
-                  ? `artifact: ${runtimeDataSource.materializationVersion}`
+                runtimeDataSource?.artifactRevision
+                  ? `artifact: ${runtimeDataSource.artifactRevision}`
                   : null,
                 runtimeDataSource?.loadDurationMs
                   ? `load: ${Math.round(runtimeDataSource.loadDurationMs)} ms`
@@ -944,6 +948,15 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     icon={<LoaderCircle size={14} />}
                     label="Materializing..."
                     color="warning"
+                    size="small"
+                    variant="outlined"
+                    sx={{ height: 22, fontSize: "0.7rem" }}
+                  />
+                ) : materializationStatus === "error" ? (
+                  <Chip
+                    icon={<XCircle size={14} />}
+                    label="Materialization failed"
+                    color="error"
                     size="small"
                     variant="outlined"
                     sx={{ height: 22, fontSize: "0.7rem" }}
@@ -1060,11 +1073,14 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
 
                   {(statsSegments.length > 0 ||
                     status === "loading" ||
-                    status === "error") && (
+                    status === "error" ||
+                    materializationError) && (
                     <Typography
                       variant="caption"
                       color={
-                        status === "error" ? "error.main" : "text.secondary"
+                        status === "error" || materializationError
+                          ? "error.main"
+                          : "text.secondary"
                       }
                       sx={{ display: "block", mt: 0.5, lineHeight: 1.4 }}
                     >
@@ -1077,7 +1093,9 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                           })
                         : status === "error"
                           ? errorMessage || "Failed to load data source"
-                          : statsSegments.join(" · ")}
+                          : materializationError
+                            ? materializationError
+                            : statsSegments.join(" · ")}
                     </Typography>
                   )}
 
@@ -1285,7 +1303,11 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                     ) || "N/A"}
                   </Typography>
                   <Typography variant="body2">
-                    Version: {selectedRunDetail.version || "N/A"}
+                    Definition Hash: {selectedRunDetail.definitionHash || "N/A"}
+                  </Typography>
+                  <Typography variant="body2">
+                    Artifact Revision:{" "}
+                    {selectedRunDetail.artifactRevision || "N/A"}
                   </Typography>
                   <Typography variant="body2">
                     Rows:{" "}

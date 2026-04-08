@@ -10,6 +10,11 @@ import { DatabaseDriver, StreamingQueryOptions } from "../databases/driver";
 import { CloudSQLPostgresDatabaseDriver } from "../databases/drivers/cloudsql-postgres/driver";
 import { CloudflareD1DatabaseDriver } from "../databases/drivers/cloudflare-d1/driver";
 import { CloudflareKVDatabaseDriver } from "../databases/drivers/cloudflare-kv/driver";
+import {
+  mapPostgresOidToType,
+  normalizePostgresFields,
+  normalizePostgresRows,
+} from "../databases/drivers/postgresql/pg-type-utils";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
@@ -2367,7 +2372,13 @@ export class DatabaseConnectionService {
             return null;
           }
 
-          const type = field?.type || field?.dataType || field?.columnType;
+          const type =
+            field?.type ||
+            field?.dataType ||
+            field?.columnType ||
+            (typeof field?.dataTypeID === "number"
+              ? mapPostgresOidToType(field.dataTypeID)
+              : undefined);
           return {
             name: String(name),
             type: type ? String(type) : undefined,
@@ -3480,11 +3491,16 @@ export class DatabaseConnectionService {
         }
 
         const result = await client.query(query);
+        const fields = normalizePostgresFields(result.fields);
+        const rows = normalizePostgresRows(
+          result.rows as Record<string, unknown>[],
+          fields,
+        );
         return {
           success: true,
-          data: result.rows,
+          data: rows,
           rowCount: result.rowCount ?? undefined,
-          fields: result.fields,
+          fields,
         };
       } finally {
         // Always release the client back to the pool

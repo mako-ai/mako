@@ -62,6 +62,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function isDashboardInEditMode(dashboardId: string): boolean {
+  return useDashboardStore.getState().isEditMode(dashboardId);
+}
+
 function syncRuntimeMaterializationStatus(
   dashboardId: string,
   status: DashboardMaterializationStatus,
@@ -80,7 +84,7 @@ function syncRuntimeMaterializationStatus(
         dataSource.dataSourceId,
         {
           materializationStatus: dataSource.status,
-          materializationVersion: dataSource.version,
+          artifactRevision: dataSource.artifactRevision,
           materializedAt: dataSource.lastMaterializedAt,
           artifactUrl: dataSource.readUrl,
           storageBackend: dataSource.storageBackend,
@@ -93,14 +97,7 @@ function syncRuntimeMaterializationStatus(
 export function shouldAutoApplyFreshMaterialization(
   dashboardId: string,
 ): boolean {
-  const session = useDashboardRuntimeStore.getState().sessions[dashboardId];
-  if (!session) {
-    return false;
-  }
-
-  return !Object.values(session.dataSources).some(
-    dataSource => dataSource.activeSource === "draft_stream",
-  );
+  return !isDashboardInEditMode(dashboardId);
 }
 
 async function fetchAndSyncMaterializationStatus(
@@ -130,8 +127,11 @@ async function waitForDashboardMaterialization(options: {
     return null;
   }
 
-  const initialVersions = new Map(
-    initial.dataSources.map(source => [source.dataSourceId, source.version]),
+  const initialRevisions = new Map(
+    initial.dataSources.map(source => [
+      source.dataSourceId,
+      source.artifactRevision,
+    ]),
   );
   let current = initial;
   while (current.anyBuilding) {
@@ -149,8 +149,8 @@ async function waitForDashboardMaterialization(options: {
   const hasFreshData = current.dataSources.some(
     source =>
       source.status === "ready" &&
-      source.version &&
-      source.version !== initialVersions.get(source.dataSourceId),
+      source.artifactRevision &&
+      source.artifactRevision !== initialRevisions.get(source.dataSourceId),
   );
   runtimeStore.dispatch(
     dashboardRuntimeEvents.setFreshDataAvailable(
@@ -534,6 +534,9 @@ export async function refreshDashboardDataSourceCommand(options: {
     workspaceId: options.workspaceId,
     dashboardId: dashboard._id,
   });
+  if (isDashboardInEditMode(dashboard._id)) {
+    return;
+  }
   await applyDashboardMaterializedData({
     workspaceId: options.workspaceId,
     dashboardId: dashboard._id,
@@ -555,6 +558,9 @@ export async function reloadDashboardDataSourcesCommand(
     workspaceId,
     dashboardId: dashboard._id,
   });
+  if (isDashboardInEditMode(dashboard._id)) {
+    return;
+  }
   await applyDashboardMaterializedData({
     workspaceId,
     dashboardId: dashboard._id,
@@ -655,7 +661,7 @@ export function getDashboardStateSnapshot(dashboardId?: string) {
         artifactUrl: runtime?.artifactUrl ?? null,
         loadDurationMs: runtime?.loadDurationMs ?? null,
         materializationStatus: runtime?.materializationStatus ?? null,
-        materializationVersion: runtime?.materializationVersion ?? null,
+        artifactRevision: runtime?.artifactRevision ?? null,
         materializedAt: runtime?.materializedAt ?? null,
         storageBackend: runtime?.storageBackend ?? null,
         columns: runtime?.schema || [],

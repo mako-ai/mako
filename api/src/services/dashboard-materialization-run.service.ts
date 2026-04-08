@@ -36,7 +36,8 @@ export interface MaterializationRunRecord {
   stage?: string;
   attempt?: number;
   artifactKey?: string;
-  version?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
   rowCount?: number;
   byteSize?: number;
   error?: string;
@@ -62,7 +63,8 @@ function toMaterializationRunRecord(run: any): MaterializationRunRecord {
     stage: plain.stage,
     attempt: plain.attempt,
     artifactKey: plain.artifactKey,
-    version: plain.version,
+    definitionHash: plain.definitionHash ?? plain.version,
+    artifactRevision: plain.artifactRevision,
     rowCount: plain.rowCount,
     byteSize: plain.byteSize,
     error: plain.error,
@@ -86,7 +88,8 @@ export async function createMaterializationRun(input: {
   startedAt?: Date;
   workerId?: string;
   artifactKey?: string;
-  version?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
   events?: MaterializationRunEventRecord[];
 }): Promise<void> {
   await MaterializationRun.create({
@@ -102,7 +105,8 @@ export async function createMaterializationRun(input: {
     workerId: input.workerId,
     attempt: 1,
     artifactKey: input.artifactKey,
-    version: input.version,
+    definitionHash: input.definitionHash,
+    artifactRevision: input.artifactRevision,
     events: input.events || [],
   });
 }
@@ -116,7 +120,8 @@ export async function ensureMaterializationRunStarted(input: {
   requestedAt: Date;
   workerId?: string;
   artifactKey?: string;
-  version?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
 }): Promise<void> {
   const now = new Date();
   await MaterializationRun.findOneAndUpdate(
@@ -143,7 +148,8 @@ export async function ensureMaterializationRunStarted(input: {
         lastHeartbeat: now,
         workerId: input.workerId,
         artifactKey: input.artifactKey,
-        version: input.version,
+        definitionHash: input.definitionHash,
+        artifactRevision: input.artifactRevision,
         stage: "started",
         finishedAt: null,
         error: null,
@@ -175,7 +181,8 @@ export async function finalizeMaterializationRun(input: {
   byteSize?: number;
   error?: string;
   artifactKey?: string;
-  version?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
 }): Promise<void> {
   await MaterializationRun.updateOne(
     { runId: input.runId },
@@ -188,7 +195,8 @@ export async function finalizeMaterializationRun(input: {
         byteSize: input.byteSize,
         error: input.error,
         artifactKey: input.artifactKey,
-        version: input.version,
+        definitionHash: input.definitionHash,
+        artifactRevision: input.artifactRevision,
       },
     },
   ).catch(() => undefined);
