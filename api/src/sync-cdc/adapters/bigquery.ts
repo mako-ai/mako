@@ -631,6 +631,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }
 
   private _datasetLocation: string | undefined;
+  private _resolvedClient?: {
+    bq: InstanceType<typeof BigQuery>;
+    projectId: string;
+    dataset: string;
+    destination: IDatabaseConnection;
+    datasetLocation: string | undefined;
+  };
 
   private async resolveBqClient(): Promise<{
     bq: InstanceType<typeof BigQuery>;
@@ -639,6 +646,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     destination: IDatabaseConnection;
     datasetLocation: string | undefined;
   }> {
+    if (this._resolvedClient) return this._resolvedClient;
+
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
     const credentials =
@@ -664,13 +673,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
     }
 
-    return {
+    this._resolvedClient = {
       bq,
       projectId,
       dataset,
       destination,
       datasetLocation: this._datasetLocation,
     };
+    return this._resolvedClient;
   }
 
   private async ensureDataset(): Promise<void> {

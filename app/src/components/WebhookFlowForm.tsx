@@ -305,7 +305,7 @@ const STEPS = [
   },
   {
     label: "Entity Configuration",
-    description: "Configure per-entity table layouts (BigQuery)",
+    description: "Configure per-entity table layouts",
   },
   { label: "Webhook Setup", description: "Webhook URL and signing secret" },
 ];
@@ -420,22 +420,36 @@ export function WebhookFlowForm({
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
   );
-  const isBigQueryDest = selectedDestination?.type === "bigquery";
+  const destType = selectedDestination?.type;
+  const isBigQueryDest = destType === "bigquery";
+  const isCdcCapableDest =
+    destType === "bigquery" ||
+    destType === "postgresql" ||
+    destType === "clickhouse" ||
+    destType === "mongodb";
+  const hasStagingDest = destType === "bigquery" || destType === "clickhouse";
 
   useEffect(() => {
     if (isBigQueryDest) {
       if (watchDeleteMode !== "soft") {
         setValue("deleteMode", "soft");
       }
-      if (isNewMode && watchSyncEngine !== "cdc") {
-        setValue("syncEngine", "cdc");
-      }
     }
-  }, [isBigQueryDest, setValue, watchDeleteMode, watchSyncEngine, isNewMode]);
+    if (isCdcCapableDest && isNewMode && watchSyncEngine !== "cdc") {
+      setValue("syncEngine", "cdc");
+    }
+  }, [
+    isBigQueryDest,
+    isCdcCapableDest,
+    setValue,
+    watchDeleteMode,
+    watchSyncEngine,
+    isNewMode,
+  ]);
 
   // Fetch entity metadata from connector and build per-entity layout defaults
   useEffect(() => {
-    if (isBigQueryDest && watchDataSourceId && connectors.length > 0) {
+    if (hasStagingDest && watchDataSourceId && connectors.length > 0) {
       const source = connectors.find(c => c._id === watchDataSourceId);
       if (!source) return;
 
@@ -676,7 +690,7 @@ export function WebhookFlowForm({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    isBigQueryDest,
+    hasStagingDest,
     watchDataSourceId,
     watchDestinationId,
     connectors,
@@ -788,10 +802,18 @@ export function WebhookFlowForm({
       // Auto-generate name as "source → destination"
       const generatedName = `${selectedSource?.name || "Source"} → ${selectedDatabase?.name || "Destination"}`;
 
-      const isBq = selectedDestination?.type === "bigquery";
-      if (data.syncEngine === "cdc" && !isBq) {
+      const cdcCapableTypes = [
+        "bigquery",
+        "postgresql",
+        "clickhouse",
+        "mongodb",
+      ];
+      if (
+        data.syncEngine === "cdc" &&
+        !cdcCapableTypes.includes(selectedDestination?.type || "")
+      ) {
         throw new Error(
-          "CDC engine is currently available only for BigQuery destinations.",
+          "CDC engine requires a supported destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB).",
         );
       }
 
@@ -804,10 +826,10 @@ export function WebhookFlowForm({
         syncEngine: data.syncEngine || "legacy",
         enabled: true,
         webhookSecret: data.webhookSecret || "",
-        deleteMode: isBq ? "soft" : data.deleteMode || "hard",
+        deleteMode: isBigQueryDest ? "soft" : data.deleteMode || "hard",
       };
 
-      if (isBq && data.tableDestination?.schema) {
+      if (isCdcCapableDest && data.tableDestination?.schema) {
         payload.tableDestination = {
           connectionId: data.destinationDatabaseId,
           schema: data.tableDestination.schema,
@@ -1195,28 +1217,34 @@ export function WebhookFlowForm({
                     )}
                   />
 
-                  {isBigQueryDest && (
+                  {isCdcCapableDest && (
                     <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                       <Controller
                         name="tableDestination.schema"
                         control={control}
                         rules={{
-                          required: isBigQueryDest
-                            ? "Dataset is required for BigQuery"
+                          required: isCdcCapableDest
+                            ? "Schema/dataset is required"
                             : false,
                         }}
                         render={({ field }) => (
                           <TextField
                             {...field}
-                            label="Dataset"
-                            placeholder="my_dataset"
+                            label={
+                              isBigQueryDest ? "Dataset" : "Schema / Database"
+                            }
+                            placeholder={
+                              isBigQueryDest ? "my_dataset" : "public"
+                            }
                             fullWidth
                             size="small"
                             disabled={!isNewMode}
                             error={!!errors.tableDestination?.schema}
                             helperText={
                               errors.tableDestination?.schema?.message ||
-                              "BigQuery dataset name"
+                              (isBigQueryDest
+                                ? "BigQuery dataset name"
+                                : "Target schema or database name")
                             }
                           />
                         )}
@@ -1276,16 +1304,16 @@ export function WebhookFlowForm({
                         <InputLabel>Sync engine</InputLabel>
                         <Select {...field} label="Sync engine">
                           <MenuItem value="legacy">legacy</MenuItem>
-                          <MenuItem value="cdc" disabled={!isBigQueryDest}>
+                          <MenuItem value="cdc" disabled={!isCdcCapableDest}>
                             cdc
                           </MenuItem>
                         </Select>
                         <FormHelperText>
                           {watchSyncEngine === "cdc"
                             ? "CDC mode enabled for this flow."
-                            : isBigQueryDest
+                            : isCdcCapableDest
                               ? "CDC is opt-in per flow; legacy remains default."
-                              : "CDC currently requires a BigQuery destination."}
+                              : "CDC requires a supported destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB)."}
                         </FormHelperText>
                       </FormControl>
                     )}
@@ -1316,7 +1344,7 @@ export function WebhookFlowForm({
                         </Select>
                         <FormHelperText>
                           {isBigQueryDest
-                            ? "BigQuery webhook flows always use soft delete (CDC tombstones)."
+                            ? "BigQuery flows always use soft delete (CDC tombstones)."
                             : "How webhook delete events are handled in the destination"}
                         </FormHelperText>
                       </FormControl>
@@ -1330,7 +1358,7 @@ export function WebhookFlowForm({
                       variant="contained"
                       endIcon={<NextIcon />}
                       onClick={() => {
-                        if (isBigQueryDest) {
+                        if (hasStagingDest) {
                           openNextStep(2);
                         } else {
                           setOpenSteps(prev => {
@@ -1342,7 +1370,7 @@ export function WebhookFlowForm({
                         }
                       }}
                     >
-                      {isBigQueryDest
+                      {hasStagingDest
                         ? "Continue to Entity Configuration"
                         : "Continue to Webhook Setup"}
                     </Button>
@@ -1351,8 +1379,8 @@ export function WebhookFlowForm({
               </AccordionDetails>
             </Accordion>
 
-            {/* Step 4: Entity Configuration (BigQuery only) */}
-            {isBigQueryDest && (
+            {/* Step 4: Entity Configuration (staging-capable destinations) */}
+            {hasStagingDest && (
               <Accordion
                 expanded={openSteps.has(3)}
                 onChange={() => toggleStep(3)}
@@ -1579,8 +1607,8 @@ export function WebhookFlowForm({
 
                     {watchEntityLayouts.length === 0 && (
                       <Alert severity="info">
-                        Select a data source and BigQuery destination to
-                        configure entities.
+                        Select a data source and a staging-capable destination
+                        to configure entities.
                       </Alert>
                     )}
 

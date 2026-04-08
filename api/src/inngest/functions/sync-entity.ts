@@ -12,6 +12,12 @@ import {
 import { FetchState } from "../../connectors/base/BaseConnector";
 import { Types } from "mongoose";
 import { cdcBackfillCheckpointService } from "../../sync-cdc/sync-state";
+import {
+  resolveCdcDestinationAdapter,
+  hasStagingSupport,
+  resolveEntityPartitioning,
+  resolveEntityClustering,
+} from "../../sync-cdc/adapters/registry";
 
 /**
  * Max steps to use before yielding back to the parent for re-invocation.
@@ -209,7 +215,20 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     }
 
     // ── Resolve bulk path options ────────────────────────────────────
-    const useBulkPath = isCdcEnabled && destinationType === "bigquery";
+    const cdcAdapter =
+      isCdcEnabled && destinationType && (tableDestination as any)?.connectionId
+        ? resolveCdcDestinationAdapter({
+            destinationType,
+            destinationDatabaseId: destinationId,
+            destinationDatabaseName,
+            tableDestination: {
+              connectionId: String((tableDestination as any).connectionId),
+              schema: (tableDestination as any).schema || "public",
+              tableName: (tableDestination as any).tableName || "",
+            },
+          })
+        : undefined;
+    const useBulkPath = isCdcEnabled && hasStagingSupport(cdcAdapter);
     let flushIndex = 0;
     let bulkSyncOptions: Record<string, unknown> | undefined;
 
@@ -217,34 +236,6 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       const bulkEntityLayout = (entityLayouts || []).find(
         (l: any) => l.entity === entity || l.entity === entity.split(":")[0],
       );
-      const bulkPartitioning = (bulkEntityLayout as any)?.partitionField
-        ? {
-            type: "time" as const,
-            field: (bulkEntityLayout as any).partitionField,
-            granularity:
-              (bulkEntityLayout as any).partitionGranularity || "day",
-            requirePartitionFilter: (tableDestination as any)?.partitioning
-              ?.requirePartitionFilter,
-          }
-        : (tableDestination as any)?.partitioning?.enabled
-          ? {
-              type: (tableDestination as any).partitioning.type || "time",
-              field:
-                (tableDestination as any).partitioning.type === "ingestion"
-                  ? "_syncedAt"
-                  : (tableDestination as any).partitioning.field || "_syncedAt",
-              granularity:
-                (tableDestination as any).partitioning.granularity || "day",
-              requirePartitionFilter: (tableDestination as any).partitioning
-                .requirePartitionFilter,
-            }
-          : undefined;
-      const bulkClustering = (bulkEntityLayout as any)?.clusterFields?.length
-        ? { fields: (bulkEntityLayout as any).clusterFields }
-        : (tableDestination as any)?.clustering?.enabled &&
-            (tableDestination as any).clustering.fields?.length
-          ? { fields: (tableDestination as any).clustering.fields }
-          : undefined;
 
       const bulkLogger: SyncLogger = {
         log: (level: string, message: string, metadata?: any) => {
@@ -280,8 +271,14 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         isIncremental: syncMode === "incremental",
         tableDestination,
         deleteMode,
-        entityPartitioning: bulkPartitioning,
-        entityClustering: bulkClustering,
+        entityPartitioning: resolveEntityPartitioning(
+          bulkEntityLayout as any,
+          (tableDestination as any)?.partitioning,
+        ),
+        entityClustering: resolveEntityClustering(
+          bulkEntityLayout as any,
+          (tableDestination as any)?.clustering,
+        ),
         logger: bulkLogger,
       };
 
@@ -372,21 +369,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 l.entity === entity || l.entity === entity.split(":")[0],
             );
             if (entityLayout) {
+              const p = resolveEntityPartitioning(
+                entityLayout as any,
+                (tableDestination as any)?.partitioning,
+              );
+              const c = resolveEntityClustering(
+                entityLayout as any,
+                (tableDestination as any)?.clustering,
+              );
               resolvedTableDest = {
                 ...tableDestination,
-                partitioning: {
-                  enabled: true,
-                  type: "time",
-                  field: (entityLayout as any).partitionField,
-                  granularity:
-                    (entityLayout as any).partitionGranularity || "day",
-                },
-                clustering: (entityLayout as any).clusterFields?.length
-                  ? {
-                      enabled: true,
-                      fields: (entityLayout as any).clusterFields,
-                    }
-                  : undefined,
+                partitioning: p ? { enabled: true, ...p } : undefined,
+                clustering: c ? { enabled: true, ...c } : undefined,
               };
             }
           }
@@ -534,7 +528,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           await touchHeartbeat(executionId);
           logExec(
             "info",
-            `Flushing ${entity} remaining buffer to BigQuery staging (${finalRowsInTemp} rows)`,
+            `Flushing ${entity} remaining buffer to staging (${finalRowsInTemp} rows)`,
             { entity, tempCount: finalRowsInTemp },
           );
           await performBulkFlush(bulkSyncOptions as any);

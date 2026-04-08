@@ -11,6 +11,8 @@ import { getCdcEventStore } from "./event-store";
 import {
   buildCdcEntityLayout,
   resolveCdcDestinationAdapter,
+  resolveEntityPartitioning,
+  resolveEntityClustering,
 } from "./adapters/registry";
 import {
   cdcLiveTableName,
@@ -58,8 +60,6 @@ export class CdcConsumerService {
         layout.entity === params.entity ||
         layout.entity === params.entity.split(":")[0],
     );
-    const tableDestinationPartitioning = flow.tableDestination?.partitioning;
-    const tableDestinationClustering = flow.tableDestination?.clustering;
     const tableName = cdcLiveTableName(
       flow.tableDestination.tableName,
       params.entity,
@@ -79,32 +79,14 @@ export class CdcConsumerService {
       entity: params.entity,
       tableName,
       deleteMode: flow.deleteMode,
-      partitioning: entityLayout?.partitionField
-        ? {
-            type: "time",
-            field: entityLayout.partitionField,
-            granularity: entityLayout.partitionGranularity || "day",
-            requirePartitionFilter:
-              tableDestinationPartitioning?.requirePartitionFilter,
-          }
-        : tableDestinationPartitioning?.enabled
-          ? {
-              type: tableDestinationPartitioning.type || "time",
-              field:
-                tableDestinationPartitioning.type === "ingestion"
-                  ? "_syncedAt"
-                  : tableDestinationPartitioning.field || "_syncedAt",
-              granularity: tableDestinationPartitioning.granularity || "day",
-              requirePartitionFilter:
-                tableDestinationPartitioning.requirePartitionFilter,
-            }
-          : undefined,
-      clustering: entityLayout?.clusterFields?.length
-        ? { fields: entityLayout.clusterFields }
-        : tableDestinationClustering?.enabled &&
-            tableDestinationClustering.fields?.length
-          ? { fields: tableDestinationClustering.fields }
-          : undefined,
+      partitioning: resolveEntityPartitioning(
+        entityLayout,
+        flow.tableDestination?.partitioning,
+      ),
+      clustering: resolveEntityClustering(
+        entityLayout,
+        flow.tableDestination?.clustering,
+      ),
     });
 
     await adapter.ensureLiveTable(layout);

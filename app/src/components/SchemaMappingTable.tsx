@@ -44,7 +44,7 @@ export interface TypeCoercion {
 interface SchemaMappingTableProps {
   columns: TypeCoercion[];
   onChange: (columns: TypeCoercion[]) => void;
-  destinationType?: "bigquery" | "postgresql" | "mysql" | string;
+  destinationType?: "bigquery" | "postgresql" | "clickhouse" | "mysql" | string;
   disabled?: boolean;
 }
 
@@ -94,6 +94,22 @@ const POSTGRESQL_TYPES = [
   { value: "DATE", label: "DATE", description: "Calendar date" },
   { value: "JSONB", label: "JSONB", description: "Binary JSON" },
   { value: "BYTEA", label: "BYTEA", description: "Binary data" },
+];
+
+// ClickHouse type options
+const CLICKHOUSE_TYPES = [
+  { value: "String", label: "String", description: "Variable-length text" },
+  { value: "Int64", label: "Int64", description: "64-bit integer" },
+  { value: "Int32", label: "Int32", description: "32-bit integer" },
+  { value: "Float64", label: "Float64", description: "64-bit floating point" },
+  { value: "Bool", label: "Bool", description: "Boolean (true/false)" },
+  {
+    value: "DateTime64(3)",
+    label: "DateTime64(3)",
+    description: "Date and time with millisecond precision",
+  },
+  { value: "Date", label: "Date", description: "Calendar date" },
+  { value: "UUID", label: "UUID", description: "UUID value" },
 ];
 
 // Generic source type options (covers common types across databases)
@@ -189,7 +205,9 @@ export function SchemaMappingTable({
     if (destinationType === "postgresql") {
       return POSTGRESQL_TYPES;
     }
-    // Default to BigQuery
+    if (destinationType === "clickhouse") {
+      return CLICKHOUSE_TYPES;
+    }
     return BIGQUERY_TYPES;
   }, [destinationType]);
 

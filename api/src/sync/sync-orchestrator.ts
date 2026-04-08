@@ -1088,21 +1088,14 @@ async function flushBulkBuffer(
   return { flushed: totalFlushed };
 }
 
-export async function performBulkFlush(
-  options: SyncChunkOptions,
-): Promise<{ flushed: number }> {
-  if (!options.tableDestination?.connectionId || !options.flowId) {
-    return { flushed: 0 };
-  }
-
+async function resolveAdapterContext(options: SyncChunkOptions) {
   const entity = options.entity;
   const entityTableName = getEntityTableName(
-    options.tableDestination.tableName,
+    options.tableDestination!.tableName,
     entity,
   );
-
   const destinationConn = await DatabaseConnection.findById(
-    options.tableDestination.connectionId,
+    options.tableDestination!.connectionId,
   )
     .select({ type: 1 })
     .lean();
@@ -1112,11 +1105,23 @@ export async function performBulkFlush(
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
-      connectionId: String(options.tableDestination.connectionId),
-      schema: options.tableDestination.schema || "public",
+      connectionId: String(options.tableDestination!.connectionId),
+      schema: options.tableDestination!.schema || "public",
       tableName: entityTableName,
     },
   });
+
+  return { entity, entityTableName, cdcAdapter };
+}
+
+export async function performBulkFlush(
+  options: SyncChunkOptions,
+): Promise<{ flushed: number }> {
+  if (!options.tableDestination?.connectionId || !options.flowId) {
+    return { flushed: 0 };
+  }
+  const { entity, entityTableName, cdcAdapter } =
+    await resolveAdapterContext(options);
 
   if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
@@ -1160,29 +1165,8 @@ export async function performPrepareStaging(
   options: SyncChunkOptions,
 ): Promise<void> {
   if (!options.tableDestination?.connectionId || !options.flowId) return;
-
-  const entity = options.entity;
-  const entityTableName = getEntityTableName(
-    options.tableDestination.tableName,
-    entity,
-  );
-
-  const destinationConn = await DatabaseConnection.findById(
-    options.tableDestination.connectionId,
-  )
-    .select({ type: 1 })
-    .lean();
-
-  const cdcAdapter = resolveCdcDestinationAdapter({
-    destinationType: destinationConn?.type || "",
-    destinationDatabaseId: options.destinationId,
-    destinationDatabaseName: options.destinationDatabaseName,
-    tableDestination: {
-      connectionId: String(options.tableDestination.connectionId),
-      schema: options.tableDestination.schema || "public",
-      tableName: entityTableName,
-    },
-  });
+  const { entity, entityTableName, cdcAdapter } =
+    await resolveAdapterContext(options);
 
   if (!cdcAdapter.prepareStaging) return;
 
@@ -1215,29 +1199,8 @@ export async function performStagingMerge(
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { written: 0 };
   }
-
-  const entity = options.entity;
-  const entityTableName = getEntityTableName(
-    options.tableDestination.tableName,
-    entity,
-  );
-
-  const destinationConn = await DatabaseConnection.findById(
-    options.tableDestination.connectionId,
-  )
-    .select({ type: 1 })
-    .lean();
-
-  const cdcAdapter = resolveCdcDestinationAdapter({
-    destinationType: destinationConn?.type || "",
-    destinationDatabaseId: options.destinationId,
-    destinationDatabaseName: options.destinationDatabaseName,
-    tableDestination: {
-      connectionId: String(options.tableDestination.connectionId),
-      schema: options.tableDestination.schema || "public",
-      tableName: entityTableName,
-    },
-  });
+  const { entity, entityTableName, cdcAdapter } =
+    await resolveAdapterContext(options);
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
 
@@ -1251,13 +1214,13 @@ export async function performStagingMerge(
     options.dataSourceId,
   );
   const entitySchema = await resolveEntitySchemaSafe({
-    entity: options.entity,
+    entity,
     dataSource,
     context: "performStagingMerge",
   });
 
   orchestratorLogger.info("performStagingMerge: merging staging to live", {
-    entity: options.entity,
+    entity,
     flowId: options.flowId,
   });
   return cdcAdapter.mergeFromStaging(
@@ -1282,29 +1245,8 @@ export async function performStagingCleanup(
   options: SyncChunkOptions,
 ): Promise<void> {
   if (!options.tableDestination?.connectionId || !options.flowId) return;
-
-  const entity = options.entity;
-  const entityTableName = getEntityTableName(
-    options.tableDestination.tableName,
-    entity,
-  );
-
-  const destinationConn = await DatabaseConnection.findById(
-    options.tableDestination.connectionId,
-  )
-    .select({ type: 1 })
-    .lean();
-
-  const cdcAdapter = resolveCdcDestinationAdapter({
-    destinationType: destinationConn?.type || "",
-    destinationDatabaseId: options.destinationId,
-    destinationDatabaseName: options.destinationDatabaseName,
-    tableDestination: {
-      connectionId: String(options.tableDestination.connectionId),
-      schema: options.tableDestination.schema || "public",
-      tableName: entityTableName,
-    },
-  });
+  const { entity, entityTableName, cdcAdapter } =
+    await resolveAdapterContext(options);
 
   if (!cdcAdapter.cleanupStaging) return;
 
@@ -1314,10 +1256,7 @@ export async function performStagingCleanup(
   });
   orchestratorLogger.info(
     "performStagingCleanup: dropping staging table and temp collection",
-    {
-      entity: options.entity,
-      flowId: options.flowId,
-    },
+    { entity, flowId: options.flowId },
   );
   await cdcAdapter.cleanupStaging(cdcLayout, options.flowId!, {
     stagingSuffix: "backfill_staging",

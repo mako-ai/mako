@@ -603,6 +603,7 @@ export const flowFunction = inngest.createFunction(
         flow.syncEngine === "cdc" &&
         Boolean(flow.tableDestination?.connectionId) &&
         hasCdcDestinationAdapter(destinationType);
+
       const requestedBackfillRunId =
         typeof backfillRunId === "string" && backfillRunId.length > 0
           ? backfillRunId
@@ -648,12 +649,9 @@ export const flowFunction = inngest.createFunction(
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
         (flow as any).syncMode = "full";
-        logger.info(
-          "Backfill mode: BigQuery CDC enabled, no webhook apply gate",
-          {
-            flowId,
-          },
-        );
+        logger.info("Backfill mode: CDC enabled, no webhook apply gate", {
+          flowId,
+        });
         await step.run("cdc-transition-start-backfill", async () => {
           await syncMachineService.applyBackfillTransition({
             workspaceId: String(flow.workspaceId),
@@ -1693,13 +1691,13 @@ export const flowFunction = inngest.createFunction(
       }
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
-        await step.run("mark-bigquery-cdc-backfill-complete", async () => {
+        await step.run("mark-cdc-backfill-complete", async () => {
           await markCdcBackfillCompletedForFlow({
             flowId: String(flowId),
             workspaceId: String(flow.workspaceId),
           });
         });
-        await step.run("drain-bigquery-cdc-pending-events", async () => {
+        await step.run("drain-cdc-pending-events", async () => {
           await touchHeartbeat(executionId);
           await forceDrainCdcFlow({
             workspaceId: String(flow.workspaceId),
@@ -2074,7 +2072,7 @@ export const flowFunction = inngest.createFunction(
               $inc: { "backfillState.consecutiveFailures": 1 },
             });
           });
-          await step.run("drain-bigquery-cdc-on-failure", async () => {
+          await step.run("drain-cdc-on-failure", async () => {
             await forceDrainCdcFlow({
               workspaceId: String(safeFlowRef.workspaceId),
               flowId: String(flowId),

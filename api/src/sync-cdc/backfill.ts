@@ -1202,9 +1202,7 @@ export async function purgeSoftDeletesAfterBackfill(params: {
 export async function forceDrainCdcFlow(params: {
   workspaceId: string;
   flowId: string;
-  maxEventsPerEntity?: number;
 }) {
-  const maxEventsPerEntity = Math.max(params.maxEventsPerEntity || 5000, 100);
   const byEntity = await getCdcEventStore().countEventsByEntity({
     workspaceId: params.workspaceId,
     flowId: params.flowId,
@@ -1220,7 +1218,6 @@ export async function forceDrainCdcFlow(params: {
         flowId: params.flowId,
         entity: item.entity,
         force: true,
-        maxEvents: maxEventsPerEntity,
       },
     });
   }
