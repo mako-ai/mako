@@ -33,7 +33,7 @@ export async function performSyncChunk(
 
 export async function performBulkFlush(
   options: SyncChunkOptions,
-): Promise<void> {
+): Promise<{ flushed: number }> {
   return performBulkFlushOrchestrated(options);
 }
 
