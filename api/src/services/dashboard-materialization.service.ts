@@ -8,9 +8,10 @@ import {
   artifactExists,
   buildDashboardArtifactKey,
   buildDashboardMaterializationArtifactPath,
+  resolveDashboardArtifactRevision,
 } from "./dashboard-cache.service";
 import { getDashboardArtifactStoreType } from "./dashboard-artifact-store.service";
-import { buildDashboardDataSourceVersion } from "./dashboard-artifact-rebuild.service";
+import { buildDashboardDataSourceDefinitionHash } from "./dashboard-artifact-rebuild.service";
 import { listActiveMaterializationRuns } from "./dashboard-materialization-run.service";
 
 export type MaterializationStatusValue =
@@ -24,7 +25,8 @@ export interface DashboardDataSourceMaterializationStatus {
   dataSourceId: string;
   name: string;
   status: MaterializationStatusValue;
-  version: string | null;
+  definitionHash: string | null;
+  artifactRevision: string | null;
   format: "parquet";
   storageBackend: "filesystem" | "gcs" | "s3";
   rowCount: number | null;
@@ -53,18 +55,30 @@ export async function buildDataSourceMaterializationStatus(input: {
   activeRunDataSourceIds?: Set<string>;
 }): Promise<DashboardDataSourceMaterializationStatus> {
   const { workspaceId, dashboardId, dataSource } = input;
-  const version = buildDashboardDataSourceVersion(dataSource as any);
+  const definitionHash = buildDashboardDataSourceDefinitionHash(
+    dataSource as any,
+  );
   const cache = dataSource.cache;
-  const artifactKey =
-    cache?.parquetArtifactKey ||
-    buildDashboardArtifactKey({
-      workspaceId,
-      dashboardId,
-      dataSourceId: dataSource.id,
-      version,
-    });
-  const canReadArtifact = artifactKey
-    ? await artifactExists(artifactKey)
+  const cachedDefinitionHash =
+    cache?.definitionHash || cache?.parquetVersion || null;
+  const expectedArtifactKey = buildDashboardArtifactKey({
+    workspaceId,
+    dashboardId,
+    dataSourceId: dataSource.id,
+    definitionHash,
+  });
+  const artifactMatchesDefinition =
+    (!cache?.parquetArtifactKey ||
+      cache.parquetArtifactKey === expectedArtifactKey) &&
+    (!cachedDefinitionHash || cachedDefinitionHash === definitionHash);
+  const currentArtifactAvailable = await artifactExists(expectedArtifactKey);
+  const previousArtifactKey =
+    cache?.parquetArtifactKey &&
+    cache.parquetArtifactKey !== expectedArtifactKey
+      ? cache.parquetArtifactKey
+      : null;
+  const previousArtifactAvailable = previousArtifactKey
+    ? await artifactExists(previousArtifactKey)
     : false;
   const rawStatus = cache?.parquetBuildStatus;
 
@@ -82,7 +96,7 @@ export async function buildDataSourceMaterializationStatus(input: {
         lastError ||
         "Materialization was interrupted (no active run). Please re-trigger.";
     }
-  } else if (canReadArtifact && rawStatus !== "error") {
+  } else if (currentArtifactAvailable && rawStatus !== "error") {
     status = "ready";
   } else if (rawStatus === "error") {
     status = "error";
@@ -90,30 +104,56 @@ export async function buildDataSourceMaterializationStatus(input: {
     status = "missing";
   }
 
+  const servingFallbackArtifact =
+    !currentArtifactAvailable &&
+    previousArtifactAvailable &&
+    (status === "building" || status === "error");
+  const artifactKey = currentArtifactAvailable
+    ? expectedArtifactKey
+    : servingFallbackArtifact
+      ? previousArtifactKey
+      : null;
+  const artifactRevision =
+    artifactKey && (artifactMatchesDefinition || servingFallbackArtifact)
+      ? resolveDashboardArtifactRevision(cache)
+      : null;
+  const builtAt =
+    artifactKey && (artifactMatchesDefinition || servingFallbackArtifact)
+      ? (cache?.parquetBuiltAt ?? null)
+      : null;
+  const rowCount =
+    artifactKey && (artifactMatchesDefinition || servingFallbackArtifact)
+      ? (cache?.rowCount ?? null)
+      : null;
+  const byteSize =
+    artifactKey && (artifactMatchesDefinition || servingFallbackArtifact)
+      ? (cache?.byteSize ?? null)
+      : null;
+
   return {
     dataSourceId: dataSource.id,
     name: dataSource.name,
     status,
-    version: cache?.parquetVersion || version,
+    definitionHash,
+    artifactRevision,
     format: "parquet",
     storageBackend: getDashboardArtifactStoreType(),
-    rowCount: cache?.rowCount ?? null,
-    byteSize: cache?.byteSize ?? null,
-    builtAt: cache?.parquetBuiltAt ? cache.parquetBuiltAt.toISOString() : null,
+    rowCount,
+    byteSize,
+    builtAt: builtAt ? builtAt.toISOString() : null,
     readUrl:
-      artifactKey || status === "building"
+      artifactKey &&
+      (status === "ready" || status === "building" || status === "error")
         ? buildDashboardMaterializationArtifactPath({
             workspaceId,
             dashboardId,
             dataSourceId: dataSource.id,
-            version: cache?.parquetVersion || version,
+            revision: artifactRevision || undefined,
           })
         : null,
     lastError,
     artifactKey,
-    lastMaterializedAt: cache?.parquetBuiltAt
-      ? cache.parquetBuiltAt.toISOString()
-      : null,
+    lastMaterializedAt: builtAt ? builtAt.toISOString() : null,
   };
 }
 

@@ -79,38 +79,52 @@ export function resolveActiveSource(options: {
   return "published_artifact";
 }
 
+function resolveArtifactRevision(cache: {
+  artifactRevision?: string;
+  parquetBuiltAt?: string;
+}): string | null {
+  const artifactRevision = cache.artifactRevision || null;
+  if (!cache.parquetBuiltAt) {
+    return artifactRevision;
+  }
+  const builtAtMs = Date.parse(cache.parquetBuiltAt);
+  const builtAtRevision = Number.isFinite(builtAtMs) ? String(builtAtMs) : null;
+
+  if (!artifactRevision || !builtAtRevision) {
+    return artifactRevision || builtAtRevision;
+  }
+
+  const artifactRevisionMs = Number(artifactRevision);
+  if (Number.isFinite(artifactRevisionMs) && artifactRevisionMs < builtAtMs) {
+    return builtAtRevision;
+  }
+
+  return artifactRevision;
+}
+
 export function buildDataSourceLoadVersion(options: {
   dataSource: DashboardDataSource;
   skipParquet: boolean;
 }): string {
-  const definitionVersion = buildDataSourceDefinitionVersion(
-    options.dataSource,
-  );
+  const definitionHash = buildDataSourceDefinitionVersion(options.dataSource);
   const activeSource = resolveActiveSource(options);
   if (activeSource === "draft_stream") {
-    return hashString(
-      JSON.stringify({
-        activeSource,
-        definitionVersion,
-      }),
-    );
+    return `draft:${definitionHash}`;
   }
 
   const cache = (options.dataSource.cache || {}) as {
+    definitionHash?: string;
+    artifactRevision?: string;
     parquetVersion?: string;
     parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
-    parquetUrl?: string;
+    parquetBuiltAt?: string;
   };
+  const artifactRevision = resolveArtifactRevision(cache);
+  if (artifactRevision) {
+    return `artifact:${definitionHash}:${artifactRevision}`;
+  }
 
-  return hashString(
-    JSON.stringify({
-      activeSource,
-      definitionVersion,
-      parquetVersion: cache.parquetVersion ?? null,
-      parquetBuildStatus: cache.parquetBuildStatus ?? null,
-      parquetUrl: cache.parquetUrl ?? null,
-    }),
-  );
+  return `artifact-pending:${definitionHash}:${cache.parquetBuildStatus ?? "missing"}`;
 }
 
 function getParquetArtifactUrl(
@@ -347,6 +361,7 @@ async function loadDashboardDataSourceWithFallback(options: {
 }): Promise<{
   rowCount: number;
   loadPath: "memory" | "arrow_stream" | "ndjson_stream";
+  activeSource: DashboardDataSourceActiveSource;
 }> {
   const {
     session,
@@ -367,6 +382,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   const tryParquet = async (): Promise<{
     rowCount: number;
     loadPath: "memory";
+    activeSource: "published_artifact";
   } | null> => {
     if (!parquetUrl) return null;
     try {
@@ -412,6 +428,7 @@ async function loadDashboardDataSourceWithFallback(options: {
           },
         }),
         loadPath: "memory",
+        activeSource: "published_artifact",
       };
     } catch (error) {
       console.warn(
@@ -435,6 +452,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   const tryArrow = async (): Promise<{
     rowCount: number;
     loadPath: "arrow_stream";
+    activeSource: "draft_stream" | "live_stream";
   } | null> => {
     try {
       updateDatasourceDiagnostics({
@@ -500,6 +518,7 @@ async function loadDashboardDataSourceWithFallback(options: {
       return {
         rowCount: totalRows ?? loadedRowCount,
         loadPath: "arrow_stream",
+        activeSource: skipParquet ? "draft_stream" : "live_stream",
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -526,6 +545,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   const tryNdjson = async (): Promise<{
     rowCount: number;
     loadPath: "ndjson_stream";
+    activeSource: "draft_stream" | "live_stream";
   }> => {
     updateDatasourceDiagnostics({
       runtimeStore,
@@ -599,6 +619,7 @@ async function loadDashboardDataSourceWithFallback(options: {
         },
       ),
       loadPath: "ndjson_stream",
+      activeSource: skipParquet ? "draft_stream" : "live_stream",
     };
   };
 
@@ -819,18 +840,20 @@ export async function materializeDashboardDataSource(options: {
   } = options;
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
-  const definitionVersion = buildDataSourceDefinitionVersion(dataSource);
   const loadVersion = buildDataSourceLoadVersion({
     dataSource,
     skipParquet,
   });
-  const activeSource = resolveActiveSource({ skipParquet });
+  const requestedSource = resolveActiveSource({ skipParquet });
   const cachedVersion = session.dataSourceVersions.get(dataSource.id);
   const cache = (dataSource.cache || {}) as {
+    definitionHash?: string;
+    artifactRevision?: string;
     parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
     parquetVersion?: string;
     parquetBuiltAt?: string;
   };
+  const artifactRevision = resolveArtifactRevision(cache);
   const parquetUrl = getParquetArtifactUrl(dataSource);
   const existingRuntime = selectDataSourceRuntime(dashboard._id, dataSource.id);
   const preserveExistingData = force && existingRuntime?.status === "ready";
@@ -849,19 +872,18 @@ export async function materializeDashboardDataSource(options: {
     dashboardId: dashboard._id,
     dataSourceId: dataSource.id,
     diagnostics: {
-      activeSource,
       resolvedMode: runtimeContext,
       artifactUrl: parquetUrl || null,
       materializationStatus: cache.parquetBuildStatus,
-      materializationVersion: cache.parquetVersion || definitionVersion,
+      artifactRevision,
       materializedAt: cache.parquetBuiltAt || null,
     },
   });
 
   // Skip if already loaded with the same version.
   // Staleness (dataFreshnessTtlMs) is handled by the materialization pipeline
-  // which produces a new parquet version; reloading the same parquet into
-  // DuckDB would not produce fresher data.
+  // which produces a new artifact revision; reloading the same published
+  // artifact into DuckDB would not produce fresher data.
   if (
     !force &&
     cachedVersion === loadVersion &&
@@ -902,7 +924,7 @@ export async function materializeDashboardDataSource(options: {
     dashboardId: dashboard._id,
     dataSourceId: dataSource.id,
     message:
-      activeSource === "published_artifact"
+      requestedSource === "published_artifact"
         ? "Preparing published data source load"
         : "Preparing draft data source load",
   });
@@ -987,7 +1009,7 @@ export async function materializeDashboardDataSource(options: {
       dashboardId: dashboard._id,
       dataSourceId: dataSource.id,
       diagnostics: {
-        activeSource,
+        activeSource: loadResult.activeSource,
         loadPath: loadResult.loadPath,
         loadingMessage: null,
         resolvedMode: runtimeContext,

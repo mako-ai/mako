@@ -37,7 +37,7 @@ function hashString(value: string): string {
   return String(hash >>> 0);
 }
 
-export function buildDashboardDataSourceVersion(dataSource: {
+export function buildDashboardDataSourceDefinitionHash(dataSource: {
   tableRef: string;
   rowLimit?: number;
   query: Record<string, unknown>;
@@ -53,6 +53,10 @@ export function buildDashboardDataSourceVersion(dataSource: {
     computedColumns: dataSource.computedColumns ?? [],
   };
   return hashString(JSON.stringify(payload));
+}
+
+function buildDashboardArtifactRevision(builtAt: Date): string {
+  return String(builtAt.getTime());
 }
 
 function buildExecutableQuery(dataSource: {
@@ -103,7 +107,8 @@ export interface RebuildDashboardArtifactsResult {
   dashboardId: string;
   results: Array<{
     dataSourceId: string;
-    version: string;
+    definitionHash: string;
+    artifactRevision: string | null;
     artifactKey: string;
     rowCount?: number;
     byteSize?: number;
@@ -134,12 +139,14 @@ export async function rebuildDashboardArtifacts(
   const results: RebuildDashboardArtifactsResult["results"] = [];
 
   for (const dataSource of filteredDataSources) {
-    const version = buildDashboardDataSourceVersion(dataSource as any);
+    const definitionHash = buildDashboardDataSourceDefinitionHash(
+      dataSource as any,
+    );
     const artifactKey = buildDashboardArtifactKey({
       workspaceId,
       dashboardId: dashboard._id.toString(),
       dataSourceId: dataSource.id,
-      version,
+      definitionHash,
     });
     const dsIndex = dashboard.dataSources.findIndex(
       ds => ds.id === dataSource.id,
@@ -160,7 +167,7 @@ export async function rebuildDashboardArtifacts(
       workerId: input.workerId,
       stage: "started",
       attempt: 1,
-      version,
+      definitionHash,
       artifactKey,
       events: [],
     };
@@ -175,18 +182,41 @@ export async function rebuildDashboardArtifacts(
         requestedAt,
         workerId: input.workerId,
         artifactKey,
-        version,
+        definitionHash,
       });
 
       const result = await withArtifactBuildLock(artifactKey, async () => {
         const cachedReady =
           !input.force &&
           dataSource.cache?.parquetArtifactKey === artifactKey &&
-          dataSource.cache?.parquetVersion === version &&
+          (dataSource.cache?.definitionHash ||
+            dataSource.cache?.parquetVersion) === definitionHash &&
           dataSource.cache?.parquetBuildStatus === "ready" &&
           (await artifactExists(artifactKey));
 
         if (cachedReady) {
+          const artifactRevision =
+            dataSource.cache?.artifactRevision ||
+            (dataSource.cache?.parquetBuiltAt
+              ? buildDashboardArtifactRevision(dataSource.cache.parquetBuiltAt)
+              : null);
+          if (
+            dsIndex !== -1 &&
+            (!dataSource.cache?.definitionHash ||
+              !dataSource.cache?.artifactRevision ||
+              dataSource.cache?.parquetVersion)
+          ) {
+            await Dashboard.findByIdAndUpdate(dashboard._id, {
+              $set: {
+                [`dataSources.${dsIndex}.cache.definitionHash`]: definitionHash,
+                [`dataSources.${dsIndex}.cache.artifactRevision`]:
+                  artifactRevision,
+              },
+              $unset: {
+                [`dataSources.${dsIndex}.cache.parquetVersion`]: 1,
+              },
+            }).catch(() => undefined);
+          }
           const reusedEvent = pushRunEvent(currentRun, {
             type: "materialization_reused",
             message: "Reused existing parquet artifact",
@@ -207,12 +237,14 @@ export async function rebuildDashboardArtifacts(
             rowCount: currentRun.rowCount,
             byteSize: currentRun.byteSize,
             artifactKey,
-            version,
+            definitionHash,
+            artifactRevision: artifactRevision || undefined,
           });
 
           return {
             dataSourceId: dataSource.id,
-            version,
+            definitionHash,
+            artifactRevision,
             artifactKey,
             rowCount: dataSource.cache?.rowCount,
             byteSize: dataSource.cache?.byteSize,
@@ -360,7 +392,7 @@ export async function rebuildDashboardArtifacts(
             id: dataSource.id,
             tableRef: dataSource.tableRef,
           },
-          version,
+          version: definitionHash,
           parquetFilePath: parquetFile.filePath,
         });
 
@@ -382,7 +414,7 @@ export async function rebuildDashboardArtifacts(
           await storeArtifact(parquetFile.filePath, artifactKey, {
             dashboardId: dashboard._id.toString(),
             dataSourceId: dataSource.id,
-            version,
+            definitionHash,
           });
         } finally {
           await fsPromises
@@ -400,6 +432,7 @@ export async function rebuildDashboardArtifacts(
         });
 
         const refreshedAt = new Date();
+        const artifactRevision = buildDashboardArtifactRevision(refreshedAt);
         currentRun.status = "ready";
         currentRun.finishedAt = refreshedAt;
         const readyEvent = pushRunEvent(currentRun, {
@@ -425,12 +458,17 @@ export async function rebuildDashboardArtifacts(
               [`dataSources.${dsIndex}.cache.rowCount`]: parquetFile.rowCount,
               [`dataSources.${dsIndex}.cache.byteSize`]: parquetFile.byteSize,
               [`dataSources.${dsIndex}.cache.parquetArtifactKey`]: artifactKey,
-              [`dataSources.${dsIndex}.cache.parquetVersion`]: version,
+              [`dataSources.${dsIndex}.cache.definitionHash`]: definitionHash,
+              [`dataSources.${dsIndex}.cache.artifactRevision`]:
+                artifactRevision,
               [`dataSources.${dsIndex}.cache.parquetBuiltAt`]: refreshedAt,
               [`dataSources.${dsIndex}.cache.parquetBuildStatus`]: "ready",
               [`dataSources.${dsIndex}.cache.parquetLastError`]: null,
               "cache.lastRefreshedAt": refreshedAt,
               ...snapshotUpdates,
+            },
+            $unset: {
+              [`dataSources.${dsIndex}.cache.parquetVersion`]: 1,
             },
           });
         }
@@ -442,12 +480,14 @@ export async function rebuildDashboardArtifacts(
           rowCount: currentRun.rowCount,
           byteSize: currentRun.byteSize,
           artifactKey,
-          version,
+          definitionHash,
+          artifactRevision,
         });
 
         return {
           dataSourceId: dataSource.id,
-          version,
+          definitionHash,
+          artifactRevision,
           artifactKey,
           rowCount: parquetFile.rowCount,
           byteSize: parquetFile.byteSize,
@@ -496,12 +536,13 @@ export async function rebuildDashboardArtifacts(
         finishedAt: currentRun.finishedAt,
         error: currentRun.error,
         artifactKey,
-        version,
+        definitionHash,
       });
 
       results.push({
         dataSourceId: dataSource.id,
-        version,
+        definitionHash,
+        artifactRevision: null,
         artifactKey,
         reused: false,
         success: false,

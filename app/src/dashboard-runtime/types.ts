@@ -25,6 +25,8 @@ export interface DashboardDataSource
   cache?:
     | (SchemaDashboardDataSource["cache"] & {
         parquetArtifactKey?: string;
+        definitionHash?: string;
+        artifactRevision?: string;
         parquetVersion?: string;
         parquetBuiltAt?: string;
         parquetBuildStatus?:
@@ -94,7 +96,8 @@ export interface DashboardRuntimeColumn {
 
 export type DashboardDataSourceActiveSource =
   | "draft_stream"
-  | "published_artifact";
+  | "published_artifact"
+  | "live_stream";
 
 export interface DashboardDataSourceRuntimeState {
   dataSourceId: string;
@@ -116,7 +119,7 @@ export interface DashboardDataSourceRuntimeState {
   artifactUrl?: string | null;
   loadDurationMs?: number | null;
   materializationStatus?: "missing" | "queued" | "building" | "ready" | "error";
-  materializationVersion?: string | null;
+  artifactRevision?: string | null;
   materializedAt?: string | null;
   storageBackend?: "filesystem" | "gcs" | "s3" | null;
 }
@@ -294,7 +297,7 @@ export type DashboardRuntimeEvent =
           | "artifactUrl"
           | "loadDurationMs"
           | "materializationStatus"
-          | "materializationVersion"
+          | "artifactRevision"
           | "materializedAt"
           | "storageBackend"
         >
@@ -332,7 +335,37 @@ const DASHBOARD_METADATA_KEYS: ReadonlySet<string> = new Set([
   "updatedAt",
   "version",
   "editLock",
+  "cache",
+  "snapshots",
 ]);
+
+function stripDataSourceServerState(dataSource: Record<string, unknown>) {
+  const result = { ...dataSource };
+  delete result.cache;
+  return result;
+}
+
+export function sanitizeEditableDashboardDefinition(
+  dashboard: Partial<Dashboard> | DashboardDefinition,
+): DashboardDefinition {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(dashboard)) {
+    if (!DASHBOARD_METADATA_KEYS.has(key)) {
+      result[key] = value;
+    }
+  }
+
+  result.dataSources = Array.isArray(dashboard.dataSources)
+    ? dashboard.dataSources.map(dataSource =>
+        stripDataSourceServerState(
+          dataSource as unknown as Record<string, unknown>,
+        ),
+      )
+    : [];
+  result.cache = {};
+
+  return result as DashboardDefinition;
+}
 
 /**
  * Serializes a Dashboard into the editable definition portion only,
@@ -341,11 +374,5 @@ const DASHBOARD_METADATA_KEYS: ReadonlySet<string> = new Set([
 export function serializeDashboardDefinition(
   dashboard: Dashboard,
 ): DashboardDefinition {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(dashboard)) {
-    if (!DASHBOARD_METADATA_KEYS.has(key)) {
-      result[key] = value;
-    }
-  }
-  return result as DashboardDefinition;
+  return sanitizeEditableDashboardDefinition(dashboard);
 }

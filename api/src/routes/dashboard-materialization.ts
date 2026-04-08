@@ -64,7 +64,9 @@ function nodeStreamToWeb(
     cancel() {
       closed = true;
       if ("destroy" in nodeStream && typeof nodeStream.destroy === "function") {
-        (nodeStream as any).destroy();
+        (
+          nodeStream as NodeJS.ReadableStream & { destroy?: () => void }
+        ).destroy?.();
       }
     },
   });
@@ -450,6 +452,9 @@ app.get(
       }
 
       const store = getDashboardArtifactStore();
+      const requestRevision = c.req.query("rev");
+      const isRevisionedRequest =
+        !!requestRevision && requestRevision === status.artifactRevision;
 
       if (getDashboardArtifactStoreType() === "filesystem") {
         const filePath = getFilesystemArtifactPath(status.artifactKey);
@@ -461,10 +466,13 @@ app.get(
         }
 
         const rangeHeader = c.req.header("range");
+        const cacheControl = isRevisionedRequest
+          ? "private, max-age=86400, immutable"
+          : "private, no-store";
         const headers: Record<string, string> = {
           "Content-Type": "application/vnd.apache.parquet",
           "Accept-Ranges": "bytes",
-          "Cache-Control": "private, max-age=86400, immutable",
+          "Cache-Control": cacheControl,
         };
 
         if (!rangeHeader) {
@@ -501,9 +509,12 @@ app.get(
       // with cross-origin signed-URL redirects.
       const stream = await store.openReadStream(status.artifactKey);
       if (stream) {
+        const cacheControl = isRevisionedRequest
+          ? "private, max-age=86400, immutable"
+          : "private, no-store";
         const headers: Record<string, string> = {
           "Content-Type": "application/vnd.apache.parquet",
-          "Cache-Control": "private, max-age=86400, immutable",
+          "Cache-Control": cacheControl,
           "X-Row-Count": String(status.rowCount || ""),
         };
 

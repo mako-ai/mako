@@ -3,7 +3,8 @@ import { getDashboardStateSnapshot } from "./commands";
 import { buildDataSourceLoadVersion, resolveActiveSource } from "./gateway";
 import { useDashboardRuntimeStore } from "./store";
 import { useDashboardStore } from "../store/dashboardStore";
-import type { Dashboard } from "./types";
+import { serializeDashboardDefinition, type Dashboard } from "./types";
+import { computeDashboardStateHash } from "../utils/stateHash";
 
 const dashboardStoreBaseline = useDashboardStore.getState();
 const runtimeStoreBaseline = useDashboardRuntimeStore.getState();
@@ -25,9 +26,10 @@ const baseDashboard = {
       },
       computedColumns: [],
       cache: {
-        parquetVersion: "v1",
+        definitionHash: "def_v1",
+        artifactRevision: "rev_v1",
         parquetBuildStatus: "ready" as const,
-        parquetUrl: "https://example.com/orders-v1.parquet",
+        parquetUrl: "https://example.com/orders-v1.parquet?rev=rev_v1",
         parquetBuiltAt: "2026-04-04T00:00:00.000Z",
       },
     },
@@ -73,8 +75,23 @@ describe("dashboard runtime contract", () => {
         ...baseDashboard.dataSources[0],
         cache: {
           ...baseDashboard.dataSources[0].cache,
-          parquetVersion: "v2",
-          parquetUrl: "https://example.com/orders-v2.parquet",
+          artifactRevision: "rev_v2",
+          parquetBuiltAt: "2026-04-05T00:00:00.000Z",
+          parquetUrl: "https://example.com/orders-v1.parquet?rev=rev_v2",
+        },
+      },
+      skipParquet: false,
+    });
+
+    const viewerV3 = buildDataSourceLoadVersion({
+      dataSource: {
+        ...baseDashboard.dataSources[0],
+        query: {
+          ...baseDashboard.dataSources[0].query,
+          code: "select order_id from orders",
+        },
+        cache: {
+          ...baseDashboard.dataSources[0].cache,
         },
       },
       skipParquet: false,
@@ -90,8 +107,8 @@ describe("dashboard runtime contract", () => {
         ...baseDashboard.dataSources[0],
         cache: {
           ...baseDashboard.dataSources[0].cache,
-          parquetVersion: "v2",
-          parquetUrl: "https://example.com/orders-v2.parquet",
+          artifactRevision: "rev_v2",
+          parquetUrl: "https://example.com/orders-v2.parquet?rev=rev_v2",
         },
       },
       skipParquet: true,
@@ -102,7 +119,86 @@ describe("dashboard runtime contract", () => {
     );
     expect(resolveActiveSource({ skipParquet: true })).toBe("draft_stream");
     expect(viewerV2).not.toBe(viewerV1);
+    expect(viewerV3).not.toBe(viewerV1);
     expect(draftV2).toBe(draftV1);
+  });
+
+  it("prefers a newer parquet build timestamp over a stale artifact revision", () => {
+    const viewerBefore = buildDataSourceLoadVersion({
+      dataSource: {
+        ...baseDashboard.dataSources[0],
+        cache: {
+          ...baseDashboard.dataSources[0].cache,
+          artifactRevision: "1775662508836",
+          parquetBuiltAt: "2026-04-08T15:35:08.836Z",
+        },
+      },
+      skipParquet: false,
+    });
+
+    const viewerAfter = buildDataSourceLoadVersion({
+      dataSource: {
+        ...baseDashboard.dataSources[0],
+        cache: {
+          ...baseDashboard.dataSources[0].cache,
+          artifactRevision: "1775662508836",
+          parquetBuiltAt: "2026-04-08T15:37:06.840Z",
+        },
+      },
+      skipParquet: false,
+    });
+
+    expect(viewerAfter).not.toBe(viewerBefore);
+    expect(viewerAfter).toContain(
+      String(Date.parse("2026-04-08T15:37:06.840Z")),
+    );
+  });
+
+  it("strips server-managed cache metadata from editable definitions", () => {
+    const serialized = serializeDashboardDefinition({
+      ...baseDashboard,
+      cache: {
+        lastRefreshedAt: "2026-04-06T00:00:00.000Z",
+      },
+      snapshots: {
+        widget_1: {
+          version: "snap_v1",
+          generatedAt: "2026-04-06T00:00:00.000Z",
+          rowCount: 1,
+          rows: [{ id: 1 }],
+          fields: [{ name: "id", type: "INTEGER" }],
+        },
+      },
+      dataSources: [
+        {
+          ...baseDashboard.dataSources[0],
+          cache: {
+            ...baseDashboard.dataSources[0].cache,
+            definitionHash: "server-only-definition-hash",
+            artifactRevision: "server-only-revision",
+          },
+        },
+      ],
+    } as Dashboard);
+
+    expect(serialized.cache).toEqual({});
+    expect("snapshots" in serialized).toBe(false);
+    expect(serialized.dataSources[0]).not.toHaveProperty("cache");
+  });
+
+  it("treats tableRef changes as unsaved dashboard changes", () => {
+    const hashA = computeDashboardStateHash(baseDashboard);
+    const hashB = computeDashboardStateHash({
+      ...baseDashboard,
+      dataSources: [
+        {
+          ...baseDashboard.dataSources[0],
+          tableRef: "ds_orders_renamed",
+        },
+      ],
+    });
+
+    expect(hashB).not.toBe(hashA);
   });
 
   it("exposes runtime source diagnostics in dashboard snapshots", () => {
@@ -144,7 +240,7 @@ describe("dashboard runtime contract", () => {
             artifactUrl: "https://example.com/orders-v2.parquet",
             loadDurationMs: 17,
             materializationStatus: "ready",
-            materializationVersion: "v2",
+            artifactRevision: "rev_v2",
             materializedAt: "2026-04-04T01:00:00.000Z",
             storageBackend: "gcs",
           },
@@ -158,7 +254,7 @@ describe("dashboard runtime contract", () => {
     expect(dataSource.activeSource).toBe("published_artifact");
     expect(dataSource.loadPath).toBe("memory");
     expect(dataSource.loadingMessage).toBeNull();
-    expect(dataSource.materializationVersion).toBe("v2");
+    expect(dataSource.artifactRevision).toBe("rev_v2");
     expect(dataSource.storageBackend).toBe("gcs");
   });
 });

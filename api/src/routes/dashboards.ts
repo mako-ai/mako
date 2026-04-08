@@ -17,7 +17,7 @@ import {
   buildTableRef,
 } from "@mako/schemas";
 import { hydrateDashboardArtifactUrls } from "../services/dashboard-cache.service";
-import { buildDashboardDataSourceVersion } from "../services/dashboard-artifact-rebuild.service";
+import { buildDashboardDataSourceDefinitionHash } from "../services/dashboard-artifact-rebuild.service";
 import {
   isDashboardMaterializationEnabled,
   normalizeDashboardMaterializationSchedule,
@@ -35,6 +35,7 @@ const DASHBOARD_QUERY_LANGUAGES = new Set(["sql", "javascript", "mongodb"]);
 async function normalizeDashboardDataSources(
   workspaceId: string,
   inputDataSources: unknown,
+  existingDataSources?: Array<Record<string, any>>,
 ) {
   if (inputDataSources === undefined) {
     return { success: true as const, dataSources: undefined };
@@ -48,6 +49,12 @@ async function normalizeDashboardDataSources(
   }
 
   const dataSources = inputDataSources as Array<Record<string, any>>;
+  const existingCacheById = new Map(
+    (existingDataSources || []).map(dataSource => [
+      String(dataSource.id),
+      dataSource.cache,
+    ]),
+  );
   const connectionIds = [
     ...new Set(dataSources.map(ds => ds?.query?.connectionId).filter(Boolean)),
   ];
@@ -145,7 +152,7 @@ async function normalizeDashboardDataSources(
           timeDimension: ds.timeDimension,
           rowLimit: ds.rowLimit,
           computedColumns: ds.computedColumns || [],
-          cache: ds.cache,
+          cache: existingCacheById.get(String(id)),
         };
       }),
     };
@@ -202,11 +209,13 @@ function sanitizeDashboardResponse<
   return dashboard;
 }
 
-function getDataSourceVersionMap(dataSources: Array<Record<string, any>>) {
+function getDataSourceDefinitionHashMap(
+  dataSources: Array<Record<string, any>>,
+) {
   return new Map(
     dataSources.map(ds => [
       String(ds.id),
-      buildDashboardDataSourceVersion(ds as any),
+      buildDashboardDataSourceDefinitionHash(ds as any),
     ]),
   );
 }
@@ -219,8 +228,8 @@ function didDashboardArtifactInputsChange(
     return true;
   }
 
-  const before = getDataSourceVersionMap(beforeDataSources);
-  const after = getDataSourceVersionMap(afterDataSources);
+  const before = getDataSourceDefinitionHashMap(beforeDataSources);
+  const after = getDataSourceDefinitionHashMap(afterDataSources);
   if (before.size !== after.size) {
     return true;
   }
@@ -321,12 +330,24 @@ app.post("/", async (c: AuthenticatedContext) => {
     const user = c.get("user");
     const userId = user?.id ?? "system";
     const body = await c.req.json();
+    const {
+      cache: _ignoredCache,
+      snapshots: _ignoredSnapshots,
+      ...dashboardInput
+    } = body as Record<string, unknown>;
 
-    if (!body.title || typeof body.title !== "string" || !body.title.trim()) {
+    if (
+      !dashboardInput.title ||
+      typeof dashboardInput.title !== "string" ||
+      !dashboardInput.title.trim()
+    ) {
       return c.json({ success: false, error: "title is required" }, 400);
     }
 
-    if (body.dataSources && !Array.isArray(body.dataSources)) {
+    if (
+      dashboardInput.dataSources &&
+      !Array.isArray(dashboardInput.dataSources)
+    ) {
       return c.json(
         { success: false, error: "dataSources must be an array" },
         400,
@@ -335,7 +356,7 @@ app.post("/", async (c: AuthenticatedContext) => {
 
     const normalizedDataSources = await normalizeDashboardDataSources(
       workspaceId,
-      body.dataSources,
+      dashboardInput.dataSources,
     );
     if (!normalizedDataSources.success) {
       return c.json(
@@ -347,7 +368,10 @@ app.post("/", async (c: AuthenticatedContext) => {
     let materializationSchedule;
     try {
       materializationSchedule = validateDashboardMaterializationSchedule(
-        body.materializationSchedule,
+        dashboardInput.materializationSchedule as
+          | Record<string, unknown>
+          | null
+          | undefined,
       );
     } catch (error) {
       return c.json(
@@ -363,7 +387,7 @@ app.post("/", async (c: AuthenticatedContext) => {
     }
 
     const dashboard = new Dashboard({
-      ...body,
+      ...dashboardInput,
       dataSources: normalizedDataSources.dataSources || [],
       workspaceId: new Types.ObjectId(workspaceId),
       createdBy: userId,
@@ -510,6 +534,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       const normalizedDataSources = await normalizeDashboardDataSources(
         workspaceId,
         body.dataSources,
+        previousDataSources,
       );
       if (!normalizedDataSources.success) {
         return c.json(
@@ -552,9 +577,6 @@ app.put("/:id", async (c: AuthenticatedContext) => {
           400,
         );
       }
-    }
-    if (body.cache !== undefined) {
-      updateFields.cache = body.cache;
     }
     if (body.access !== undefined) {
       updateFields.access = body.access;
@@ -716,6 +738,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       const normalizedDataSources = await normalizeDashboardDataSources(
         workspaceId,
         validatedBody.dataSources as any[],
+        existing.toObject().dataSources || [],
       );
       if (!normalizedDataSources.success) {
         logger.warn("Dashboard PATCH data source normalization failed", {
@@ -730,6 +753,8 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
       }
       validatedBody.dataSources = normalizedDataSources.dataSources;
     }
+    delete validatedBody.cache;
+    delete validatedBody.snapshots;
     if (validatedBody.materializationSchedule !== undefined) {
       try {
         validatedBody.materializationSchedule =

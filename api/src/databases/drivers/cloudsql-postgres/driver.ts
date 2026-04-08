@@ -12,6 +12,10 @@ import {
 import { Client as PgClient, Pool as PgPool } from "pg";
 import { GoogleAuth, JWT, type AuthClient } from "google-auth-library";
 import { loggers } from "../../../logging";
+import {
+  normalizePostgresFields,
+  normalizePostgresRows,
+} from "../postgresql/pg-type-utils";
 
 const logger = loggers.db("cloudsql-postgres");
 
@@ -227,11 +231,16 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
           }
 
           const result = await client.query(query);
+          const fields = normalizePostgresFields(result.fields);
+          const rows = normalizePostgresRows(
+            result.rows as Record<string, unknown>[],
+            fields,
+          );
           return {
             success: true,
-            data: result.rows,
+            data: rows,
             rowCount: result.rowCount ?? undefined,
-            fields: result.fields,
+            fields,
           };
         } catch (error) {
           return {
@@ -248,11 +257,16 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       }
 
       const result = await pool.query(query);
+      const fields = normalizePostgresFields(result.fields);
+      const rows = normalizePostgresRows(
+        result.rows as Record<string, unknown>[],
+        fields,
+      );
       return {
         success: true,
-        data: result.rows,
+        data: rows,
         rowCount: result.rowCount ?? undefined,
-        fields: result.fields,
+        fields,
       };
     } catch (error) {
       return {

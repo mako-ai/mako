@@ -54,7 +54,7 @@ function ensureDataSourceState(
       artifactUrl: null,
       loadDurationMs: null,
       materializationStatus: undefined,
-      materializationVersion: null,
+      artifactRevision: null,
       materializedAt: null,
       storageBackend: null,
     };

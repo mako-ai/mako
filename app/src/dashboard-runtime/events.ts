@@ -152,7 +152,7 @@ export const dashboardRuntimeEvents = {
         | "artifactUrl"
         | "loadDurationMs"
         | "materializationStatus"
-        | "materializationVersion"
+        | "artifactRevision"
         | "materializedAt"
         | "storageBackend"
       >

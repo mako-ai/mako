@@ -2182,6 +2182,8 @@ export interface IMaterializationRun extends Document {
   finishedAt?: Date;
   artifactKey?: string;
   version?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
   rowCount?: number;
   byteSize?: number;
   error?: string;
@@ -2226,6 +2228,8 @@ const MaterializationRunSchema = new Schema<IMaterializationRun>(
     attempt: { type: Number, default: 1 },
     artifactKey: { type: String },
     version: { type: String },
+    definitionHash: { type: String },
+    artifactRevision: { type: String },
     rowCount: { type: Number },
     byteSize: { type: Number },
     error: { type: String },
@@ -2450,6 +2454,8 @@ export interface IDashboardDataSource {
     rowCount?: number;
     byteSize?: number;
     parquetArtifactKey?: string;
+    definitionHash?: string;
+    artifactRevision?: string;
     parquetVersion?: string;
     parquetBuiltAt?: Date;
     parquetBuildStatus?: "missing" | "queued" | "building" | "ready" | "error";
@@ -2537,6 +2543,8 @@ const DashboardSchema = new Schema<IDashboard>(
           rowCount: { type: Number },
           byteSize: { type: Number },
           parquetArtifactKey: { type: String },
+          definitionHash: { type: String },
+          artifactRevision: { type: String },
           parquetVersion: { type: String },
           parquetBuiltAt: { type: Date },
           parquetBuildStatus: {
