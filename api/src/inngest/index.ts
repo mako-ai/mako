@@ -6,6 +6,7 @@ import {
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
 } from "./functions/flow";
+import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import {
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,
@@ -23,6 +24,7 @@ import { loggers } from "../logging";
 
 const baseFunctions = [
   flowFunction,
+  syncBackfillEntityFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
@@ -95,6 +97,7 @@ export function logInngestStatus(): void {
 export { inngest };
 export {
   flowFunction,
+  syncBackfillEntityFunction,
   flowSchedulerFunction,
   manualFlowFunction,
   cancelFlowFunction,
