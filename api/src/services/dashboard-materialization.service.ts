@@ -106,6 +106,7 @@ export async function buildDataSourceMaterializationStatus(input: {
             workspaceId,
             dashboardId,
             dataSourceId: dataSource.id,
+            version: cache?.parquetVersion || version,
           })
         : null,
     lastError,

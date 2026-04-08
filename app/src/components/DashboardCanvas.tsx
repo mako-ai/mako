@@ -34,6 +34,7 @@ import {
   useDashboardStore,
   type DashboardWidget,
 } from "../store/dashboardStore";
+import { useConsoleStore } from "../store/consoleStore";
 import { useTheme } from "../contexts/ThemeContext";
 import { useAuth } from "../contexts/auth-context";
 import {
@@ -59,6 +60,7 @@ const {
   saveDashboard: saveDashboardAction,
   undo: undoAction,
   redo: redoAction,
+  releaseLock: releaseLockAction,
 } = useDashboardStore.getState();
 
 interface DashboardCanvasProps {
@@ -103,6 +105,23 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     setLockError,
     resolveConflictAction,
   } = useDashboardEditSession({ dashboardId, workspaceId });
+
+  const tabId = useConsoleStore(state =>
+    Object.keys(state.tabs).find(id => {
+      const tab = state.tabs[id];
+      return (
+        tab.kind === "dashboard" &&
+        (tab.metadata?.dashboardId === dashboardId ||
+          (isNew && tab.metadata?.isNew))
+      );
+    }),
+  );
+
+  useEffect(() => {
+    if (!tabId) return;
+    const shouldPin = hasUnsavedChanges || isEditMode;
+    useConsoleStore.getState().updateDirty(tabId, shouldPin);
+  }, [tabId, hasUnsavedChanges, isEditMode]);
 
   const [viewMode, setViewMode] = useState<ViewMode>("canvas");
   const [hasCodeError, setHasCodeError] = useState(false);
@@ -201,6 +220,12 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       } catch {
         setFreshnessDismissed(false);
       }
+    }
+  }, [workspaceId, dashboardId]);
+
+  const handleDismissStaleLock = useCallback(async () => {
+    if (workspaceId && dashboardId) {
+      await releaseLockAction(workspaceId, dashboardId);
     }
   }, [workspaceId, dashboardId]);
 
@@ -461,6 +486,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         userId={user?.id}
         onClearLockError={() => setLockError(null)}
         onForceEditMode={handleForceEditMode}
+        onDismissStaleLock={handleDismissStaleLock}
         onEditModeToggle={handleEditModeToggle}
         onReloadData={handleReloadData}
         dataFreshness={freshnessDismissed ? null : dataFreshness}

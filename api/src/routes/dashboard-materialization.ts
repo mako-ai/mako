@@ -464,7 +464,7 @@ app.get(
         const headers: Record<string, string> = {
           "Content-Type": "application/vnd.apache.parquet",
           "Accept-Ranges": "bytes",
-          "Cache-Control": "private, max-age=300",
+          "Cache-Control": "private, max-age=86400, immutable",
         };
 
         if (!rangeHeader) {
@@ -503,7 +503,7 @@ app.get(
       if (stream) {
         const headers: Record<string, string> = {
           "Content-Type": "application/vnd.apache.parquet",
-          "Cache-Control": "private, max-age=300",
+          "Cache-Control": "private, max-age=86400, immutable",
           "X-Row-Count": String(status.rowCount || ""),
         };
 

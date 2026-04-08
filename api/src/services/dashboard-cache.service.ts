@@ -46,8 +46,10 @@ export function buildDashboardMaterializationArtifactPath(input: {
   workspaceId: string;
   dashboardId: string;
   dataSourceId: string;
+  version?: string;
 }): string {
-  return `/api/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/data-sources/${input.dataSourceId}/materialization/artifact`;
+  const base = `/api/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/data-sources/${input.dataSourceId}/materialization/artifact`;
+  return input.version ? `${base}?v=${input.version}` : base;
 }
 
 export function buildSnapshotArtifactKey(input: {
@@ -124,6 +126,7 @@ export async function hydrateDashboardArtifactUrls<
             workspaceId,
             dashboardId,
             dataSourceId: String(ds.id),
+            version: ds.cache?.parquetVersion ?? undefined,
           }),
         },
       };
