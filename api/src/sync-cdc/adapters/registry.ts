@@ -6,6 +6,8 @@ import type {
 import type { CdcStoredEvent } from "../events";
 import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
 import { BigQueryDestinationAdapter } from "./bigquery";
+import { ClickHouseDestinationAdapter } from "./clickhouse";
+import { MongoDbDestinationAdapter } from "./mongodb";
 import { PostgreSqlDestinationAdapter } from "./postgresql";
 
 export interface CdcEntityLayout {
@@ -85,8 +87,24 @@ export function resolveCdcDestinationAdapter(params: {
     });
   }
 
+  if (normalizedType === "clickhouse") {
+    return new ClickHouseDestinationAdapter({
+      destinationDatabaseId: params.destinationDatabaseId,
+      destinationDatabaseName: params.destinationDatabaseName,
+      tableDestination: params.tableDestination,
+    });
+  }
+
   if (normalizedType === "postgresql") {
     return new PostgreSqlDestinationAdapter({
+      destinationDatabaseId: params.destinationDatabaseId,
+      destinationDatabaseName: params.destinationDatabaseName,
+      tableDestination: params.tableDestination,
+    });
+  }
+
+  if (normalizedType === "mongodb") {
+    return new MongoDbDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
       destinationDatabaseName: params.destinationDatabaseName,
       tableDestination: params.tableDestination,
@@ -101,7 +119,12 @@ export function resolveCdcDestinationAdapter(params: {
 export function hasCdcDestinationAdapter(destinationType?: string): boolean {
   if (!destinationType) return false;
   const normalizedType = destinationType.toLowerCase();
-  return normalizedType === "bigquery" || normalizedType === "postgresql";
+  return (
+    normalizedType === "bigquery" ||
+    normalizedType === "clickhouse" ||
+    normalizedType === "postgresql" ||
+    normalizedType === "mongodb"
+  );
 }
 
 export function hasStagingSupport(

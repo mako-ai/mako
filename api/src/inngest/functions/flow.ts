@@ -26,13 +26,7 @@ import {
   syncMachineService,
 } from "../../sync-cdc/sync-state";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
-import {
-  hasCdcDestinationAdapter,
-  hasStagingSupport,
-  resolveCdcDestinationAdapter,
-  resolveEntityPartitioning,
-  resolveEntityClustering,
-} from "../../sync-cdc/adapters/registry";
+import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import {
   cdcBackfillService,
   forceDrainCdcFlow,
@@ -42,101 +36,6 @@ import {
 import { syncBackfillEntityFunction } from "./sync-entity";
 
 const flowLogger = loggers.inngest("flow");
-
-type LogLevel = "debug" | "info" | "warn" | "error";
-type AppendLogFn = (level: LogLevel, msg: string, meta?: any) => unknown;
-
-async function drainTempToStaging(params: {
-  step: any;
-  flowId: string;
-  entity: string;
-  safeEntityStepId: string;
-  stepPrefix: string;
-  bulkSyncOptions: Record<string, unknown>;
-  executionId?: string;
-  appendExecutionLog: AppendLogFn;
-  touchHeartbeat: (execId?: string) => Promise<void>;
-}): Promise<number> {
-  const { step, flowId, entity, safeEntityStepId, stepPrefix } = params;
-  let subFlush = 0;
-  let rowsInTemp = await getTempCollectionCount(flowId, entity);
-
-  while (rowsInTemp > 0) {
-    const cnt = rowsInTemp;
-    await step.run(
-      `${stepPrefix}-${safeEntityStepId}-${subFlush}`,
-      async () => {
-        await params.touchHeartbeat(params.executionId);
-        params.appendExecutionLog(
-          "info",
-          `Flushing ${entity} ${stepPrefix} ${subFlush} to staging (${cnt} rows in temp)`,
-          { entity, subFlush, tempCount: cnt },
-        );
-        try {
-          await performBulkFlush({
-            ...(params.bulkSyncOptions as object),
-            bulkFlushMaxBatches: 1,
-          } as any);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          params.appendExecutionLog(
-            "error",
-            `Failed to flush ${entity} ${stepPrefix} ${subFlush}: ${msg}`,
-            { entity, subFlush },
-          );
-          throw err;
-        }
-        params.appendExecutionLog(
-          "info",
-          `${entity} ${stepPrefix} ${subFlush} flushed to staging`,
-          { entity, subFlush },
-        );
-      },
-    );
-    subFlush++;
-    if (subFlush > 500) {
-      throw new Error(
-        `Flush sub-step limit exceeded for ${entity} (${stepPrefix})`,
-      );
-    }
-    rowsInTemp = await getTempCollectionCount(flowId, entity);
-  }
-  return subFlush;
-}
-
-async function runStagingStep(params: {
-  step: any;
-  stepName: string;
-  entity: string;
-  label: string;
-  executionId?: string;
-  appendExecutionLog: AppendLogFn;
-  touchHeartbeat: (execId?: string) => Promise<void>;
-  work: () => Promise<void>;
-}): Promise<void> {
-  await params.step.run(params.stepName, async () => {
-    await params.touchHeartbeat(params.executionId);
-    params.appendExecutionLog("info", `${params.label} for ${params.entity}`, {
-      entity: params.entity,
-    });
-    try {
-      await params.work();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      params.appendExecutionLog(
-        "error",
-        `Failed: ${params.label} for ${params.entity}: ${msg}`,
-        { entity: params.entity },
-      );
-      throw err;
-    }
-    params.appendExecutionLog(
-      "info",
-      `${params.entity} ${params.label} complete`,
-      { entity: params.entity },
-    );
-  });
-}
 
 // Helper function to get flow display name
 async function getFlowDisplayName(flow: IFlow): Promise<string> {
@@ -705,20 +604,6 @@ export const flowFunction = inngest.createFunction(
         Boolean(flow.tableDestination?.connectionId) &&
         hasCdcDestinationAdapter(destinationType);
 
-      const cdcAdapter =
-        isCdcEnabled && destinationType && flow.tableDestination
-          ? resolveCdcDestinationAdapter({
-              destinationType,
-              destinationDatabaseId: String(flow.destinationDatabaseId),
-              destinationDatabaseName: flow.destinationDatabaseName,
-              tableDestination: {
-                connectionId: String(flow.tableDestination.connectionId),
-                schema: flow.tableDestination.schema || "public",
-                tableName: flow.tableDestination.tableName || "",
-              },
-            })
-          : undefined;
-
       const requestedBackfillRunId =
         typeof backfillRunId === "string" && backfillRunId.length > 0
           ? backfillRunId
@@ -764,12 +649,9 @@ export const flowFunction = inngest.createFunction(
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
         (flow as any).syncMode = "full";
-        logger.info(
-          "Backfill mode: BigQuery CDC enabled, no webhook apply gate",
-          {
-            flowId,
-          },
-        );
+        logger.info("Backfill mode: CDC enabled, no webhook apply gate", {
+          flowId,
+        });
         await step.run("cdc-transition-start-backfill", async () => {
           await syncMachineService.applyBackfillTransition({
             workspaceId: String(flow.workspaceId),
@@ -1809,7 +1691,7 @@ export const flowFunction = inngest.createFunction(
       }
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
-        await step.run("mark-bigquery-cdc-backfill-complete", async () => {
+        await step.run("mark-cdc-backfill-complete", async () => {
           await markCdcBackfillCompletedForFlow({
             flowId: String(flowId),
             workspaceId: String(flow.workspaceId),
