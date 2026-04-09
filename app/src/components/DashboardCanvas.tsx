@@ -154,8 +154,15 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   }, [dashboard?.title]);
 
   const handleRefresh = useCallback(() => {
-    if (workspaceId) void refreshDashboardCommand(workspaceId, dashboardId);
-  }, [workspaceId, dashboardId]);
+    if (!workspaceId) {
+      return;
+    }
+    if (isEditMode) {
+      void reloadDashboardDataSourcesCommand(workspaceId, dashboardId);
+      return;
+    }
+    void refreshDashboardCommand(workspaceId, dashboardId);
+  }, [workspaceId, dashboardId, isEditMode]);
 
   const dataFreshness = useMemo(() => {
     if (!dashboard || dashboard.dataSources.length === 0) return null;

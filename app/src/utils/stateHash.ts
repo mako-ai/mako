@@ -41,6 +41,7 @@ export function computeDashboardStateHash(dashboard: {
   dataSources: Array<{
     id: string;
     name: string;
+    tableRef?: string;
     query: unknown;
     computedColumns?: unknown[];
     timeDimension?: string;
@@ -70,6 +71,7 @@ export function computeDashboardStateHash(dashboard: {
     dataSources: dashboard.dataSources.map(ds => ({
       id: ds.id,
       name: ds.name,
+      tableRef: ds.tableRef,
       query: ds.query,
       computedColumns: ds.computedColumns,
       timeDimension: ds.timeDimension,

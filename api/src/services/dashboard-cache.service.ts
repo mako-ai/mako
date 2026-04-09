@@ -36,20 +36,25 @@ export function buildDashboardArtifactKey(input: {
   workspaceId: string;
   dashboardId: string;
   dataSourceId: string;
-  version: string;
+  definitionHash: string;
 }): string {
   const prefix = getDashboardArtifactPrefix();
-  return `${prefix}/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/dataSources/${input.dataSourceId}/${input.version}.parquet`;
+  return `${prefix}/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/dataSources/${input.dataSourceId}/${input.definitionHash}.parquet`;
 }
 
 export function buildDashboardMaterializationArtifactPath(input: {
   workspaceId: string;
   dashboardId: string;
   dataSourceId: string;
-  version?: string;
+  revision?: string;
 }): string {
   const base = `/api/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/data-sources/${input.dataSourceId}/materialization/artifact`;
-  return input.version ? `${base}?v=${input.version}` : base;
+  const params = new URLSearchParams();
+  if (input.revision) {
+    params.set("rev", input.revision);
+  }
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
 }
 
 export function buildSnapshotArtifactKey(input: {
@@ -60,6 +65,33 @@ export function buildSnapshotArtifactKey(input: {
 }): string {
   const prefix = getDashboardArtifactPrefix();
   return `${prefix}/workspaces/${input.workspaceId}/dashboards/${input.dashboardId}/widgets/${input.widgetId}/${input.version}.json`;
+}
+
+export function resolveDashboardArtifactRevision(cache?: {
+  artifactRevision?: string | null;
+  parquetBuiltAt?: Date | string | null;
+}): string | null {
+  const artifactRevision = cache?.artifactRevision || null;
+  if (!cache?.parquetBuiltAt) {
+    return artifactRevision;
+  }
+  const builtAt =
+    cache.parquetBuiltAt instanceof Date
+      ? cache.parquetBuiltAt
+      : new Date(cache.parquetBuiltAt);
+  const builtAtMs = builtAt.getTime();
+  const builtAtRevision = Number.isFinite(builtAtMs) ? String(builtAtMs) : null;
+
+  if (!artifactRevision || !builtAtRevision) {
+    return artifactRevision || builtAtRevision;
+  }
+
+  const artifactRevisionMs = Number(artifactRevision);
+  if (Number.isFinite(artifactRevisionMs) && artifactRevisionMs < builtAtMs) {
+    return builtAtRevision;
+  }
+
+  return artifactRevision;
 }
 
 export function getArtifactStore(): DashboardArtifactStore {
@@ -126,7 +158,7 @@ export async function hydrateDashboardArtifactUrls<
             workspaceId,
             dashboardId,
             dataSourceId: String(ds.id),
-            version: ds.cache?.parquetVersion ?? undefined,
+            revision: resolveDashboardArtifactRevision(ds.cache) || undefined,
           }),
         },
       };

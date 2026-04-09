@@ -8,12 +8,13 @@ import {
 } from "@mako/schemas";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import { disposeDashboardRuntime } from "../dashboard-runtime/gateway";
-import type {
-  Dashboard,
-  DashboardDataSource,
-  DashboardWidget,
-  GlobalFilter,
-  TableRelationship,
+import {
+  sanitizeEditableDashboardDefinition,
+  type Dashboard,
+  type DashboardDataSource,
+  type DashboardWidget,
+  type GlobalFilter,
+  type TableRelationship,
 } from "../dashboard-runtime/types";
 
 export type {
@@ -44,7 +45,8 @@ export interface DashboardDataSourceMaterializationStatus {
   dataSourceId: string;
   name: string;
   status: "missing" | "queued" | "building" | "ready" | "error";
-  version: string | null;
+  definitionHash: string | null;
+  artifactRevision: string | null;
   format: "parquet";
   storageBackend: "filesystem" | "gcs" | "s3";
   rowCount: number | null;
@@ -72,12 +74,13 @@ export interface MaterializationRunRecord {
   dashboardId: string;
   dataSourceId: string;
   triggerType: "manual" | "schedule" | "dashboard_update";
-  status: "building" | "ready" | "error";
+  status: "queued" | "building" | "ready" | "error" | "abandoned" | "cancelled";
   requestedAt: string;
   startedAt?: string;
   finishedAt?: string;
   artifactKey?: string;
-  version?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
   rowCount?: number;
   byteSize?: number;
   error?: string;
@@ -112,7 +115,8 @@ function applyMaterializationStatusToDashboard(
         rowCount: sourceStatus.rowCount ?? undefined,
         byteSize: sourceStatus.byteSize ?? undefined,
         parquetArtifactKey: sourceStatus.artifactKey ?? undefined,
-        parquetVersion: sourceStatus.version ?? undefined,
+        definitionHash: sourceStatus.definitionHash ?? undefined,
+        artifactRevision: sourceStatus.artifactRevision ?? undefined,
         parquetBuiltAt: sourceStatus.builtAt ?? undefined,
         parquetBuildStatus: sourceStatus.status,
         parquetLastError: sourceStatus.lastError ?? undefined,
@@ -470,17 +474,10 @@ export const useDashboardStore = create<DashboardStoreState>()(
         const dashboard = get().openDashboards[dashboardId];
         if (!dashboard) return { ok: false, error: "Dashboard not loaded" };
         try {
+          const editableDefinition =
+            sanitizeEditableDashboardDefinition(dashboard);
           const payload = {
-            widgets: dashboard.widgets,
-            dataSources: dashboard.dataSources,
-            relationships: dashboard.relationships,
-            globalFilters: dashboard.globalFilters,
-            crossFilter: dashboard.crossFilter,
-            materializationSchedule: dashboard.materializationSchedule,
-            layout: dashboard.layout,
-            cache: dashboard.cache,
-            title: dashboard.title,
-            description: dashboard.description,
+            ...editableDefinition,
             version: dashboard.version,
           };
           const response = await apiClient.patch<{
@@ -490,10 +487,14 @@ export const useDashboardStore = create<DashboardStoreState>()(
           if (response.data) {
             set(state => {
               const local = state.openDashboards[dashboardId];
-              if (local) {
-                local.version = response.data.version;
-                state.savedStateHashes[dashboardId] =
-                  computeDashboardStateHash(local);
+              if (local && response.data) {
+                state.openDashboards[dashboardId] = {
+                  ...response.data,
+                  readOnly: local.readOnly ?? response.data.readOnly,
+                };
+                state.savedStateHashes[dashboardId] = computeDashboardStateHash(
+                  state.openDashboards[dashboardId],
+                );
               }
             });
           }
@@ -538,6 +539,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
             state.openDashboards[dashboardId] = serverDashboard;
             state.conflict = null;
             state.historyMap[dashboardId] = { stack: [], index: -1 };
+            state.savedStateHashes[dashboardId] =
+              computeDashboardStateHash(serverDashboard);
           });
         } else {
           set(state => {
@@ -563,7 +566,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
         set(state => {
           const d = state.openDashboards[dashboardId];
           if (d) {
-            Object.assign(d, result.data);
+            Object.assign(d, sanitizeEditableDashboardDefinition(result.data));
           }
         });
         return null;

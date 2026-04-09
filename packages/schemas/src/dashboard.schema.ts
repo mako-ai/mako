@@ -59,6 +59,8 @@ export const DashboardDataSourceSchema = z.object({
       rowCount: z.number().optional(),
       byteSize: z.number().optional(),
       parquetArtifactKey: z.string().optional(),
+      definitionHash: z.string().optional(),
+      artifactRevision: z.string().optional(),
       parquetVersion: z.string().optional(),
       parquetBuiltAt: z.string().optional(),
       parquetBuildStatus: z

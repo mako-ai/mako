@@ -6,6 +6,10 @@ import {
   selectSavedHash,
   type DashboardConflict,
 } from "../store/dashboardStore";
+import {
+  materializeDashboardInBackgroundCommand,
+  refreshDashboardCommand,
+} from "../dashboard-runtime/commands";
 import { computeDashboardStateHash } from "../utils/stateHash";
 
 const {
@@ -124,7 +128,8 @@ export function useDashboardEditSession({
           setExitEditConfirmOpen(true);
           return;
         }
-        void exitEditModeAction(workspaceId, dashboardId);
+        await exitEditModeAction(workspaceId, dashboardId);
+        await refreshDashboardCommand(workspaceId, dashboardId);
       }
     },
     [workspaceId, dashboardId],
@@ -137,7 +142,14 @@ export function useDashboardEditSession({
       .getState()
       .saveDashboard(workspaceId, dashboardId);
     if (result.ok) {
-      void exitEditModeAction(workspaceId, dashboardId);
+      await exitEditModeAction(workspaceId, dashboardId);
+      await refreshDashboardCommand(workspaceId, dashboardId);
+      void materializeDashboardInBackgroundCommand({
+        workspaceId,
+        dashboardId,
+      }).catch(() => undefined);
+    } else if (result.error) {
+      setLockError(result.error);
     }
   }, [workspaceId, dashboardId]);
 
@@ -148,6 +160,7 @@ export function useDashboardEditSession({
     await useDashboardStore
       .getState()
       .reloadDashboard(workspaceId, dashboardId);
+    await refreshDashboardCommand(workspaceId, dashboardId);
   }, [workspaceId, dashboardId]);
 
   const handleExitEditCancel = useCallback(() => {

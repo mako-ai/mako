@@ -11,78 +11,12 @@ import {
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { loggers } from "../../../logging";
+import {
+  mapPostgresOidToType,
+  stripTrailingSqlSemicolon,
+} from "./pg-type-utils";
 
 const logger = loggers.db("postgresql");
-
-/**
- * Map PostgreSQL OID (dataTypeID) to type name
- * Common OIDs from PostgreSQL's pg_type catalog
- * See: https://www.postgresql.org/docs/current/datatype.html
- */
-function mapPostgresOidToType(oid: number): string {
-  const oidMap: Record<number, string> = {
-    // Boolean
-    16: "BOOLEAN",
-    // Numeric
-    20: "BIGINT",
-    21: "SMALLINT",
-    23: "INTEGER",
-    26: "OID",
-    700: "REAL",
-    701: "DOUBLE PRECISION",
-    1700: "NUMERIC",
-    // Character
-    18: "CHAR",
-    25: "TEXT",
-    1042: "CHAR",
-    1043: "VARCHAR",
-    // Binary
-    17: "BYTEA",
-    // Date/Time
-    1082: "DATE",
-    1083: "TIME",
-    1114: "TIMESTAMP",
-    1184: "TIMESTAMPTZ",
-    1186: "INTERVAL",
-    1266: "TIMETZ",
-    // UUID
-    2950: "UUID",
-    // JSON
-    114: "JSON",
-    3802: "JSONB",
-    // Arrays (common)
-    1000: "BOOLEAN[]",
-    1005: "SMALLINT[]",
-    1007: "INTEGER[]",
-    1016: "BIGINT[]",
-    1009: "TEXT[]",
-    1015: "VARCHAR[]",
-    1021: "REAL[]",
-    1022: "DOUBLE PRECISION[]",
-    // Network
-    869: "INET",
-    650: "CIDR",
-    829: "MACADDR",
-    // Geometric
-    600: "POINT",
-    601: "LSEG",
-    602: "PATH",
-    603: "BOX",
-    604: "POLYGON",
-    628: "LINE",
-    718: "CIRCLE",
-    // Other
-    2249: "RECORD",
-    2287: "RECORD[]",
-    3904: "INT4RANGE",
-    3906: "INT8RANGE",
-    3908: "NUMRANGE",
-    3912: "DATERANGE",
-    3910: "TSRANGE",
-    3914: "TSTZRANGE",
-  };
-  return oidMap[oid] || "TEXT";
-}
 
 /**
  * Map JavaScript types to PostgreSQL types
@@ -416,8 +350,9 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     error?: string;
   }> {
     try {
+      const baseQuery = stripTrailingSqlSemicolon(query);
       // LIMIT 0 gives us column metadata without fetching any data
-      const schemaQuery = `SELECT * FROM (${query}) AS _schema_query LIMIT 0`;
+      const schemaQuery = `SELECT * FROM (${baseQuery}) AS _schema_query LIMIT 0`;
 
       const result = await databaseConnectionService.executeQuery(
         database,
@@ -443,7 +378,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       }
 
       // Fallback: try with LIMIT 1 and infer from data
-      const sampleQuery = `SELECT * FROM (${query}) AS _schema_query LIMIT 1`;
+      const sampleQuery = `SELECT * FROM (${baseQuery}) AS _schema_query LIMIT 1`;
       const sampleResult = await databaseConnectionService.executeQuery(
         database,
         sampleQuery,
