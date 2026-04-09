@@ -1990,11 +1990,13 @@ export class CloseConnector extends BaseConnector {
           .map(event => event.trim())
           .filter((event): event is string => event.length > 0)
       : [];
-    const normalized = normalizeEventSelectors(
+
+    const effectiveEvents =
       requestedEvents.length > 0
         ? requestedEvents
-        : this.getSupportedWebhookEvents(),
-    );
+        : this.getWebhookEventsForEntities(options.enabledEntities ?? []);
+
+    const normalized = normalizeEventSelectors(effectiveEvents);
     if (requestedEvents.length > 0 && normalized.unsupported.length > 0) {
       logger.warn("Ignoring unsupported Close webhook events", {
         unsupportedEvents: normalized.unsupported,
@@ -2039,6 +2041,23 @@ export class CloseConnector extends BaseConnector {
           existing.subscription_id ||
           existing.webhook_id;
         if (existingId) {
+          try {
+            await api.put(`/webhook/${existingId}/`, {
+              events: normalized.selectors,
+            });
+            logger.info(
+              "Updated Close webhook events for existing subscription",
+              {
+                webhookId: existingId,
+                eventCount: normalized.selectors.length,
+              },
+            );
+          } catch (updateError) {
+            logger.warn("Could not update events on existing Close webhook", {
+              webhookId: existingId,
+              error: updateError,
+            });
+          }
           return {
             providerWebhookId: String(existingId),
             endpointUrl: options.endpointUrl,
@@ -2259,6 +2278,69 @@ export class CloseConnector extends BaseConnector {
     return CLOSE_SUPPORTED_WEBHOOK_SELECTORS.map(
       selector => `${selector.object_type}.${selector.action}`,
     );
+  }
+
+  /**
+   * Return only the webhook event strings relevant to the given entities.
+   * Falls back to all supported events when the entity list is empty
+   * (i.e. no explicit selection — sync everything).
+   */
+  getWebhookEventsForEntities(entities: string[]): string[] {
+    if (entities.length === 0) return this.getSupportedWebhookEvents();
+
+    const entitySet = new Set(entities.map(e => e.toLowerCase()));
+
+    const activitySubTypeToObjectType: Record<string, string> = {
+      call: "activity.call",
+      email: "activity.email",
+      emailthread: "activity.email_thread",
+      sms: "activity.sms",
+      note: "activity.note",
+      meeting: "activity.meeting",
+      leadstatuschange: "activity.lead_status_change",
+      opportunitystatuschange: "activity.opportunity_status_change",
+      taskcompleted: "activity.task_completed",
+      customactivity: "activity.custom_activity",
+    };
+
+    const entityToObjectTypes: Record<string, string[]> = {
+      leads: ["lead"],
+      contacts: ["contact"],
+      opportunities: ["opportunity"],
+      custom_fields: [
+        "custom_fields.lead",
+        "custom_fields.contact",
+        "custom_fields.opportunity",
+        "custom_fields.activity",
+        "custom_fields.custom_object",
+        "custom_fields.shared",
+      ],
+      custom_activity_types: ["custom_activity_type"],
+      custom_object_types: ["custom_object_type"],
+      custom_objects: ["custom_object"],
+      lead_statuses: ["status.lead"],
+      opportunity_statuses: ["status.opportunity"],
+    };
+
+    const relevantObjectTypes = new Set<string>();
+
+    for (const entity of entitySet) {
+      if (entity.startsWith("activities:")) {
+        const subType = entity.slice("activities:".length).toLowerCase();
+        const objType = activitySubTypeToObjectType[subType];
+        if (objType) relevantObjectTypes.add(objType);
+        continue;
+      }
+
+      const mapped = entityToObjectTypes[entity];
+      if (mapped) {
+        for (const ot of mapped) relevantObjectTypes.add(ot);
+      }
+    }
+
+    return CLOSE_SUPPORTED_WEBHOOK_SELECTORS.filter(selector =>
+      relevantObjectTypes.has(selector.object_type),
+    ).map(selector => `${selector.object_type}.${selector.action}`);
   }
 
   /**

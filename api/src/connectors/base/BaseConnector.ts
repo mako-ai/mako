@@ -79,6 +79,7 @@ export interface ProvisionWebhookOptions {
   endpointUrl: string;
   verifySsl?: boolean;
   events?: string[];
+  enabledEntities?: string[];
 }
 
 export interface ProvisionWebhookResult {

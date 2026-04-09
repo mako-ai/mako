@@ -2049,10 +2049,13 @@ flowRoutes.post("/:flowId/webhook/provision", async c => {
           .filter(Boolean)
       : undefined;
 
+    const { entities: enabledEntities } = resolveConfiguredEntities(flow);
+
     const created = await connector.createWebhookSubscription({
       endpointUrl: endpoint,
       verifySsl: body.verifySsl !== false,
       events: requestedEvents,
+      enabledEntities,
     });
 
     if (!flow.webhookConfig) {
