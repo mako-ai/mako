@@ -318,7 +318,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string; skipDrop?: boolean },
+    options?: {
+      stagingSuffix?: string;
+      skipDrop?: boolean;
+      skipParquetCleanup?: boolean;
+    },
   ): Promise<{ loaded: number }> {
     await this.ensureDataset();
     const stagingTable = this.getStagingTableName(
@@ -329,7 +333,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     if (!options?.skipDrop) {
       await this.dropStagingTable(stagingTable).catch(() => undefined);
     }
-    return this.loadParquetToStaging(parquetPath, stagingTable);
+    return this.loadParquetToStaging(parquetPath, stagingTable, {
+      skipParquetCleanup: options?.skipParquetCleanup,
+    });
   }
 
   async mergeFromStaging(
@@ -691,6 +697,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   private async loadParquetToStaging(
     parquetPath: string,
     stagingTable: string,
+    options?: { skipParquetCleanup?: boolean },
   ): Promise<{ loaded: number }> {
     const { bq, dataset } = await this.resolveBqClient();
 
@@ -712,7 +719,9 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
 
-    await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+    if (!options?.skipParquetCleanup) {
+      await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+    }
 
     log.info("Loaded Parquet to BigQuery staging table", {
       stagingTable,

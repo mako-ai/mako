@@ -276,7 +276,11 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string; skipDrop?: boolean },
+    options?: {
+      stagingSuffix?: string;
+      skipDrop?: boolean;
+      skipParquetCleanup?: boolean;
+    },
   ): Promise<{ loaded: number }> {
     const db = this.getDatabase();
     await this.executeQuery(`CREATE DATABASE IF NOT EXISTS ${escId(db)}`);
@@ -293,6 +297,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
     return this.loadParquetToStaging(parquetPath, stagingTable, {
       skipDrop: options?.skipDrop,
+      skipParquetCleanup: options?.skipParquetCleanup,
     });
   }
 
@@ -342,7 +347,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
   private async loadParquetToStaging(
     parquetPath: string,
     stagingTable: string,
-    options?: { skipDrop?: boolean },
+    options?: { skipDrop?: boolean; skipParquetCleanup?: boolean },
   ): Promise<{ loaded: number }> {
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
@@ -368,16 +373,14 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
         await client.command({
           query: `${createVerb} ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
         });
-      } catch {
-        if (options?.skipDrop) {
-          log.info("Staging table already exists, appending", {
-            stagingTable,
-          });
-        } else {
+      } catch (err) {
+        if (!options?.skipDrop) {
           log.info(
             "Live table not found, creating staging from Parquet insert",
             { stagingTable, liveTable },
           );
+        } else {
+          throw err;
         }
       }
 
@@ -401,7 +404,9 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
         parquetPath,
       });
 
-      await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+      if (!options?.skipParquetCleanup) {
+        await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+      }
       return { loaded };
     } finally {
       await client.close();
