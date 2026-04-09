@@ -834,19 +834,20 @@ export class CdcBackfillService {
 
       for (const entity of enabledEntities) {
         const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
-        const bulkStaging = `${liveTable}__${flowToken}__staging`;
+        // Only drop backfill staging and legacy tables. The stream staging
+        // table (`…__staging`) is ephemeral — created and dropped within
+        // writeViaParquet's try/finally. Dropping it here races with
+        // in-flight cdc-materialize jobs and causes "Table not found" errors.
         const backfillBulkStaging = `${liveTable}__${flowToken}__backfill_staging`;
         const legacyStagingTables = [
           cdcStageTableName(tablePrefix, entity, flowId),
           `${liveTable}__stage_changes`,
         ];
-        for (const table of [bulkStaging, backfillBulkStaging]) {
-          try {
-            await driver.dropTable(destination, table, { schema });
-            dropped++;
-          } catch {
-            /* may not exist */
-          }
+        try {
+          await driver.dropTable(destination, backfillBulkStaging, { schema });
+          dropped++;
+        } catch {
+          /* may not exist */
         }
         for (const table of legacyStagingTables) {
           try {
