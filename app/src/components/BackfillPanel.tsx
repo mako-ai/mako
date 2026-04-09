@@ -47,6 +47,8 @@ interface BackfillPanelProps {
   onEdit?: () => void;
 }
 
+type EventFilterKey = "all" | "applied" | "pending" | "failed" | "dropped";
+
 type StreamState = "idle" | "active" | "paused" | "error";
 type BackfillStatus = "idle" | "running" | "paused" | "completed" | "error";
 
@@ -336,6 +338,15 @@ export function BackfillPanel({
   const [webhookEvents, setWebhookEvents] = useState<any[]>([]);
   const [webhookEventsTotalAll, setWebhookEventsTotalAll] = useState(0);
   const [eventsFilter, setEventsFilter] = useState<string>("all");
+  const [eventCounts, setEventCounts] = useState<
+    Record<EventFilterKey, number>
+  >({
+    all: 0,
+    applied: 0,
+    pending: 0,
+    failed: 0,
+    dropped: 0,
+  });
   const [retryingFailed, setRetryingFailed] = useState(false);
   const [entityResetOpen, setEntityResetOpen] = useState(false);
   const [entityResetEntity, setEntityResetEntity] = useState("");
@@ -422,6 +433,31 @@ export function BackfillPanel({
     flowId,
   ]);
 
+  const fetchEventCounts = useCallback(async () => {
+    const [
+      allResult,
+      appliedResult,
+      pendingResult,
+      failedResult,
+      droppedResult,
+    ] = await Promise.all([
+      fetchWebhookEvents(workspaceId, flowId, 1, 0),
+      fetchWebhookEvents(workspaceId, flowId, 1, 0, { applyStatus: "applied" }),
+      fetchWebhookEvents(workspaceId, flowId, 1, 0, { applyStatus: "pending" }),
+      fetchWebhookEvents(workspaceId, flowId, 1, 0, { applyStatus: "failed" }),
+      fetchWebhookEvents(workspaceId, flowId, 1, 0, { applyStatus: "dropped" }),
+    ]);
+
+    const all = allResult?.total ?? 0;
+    const applied = appliedResult?.total ?? 0;
+    const pending = pendingResult?.total ?? 0;
+    const failed = failedResult?.total ?? 0;
+    const dropped = droppedResult?.total ?? 0;
+
+    setEventCounts({ all, applied, pending, failed, dropped });
+    setWebhookEventsTotalAll(all);
+  }, [fetchWebhookEvents, workspaceId, flowId]);
+
   const pollLogs = useCallback(async () => {
     const currentExecId = executionIdRef.current;
     if (!currentExecId) {
@@ -494,6 +530,13 @@ export function BackfillPanel({
   useEffect(() => {
     pollCdc();
   }, [tab, eventsFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (tab !== 2) return;
+    fetchEventCounts();
+    const id = setInterval(fetchEventCounts, 15000);
+    return () => clearInterval(id);
+  }, [tab, fetchEventCounts]);
 
   const pollDestCounts = useCallback(async () => {
     const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
@@ -1932,9 +1975,7 @@ export function BackfillPanel({
               ).map(f => (
                 <Chip
                   key={f.key}
-                  label={
-                    f.key === "all" ? `All (${webhookEventsTotalAll})` : f.label
-                  }
+                  label={`${f.label} (${eventCounts[f.key] ?? 0})`}
                   size="small"
                   variant={eventsFilter === f.key ? "filled" : "outlined"}
                   color={
