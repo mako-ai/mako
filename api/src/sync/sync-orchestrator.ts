@@ -956,10 +956,25 @@ async function performSyncChunkSql(
  * to the OS promptly). The streaming pipeline micro-chunks rows via
  * MONGO_TO_PARQUET_CHUNK so peak JS heap stays bounded regardless of this value.
  */
-const FLUSH_BATCH_SIZE = 60_000;
+function resolvePositiveIntEnv(
+  value: string | undefined,
+  fallback: number,
+): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
+  process.env.SYNC_BULK_FLUSH_BATCH_SIZE,
+  30_000,
+);
 
 /** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
-const MONGO_TO_PARQUET_CHUNK = 400;
+const MONGO_TO_PARQUET_CHUNK = resolvePositiveIntEnv(
+  process.env.SYNC_BULK_MONGO_TO_PARQUET_CHUNK,
+  200,
+);
 
 function syncMemorySnapshot(): {
   heapUsedMb: number;
