@@ -8,6 +8,17 @@ const logger = loggers.api("streaming-parquet-builder");
 
 /** Max rows per INSERT VALUES clause to cap peak JS heap (SQL string materialization). */
 const INSERT_MICRO_BATCH_ROWS = 120;
+const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 256;
+const DEFAULT_DUCKDB_THREADS = 1;
+
+function parsePositiveInt(
+  rawValue: string | undefined,
+  fallback: number,
+): number {
+  if (!rawValue) return fallback;
+  const parsed = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -197,12 +208,26 @@ export async function buildParquetFromBatches(
 
   const instance = await DuckDBInstance.create(dbPath);
   const connection = await instance.connect();
+  const duckDbMemoryLimitMb = parsePositiveInt(
+    process.env.SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB,
+    DEFAULT_DUCKDB_MEMORY_LIMIT_MB,
+  );
+  const duckDbThreads = parsePositiveInt(
+    process.env.SYNC_PARQUET_DUCKDB_THREADS,
+    DEFAULT_DUCKDB_THREADS,
+  );
   let totalRows = 0;
   let tableCreated = false;
   let columns: string[] = [];
   let columnTypeMap = new Map<string, DuckDBColumnType>();
 
   try {
+    await connection.run(`PRAGMA threads=${duckDbThreads}`);
+    await connection.run(`PRAGMA memory_limit='${duckDbMemoryLimitMb}MB'`);
+    await connection.run(
+      `PRAGMA temp_directory='${os.tmpdir().replace(/'/g, "''")}'`,
+    );
+
     const insertBatch = async (rows: Record<string, unknown>[]) => {
       if (rows.length === 0) return;
 
@@ -292,6 +317,8 @@ export async function buildParquetFromBatches(
       rowCount: totalRows,
       byteSize: stat.size,
       parquetPath,
+      duckDbMemoryLimitMb,
+      duckDbThreads,
     });
 
     return {
