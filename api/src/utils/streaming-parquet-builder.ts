@@ -300,7 +300,16 @@ export async function buildParquetFromBatches(
       byteSize: stat.size,
     };
   } finally {
-    connection.closeSync();
+    try {
+      connection.closeSync();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      instance.closeSync();
+    } catch {
+      /* best-effort */
+    }
     await fsPromises.rm(dbPath, { force: true }).catch(() => undefined);
     await fsPromises
       .rm(`${dbPath}.wal`, { force: true })

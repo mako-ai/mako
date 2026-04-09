@@ -276,7 +276,11 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string; skipDrop?: boolean },
+    options?: {
+      stagingSuffix?: string;
+      skipDrop?: boolean;
+      skipParquetCleanup?: boolean;
+    },
   ): Promise<{ loaded: number }> {
     const db = this.getDatabase();
     await this.executeQuery(`CREATE DATABASE IF NOT EXISTS ${escId(db)}`);
@@ -291,7 +295,10 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       await this.dropTable(stagingTable).catch(() => undefined);
     }
 
-    return this.loadParquetToStaging(parquetPath, stagingTable);
+    return this.loadParquetToStaging(parquetPath, stagingTable, {
+      skipDrop: options?.skipDrop,
+      skipParquetCleanup: options?.skipParquetCleanup,
+    });
   }
 
   async mergeFromStaging(
@@ -340,6 +347,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
   private async loadParquetToStaging(
     parquetPath: string,
     stagingTable: string,
+    options?: { skipDrop?: boolean; skipParquetCleanup?: boolean },
   ): Promise<{ loaded: number }> {
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
@@ -350,29 +358,30 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     const client = createClient(config);
 
     try {
-      await client.command({
-        query: `DROP TABLE IF EXISTS ${fullStaging}`,
-      });
+      if (!options?.skipDrop) {
+        await client.command({
+          query: `DROP TABLE IF EXISTS ${fullStaging}`,
+        });
+      }
 
-      // Create staging table by cloning the live table schema if it exists.
-      // If the live table doesn't exist yet, create a minimal staging table
-      // and let the Parquet INSERT populate its columns.
       const liveTable = this.config.tableDestination.tableName;
       const fullLive = `${escId(db)}.${escId(liveTable)}`;
       try {
+        const createVerb = options?.skipDrop
+          ? "CREATE TABLE IF NOT EXISTS"
+          : "CREATE TABLE";
         await client.command({
-          query: `CREATE TABLE ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
+          query: `${createVerb} ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
         });
-      } catch {
-        // Live table doesn't exist yet — create an empty staging table.
-        // ClickHouse CREATE TABLE ... EMPTY AS doesn't work without a source,
-        // so we'll try a direct insert which may auto-infer from Parquet
-        // on newer ClickHouse versions (23.3+). If that fails, the error
-        // will propagate to the caller.
-        log.info("Live table not found, creating staging from Parquet insert", {
-          stagingTable,
-          liveTable,
-        });
+      } catch (err) {
+        if (!options?.skipDrop) {
+          log.info(
+            "Live table not found, creating staging from Parquet insert",
+            { stagingTable, liveTable },
+          );
+        } else {
+          throw err;
+        }
       }
 
       const parquetStream = createReadStream(parquetPath);
@@ -395,7 +404,9 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
         parquetPath,
       });
 
-      await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+      if (!options?.skipParquetCleanup) {
+        await fs.rm(parquetPath, { force: true }).catch(() => undefined);
+      }
       return { loaded };
     } finally {
       await client.close();

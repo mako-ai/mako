@@ -46,7 +46,11 @@ export interface CdcDestinationAdapter {
     parquetPath: string,
     layout: CdcEntityLayout,
     flowId: string,
-    options?: { stagingSuffix?: string; skipDrop?: boolean },
+    options?: {
+      stagingSuffix?: string;
+      skipDrop?: boolean;
+      skipParquetCleanup?: boolean;
+    },
   ): Promise<{ loaded: number }>;
   mergeFromStaging?(
     layout: CdcEntityLayout,

@@ -1868,6 +1868,7 @@ export const flowFunction = inngest.createFunction(
         error: error?.message || String(error),
         errorName: error?.name,
         errorCode: error?.code,
+        stack: error?.stack,
       });
 
       logger.error("Flow failed", {

@@ -1,3 +1,4 @@
+import { promises as fs } from "fs";
 import { syncConnectorRegistry } from "./connector-registry";
 import { databaseDataSourceManager } from "./database-data-source-manager";
 import { getDestinationManager } from "./destination-manager";
@@ -948,8 +949,14 @@ async function performSyncChunkSql(
   };
 }
 
-/** Rows per parquet file in bulk flush (lower = shorter Inngest steps for wide Meeting rows). */
-const FLUSH_BATCH_SIZE = 2_000;
+/**
+ * Max rows per parquet file in bulk flush.
+ * A single DuckDB instance is used per parquet file; keep this large to avoid
+ * spawning many instances (native memory overhead ~40-60 MB each, not released
+ * to the OS promptly). The streaming pipeline micro-chunks rows via
+ * MONGO_TO_PARQUET_CHUNK so peak JS heap stays bounded regardless of this value.
+ */
+const FLUSH_BATCH_SIZE = 60_000;
 
 /** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
 const MONGO_TO_PARQUET_CHUNK = 400;
@@ -1045,12 +1052,35 @@ async function flushBulkBuffer(
     }
 
     const tLoadStart = Date.now();
-    await cdcAdapter.loadStagingFromParquet!(
-      parquet.filePath,
-      cdcLayout,
-      flowId,
-      { stagingSuffix: "backfill_staging", skipDrop: true },
-    );
+    const LOAD_MAX_RETRIES = 3;
+    try {
+      for (let attempt = 1; attempt <= LOAD_MAX_RETRIES; attempt++) {
+        try {
+          await cdcAdapter.loadStagingFromParquet!(
+            parquet.filePath,
+            cdcLayout,
+            flowId,
+            {
+              stagingSuffix: "backfill_staging",
+              skipDrop: true,
+              skipParquetCleanup: true,
+            },
+          );
+          break;
+        } catch (err) {
+          if (attempt === LOAD_MAX_RETRIES) throw err;
+          const backoffMs = Math.min(1000 * 2 ** (attempt - 1), 15_000);
+          logger?.log(
+            "warn",
+            `${entity} flush batch ${batchNum + 1}/${totalBatches} load failed (attempt ${attempt}/${LOAD_MAX_RETRIES}), retrying in ${backoffMs}ms`,
+            { entity, batch: batchNum + 1, attempt, error: String(err) },
+          );
+          await new Promise(r => setTimeout(r, backoffMs));
+        }
+      }
+    } finally {
+      await fs.rm(parquet.filePath, { force: true }).catch(() => undefined);
+    }
     const loadMs = Date.now() - tLoadStart;
 
     const batchRows = docIds.length;
