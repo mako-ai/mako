@@ -1869,12 +1869,14 @@ flowRoutes.post("/:flowId/sync-cdc/recover", async c => {
     const body = (await c.req.json().catch(() => ({}))) as {
       retryFailedMaterialization?: boolean;
       entity?: string;
+      target?: "stream" | "backfill" | "both";
     };
     const result = await cdcBackfillService.recoverFlow({
       workspaceId,
       flowId,
       retryFailedMaterialization: body.retryFailedMaterialization !== false,
       entity: typeof body.entity === "string" ? body.entity : undefined,
+      target: body.target || "both",
     });
     return c.json({
       success: true,

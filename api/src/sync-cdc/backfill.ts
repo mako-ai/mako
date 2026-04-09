@@ -413,6 +413,7 @@ export class CdcBackfillService {
     flowId: string;
     retryFailedMaterialization?: boolean;
     entity?: string;
+    target?: "stream" | "backfill" | "both";
   }) {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(params.flowId),
@@ -425,19 +426,45 @@ export class CdcBackfillService {
       throw new Error("Recover requires syncEngine=cdc");
     }
 
-    await assertCanStartBackfill(params.workspaceId, params.flowId);
+    const target = params.target || "both";
+    const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
+    const recoverStream = target === "stream" || target === "both";
+    const recoverBackfill = target === "backfill" || target === "both";
 
-    const streamResult = await cdcSyncStateService.applyStreamTransition({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-      event: { type: "RECOVER", reason: "Stream recovered via API" },
-    });
-    if (!streamResult.changed) {
-      await this.resumeStream(params.workspaceId, params.flowId);
+    let resumedBackfill: { runId: string; reusedRunId: boolean } | undefined;
+
+    if (recoverBackfill && hasIncompleteBackfill) {
+      log.info("Recover: restarting incomplete backfill", {
+        flowId: params.flowId,
+        runId: flow.backfillState?.runId,
+        backfillStatus: flow.backfillState?.status,
+      });
+
+      await assertCanStartBackfill(params.workspaceId, params.flowId);
+
+      resumedBackfill = await this.startBackfill(
+        params.workspaceId,
+        params.flowId,
+        {
+          reuseExistingRunId: true,
+          reason: "Backfill restarted via recover (from checkpoint)",
+        },
+      );
+    }
+
+    if (recoverStream) {
+      const streamResult = await cdcSyncStateService.applyStreamTransition({
+        workspaceId: params.workspaceId,
+        flowId: params.flowId,
+        event: { type: "RECOVER", reason: "Stream recovered via API" },
+      });
+      if (!streamResult.changed) {
+        await this.resumeStream(params.workspaceId, params.flowId);
+      }
     }
 
     let retried = { resetCount: 0, entities: [] as string[] };
-    if (params.retryFailedMaterialization) {
+    if (params.retryFailedMaterialization && recoverStream) {
       retried = await this.retryFailedMaterialization({
         workspaceId: params.workspaceId,
         flowId: params.flowId,
@@ -458,7 +485,9 @@ export class CdcBackfillService {
       ),
       this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
       this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
-      this.cleanupOrphanStagingTables(flow),
+      recoverStream
+        ? this.cleanupOrphanStagingTables(flow)
+        : Promise.resolve(0),
     ]);
 
     return {
@@ -468,6 +497,12 @@ export class CdcBackfillService {
       drainedFailedWebhooks,
       reconciledWebhooks,
       stagingCleaned,
+      resumedBackfill: resumedBackfill
+        ? {
+            runId: resumedBackfill.runId,
+            reusedRunId: resumedBackfill.reusedRunId,
+          }
+        : undefined,
     };
   }
 
@@ -834,19 +869,20 @@ export class CdcBackfillService {
 
       for (const entity of enabledEntities) {
         const liveTable = cdcLiveTableName(tablePrefix, entity, flowId);
-        const bulkStaging = `${liveTable}__${flowToken}__staging`;
+        // Only drop backfill staging and legacy tables. The stream staging
+        // table (`…__staging`) is ephemeral — created and dropped within
+        // writeViaParquet's try/finally. Dropping it here races with
+        // in-flight cdc-materialize jobs and causes "Table not found" errors.
         const backfillBulkStaging = `${liveTable}__${flowToken}__backfill_staging`;
         const legacyStagingTables = [
           cdcStageTableName(tablePrefix, entity, flowId),
           `${liveTable}__stage_changes`,
         ];
-        for (const table of [bulkStaging, backfillBulkStaging]) {
-          try {
-            await driver.dropTable(destination, table, { schema });
-            dropped++;
-          } catch {
-            /* may not exist */
-          }
+        try {
+          await driver.dropTable(destination, backfillBulkStaging, { schema });
+          dropped++;
+        } catch {
+          /* may not exist */
         }
         for (const table of legacyStagingTables) {
           try {

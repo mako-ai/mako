@@ -454,7 +454,7 @@ interface FlowStore extends FlowStoreState {
     flowId: string,
     options?: {
       retryFailedMaterialization?: boolean;
-      resumeBackfill?: boolean;
+      target?: "stream" | "backfill" | "both";
       entity?: string;
     },
   ) => Promise<boolean>;
@@ -1082,7 +1082,7 @@ export const useFlowStore = create<FlowStore>()(
           }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover`, {
             retryFailedMaterialization:
               options?.retryFailedMaterialization !== false,
-            resumeBackfill: options?.resumeBackfill !== false,
+            target: options?.target || "both",
             entity: options?.entity,
           });
           if (!response.success) {

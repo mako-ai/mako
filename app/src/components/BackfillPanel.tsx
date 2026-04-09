@@ -591,7 +591,7 @@ export function BackfillPanel({
       async () => {
         const ok = await recoverCdcFlow(workspaceId, flowId, {
           retryFailedMaterialization: true,
-          resumeBackfill: false,
+          target: "stream",
         });
         if (!ok) throw new Error("Failed to recover stream");
       },
@@ -639,8 +639,8 @@ export function BackfillPanel({
     withBusy(
       async () => {
         const ok = await recoverCdcFlow(workspaceId, flowId, {
-          retryFailedMaterialization: true,
-          resumeBackfill: true,
+          retryFailedMaterialization: false,
+          target: "backfill",
         });
         if (!ok) throw new Error("Failed to recover backfill");
       },
