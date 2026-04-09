@@ -759,6 +759,7 @@ export class CdcBackfillService {
     flowId: string,
   ): Promise<number> {
     try {
+      // Includes ENQUEUE_FAILED (status + applyStatus both "failed") and materialization failures.
       const result = await WebhookEvent.updateMany(
         {
           flowId: new Types.ObjectId(flowId),

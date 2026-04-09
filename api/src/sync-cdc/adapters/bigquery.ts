@@ -699,10 +699,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     stagingTable: string,
     options?: { skipParquetCleanup?: boolean },
   ): Promise<{ loaded: number }> {
-    const { bq, dataset } = await this.resolveBqClient();
+    const { bq, dataset, datasetLocation } = await this.resolveBqClient();
 
     const [metadata] = await bq
-      .dataset(dataset)
+      .dataset(dataset, { location: datasetLocation })
       .table(stagingTable)
       .load(parquetPath, {
         sourceFormat: "PARQUET",
