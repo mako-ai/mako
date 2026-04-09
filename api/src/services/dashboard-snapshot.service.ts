@@ -95,5 +95,6 @@ export async function generateSnapshotsForDataSource(options: {
     return snapshots;
   } finally {
     connection.closeSync();
+    instance.closeSync();
   }
 }

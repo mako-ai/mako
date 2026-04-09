@@ -301,6 +301,7 @@ export async function buildParquetFromBatches(
     };
   } finally {
     connection.closeSync();
+    instance.closeSync();
     await fsPromises.rm(dbPath, { force: true }).catch(() => undefined);
     await fsPromises
       .rm(`${dbPath}.wal`, { force: true })
