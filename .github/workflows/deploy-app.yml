@@ -452,6 +452,7 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=1Gi \
+            --concurrency=4 \
             --min-instances=0 \
             --max-instances=2 \
             --allow-unauthenticated \
@@ -482,6 +483,10 @@ jobs:
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
+            --set-env-vars SYNC_BULK_FLUSH_BATCH_SIZE=30000 \
+            --set-env-vars SYNC_BULK_MONGO_TO_PARQUET_CHUNK=200 \
+            --set-env-vars SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB=256 \
+            --set-env-vars SYNC_PARQUET_DUCKDB_THREADS=1 \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
             --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
@@ -789,6 +794,7 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=1Gi \
+            --concurrency=4 \
             --min-instances=1 \
             --network=mako-vpc \
             --subnet=mako-subnet \
@@ -812,6 +818,10 @@ jobs:
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
+            --set-env-vars SYNC_BULK_FLUSH_BATCH_SIZE=30000 \
+            --set-env-vars SYNC_BULK_MONGO_TO_PARQUET_CHUNK=200 \
+            --set-env-vars SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB=256 \
+            --set-env-vars SYNC_PARQUET_DUCKDB_THREADS=1 \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
             --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
