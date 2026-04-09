@@ -96,6 +96,7 @@ export class CdcConsumerService {
       entity: params.entity,
     }).lean();
     const afterIngestSeq = Number(state?.lastMaterializedSeq || 0);
+    const lastIngestSeq = Number(state?.lastIngestSeq || 0);
     const eventStore = getCdcEventStore();
     const pending = await eventStore.readAfter({
       flowId: params.flowId,
@@ -105,12 +106,28 @@ export class CdcConsumerService {
     });
 
     if (pending.length === 0) {
+      if (lastIngestSeq > afterIngestSeq) {
+        log.warn("Sequence gap with no pending events — advancing cursor", {
+          flowId: params.flowId,
+          entity: params.entity,
+          lastMaterializedSeq: afterIngestSeq,
+          lastIngestSeq,
+        });
+        await cdcSyncStateService.advanceConsumerCursor({
+          workspaceId: params.workspaceId,
+          flowId: params.flowId,
+          entity: params.entity,
+          lastIngestSeq,
+          processedEventsDelta: 0,
+          rowsAppliedDelta: 0,
+        });
+      }
       return {
         processed: 0,
         applied: 0,
         failed: 0,
         dropped: 0,
-        latestIngestSeq: afterIngestSeq,
+        latestIngestSeq: lastIngestSeq,
       };
     }
 

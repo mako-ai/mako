@@ -277,6 +277,43 @@ class MongoCdcEventStore implements CdcEventStore {
       }
     }
 
+    if (deduped > 0 && inserted > 0) {
+      const insertedDocs = await CdcChangeEvent.find({
+        flowId: flowObjectId,
+        ingestSeq: { $gte: seqStart, $lt: seqStart + docs.length },
+      })
+        .select({ entity: 1, ingestSeq: 1 })
+        .lean();
+
+      const correctedByEntity = new Map<string, CdcAppendEntitySummary>();
+      for (const doc of insertedDocs) {
+        const prev = correctedByEntity.get(doc.entity);
+        const seq = Number(doc.ingestSeq);
+        correctedByEntity.set(doc.entity, {
+          entity: doc.entity,
+          source: byEntity.get(doc.entity)?.source ?? "webhook",
+          runId: byEntity.get(doc.entity)?.runId,
+          lastIngestSeq: Math.max(seq, prev?.lastIngestSeq ?? 0),
+        });
+      }
+
+      return {
+        inserted,
+        deduped,
+        attempted: docs.length,
+        entities: Array.from(correctedByEntity.values()),
+      };
+    }
+
+    if (deduped > 0 && inserted === 0) {
+      return {
+        inserted: 0,
+        deduped,
+        attempted: docs.length,
+        entities: [],
+      };
+    }
+
     return {
       inserted,
       deduped,
@@ -291,14 +328,16 @@ class MongoCdcEventStore implements CdcEventStore {
     afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]> {
+    const flowObjectId = new Types.ObjectId(params.flowId);
+    const safeLimit = Math.max(params.limit, 1);
+
     const rows = await CdcChangeEvent.find({
-      flowId: new Types.ObjectId(params.flowId),
+      flowId: flowObjectId,
       entity: params.entity,
       materializationStatus: "pending",
-      ingestSeq: { $gt: Math.max(params.afterIngestSeq, 0) },
     })
       .sort({ ingestSeq: 1 })
-      .limit(Math.max(params.limit, 1))
+      .limit(safeLimit)
       .lean();
 
     return rows.map(row =>
