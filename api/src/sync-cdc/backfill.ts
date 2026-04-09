@@ -1020,9 +1020,18 @@ export class CdcBackfillService {
   }> {
     const MAX_CONSECUTIVE_FAILURES = 3;
 
+    // Recover flows stuck in "running" (process died before error handler ran)
+    // AND flows in "error" that still have a runId (error handler ran but no
+    // auto-restart occurred — e.g. MongoDB crashed and Inngest exhausted retries).
     const staleFlows = await Flow.find({
       syncEngine: "cdc",
-      "backfillState.status": "running",
+      $or: [
+        { "backfillState.status": "running" },
+        {
+          "backfillState.status": "error",
+          "backfillState.runId": { $exists: true, $ne: null },
+        },
+      ],
     }).lean();
 
     if (staleFlows.length === 0) {
@@ -1036,6 +1045,7 @@ export class CdcBackfillService {
         flows: staleFlows.map(f => ({
           flowId: f._id.toString(),
           type: f.type,
+          backfillStatus: f.backfillState?.status || null,
           runId: f.backfillState?.runId || null,
           startedAt: f.backfillState?.startedAt || null,
           consecutiveFailures: f.backfillState?.consecutiveFailures ?? 0,
@@ -1054,6 +1064,7 @@ export class CdcBackfillService {
       const flowLabel = `${flow.type}:${fId}`;
       const runId = flow.backfillState?.runId || "unknown";
       const failures = flow.backfillState?.consecutiveFailures ?? 0;
+      const wasRunning = flow.backfillState?.status === "running";
 
       // On startup, force-abandon ALL running executions for this flow.
       // The previous process is gone, so any "running" execution is orphaned
@@ -1061,43 +1072,53 @@ export class CdcBackfillService {
       await abandonStaleExecutions(wId, fId, { force: true });
 
       try {
-        log.info(
-          `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
-          { flowId: fId, runId, consecutiveFailures: failures },
-        );
+        // Only transition running → error; flows already in "error" just
+        // need an auto-restart attempt (the Inngest error handler already
+        // applied the FAIL transition and incremented consecutiveFailures).
+        if (wasRunning) {
+          log.info(
+            `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
+            { flowId: fId, runId, consecutiveFailures: failures },
+          );
 
-        await cdcSyncStateService.applyBackfillTransition({
-          workspaceId: wId,
-          flowId: fId,
-          event: {
-            type: "FAIL",
-            reason: "Backfill interrupted by server restart",
-            errorCode: "SERVER_RESTART",
-          },
-        });
-        await Flow.findByIdAndUpdate(fId, {
-          $inc: { "backfillState.consecutiveFailures": 1 },
-        });
+          await cdcSyncStateService.applyBackfillTransition({
+            workspaceId: wId,
+            flowId: fId,
+            event: {
+              type: "FAIL",
+              reason: "Backfill interrupted by server restart",
+              errorCode: "SERVER_RESTART",
+            },
+          });
+          await Flow.findByIdAndUpdate(fId, {
+            $inc: { "backfillState.consecutiveFailures": 1 },
+          });
+        }
 
-        if (failures + 1 < MAX_CONSECUTIVE_FAILURES) {
+        const effectiveFailures = wasRunning ? failures + 1 : failures;
+
+        if (effectiveFailures < MAX_CONSECUTIVE_FAILURES) {
           const result = await this.startBackfill(wId, fId, {
             reuseExistingRunId: true,
-            reason: `Auto-resumed on startup (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
+            reason: wasRunning
+              ? `Auto-resumed on startup (attempt ${effectiveFailures}/${MAX_CONSECUTIVE_FAILURES})`
+              : `Auto-resumed on startup from error state (attempt ${effectiveFailures}/${MAX_CONSECUTIVE_FAILURES})`,
           });
           log.info(
             `Startup recovery: "${flowLabel}" — backfill restarted from checkpoint`,
             {
               flowId: fId,
+              previousStatus: flow.backfillState?.status,
               newRunId: result.runId,
               reusedRunId: result.reusedRunId,
-              consecutiveFailures: failures + 1,
+              consecutiveFailures: effectiveFailures,
             },
           );
           recovered++;
         } else {
           log.warn(
-            `Startup recovery: "${flowLabel}" — too many consecutive failures (${failures + 1}/${MAX_CONSECUTIVE_FAILURES}), manual intervention required`,
-            { flowId: fId, runId, consecutiveFailures: failures + 1 },
+            `Startup recovery: "${flowLabel}" — too many consecutive failures (${effectiveFailures}/${MAX_CONSECUTIVE_FAILURES}), manual intervention required`,
+            { flowId: fId, runId, consecutiveFailures: effectiveFailures },
           );
           skipped++;
         }
