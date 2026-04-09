@@ -427,13 +427,40 @@ export class CdcBackfillService {
 
     await assertCanStartBackfill(params.workspaceId, params.flowId);
 
-    const streamResult = await cdcSyncStateService.applyStreamTransition({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-      event: { type: "RECOVER", reason: "Stream recovered via API" },
-    });
-    if (!streamResult.changed) {
-      await this.resumeStream(params.workspaceId, params.flowId);
+    const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
+    let resumedBackfill: { runId: string; reusedRunId: boolean } | undefined;
+
+    if (hasIncompleteBackfill) {
+      // Backfill didn't finish — restart it from checkpoint.
+      // Do NOT activate the stream yet; it will be activated automatically
+      // when the backfill completes (via the cdc-transition-backfill-complete
+      // step in the flow function).
+      log.info(
+        "Recover: restarting incomplete backfill (skipping stream activation)",
+        {
+          flowId: params.flowId,
+          runId: flow.backfillState?.runId,
+          backfillStatus: flow.backfillState?.status,
+        },
+      );
+      resumedBackfill = await this.startBackfill(
+        params.workspaceId,
+        params.flowId,
+        {
+          reuseExistingRunId: true,
+          reason: "Backfill restarted via recover (from checkpoint)",
+        },
+      );
+    } else {
+      // Backfill is already complete — recover the stream.
+      const streamResult = await cdcSyncStateService.applyStreamTransition({
+        workspaceId: params.workspaceId,
+        flowId: params.flowId,
+        event: { type: "RECOVER", reason: "Stream recovered via API" },
+      });
+      if (!streamResult.changed) {
+        await this.resumeStream(params.workspaceId, params.flowId);
+      }
     }
 
     let retried = { resetCount: 0, entities: [] as string[] };
@@ -468,6 +495,12 @@ export class CdcBackfillService {
       drainedFailedWebhooks,
       reconciledWebhooks,
       stagingCleaned,
+      resumedBackfill: resumedBackfill
+        ? {
+            runId: resumedBackfill.runId,
+            reusedRunId: resumedBackfill.reusedRunId,
+          }
+        : undefined,
     };
   }
 
