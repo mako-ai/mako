@@ -185,7 +185,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       }
     }
 
-    // 6. Trigger immediate processing via Inngest
+    // 6. Trigger immediate processing via Inngest (retry briefly on transient failures)
     try {
       const destConn = flow.destinationDatabaseId
         ? await DatabaseConnection.findById(flow.destinationDatabaseId)
@@ -193,7 +193,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
             .lean()
         : null;
 
-      await enqueueWebhookProcess({
+      const enqueuePayload = {
         flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
@@ -203,7 +203,28 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
           tableDestination: flow.tableDestination,
         },
         destinationTypeHint: destConn?.type,
-      });
+      };
+
+      const maxEnqueueAttempts = 3;
+      const enqueueRetryDelayMs = 500;
+      let enqueueError: unknown;
+      for (let attempt = 1; attempt <= maxEnqueueAttempts; attempt++) {
+        try {
+          await enqueueWebhookProcess(enqueuePayload);
+          enqueueError = undefined;
+          break;
+        } catch (err) {
+          enqueueError = err;
+          if (attempt < maxEnqueueAttempts) {
+            await new Promise(resolve =>
+              setTimeout(resolve, enqueueRetryDelayMs),
+            );
+          }
+        }
+      }
+      if (enqueueError) {
+        throw enqueueError;
+      }
     } catch (enqueueError) {
       await WebhookEvent.updateOne(
         { _id: webhookEvent._id },
