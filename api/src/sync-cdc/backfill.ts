@@ -98,36 +98,41 @@ async function assertCanStartBackfill(
 async function abandonStaleExecutions(
   workspaceId: string,
   flowId: string,
+  options?: { force?: boolean },
 ): Promise<number> {
-  const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
-  const result = await FlowExecution.updateMany(
-    {
-      workspaceId: new Types.ObjectId(workspaceId),
-      flowId: new Types.ObjectId(flowId),
-      status: "running",
-      $or: [
-        { lastHeartbeat: { $lt: cutoff } },
-        { lastHeartbeat: { $exists: false }, startedAt: { $lt: cutoff } },
-      ],
-    },
-    {
-      $set: {
-        status: "abandoned",
-        completedAt: new Date(),
-        error: {
-          message:
-            "Execution abandoned during recovery — no heartbeat for 10+ minutes",
-          code: "RECOVERY_ABANDON",
-        },
+  const filter: Record<string, unknown> = {
+    workspaceId: new Types.ObjectId(workspaceId),
+    flowId: new Types.ObjectId(flowId),
+    status: "running",
+  };
+
+  if (!options?.force) {
+    const cutoff = new Date(Date.now() - STALE_HEARTBEAT_MS);
+    filter.$or = [
+      { lastHeartbeat: { $lt: cutoff } },
+      { lastHeartbeat: { $exists: false }, startedAt: { $lt: cutoff } },
+    ];
+  }
+
+  const result = await FlowExecution.updateMany(filter, {
+    $set: {
+      status: "abandoned",
+      completedAt: new Date(),
+      error: {
+        message: options?.force
+          ? "Execution abandoned on server startup — previous process no longer running"
+          : "Execution abandoned during recovery — no heartbeat for 10+ minutes",
+        code: "RECOVERY_ABANDON",
       },
     },
-  );
+  });
 
   if (result.modifiedCount > 0) {
     log.warn("Abandoned stale executions during recovery", {
       flowId,
       workspaceId,
       abandonedCount: result.modifiedCount,
+      force: options?.force ?? false,
     });
   }
 
@@ -1050,20 +1055,10 @@ export class CdcBackfillService {
       const runId = flow.backfillState?.runId || "unknown";
       const failures = flow.backfillState?.consecutiveFailures ?? 0;
 
-      await abandonStaleExecutions(wId, fId);
-      const activeExec = await FlowExecution.exists({
-        workspaceId: new Types.ObjectId(wId),
-        flowId: new Types.ObjectId(fId),
-        status: "running",
-      });
-      if (activeExec) {
-        log.info(
-          `Startup recovery: "${flowLabel}" skipped — execution still active`,
-          { flowId: fId, runId },
-        );
-        skipped++;
-        continue;
-      }
+      // On startup, force-abandon ALL running executions for this flow.
+      // The previous process is gone, so any "running" execution is orphaned
+      // regardless of heartbeat recency (e.g. crash < 10 min ago).
+      await abandonStaleExecutions(wId, fId, { force: true });
 
       try {
         log.info(
