@@ -425,19 +425,49 @@ export class CdcBackfillService {
       throw new Error("Recover requires syncEngine=cdc");
     }
 
-    await assertCanStartBackfill(params.workspaceId, params.flowId);
+    const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
+    let resumedBackfill: { runId: string; reusedRunId: boolean } | undefined;
 
-    const streamResult = await cdcSyncStateService.applyStreamTransition({
-      workspaceId: params.workspaceId,
-      flowId: params.flowId,
-      event: { type: "RECOVER", reason: "Stream recovered via API" },
-    });
-    if (!streamResult.changed) {
-      await this.resumeStream(params.workspaceId, params.flowId);
+    if (hasIncompleteBackfill) {
+      // Backfill didn't finish — restart it from checkpoint instead of
+      // activating the stream. The stream will be activated automatically
+      // when the backfill completes (via the cdc-transition-backfill-complete
+      // step in the flow function). Activating the stream now would cause
+      // concurrent writes to the same live tables from both paths.
+      log.info(
+        "Recover: restarting incomplete backfill (skipping stream activation)",
+        {
+          flowId: params.flowId,
+          runId: flow.backfillState?.runId,
+          backfillStatus: flow.backfillState?.status,
+        },
+      );
+
+      await assertCanStartBackfill(params.workspaceId, params.flowId);
+
+      resumedBackfill = await this.startBackfill(
+        params.workspaceId,
+        params.flowId,
+        {
+          reuseExistingRunId: true,
+          reason: "Backfill restarted via recover (from checkpoint)",
+        },
+      );
+    } else {
+      await assertCanStartBackfill(params.workspaceId, params.flowId);
+
+      const streamResult = await cdcSyncStateService.applyStreamTransition({
+        workspaceId: params.workspaceId,
+        flowId: params.flowId,
+        event: { type: "RECOVER", reason: "Stream recovered via API" },
+      });
+      if (!streamResult.changed) {
+        await this.resumeStream(params.workspaceId, params.flowId);
+      }
     }
 
     let retried = { resetCount: 0, entities: [] as string[] };
-    if (params.retryFailedMaterialization) {
+    if (params.retryFailedMaterialization && !hasIncompleteBackfill) {
       retried = await this.retryFailedMaterialization({
         workspaceId: params.workspaceId,
         flowId: params.flowId,
@@ -458,7 +488,9 @@ export class CdcBackfillService {
       ),
       this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
       this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
-      this.cleanupOrphanStagingTables(flow),
+      hasIncompleteBackfill
+        ? Promise.resolve(0)
+        : this.cleanupOrphanStagingTables(flow),
     ]);
 
     return {
@@ -468,6 +500,12 @@ export class CdcBackfillService {
       drainedFailedWebhooks,
       reconciledWebhooks,
       stagingCleaned,
+      resumedBackfill: resumedBackfill
+        ? {
+            runId: resumedBackfill.runId,
+            reusedRunId: resumedBackfill.reusedRunId,
+          }
+        : undefined,
     };
   }
 
