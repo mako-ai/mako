@@ -794,7 +794,7 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=2Gi \
-            --concurrency=4 \
+            --concurrency=10 \
             --min-instances=1 \
             --max-instances=15 \
             --network=mako-vpc \
