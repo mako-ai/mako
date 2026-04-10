@@ -21,6 +21,44 @@ import type {
 } from "../../connectors/base/BaseConnector";
 
 // ---------------------------------------------------------------------------
+// Retry helper for BigQuery quota / rate-limit errors (HTTP 403 rateLimitExceeded,
+// 429 quotaExceeded, or error messages mentioning "quota").
+// ---------------------------------------------------------------------------
+
+function isQuotaError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes("quota") ||
+    msg.includes("rate limit") ||
+    msg.includes("ratelimitexceeded") ||
+    msg.includes("exceeded") ||
+    /exceeded.*quota|quota.*exceeded/i.test(err.message)
+  );
+}
+
+async function retryOnQuota<T>(
+  fn: () => Promise<T>,
+  opts: { label: string; maxRetries?: number } = { label: "BigQuery op" },
+): Promise<T> {
+  const maxRetries = opts.maxRetries ?? 4;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= maxRetries || !isQuotaError(err)) throw err;
+      const backoffMs = Math.min(30_000, 5_000 * 2 ** attempt);
+      log.warn(`${opts.label}: quota error, retrying in ${backoffMs}ms`, {
+        attempt: attempt + 1,
+        maxRetries,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      await new Promise(r => setTimeout(r, backoffMs));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Schema contract: one source of truth for BigQuery column types.
 // Staging is always VARCHAR (from Parquet). Live table uses these types.
 // INSERT SELECT casts VARCHAR staging → typed live columns.
@@ -540,39 +578,49 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const [deleteStmt, insertStmt] = buildMergeStatements(allColumns);
 
-    const deleteResult = await databaseConnectionService.executeQuery(
-      destination,
-      deleteStmt,
-      { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+    await retryOnQuota(
+      async () => {
+        const deleteResult = await databaseConnectionService.executeQuery(
+          destination,
+          deleteStmt,
+          { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+        );
+        if (!deleteResult.success) {
+          const notFound =
+            deleteResult.error &&
+            /not found|does not exist/i.test(deleteResult.error);
+          if (!notFound) {
+            log.error("BigQuery DELETE before INSERT failed", {
+              liveTable,
+              stagingTable,
+              error: deleteResult.error,
+            });
+            throw new Error(deleteResult.error || "BigQuery DELETE failed");
+          }
+        }
+      },
+      { label: `mergeStagingToLive:DELETE(${liveTable})` },
     );
-    if (!deleteResult.success) {
-      const notFound =
-        deleteResult.error &&
-        /not found|does not exist/i.test(deleteResult.error);
-      if (!notFound) {
-        log.error("BigQuery DELETE before INSERT failed", {
-          liveTable,
-          stagingTable,
-          error: deleteResult.error,
-        });
-        throw new Error(deleteResult.error || "BigQuery DELETE failed");
-      }
-    }
 
-    const insertResult = await databaseConnectionService.executeQuery(
-      destination,
-      insertStmt,
-      { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+    await retryOnQuota(
+      async () => {
+        const insertResult = await databaseConnectionService.executeQuery(
+          destination,
+          insertStmt,
+          { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
+        );
+        if (!insertResult.success) {
+          log.error("BigQuery INSERT from staging failed", {
+            liveTable,
+            stagingTable,
+            error: insertResult.error,
+            insertPreview: insertStmt.slice(0, 900),
+          });
+          throw new Error(insertResult.error || "BigQuery INSERT failed");
+        }
+      },
+      { label: `mergeStagingToLive:INSERT(${liveTable})` },
     );
-    if (!insertResult.success) {
-      log.error("BigQuery INSERT from staging failed", {
-        liveTable,
-        stagingTable,
-        error: insertResult.error,
-        insertPreview: insertStmt.slice(0, 900),
-      });
-      throw new Error(insertResult.error || "BigQuery INSERT failed");
-    }
 
     log.info("Merged staging to live table via DELETE+INSERT", {
       liveTable,
@@ -701,21 +749,27 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   ): Promise<{ loaded: number }> {
     const { bq, dataset, datasetLocation } = await this.resolveBqClient();
 
-    const [metadata] = await bq
-      .dataset(dataset, { location: datasetLocation })
-      .table(stagingTable)
-      .load(parquetPath, {
-        sourceFormat: "PARQUET",
-        writeDisposition: "WRITE_APPEND",
-        schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
-      });
+    const jobMeta = await retryOnQuota(
+      async () => {
+        const [metadata] = await bq
+          .dataset(dataset, { location: datasetLocation })
+          .table(stagingTable)
+          .load(parquetPath, {
+            sourceFormat: "PARQUET",
+            writeDisposition: "WRITE_APPEND",
+            schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
+          });
 
-    const jobMeta = metadata as Record<string, any>;
-    if (jobMeta?.status?.errorResult) {
-      throw new Error(
-        jobMeta.status.errorResult.message || "BigQuery load job failed",
-      );
-    }
+        const meta = metadata as Record<string, any>;
+        if (meta?.status?.errorResult) {
+          throw new Error(
+            meta.status.errorResult.message || "BigQuery load job failed",
+          );
+        }
+        return meta;
+      },
+      { label: `loadParquetToStaging(${stagingTable})` },
+    );
 
     const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
 
@@ -814,22 +868,27 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       if (fallbackDataSourceId) {
         where += ` AND \`_dataSourceId\` = '${fallbackDataSourceId.replace(/'/g, "''")}'`;
       }
-      const result = await databaseConnectionService.executeQuery(
-        destination,
-        `DELETE FROM ${fullLive} WHERE ${where}`,
-        { location: datasetLocation },
+      await retryOnQuota(
+        async () => {
+          const result = await databaseConnectionService.executeQuery(
+            destination,
+            `DELETE FROM ${fullLive} WHERE ${where}`,
+            { location: datasetLocation },
+          );
+          if (!result.success) {
+            const notFound =
+              result.error && /not found|does not exist/i.test(result.error);
+            if (notFound) {
+              log.info("Skipping hard delete — live table does not exist yet", {
+                table: layout.tableName,
+              });
+              return;
+            }
+            throw new Error(result.error || "BigQuery hard delete failed");
+          }
+        },
+        { label: `hardDeleteBatch(${layout.tableName})` },
       );
-      if (!result.success) {
-        const notFound =
-          result.error && /not found|does not exist/i.test(result.error);
-        if (notFound) {
-          log.info("Skipping hard delete — live table does not exist yet", {
-            table: layout.tableName,
-          });
-          return;
-        }
-        throw new Error(result.error || "BigQuery hard delete failed");
-      }
     }
 
     log.info("Hard-deleted records from live table", {
