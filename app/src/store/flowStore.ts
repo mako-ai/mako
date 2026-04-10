@@ -458,6 +458,19 @@ interface FlowStore extends FlowStoreState {
       entity?: string;
     },
   ) => Promise<boolean>;
+  recoverCdcStream: (
+    workspaceId: string,
+    flowId: string,
+    options?: {
+      retryFailedMaterialization?: boolean;
+      entity?: string;
+    },
+  ) => Promise<boolean>;
+  recoverCdcBackfill: (workspaceId: string, flowId: string) => Promise<boolean>;
+  reprocessStaleEvents: (
+    workspaceId: string,
+    flowId: string,
+  ) => Promise<boolean>;
   retryFailedCdcMaterialization: (
     workspaceId: string,
     flowId: string,
@@ -1087,6 +1100,73 @@ export const useFlowStore = create<FlowStore>()(
           });
           if (!response.success) {
             throw new Error(response.error || "Failed to recover CDC flow");
+          }
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      recoverCdcStream: async (workspaceId, flowId, options) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover-stream`,
+            {
+              retryFailedMaterialization:
+                options?.retryFailedMaterialization !== false,
+              entity: options?.entity,
+            },
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to recover CDC stream");
+          }
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      recoverCdcBackfill: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover-backfill`,
+          );
+          if (!response.success) {
+            throw new Error(response.error || "Failed to recover CDC backfill");
+          }
+          return true;
+        } catch (error) {
+          set(state => {
+            state.error[workspaceId] = normalizeError(error);
+          });
+          return false;
+        }
+      },
+
+      reprocessStaleEvents: async (workspaceId, flowId) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reprocess-stale`,
+          );
+          if (!response.success) {
+            throw new Error(
+              response.error || "Failed to reprocess stale events",
+            );
           }
           return true;
         } catch (error) {
