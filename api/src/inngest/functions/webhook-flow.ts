@@ -1084,6 +1084,20 @@ export const webhookRetryFunction = inngest.createFunction(
   },
 );
 
+const CDC_MATERIALIZE_MAX_EVENTS = Math.max(
+  parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "7500", 10) ||
+    7500,
+  100,
+);
+
+const CDC_MATERIALIZE_MAX_EVENTS_BACKFILL = Math.max(
+  parseInt(
+    process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS_BACKFILL || "1000",
+    10,
+  ) || 1000,
+  100,
+);
+
 async function runCdcMaterialization(params: {
   eventData: unknown;
   step: any;
@@ -1096,11 +1110,20 @@ async function runCdcMaterialization(params: {
     entity: string;
     force?: boolean;
   };
-  const maxEvents = Math.max(
-    parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "7500", 10) ||
-      7500,
-    100,
+
+  const isBackfilling = await params.step.run(
+    "check-backfill-state",
+    async () => {
+      const flow = await Flow.findById(flowId)
+        .select("backfillState.status")
+        .lean();
+      return flow?.backfillState?.status === "running";
+    },
   );
+
+  const maxEvents = isBackfilling
+    ? CDC_MATERIALIZE_MAX_EVENTS_BACKFILL
+    : CDC_MATERIALIZE_MAX_EVENTS;
 
   const materializeStartedAt = Date.now();
   const result = await params.step.run("materialize-cdc-entity", async () => {
@@ -1117,6 +1140,8 @@ async function runCdcMaterialization(params: {
     flowId,
     entity,
     force: Boolean(force),
+    isBackfilling,
+    maxEvents,
     materializeStepDurationMs,
     processed: (result as any).processed,
     applied: (result as any).applied,
