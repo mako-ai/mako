@@ -1085,16 +1085,16 @@ export const webhookRetryFunction = inngest.createFunction(
 );
 
 const CDC_MATERIALIZE_MAX_EVENTS = Math.max(
-  parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "7500", 10) ||
-    7500,
+  parseInt(process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS || "15000", 10) ||
+    15000,
   100,
 );
 
 const CDC_MATERIALIZE_MAX_EVENTS_BACKFILL = Math.max(
   parseInt(
-    process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS_BACKFILL || "1000",
+    process.env.BIGQUERY_CDC_MATERIALIZE_MAX_EVENTS_BACKFILL || "5000",
     10,
-  ) || 1000,
+  ) || 5000,
   100,
 );
 
@@ -1174,7 +1174,7 @@ export const cdcMaterializeFunction = inngest.createFunction(
     },
     throttle: {
       limit: 1,
-      period: "30s",
+      period: "3m",
       key: "event.data.flowId + ':' + event.data.entity",
     },
   },
