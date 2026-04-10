@@ -408,7 +408,7 @@ export class CdcBackfillService {
     return { resetCount, entities };
   }
 
-  async recoverFlow(params: {
+  async recoverStream(params: {
     workspaceId: string;
     flowId: string;
     retryFailedMaterialization?: boolean;
@@ -422,35 +422,17 @@ export class CdcBackfillService {
       throw new Error("Flow not found");
     }
     if (flow.syncEngine !== "cdc") {
-      throw new Error("Recover requires syncEngine=cdc");
+      throw new Error("Recover stream requires syncEngine=cdc");
     }
 
     const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
-    let resumedBackfill: { runId: string; reusedRunId: boolean } | undefined;
-
     if (hasIncompleteBackfill) {
-      // Backfill didn't finish — restart it from checkpoint instead of
-      // activating the stream. The stream will be activated automatically
-      // when the backfill completes (via the cdc-transition-backfill-complete
-      // step in the flow function). Activating the stream now would cause
-      // concurrent writes to the same live tables from both paths.
-      log.info(
-        "Recover: restarting incomplete backfill (skipping stream activation)",
+      log.warn(
+        "recoverStream: skipping stream activation because backfill is incomplete",
         {
           flowId: params.flowId,
           runId: flow.backfillState?.runId,
           backfillStatus: flow.backfillState?.status,
-        },
-      );
-
-      await assertCanStartBackfill(params.workspaceId, params.flowId);
-
-      resumedBackfill = await this.startBackfill(
-        params.workspaceId,
-        params.flowId,
-        {
-          reuseExistingRunId: true,
-          reason: "Backfill restarted via recover (from checkpoint)",
         },
       );
     } else {
@@ -467,7 +449,7 @@ export class CdcBackfillService {
     }
 
     let retried = { resetCount: 0, entities: [] as string[] };
-    if (params.retryFailedMaterialization && !hasIncompleteBackfill) {
+    if (params.retryFailedMaterialization !== false && !hasIncompleteBackfill) {
       retried = await this.retryFailedMaterialization({
         workspaceId: params.workspaceId,
         flowId: params.flowId,
@@ -484,7 +466,7 @@ export class CdcBackfillService {
       this.drainPendingWebhookEvents(
         params.workspaceId,
         params.flowId,
-        "recover",
+        "recover-stream",
       ),
       this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
       this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
@@ -500,12 +482,182 @@ export class CdcBackfillService {
       drainedFailedWebhooks,
       reconciledWebhooks,
       stagingCleaned,
+    };
+  }
+
+  async recoverBackfill(params: { workspaceId: string; flowId: string }) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Recover backfill requires syncEngine=cdc");
+    }
+
+    const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
+    let resumedBackfill: { runId: string; reusedRunId: boolean } | undefined;
+
+    if (!hasIncompleteBackfill) {
+      log.warn("recoverBackfill: no incomplete backfill found", {
+        flowId: params.flowId,
+      });
+    } else {
+      log.info(
+        "recoverBackfill: restarting incomplete backfill from checkpoint",
+        {
+          flowId: params.flowId,
+          runId: flow.backfillState?.runId,
+          backfillStatus: flow.backfillState?.status,
+        },
+      );
+
+      await assertCanStartBackfill(params.workspaceId, params.flowId);
+
+      resumedBackfill = await this.startBackfill(
+        params.workspaceId,
+        params.flowId,
+        {
+          reuseExistingRunId: true,
+          reason: "Backfill restarted via recover-backfill (from checkpoint)",
+        },
+      );
+    }
+
+    const [webhookEventsDrained, drainedFailedWebhooks, reconciledWebhooks] =
+      await Promise.all([
+        this.drainPendingWebhookEvents(
+          params.workspaceId,
+          params.flowId,
+          "recover-backfill",
+        ),
+        this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
+        this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
+      ]);
+
+    return {
+      webhookEventsDrained,
+      drainedFailedWebhooks,
+      reconciledWebhooks,
       resumedBackfill: resumedBackfill
         ? {
             runId: resumedBackfill.runId,
             reusedRunId: resumedBackfill.reusedRunId,
           }
         : undefined,
+    };
+  }
+
+  async reprocessStaleEvents(params: { workspaceId: string; flowId: string }) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Reprocess stale events requires syncEngine=cdc");
+    }
+
+    const [reconciledWebhooks, drainedWebhooks, resetFailedWebhooks] =
+      await Promise.all([
+        this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
+        this.drainPendingWebhookEvents(
+          params.workspaceId,
+          params.flowId,
+          "reprocess-stale",
+        ),
+        this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
+      ]);
+
+    let materializeTriggered = 0;
+    try {
+      const byEntity = await getCdcEventStore().countEventsByEntity({
+        workspaceId: params.workspaceId,
+        flowId: params.flowId,
+        materializationStatus: "pending",
+      });
+      for (const item of byEntity) {
+        if (item.count <= 0) continue;
+        await inngest.send({
+          name: "cdc/materialize",
+          data: {
+            workspaceId: params.workspaceId,
+            flowId: params.flowId,
+            entity: item.entity,
+            force: true,
+          },
+        });
+        materializeTriggered++;
+      }
+    } catch (error) {
+      log.warn("Failed to force-drain CDC during reprocess-stale", {
+        flowId: params.flowId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    log.info("Reprocessed stale events", {
+      flowId: params.flowId,
+      reconciledWebhooks,
+      drainedWebhooks,
+      resetFailedWebhooks,
+      materializeTriggered,
+    });
+
+    return {
+      reconciledWebhooks,
+      drainedWebhooks,
+      resetFailedWebhooks,
+      materializeTriggered,
+    };
+  }
+
+  /**
+   * Backward-compatible wrapper: delegates to recoverStream or recoverBackfill
+   * based on whether an incomplete backfill exists.
+   */
+  async recoverFlow(params: {
+    workspaceId: string;
+    flowId: string;
+    retryFailedMaterialization?: boolean;
+    entity?: string;
+  }) {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(params.flowId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+
+    const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
+
+    if (hasIncompleteBackfill) {
+      const result = await this.recoverBackfill({
+        workspaceId: params.workspaceId,
+        flowId: params.flowId,
+      });
+      return {
+        retriedFailedRows: 0,
+        retriedEntities: [] as string[],
+        stagingCleaned: 0,
+        ...result,
+      };
+    }
+
+    const result = await this.recoverStream({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      retryFailedMaterialization: params.retryFailedMaterialization,
+      entity: params.entity,
+    });
+    return {
+      ...result,
+      resumedBackfill: undefined,
     };
   }
 

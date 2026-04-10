@@ -1892,6 +1892,105 @@ flowRoutes.post("/:flowId/sync-cdc/recover", async c => {
   }
 });
 
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/recover-stream
+flowRoutes.post("/:flowId/sync-cdc/recover-stream", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const body = (await c.req.json().catch(() => ({}))) as {
+      retryFailedMaterialization?: boolean;
+      entity?: string;
+    };
+    const result = await cdcBackfillService.recoverStream({
+      workspaceId,
+      flowId,
+      retryFailedMaterialization: body.retryFailedMaterialization !== false,
+      entity: typeof body.entity === "string" ? body.entity : undefined,
+    });
+    return c.json({
+      success: true,
+      message: "CDC stream recovered",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/recover-backfill
+flowRoutes.post("/:flowId/sync-cdc/recover-backfill", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const result = await cdcBackfillService.recoverBackfill({
+      workspaceId,
+      flowId,
+    });
+    return c.json({
+      success: true,
+      message: "CDC backfill recovered",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/reprocess-stale
+flowRoutes.post("/:flowId/sync-cdc/reprocess-stale", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const authorizationError = await assertOwnerOrAdmin(
+      c as AuthenticatedContext,
+      workspaceId,
+    );
+    if (authorizationError) return authorizationError;
+
+    const result = await cdcBackfillService.reprocessStaleEvents({
+      workspaceId,
+      flowId,
+    });
+    return c.json({
+      success: true,
+      message: "Stale events reprocessed",
+      data: result,
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
 // POST /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/materialize/retry-failed
 flowRoutes.post("/:flowId/sync-cdc/materialize/retry-failed", async c => {
   try {

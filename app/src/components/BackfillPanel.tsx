@@ -270,7 +270,9 @@ export function BackfillPanel({
     resumeCdcFlow,
     resetCdcEntityTable,
     resyncCdcFlow,
-    recoverCdcFlow,
+    recoverCdcStream,
+    recoverCdcBackfill,
+    reprocessStaleEvents,
     retryAllFailedWebhookEvents,
   } = useFlowStore();
 
@@ -348,6 +350,7 @@ export function BackfillPanel({
     dropped: 0,
   });
   const [retryingFailed, setRetryingFailed] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
   const [entityResetOpen, setEntityResetOpen] = useState(false);
   const [entityResetEntity, setEntityResetEntity] = useState("");
   const [runs, setRuns] = useState<
@@ -632,9 +635,8 @@ export function BackfillPanel({
   const handleRecoverStream = () =>
     withBusy(
       async () => {
-        const ok = await recoverCdcFlow(workspaceId, flowId, {
+        const ok = await recoverCdcStream(workspaceId, flowId, {
           retryFailedMaterialization: true,
-          resumeBackfill: false,
         });
         if (!ok) throw new Error("Failed to recover stream");
       },
@@ -648,6 +650,17 @@ export function BackfillPanel({
       await pollCdc();
     } finally {
       setRetryingFailed(false);
+    }
+  };
+
+  const handleReprocessStale = async () => {
+    setReprocessing(true);
+    try {
+      await reprocessStaleEvents(workspaceId, flowId);
+      await pollCdc();
+      await fetchEventCounts();
+    } finally {
+      setReprocessing(false);
     }
   };
 
@@ -681,10 +694,7 @@ export function BackfillPanel({
   const handleRecoverBackfill = () =>
     withBusy(
       async () => {
-        const ok = await recoverCdcFlow(workspaceId, flowId, {
-          retryFailedMaterialization: true,
-          resumeBackfill: true,
-        });
+        const ok = await recoverCdcBackfill(workspaceId, flowId);
         if (!ok) throw new Error("Failed to recover backfill");
       },
       { backfillStatus: "running" },
@@ -2016,6 +2026,27 @@ export function BackfillPanel({
                   {retryingFailed
                     ? "Retrying..."
                     : `Retry ${(cdc as any).failedWebhookCount} failed`}
+                </Button>
+              )}
+              {eventCounts.pending > 0 && streamState !== "error" && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="info"
+                  startIcon={<RetryIcon sx={{ fontSize: 14 }} />}
+                  onClick={handleReprocessStale}
+                  disabled={reprocessing}
+                  sx={{
+                    textTransform: "none",
+                    fontSize: "0.72rem",
+                    ...((cdc as any)?.failedWebhookCount > 0
+                      ? {}
+                      : { ml: "auto" }),
+                  }}
+                >
+                  {reprocessing
+                    ? "Reprocessing..."
+                    : `Reprocess ${eventCounts.pending} pending`}
                 </Button>
               )}
             </Box>
