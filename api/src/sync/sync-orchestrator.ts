@@ -967,7 +967,7 @@ function resolvePositiveIntEnv(
 
 const FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
   process.env.SYNC_BULK_FLUSH_BATCH_SIZE,
-  30_000,
+  5_000,
 );
 
 /** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
@@ -990,12 +990,9 @@ function syncMemorySnapshot(): {
 }
 
 /**
- * Flush ALL rows from the temp collection to BQ staging in batches of
+ * Flush rows from the temp collection to BQ staging in batches of
  * FLUSH_BATCH_SIZE.  Each batch builds its own parquet file and loads it
  * independently so peak memory stays bounded.
- *
- * This runs inside a single Inngest step — the internal loop handles memory
- * via small parquet files but doesn't create additional Inngest steps.
  */
 async function flushBulkBuffer(
   tempCollection: Collection,
@@ -1009,23 +1006,23 @@ async function flushBulkBuffer(
   const totalCount = await tempCollection.countDocuments();
   if (totalCount === 0) return { flushed: 0 };
 
-  const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
+  const effectiveBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
   let totalFlushed = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
+    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows, batchSize=${FLUSH_BATCH_SIZE})`,
     {
       entity,
       totalCount,
-      totalBatches,
+      effectiveBatches,
       batchSize: FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
     },
   );
 
-  for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+  for (let batchNum = 0; batchNum < effectiveBatches; batchNum++) {
     const docIds: unknown[] = [];
     const cursor = tempCollection
       .find({}, { projection: { _bulkRunId: 0 } })
@@ -1061,7 +1058,7 @@ async function flushBulkBuffer(
       logger?.log(
         "warn",
         `${entity} flush: empty parquet (possible race), stopping flush loop`,
-        { entity, batch: batchNum + 1, totalBatches },
+        { entity, batch: batchNum + 1, effectiveBatches },
       );
       break;
     }
@@ -1087,7 +1084,7 @@ async function flushBulkBuffer(
           const backoffMs = Math.min(1000 * 2 ** (attempt - 1), 15_000);
           logger?.log(
             "warn",
-            `${entity} flush batch ${batchNum + 1}/${totalBatches} load failed (attempt ${attempt}/${LOAD_MAX_RETRIES}), retrying in ${backoffMs}ms`,
+            `${entity} flush batch ${batchNum + 1}/${effectiveBatches} load failed (attempt ${attempt}/${LOAD_MAX_RETRIES}), retrying in ${backoffMs}ms`,
             { entity, batch: batchNum + 1, attempt, error: String(err) },
           );
           await new Promise(r => setTimeout(r, backoffMs));
@@ -1104,11 +1101,11 @@ async function flushBulkBuffer(
 
     logger?.log(
       "info",
-      `📦 ${entity} flush ${batchNum + 1}/${totalBatches} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}) [parquet ${parquetMs}ms, load ${loadMs}ms]`,
+      `${entity} flush ${batchNum + 1}/${effectiveBatches} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}) [parquet ${parquetMs}ms, load ${loadMs}ms]`,
       {
         entity,
         batch: batchNum + 1,
-        totalBatches,
+        effectiveBatches,
         batchRows,
         totalFlushed,
         totalCount,
@@ -1121,11 +1118,10 @@ async function flushBulkBuffer(
 
   logger?.log(
     "info",
-    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
+    `${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
     {
       entity,
       totalFlushed,
-      batches: totalBatches,
       memory: syncMemorySnapshot(),
     },
   );

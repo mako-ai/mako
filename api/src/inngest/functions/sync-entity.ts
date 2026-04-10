@@ -25,6 +25,16 @@ import {
  */
 const STEP_BUDGET = 900;
 
+/**
+ * Temp collection row count that triggers a flush to staging.
+ * Kept low to stay safe on 1Gi Cloud Run instances (default 10k).
+ * Override with SYNC_BACKFILL_FLUSH_THRESHOLD for higher-memory environments.
+ */
+const FLUSH_THRESHOLD = Math.max(
+  parseInt(process.env.SYNC_BACKFILL_FLUSH_THRESHOLD || "10000", 10) || 10_000,
+  1_000,
+);
+
 export interface SyncBackfillEntityPayload {
   flowId: string;
   entity: string;
@@ -489,7 +499,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
       if (useBulkPath && bulkSyncOptions && !completed) {
         const tempCount = await getTempCollectionCount(flowId, entity);
-        if (tempCount >= 50_000) {
+        if (tempCount >= FLUSH_THRESHOLD) {
           await step.run(
             `flush-batch-${safeEntityStepId}-${flushIndex}`,
             async () => {
@@ -547,7 +557,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         await performStagingCleanup(bulkSyncOptions as any);
         logExec(
           "info",
-          `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+          `${entity} bulk backfill complete (buffer -> Parquet -> staging -> live)`,
           { entity },
         );
       });
