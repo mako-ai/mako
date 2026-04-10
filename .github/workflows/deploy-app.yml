@@ -796,6 +796,7 @@ jobs:
             --memory=1Gi \
             --concurrency=4 \
             --min-instances=1 \
+            --max-instances=1 \
             --network=mako-vpc \
             --subnet=mako-subnet \
             --vpc-egress=all-traffic \

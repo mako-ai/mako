@@ -1095,15 +1095,37 @@ export class CdcBackfillService {
       const runId = flow.backfillState?.runId || "unknown";
       const failures = flow.backfillState?.consecutiveFailures ?? 0;
 
-      // On startup, force-abandon ALL running executions for this flow.
-      // The previous process is gone, so any "running" execution is orphaned
-      // regardless of heartbeat recency (e.g. crash < 10 min ago).
-      await abandonStaleExecutions(wId, fId, { force: true });
+      // Do NOT force-abandon executions on every startup:
+      // in Cloud Run autoscaling/multi-instance environments, a new instance can
+      // start while another healthy instance is still processing the backfill.
+      // Only abandon executions that are actually stale by heartbeat timeout.
+      const abandonedCount = await abandonStaleExecutions(wId, fId);
+
+      const stillRunning = await FlowExecution.exists({
+        workspaceId: new Types.ObjectId(wId),
+        flowId: new Types.ObjectId(fId),
+        status: "running",
+      });
+
+      if (abandonedCount === 0 && stillRunning) {
+        log.info(
+          `Startup recovery: "${flowLabel}" — skipping (active execution heartbeat is healthy)`,
+          { flowId: fId, runId, consecutiveFailures: failures },
+        );
+        skipped++;
+        continue;
+      }
 
       try {
         log.info(
           `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
-          { flowId: fId, runId, consecutiveFailures: failures },
+          {
+            flowId: fId,
+            runId,
+            consecutiveFailures: failures,
+            abandonedCount,
+            stillRunning: Boolean(stillRunning),
+          },
         );
 
         await cdcSyncStateService.applyBackfillTransition({
