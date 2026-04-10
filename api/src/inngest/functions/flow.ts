@@ -2397,6 +2397,7 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
       const executionsCollection = db.collection("flow_executions");
       const locksCollection = db.collection("flow_execution_locks");
 
+      const MAX_CONSECUTIVE_FAILURES = 10;
       let abandonedCount = 0;
       let staleLockCount = 0;
 
@@ -2496,8 +2497,6 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
                 { "backfillState.status": "error" },
               ],
             }).lean();
-
-            const MAX_CONSECUTIVE_FAILURES = 10;
 
             for (const cdcFlow of stuckCdcFlows) {
               const wId = String(cdcFlow.workspaceId);
