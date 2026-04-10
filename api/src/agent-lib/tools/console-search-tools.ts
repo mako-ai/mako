@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Types } from "mongoose";
+import type { AgentToolExecutionContext } from "../../agents/types";
 import {
   SavedConsole,
   DatabaseConnection,
@@ -12,6 +13,11 @@ import {
 } from "../../services/embedding.service";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
+import {
+  isAgentToolAbortError,
+  registerAgentExecution,
+  throwIfAborted,
+} from "./shared/truncation";
 
 const logger = loggers.agent();
 
@@ -205,9 +211,11 @@ export async function searchConsoles(
   query: string,
   workspaceId: string,
   limit: number = 5,
+  signal?: AbortSignal,
 ): Promise<ConsoleSearchResult[]> {
   let results: any[] = [];
 
+  throwIfAborted(signal);
   const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
 
   if (canVector) {
@@ -216,11 +224,13 @@ export async function searchConsoles(
       if (embedding) {
         const currentModel = getEmbeddingModelName();
         const vectorResults = await vectorSearch(embedding, workspaceId, limit);
+        throwIfAborted(signal);
         results = vectorResults.filter(
           (r: any) => !r.embeddingModel || r.embeddingModel === currentModel,
         );
       }
     } catch (err) {
+      if (isAgentToolAbortError(err)) throw err;
       logger.warn("Vector search failed, falling back to text search", {
         error: err,
       });
@@ -230,6 +240,7 @@ export async function searchConsoles(
   if (results.length < limit) {
     try {
       const textResults = await textSearch(query, workspaceId, limit);
+      throwIfAborted(signal);
       const existingIds = new Set(results.map(r => r.id));
       for (const tr of textResults) {
         if (!existingIds.has(tr.id)) {
@@ -237,6 +248,7 @@ export async function searchConsoles(
         }
       }
     } catch (err) {
+      if (isAgentToolAbortError(err)) throw err;
       logger.warn("Text search failed, falling back to regex", { error: err });
     }
   }
@@ -244,6 +256,7 @@ export async function searchConsoles(
   if (results.length < limit) {
     try {
       const regexResults = await regexNameSearch(query, workspaceId, limit);
+      throwIfAborted(signal);
       const existingIds = new Set(results.map(r => r.id));
       for (const rr of regexResults) {
         if (!existingIds.has(rr.id)) {
@@ -251,6 +264,7 @@ export async function searchConsoles(
         }
       }
     } catch (err) {
+      if (isAgentToolAbortError(err)) throw err;
       logger.warn("Regex name search failed", { error: err });
     }
   }
@@ -266,6 +280,7 @@ export async function searchConsoles(
   results = results.slice(0, limit);
 
   await enrichWithConnectionNames(results);
+  throwIfAborted(signal);
 
   return results.map(r => ({
     id: r.id,
@@ -279,7 +294,10 @@ export async function searchConsoles(
   }));
 }
 
-export const createConsoleSearchTools = (workspaceId: string) => ({
+export const createConsoleSearchTools = (
+  workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
+) => ({
   search_consoles: {
     description:
       "Search saved consoles across the workspace by semantic meaning or keywords. Returns matching consoles ranked by relevance and recency. Use this to find past queries, discover existing work, or locate a console the user mentions. Results include id, title, description, connection info, and language.",
@@ -296,16 +314,24 @@ export const createConsoleSearchTools = (workspaceId: string) => ({
         .describe("Max results to return (default 5)"),
     }),
     execute: async ({ query, limit }: { query: string; limit?: number }) => {
+      const { signal, release } = registerAgentExecution(
+        toolExecutionContext,
+        "agent-search-consoles",
+      );
       try {
-        return await searchConsoles(query, workspaceId, limit || 5);
+        throwIfAborted(signal);
+        return await searchConsoles(query, workspaceId, limit || 5, signal);
       } catch (error) {
         return {
           success: false,
-          error:
-            error instanceof Error
+          error: isAgentToolAbortError(error)
+            ? "Console search cancelled because the chat stopped."
+            : error instanceof Error
               ? error.message
               : "Failed to search consoles",
         };
+      } finally {
+        release();
       }
     },
   },

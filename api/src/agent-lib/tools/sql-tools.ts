@@ -8,6 +8,7 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
+import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -15,6 +16,9 @@ import {
   truncateQueryResults,
   MAX_SAMPLE_ROWS,
   AGENT_QUERY_TIMEOUT_MS,
+  registerAgentExecution,
+  throwIfAborted,
+  isAgentToolAbortError,
   withAgentTimeout,
 } from "./shared/truncation";
 import {
@@ -154,126 +158,143 @@ async function listSqlConnectionsImpl(workspaceId: string) {
 // ============================================================================
 // sql_list_databases
 // ============================================================================
-async function listDatabasesImpl(connectionId: string, workspaceId: string) {
-  const database = await fetchSqlDatabase(connectionId, workspaceId);
-  const dialect = getDialect(database.type);
+async function listDatabasesImpl(
+  connectionId: string,
+  workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
+) {
+  const { executionId, signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-sql-list-databases",
+  );
 
-  if (dialect === "postgresql") {
-    // List Postgres databases
-    const result = await databaseConnectionService.executeQuery(
-      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname;`,
-    );
+  try {
+    throwIfAborted(signal);
+    const database = await fetchSqlDatabase(connectionId, workspaceId);
+    const dialect = getDialect(database.type);
 
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list databases");
-    }
-
-    return (result.data || []).map((row: { datname: string }) => ({
-      name: row.datname,
-      sqlDialect: dialect,
-    }));
-  }
-
-  if (dialect === "mysql") {
-    const result = await databaseConnectionService.executeQuery(
-      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      "SHOW DATABASES",
-    );
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list databases");
-    }
-
-    return (result.data || [])
-      .map(
-        (row: { Database?: string; database?: string }) =>
-          row.Database || row.database,
-      )
-      .filter(
-        (name: string | undefined): name is string =>
-          !!name && !MYSQL_SYSTEM_DATABASES_SET.has(name),
-      )
-      .map((name: string) => ({
-        name,
-        sqlDialect: dialect,
-      }));
-  }
-
-  if (dialect === "bigquery") {
-    // List BigQuery datasets
-    const datasets = await databaseConnectionService.listBigQueryDatasets(
-      database as Parameters<
-        typeof databaseConnectionService.listBigQueryDatasets
-      >[0],
-    );
-    return datasets.map(ds => ({
-      name: ds,
-      sqlDialect: dialect,
-    }));
-  }
-
-  if (dialect === "clickhouse") {
-    // List ClickHouse databases
-    const result = await databaseConnectionService.executeQuery(
-      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      "SHOW DATABASES",
-    );
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list databases");
-    }
-
-    const systemDatabases = new Set([
-      "system",
-      "information_schema",
-      "INFORMATION_SCHEMA",
-    ]);
-
-    return (result.data || [])
-      .filter((row: { name: string }) => !systemDatabases.has(row.name))
-      .map((row: { name: string }) => ({
-        name: row.name,
-        sqlDialect: dialect,
-      }));
-  }
-
-  // SQLite/D1
-  const connection: Record<string, unknown> =
-    (database as unknown as { connection: Record<string, unknown> })
-      .connection || {};
-  const databaseId = connection.database_id as string | undefined;
-
-  // For Cloudflare D1: check if it's cluster mode (no database_id configured)
-  if (database.type === "cloudflare-d1") {
-    if (databaseId) {
-      // Single database mode: return the configured database_id as both id and name
-      return [{ id: databaseId, name: databaseId, sqlDialect: dialect }];
-    }
-
-    // Cluster mode: fetch all D1 databases from Cloudflare API
-    try {
-      const d1Databases = await databaseConnectionService.listD1Databases(
+    if (dialect === "postgresql") {
+      const result = await databaseConnectionService.executeQuery(
         database as Parameters<
-          typeof databaseConnectionService.listD1Databases
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        `SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn = true ORDER BY datname;`,
+        { executionId, signal },
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to list databases");
+      }
+
+      return (result.data || []).map((row: { datname: string }) => ({
+        name: row.datname,
+        sqlDialect: dialect,
+      }));
+    }
+
+    if (dialect === "mysql") {
+      const result = await databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        "SHOW DATABASES",
+        { executionId, signal },
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to list databases");
+      }
+
+      return (result.data || [])
+        .map(
+          (row: { Database?: string; database?: string }) =>
+            row.Database || row.database,
+        )
+        .filter(
+          (name: string | undefined): name is string =>
+            !!name && !MYSQL_SYSTEM_DATABASES_SET.has(name),
+        )
+        .map((name: string) => ({
+          name,
+          sqlDialect: dialect,
+        }));
+    }
+
+    if (dialect === "bigquery") {
+      const datasets = await databaseConnectionService.listBigQueryDatasets(
+        database as Parameters<
+          typeof databaseConnectionService.listBigQueryDatasets
         >[0],
       );
-      return d1Databases.map(db => ({
-        id: db.uuid, // UUID for API calls
-        name: db.name, // Human-readable name for display
+      throwIfAborted(signal);
+      return datasets.map(ds => ({
+        name: ds,
         sqlDialect: dialect,
       }));
-    } catch {
-      // Fallback to "main" if listing fails (e.g., API error, credentials issue)
-      return [{ name: "main", sqlDialect: dialect }];
     }
-  }
 
-  // Plain SQLite (not D1)
-  if (databaseId) {
-    return [{ name: databaseId, sqlDialect: dialect }];
+    if (dialect === "clickhouse") {
+      const result = await databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        "SHOW DATABASES",
+        { executionId, signal },
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to list databases");
+      }
+
+      const systemDatabases = new Set([
+        "system",
+        "information_schema",
+        "INFORMATION_SCHEMA",
+      ]);
+
+      return (result.data || [])
+        .filter((row: { name: string }) => !systemDatabases.has(row.name))
+        .map((row: { name: string }) => ({
+          name: row.name,
+          sqlDialect: dialect,
+        }));
+    }
+
+    // SQLite/D1
+    const connection: Record<string, unknown> =
+      (database as unknown as { connection: Record<string, unknown> })
+        .connection || {};
+    const databaseId = connection.database_id as string | undefined;
+
+    if (database.type === "cloudflare-d1") {
+      if (databaseId) {
+        return [{ id: databaseId, name: databaseId, sqlDialect: dialect }];
+      }
+
+      try {
+        const d1Databases = await databaseConnectionService.listD1Databases(
+          database as Parameters<
+            typeof databaseConnectionService.listD1Databases
+          >[0],
+        );
+        throwIfAborted(signal);
+        return d1Databases.map(db => ({
+          id: db.uuid,
+          name: db.name,
+          sqlDialect: dialect,
+        }));
+      } catch {
+        return [{ name: "main", sqlDialect: dialect }];
+      }
+    }
+
+    if (databaseId) {
+      return [{ name: databaseId, sqlDialect: dialect }];
+    }
+    return [{ name: "main", sqlDialect: dialect }];
+  } finally {
+    release();
   }
-  return [{ name: "main", sqlDialect: dialect }];
 }
 
 // ============================================================================
@@ -283,152 +304,170 @@ async function listTablesImpl(
   connectionId: string,
   databaseName: string,
   workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   if (!databaseName) {
     throw new Error("'database' is required");
   }
 
-  const database = await fetchSqlDatabase(connectionId, workspaceId);
-  const dialect = getDialect(database.type);
-
-  if (dialect === "postgresql") {
-    // Query all schemas, prefix table names if not 'public'
-    const result = await databaseConnectionService.executeQuery(
-      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT table_schema, table_name, table_type
-       FROM information_schema.tables
-       WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-       ORDER BY table_schema, table_name;`,
-      { databaseName },
-    );
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list tables");
-    }
-
-    return (result.data || []).map(
-      (row: {
-        table_schema: string;
-        table_name: string;
-        table_type: string;
-      }) => {
-        const name =
-          row.table_schema === "public"
-            ? row.table_name
-            : `${row.table_schema}.${row.table_name}`;
-        return {
-          name,
-          type: row.table_type === "VIEW" ? "view" : "table",
-          schema: row.table_schema,
-          sqlDialect: dialect,
-        };
-      },
-    );
-  }
-
-  if (dialect === "mysql") {
-    const safeDb = databaseName.replace(/'/g, "''");
-    const result = await databaseConnectionService.executeQuery(
-      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT table_name AS table_name, table_type AS table_type
-       FROM information_schema.tables
-       WHERE table_schema = '${safeDb}'
-       ORDER BY table_name;`,
-      { databaseName },
-    );
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list tables");
-    }
-
-    return (result.data || [])
-      .map(
-        (row: {
-          table_name?: string;
-          TABLE_NAME?: string;
-          table_type?: string;
-          TABLE_TYPE?: string;
-        }) => ({
-          name: row.table_name ?? row.TABLE_NAME,
-          type: row.table_type ?? row.TABLE_TYPE,
-        }),
-      )
-      .filter(
-        (row: {
-          name?: string;
-          type?: string;
-        }): row is {
-          name: string;
-          type?: string;
-        } => !!row.name,
-      )
-      .map((row: { name: string; type?: string }) => ({
-        name: row.name,
-        type: row.type === "VIEW" ? "view" : "table",
-        sqlDialect: dialect,
-      }));
-  }
-
-  if (dialect === "bigquery") {
-    // Use the existing service method
-    const tables = await databaseConnectionService.listBigQueryTables(
-      database as Parameters<
-        typeof databaseConnectionService.listBigQueryTables
-      >[0],
-      databaseName,
-    );
-    return tables.map(t => ({
-      name: t.name,
-      type: t.type === "VIEW" ? "view" : "table",
-      sqlDialect: dialect,
-    }));
-  }
-
-  if (dialect === "clickhouse") {
-    // List ClickHouse tables in the database
-    const result = await databaseConnectionService.executeQuery(
-      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-      `SELECT name, engine 
-       FROM system.tables 
-       WHERE database = '${databaseName.replace(/'/g, "''")}'
-       ORDER BY name`,
-    );
-
-    if (!result.success) {
-      throw new Error(result.error || "Failed to list tables");
-    }
-
-    return (result.data || []).map((row: { name: string; engine: string }) => ({
-      name: row.name,
-      type:
-        row.engine === "View" || row.engine === "MaterializedView"
-          ? "view"
-          : "table",
-      sqlDialect: dialect,
-    }));
-  }
-
-  // SQLite/D1
-  const result = await databaseConnectionService.executeQuery(
-    database as Parameters<typeof databaseConnectionService.executeQuery>[0],
-    `SELECT name, type 
-     FROM sqlite_master 
-     WHERE type IN ('table', 'view') 
-     AND name NOT LIKE 'sqlite_%' 
-     AND name NOT LIKE '_cf_%'
-     ORDER BY type DESC, name ASC;`,
-    { databaseId: databaseName },
+  const { executionId, signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-sql-list-tables",
   );
 
-  if (!result.success) {
-    throw new Error(result.error || "Failed to list tables");
-  }
+  try {
+    throwIfAborted(signal);
+    const database = await fetchSqlDatabase(connectionId, workspaceId);
+    const dialect = getDialect(database.type);
 
-  return (result.data || []).map((row: { name: string; type: string }) => ({
-    name: row.name,
-    type: row.type === "view" ? "view" : "table",
-    sqlDialect: dialect,
-  }));
+    if (dialect === "postgresql") {
+      const result = await databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        `SELECT table_schema, table_name, table_type
+         FROM information_schema.tables
+         WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+         ORDER BY table_schema, table_name;`,
+        { databaseName, executionId, signal },
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to list tables");
+      }
+
+      return (result.data || []).map(
+        (row: {
+          table_schema: string;
+          table_name: string;
+          table_type: string;
+        }) => {
+          const name =
+            row.table_schema === "public"
+              ? row.table_name
+              : `${row.table_schema}.${row.table_name}`;
+          return {
+            name,
+            type: row.table_type === "VIEW" ? "view" : "table",
+            schema: row.table_schema,
+            sqlDialect: dialect,
+          };
+        },
+      );
+    }
+
+    if (dialect === "mysql") {
+      const safeDb = databaseName.replace(/'/g, "''");
+      const result = await databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        `SELECT table_name AS table_name, table_type AS table_type
+         FROM information_schema.tables
+         WHERE table_schema = '${safeDb}'
+         ORDER BY table_name;`,
+        { databaseName, executionId, signal },
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to list tables");
+      }
+
+      return (result.data || [])
+        .map(
+          (row: {
+            table_name?: string;
+            TABLE_NAME?: string;
+            table_type?: string;
+            TABLE_TYPE?: string;
+          }) => ({
+            name: row.table_name ?? row.TABLE_NAME,
+            type: row.table_type ?? row.TABLE_TYPE,
+          }),
+        )
+        .filter(
+          (row: {
+            name?: string;
+            type?: string;
+          }): row is {
+            name: string;
+            type?: string;
+          } => !!row.name,
+        )
+        .map((row: { name: string; type?: string }) => ({
+          name: row.name,
+          type: row.type === "VIEW" ? "view" : "table",
+          sqlDialect: dialect,
+        }));
+    }
+
+    if (dialect === "bigquery") {
+      const tables = await databaseConnectionService.listBigQueryTables(
+        database as Parameters<
+          typeof databaseConnectionService.listBigQueryTables
+        >[0],
+        databaseName,
+      );
+      throwIfAborted(signal);
+      return tables.map(t => ({
+        name: t.name,
+        type: t.type === "VIEW" ? "view" : "table",
+        sqlDialect: dialect,
+      }));
+    }
+
+    if (dialect === "clickhouse") {
+      const result = await databaseConnectionService.executeQuery(
+        database as Parameters<
+          typeof databaseConnectionService.executeQuery
+        >[0],
+        `SELECT name, engine 
+         FROM system.tables 
+         WHERE database = '${databaseName.replace(/'/g, "''")}'
+         ORDER BY name`,
+        { executionId, signal },
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || "Failed to list tables");
+      }
+
+      return (result.data || []).map(
+        (row: { name: string; engine: string }) => ({
+          name: row.name,
+          type:
+            row.engine === "View" || row.engine === "MaterializedView"
+              ? "view"
+              : "table",
+          sqlDialect: dialect,
+        }),
+      );
+    }
+
+    // SQLite/D1
+    const result = await databaseConnectionService.executeQuery(
+      database as Parameters<typeof databaseConnectionService.executeQuery>[0],
+      `SELECT name, type 
+       FROM sqlite_master 
+       WHERE type IN ('table', 'view') 
+       AND name NOT LIKE 'sqlite_%' 
+       AND name NOT LIKE '_cf_%'
+       ORDER BY type DESC, name ASC;`,
+      { databaseId: databaseName, executionId, signal },
+    );
+
+    if (!result.success) {
+      throw new Error(result.error || "Failed to list tables");
+    }
+
+    return (result.data || []).map((row: { name: string; type: string }) => ({
+      name: row.name,
+      type: row.type === "view" ? "view" : "table",
+      sqlDialect: dialect,
+    }));
+  } finally {
+    release();
+  }
 }
 
 // ============================================================================
@@ -439,6 +478,7 @@ async function inspectTableImpl(
   databaseName: string,
   tableName: string,
   workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   if (!databaseName) {
     throw new Error("'database' is required");
@@ -450,17 +490,28 @@ async function inspectTableImpl(
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
 
-  return withAgentTimeout(
-    `agent-inspect-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    async executionId =>
-      inspectTableInner(
-        database,
-        dialect,
-        databaseName,
-        tableName,
-        executionId,
-      ),
+  const { executionId, signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-sql-inspect",
   );
+
+  try {
+    return await withAgentTimeout(
+      executionId,
+      async registeredExecutionId =>
+        inspectTableInner(
+          database,
+          dialect,
+          databaseName,
+          tableName,
+          registeredExecutionId,
+          signal,
+        ),
+      { signal },
+    );
+  } finally {
+    release();
+  }
 }
 
 async function inspectTableInner(
@@ -469,6 +520,7 @@ async function inspectTableInner(
   databaseName: string,
   tableName: string,
   executionId?: string,
+  signal?: AbortSignal,
 ) {
   let columns: Array<{
     name: string;
@@ -501,7 +553,7 @@ async function inspectTableInner(
        WHERE table_schema = ${escapePostgresLiteral(schema)}
          AND table_name = ${escapePostgresLiteral(table)}
        ORDER BY ordinal_position;`,
-      { databaseName, executionId },
+      { databaseName, executionId, signal },
     );
 
     if (!columnsResult.success) {
@@ -523,7 +575,7 @@ async function inspectTableInner(
       `SELECT table_type FROM information_schema.tables
        WHERE table_schema = ${escapePostgresLiteral(schema)}
          AND table_name = ${escapePostgresLiteral(table)};`,
-      { databaseName, executionId },
+      { databaseName, executionId, signal },
     );
     if (typeResult.success && typeResult.data?.[0]?.table_type === "VIEW") {
       entityKind = "view";
@@ -534,7 +586,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseName, executionId },
+      { databaseName, executionId, signal },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -577,7 +629,7 @@ async function inspectTableInner(
        WHERE table_name = '${safeTableForQuery}'
        ORDER BY ordinal_position
        LIMIT 1000`,
-      { executionId },
+      { executionId, signal },
     );
 
     if (!columnsResult.success) {
@@ -597,7 +649,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS}`,
-      { executionId },
+      { executionId, signal },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -615,7 +667,7 @@ async function inspectTableInner(
        FROM system.columns
        WHERE database = '${safeDatabase}' AND table = '${safeTable}'
        ORDER BY position`,
-      { executionId },
+      { executionId, signal },
     );
 
     if (!columnsResult.success) {
@@ -636,7 +688,7 @@ async function inspectTableInner(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT engine FROM system.tables 
        WHERE database = '${safeDatabase}' AND name = '${safeTable}'`,
-      { executionId },
+      { executionId, signal },
     );
     if (
       typeResult.success &&
@@ -650,7 +702,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM "${databaseName.replace(/"/g, '""')}"."${tableName.replace(/"/g, '""')}" LIMIT ${MAX_SAMPLE_ROWS}`,
-      { executionId },
+      { executionId, signal },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -667,7 +719,7 @@ async function inspectTableInner(
        WHERE table_schema = '${safeDb}'
          AND table_name = '${safeTable}'
        ORDER BY ordinal_position;`,
-      { databaseName, executionId },
+      { databaseName, executionId, signal },
     );
 
     if (!columnsResult.success) {
@@ -710,7 +762,7 @@ async function inspectTableInner(
        FROM information_schema.tables
        WHERE table_schema = '${safeDb}'
          AND table_name = '${safeTable}';`,
-      { databaseName, executionId },
+      { databaseName, executionId, signal },
     );
     const typeValue =
       (typeResult.success && typeResult.data?.[0]?.table_type) ||
@@ -723,7 +775,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${qualifiedName} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseName, executionId },
+      { databaseName, executionId, signal },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -735,7 +787,7 @@ async function inspectTableInner(
     const columnsResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `PRAGMA table_info(${escapeSqliteLiteral(tableName)});`,
-      { databaseId: databaseName, executionId },
+      { databaseId: databaseName, executionId, signal },
     );
 
     if (!columnsResult.success) {
@@ -755,7 +807,7 @@ async function inspectTableInner(
     const typeResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT type FROM sqlite_master WHERE name = ${escapeSqliteLiteral(tableName)};`,
-      { databaseId: databaseName, executionId },
+      { databaseId: databaseName, executionId, signal },
     );
     if (typeResult.success && typeResult.data?.[0]?.type === "view") {
       entityKind = "view";
@@ -765,7 +817,7 @@ async function inspectTableInner(
     const samplesResult = await databaseConnectionService.executeQuery(
       database as Parameters<typeof databaseConnectionService.executeQuery>[0],
       `SELECT * FROM ${escapeSqliteIdentifier(tableName)} LIMIT ${MAX_SAMPLE_ROWS};`,
-      { databaseId: databaseName, executionId },
+      { databaseId: databaseName, executionId, signal },
     );
 
     if (samplesResult.success && samplesResult.data) {
@@ -798,6 +850,7 @@ async function executeQueryImpl(
   query: string,
   workspaceId: string,
   userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   const startTime = Date.now();
 
@@ -819,17 +872,23 @@ async function executeQueryImpl(
     options = { databaseId: databaseName };
   }
 
+  const { executionId, signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-sql-query",
+  );
+
   try {
     const result = await withAgentTimeout(
-      `agent-sql-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      executionId =>
+      executionId,
+      registeredExecutionId =>
         databaseConnectionService.executeQuery(
           database as Parameters<
             typeof databaseConnectionService.executeQuery
           >[0],
           safeQuery,
-          { ...options, executionId },
+          { ...options, executionId: registeredExecutionId, signal },
         ),
+      { signal },
     );
 
     // Track successful/error query execution (fire-and-forget)
@@ -894,6 +953,14 @@ async function executeQueryImpl(
 
     return { ...result, sqlDialect: dialect };
   } catch (err: unknown) {
+    if (isAgentToolAbortError(err)) {
+      return {
+        success: false,
+        status: "cancelled",
+        message: "Query cancelled because the chat stopped.",
+        sqlDialect: dialect,
+      };
+    }
     if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
       if (userId) {
         queryExecutionService.track({
@@ -917,6 +984,8 @@ async function executeQueryImpl(
       };
     }
     throw err;
+  } finally {
+    release();
   }
 }
 
@@ -928,6 +997,7 @@ export const createSqlToolsV2 = (
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
   userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) => {
   return {
     ...clientConsoleTools,
@@ -957,12 +1027,17 @@ export const createSqlToolsV2 = (
       inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) => {
         try {
-          return await listDatabasesImpl(params.connectionId, workspaceId);
+          return await listDatabasesImpl(
+            params.connectionId,
+            workspaceId,
+            toolExecutionContext,
+          );
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Database listing cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to list databases",
           };
@@ -980,12 +1055,16 @@ export const createSqlToolsV2 = (
             params.connectionId,
             params.database,
             workspaceId,
+            toolExecutionContext,
           );
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error ? error.message : "Failed to list tables",
+            error: isAgentToolAbortError(error)
+              ? "Table listing cancelled because the chat stopped."
+              : error instanceof Error
+                ? error.message
+                : "Failed to list tables",
           };
         }
       },
@@ -1006,17 +1085,20 @@ export const createSqlToolsV2 = (
             params.database,
             params.table,
             workspaceId,
+            toolExecutionContext,
           );
         } catch (error) {
           const isTimeout =
             error instanceof Error && error.message === "AGENT_QUERY_TIMEOUT";
           return {
             success: false,
-            error: isTimeout
-              ? `Table inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The table may be very large or the database is slow. Try using execute_query with a targeted INFORMATION_SCHEMA query instead.`
-              : error instanceof Error
-                ? error.message
-                : "Failed to inspect table",
+            error: isAgentToolAbortError(error)
+              ? "Table inspection cancelled because the chat stopped."
+              : isTimeout
+                ? `Table inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The table may be very large or the database is slow. Try using execute_query with a targeted INFORMATION_SCHEMA query instead.`
+                : error instanceof Error
+                  ? error.message
+                  : "Failed to inspect table",
           };
         }
       },
@@ -1038,12 +1120,14 @@ export const createSqlToolsV2 = (
             params.query,
             workspaceId,
             userId,
+            toolExecutionContext,
           );
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Query cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to execute query",
           };

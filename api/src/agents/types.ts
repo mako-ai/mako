@@ -9,6 +9,19 @@
 import type { SystemModelMessage } from "ai";
 import type { ConsoleDataV2 } from "../agent-lib/types";
 
+export interface AgentToolExecutionContext {
+  /** Abort signal for the active chat request */
+  signal: AbortSignal;
+  /** Create a unique execution ID for a long-running tool */
+  createExecutionId: (prefix?: string) => string;
+  /** Register an execution so the request can cancel it on abort */
+  registerExecution: (executionId: string) => void;
+  /** Release a previously registered execution */
+  releaseExecution: (executionId: string) => void;
+  /** Check whether the chat request has already been aborted */
+  isAborted: () => boolean;
+}
+
 /**
  * Metadata about an agent for UI display and routing
  */
@@ -113,6 +126,8 @@ export interface AgentContext {
     }>;
     crossFilterEnabled: boolean;
   };
+  /** Request-scoped execution registry for cancellable server tools */
+  toolExecutionContext?: AgentToolExecutionContext;
 }
 
 /**

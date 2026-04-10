@@ -64,6 +64,7 @@ interface ConsoleActions {
   fetchConsoleContent: (
     workspaceId: string,
     consoleId: string,
+    options?: { signal?: AbortSignal },
   ) => Promise<ConsoleContentResponse | null>;
   saveConsole: (
     workspaceId: string,
@@ -354,11 +355,12 @@ export const useConsoleStore = create<ConsoleStore>()(
         }
       },
 
-      fetchConsoleContent: async (workspaceId, consoleId) => {
+      fetchConsoleContent: async (workspaceId, consoleId, options) => {
         try {
           const res = await apiClient.get<ConsoleContentResponse>(
             `/workspaces/${workspaceId}/consoles/content`,
             { id: consoleId },
+            { signal: options?.signal },
           );
 
           if (res.success) {
@@ -390,6 +392,9 @@ export const useConsoleStore = create<ConsoleStore>()(
 
           return res.success ? res : null;
         } catch (e) {
+          if (e instanceof Error && e.name === "AbortError") {
+            return null;
+          }
           console.error("Failed to fetch console content", e);
           return null;
         }
