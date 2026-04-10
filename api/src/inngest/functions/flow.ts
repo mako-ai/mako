@@ -867,7 +867,7 @@ export const flowFunction = inngest.createFunction(
                 typeCoercions: flow.typeCoercions,
                 keyColumns: flow.conflictConfig?.keyColumns,
                 state: chunkState,
-                maxRowsPerChunk: 10000, // Process 10k rows per Inngest step
+                maxRowsPerChunk: 5000, // Process 5k rows per Inngest step to stay within 2GB memory
                 onProgress: (processed, estimated) => {
                   const progress = estimated
                     ? `${processed}/${estimated} (${Math.round((processed / estimated) * 100)}%)`
