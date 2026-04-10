@@ -1092,6 +1092,27 @@ export class CdcBackfillService {
     const skipped = 0;
     let errors = 0;
 
+    // Cancel all stale Inngest functions first so the concurrency slots
+    // (limit: 1 per flowId) are freed before we try to start new ones.
+    for (const flow of staleFlows) {
+      const fId = String(flow._id);
+      try {
+        await inngest.send({
+          name: "flow.cancel",
+          data: { flowId: fId },
+        });
+      } catch (err) {
+        log.warn("Failed to send Inngest cancel during startup recovery", {
+          flowId: fId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Give Inngest a moment to process the cancellations and release
+    // the concurrency slots before we start new executions.
+    await new Promise(r => setTimeout(r, 2000));
+
     for (const flow of staleFlows) {
       const wId = String(flow.workspaceId);
       const fId = String(flow._id);
@@ -1118,8 +1139,6 @@ export class CdcBackfillService {
           });
         }
 
-        // Server restarts are expected (deploys, scaling). Reset the failure
-        // counter so they don't trip the circuit breaker and strand backfills.
         await Flow.findByIdAndUpdate(fId, {
           $set: { "backfillState.consecutiveFailures": 0 },
         });
