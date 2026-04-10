@@ -1075,7 +1075,7 @@ export class CdcBackfillService {
     }
 
     log.info(
-      `Startup backfill check: found ${staleFlows.length} stale backfill(s) to recover`,
+      `Startup backfill check: found ${staleFlows.length} stale backfill(s) to clean up`,
       {
         flows: staleFlows.map(f => ({
           flowId: f._id.toString(),
@@ -1089,11 +1089,13 @@ export class CdcBackfillService {
     );
 
     let recovered = 0;
-    const skipped = 0;
     let errors = 0;
 
-    // Cancel all stale Inngest functions first so the concurrency slots
-    // (limit: 1 per flowId) are freed before we try to start new ones.
+    // Cancel stale Inngest functions so concurrency slots are freed.
+    // We do NOT auto-restart here — the cleanup cron (every 5 min) will
+    // detect the interrupted backfill and restart it once the deploy
+    // stabilizes. Restarting on boot causes a storm when Cloud Run does
+    // a rolling restart (each new instance abandons and re-creates).
     for (const flow of staleFlows) {
       const fId = String(flow._id);
       try {
@@ -1109,10 +1111,6 @@ export class CdcBackfillService {
       }
     }
 
-    // Give Inngest a moment to process the cancellations and release
-    // the concurrency slots before we start new executions.
-    await new Promise(r => setTimeout(r, 2000));
-
     for (const flow of staleFlows) {
       const wId = String(flow.workspaceId);
       const fId = String(flow._id);
@@ -1124,7 +1122,7 @@ export class CdcBackfillService {
       try {
         if (flow.backfillState?.status === "running") {
           log.info(
-            `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
+            `Startup recovery: "${flowLabel}" — marking interrupted (cleanup cron will restart)`,
             { flowId: fId, runId },
           );
 
@@ -1139,26 +1137,20 @@ export class CdcBackfillService {
           });
         }
 
+        // Reset failure counter — server restarts are not backfill bugs.
+        // Keep the runId so the cleanup cron can resume from checkpoint.
         await Flow.findByIdAndUpdate(fId, {
           $set: { "backfillState.consecutiveFailures": 0 },
         });
 
-        const result = await this.startBackfill(wId, fId, {
-          reuseExistingRunId: true,
-          reason: `Auto-resumed on startup after server restart`,
-        });
         log.info(
-          `Startup recovery: "${flowLabel}" — backfill restarted from checkpoint`,
-          {
-            flowId: fId,
-            newRunId: result.runId,
-            reusedRunId: result.reusedRunId,
-          },
+          `Startup recovery: "${flowLabel}" — cleaned up, awaiting cron restart`,
+          { flowId: fId, runId },
         );
         recovered++;
       } catch (err) {
         log.error(
-          `Startup recovery: "${flowLabel}" — recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+          `Startup recovery: "${flowLabel}" — cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
           {
             flowId: fId,
             runId,
@@ -1170,10 +1162,10 @@ export class CdcBackfillService {
     }
 
     log.info(
-      `Startup backfill recovery complete: ${recovered} recovered, ${skipped} skipped, ${errors} errors`,
+      `Startup backfill recovery complete: ${recovered} cleaned up, ${errors} errors (cron will restart)`,
     );
 
-    return { recovered, skipped, errors };
+    return { recovered, skipped: 0, errors };
   }
 }
 

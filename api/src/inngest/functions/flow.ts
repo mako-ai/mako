@@ -2387,7 +2387,7 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
     id: "cleanup-abandoned-flows",
     name: "Cleanup Abandoned Flows",
   },
-  { cron: "*/15 * * * *" }, // Run every 15 minutes
+  { cron: "*/5 * * * *" },
   async ({ step, logger }) => {
     const result = await step.run("cleanup-abandoned-flows", async () => {
       const db = Flow.db;
@@ -2585,15 +2585,70 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
         });
       }
 
+      // 3. Recover interrupted CDC backfills left in "error" state by
+      //    startup recovery (server restart). These have a runId (checkpoint)
+      //    and low consecutiveFailures since startup resets the counter.
+      let cdcRecoveredCount = 0;
+      const interruptedCdcFlows = await Flow.find({
+        syncEngine: "cdc",
+        "backfillState.status": "error",
+        "backfillState.runId": { $exists: true, $ne: null },
+        $or: [
+          { "backfillState.consecutiveFailures": { $exists: false } },
+          {
+            "backfillState.consecutiveFailures": {
+              $lt: MAX_CONSECUTIVE_FAILURES,
+            },
+          },
+        ],
+      }).lean();
+
+      for (const cdcFlow of interruptedCdcFlows) {
+        const wId = String(cdcFlow.workspaceId);
+        const fId = String(cdcFlow._id);
+        const failures = cdcFlow.backfillState?.consecutiveFailures ?? 0;
+
+        const hasRunningExec = await executionsCollection.findOne({
+          flowId: cdcFlow._id,
+          status: "running",
+        });
+        if (hasRunningExec) continue;
+
+        try {
+          const restartResult = await cdcBackfillService.startBackfill(
+            wId,
+            fId,
+            {
+              reuseExistingRunId: true,
+              reason: `Auto-resumed interrupted backfill (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
+            },
+          );
+          logger.info("Auto-restarted interrupted CDC backfill", {
+            flowId: fId,
+            consecutiveFailures: failures,
+            runId: restartResult.runId,
+            reusedRunId: restartResult.reusedRunId,
+          });
+          cdcRecoveredCount++;
+        } catch (cdcErr) {
+          logger.error("Failed to restart interrupted CDC backfill", {
+            flowId: fId,
+            error: cdcErr instanceof Error ? cdcErr.message : String(cdcErr),
+          });
+        }
+      }
+
       logger.info("Cleanup abandoned flows completed", {
         abandonedExecutions: abandonedCount,
         staleLocks: staleLockCount,
+        cdcRecovered: cdcRecoveredCount,
         timestamp: now.toISOString(),
       });
 
       return {
         abandonedExecutions: abandonedCount,
         staleLocks: staleLockCount,
+        cdcRecovered: cdcRecoveredCount,
         timestamp: now,
       };
     });
