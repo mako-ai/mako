@@ -1058,11 +1058,15 @@ export class CdcBackfillService {
     skipped: number;
     errors: number;
   }> {
-    const MAX_CONSECUTIVE_FAILURES = 3;
-
     const staleFlows = await Flow.find({
       syncEngine: "cdc",
-      "backfillState.status": "running",
+      $or: [
+        { "backfillState.status": "running" },
+        {
+          "backfillState.status": "error",
+          "backfillState.runId": { $exists: true, $ne: null },
+        },
+      ],
     }).lean();
 
     if (staleFlows.length === 0) {
@@ -1085,7 +1089,7 @@ export class CdcBackfillService {
     );
 
     let recovered = 0;
-    let skipped = 0;
+    const skipped = 0;
     let errors = 0;
 
     for (const flow of staleFlows) {
@@ -1093,54 +1097,46 @@ export class CdcBackfillService {
       const fId = String(flow._id);
       const flowLabel = `${flow.type}:${fId}`;
       const runId = flow.backfillState?.runId || "unknown";
-      const failures = flow.backfillState?.consecutiveFailures ?? 0;
 
-      // On startup, force-abandon ALL running executions for this flow.
-      // The previous process is gone, so any "running" execution is orphaned
-      // regardless of heartbeat recency (e.g. crash < 10 min ago).
       await abandonStaleExecutions(wId, fId, { force: true });
 
       try {
-        log.info(
-          `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
-          { flowId: fId, runId, consecutiveFailures: failures },
-        );
-
-        await cdcSyncStateService.applyBackfillTransition({
-          workspaceId: wId,
-          flowId: fId,
-          event: {
-            type: "FAIL",
-            reason: "Backfill interrupted by server restart",
-            errorCode: "SERVER_RESTART",
-          },
-        });
-        await Flow.findByIdAndUpdate(fId, {
-          $inc: { "backfillState.consecutiveFailures": 1 },
-        });
-
-        if (failures + 1 < MAX_CONSECUTIVE_FAILURES) {
-          const result = await this.startBackfill(wId, fId, {
-            reuseExistingRunId: true,
-            reason: `Auto-resumed on startup (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
-          });
+        if (flow.backfillState?.status === "running") {
           log.info(
-            `Startup recovery: "${flowLabel}" — backfill restarted from checkpoint`,
-            {
-              flowId: fId,
-              newRunId: result.runId,
-              reusedRunId: result.reusedRunId,
-              consecutiveFailures: failures + 1,
+            `Startup recovery: "${flowLabel}" — transitioning to error (was stuck in running)`,
+            { flowId: fId, runId },
+          );
+
+          await cdcSyncStateService.applyBackfillTransition({
+            workspaceId: wId,
+            flowId: fId,
+            event: {
+              type: "FAIL",
+              reason: "Backfill interrupted by server restart",
+              errorCode: "SERVER_RESTART",
             },
-          );
-          recovered++;
-        } else {
-          log.warn(
-            `Startup recovery: "${flowLabel}" — too many consecutive failures (${failures + 1}/${MAX_CONSECUTIVE_FAILURES}), manual intervention required`,
-            { flowId: fId, runId, consecutiveFailures: failures + 1 },
-          );
-          skipped++;
+          });
         }
+
+        // Server restarts are expected (deploys, scaling). Reset the failure
+        // counter so they don't trip the circuit breaker and strand backfills.
+        await Flow.findByIdAndUpdate(fId, {
+          $set: { "backfillState.consecutiveFailures": 0 },
+        });
+
+        const result = await this.startBackfill(wId, fId, {
+          reuseExistingRunId: true,
+          reason: `Auto-resumed on startup after server restart`,
+        });
+        log.info(
+          `Startup recovery: "${flowLabel}" — backfill restarted from checkpoint`,
+          {
+            flowId: fId,
+            newRunId: result.runId,
+            reusedRunId: result.reusedRunId,
+          },
+        );
+        recovered++;
       } catch (err) {
         log.error(
           `Startup recovery: "${flowLabel}" — recovery failed: ${err instanceof Error ? err.message : String(err)}`,

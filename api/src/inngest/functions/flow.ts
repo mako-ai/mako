@@ -2497,7 +2497,7 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
               ],
             }).lean();
 
-            const MAX_CONSECUTIVE_FAILURES = 3;
+            const MAX_CONSECUTIVE_FAILURES = 10;
 
             for (const cdcFlow of stuckCdcFlows) {
               const wId = String(cdcFlow.workspaceId);
@@ -2505,7 +2505,6 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
               const failures = cdcFlow.backfillState?.consecutiveFailures ?? 0;
 
               try {
-                // Transition to error via state machine (writes audit record)
                 if (cdcFlow.backfillState?.status === "running") {
                   await syncMachineService.applyBackfillTransition({
                     workspaceId: wId,
@@ -2522,7 +2521,6 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
                   });
                 }
 
-                // Auto-restart if under circuit breaker threshold
                 if (failures + 1 < MAX_CONSECUTIVE_FAILURES) {
                   const restartResult = await cdcBackfillService.startBackfill(
                     wId,
