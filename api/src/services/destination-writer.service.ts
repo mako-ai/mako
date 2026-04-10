@@ -1425,7 +1425,7 @@ export async function executeDbSyncChunk(options: {
     typeCoercions,
     keyColumns,
     state,
-    maxRowsPerChunk = 10000,
+    maxRowsPerChunk = 5000,
     onProgress,
   } = options;
 

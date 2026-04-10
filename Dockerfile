@@ -55,5 +55,7 @@ WORKDIR /app/api
 ENV PORT=8080
 EXPOSE 8080
 
+ENV NODE_OPTIONS="--max-old-space-size=1024 --expose-gc"
+
 ENTRYPOINT ["node"]
 CMD ["dist/index.js"]

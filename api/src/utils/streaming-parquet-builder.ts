@@ -8,7 +8,7 @@ const logger = loggers.api("streaming-parquet-builder");
 
 /** Max rows per INSERT VALUES clause to cap peak JS heap (SQL string materialization). */
 const INSERT_MICRO_BATCH_ROWS = 120;
-const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 256;
+const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 128;
 const DEFAULT_DUCKDB_THREADS = 1;
 
 function parsePositiveInt(
