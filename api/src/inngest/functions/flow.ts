@@ -399,7 +399,6 @@ export const flowFunction = inngest.createFunction(
     retries: 10,
     timeouts: {
       start: "5m",
-      finish: "6h",
     },
     cancelOn: [
       {
