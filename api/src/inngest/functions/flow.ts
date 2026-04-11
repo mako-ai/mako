@@ -397,6 +397,10 @@ export const flowFunction = inngest.createFunction(
       key: "event.data.flowId", // Prevent duplicate executions of the same flow
     },
     retries: 10,
+    timeouts: {
+      start: "5m",
+      finish: "6h",
+    },
     cancelOn: [
       {
         event: "flow.cancel",

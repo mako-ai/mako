@@ -28,11 +28,81 @@ const STALE_HEARTBEAT_MS = 10 * 60 * 1000; // 10 minutes
 const CANCEL_WAIT_POLL_MS = 1000;
 const CANCEL_WAIT_TIMEOUT_MS = 30_000;
 
+const INNGEST_APP_ID = "mako-sync";
+const INNGEST_FLOW_FUNCTION_ID = `${INNGEST_APP_ID}-flow`;
+
+/**
+ * Cancel all running Inngest "flow" function runs for a given flowId via the
+ * bulk-cancellation REST API.  This is the only reliable way to release the
+ * per-flow concurrency lock when a function is stuck (ghost process after
+ * server restart, step timeout, etc.).
+ */
+async function cancelInngestFlowRuns(flowId: string): Promise<boolean> {
+  const signingKey = process.env.INNGEST_SIGNING_KEY;
+  if (!signingKey) {
+    log.warn(
+      "cancelInngestFlowRuns: INNGEST_SIGNING_KEY not set, skipping API cancel",
+      { flowId },
+    );
+    return false;
+  }
+
+  try {
+    const res = await fetch("https://api.inngest.com/v1/cancellations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${signingKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        app_id: INNGEST_APP_ID,
+        function_id: INNGEST_FLOW_FUNCTION_ID,
+        started_after: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        started_before: new Date().toISOString(),
+        if: `event.data.flowId == '${flowId}'`,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log.error("Inngest bulk cancel API returned non-OK", {
+        flowId,
+        status: res.status,
+        body: body.slice(0, 500),
+      });
+      return false;
+    }
+
+    const data = (await res.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null;
+    log.info("Inngest bulk cancel API succeeded", {
+      flowId,
+      cancellationId: data?.id,
+    });
+    return true;
+  } catch (error) {
+    log.error("Inngest bulk cancel API call failed", {
+      flowId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 async function assertCanStartBackfill(
   workspaceId: string,
   flowId: string,
 ): Promise<void> {
-  await abandonStaleExecutions(workspaceId, flowId);
+  const abandonedCount = await abandonStaleExecutions(workspaceId, flowId);
+  if (abandonedCount > 0) {
+    log.warn("Abandoned stale executions before starting backfill", {
+      flowId,
+      workspaceId,
+      abandonedCount,
+    });
+  }
 
   const workspaceObjectId = new Types.ObjectId(workspaceId);
   const flowObjectId = new Types.ObjectId(flowId);
@@ -47,6 +117,13 @@ async function assertCanStartBackfill(
 
   if (!running) return;
 
+  const executionAge = running.startedAt
+    ? Date.now() - new Date(running.startedAt).getTime()
+    : undefined;
+  const heartbeatAge = running.lastHeartbeat
+    ? Date.now() - new Date(running.lastHeartbeat).getTime()
+    : undefined;
+
   // If the backfill was paused (or cancelled), an Inngest cancel is already
   // in-flight.  Wait for the worker to finish rather than rejecting — the
   // user expects reset-entity / resume to work immediately after pause.
@@ -60,25 +137,40 @@ async function assertCanStartBackfill(
     flow?.backfillState?.status === "idle";
 
   if (!isPendingCancel) {
+    log.error("Cannot start backfill — execution still running", {
+      flowId,
+      executionId: running._id?.toString(),
+      backfillStatus: flow?.backfillState?.status,
+      executionStartedAt: running.startedAt,
+      executionAgeMs: executionAge,
+      lastHeartbeat: running.lastHeartbeat,
+      heartbeatAgeMs: heartbeatAge,
+    });
     throw new Error(
-      "Cannot start backfill while an execution is still running",
+      `Cannot start backfill while an execution is still running (execution ${running._id?.toString()}, started ${executionAge ? Math.round(executionAge / 1000) + "s ago" : "unknown"}, last heartbeat ${heartbeatAge ? Math.round(heartbeatAge / 1000) + "s ago" : "never"})`,
     );
   }
 
-  // Send cancel (idempotent) and poll until the execution finishes
+  // Send cancel via event (for functions that are actively running steps)
+  // AND via REST API (to release the concurrency lock on ghost functions)
   log.info("Waiting for previous execution to finish before starting", {
     flowId,
     executionId: running._id?.toString(),
     backfillStatus: flow?.backfillState?.status,
+    executionAgeMs: executionAge,
+    heartbeatAgeMs: heartbeatAge,
   });
 
-  await inngest.send({
-    name: "flow.cancel",
-    data: {
-      flowId,
-      executionId: running._id?.toString(),
-    },
-  });
+  await Promise.all([
+    inngest.send({
+      name: "flow.cancel",
+      data: {
+        flowId,
+        executionId: running._id?.toString(),
+      },
+    }),
+    cancelInngestFlowRuns(flowId),
+  ]);
 
   const deadline = Date.now() + CANCEL_WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -87,13 +179,45 @@ async function assertCanStartBackfill(
       _id: running._id,
       status: "running",
     });
-    if (!still) return;
+    if (!still) {
+      log.info("Previous execution finished after cancel signal", {
+        flowId,
+        executionId: running._id?.toString(),
+        waitedMs: CANCEL_WAIT_TIMEOUT_MS - (deadline - Date.now()),
+      });
+      return;
+    }
   }
 
-  log.warn("Cancel wait timed out, force-abandoning stuck execution", {
+  log.error("Cancel wait timed out — force-abandoning stuck execution", {
     flowId,
     executionId: running._id?.toString(),
+    executionStartedAt: running.startedAt,
+    executionAgeMs: executionAge,
+    heartbeatAgeMs: heartbeatAge,
+    cancelWaitTimeoutMs: CANCEL_WAIT_TIMEOUT_MS,
   });
+
+  // Write the error into the execution so it's visible in the UI
+  await FlowExecution.updateOne(
+    { _id: running._id, status: "running" },
+    {
+      $push: {
+        logs: {
+          $each: [
+            {
+              timestamp: new Date(),
+              level: "error",
+              message: `Backfill execution stuck — no heartbeat for ${heartbeatAge ? Math.round(heartbeatAge / 1000) + "s" : "unknown"}. Force-abandoning to allow restart.`,
+              metadata: { flowId, executionId: running._id?.toString() },
+            },
+          ],
+          $slice: -200,
+        },
+      },
+    },
+  );
+
   await abandonStaleExecutions(workspaceId, flowId, { force: true });
 }
 
@@ -202,7 +326,23 @@ export class CdcBackfillService {
           ? scopeFromFlow
           : [];
 
+    log.info("startBackfill: pre-check starting", {
+      flowId,
+      workspaceId,
+      currentBackfillStatus: flow.backfillState?.status,
+      currentRunId: flow.backfillState?.runId,
+      reuseExistingRunId: shouldReuseRunId,
+      entities: effectiveScope.length > 0 ? effectiveScope : "all",
+    });
+    const preCheckStart = Date.now();
     await assertCanStartBackfill(workspaceId, flowId);
+    const preCheckMs = Date.now() - preCheckStart;
+    if (preCheckMs > 5000) {
+      log.warn("startBackfill: pre-check was slow", {
+        flowId,
+        preCheckMs,
+      });
+    }
 
     const runId =
       shouldReuseRunId && flow.backfillState?.runId
@@ -245,8 +385,9 @@ export class CdcBackfillService {
       context: { hasActiveRunLock: false },
     });
 
-    await inngest.send({
-      id: createBackfillTriggerEventId(flowId, runId),
+    const triggerEventId = createBackfillTriggerEventId(flowId, runId);
+    const sendResult = await inngest.send({
+      id: triggerEventId,
       name: "flow.execute",
       data: {
         flowId,
@@ -257,6 +398,13 @@ export class CdcBackfillService {
           ? { backfillEntities: effectiveScope }
           : {}),
       },
+    });
+
+    log.info("Backfill flow.execute event sent to Inngest", {
+      flowId,
+      runId,
+      triggerEventId,
+      inngestEventIds: sendResult?.ids,
     });
 
     return { runId, reusedRunId };
