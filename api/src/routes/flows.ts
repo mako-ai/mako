@@ -2361,6 +2361,9 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
       failedTotal,
       pendingByEntity,
       failedWebhookCount,
+      webhookPendingCount,
+      cdcByStatus,
+      cdcBySource,
     ] = await Promise.all([
       Flow.findOne({
         _id: flowObjectId,
@@ -2399,6 +2402,19 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         workspaceId: workspaceObjectId,
         status: "failed",
       }),
+      WebhookEvent.countDocuments({
+        flowId: flowObjectId,
+        workspaceId: workspaceObjectId,
+        applyStatus: "pending",
+      }),
+      CdcChangeEvent.aggregate<{ _id: string; count: number }>([
+        { $match: { flowId: flowObjectId } },
+        { $group: { _id: "$materializationStatus", count: { $sum: 1 } } },
+      ]),
+      CdcChangeEvent.aggregate<{ _id: string; count: number }>([
+        { $match: { flowId: flowObjectId } },
+        { $group: { _id: "$sourceKind", count: { $sum: 1 } } },
+      ]),
     ]);
 
     if (!flow) {
@@ -2535,6 +2551,9 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
           }
         : null;
 
+    const statusMap = new Map(cdcByStatus.map(r => [r._id, r.count]));
+    const sourceMap = new Map(cdcBySource.map(r => [r._id, r.count]));
+
     return c.json({
       success: true,
       data: {
@@ -2544,6 +2563,7 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
         lastError,
         backlogCount: totalBacklog,
+        webhookPendingCount,
         lagSeconds,
         lastMaterializedAt:
           materializedDates.sort((a, b) => b.getTime() - a.getTime())[0] ||
@@ -2561,6 +2581,20 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
               : null,
         },
         failedWebhookCount,
+        pipeline: {
+          cdcEventsByStatus: {
+            pending: statusMap.get("pending") || 0,
+            applied: statusMap.get("applied") || 0,
+            failed: statusMap.get("failed") || 0,
+            dropped: statusMap.get("dropped") || 0,
+          },
+          cdcEventsBySource: {
+            webhook: sourceMap.get("webhook") || 0,
+            backfill: sourceMap.get("backfill") || 0,
+          },
+          materializationBacklog: totalBacklog,
+          lagSeconds,
+        },
         transitions: transitions.map(t => ({
           machine: t.machine,
           fromState: t.fromState,

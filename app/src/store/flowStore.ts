@@ -298,6 +298,7 @@ export interface CdcStatus {
     event: string | null;
   } | null;
   backlogCount: number;
+  webhookPendingCount: number;
   lagSeconds: number | null;
   lastMaterializedAt: string | null;
   entities: Array<{
@@ -312,6 +313,20 @@ export interface CdcStatus {
     lifetimeRowsApplied?: number;
     backfillDone?: boolean;
   }>;
+  pipeline: {
+    cdcEventsByStatus: {
+      pending: number;
+      applied: number;
+      failed: number;
+      dropped: number;
+    };
+    cdcEventsBySource: {
+      webhook: number;
+      backfill: number;
+    };
+    materializationBacklog: number;
+    lagSeconds: number | null;
+  };
   transitions: Array<{
     machine?: string;
     fromState: string;
