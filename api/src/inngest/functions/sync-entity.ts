@@ -287,6 +287,28 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         ),
         logger: bulkLogger,
       };
+
+      await step.run(`prepare-staging-${safeEntityStepId}`, async () => {
+        await touchHeartbeat(executionId);
+
+        // Rescue orphaned staging data from a previously crashed invocation
+        // before dropping the staging table.
+        try {
+          const rescued = await performStagingMerge(bulkSyncOptions as any);
+          if (rescued.written > 0) {
+            logExec(
+              "info",
+              `Rescued ${rescued.written} orphaned staging rows into live table before fresh start`,
+              { entity, rescued: rescued.written },
+            );
+          }
+        } catch {
+          // Staging table may not exist — that's fine
+        }
+
+        await performPrepareStaging(bulkSyncOptions as any);
+      });
+      stepsUsed++;
     }
 
     // ── Chunk loop ───────────────────────────────────────────────────
