@@ -508,15 +508,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         const tempCount = await getTempCollectionCount(flowId, entity);
         if (tempCount >= 20_000) {
           await step.run(
-            `flush-batch-${safeEntityStepId}-${flushIndex}`,
+            `flush-merge-${safeEntityStepId}-${flushIndex}`,
             async () => {
               await touchHeartbeat(executionId);
               logExec(
                 "info",
-                `Flushing ${entity} buffer batch ${flushIndex} to staging (${tempCount} rows in temp)`,
+                `Flushing ${entity} buffer batch ${flushIndex} to live (${tempCount} rows in temp)`,
                 { entity, flushIndex, tempCount },
               );
+              await performPrepareStaging(bulkSyncOptions as any);
               await performBulkFlush(bulkSyncOptions as any);
+              await performStagingMerge(bulkSyncOptions as any);
+              await performStagingCleanup(bulkSyncOptions as any);
             },
           );
           stepsUsed++;
@@ -537,37 +540,28 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       totalChunks: chunkIndex,
     });
 
-    // ── Flush + merge + cleanup for bulk path ────────────────────────
+    // ── Flush remaining + merge for bulk path ─────────────────────────
     if (useBulkPath && bulkSyncOptions) {
       const finalRowsInTemp = await getTempCollectionCount(flowId, entity);
       if (finalRowsInTemp > 0) {
-        await step.run(`flush-final-${safeEntityStepId}`, async () => {
+        await step.run(`flush-merge-final-${safeEntityStepId}`, async () => {
           await touchHeartbeat(executionId);
           logExec(
             "info",
-            `Flushing ${entity} remaining buffer to staging (${finalRowsInTemp} rows)`,
+            `Flushing ${entity} remaining buffer to live (${finalRowsInTemp} rows)`,
             { entity, tempCount: finalRowsInTemp },
           );
+          await performPrepareStaging(bulkSyncOptions as any);
           await performBulkFlush(bulkSyncOptions as any);
+          await performStagingMerge(bulkSyncOptions as any);
+          await performStagingCleanup(bulkSyncOptions as any);
+          logExec(
+            "info",
+            `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
+            { entity },
+          );
         });
       }
-
-      await step.run(`merge-staging-${safeEntityStepId}`, async () => {
-        await touchHeartbeat(executionId);
-        logExec("info", `Merging ${entity} staging table to live`, { entity });
-        await performStagingMerge(bulkSyncOptions as any);
-        logExec("info", `${entity} merged staging to live table`, { entity });
-      });
-
-      await step.run(`cleanup-staging-${safeEntityStepId}`, async () => {
-        await touchHeartbeat(executionId);
-        await performStagingCleanup(bulkSyncOptions as any);
-        logExec(
-          "info",
-          `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
-          { entity },
-        );
-      });
 
       if (executionId) {
         try {
