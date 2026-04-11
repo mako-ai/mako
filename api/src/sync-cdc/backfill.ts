@@ -90,9 +90,11 @@ async function assertCanStartBackfill(
     if (!still) return;
   }
 
-  throw new Error(
-    "Timed out waiting for previous execution to finish (30s). Try again shortly.",
-  );
+  log.warn("Cancel wait timed out, force-abandoning stuck execution", {
+    flowId,
+    executionId: running._id?.toString(),
+  });
+  await abandonStaleExecutions(workspaceId, flowId, { force: true });
 }
 
 async function abandonStaleExecutions(
@@ -485,71 +487,6 @@ export class CdcBackfillService {
     };
   }
 
-  async recoverBackfill(params: { workspaceId: string; flowId: string }) {
-    const flow = await Flow.findOne({
-      _id: new Types.ObjectId(params.flowId),
-      workspaceId: new Types.ObjectId(params.workspaceId),
-    });
-    if (!flow) {
-      throw new Error("Flow not found");
-    }
-    if (flow.syncEngine !== "cdc") {
-      throw new Error("Recover backfill requires syncEngine=cdc");
-    }
-
-    const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
-    let resumedBackfill: { runId: string; reusedRunId: boolean } | undefined;
-
-    if (!hasIncompleteBackfill) {
-      log.warn("recoverBackfill: no incomplete backfill found", {
-        flowId: params.flowId,
-      });
-    } else {
-      log.info(
-        "recoverBackfill: restarting incomplete backfill from checkpoint",
-        {
-          flowId: params.flowId,
-          runId: flow.backfillState?.runId,
-          backfillStatus: flow.backfillState?.status,
-        },
-      );
-
-      await assertCanStartBackfill(params.workspaceId, params.flowId);
-
-      resumedBackfill = await this.startBackfill(
-        params.workspaceId,
-        params.flowId,
-        {
-          reuseExistingRunId: true,
-          reason: "Backfill restarted via recover-backfill (from checkpoint)",
-        },
-      );
-    }
-
-    const [webhookEventsDrained, drainedFailedWebhooks, reconciledWebhooks] =
-      await Promise.all([
-        this.drainPendingWebhookEvents(
-          params.workspaceId,
-          params.flowId,
-          "recover-backfill",
-        ),
-        this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
-        this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
-      ]);
-
-    return {
-      webhookEventsDrained,
-      drainedFailedWebhooks,
-      reconciledWebhooks,
-      resumedBackfill: resumedBackfill
-        ? {
-            runId: resumedBackfill.runId,
-            reusedRunId: resumedBackfill.reusedRunId,
-          }
-        : undefined,
-    };
-  }
-
   async reprocessStaleEvents(params: { workspaceId: string; flowId: string }) {
     const flow = await Flow.findOne({
       _id: new Types.ObjectId(params.flowId),
@@ -574,6 +511,7 @@ export class CdcBackfillService {
       ]);
 
     let materializeTriggered = 0;
+    let cursorsRewound = 0;
     try {
       const byEntity = await getCdcEventStore().countEventsByEntity({
         workspaceId: params.workspaceId,
@@ -582,6 +520,39 @@ export class CdcBackfillService {
       });
       for (const item of byEntity) {
         if (item.count <= 0) continue;
+
+        const minPending = await CdcChangeEvent.findOne({
+          flowId: new Types.ObjectId(params.flowId),
+          entity: item.entity,
+          materializationStatus: "pending",
+        })
+          .sort({ ingestSeq: 1 })
+          .select({ ingestSeq: 1 })
+          .lean();
+
+        if (minPending) {
+          const targetSeq = Math.max(
+            0,
+            (parseInt(String(minPending.ingestSeq), 10) || 0) - 1,
+          );
+          const state = await CdcEntityState.findOne({
+            flowId: new Types.ObjectId(params.flowId),
+            entity: item.entity,
+          })
+            .select({ lastMaterializedSeq: 1 })
+            .lean();
+          if (state && Number(state.lastMaterializedSeq || 0) > targetSeq) {
+            await CdcEntityState.updateOne(
+              {
+                flowId: new Types.ObjectId(params.flowId),
+                entity: item.entity,
+              },
+              { $set: { lastMaterializedSeq: targetSeq } },
+            );
+            cursorsRewound++;
+          }
+        }
+
         await inngest.send({
           name: "cdc/materialize",
           data: {
@@ -606,6 +577,7 @@ export class CdcBackfillService {
       drainedWebhooks,
       resetFailedWebhooks,
       materializeTriggered,
+      cursorsRewound,
     });
 
     return {
@@ -613,12 +585,13 @@ export class CdcBackfillService {
       drainedWebhooks,
       resetFailedWebhooks,
       materializeTriggered,
+      cursorsRewound,
     };
   }
 
   /**
-   * Backward-compatible wrapper: delegates to recoverStream or recoverBackfill
-   * based on whether an incomplete backfill exists.
+   * Unified recovery: resumes an incomplete backfill (if runId exists) or
+   * recovers the stream pipeline.
    */
   async recoverFlow(params: {
     workspaceId: string;
@@ -633,30 +606,65 @@ export class CdcBackfillService {
     if (!flow) {
       throw new Error("Flow not found");
     }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Recover flow requires syncEngine=cdc");
+    }
 
     const hasIncompleteBackfill = Boolean(flow.backfillState?.runId);
 
     if (hasIncompleteBackfill) {
-      const result = await this.recoverBackfill({
-        workspaceId: params.workspaceId,
+      log.info("recoverFlow: restarting incomplete backfill from checkpoint", {
         flowId: params.flowId,
+        runId: flow.backfillState?.runId,
+        backfillStatus: flow.backfillState?.status,
       });
+
+      await assertCanStartBackfill(params.workspaceId, params.flowId);
+
+      const resumedBackfill = await this.startBackfill(
+        params.workspaceId,
+        params.flowId,
+        {
+          reuseExistingRunId: true,
+          reason: "Backfill restarted via recover (from checkpoint)",
+        },
+      );
+
+      const [webhookEventsDrained, drainedFailedWebhooks, reconciledWebhooks] =
+        await Promise.all([
+          this.drainPendingWebhookEvents(
+            params.workspaceId,
+            params.flowId,
+            "recover",
+          ),
+          this.resetFailedWebhookEvents(params.workspaceId, params.flowId),
+          this.reconcileWebhookApplyStatus(params.workspaceId, params.flowId),
+        ]);
+
       return {
         retriedFailedRows: 0,
         retriedEntities: [] as string[],
         stagingCleaned: 0,
-        ...result,
+        webhookEventsDrained,
+        drainedFailedWebhooks,
+        reconciledWebhooks,
+        resumedBackfill: {
+          runId: resumedBackfill.runId,
+          reusedRunId: resumedBackfill.reusedRunId,
+        },
       };
     }
 
-    const result = await this.recoverStream({
+    // Stream recovery (includes its own webhook drain/reset/reconcile)
+    const streamResult = await this.recoverStream({
       workspaceId: params.workspaceId,
       flowId: params.flowId,
       retryFailedMaterialization: params.retryFailedMaterialization,
       entity: params.entity,
     });
+
     return {
-      ...result,
+      ...streamResult,
       resumedBackfill: undefined,
     };
   }
@@ -1207,23 +1215,18 @@ export class CdcBackfillService {
 
   async recoverStaleBackfillsOnStartup(): Promise<{
     recovered: number;
-    skipped: number;
     errors: number;
   }> {
+    // Only handle flows that were actively running when the server died.
+    // Flows already in "error" state are the cleanup cron's responsibility.
     const staleFlows = await Flow.find({
       syncEngine: "cdc",
-      $or: [
-        { "backfillState.status": "running" },
-        {
-          "backfillState.status": "error",
-          "backfillState.runId": { $exists: true, $ne: null },
-        },
-      ],
+      "backfillState.status": "running",
     }).lean();
 
     if (staleFlows.length === 0) {
       log.info("Startup backfill check: no stale backfills found");
-      return { recovered: 0, skipped: 0, errors: 0 };
+      return { recovered: 0, errors: 0 };
     }
 
     log.info(
@@ -1234,8 +1237,6 @@ export class CdcBackfillService {
           type: f.type,
           runId: f.backfillState?.runId || null,
           startedAt: f.backfillState?.startedAt || null,
-          consecutiveFailures: f.backfillState?.consecutiveFailures ?? 0,
-          scope: f.backfillState?.scope?.mode || "all",
         })),
       },
     );
@@ -1266,58 +1267,41 @@ export class CdcBackfillService {
     for (const flow of staleFlows) {
       const wId = String(flow.workspaceId);
       const fId = String(flow._id);
-      const flowLabel = `${flow.type}:${fId}`;
       const runId = flow.backfillState?.runId || "unknown";
 
-      await abandonStaleExecutions(wId, fId, { force: true });
-
       try {
-        if (flow.backfillState?.status === "running") {
-          log.info(
-            `Startup recovery: "${flowLabel}" — marking interrupted (cleanup cron will restart)`,
-            { flowId: fId, runId },
-          );
+        await abandonStaleExecutions(wId, fId, { force: true });
 
-          await cdcSyncStateService.applyBackfillTransition({
-            workspaceId: wId,
-            flowId: fId,
-            event: {
-              type: "FAIL",
-              reason: "Backfill interrupted by server restart",
-              errorCode: "SERVER_RESTART",
-            },
-          });
-        }
-
-        // Reset failure counter — server restarts are not backfill bugs.
-        // Keep the runId so the cleanup cron can resume from checkpoint.
+        // Mark as error directly — no state machine call needed during
+        // crash recovery. Reset failure counter since server restarts
+        // are not backfill bugs. Keep runId so the cron can resume.
         await Flow.findByIdAndUpdate(fId, {
-          $set: { "backfillState.consecutiveFailures": 0 },
+          $set: {
+            "backfillState.status": "error",
+            "backfillState.consecutiveFailures": 0,
+          },
         });
 
-        log.info(
-          `Startup recovery: "${flowLabel}" — cleaned up, awaiting cron restart`,
-          { flowId: fId, runId },
-        );
+        log.info("Startup recovery: cleaned up, awaiting cron restart", {
+          flowId: fId,
+          runId,
+        });
         recovered++;
       } catch (err) {
-        log.error(
-          `Startup recovery: "${flowLabel}" — cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-          {
-            flowId: fId,
-            runId,
-            error: err instanceof Error ? err.message : String(err),
-          },
-        );
+        log.error("Startup recovery: cleanup failed", {
+          flowId: fId,
+          runId,
+          error: err instanceof Error ? err.message : String(err),
+        });
         errors++;
       }
     }
 
     log.info(
-      `Startup backfill recovery complete: ${recovered} cleaned up, ${errors} errors (cron will restart)`,
+      `Startup backfill recovery complete: ${recovered} cleaned up, ${errors} errors`,
     );
 
-    return { recovered, skipped: 0, errors };
+    return { recovered, errors };
   }
 }
 
@@ -1405,6 +1389,31 @@ export async function forceDrainCdcFlow(params: {
 
   for (const item of byEntity) {
     if (item.count <= 0) continue;
+
+    const minPending = await CdcChangeEvent.findOne({
+      flowId: new Types.ObjectId(params.flowId),
+      entity: item.entity,
+      materializationStatus: "pending",
+    })
+      .sort({ ingestSeq: 1 })
+      .select({ ingestSeq: 1 })
+      .lean();
+
+    if (minPending) {
+      const targetSeq = Math.max(
+        0,
+        (parseInt(String(minPending.ingestSeq), 10) || 0) - 1,
+      );
+      await CdcEntityState.updateOne(
+        {
+          flowId: new Types.ObjectId(params.flowId),
+          entity: item.entity,
+          lastMaterializedSeq: { $gt: targetSeq },
+        },
+        { $set: { lastMaterializedSeq: targetSeq } },
+      );
+    }
+
     await inngest.send({
       name: "cdc/materialize",
       data: {

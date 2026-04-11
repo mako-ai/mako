@@ -652,33 +652,6 @@ export const flowFunction = inngest.createFunction(
         logger.info("Backfill mode: CDC enabled, no webhook apply gate", {
           flowId,
         });
-        await step.run("cdc-transition-start-backfill", async () => {
-          await syncMachineService.applyBackfillTransition({
-            workspaceId: String(flow.workspaceId),
-            flowId: String(flow._id),
-            event: {
-              type: "START",
-              reason: "Backfill execution started",
-            },
-            context: {
-              hasActiveRunLock: false,
-            },
-          });
-        });
-        await step.run("mark-cdc-backfill-active", async () => {
-          const now = new Date();
-          const update: Record<string, unknown> = {
-            "backfillState.status": "running",
-            "backfillState.startedAt": flow.backfillState?.startedAt || now,
-            "backfillState.completedAt": null,
-          };
-          if (cdcBackfillRunId) {
-            update["backfillState.runId"] = cdcBackfillRunId;
-          }
-          await Flow.findByIdAndUpdate(flowId, {
-            $set: update,
-          });
-        });
       }
 
       // Initialize logger and get execution ID
@@ -1732,15 +1705,11 @@ export const flowFunction = inngest.createFunction(
           });
         });
         await step.run("finalize-cdc-backfill-run", async () => {
-          const now = new Date();
+          // markCdcBackfillCompletedForFlow already set status=completed,
+          // completedAt, and unset runId. Only reset the failure counter
+          // and clear checkpoint data here.
           await Flow.findByIdAndUpdate(flowId, {
-            $set: {
-              "backfillState.completedAt": now,
-              "backfillState.consecutiveFailures": 0,
-            },
-            $unset: {
-              "backfillState.runId": "",
-            },
+            $set: { "backfillState.consecutiveFailures": 0 },
           });
           if (cdcBackfillRunId) {
             await cdcBackfillCheckpointService.clearRun({
@@ -2061,15 +2030,9 @@ export const flowFunction = inngest.createFunction(
             });
           });
           await step.run("mark-cdc-backfill-interrupted", async () => {
-            const update: Record<string, unknown> = {
-              "backfillState.status": "error",
-              "backfillState.completedAt": null,
-            };
-            if (cdcBackfillRunId) {
-              update["backfillState.runId"] = cdcBackfillRunId;
-            }
+            // cdc-transition-fail already set status=error via the state
+            // machine. Only bump the failure counter here.
             await Flow.findByIdAndUpdate(flowId, {
-              $set: update,
               $inc: { "backfillState.consecutiveFailures": 1 },
             });
           });
@@ -2487,72 +2450,8 @@ export const cleanupAbandonedFlowsFunction = inngest.createFunction(
               modified: gateResetResult.modifiedCount,
               flowIds: staleGateFlowIds.map(id => id.toString()),
             });
-
-            // Properly transition CDC backfill state and auto-restart
-            const stuckCdcFlows = await Flow.find({
-              _id: { $in: staleGateFlowIds },
-              syncEngine: "cdc",
-              $or: [
-                { "backfillState.status": "running" },
-                { "backfillState.status": "error" },
-              ],
-            }).lean();
-
-            for (const cdcFlow of stuckCdcFlows) {
-              const wId = String(cdcFlow.workspaceId);
-              const fId = String(cdcFlow._id);
-              const failures = cdcFlow.backfillState?.consecutiveFailures ?? 0;
-
-              try {
-                if (cdcFlow.backfillState?.status === "running") {
-                  await syncMachineService.applyBackfillTransition({
-                    workspaceId: wId,
-                    flowId: fId,
-                    event: {
-                      type: "FAIL",
-                      reason:
-                        "Backfill execution abandoned (worker crash or timeout)",
-                      errorCode: "WORKER_TIMEOUT",
-                    },
-                  });
-                  await Flow.findByIdAndUpdate(fId, {
-                    $inc: { "backfillState.consecutiveFailures": 1 },
-                  });
-                }
-
-                if (failures + 1 < MAX_CONSECUTIVE_FAILURES) {
-                  const restartResult = await cdcBackfillService.startBackfill(
-                    wId,
-                    fId,
-                    {
-                      reuseExistingRunId: true,
-                      reason: `Auto-resumed after worker crash/timeout (attempt ${failures + 1}/${MAX_CONSECUTIVE_FAILURES})`,
-                    },
-                  );
-                  logger.info("Auto-restarted abandoned CDC backfill", {
-                    flowId: fId,
-                    consecutiveFailures: failures + 1,
-                    runId: restartResult.runId,
-                    reusedRunId: restartResult.reusedRunId,
-                  });
-                } else {
-                  logger.warn(
-                    "CDC backfill exceeded max consecutive failures, skipping auto-restart",
-                    {
-                      flowId: fId,
-                      consecutiveFailures: failures + 1,
-                      maxAllowed: MAX_CONSECUTIVE_FAILURES,
-                    },
-                  );
-                }
-              } catch (cdcErr) {
-                logger.error("Failed to recover abandoned CDC backfill", {
-                  flowId: fId,
-                  error:
-                    cdcErr instanceof Error ? cdcErr.message : String(cdcErr),
-                });
-              }
-            }
+            // CDC restart is handled by the unified recovery loop below
+            // (Section 3) which picks up flows in "error" state with runId.
           }
         }
       }

@@ -1940,9 +1940,9 @@ flowRoutes.post("/:flowId/sync-cdc/recover-backfill", async c => {
     );
     if (authorizationError) return authorizationError;
 
-    const result = await cdcBackfillService.recoverBackfill({
-      workspaceId,
-      flowId,
+    const result = await cdcBackfillService.startBackfill(workspaceId, flowId, {
+      reuseExistingRunId: true,
+      reason: "Backfill restarted via recover-backfill (from checkpoint)",
     });
     return c.json({
       success: true,
