@@ -742,6 +742,11 @@ export class CdcBackfillService {
       });
     }
 
+    const orphanedResolved = await this.resolveOrphanedWebhookApplyStatus(
+      params.workspaceId,
+      params.flowId,
+    );
+
     log.info("Reprocessed stale events", {
       flowId: params.flowId,
       reconciledWebhooks,
@@ -749,6 +754,7 @@ export class CdcBackfillService {
       resetFailedWebhooks,
       materializeTriggered,
       cursorsRewound,
+      orphanedResolved,
     });
 
     return {
@@ -757,6 +763,7 @@ export class CdcBackfillService {
       resetFailedWebhooks,
       materializeTriggered,
       cursorsRewound,
+      orphanedResolved,
     };
   }
 
@@ -1163,6 +1170,75 @@ export class CdcBackfillService {
       return result.modifiedCount || 0;
     } catch (error) {
       log.warn("Failed to reconcile webhook apply status", {
+        flowId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 0;
+    }
+  }
+
+  /**
+   * Finds WebhookEvents stuck at applyStatus:"pending" whose CDC events have
+   * all been materialized (applied/dropped) or were never created, and resolves
+   * their applyStatus accordingly.
+   */
+  private async resolveOrphanedWebhookApplyStatus(
+    workspaceId: string,
+    flowId: string,
+  ): Promise<number> {
+    try {
+      const flowOid = new Types.ObjectId(flowId);
+      const wsOid = new Types.ObjectId(workspaceId);
+
+      const stuckWebhookEvents = await WebhookEvent.find({
+        flowId: flowOid,
+        workspaceId: wsOid,
+        status: "completed",
+        applyStatus: "pending",
+      })
+        .select({ _id: 1 })
+        .limit(1000)
+        .lean();
+
+      if (stuckWebhookEvents.length === 0) return 0;
+
+      const stuckIds = stuckWebhookEvents.map(e => String(e._id));
+
+      const withPendingCdc: string[] = await CdcChangeEvent.distinct(
+        "webhookEventId",
+        {
+          flowId: flowOid,
+          webhookEventId: { $in: stuckIds },
+          materializationStatus: "pending",
+        },
+      );
+      const pendingSet = new Set(withPendingCdc);
+
+      const orphanedIds = stuckIds.filter(id => !pendingSet.has(id));
+      if (orphanedIds.length === 0) return 0;
+
+      const orphanedOids = orphanedIds.map(id => new Types.ObjectId(id));
+
+      const result = await WebhookEvent.updateMany(
+        { _id: { $in: orphanedOids } },
+        {
+          $set: { applyStatus: "applied" },
+          $unset: { applyError: "" },
+        },
+      );
+
+      if (result.modifiedCount > 0) {
+        log.info("Resolved orphaned webhook applyStatus", {
+          flowId,
+          total: stuckWebhookEvents.length,
+          withPendingCdc: withPendingCdc.length,
+          resolved: result.modifiedCount,
+        });
+      }
+
+      return result.modifiedCount || 0;
+    } catch (error) {
+      log.warn("Failed to resolve orphaned webhook apply status", {
         flowId,
         error: error instanceof Error ? error.message : String(error),
       });
