@@ -290,11 +290,22 @@ export const syncBackfillEntityFunction = inngest.createFunction(
 
       await step.run(`prepare-staging-${safeEntityStepId}`, async () => {
         await touchHeartbeat(executionId);
-        logExec(
-          "info",
-          `Preparing staging table for ${entity} (dropping if exists)`,
-          { entity },
-        );
+
+        // Rescue orphaned staging data from a previously crashed invocation
+        // before dropping the staging table.
+        try {
+          const rescued = await performStagingMerge(bulkSyncOptions as any);
+          if (rescued.written > 0) {
+            logExec(
+              "info",
+              `Rescued ${rescued.written} orphaned staging rows into live table before fresh start`,
+              { entity, rescued: rescued.written },
+            );
+          }
+        } catch {
+          // Staging table may not exist — that's fine
+        }
+
         await performPrepareStaging(bulkSyncOptions as any);
       });
       stepsUsed++;
