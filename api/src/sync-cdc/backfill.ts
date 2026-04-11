@@ -30,12 +30,13 @@ const CANCEL_WAIT_TIMEOUT_MS = 30_000;
 
 const INNGEST_APP_ID = "mako-sync";
 const INNGEST_FLOW_FUNCTION_ID = `${INNGEST_APP_ID}-flow`;
+const INNGEST_ENTITY_FUNCTION_ID = `${INNGEST_APP_ID}-sync-backfill-entity`;
 
 /**
- * Cancel all running Inngest "flow" function runs for a given flowId via the
- * bulk-cancellation REST API.  This is the only reliable way to release the
- * per-flow concurrency lock when a function is stuck (ghost process after
- * server restart, step timeout, etc.).
+ * Cancel all running Inngest function runs for a given flowId via the
+ * bulk-cancellation REST API.  Cancels both the parent "flow" function and
+ * child "sync-backfill-entity" functions so that restarted backfills don't
+ * get blocked by orphaned children holding the concurrency slot.
  */
 async function cancelInngestFlowRuns(flowId: string): Promise<boolean> {
   const signingKey = process.env.INNGEST_SIGNING_KEY;
@@ -47,48 +48,70 @@ async function cancelInngestFlowRuns(flowId: string): Promise<boolean> {
     return false;
   }
 
-  try {
-    const res = await fetch("https://api.inngest.com/v1/cancellations", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${signingKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        app_id: INNGEST_APP_ID,
-        function_id: INNGEST_FLOW_FUNCTION_ID,
-        started_after: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-        started_before: new Date().toISOString(),
-        if: `event.data.flowId == '${flowId}'`,
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      log.error("Inngest bulk cancel API returned non-OK", {
-        flowId,
-        status: res.status,
-        body: body.slice(0, 500),
+  const functionIds = [INNGEST_FLOW_FUNCTION_ID, INNGEST_ENTITY_FUNCTION_ID];
+  const results = await Promise.allSettled(
+    functionIds.map(async functionId => {
+      const res = await fetch("https://api.inngest.com/v1/cancellations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${signingKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          app_id: INNGEST_APP_ID,
+          function_id: functionId,
+          started_after: new Date(
+            Date.now() - 24 * 60 * 60 * 1000,
+          ).toISOString(),
+          started_before: new Date().toISOString(),
+          if: `event.data.flowId == '${flowId}'`,
+        }),
       });
-      return false;
-    }
 
-    const data = (await res.json().catch(() => null)) as Record<
-      string,
-      unknown
-    > | null;
-    log.info("Inngest bulk cancel API succeeded", {
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        log.error("Inngest bulk cancel API returned non-OK", {
+          flowId,
+          functionId,
+          status: res.status,
+          body: body.slice(0, 500),
+        });
+        return false;
+      }
+
+      const data = (await res.json().catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
+      log.info("Inngest bulk cancel API succeeded", {
+        flowId,
+        functionId,
+        cancellationId: data?.id,
+      });
+      return true;
+    }),
+  );
+
+  const allOk = results.every(
+    r => r.status === "fulfilled" && r.value === true,
+  );
+  if (!allOk) {
+    log.warn("Some Inngest bulk cancel calls failed", {
       flowId,
-      cancellationId: data?.id,
+      results: results.map((r, i) => ({
+        functionId: functionIds[i],
+        status: r.status,
+        value: r.status === "fulfilled" ? r.value : undefined,
+        reason:
+          r.status === "rejected"
+            ? r.reason instanceof Error
+              ? r.reason.message
+              : String(r.reason)
+            : undefined,
+      })),
     });
-    return true;
-  } catch (error) {
-    log.error("Inngest bulk cancel API call failed", {
-      flowId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return false;
   }
+  return allOk;
 }
 
 async function assertCanStartBackfill(

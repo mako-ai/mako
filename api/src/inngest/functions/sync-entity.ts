@@ -124,6 +124,12 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       key: "event.data.flowId",
     },
     retries: 3,
+    cancelOn: [
+      {
+        event: "flow.cancel",
+        if: "async.data.flowId == event.data.flowId",
+      },
+    ],
   },
   { event: "flow/sync-backfill-entity" },
   async ({ event, step, logger }): Promise<SyncBackfillEntityResult> => {
