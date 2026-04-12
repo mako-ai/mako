@@ -122,6 +122,36 @@ The response is a **Server-Sent Events (SSE)** stream:
 | `PUT`    | `/api/workspaces/:wid/chats/:id` | Update chat title  |
 | `DELETE` | `/api/workspaces/:wid/chats/:id` | Delete a chat      |
 
+
+## Dashboards
+
+| Method   | Endpoint                                                         | Description                          |
+| -------- | ---------------------------------------------------------------- | ------------------------------------ |
+| `GET`    | `/api/workspaces/:wid/dashboards`                                | List dashboards                      |
+| `POST`   | `/api/workspaces/:wid/dashboards`                                | Create a dashboard                   |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did`                           | Get dashboard details                |
+| `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
+| `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
+
+### Dashboard Folders
+
+| Method   | Endpoint                                                         | Description                          |
+| -------- | ---------------------------------------------------------------- | ------------------------------------ |
+| `GET`    | `/api/workspaces/:wid/dashboard-folders`                         | List dashboard folders               |
+| `POST`   | `/api/workspaces/:wid/dashboard-folders`                         | Create a folder                      |
+| `PUT`    | `/api/workspaces/:wid/dashboard-folders/:fid`                    | Update a folder                      |
+| `DELETE` | `/api/workspaces/:wid/dashboard-folders/:fid`                    | Delete a folder                      |
+
+### Dashboard Materialization
+
+| Method | Endpoint                                                                      | Description                                   |
+| ------ | ----------------------------------------------------------------------------- | --------------------------------------------- |
+| `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/status`                 | Get materialization status for all data sources |
+| `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger`                | Trigger materialization for a data source       |
+| `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger-all`            | Trigger materialization for all data sources    |
+| `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/stream/:dataSourceId`   | Stream Parquet artifact (supports range requests) |
+
 ## Inngest
 
 | Method | Endpoint       | Description                        |

@@ -5,9 +5,9 @@
 
 <p align="center"><strong>The AI-native SQL Client.</strong></p>
 
-> **The Cursor for Data.** Connect to any database and query with AI assistance.
+> **The Cursor for Data.** Connect to any database, query with AI, and build live dashboards -- all from your browser.
 
-Stop wrestling with complex SQL and slow, bloated database tools. Write queries in plain English and get instant, accurate results.
+Stop wrestling with complex SQL and slow, bloated database tools. Write queries in plain English, get instant results, and turn them into interactive dashboards with cross-filtering and scheduled refresh.
 
 ![Mako App Interface](./website/public/app-screenshot.png)
 
@@ -17,6 +17,8 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 
 - **✨ AI Query Generation**: Write queries in natural language. Our schema-aware AI generates optimized SQL instantly.
   - _Replaces: DataGrip, DBeaver, Postico_
+- **📊 AI Dashboards**: Build interactive dashboards from conversation. Cross-filtering, scheduled data refresh, Parquet materialization -- powered by DuckDB in the browser.
+  - _Replaces: Metabase, Looker, manual BI pipelines_
 - **👥 Team Collaboration**: Share connections, version-control queries, and work together in real-time.
   - _Replaces: Passing credentials around, lost SQL files_
 - **⚡ Blazing Fast**: No Java or Electron bloat. Opens instantly in your browser and runs smooth.
@@ -24,33 +26,118 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 
 ## 🔌 Integrations
 
-Connect your favorite tools and platforms.
-
 ### Databases
 
-| Integration    | Status  | Description                                         |
-| -------------- | ------- | --------------------------------------------------- |
-| **PostgreSQL** | ✅ Live | Connect to PostgreSQL for relational data queries   |
-| **MongoDB**    | ✅ Live | Connect to MongoDB for flexible document-based data |
-| **BigQuery**   | ✅ Live | Analyze large datasets with Google BigQuery         |
-| **MySQL**      | 🚧 Soon | Query MySQL databases with natural language         |
-| **Snowflake**  | 🚧 Soon | Query Snowflake databases with natural language     |
-| **Databricks** | 🚧 Soon | Query Databricks databases with natural language    |
+| Integration           | Status  | Description                                          |
+| --------------------- | ------- | ---------------------------------------------------- |
+| **PostgreSQL**        | ✅ Live | Connect to PostgreSQL for relational data queries    |
+| **MongoDB**           | ✅ Live | Connect to MongoDB for flexible document-based data  |
+| **BigQuery**          | ✅ Live | Analyze large datasets with Google BigQuery          |
+| **ClickHouse**        | ✅ Live | Fast OLAP queries on ClickHouse                      |
+| **MySQL**             | ✅ Live | Query MySQL databases with natural language          |
+| **Redshift**          | ✅ Live | Query Amazon Redshift data warehouses                |
+| **Cloud SQL**         | ✅ Live | Connect to Google Cloud SQL (Postgres)               |
+| **Cloudflare D1**     | ✅ Live | Query Cloudflare D1 SQLite databases                 |
+| **Cloudflare KV**     | ✅ Live | Browse and query Cloudflare Workers KV               |
 
-### Connectors
+### Data Connectors
 
-| Integration               | Status  | Description                                      |
-| ------------------------- | ------- | ------------------------------------------------ |
-| **Stripe**                | ✅ Live | Track payments, subscriptions, and billing data  |
-| **PostHog**               | ✅ Live | Analyze product analytics and user behavior      |
-| **Google Analytics**      | ✅ Live | Connect website traffic and conversion data      |
-| **Google Search Console** | ✅ Live | Connect Google Search Console data               |
-| **Close.com**             | ✅ Live | Sync CRM data (leads, opportunities, activities) |
-| **GraphQL**               | ✅ Live | Query any GraphQL API with custom endpoints      |
-| **REST**                  | ✅ Live | Query any REST API with custom endpoints         |
-| **Hubspot**               | 🚧 Soon | Sync CRM contacts, companies, deals              |
-| **Salesforce**            | 🚧 Soon | Sync CRM accounts, contacts, opportunities       |
-| **Pipedrive**             | 🚧 Soon | Sync CRM deals, activities, contacts             |
+Sync external SaaS data into Mako's data warehouse for querying and dashboards.
+
+| Integration    | Status  | Description                                      |
+| -------------- | ------- | ------------------------------------------------ |
+| **Stripe**     | ✅ Live | Track payments, subscriptions, and billing data  |
+| **PostHog**    | ✅ Live | Analyze product analytics and user behavior      |
+| **Close.com**  | ✅ Live | Sync CRM data (leads, opportunities, activities) |
+| **GraphQL**    | ✅ Live | Query any GraphQL API with custom endpoints      |
+| **REST**       | ✅ Live | Query any REST API with custom endpoints         |
+| **BigQuery**   | ✅ Live | Sync BigQuery datasets into the warehouse        |
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Frontend (React + Vite)                                │
+│  ┌──────────┐ ┌──────────────┐ ┌─────────────────────┐ │
+│  │ Console  │ │  Dashboards  │ │   AI Chat (Vercel   │ │
+│  │ (Monaco) │ │  (DuckDB +   │ │    AI SDK)          │ │
+│  │          │ │   Mosaic)    │ │                     │ │
+│  └──────────┘ └──────────────┘ └─────────────────────┘ │
+│           ▲          ▲                   ▲              │
+│           │     Parquet/Arrow            │              │
+│           │     via OPFS cache           │              │
+└───────────┼──────────┼──────────────────┼──────────────┘
+            │          │                  │
+┌───────────┼──────────┼──────────────────┼──────────────┐
+│  API (Hono + Node.js)                                  │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ Unified Agent (triage → Console / Dashboard /    │  │
+│  │                         Flow sub-agents)         │  │
+│  └──────────────────────────────────────────────────┘  │
+│  ┌──────────────┐ ┌───────────────┐ ┌──────────────┐  │
+│  │  DB Drivers   │ │  Connectors   │ │  Dashboard   │  │
+│  │  (9 drivers)  │ │  (6 sources)  │ │  Engine      │  │
+│  │              │ │               │ │  (DuckDB     │  │
+│  │              │ │               │ │   + Parquet) │  │
+│  └──────────────┘ └───────────────┘ └──────────────┘  │
+│                          ▲                             │
+│                    ┌─────┴──────┐                      │
+│                    │  Inngest   │ (scheduled refresh,   │
+│                    │            │  incremental sync)    │
+│                    └────────────┘                      │
+└────────────────────────────────────────────────────────┘
+            │                │
+     ┌──────┴──────┐  ┌─────┴──────────┐
+     │  MongoDB    │  │  User DBs      │
+     │  (metadata, │  │  (PG, BQ, CH,  │
+     │   warehouse)│  │   MySQL, etc.) │
+     └─────────────┘  └────────────────┘
+```
+
+**Key technology choices:**
+- **DuckDB** (both server-side via `@duckdb/node-api` and browser-side via `@duckdb/duckdb-wasm`): powers dashboard SQL execution, Parquet artifact generation, and in-browser cross-filtering with OPFS caching
+- **Mosaic** (`@uwdata/mosaic-core`): coordinates cross-filtering across dashboard widgets
+- **Apache Arrow / Parquet**: server materializes query results into Parquet, served to browser as Arrow IPC for zero-copy rendering
+- **Inngest**: event-driven job queues for scheduled dashboard refresh and incremental data sync
+- **Hono**: lightweight, fast HTTP framework for the API
+- **Monaco Editor**: VS Code's editor for the SQL console
+- **Vercel AI SDK**: multi-provider LLM abstraction (OpenAI, Anthropic, Google)
+
+## 📊 Dashboard Engine
+
+Dashboards are a core feature. The AI agent creates interactive dashboards from natural language:
+
+1. **Agent creates a dashboard spec** with widgets, layouts, and SQL queries
+2. **Server materializes** query results into Parquet artifacts (stored on filesystem, GCS, or S3)
+3. **Browser loads** Parquet data into DuckDB-WASM, cached in OPFS for instant reloads
+4. **Mosaic cross-filtering** lets users click on one chart to filter all others
+5. **Inngest cron** keeps data fresh with scheduled re-materialization and stale-run detection
+
+### Dashboard Artifact Storage
+
+Dashboard materialization stores Parquet artifacts on the backend. Three storage backends:
+
+- `filesystem` -- default; stores files on local disk
+- `gcs` -- Google Cloud Storage
+- `s3` -- S3-compatible bucket
+
+```env
+DASHBOARD_ARTIFACT_STORE=filesystem
+
+# Optional shared settings
+DASHBOARD_ARTIFACT_PREFIX=dashboards
+DASHBOARD_ARTIFACT_DIR=/absolute/path/to/artifacts  # filesystem only
+```
+
+#### Google Cloud Storage
+
+```env
+DASHBOARD_ARTIFACT_STORE=gcs
+GCS_DASHBOARD_BUCKET=your-bucket-name
+DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/prod
+```
+
+See the [docs](https://docs.mako.ai) for full GCS/S3 provisioning instructions.
 
 ## 🛠️ Quick Start
 
@@ -76,7 +163,7 @@ Connect your favorite tools and platforms.
 3. **Start Services**
 
    ```bash
-   # Start MongoDB and dependencies
+   # Start MongoDB
    pnpm run docker:up
 
    # Start the full stack (API + App + Inngest)
@@ -87,114 +174,6 @@ Connect your favorite tools and platforms.
    - Open **http://localhost:5173** to access the app.
    - Add a Data Source (e.g., Stripe or Close.com).
    - Use the chat interface to ask questions about your data.
-
-## Dashboard Artifact Storage
-
-Dashboard materialization stores parquet artifacts on the backend. The app
-supports three storage backends:
-
-- `filesystem` - default; stores parquet files on local disk
-- `gcs` - stores parquet files in Google Cloud Storage
-- `s3` - stores parquet files in an S3-compatible bucket
-
-### Environment Variables
-
-Set the backend with:
-
-```env
-DASHBOARD_ARTIFACT_STORE=filesystem
-```
-
-Optional shared settings:
-
-```env
-# Object key / directory prefix. Defaults to "dashboards".
-DASHBOARD_ARTIFACT_PREFIX=dashboards
-
-# Filesystem backend only. If omitted:
-# - local/dev uses .data/dashboard-artifacts
-# - production uses /data/dashboard-artifacts
-DASHBOARD_ARTIFACT_DIR=/absolute/path/to/artifacts
-```
-
-#### Google Cloud Storage
-
-To store dashboard parquet artifacts in GCS, set:
-
-```env
-DASHBOARD_ARTIFACT_STORE=gcs
-GCS_DASHBOARD_BUCKET=your-bucket-name
-# Optional:
-DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/prod
-```
-
-You also need to provision bucket access for the Cloud Run runtime identity.
-
-### Provisioning GCS for Cloud Run
-
-1. Identify the Cloud Run runtime service account:
-
-   ```bash
-   gcloud run services describe revops-fullstack \
-     --project=revops-462013 \
-     --region=europe-west1 \
-     --format="value(spec.template.spec.serviceAccountName)"
-   ```
-
-2. Create a bucket in the same region as Cloud Run:
-
-   ```bash
-   gcloud storage buckets create gs://revops-462013-dashboard-artifacts \
-     --project=revops-462013 \
-     --location=europe-west1 \
-     --uniform-bucket-level-access
-   ```
-
-3. Grant the runtime service account permission to read/write objects:
-
-   ```bash
-   gcloud storage buckets add-iam-policy-binding gs://revops-462013-dashboard-artifacts \
-     --project=revops-462013 \
-     --member="serviceAccount:813928377715-compute@developer.gserviceaccount.com" \
-     --role="roles/storage.objectAdmin"
-   ```
-
-4. Grant signed URL capability to the same runtime service account:
-
-   ```bash
-   gcloud iam service-accounts add-iam-policy-binding \
-     813928377715-compute@developer.gserviceaccount.com \
-     --project=revops-462013 \
-     --member="serviceAccount:813928377715-compute@developer.gserviceaccount.com" \
-     --role="roles/iam.serviceAccountTokenCreator"
-   ```
-
-5. Configure Cloud Run with the required env vars:
-
-   ```bash
-   gcloud run services update revops-fullstack \
-     --project=revops-462013 \
-     --region=europe-west1 \
-     --update-env-vars=DASHBOARD_ARTIFACT_STORE=gcs,GCS_DASHBOARD_BUCKET=revops-462013-dashboard-artifacts,DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/prod
-   ```
-
-### Deployment Notes
-
-- If `DASHBOARD_ARTIFACT_STORE` is not set, the app falls back to
-  `filesystem`.
-- GitHub Actions / deploy scripts must pass the same storage env vars to Cloud
-  Run, otherwise future deploys will revert to local disk storage.
-- For preview environments, prefer a per-PR prefix such as
-  `dashboard-artifacts/pr-123` so all previews can share one bucket safely.
-
-## 🏗️ Architecture
-
-Mako uses a modern, scalable architecture designed for flexibility and performance.
-
-- **Frontend**: React + Vite (Web App), Next.js (Website)
-- **Backend**: Node.js + Hono (API), Inngest (Job Queues)
-- **Database**: MongoDB (Metadata & Data Warehouse)
-- **Sync Engine**: Custom incremental sync with atomic collection swaps
 
 ## 🌐 IP Whitelisting
 
@@ -216,6 +195,7 @@ This IP is used by Mako's cloud service for all outbound database connections.
 | `pnpm run docker:up` | Start MongoDB and other services            |
 | `pnpm run test`      | Run test suite                              |
 | `pnpm run build`     | Build all packages                          |
+| `pnpm run docs:dev`  | Start documentation site locally            |
 
 ## 🤝 Community & Support
 

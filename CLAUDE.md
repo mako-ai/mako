@@ -141,7 +141,7 @@ INNGEST_SIGNING_KEY=your_inngest_signing_key
 
 ### Supported Databases
 
-MongoDB, PostgreSQL, BigQuery, ClickHouse, Cloud SQL (Postgres), Cloudflare D1, Cloudflare KV, MySQL, SQLite, MSSQL
+MongoDB, PostgreSQL, BigQuery, ClickHouse, Cloud SQL (Postgres), Cloudflare D1, Cloudflare KV, MySQL, Redshift
 
 ## Key Principles
 
