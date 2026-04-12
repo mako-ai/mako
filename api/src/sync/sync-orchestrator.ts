@@ -968,7 +968,7 @@ function resolvePositiveIntEnv(
 
 const FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
   process.env.SYNC_BULK_FLUSH_BATCH_SIZE,
-  10_000,
+  2_000,
 );
 
 /** Absolute minimum rows per parquet flush — below this we surface the OOM error. */
@@ -980,7 +980,7 @@ const MIN_FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
 /** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
 const MONGO_TO_PARQUET_CHUNK = resolvePositiveIntEnv(
   process.env.SYNC_BULK_MONGO_TO_PARQUET_CHUNK,
-  200,
+  100,
 );
 
 function syncMemorySnapshot(): {
@@ -1044,6 +1044,13 @@ async function flushBulkBuffer(
 
     let docIdChunks: unknown[][] = [];
     let currentChunk: unknown[] = [];
+
+    const memBeforeBatch = syncMemorySnapshot();
+    logger?.log(
+      "debug",
+      `${entity} flush batch ${batchNum}: starting parquet build (${effectiveBatchSize} rows, rss ${memBeforeBatch.rssMb}MB, heap ${memBeforeBatch.heapUsedMb}MB)`,
+      { entity, batch: batchNum, effectiveBatchSize, memory: memBeforeBatch },
+    );
 
     const tParquetStart = Date.now();
 
@@ -1125,6 +1132,18 @@ async function flushBulkBuffer(
     }
 
     const parquetMs = Date.now() - tParquetStart;
+    const memAfterParquet = syncMemorySnapshot();
+    logger?.log(
+      "debug",
+      `${entity} flush batch ${batchNum}: parquet built (${parquet.rowCount} rows, ${parquetMs}ms, rss ${memAfterParquet.rssMb}MB, heap ${memAfterParquet.heapUsedMb}MB)`,
+      {
+        entity,
+        batch: batchNum,
+        rowCount: parquet.rowCount,
+        parquetMs,
+        memory: memAfterParquet,
+      },
+    );
 
     if (parquet.rowCount === 0) {
       logger?.log(
@@ -1166,6 +1185,12 @@ async function flushBulkBuffer(
       await fs.rm(parquet.filePath, { force: true }).catch(() => undefined);
     }
     const loadMs = Date.now() - tLoadStart;
+    const memAfterLoad = syncMemorySnapshot();
+    logger?.log(
+      "debug",
+      `${entity} flush batch ${batchNum}: staging load complete (${loadMs}ms, rss ${memAfterLoad.rssMb}MB, heap ${memAfterLoad.heapUsedMb}MB)`,
+      { entity, batch: batchNum, loadMs, memory: memAfterLoad },
+    );
 
     let batchRows = 0;
     for (const chunk of docIdChunks) {
