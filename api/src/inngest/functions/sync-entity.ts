@@ -415,7 +415,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             entity,
             isIncremental: syncMode === "incremental",
             state,
-            maxIterations: 10,
+            maxIterations: 5,
             logger: syncLogger,
             step,
             queries,
