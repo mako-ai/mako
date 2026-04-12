@@ -116,8 +116,16 @@ class ApiClient {
   /**
    * GET request
    */
-  async get<T>(path: string, params?: Record<string, string>): Promise<T> {
-    return this.request<T>(path, { method: "GET", params });
+  async get<T>(
+    path: string,
+    params?: Record<string, string>,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
+    return this.request<T>(path, {
+      method: "GET",
+      params,
+      signal: options?.signal,
+    });
   }
 
   /**
@@ -138,18 +146,26 @@ class ApiClient {
   /**
    * PUT request
    */
-  async put<T>(path: string, data?: any): Promise<T> {
+  async put<T>(
+    path: string,
+    data?: any,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
     return this.request<T>(path, {
       method: "PUT",
       body: data ? JSON.stringify(data) : undefined,
+      signal: options?.signal,
     });
   }
 
   /**
    * DELETE request
    */
-  async delete<T>(path: string): Promise<T> {
-    return this.request<T>(path, { method: "DELETE" });
+  async delete<T>(
+    path: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
+    return this.request<T>(path, { method: "DELETE", signal: options?.signal });
   }
 
   /**

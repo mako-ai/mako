@@ -24,6 +24,8 @@ import {
 import { selectWidgetRuntime } from "./selectors";
 import { getAllTemplates, getTemplate } from "@mako/schemas";
 
+import { throwIfAborted, abortableSleep } from "./abort-utils";
+
 /**
  * Poll the runtime store for widget render status after adding/modifying a
  * chart widget. Returns the render error if the chart fails, or null on
@@ -32,12 +34,14 @@ import { getAllTemplates, getTemplate } from "@mako/schemas";
 async function waitForWidgetRenderResult(
   dashboardId: string,
   widgetId: string,
+  signal?: AbortSignal,
   maxWaitMs = 3000,
 ): Promise<{ renderError: string | null; renderErrorKind: string | null }> {
   const POLL_INTERVAL = 150;
   const deadline = Date.now() + maxWaitMs;
 
   while (Date.now() < deadline) {
+    throwIfAborted(signal);
     const runtime = selectWidgetRuntime(dashboardId, widgetId);
     if (runtime?.renderStatus === "error") {
       return {
@@ -48,7 +52,7 @@ async function waitForWidgetRenderResult(
     if (runtime?.renderStatus === "ready") {
       return { renderError: null, renderErrorKind: null };
     }
-    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+    await abortableSleep(POLL_INTERVAL, signal);
   }
 
   return { renderError: null, renderErrorKind: null };
@@ -117,7 +121,9 @@ export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
   fallbackDashboardId?: string | null,
+  options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<Record<string, unknown> | null> {
+  const signal = options?.signal;
   if (
     DASHBOARD_TOOLS.has(toolName) &&
     fallbackDashboardId &&
@@ -180,7 +186,8 @@ export async function executeDashboardAgentTool(
     }
 
     try {
-      await store.openDashboard(workspaceId, dashboardId);
+      await store.openDashboard(workspaceId, dashboardId, { signal });
+      throwIfAborted(signal);
       const dashboard =
         useDashboardStore.getState().openDashboards[dashboardId];
       if (!dashboard) {
@@ -231,15 +238,18 @@ export async function executeDashboardAgentTool(
     }
 
     try {
-      const dashboard = await useDashboardStore
-        .getState()
-        .createDashboard(workspaceId, {
+      const dashboard = await useDashboardStore.getState().createDashboard(
+        workspaceId,
+        {
           title: input.title,
           description:
             typeof input.description === "string"
               ? input.description
               : undefined,
-        } as any);
+        } as any,
+        { signal },
+      );
+      throwIfAborted(signal);
 
       if (!dashboard) {
         return { success: false, error: "Failed to create dashboard" };
@@ -255,8 +265,9 @@ export async function executeDashboardAgentTool(
 
       await useDashboardStore
         .getState()
-        .enterEditMode(workspaceId, dashboard._id)
+        .enterEditMode(workspaceId, dashboard._id, { signal })
         .catch(() => {});
+      throwIfAborted(signal);
 
       const consoleStore = useConsoleStore.getState();
       const tabId = consoleStore.openTab({
@@ -309,19 +320,35 @@ export async function executeDashboardAgentTool(
       return { success: true, alreadyEditing: true };
     }
 
-    const result = await store.enterEditMode(workspaceId, dashboardId);
+    const result = await store.enterEditMode(workspaceId, dashboardId, {
+      signal,
+    });
+    throwIfAborted(signal);
     if (result.ok) {
       return { success: true };
     }
 
     const lockedBy = result.lockedBy ?? "Another user";
-    const userApproved = await new Promise<boolean>(resolve => {
+    const userApproved = await new Promise<boolean>((resolve, reject) => {
+      const handleAbort = () => {
+        useDashboardStore.getState().setLockConflictPrompt(null);
+        reject(new DOMException("Dashboard tool cancelled", "AbortError"));
+      };
+      if (signal?.aborted) {
+        handleAbort();
+        return;
+      }
+      signal?.addEventListener("abort", handleAbort, { once: true });
       useDashboardStore.getState().setLockConflictPrompt({
         dashboardId,
         lockedBy,
-        resolve,
+        resolve: force => {
+          signal?.removeEventListener("abort", handleAbort);
+          resolve(force);
+        },
       });
     });
+    throwIfAborted(signal);
 
     if (!userApproved) {
       return {
@@ -333,7 +360,8 @@ export async function executeDashboardAgentTool(
 
     const forceResult = await useDashboardStore
       .getState()
-      .enterEditMode(workspaceId, dashboardId, { force: true });
+      .enterEditMode(workspaceId, dashboardId, { force: true, signal });
+    throwIfAborted(signal);
     if (forceResult.ok) {
       return { success: true, forcedFrom: lockedBy };
     }
@@ -381,7 +409,9 @@ export async function executeDashboardAgentTool(
               ? input.timeDimension
               : undefined,
           dashboardId: ctx.dashboardId,
+          signal,
         });
+        throwIfAborted(signal);
         const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
         const runtimeSource = snapshot.dataSources.find(
           ds => ds.id === dataSource.id,
@@ -452,7 +482,9 @@ export async function executeDashboardAgentTool(
               ? input.databaseName
               : undefined,
         },
+        signal,
       });
+      throwIfAborted(signal);
       const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
       const runtimeSource = snapshot.dataSources.find(
         ds => ds.id === dataSource.id,
@@ -603,7 +635,9 @@ export async function executeDashboardAgentTool(
                 : existing.query.databaseName,
           },
         },
+        signal,
       });
+      throwIfAborted(signal);
 
       if (shouldRun) {
         const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
@@ -672,7 +706,9 @@ export async function executeDashboardAgentTool(
         workspaceId: ctx.workspaceId,
         dashboardId: ctx.dashboardId,
         dataSourceId: input.dataSourceId,
+        signal,
       });
+      throwIfAborted(signal);
 
       const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
       const runtimeSource = snapshot.dataSources.find(
@@ -796,7 +832,9 @@ export async function executeDashboardAgentTool(
         dataSourceId: input.dataSourceId,
         sql: typeof input.sql === "string" ? input.sql : undefined,
         dashboardId: ctx.dashboardId,
+        signal,
       });
+      throwIfAborted(signal);
 
       return {
         success: true,
@@ -836,7 +874,9 @@ export async function executeDashboardAgentTool(
       dashboardId: ctx.dashboardId,
       dataSourceId: input.dataSourceId as string | undefined,
       sql: String(input.localSql || ""),
+      signal,
     });
+    throwIfAborted(signal);
     if (!queryValidation.valid) {
       return {
         success: false,
@@ -876,12 +916,15 @@ export async function executeDashboardAgentTool(
         dashboardId: ctx.dashboardId,
         dataSourceId: widget.dataSourceId,
         sql: widget.localSql,
+        signal,
       });
+      throwIfAborted(signal);
 
       const renderResult =
         widget.type === "chart" && widget.vegaLiteSpec
-          ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id)
+          ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id, signal)
           : null;
+      throwIfAborted(signal);
 
       if (renderResult?.renderError) {
         return {
@@ -977,7 +1020,9 @@ export async function executeDashboardAgentTool(
         dashboardId: ctx.dashboardId,
         dataSourceId: targetWidget.dataSourceId,
         sql: String(changes.localSql),
+        signal,
       });
+      throwIfAborted(signal);
       if (!queryValidation.valid) {
         return {
           success: false,
@@ -1021,14 +1066,17 @@ export async function executeDashboardAgentTool(
         dashboardId: ctx.dashboardId,
         dataSourceId: widget.dataSourceId,
         sql: widget.localSql,
+        signal,
       });
+      throwIfAborted(signal);
 
       const isChartWithSpec =
         widget.type === "chart" &&
         (changes.vegaLiteSpec || widget.vegaLiteSpec);
       const renderResult = isChartWithSpec
-        ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id)
+        ? await waitForWidgetRenderResult(ctx.dashboardId, widget.id, signal)
         : null;
+      throwIfAborted(signal);
 
       if (renderResult?.renderError) {
         return {

@@ -50,6 +50,8 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
+import { databaseConnectionService } from "../services/database-connection.service";
+import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.agent();
@@ -333,6 +335,47 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   logger.info("Using agent", { agentId: resolvedAgentId, tabKind, flowType });
 
+  const requestSignal = c.req.raw.signal;
+  const requestExecutionIds = new Set<string>();
+
+  // Cancel all currently-registered database executions.
+  // Invariant: this only runs as a batch on abort. Any execution registered
+  // *after* the abort fires is individually cancelled inside registerExecution
+  // (which checks requestSignal.aborted synchronously after adding the ID).
+  const cancelRegisteredExecutions = async (): Promise<void> => {
+    const executionIds = Array.from(requestExecutionIds);
+    await Promise.allSettled(
+      executionIds.map(executionId =>
+        databaseConnectionService.cancelQuery(executionId),
+      ),
+    );
+  };
+  requestSignal.addEventListener(
+    "abort",
+    () => {
+      void cancelRegisteredExecutions();
+    },
+    { once: true },
+  );
+
+  const toolExecutionContext: NonNullable<
+    AgentContext["toolExecutionContext"]
+  > = {
+    signal: requestSignal,
+    createExecutionId: createAgentExecutionId,
+    registerExecution: executionId => {
+      requestExecutionIds.add(executionId);
+      if (requestSignal.aborted) {
+        requestExecutionIds.delete(executionId);
+        void databaseConnectionService.cancelQuery(executionId);
+      }
+    },
+    releaseExecution: executionId => {
+      requestExecutionIds.delete(executionId);
+    },
+    isAborted: () => requestSignal.aborted,
+  };
+
   // Auto-discover relevant consoles via embedding search (parallel with other setup)
   let consoleHints = "";
   if (
@@ -390,6 +433,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     consoleHints,
     activeConsoleResults,
     activeDashboardContext,
+    toolExecutionContext,
   };
 
   // Create agent configuration
@@ -453,8 +497,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     messages: modelMessages,
     tools: tools as Record<string, any>,
     stopWhen: stepCountIs(MAX_STEPS),
-    providerOptions: providerOptions as any,
-    onStepFinish: ({ toolCalls }) => {
+    providerOptions: providerOptions as Record<string, unknown>,
+    abortSignal: requestSignal,
+    onStepFinish({ toolCalls }: { toolCalls?: Array<unknown> }) {
       stepsCompleted += 1;
 
       logger.debug("Step finished", {
@@ -469,7 +514,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         });
       }
     },
-  });
+  } as Parameters<typeof streamText>[0]);
 
   // Return native AI SDK UI message stream response (for useChat compatibility)
   // Using AI SDK best practice: save once at the end with all messages
@@ -480,6 +525,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
     sendReasoning: true,
     onFinish: async ({ messages: allMessages }) => {
+      if (requestExecutionIds.size > 0) {
+        await cancelRegisteredExecutions();
+        requestExecutionIds.clear();
+      }
       const durationMs = Date.now() - startTime;
 
       // Extract detailed per-step usage from result.steps

@@ -199,9 +199,18 @@ export const consoleAgentFactory: AgentFactory = (
   );
 
   // Create tools
-  const tools = createUniversalTools(workspaceId, enrichedConsoles, consoleId);
+  const tools = createUniversalTools(
+    workspaceId,
+    enrichedConsoles,
+    consoleId,
+    context.userId,
+    context.toolExecutionContext,
+  );
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
-  const consoleSearchTools = createConsoleSearchTools(workspaceId);
+  const consoleSearchTools = createConsoleSearchTools(
+    workspaceId,
+    context.toolExecutionContext,
+  );
 
   return {
     systemPrompt: [

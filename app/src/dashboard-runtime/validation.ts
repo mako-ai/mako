@@ -20,6 +20,7 @@ export async function validateDuckDBQuery(options: {
   dashboardId?: string;
   sql: string;
   dataSourceId?: string;
+  signal?: AbortSignal;
 }): Promise<
   | { valid: true; fields: string[]; rowCount: number }
   | { valid: false; error: string; errorKind: DashboardErrorKind }
@@ -39,6 +40,7 @@ export async function validateDuckDBQuery(options: {
       dashboardId: options.dashboardId,
       dataSourceId: options.dataSourceId,
       sql: validationSql,
+      signal: options.signal,
     });
 
     return {

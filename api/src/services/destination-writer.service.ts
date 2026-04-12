@@ -978,6 +978,7 @@ export async function estimateQueryRowCount(
   connection: IDatabaseConnection,
   query: string,
   database?: string,
+  options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<{ success: boolean; estimatedCount?: number; error?: string }> {
   const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
@@ -995,6 +996,8 @@ export async function estimateQueryRowCount(
 
     const result = await driver.executeQuery(connection, countQuery, {
       databaseName: database,
+      executionId: options?.executionId,
+      signal: options?.signal,
     });
 
     if (result.success && result.data && result.data.length > 0) {
@@ -1023,6 +1026,7 @@ export async function getMaxTrackingValue(
   trackingColumn: string,
   schema?: string,
   database?: string,
+  options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<{ success: boolean; maxValue?: string; error?: string }> {
   const driver = databaseRegistry.getDriver(connection.type);
   if (!driver) {
@@ -1038,6 +1042,8 @@ export async function getMaxTrackingValue(
 
     const result = await driver.executeQuery(connection, query, {
       databaseName: database,
+      executionId: options?.executionId,
+      signal: options?.signal,
     });
 
     if (result.success && result.data && result.data.length > 0) {
@@ -1067,6 +1073,7 @@ export async function validateQuery(
   connection: IDatabaseConnection,
   query: string,
   database?: string,
+  options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<{
   success: boolean;
   columns?: Array<{ name: string; type: string }>;
@@ -1091,6 +1098,8 @@ export async function validateQuery(
 
     const result = await driver.executeQuery(connection, testQuery, {
       databaseName: database,
+      executionId: options?.executionId,
+      signal: options?.signal,
     });
 
     if (!result.success) {

@@ -8,6 +8,7 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { queryExecutionService } from "../../services/query-execution.service";
+import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import {
@@ -17,6 +18,9 @@ import {
   MAX_SAMPLE_ROWS,
   MAX_TOTAL_OUTPUT_SIZE,
   AGENT_QUERY_TIMEOUT_MS,
+  registerAgentExecution,
+  throwIfAborted,
+  isAgentToolAbortError,
   withAgentTimeout,
 } from "./shared/truncation";
 
@@ -69,6 +73,7 @@ async function listMongoConnectionsImpl(workspaceId: string) {
 async function listMongoDatabasesImpl(
   connectionId: string,
   workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   if (
     !Types.ObjectId.isValid(connectionId) ||
@@ -76,34 +81,48 @@ async function listMongoDatabasesImpl(
   ) {
     throw new Error("Invalid connection ID or workspace ID");
   }
-  const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(connectionId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
-  if (!database) throw new Error("Connection not found or access denied");
-  if (database.type !== "mongodb") {
-    throw new Error("Database listing only supported for MongoDB connections");
+  const { signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-mongo-list-databases",
+  );
+
+  try {
+    throwIfAborted(signal);
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(connectionId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!database) throw new Error("Connection not found or access denied");
+    if (database.type !== "mongodb") {
+      throw new Error(
+        "Database listing only supported for MongoDB connections",
+      );
+    }
+
+    const connection = await databaseConnectionService.getConnection(
+      database as Parameters<typeof databaseConnectionService.getConnection>[0],
+    );
+    const adminDb = connection.db("admin");
+    const result = await adminDb.admin().listDatabases();
+    throwIfAborted(signal);
+
+    return result.databases.map(
+      (db: { name: string; sizeOnDisk?: number; empty?: boolean }) => ({
+        name: db.name,
+        sizeOnDisk: db.sizeOnDisk,
+        empty: db.empty,
+      }),
+    );
+  } finally {
+    release();
   }
-
-  const connection = await databaseConnectionService.getConnection(
-    database as Parameters<typeof databaseConnectionService.getConnection>[0],
-  );
-  const adminDb = connection.db("admin");
-  const result = await adminDb.admin().listDatabases();
-
-  return result.databases.map(
-    (db: { name: string; sizeOnDisk?: number; empty?: boolean }) => ({
-      name: db.name,
-      sizeOnDisk: db.sizeOnDisk,
-      empty: db.empty,
-    }),
-  );
 }
 
 async function listCollectionsImpl(
   connectionId: string,
   databaseName: string,
   workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   if (
     !Types.ObjectId.isValid(connectionId) ||
@@ -114,28 +133,41 @@ async function listCollectionsImpl(
   if (!databaseName) {
     throw new Error("'databaseName' is required");
   }
-  const database = await DatabaseConnection.findOne({
-    _id: new Types.ObjectId(connectionId),
-    workspaceId: new Types.ObjectId(workspaceId),
-  });
-  if (!database) throw new Error("Connection not found or access denied");
-  if (database.type !== "mongodb") {
-    throw new Error("Collection listing only supported for MongoDB databases");
+  const { signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-mongo-list-collections",
+  );
+
+  try {
+    throwIfAborted(signal);
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(connectionId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!database) throw new Error("Connection not found or access denied");
+    if (database.type !== "mongodb") {
+      throw new Error(
+        "Collection listing only supported for MongoDB databases",
+      );
+    }
+    const connection = await databaseConnectionService.getConnection(
+      database as Parameters<typeof databaseConnectionService.getConnection>[0],
+    );
+    const db = connection.db(databaseName);
+    const collections = await db
+      .listCollections({ type: "collection" })
+      .toArray();
+    throwIfAborted(signal);
+    return collections.map(
+      (col: { name: string; type?: string; options?: unknown }) => ({
+        name: col.name,
+        type: col.type,
+        options: col.options,
+      }),
+    );
+  } finally {
+    release();
   }
-  const connection = await databaseConnectionService.getConnection(
-    database as Parameters<typeof databaseConnectionService.getConnection>[0],
-  );
-  const db = connection.db(databaseName);
-  const collections = await db
-    .listCollections({ type: "collection" })
-    .toArray();
-  return collections.map(
-    (col: { name: string; type?: string; options?: unknown }) => ({
-      name: col.name,
-      type: col.type,
-      options: col.options,
-    }),
-  );
 }
 
 async function inspectCollectionImpl(
@@ -143,6 +175,7 @@ async function inspectCollectionImpl(
   collectionName: string,
   databaseName: string,
   workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   if (
     !Types.ObjectId.isValid(connectionId) ||
@@ -164,50 +197,67 @@ async function inspectCollectionImpl(
     );
   }
 
-  return withAgentTimeout(
-    `agent-inspect-mongo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    async _executionId => {
-      const connection = await databaseConnectionService.getConnection(
-        database as Parameters<
-          typeof databaseConnectionService.getConnection
-        >[0],
-      );
-      const db = connection.db(databaseName);
-      const collection = db.collection(collectionName);
-
-      const SAMPLE_SIZE = 100;
-      const sampleDocuments = await collection
-        .aggregate([{ $sample: { size: SAMPLE_SIZE } }])
-        .toArray();
-
-      const fieldTypeMap: Record<string, Set<string>> = {};
-      for (const doc of sampleDocuments) {
-        for (const [field, value] of Object.entries(doc)) {
-          if (!fieldTypeMap[field]) fieldTypeMap[field] = new Set<string>();
-          fieldTypeMap[field].add(inferBsonType(value));
-        }
-      }
-
-      const fields = Object.entries(fieldTypeMap).map(([name, types]) => ({
-        name,
-        types: Array.from(types),
-      }));
-
-      const { samples, _note } = truncateSamples(
-        sampleDocuments,
-        MAX_SAMPLE_ROWS,
-      );
-
-      return {
-        entityKind: "collection" as const,
-        entityName: collectionName,
-        database: databaseName,
-        fields,
-        samples,
-        _note,
-      };
-    },
+  const { executionId, signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-mongo-inspect",
   );
+
+  try {
+    return await withAgentTimeout(
+      executionId,
+      async registeredExecutionId => {
+        const SAMPLE_SIZE = 100;
+        const inspectionQuery = `db.collection(${JSON.stringify(collectionName)}).aggregate([{ $sample: { size: ${SAMPLE_SIZE} } }]).toArray()`;
+        const result = await databaseConnectionService.executeQuery(
+          database as Parameters<
+            typeof databaseConnectionService.executeQuery
+          >[0],
+          inspectionQuery,
+          {
+            databaseName,
+            executionId: registeredExecutionId,
+            signal,
+          },
+        );
+
+        if (!result.success) {
+          throw new Error(result.error || "Failed to inspect collection");
+        }
+
+        const sampleDocuments = Array.isArray(result.data) ? result.data : [];
+
+        const fieldTypeMap: Record<string, Set<string>> = {};
+        for (const doc of sampleDocuments) {
+          for (const [field, value] of Object.entries(doc)) {
+            if (!fieldTypeMap[field]) fieldTypeMap[field] = new Set<string>();
+            fieldTypeMap[field].add(inferBsonType(value));
+          }
+        }
+
+        const fields = Object.entries(fieldTypeMap).map(([name, types]) => ({
+          name,
+          types: Array.from(types),
+        }));
+
+        const { samples, _note } = truncateSamples(
+          sampleDocuments,
+          MAX_SAMPLE_ROWS,
+        );
+
+        return {
+          entityKind: "collection" as const,
+          entityName: collectionName,
+          database: databaseName,
+          fields,
+          samples,
+          _note,
+        };
+      },
+      { signal },
+    );
+  } finally {
+    release();
+  }
 }
 
 async function executeQueryImpl(
@@ -216,6 +266,7 @@ async function executeQueryImpl(
   databaseName: string,
   workspaceId: string,
   userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) {
   const startTime = Date.now();
 
@@ -234,22 +285,35 @@ async function executeQueryImpl(
   });
   if (!database) throw new Error("Connection not found or access denied");
 
+  const { executionId, signal, release } = registerAgentExecution(
+    toolExecutionContext,
+    "agent-mongo-query",
+  );
+
   let result: Awaited<
     ReturnType<typeof databaseConnectionService.executeQuery>
   >;
   try {
     result = await withAgentTimeout(
-      `agent-mongo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      executionId =>
+      executionId,
+      registeredExecutionId =>
         databaseConnectionService.executeQuery(
           database as Parameters<
             typeof databaseConnectionService.executeQuery
           >[0],
           query,
-          { databaseName, executionId },
+          { databaseName, executionId: registeredExecutionId, signal },
         ),
+      { signal },
     );
   } catch (err: unknown) {
+    if (isAgentToolAbortError(err)) {
+      return {
+        success: false,
+        status: "cancelled",
+        message: "Query cancelled because the chat stopped.",
+      };
+    }
     if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
       // Track timeout (fire-and-forget)
       if (userId) {
@@ -273,6 +337,8 @@ async function executeQueryImpl(
       };
     }
     throw err;
+  } finally {
+    release();
   }
 
   // Track query execution (fire-and-forget)
@@ -354,6 +420,7 @@ export const createMongoToolsV2 = (
   _consoles: ConsoleDataV2[],
   _preferredConsoleId?: string,
   userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) => {
   return {
     ...clientConsoleTools,
@@ -383,12 +450,17 @@ export const createMongoToolsV2 = (
       inputSchema: connectionIdSchema,
       execute: async (params: { connectionId: string }) => {
         try {
-          return await listMongoDatabasesImpl(params.connectionId, workspaceId);
+          return await listMongoDatabasesImpl(
+            params.connectionId,
+            workspaceId,
+            toolExecutionContext,
+          );
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Database listing cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to list databases",
           };
@@ -408,12 +480,14 @@ export const createMongoToolsV2 = (
             params.connectionId,
             params.databaseName,
             workspaceId,
+            toolExecutionContext,
           );
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Collection listing cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to list collections",
           };
@@ -436,17 +510,20 @@ export const createMongoToolsV2 = (
             params.collectionName,
             params.databaseName,
             workspaceId,
+            toolExecutionContext,
           );
         } catch (error) {
           const isTimeout =
             error instanceof Error && error.message === "AGENT_QUERY_TIMEOUT";
           return {
             success: false,
-            error: isTimeout
-              ? `Collection inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The collection may be very large. Try using execute_query with a targeted query instead.`
-              : error instanceof Error
-                ? error.message
-                : "Failed to inspect collection",
+            error: isAgentToolAbortError(error)
+              ? "Collection inspection cancelled because the chat stopped."
+              : isTimeout
+                ? `Collection inspection timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The collection may be very large. Try using execute_query with a targeted query instead.`
+                : error instanceof Error
+                  ? error.message
+                  : "Failed to inspect collection",
           };
         }
       },
@@ -468,12 +545,14 @@ export const createMongoToolsV2 = (
             params.databaseName,
             workspaceId,
             userId,
+            toolExecutionContext,
           );
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Query cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to execute query",
           };

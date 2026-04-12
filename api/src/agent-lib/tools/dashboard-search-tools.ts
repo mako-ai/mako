@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { Types } from "mongoose";
+import type { AgentToolExecutionContext } from "../../agents/types";
 import { Dashboard } from "../../database/workspace-schema";
+import {
+  isAgentToolAbortError,
+  registerAgentExecution,
+  throwIfAborted,
+} from "./shared/truncation";
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -42,7 +48,10 @@ async function searchDashboardsByQuery(
   }));
 }
 
-export const createDashboardSearchTools = (workspaceId: string) => ({
+export const createDashboardSearchTools = (
+  workspaceId: string,
+  toolExecutionContext?: AgentToolExecutionContext,
+) => ({
   search_dashboards: {
     description:
       "Search saved dashboards across the workspace by title, description, or data source name. " +
@@ -59,12 +68,18 @@ export const createDashboardSearchTools = (workspaceId: string) => ({
         .describe("Max results to return (default 5)"),
     }),
     execute: async ({ query, limit }: { query: string; limit?: number }) => {
+      const { signal, release } = registerAgentExecution(
+        toolExecutionContext,
+        "agent-search-dashboards",
+      );
       try {
+        throwIfAborted(signal);
         const results = await searchDashboardsByQuery(
           query,
           workspaceId,
           limit || 5,
         );
+        throwIfAborted(signal);
         return {
           success: true as const,
           dashboards: results,
@@ -73,11 +88,14 @@ export const createDashboardSearchTools = (workspaceId: string) => ({
       } catch (error) {
         return {
           success: false as const,
-          error:
-            error instanceof Error
+          error: isAgentToolAbortError(error)
+            ? "Dashboard search cancelled because the chat stopped."
+            : error instanceof Error
               ? error.message
               : "Failed to search dashboards",
         };
+      } finally {
+        release();
       }
     },
   },

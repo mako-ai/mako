@@ -151,6 +151,7 @@ interface DashboardStoreState {
   createDashboard: (
     workspaceId: string,
     data: Partial<Dashboard>,
+    options?: { signal?: AbortSignal },
   ) => Promise<Dashboard | null>;
   updateDashboard: (
     workspaceId: string,
@@ -162,8 +163,16 @@ interface DashboardStoreState {
     workspaceId: string,
     id: string,
   ) => Promise<Dashboard | null>;
-  openDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
-  reloadDashboard: (workspaceId: string, dashboardId: string) => Promise<void>;
+  openDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<void>;
+  reloadDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<void>;
   closeDashboard: (dashboardId: string) => void;
   saveDashboard: (
     workspaceId: string,
@@ -202,6 +211,7 @@ interface DashboardStoreState {
   fetchDashboardMaterializationStatus: (
     workspaceId: string,
     dashboardId: string,
+    options?: { signal?: AbortSignal },
   ) => Promise<DashboardMaterializationStatus | null>;
   materializeDashboard: (
     workspaceId: string,
@@ -227,10 +237,15 @@ interface DashboardStoreState {
 
   getDashboardSavedStateHash: (dashboardId: string) => string | undefined;
 
-  acquireLock: (workspaceId: string, dashboardId: string) => Promise<boolean>;
+  acquireLock: (
+    workspaceId: string,
+    dashboardId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<boolean>;
   forceAcquireLock: (
     workspaceId: string,
     dashboardId: string,
+    options?: { signal?: AbortSignal },
   ) => Promise<boolean>;
   releaseLock: (workspaceId: string, dashboardId: string) => Promise<void>;
   heartbeatLock: (workspaceId: string, dashboardId: string) => Promise<void>;
@@ -238,7 +253,7 @@ interface DashboardStoreState {
   enterEditMode: (
     workspaceId: string,
     dashboardId: string,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; signal?: AbortSignal },
   ) => Promise<{ ok: boolean; lockedBy?: string }>;
   exitEditMode: (workspaceId: string, dashboardId: string) => Promise<void>;
   setLockConflictPrompt: (prompt: LockConflictPrompt | null) => void;
@@ -315,12 +330,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
       createDashboard: async (
         workspaceId: string,
         data: Partial<Dashboard>,
+        options?: { signal?: AbortSignal },
       ) => {
         try {
           const response = await apiClient.post<{
             success: boolean;
             data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards`, data);
+          }>(`/workspaces/${workspaceId}/dashboards`, data, {
+            signal: options?.signal,
+          });
 
           if (response.data) {
             set(state => {
@@ -407,7 +425,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
         }
       },
 
-      openDashboard: async (workspaceId: string, dashboardId: string) => {
+      openDashboard: async (
+        workspaceId: string,
+        dashboardId: string,
+        options?: { signal?: AbortSignal },
+      ) => {
         const existing = get().openDashboards[dashboardId];
         if (existing) {
           set(state => {
@@ -416,15 +438,25 @@ export const useDashboardStore = create<DashboardStoreState>()(
           return;
         }
 
-        await get().reloadDashboard(workspaceId, dashboardId);
+        await get().reloadDashboard(workspaceId, dashboardId, options);
       },
 
-      reloadDashboard: async (workspaceId: string, dashboardId: string) => {
+      reloadDashboard: async (
+        workspaceId: string,
+        dashboardId: string,
+        options?: { signal?: AbortSignal },
+      ) => {
         try {
           const response = await apiClient.get<{
             success: boolean;
             data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`);
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}`,
+            undefined,
+            {
+              signal: options?.signal,
+            },
+          );
 
           if (response.data) {
             const dashboard = response.data;
@@ -755,6 +787,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
       fetchDashboardMaterializationStatus: async (
         workspaceId: string,
         dashboardId: string,
+        options?: { signal?: AbortSignal },
       ) => {
         try {
           const response = await apiClient.get<{
@@ -762,6 +795,8 @@ export const useDashboardStore = create<DashboardStoreState>()(
             data: DashboardMaterializationStatus;
           }>(
             `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization`,
+            undefined,
+            { signal: options?.signal },
           );
           if (!response.data) {
             return null;
@@ -853,12 +888,22 @@ export const useDashboardStore = create<DashboardStoreState>()(
         return get().savedStateHashes[dashboardId];
       },
 
-      acquireLock: async (workspaceId: string, dashboardId: string) => {
+      acquireLock: async (
+        workspaceId: string,
+        dashboardId: string,
+        options?: { signal?: AbortSignal },
+      ) => {
         try {
           const response = await apiClient.post<{
             success: boolean;
             data: Pick<Dashboard, "editLock">;
-          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`);
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`,
+            undefined,
+            {
+              signal: options?.signal,
+            },
+          );
           if (response.data) {
             set(state => {
               const d = state.openDashboards[dashboardId];
@@ -877,13 +922,19 @@ export const useDashboardStore = create<DashboardStoreState>()(
         }
       },
 
-      forceAcquireLock: async (workspaceId: string, dashboardId: string) => {
+      forceAcquireLock: async (
+        workspaceId: string,
+        dashboardId: string,
+        options?: { signal?: AbortSignal },
+      ) => {
         try {
           const response = await apiClient.post<{
             success: boolean;
             data: Pick<Dashboard, "editLock">;
           }>(
             `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock?force=true`,
+            undefined,
+            { signal: options?.signal },
           );
           if (response.data) {
             set(state => {
@@ -928,13 +979,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
       enterEditMode: async (
         workspaceId: string,
         dashboardId: string,
-        opts?: { force?: boolean },
+        opts?: { force?: boolean; signal?: AbortSignal },
       ) => {
         if (get().editingDashboards[dashboardId]) {
           return { ok: true };
         }
         const lockFn = opts?.force ? get().forceAcquireLock : get().acquireLock;
-        const acquired = await lockFn(workspaceId, dashboardId);
+        const acquired = await lockFn(workspaceId, dashboardId, {
+          signal: opts?.signal,
+        });
         if (acquired) {
           set(state => {
             state.editingDashboards[dashboardId] = true;

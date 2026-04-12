@@ -24,6 +24,7 @@ import type {
   DashboardQueryResult,
   DashboardRuntimeColumn,
 } from "./types";
+import { throwIfAborted as throwIfSignalAborted } from "./abort-utils";
 
 function hashString(value: string): string {
   let hash = 0;
@@ -214,6 +215,7 @@ async function fetchDashboardExport(
   dashboardId: string,
   dataSource: DashboardDataSource,
   format: "arrow" | "ndjson" | "parquet",
+  signal?: AbortSignal,
 ): Promise<Response & { body: ReadableStream<Uint8Array> }> {
   const response = await fetch(
     `/api/workspaces/${workspaceId}/execute/export`,
@@ -224,6 +226,7 @@ async function fetchDashboardExport(
       body: JSON.stringify(
         buildDashboardExportPayload(dashboardId, dataSource, format),
       ),
+      signal,
     },
   );
 
@@ -252,6 +255,7 @@ async function loadParquetArtifactIntoTable(options: {
   session: Awaited<ReturnType<typeof ensureDashboardSession>>;
   parquetUrl: string;
   targetTableRef: string;
+  signal?: AbortSignal;
   onProgress?: (progress: {
     rowsLoaded: number;
     bytesLoaded: number;
@@ -260,6 +264,7 @@ async function loadParquetArtifactIntoTable(options: {
 }): Promise<number> {
   const response = await fetch(options.parquetUrl, {
     credentials: "include",
+    signal: options.signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(response.statusText || "Failed to fetch parquet artifact");
@@ -268,6 +273,7 @@ async function loadParquetArtifactIntoTable(options: {
   const totalBytes = parseNumericHeader(response.headers, "Content-Length");
   const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
   const parquetBuffer = await collectStreamBytes(response.body, bytesLoaded => {
+    throwIfSignalAborted(options.signal);
     const estimatedRows = estimateRowsFromBytes(
       bytesLoaded,
       totalBytes,
@@ -358,6 +364,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   onRowsLoaded: (loaded: number) => void;
   runtimeContext?: DashboardRuntimeContext;
   skipParquet?: boolean;
+  signal?: AbortSignal;
 }): Promise<{
   rowCount: number;
   loadPath: "memory" | "arrow_stream" | "ndjson_stream";
@@ -386,6 +393,7 @@ async function loadDashboardDataSourceWithFallback(options: {
   } | null> => {
     if (!parquetUrl) return null;
     try {
+      throwIfSignalAborted(options.signal);
       updateDatasourceDiagnostics({
         runtimeStore,
         dashboardId,
@@ -407,6 +415,7 @@ async function loadDashboardDataSourceWithFallback(options: {
           session,
           parquetUrl,
           targetTableRef,
+          signal: options.signal,
           onProgress: progress => {
             const loadingMessage =
               progress.rowsLoaded > 0
@@ -475,6 +484,7 @@ async function loadDashboardDataSourceWithFallback(options: {
         dashboardId,
         dataSource,
         "arrow",
+        options.signal,
       );
       const totalBytes = parseNumericHeader(response.headers, "Content-Length");
       const totalRows = parseNumericHeader(response.headers, "X-Row-Count");
@@ -567,6 +577,7 @@ async function loadDashboardDataSourceWithFallback(options: {
       dashboardId,
       dataSource,
       "ndjson",
+      options.signal,
     );
     const totalBytes = parseNumericHeader(response.headers, "Content-Length");
     setDatasourceLoadingMessage({
@@ -829,6 +840,7 @@ export async function materializeDashboardDataSource(options: {
   force?: boolean;
   runtimeContext?: DashboardRuntimeContext;
   skipParquet?: boolean;
+  signal?: AbortSignal;
 }): Promise<void> {
   const {
     workspaceId,
@@ -837,6 +849,7 @@ export async function materializeDashboardDataSource(options: {
     force = false,
     runtimeContext = "builder",
     skipParquet = false,
+    signal,
   } = options;
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
@@ -940,6 +953,7 @@ export async function materializeDashboardDataSource(options: {
   );
 
   try {
+    throwIfSignalAborted(signal);
     temporaryTableRef = buildTemporaryTableRef(dataSource.tableRef);
     setDatasourceLoadingMessage({
       runtimeStore,
@@ -962,6 +976,7 @@ export async function materializeDashboardDataSource(options: {
       },
       runtimeContext,
       skipParquet,
+      signal,
     });
 
     setDatasourceLoadingMessage({
@@ -1174,7 +1189,9 @@ export async function queryDashboardRuntime(options: {
   dashboard: Dashboard;
   sql: string;
   dataSourceId?: string;
+  signal?: AbortSignal;
 }): Promise<DashboardQueryResult> {
+  throwIfSignalAborted(options.signal);
   const session = getDashboardSession(options.dashboard._id);
   if (!session) {
     throw new Error("Dashboard runtime session is not initialized");
@@ -1185,13 +1202,16 @@ export async function queryDashboardRuntime(options: {
     options.sql,
     options.dataSourceId,
   );
-  return await queryDuckDB(session.db, resolvedSql);
+  const result = await queryDuckDB(session.db, resolvedSql);
+  throwIfSignalAborted(options.signal);
+  return result;
 }
 
 export async function previewDashboardDataSource(options: {
   dashboard: Dashboard;
   dataSourceId: string;
   sql?: string;
+  signal?: AbortSignal;
 }): Promise<DashboardQueryResult> {
   const dataSource = options.dashboard.dataSources.find(
     ds => ds.id === options.dataSourceId,
@@ -1221,5 +1241,6 @@ export async function previewDashboardDataSource(options: {
   return await queryDashboardRuntime({
     dashboard: options.dashboard,
     sql,
+    signal: options.signal,
   });
 }

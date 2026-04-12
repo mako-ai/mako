@@ -26,6 +26,7 @@ import type {
   DashboardQueryDefinition,
   DashboardWidget,
 } from "./types";
+import { abortableSleep } from "./abort-utils";
 
 function resolveActiveDashboardId(): string {
   const id = useDashboardStore.getState().activeDashboardId;
@@ -56,10 +57,6 @@ function remountWidgetsForDataSource(
       );
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function isDashboardInEditMode(dashboardId: string): boolean {
@@ -103,10 +100,11 @@ export function shouldAutoApplyFreshMaterialization(
 async function fetchAndSyncMaterializationStatus(
   workspaceId: string,
   dashboardId: string,
+  signal?: AbortSignal,
 ): Promise<DashboardMaterializationStatus | null> {
   const status = await useDashboardStore
     .getState()
-    .fetchDashboardMaterializationStatus(workspaceId, dashboardId);
+    .fetchDashboardMaterializationStatus(workspaceId, dashboardId, { signal });
   if (status) {
     syncRuntimeMaterializationStatus(dashboardId, status);
   }
@@ -117,11 +115,13 @@ async function waitForDashboardMaterialization(options: {
   workspaceId: string;
   dashboardId: string;
   pollMs?: number;
+  signal?: AbortSignal;
 }): Promise<DashboardMaterializationStatus | null> {
   const runtimeStore = useDashboardRuntimeStore.getState();
   const initial = await fetchAndSyncMaterializationStatus(
     options.workspaceId,
     options.dashboardId,
+    options.signal,
   );
   if (!initial) {
     return null;
@@ -135,10 +135,11 @@ async function waitForDashboardMaterialization(options: {
   );
   let current = initial;
   while (current.anyBuilding) {
-    await sleep(options.pollMs ?? 3000);
+    await abortableSleep(options.pollMs ?? 3000, options.signal);
     const nextStatus = await fetchAndSyncMaterializationStatus(
       options.workspaceId,
       options.dashboardId,
+      options.signal,
     );
     if (!nextStatus) {
       return null;
@@ -275,6 +276,7 @@ export async function createDashboardDataSource(options: {
   timeDimension?: string;
   rowLimit?: number;
   dashboardId?: string;
+  signal?: AbortSignal;
 }): Promise<DashboardDataSource> {
   const store = useDashboardStore.getState();
   const dashboard = getDashboardOrThrow(options.dashboardId);
@@ -293,6 +295,7 @@ export async function createDashboardDataSource(options: {
     dataSource,
     force: true,
     skipParquet: true,
+    signal: options.signal,
   });
 
   return dataSource;
@@ -305,10 +308,12 @@ export async function importConsoleAsDashboardDataSource(options: {
   rowLimit?: number;
   timeDimension?: string;
   dashboardId?: string;
+  signal?: AbortSignal;
 }): Promise<DashboardDataSource> {
   const response = await apiClient.get<ConsoleContentResponse>(
     `/workspaces/${options.workspaceId}/consoles/content`,
     { id: options.consoleId },
+    { signal: options.signal },
   );
 
   if (!response.success) {
@@ -347,6 +352,7 @@ export async function importConsoleAsDashboardDataSource(options: {
     dataSource,
     force: true,
     skipParquet: true,
+    signal: options.signal,
   });
 
   return dataSource;
@@ -358,6 +364,7 @@ export async function updateDashboardDataSourceQuery(options: {
   changes: Partial<DashboardDataSource>;
   rematerialize?: boolean;
   dashboardId?: string;
+  signal?: AbortSignal;
 }): Promise<void> {
   const store = useDashboardStore.getState();
   const dashboard = getDashboardOrThrow(options.dashboardId);
@@ -375,6 +382,7 @@ export async function updateDashboardDataSourceQuery(options: {
         dataSource,
         force: true,
         skipParquet: true,
+        signal: options.signal,
       });
 
       const mosaicInstance = getMosaicInstance(updatedDashboard._id);
@@ -399,6 +407,7 @@ export async function runDashboardDataSource(options: {
   workspaceId: string;
   dashboardId: string;
   dataSourceId: string;
+  signal?: AbortSignal;
 }): Promise<{ loadPath: string | null; recovered: boolean }> {
   const dashboard = getDashboardOrThrow(options.dashboardId);
   const dataSource = dashboard.dataSources.find(
@@ -416,6 +425,7 @@ export async function runDashboardDataSource(options: {
       dataSource,
       force: true,
       skipParquet: true,
+      signal: options.signal,
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -450,6 +460,7 @@ export async function runDashboardDataSource(options: {
       dataSource: freshDs,
       force: true,
       skipParquet: true,
+      signal: options.signal,
     });
 
     const otherDataSources = freshDashboard.dataSources.filter(
@@ -464,6 +475,7 @@ export async function runDashboardDataSource(options: {
             dataSource: ds,
             force: true,
             skipParquet: true,
+            signal: options.signal,
           }),
         ),
       );
@@ -696,12 +708,14 @@ export async function previewDashboardQuery(options: {
   dataSourceId: string;
   sql?: string;
   dashboardId?: string;
+  signal?: AbortSignal;
 }) {
   const dashboard = getDashboardOrThrow(options.dashboardId);
   return await previewDashboardDataSource({
     dashboard,
     dataSourceId: options.dataSourceId,
     sql: options.sql,
+    signal: options.signal,
   });
 }
 
@@ -709,12 +723,14 @@ export async function executeDashboardSql(options: {
   sql: string;
   dataSourceId?: string;
   dashboardId?: string;
+  signal?: AbortSignal;
 }) {
   const dashboard = getDashboardOrThrow(options.dashboardId);
   return await queryDashboardRuntime({
     dashboard,
     sql: options.sql,
     dataSourceId: options.dataSourceId,
+    signal: options.signal,
   });
 }
 

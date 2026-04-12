@@ -23,11 +23,18 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     consoles,
     consoleId,
     userId,
+    context.toolExecutionContext,
   );
-  const flowTools = createFlowTools(workspaceId);
+  const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
-  const consoleSearchTools = createConsoleSearchTools(workspaceId);
-  const dashboardSearchTools = createDashboardSearchTools(workspaceId);
+  const consoleSearchTools = createConsoleSearchTools(
+    workspaceId,
+    context.toolExecutionContext,
+  );
+  const dashboardSearchTools = createDashboardSearchTools(
+    workspaceId,
+    context.toolExecutionContext,
+  );
 
   const {
     list_connections: _flowListConnections,

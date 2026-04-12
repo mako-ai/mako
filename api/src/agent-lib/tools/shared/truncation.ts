@@ -3,10 +3,54 @@
  * Prevents context overflow by limiting string lengths, array sizes, object depths, etc.
  */
 
+import type { AgentToolExecutionContext } from "../../../agents/types";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 
 // Agent query timeout: how long server-side agent tools wait before aborting
 export const AGENT_QUERY_TIMEOUT_MS = 60_000; // 60 seconds
+export const AGENT_QUERY_TIMEOUT = "AGENT_QUERY_TIMEOUT";
+export const AGENT_QUERY_ABORTED = "AGENT_QUERY_ABORTED";
+
+export function createAgentExecutionId(prefix = "agent-query"): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error(AGENT_QUERY_ABORTED);
+  }
+}
+
+export function isAgentToolAbortError(error: unknown): boolean {
+  if (error instanceof Error && error.message === AGENT_QUERY_ABORTED) {
+    return true;
+  }
+  if (error instanceof Error && error.name === "AbortError") return true;
+  return false;
+}
+
+export function isAgentToolTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.message === AGENT_QUERY_TIMEOUT;
+}
+
+export function registerAgentExecution(
+  toolExecutionContext: AgentToolExecutionContext | undefined,
+  prefix: string,
+): {
+  executionId: string;
+  signal: AbortSignal | undefined;
+  release: () => void;
+} {
+  const executionId =
+    toolExecutionContext?.createExecutionId(prefix) ??
+    createAgentExecutionId(prefix);
+  toolExecutionContext?.registerExecution(executionId);
+  return {
+    executionId,
+    signal: toolExecutionContext?.signal,
+    release: () => toolExecutionContext?.releaseExecution(executionId),
+  };
+}
 
 /**
  * Run a database operation with a timeout. On timeout, cancels the query
@@ -15,26 +59,66 @@ export const AGENT_QUERY_TIMEOUT_MS = 60_000; // 60 seconds
 export async function withAgentTimeout<T>(
   executionId: string,
   fn: (execId: string) => Promise<T>,
+  options?: {
+    signal?: AbortSignal;
+    onTimeout?: (executionId: string) => Promise<void> | void;
+    onAbort?: (executionId: string) => Promise<void> | void;
+    timeoutMs?: number;
+  },
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let removeAbortListener: (() => void) | undefined;
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error("AGENT_QUERY_TIMEOUT")),
-      AGENT_QUERY_TIMEOUT_MS,
+      () => reject(new Error(AGENT_QUERY_TIMEOUT)),
+      options?.timeoutMs ?? AGENT_QUERY_TIMEOUT_MS,
     );
   });
 
+  const abortSignal = options?.signal;
+  const abortPromise = abortSignal
+    ? new Promise<never>((_, reject) => {
+        const handleAbort = () => reject(new Error(AGENT_QUERY_ABORTED));
+        if (abortSignal.aborted) {
+          handleAbort();
+          return;
+        }
+        abortSignal.addEventListener("abort", handleAbort, { once: true });
+        removeAbortListener = () =>
+          abortSignal.removeEventListener("abort", handleAbort);
+      })
+    : null;
+
   try {
-    const result = await Promise.race([fn(executionId), timeoutPromise]);
+    throwIfAborted(options?.signal);
+    const result = await Promise.race(
+      [fn(executionId), timeoutPromise, abortPromise].filter(
+        (candidate): candidate is Promise<T> | Promise<never> => !!candidate,
+      ),
+    );
     return result;
   } catch (err) {
-    if (err instanceof Error && err.message === "AGENT_QUERY_TIMEOUT") {
-      databaseConnectionService.cancelQuery(executionId).catch(() => {});
+    if (isAgentToolTimeoutError(err)) {
+      const cancel =
+        options?.onTimeout ??
+        (async (id: string) => {
+          await databaseConnectionService.cancelQuery(id);
+        });
+      await Promise.resolve(cancel(executionId)).catch(() => {});
+    }
+    if (isAgentToolAbortError(err)) {
+      const cancel =
+        options?.onAbort ??
+        (async (id: string) => {
+          await databaseConnectionService.cancelQuery(id);
+        });
+      await Promise.resolve(cancel(executionId)).catch(() => {});
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    removeAbortListener?.();
   }
 }
 

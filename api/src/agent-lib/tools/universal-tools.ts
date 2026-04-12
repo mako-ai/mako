@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
+import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
 import { clientConsoleTools } from "./console-tools-client";
 import { clientChartTools } from "./chart-tools-client";
@@ -139,6 +140,7 @@ export const createUniversalTools = (
   consoles: ConsoleDataV2[],
   preferredConsoleId?: string,
   userId?: string,
+  toolExecutionContext?: AgentToolExecutionContext,
 ) => {
   // Get MongoDB tools and extract just the database-specific ones
   const mongoTools = createMongoToolsV2(
@@ -146,6 +148,7 @@ export const createUniversalTools = (
     consoles,
     preferredConsoleId,
     userId,
+    toolExecutionContext,
   );
   const {
     // Strip console tools (we use client-side versions)
@@ -166,6 +169,7 @@ export const createUniversalTools = (
     consoles,
     preferredConsoleId,
     userId,
+    toolExecutionContext,
   );
   const {
     // Strip console tools

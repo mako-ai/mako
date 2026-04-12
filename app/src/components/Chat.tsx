@@ -253,6 +253,35 @@ interface ToolInvocationInfo {
   output?: unknown;
 }
 
+type AutoSendPredicateArgs = Parameters<
+  typeof lastAssistantMessageIsCompleteWithToolCalls
+>[0];
+
+interface ActiveClientToolCall {
+  toolCallId: string;
+  toolName: string;
+  executionId: string;
+  abortController: AbortController;
+  cancel: () => void | Promise<void>;
+  cancellationOutput: Record<string, unknown>;
+  settled: boolean;
+}
+
+const LONG_RUNNING_DASHBOARD_TOOLS = new Set([
+  "open_dashboard",
+  "create_dashboard",
+  "enter_edit_mode",
+  "add_data_source",
+  "import_console_as_data_source",
+  "create_data_source",
+  "update_data_source_query",
+  "run_data_source_query",
+  "preview_data_source",
+  "get_data_preview",
+  "add_widget",
+  "modify_widget",
+]);
+
 // ReasoningDisplay for showing reasoning/thinking parts inline.
 // - Auto-opens while streaming, auto-collapses when done.
 // - Shows elapsed thinking time ("Thought for Xs").
@@ -394,6 +423,12 @@ const shimmerAnimation = keyframes`
 const streamingIndicatorContainerSx = {
   display: "flex",
   alignItems: "center",
+  justifyContent: "center",
+  width: 14,
+  height: 14,
+  overflow: "visible",
+  lineHeight: 0,
+  flexShrink: 0,
   mt: 0.5,
 } as const;
 
@@ -941,9 +976,20 @@ const Chat: React.FC<ChatProps> = ({
   const workspaceIdRef = useRef(currentWorkspace?.id);
   const modelIdRef = useRef(selectedModelId);
   const chatIdRef = useRef(chatId);
+  const manualStopRequestedRef = useRef(false);
+  const activeClientToolCallsRef = useRef(
+    new Map<string, ActiveClientToolCall>(),
+  );
   workspaceIdRef.current = currentWorkspace?.id;
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
+
+  const autoSendWhenComplete = useCallback((options: AutoSendPredicateArgs) => {
+    if (manualStopRequestedRef.current) {
+      return false;
+    }
+    return lastAssistantMessageIsCompleteWithToolCalls(options);
+  }, []);
 
   // Create transport with prepareSendMessagesRequest for dynamic body values
   // prepareSendMessagesRequest REPLACES the body (doesn't merge), so we must include all fields
@@ -1133,7 +1179,7 @@ const Chat: React.FC<ChatProps> = ({
     transport,
 
     // Automatically submit when all tool results are available
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    sendAutomaticallyWhen: autoSendWhenComplete,
 
     // Handle client-side tools (console operations)
     async onToolCall({ toolCall }) {
@@ -1535,20 +1581,21 @@ const Chat: React.FC<ChatProps> = ({
             return;
           }
 
+          const { abortController } = registerActiveClientToolCall(
+            "open_console",
+            toolCall.toolCallId,
+          );
+
           try {
             const currentStore = useConsoleStore.getState();
             const existingTab = currentStore.tabs[consoleId];
             if (existingTab) {
               currentStore.setActiveTab(consoleId);
-              addToolOutput({
-                tool: "open_console",
-                toolCallId: toolCall.toolCallId,
-                output: {
-                  success: true,
-                  consoleId,
-                  title: existingTab.title,
-                  message: `Console "${existingTab.title}" is already open — switched to it.`,
-                },
+              settleActiveClientToolCall("open_console", toolCall.toolCallId, {
+                success: true,
+                consoleId,
+                title: existingTab.title,
+                message: `Console "${existingTab.title}" is already open — switched to it.`,
               });
               return;
             }
@@ -1556,15 +1603,15 @@ const Chat: React.FC<ChatProps> = ({
             const data = await currentStore.fetchConsoleContent(
               workspaceIdRef.current!,
               consoleId,
+              { signal: abortController.signal },
             );
+            if (abortController.signal.aborted) {
+              return;
+            }
             if (!data) {
-              addToolOutput({
-                tool: "open_console",
-                toolCallId: toolCall.toolCallId,
-                output: {
-                  success: false,
-                  error: `Console ${consoleId} not found or access denied.`,
-                },
+              settleActiveClientToolCall("open_console", toolCall.toolCallId, {
+                success: false,
+                error: `Console ${consoleId} not found or access denied.`,
               });
               return;
             }
@@ -1580,24 +1627,19 @@ const Chat: React.FC<ChatProps> = ({
             });
             currentStore.setActiveTab(consoleId);
 
-            addToolOutput({
-              tool: "open_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: true,
-                consoleId,
-                title,
-                message: `Console "${title}" opened successfully.`,
-              },
+            settleActiveClientToolCall("open_console", toolCall.toolCallId, {
+              success: true,
+              consoleId,
+              title,
+              message: `Console "${title}" opened successfully.`,
             });
           } catch (err) {
-            addToolOutput({
-              tool: "open_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
-              },
+            if (abortController.signal.aborted) {
+              return;
+            }
+            settleActiveClientToolCall("open_console", toolCall.toolCallId, {
+              success: false,
+              error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
             });
           }
           return;
@@ -1690,71 +1732,154 @@ const Chat: React.FC<ChatProps> = ({
             return;
           }
 
-          // Send the spec to the renderer and wait for render result
-          const renderResult = await new Promise<{
-            success: boolean;
-            error?: string;
-          }>(resolve => {
-            const timeout = setTimeout(() => resolve({ success: true }), 5000);
-            onChartSpecChangeRef.current!({
-              spec: parsed.data,
-              onRenderResult: result => {
-                clearTimeout(timeout);
-                resolve(result);
-              },
-            });
-          });
+          const { abortController } = registerActiveClientToolCall(
+            "modify_chart_spec",
+            toolCall.toolCallId,
+          );
 
-          if (renderResult.success) {
-            addToolOutput({
-              tool: "modify_chart_spec",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: true,
-                message: "Chart rendered successfully in the results panel.",
-              },
+          try {
+            // Send the spec to the renderer and wait for render result
+            const renderResult = await new Promise<{
+              success: boolean;
+              error?: string;
+            }>((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                abortController.signal.removeEventListener(
+                  "abort",
+                  handleAbort,
+                );
+                resolve({ success: true });
+              }, 5000);
+              const handleAbort = () => {
+                clearTimeout(timeout);
+                abortController.signal.removeEventListener(
+                  "abort",
+                  handleAbort,
+                );
+                reject(
+                  new DOMException("Chart update cancelled", "AbortError"),
+                );
+              };
+
+              if (abortController.signal.aborted) {
+                handleAbort();
+                return;
+              }
+
+              abortController.signal.addEventListener("abort", handleAbort, {
+                once: true,
+              });
+              onChartSpecChangeRef.current!({
+                spec: parsed.data,
+                onRenderResult: result => {
+                  clearTimeout(timeout);
+                  abortController.signal.removeEventListener(
+                    "abort",
+                    handleAbort,
+                  );
+                  resolve(result);
+                },
+              });
             });
-          } else {
-            addToolOutput({
-              tool: "modify_chart_spec",
-              toolCallId: toolCall.toolCallId,
-              output: {
+
+            if (renderResult.success) {
+              settleActiveClientToolCall(
+                "modify_chart_spec",
+                toolCall.toolCallId,
+                {
+                  success: true,
+                  message: "Chart rendered successfully in the results panel.",
+                },
+              );
+            } else {
+              settleActiveClientToolCall(
+                "modify_chart_spec",
+                toolCall.toolCallId,
+                {
+                  success: false,
+                  error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
+                },
+              );
+            }
+          } catch (chartError) {
+            if (abortController.signal.aborted) {
+              return;
+            }
+
+            settleActiveClientToolCall(
+              "modify_chart_spec",
+              toolCall.toolCallId,
+              {
                 success: false,
-                error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
+                error:
+                  chartError instanceof Error
+                    ? chartError.message
+                    : "Chart rendering failed unexpectedly.",
               },
-            });
+            );
           }
           return;
         }
 
         // --- Dashboard tools (client-side) ---
         try {
+          const activeDashboardTool = LONG_RUNNING_DASHBOARD_TOOLS.has(toolName)
+            ? registerActiveClientToolCall(toolName, toolCall.toolCallId)
+            : null;
+
           const dashboardToolOutput = await executeDashboardAgentTool(
             toolName,
             input,
             capturedDashboardIdRef.current,
+            activeDashboardTool
+              ? {
+                  executionId: activeDashboardTool.executionId,
+                  signal: activeDashboardTool.abortController.signal,
+                }
+              : undefined,
           );
 
           if (dashboardToolOutput !== null) {
-            addToolOutput({
-              tool: toolName,
-              toolCallId: toolCall.toolCallId,
-              output: dashboardToolOutput,
-            });
+            if (activeDashboardTool) {
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                dashboardToolOutput,
+              );
+            } else {
+              addToolOutput({
+                tool: toolName,
+                toolCallId: toolCall.toolCallId,
+                output: dashboardToolOutput,
+              });
+            }
             return;
           }
         } catch (dashboardError) {
-          addToolOutput({
-            tool: toolName,
-            toolCallId: toolCall.toolCallId,
-            output: {
+          if (LONG_RUNNING_DASHBOARD_TOOLS.has(toolName)) {
+            if (manualStopRequestedRef.current) {
+              return;
+            }
+            settleActiveClientToolCall(toolName, toolCall.toolCallId, {
               success: false,
               error:
                 dashboardError instanceof Error
                   ? dashboardError.message
                   : "Dashboard tool execution failed",
-            },
-          });
+            });
+          } else {
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  dashboardError instanceof Error
+                    ? dashboardError.message
+                    : "Dashboard tool execution failed",
+              },
+            });
+          }
           return;
         }
 
@@ -1836,9 +1961,19 @@ const Chat: React.FC<ChatProps> = ({
           }
 
           const QUERY_TIMEOUT_MS = 120_000; // 2 minutes
-          const abortController = new AbortController();
+          const { abortController, executionId } = registerActiveClientToolCall(
+            "run_console",
+            toolCall.toolCallId,
+            {
+              cancel: async () => {
+                await useConsoleStore
+                  .getState()
+                  .cancelQuery(workspaceId, executionId);
+              },
+            },
+          );
           const timeoutId = setTimeout(
-            () => abortController.abort(),
+            () => abortController.abort("query-timeout"),
             QUERY_TIMEOUT_MS,
           );
 
@@ -1855,6 +1990,7 @@ const Chat: React.FC<ChatProps> = ({
               connectionId,
               content,
               {
+                executionId,
                 databaseName: targetConsole.databaseName,
                 databaseId: targetConsole.databaseId,
                 signal: abortController.signal,
@@ -1884,34 +2020,42 @@ const Chat: React.FC<ChatProps> = ({
                 }),
               );
 
-              addToolOutput({
-                tool: "run_console",
-                toolCallId: toolCall.toolCallId,
-                output: {
-                  success: true,
-                  rowCount,
-                  preview,
-                  message: `Query executed successfully. ${rowCount} row(s) returned.`,
-                },
+              settleActiveClientToolCall("run_console", toolCall.toolCallId, {
+                success: true,
+                rowCount,
+                preview,
+                message: `Query executed successfully. ${rowCount} row(s) returned.`,
               });
             } else {
+              const abortReason =
+                typeof abortController.signal.reason === "string"
+                  ? abortController.signal.reason
+                  : undefined;
               window.dispatchEvent(
                 new CustomEvent("console-execution-result", {
                   detail: { consoleId, result: null },
                 }),
               );
 
-              addToolOutput({
-                tool: "run_console",
-                toolCallId: toolCall.toolCallId,
-                output: {
-                  success: false,
-                  error: result.error || "Query execution failed.",
-                },
+              if (abortReason === "chat-stop") {
+                return;
+              }
+
+              settleActiveClientToolCall("run_console", toolCall.toolCallId, {
+                success: false,
+                error:
+                  abortReason === "query-timeout"
+                    ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
+                    : result.error || "Query execution failed.",
               });
             }
           } catch (e: any) {
             clearTimeout(timeoutId);
+
+            const abortReason =
+              typeof abortController.signal.reason === "string"
+                ? abortController.signal.reason
+                : undefined;
 
             window.dispatchEvent(
               new CustomEvent("console-execution-result", {
@@ -1919,17 +2063,16 @@ const Chat: React.FC<ChatProps> = ({
               }),
             );
 
-            const isTimeout =
-              e?.name === "AbortError" && abortController.signal.aborted;
-            addToolOutput({
-              tool: "run_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: isTimeout
+            if (abortReason === "chat-stop") {
+              return;
+            }
+
+            settleActiveClientToolCall("run_console", toolCall.toolCallId, {
+              success: false,
+              error:
+                abortReason === "query-timeout"
                   ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
                   : e?.message || "Query execution failed unexpectedly.",
-              },
             });
           }
           return;
@@ -2121,6 +2264,96 @@ const Chat: React.FC<ChatProps> = ({
     },
   });
 
+  const createCancellationOutput = useCallback(
+    (toolName: string): Record<string, unknown> => ({
+      success: false,
+      error:
+        toolName === "run_console"
+          ? "Query cancelled because the chat stopped."
+          : "Tool cancelled because the chat stopped.",
+    }),
+    [],
+  );
+
+  const registerActiveClientToolCall = useCallback(
+    (
+      toolName: string,
+      toolCallId: string,
+      options?: {
+        executionId?: string;
+        cancel?: () => void | Promise<void>;
+        cancellationOutput?: Record<string, unknown>;
+      },
+    ) => {
+      const abortController = new AbortController();
+      const executionId =
+        options?.executionId ?? `chat-tool-${generateObjectId()}`;
+
+      activeClientToolCallsRef.current.set(toolCallId, {
+        toolCallId,
+        toolName,
+        executionId,
+        abortController,
+        cancel: options?.cancel ?? (() => {}),
+        cancellationOutput:
+          options?.cancellationOutput ?? createCancellationOutput(toolName),
+        settled: false,
+      });
+
+      return { abortController, executionId };
+    },
+    [createCancellationOutput],
+  );
+
+  const settleActiveClientToolCall = useCallback(
+    (
+      toolName: string,
+      toolCallId: string,
+      output: Record<string, unknown>,
+    ): void => {
+      const activeToolCall = activeClientToolCallsRef.current.get(toolCallId);
+      if (!activeToolCall) {
+        if (!manualStopRequestedRef.current) {
+          addToolOutput({ tool: toolName, toolCallId, output });
+        }
+        return;
+      }
+
+      if (!activeToolCall.settled) {
+        activeToolCall.settled = true;
+        addToolOutput({
+          tool: activeToolCall.toolName,
+          toolCallId,
+          output,
+        });
+      }
+
+      activeClientToolCallsRef.current.delete(toolCallId);
+    },
+    [addToolOutput],
+  );
+
+  const handleStop = useCallback(() => {
+    manualStopRequestedRef.current = true;
+
+    for (const activeToolCall of activeClientToolCallsRef.current.values()) {
+      activeToolCall.abortController.abort("chat-stop");
+      void activeToolCall.cancel();
+
+      if (!activeToolCall.settled) {
+        activeToolCall.settled = true;
+        addToolOutput({
+          tool: activeToolCall.toolName,
+          toolCallId: activeToolCall.toolCallId,
+          output: activeToolCall.cancellationOutput,
+        });
+      }
+    }
+
+    activeClientToolCallsRef.current.clear();
+    stop();
+  }, [addToolOutput, stop]);
+
   const isLoading = status === "streaming" || status === "submitted";
 
   // Auto-scroll to bottom when messages change
@@ -2284,6 +2517,7 @@ const Chat: React.FC<ChatProps> = ({
 
   // Create new chat session - just generate a new ID locally (no API call needed)
   const createNewSession = () => {
+    manualStopRequestedRef.current = false;
     setChatId(generateObjectId());
     setMessages([]);
     setIsExistingChat(false);
@@ -2298,6 +2532,7 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const handleSelectSession = (id: string) => {
+    manualStopRequestedRef.current = false;
     setChatId(id);
     setMessages([]);
     setIsExistingChat(true);
@@ -2339,6 +2574,7 @@ const Chat: React.FC<ChatProps> = ({
   // Stable submit handler — uses refs to avoid stale closures and minimize deps
   const handleChatSubmit = useCallback(
     (text: string) => {
+      manualStopRequestedRef.current = false;
       capturedConsoleIdRef.current = activeConsoleIdRef.current;
       capturedDashboardIdRef.current =
         useDashboardStore.getState().activeDashboardId ?? null;
@@ -2575,6 +2811,7 @@ const Chat: React.FC<ChatProps> = ({
                 variant="outlined"
                 size="small"
                 onClick={() => {
+                  manualStopRequestedRef.current = false;
                   // Submit the suggestion immediately
                   capturedConsoleIdRef.current = activeConsoleId;
                   capturedDashboardIdRef.current =
@@ -2648,7 +2885,7 @@ const Chat: React.FC<ChatProps> = ({
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea
         onSubmit={handleChatSubmit}
-        onStop={stop}
+        onStop={handleStop}
         isLoading={isLoading}
         disabled={!currentWorkspace}
         focusKey={`${chatId}-${messages.length}`}

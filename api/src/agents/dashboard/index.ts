@@ -36,8 +36,14 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
   const { workspaceId } = context;
 
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
-  const consoleSearchTools = createConsoleSearchTools(workspaceId);
-  const dashboardSearchTools = createDashboardSearchTools(workspaceId);
+  const consoleSearchTools = createConsoleSearchTools(
+    workspaceId,
+    context.toolExecutionContext,
+  );
+  const dashboardSearchTools = createDashboardSearchTools(
+    workspaceId,
+    context.toolExecutionContext,
+  );
 
   const runtimeContext = buildDashboardRuntimeContext(context);
 

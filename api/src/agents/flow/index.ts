@@ -24,6 +24,12 @@ import {
   checkQuerySafety,
 } from "../../services/destination-writer.service";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import {
+  AGENT_QUERY_TIMEOUT_MS,
+  isAgentToolAbortError,
+  registerAgentExecution,
+  withAgentTimeout,
+} from "../../agent-lib/tools/shared/truncation";
 
 // Import shared database discovery tools from agent-lib
 import {
@@ -163,7 +169,10 @@ const listFlowTabsSchema = z.object({});
  * Create tools for flow agent
  * Uses shared database discovery tools from agent-lib
  */
-export function createFlowTools(workspaceId: string) {
+export function createFlowTools(
+  workspaceId: string,
+  toolExecutionContext?: AgentContext["toolExecutionContext"],
+) {
   return {
     // =========================================================================
     // Database Discovery Tools (from shared agent-lib module)
@@ -206,7 +215,11 @@ export function createFlowTools(workspaceId: string) {
       execute: async (params: z.infer<typeof connectionIdSchema>) => {
         try {
           const { connectionId } = params;
-          const databases = await listDatabasesImpl(connectionId, workspaceId);
+          const databases = await listDatabasesImpl(
+            connectionId,
+            workspaceId,
+            toolExecutionContext,
+          );
           return {
             success: true,
             databases: databases.map(db => ({
@@ -218,8 +231,9 @@ export function createFlowTools(workspaceId: string) {
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Database listing cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to list databases",
           };
@@ -242,6 +256,7 @@ export function createFlowTools(workspaceId: string) {
             connectionId,
             databaseName,
             workspaceId,
+            toolExecutionContext,
           );
           return {
             success: true,
@@ -254,8 +269,11 @@ export function createFlowTools(workspaceId: string) {
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error ? error.message : "Failed to list tables",
+            error: isAgentToolAbortError(error)
+              ? "Table listing cancelled because the chat stopped."
+              : error instanceof Error
+                ? error.message
+                : "Failed to list tables",
           };
         }
       },
@@ -281,6 +299,7 @@ export function createFlowTools(workspaceId: string) {
             databaseName,
             tableName,
             workspaceId,
+            toolExecutionContext,
           );
           return {
             success: true,
@@ -294,8 +313,9 @@ export function createFlowTools(workspaceId: string) {
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Table inspection cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Failed to inspect table",
           };
@@ -339,26 +359,40 @@ export function createFlowTools(workspaceId: string) {
             return { success: false, error: "Connection not found" };
           }
 
-          const result = await validateQueryService(
-            connection,
-            query,
-            database,
+          const { executionId, signal, release } = registerAgentExecution(
+            toolExecutionContext,
+            "agent-flow-validate-query",
           );
 
-          return {
-            success: result.success,
-            columns: result.columns,
-            sampleRow: result.sampleRow,
-            connectionName: connection.name,
-            connectionType: connection.type,
-            safetyCheck: safetyResult,
-            error: result.error,
-          };
+          try {
+            const result = await withAgentTimeout(
+              executionId,
+              registeredExecutionId =>
+                validateQueryService(connection, query, database, {
+                  executionId: registeredExecutionId,
+                  signal,
+                }),
+              { signal },
+            );
+
+            return {
+              success: result.success,
+              columns: result.columns,
+              sampleRow: result.sampleRow,
+              connectionName: connection.name,
+              connectionType: connection.type,
+              safetyCheck: safetyResult,
+              error: result.error,
+            };
+          } finally {
+            release();
+          }
         } catch (error) {
           return {
             success: false,
-            error:
-              error instanceof Error
+            error: isAgentToolAbortError(error)
+              ? "Query validation cancelled because the chat stopped."
+              : error instanceof Error
                 ? error.message
                 : "Query validation failed",
           };
@@ -389,7 +423,6 @@ export function createFlowTools(workspaceId: string) {
             return { success: false, error: "Connection not found" };
           }
 
-          // Add LIMIT if missing from SELECT queries (safety measure)
           let safeQuery = query;
           const upperQuery = query.toUpperCase().trim();
           if (
@@ -399,25 +432,50 @@ export function createFlowTools(workspaceId: string) {
             safeQuery = `${query.replace(/;+$/, "")} LIMIT 500`;
           }
 
-          const result = await databaseConnectionService.executeQuery(
-            connection.toObject(),
-            safeQuery,
-            { databaseName: database },
+          const { executionId, signal, release } = registerAgentExecution(
+            toolExecutionContext,
+            "agent-flow-execute-query",
           );
 
-          return {
-            success: result.success,
-            data: result.data,
-            rowCount: Array.isArray(result.data) ? result.data.length : 0,
-            connectionName: connection.name,
-            connectionType: connection.type,
-            error: result.error,
-          };
+          try {
+            const result = await withAgentTimeout(
+              executionId,
+              registeredExecutionId =>
+                databaseConnectionService.executeQuery(
+                  connection.toObject(),
+                  safeQuery,
+                  {
+                    databaseName: database,
+                    executionId: registeredExecutionId,
+                    signal,
+                  },
+                ),
+              { signal },
+            );
+
+            return {
+              success: result.success,
+              data: result.data,
+              rowCount: Array.isArray(result.data) ? result.data.length : 0,
+              connectionName: connection.name,
+              connectionType: connection.type,
+              error: result.error,
+            };
+          } finally {
+            release();
+          }
         } catch (error) {
+          const isTimeout =
+            error instanceof Error && error.message === "AGENT_QUERY_TIMEOUT";
           return {
             success: false,
-            error:
-              error instanceof Error ? error.message : "Query execution failed",
+            error: isAgentToolAbortError(error)
+              ? "Query execution cancelled because the chat stopped."
+              : isTimeout
+                ? `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s.`
+                : error instanceof Error
+                  ? error.message
+                  : "Query execution failed",
           };
         }
       },
@@ -579,7 +637,7 @@ export const flowAgentFactory: AgentFactory = (
 
   const runtimeContext = buildRuntimeContext(flowFormState, databases);
 
-  const tools = createFlowTools(workspaceId);
+  const tools = createFlowTools(workspaceId, context.toolExecutionContext);
 
   return {
     systemPrompt: [

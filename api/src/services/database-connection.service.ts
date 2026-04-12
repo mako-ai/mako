@@ -2,7 +2,7 @@ import { createClient } from "@clickhouse/client";
 import { MongoClient, Db, MongoClientOptions, ClientSession } from "mongodb";
 import { Client as PgClient, Pool as PgPool } from "pg";
 import * as mysql from "mysql2/promise";
-import { ConnectionPool } from "mssql";
+import { ConnectionPool, Request as MSSQLRequest } from "mssql";
 import { IDatabaseConnection } from "../database/workspace-schema";
 import axios, { AxiosInstance } from "axios";
 import crypto from "crypto";
@@ -320,6 +320,14 @@ export class DatabaseConnectionService {
     }
   > = new Map();
 
+  // Track running MSSQL queries for cancellation
+  private runningMSSQLQueries: Map<
+    string,
+    {
+      request: MSSQLRequest;
+    }
+  > = new Map();
+
   private cleanupInterval: NodeJS.Timeout | null = null;
   private readonly userDatabaseMaxIdleTime = 15 * 60 * 1000; // 15 minutes - keep user database pools alive during active sessions
 
@@ -432,7 +440,7 @@ export class DatabaseConnectionService {
         case "mysql":
           return await this.executeMySQLQuery(database, query, options);
         case "mssql":
-          return await this.executeMSSQLQuery(database, query);
+          return await this.executeMSSQLQuery(database, query, options);
         case "bigquery":
           return await this.executeBigQueryQuery(database, query, options);
         case "clickhouse":
@@ -2174,6 +2182,27 @@ export class DatabaseConnectionService {
     }
   }
 
+  private async cancelMSSQLQuery(
+    executionId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const running = this.runningMSSQLQueries.get(executionId);
+    if (!running) {
+      return { success: false, error: "Query not found or already completed" };
+    }
+
+    try {
+      running.request.cancel();
+      this.runningMSSQLQueries.delete(executionId);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error:
+          error instanceof Error ? error.message : "Failed to cancel query",
+      };
+    }
+  }
+
   /**
    * Cancel a running query (auto-detects database type)
    */
@@ -2195,6 +2224,10 @@ export class DatabaseConnectionService {
     // Try ClickHouse
     if (this.runningClickHouseQueries.has(executionId)) {
       return this.cancelClickHouseQuery(executionId);
+    }
+    // Try MSSQL
+    if (this.runningMSSQLQueries.has(executionId)) {
+      return this.cancelMSSQLQuery(executionId);
     }
 
     // Delegate to drivers that support cancellation (e.g., cloudsql-postgres)
@@ -3875,10 +3908,16 @@ export class DatabaseConnectionService {
   private async executeMSSQLQuery(
     database: IDatabaseConnection,
     query: string,
+    options?: QueryExecuteOptions,
   ): Promise<QueryResult> {
     const pool = (await this.getConnection(database)) as ConnectionPool;
+    const request = pool.request();
+    const executionId = options?.executionId;
     try {
-      const result = await pool.request().query(query);
+      if (executionId) {
+        this.runningMSSQLQueries.set(executionId, { request });
+      }
+      const result = await request.query(query);
       return {
         success: true,
         data: result.recordset,
@@ -3889,6 +3928,10 @@ export class DatabaseConnectionService {
         success: false,
         error: error instanceof Error ? error.message : "MSSQL query failed",
       };
+    } finally {
+      if (executionId) {
+        this.runningMSSQLQueries.delete(executionId);
+      }
     }
   }
 
