@@ -1,3 +1,11 @@
+/**
+ * CDC event store — MongoDB-backed persistent storage for `CdcChangeEvent`
+ * documents with append, read, mark-applied/failed/dropped, and flow-level
+ * cleanup operations.
+ *
+ * Manages per-flow ingest sequence counters in `cdc_counters` and provides
+ * deduplication via `idempotencyKey` unique indexes.
+ */
 import * as crypto from "crypto";
 import { Types } from "mongoose";
 import {

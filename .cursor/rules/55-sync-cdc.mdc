@@ -12,7 +12,7 @@ Webhook → ingest.ts (normalize + store) → event-store.ts → Inngest cdc/mat
 → consumer.ts (resolve adapter → ensureLiveTable → applyEvents) → destination DB
 ```
 
-Backfills follow a parallel path: `backfill.ts` → `flow.execute` with `backfill: true` → adapter `applyBatch`.
+Backfills follow a parallel path: `backfill/` → `flow.execute` with `backfill: true` → adapter `applyBatch`.
 
 ## Key Files
 
@@ -20,12 +20,18 @@ Backfills follow a parallel path: `backfill.ts` → `flow.execute` with `backfil
 |------|---------------|
 | `ingest.ts` | Normalize events, append to event store, update sync state, enqueue materialization |
 | `consumer.ts` | Read pending events, resolve destination adapter, materialize or drop |
-| `backfill.ts` | Manage backfill runs, clear event store, trigger flow re-execution |
+| `backfill/index.ts` | Re-export facade: `cdcBackfillService`, `markCdcBackfillCompletedForFlow`, `forceDrainCdcFlow` |
+| `backfill/orchestration.ts` | Backfill lifecycle: start, pause, resume, cancel, resync, stream pause/resume |
+| `backfill/recovery.ts` | Stream recovery, reprocess stale events, retry failed materialization |
+| `backfill/webhook-ops.ts` | Drain pending webhooks, reset failed, reconcile/resolve apply status |
+| `backfill/destination-ops.ts` | Delete destination tables, clean staging, purge soft-deletes, force drain |
 | `event-store.ts` | Append/read/mark events; idempotency via `stableStringify` + SHA1 |
 | `normalization.ts` | Timestamp resolution, table naming, payload sanitization, dedup |
 | `events.ts` | `CdcStoredEvent` type, `normalizeCdcEvent` |
 | `sync-state.ts` | Entity-level state machine (stream transitions, consumer cursors) |
+| `constants.ts` | Env-configurable operational constants (batch sizes, retry limits) |
 | `adapters/registry.ts` | `CdcDestinationAdapter` interface, `resolveCdcDestinationAdapter` |
+| `adapters/shared.ts` | Row-building helpers (`buildUpsertRow`, `buildSoftDeleteRow`, etc.), `retryOnTransient` |
 
 ## Rules
 
@@ -35,9 +41,10 @@ Backfills follow a parallel path: `backfill.ts` → `flow.execute` with `backfil
 - **Consumer failure** — consumer throws after `markEventsFailed` + `applyStreamTransition(FAIL)`. Callers (Inngest functions) must expect retries.
 - **Payload sanitization** — `sanitizeBackfillPayloadForIdempotency` strips `_mako_*` and `_syncedAt` fields before hashing. Adding new volatile fields requires updating this function.
 - **Table naming** — `cdcLiveTableName` / `cdcStageTableName` use flow token from truncated ID + SHA1 fallback. Don't assume table names are human-readable.
+- **Shared adapter helpers** — `adapters/shared.ts` provides `buildUpsertRow`, `buildSoftDeleteRow`, `buildBatchRow`, `partitionEventsByOperation`, `resolveDeleteMode`, `resolveFallbackDataSourceId`, `getStagingTableName`, and `retryOnTransient`. New adapters should use these instead of reimplementing row-building logic.
 
 ## Destination Adapters
 
 Adapters implement `CdcDestinationAdapter` and are manually registered in `resolveCdcDestinationAdapter`. See the `add-cdc-adapter` skill for scaffolding a new adapter.
 
-Currently supported: BigQuery, PostgreSQL.
+Currently supported: BigQuery, ClickHouse, PostgreSQL, MongoDB.

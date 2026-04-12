@@ -1,14 +1,21 @@
 import { Types } from "mongoose";
-import type { IFlow } from "../../database/workspace-schema";
+import type { IFlow, ITableDestination } from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
-  resolveSourceTimestamp,
   selectLatestChangePerRecord,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
+import {
+  buildUpsertRow,
+  buildSoftDeleteRow,
+  buildBatchRow,
+  partitionEventsByOperation,
+  resolveDeleteMode,
+  resolveFallbackDataSourceId,
+} from "./shared";
 
 const log = loggers.sync("cdc.adapter.postgresql");
 
@@ -40,39 +47,20 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
   }): Promise<{ applied: number }> {
-    if (params.events.length === 0) {
-      return { applied: 0 };
-    }
+    if (params.events.length === 0) return { applied: 0 };
 
     const writer = await this.createWriter(params.layout.tableName);
-    (writer as any).config.deleteMode = params.flow.deleteMode;
+    (
+      writer as unknown as { config: { deleteMode?: string } }
+    ).config.deleteMode = params.flow.deleteMode;
 
     const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(event => event.operation === "upsert");
-    const deletes = latest.filter(event => event.operation === "delete");
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const { upserts, deletes } = partitionEventsByOperation(latest);
+    const deleteMode = resolveDeleteMode(params.flow, params.layout);
 
     if (upserts.length > 0) {
-      const rows = upserts.map(event => {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        return {
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: null,
-          is_deleted: false,
-          deleted_at: null,
-        };
-      });
-
+      const rows = upserts.map(e => buildUpsertRow(e, fallbackDsId));
       const write = await writer.writeBatch(rows, {
         keyColumns: params.layout.keyColumns,
         conflictStrategy: "update",
@@ -85,27 +73,8 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (deletes.length > 0) {
-      const deleteMode =
-        params.flow.deleteMode || params.layout.deleteMode || "hard";
       if (deleteMode === "soft") {
-        const rows = deletes.map(event => {
-          const payload = normalizePayloadKeys(event.payload || {});
-          const sourceTs = resolveSourceTimestamp(
-            payload,
-            new Date(event.sourceTs),
-          );
-          return {
-            ...payload,
-            id: event.recordId,
-            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-            _mako_source_ts: sourceTs,
-            _mako_ingest_seq: Number(event.ingestSeq),
-            _mako_deleted_at: new Date(),
-            is_deleted: true,
-            deleted_at: new Date(),
-          };
-        });
-
+        const rows = deletes.map(e => buildSoftDeleteRow(e, fallbackDsId));
         const write = await writer.writeBatch(rows, {
           keyColumns: params.layout.keyColumns,
           conflictStrategy: "update",
@@ -119,7 +88,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
         for (const event of deletes) {
           const payload = normalizePayloadKeys(event.payload || {});
           const dataSourceId =
-            payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
+            payload._dataSourceId ?? fallbackDsId ?? undefined;
           const keyFilters: Record<string, unknown> = { id: event.recordId };
           if (dataSourceId !== undefined) {
             keyFilters._dataSourceId = dataSourceId;
@@ -134,9 +103,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    return {
-      applied: latest.length,
-    };
+    return { applied: latest.length };
   }
 
   async applyBatch(params: {
@@ -144,28 +111,14 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
   }): Promise<{ written: number }> {
-    if (params.records.length === 0) {
-      return { written: 0 };
-    }
+    if (params.records.length === 0) return { written: 0 };
 
     const writer = await this.createWriter(params.layout.tableName);
-    (writer as any).config.deleteMode = params.flow.deleteMode;
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-
-    const rows = params.records.map(record => {
-      const payload = normalizePayloadKeys(record || {});
-      return {
-        ...payload,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: resolveSourceTimestamp(payload),
-        _mako_ingest_seq:
-          typeof payload._mako_ingest_seq === "number"
-            ? payload._mako_ingest_seq
-            : undefined,
-      };
-    });
+    (
+      writer as unknown as { config: { deleteMode?: string } }
+    ).config.deleteMode = params.flow.deleteMode;
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const rows = params.records.map(r => buildBatchRow(r, fallbackDsId));
 
     const write = await writer.writeBatch(rows, {
       keyColumns: params.layout.keyColumns,
@@ -206,7 +159,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           schema: this.config.tableDestination.schema,
           tableName,
           createIfNotExists: true,
-        } as any,
+        } satisfies ITableDestination,
       },
       "cdc-postgresql-adapter",
     );

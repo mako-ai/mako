@@ -1,3 +1,11 @@
+/**
+ * CDC sync state management — stream and backfill state machines,
+ * entity-level cursor tracking, and backfill checkpoint services.
+ *
+ * Defines `STREAM_TRANSITIONS` and `BACKFILL_TRANSITIONS` that govern
+ * valid state changes, and exports `cdcSyncStateService` for applying
+ * transitions and querying flow statistics.
+ */
 import { Types } from "mongoose";
 import type { FetchState } from "../connectors/base/BaseConnector";
 import {
@@ -440,7 +448,6 @@ export const cdcBackfillCheckpointService = {
   listCompletedEntities: async (params: {
     workspaceId: string;
     flowId: string;
-    runId: string;
   }) => {
     return cdcSyncStateService.listCompletedBackfillEntities({
       workspaceId: params.workspaceId,
@@ -573,7 +580,7 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
       .sort((a, b) => a - b)[0];
     lagSeconds = oldest
       ? Math.max(Math.floor((Date.now() - oldest) / 1000), 0)
-      : -1;
+      : null;
   } else {
     lagSeconds = 0;
   }

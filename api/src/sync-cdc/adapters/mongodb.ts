@@ -7,12 +7,25 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
-  resolveSourceTimestamp,
   selectLatestChangePerRecord,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
-import type { Collection, Db, MongoClient } from "mongodb";
+import {
+  buildUpsertRow,
+  buildSoftDeleteRow,
+  buildBatchRow,
+  partitionEventsByOperation,
+  resolveDeleteMode,
+  resolveFallbackDataSourceId,
+} from "./shared";
+import type {
+  AnyBulkWriteOperation,
+  Collection,
+  Db,
+  Document,
+  MongoClient,
+} from "mongodb";
 
 const log = loggers.sync("cdc.adapter.mongodb");
 
@@ -54,7 +67,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
       destination,
     )) as MongoClient;
     const dbName =
-      (destination.connection as any).database ||
+      destination.connection.database ||
       this.config.tableDestination.schema ||
       "default";
     return client.db(dbName);
@@ -110,83 +123,37 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     await this.ensureKeyIndex(collection, params.layout.keyColumns);
 
     const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(e => e.operation === "upsert");
-    const deletes = latest.filter(e => e.operation === "delete");
-    const deleteMode =
-      params.flow.deleteMode || params.layout.deleteMode || "hard";
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const { upserts, deletes } = partitionEventsByOperation(latest);
+    const deleteMode = resolveDeleteMode(params.flow, params.layout);
 
-    const ops: any[] = [];
+    const ops: AnyBulkWriteOperation<Document>[] = [];
 
     for (const event of upserts) {
-      const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
-      const row = {
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      };
-
+      const row = buildUpsertRow(event, fallbackDsId);
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
       ops.push({
-        replaceOne: {
-          filter,
-          replacement: row,
-          upsert: true,
-        },
+        replaceOne: { filter, replacement: row, upsert: true },
       });
     }
 
     if (deleteMode === "soft") {
       for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        const deletedAt = new Date();
-        const row = {
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        };
-
+        const row = buildSoftDeleteRow(event, fallbackDsId);
         const filter = this.buildKeyFilter(params.layout.keyColumns, row);
         ops.push({
-          replaceOne: {
-            filter,
-            replacement: row,
-            upsert: true,
-          },
+          replaceOne: { filter, replacement: row, upsert: true },
         });
       }
     } else if (deletes.length > 0) {
       for (const event of deletes) {
         const payload = normalizePayloadKeys(event.payload || {});
-        const dataSourceId =
-          payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
-        const keyFilters: Record<string, unknown> = { id: event.recordId };
+        const dataSourceId = payload._dataSourceId ?? fallbackDsId ?? undefined;
+        const filter: Record<string, unknown> = { id: event.recordId };
         if (dataSourceId !== undefined) {
-          keyFilters._dataSourceId = dataSourceId;
+          filter._dataSourceId = dataSourceId;
         }
-        ops.push({
-          deleteOne: { filter: keyFilters },
-        });
+        ops.push({ deleteOne: { filter } });
       }
     }
 
@@ -213,30 +180,12 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     const collection = await this.getCollection(params.layout.tableName);
     await this.ensureKeyIndex(collection, params.layout.keyColumns);
 
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
 
     const ops = params.records.map(record => {
-      const payload = normalizePayloadKeys(record);
-      const row = {
-        ...payload,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: resolveSourceTimestamp(payload),
-        _mako_ingest_seq:
-          typeof payload._mako_ingest_seq === "number"
-            ? payload._mako_ingest_seq
-            : undefined,
-      };
-
+      const row = buildBatchRow(record, fallbackDsId);
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
-      return {
-        replaceOne: {
-          filter,
-          replacement: row,
-          upsert: true,
-        },
-      };
+      return { replaceOne: { filter, replacement: row, upsert: true } };
     });
 
     const result = await collection.bulkWrite(ops, { ordered: false });

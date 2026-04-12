@@ -1,4 +1,4 @@
-import type { IFlow } from "../database/workspace-schema";
+import type { IEntityLayout, IFlow } from "../database/workspace-schema";
 
 type FlowEntitySelectionSource =
   | Pick<IFlow, "entityFilter" | "entityLayouts">
@@ -25,12 +25,12 @@ export function resolveConfiguredEntities(flow: FlowEntitySelectionSource): {
   if (hasEntityLayouts) {
     const entities = (flow?.entityLayouts || [])
       .filter(
-        (layout: any) =>
+        (layout: IEntityLayout) =>
           layout &&
           layout.enabled !== false &&
           normalizeEntityName(layout.entity) !== null,
       )
-      .map((layout: any) => normalizeEntityName(layout.entity))
+      .map((layout: IEntityLayout) => normalizeEntityName(layout.entity))
       .filter((entity): entity is string => entity !== null);
 
     return {

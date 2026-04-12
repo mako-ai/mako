@@ -225,11 +225,7 @@ async function getDestinationEntityRowCount(params: {
     return cached.value;
   }
 
-  const tableName = cdcLiveTableName(
-    params.baseTablePrefix,
-    params.entity,
-    params.flowId,
-  );
+  const tableName = cdcLiveTableName(params.baseTablePrefix, params.entity);
   const query = buildDestinationCountQuery({
     destinationType: params.destinationType,
     schema: params.schema,
@@ -1544,7 +1540,6 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
           const liveTable = cdcLiveTableName(
             flow.tableDestination.tableName,
             entity,
-            flowId,
           );
           const oldStageTable = cdcStageTableName(
             flow.tableDestination.tableName,
@@ -1726,11 +1721,7 @@ flowRoutes.post("/:flowId/sync-cdc/reset-column", async c => {
 
     const destinationType = String(destinationDoc.type || "").toLowerCase();
     const schema = flow.tableDestination.schema;
-    const tableName = cdcLiveTableName(
-      flow.tableDestination.tableName,
-      entity,
-      String(flow._id),
-    );
+    const tableName = cdcLiveTableName(flow.tableDestination.tableName, entity);
 
     let resetQuery: string | null = null;
     if (destinationType === "bigquery") {

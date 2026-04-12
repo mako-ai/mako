@@ -8,22 +8,38 @@ import {
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import { buildParquetFromBatches } from "../../utils/streaming-parquet-builder";
-import {
-  normalizePayloadKeys,
-  resolveSourceTimestamp,
-  selectLatestChangePerRecord,
-} from "../normalization";
+import { CDC_HARD_DELETE_CHUNK_SIZE } from "../constants";
+import { selectLatestChangePerRecord } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 import type {
   ConnectorEntitySchema,
   ConnectorLogicalType,
 } from "../../connectors/base/BaseConnector";
+import {
+  buildUpsertRow,
+  buildSoftDeleteRow,
+  buildBatchRow,
+  partitionEventsByOperation,
+  resolveDeleteMode,
+  resolveFallbackDataSourceId,
+  getStagingTableName,
+  retryOnTransient,
+} from "./shared";
 
-// ---------------------------------------------------------------------------
-// Retry helper for BigQuery quota / rate-limit errors (HTTP 403 rateLimitExceeded,
-// 429 quotaExceeded, or error messages mentioning "quota").
-// ---------------------------------------------------------------------------
+interface BqColumnRow {
+  table_name: string;
+  column_name: string;
+  data_type: string;
+}
+
+interface BqConnectionFields extends IDatabaseConnection {
+  connection: IDatabaseConnection["connection"] & {
+    service_account_json?: string | Record<string, unknown>;
+    project_id?: string;
+    location?: string;
+  };
+}
 
 function isQuotaError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -37,25 +53,11 @@ function isQuotaError(err: unknown): boolean {
   );
 }
 
-async function retryOnQuota<T>(
+function retryOnQuota<T>(
   fn: () => Promise<T>,
-  opts: { label: string; maxRetries?: number } = { label: "BigQuery op" },
+  opts: { label: string; maxRetries?: number },
 ): Promise<T> {
-  const maxRetries = opts.maxRetries ?? 4;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (attempt >= maxRetries || !isQuotaError(err)) throw err;
-      const backoffMs = Math.min(30_000, 5_000 * 2 ** attempt);
-      log.warn(`${opts.label}: quota error, retrying in ${backoffMs}ms`, {
-        attempt: attempt + 1,
-        maxRetries,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      await new Promise(r => setTimeout(r, backoffMs));
-    }
-  }
+  return retryOnTransient(fn, { ...opts, isTransient: isQuotaError });
 }
 
 // ---------------------------------------------------------------------------
@@ -103,16 +105,7 @@ function resolveTargetBqType(
   if (liveType) return liveType;
   const schemaField = entitySchema?.fields[column];
   if (schemaField) {
-    const schemaType = mapLogicalTypeToBigQuery(schemaField.type);
-    if (liveType && liveType.toUpperCase() !== schemaType.toUpperCase()) {
-      log.warn(
-        "Live table column type differs from connector schema; using live type to avoid INSERT failure. " +
-          "Recreate the destination table to adopt the correct schema type.",
-        { column, schemaType, liveType },
-      );
-      return liveType;
-    }
-    return schemaType;
+    return mapLogicalTypeToBigQuery(schemaField.type);
   }
   if (SYSTEM_COLUMN_TYPES[column]) return SYSTEM_COLUMN_TYPES[column];
   return "STRING";
@@ -235,58 +228,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
     entitySchema?: ConnectorEntitySchema;
   }): Promise<{ applied: number }> {
-    if (params.events.length === 0) {
-      return { applied: 0 };
-    }
+    if (params.events.length === 0) return { applied: 0 };
 
     const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(event => event.operation === "upsert");
-    const deletes = latest.filter(event => event.operation === "delete");
-    const deleteMode =
-      params.flow.deleteMode || params.layout.deleteMode || "hard";
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const { upserts, deletes } = partitionEventsByOperation(latest);
+    const deleteMode = resolveDeleteMode(params.flow, params.layout);
 
-    const rows: Record<string, unknown>[] = [];
-
-    for (const event of upserts) {
-      const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
-    }
-
+    const rows: Record<string, unknown>[] = upserts.map(e =>
+      buildUpsertRow(e, fallbackDsId),
+    );
     if (deleteMode === "soft") {
-      for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
-      }
+      rows.push(...deletes.map(e => buildSoftDeleteRow(e, fallbackDsId)));
     }
 
     if (rows.length > 0) {
@@ -299,7 +252,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (deleteMode === "hard" && deletes.length > 0) {
-      await this.hardDeleteBatch(params.layout, deletes, fallbackDataSourceId);
+      await this.hardDeleteBatch(params.layout, deletes, fallbackDsId);
     }
 
     return { applied: latest.length };
@@ -311,34 +264,24 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
     entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }> {
-    if (params.records.length === 0) {
-      return { written: 0 };
-    }
+    if (params.records.length === 0) return { written: 0 };
 
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
 
     const rows = params.records.map(record => {
-      const payload = normalizePayloadKeys(record || {});
+      const base = buildBatchRow(record, fallbackDsId);
       const {
         deleted_at: _ignoredDeletedAt,
         deletedAt: _ignoredDeletedAtCamel,
         date_deleted: _ignoredDateDeleted,
-        ...payloadWithoutDeletedAt
-      } = payload as Record<string, unknown> & {
+        ...withoutDeletedAt
+      } = base as Record<string, unknown> & {
         deletedAt?: unknown;
         date_deleted?: unknown;
       };
-      const makoDeletedAt = this.coerceToDate(payload._mako_deleted_at);
+      const makoDeletedAt = this.coerceToDate(base._mako_deleted_at);
       return {
-        ...payloadWithoutDeletedAt,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: resolveSourceTimestamp(payload),
-        _mako_ingest_seq:
-          typeof payload._mako_ingest_seq === "number"
-            ? payload._mako_ingest_seq
-            : undefined,
+        ...withoutDeletedAt,
         _mako_deleted_at: makoDeletedAt,
         deleted_at: makoDeletedAt,
       };
@@ -430,10 +373,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const stagingCols = new Set<string>();
     const liveCols = new Set<string>();
     const liveTypes = new Map<string, string>();
-    for (const r of (schemaResult.data as any[]) || []) {
-      const tbl = r.table_name as string;
-      const col = r.column_name as string;
-      const dt = r.data_type as string;
+    for (const r of (schemaResult.data as BqColumnRow[]) || []) {
+      const tbl = r.table_name;
+      const col = r.column_name;
+      const dt = r.data_type;
       if (tbl === liveTable) {
         liveCols.add(col);
         liveTypes.set(col, dt);
@@ -471,10 +414,10 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             "INFORMATION_SCHEMA refresh failed after creating live table",
         );
       }
-      for (const r of (refreshResult.data as any[]) || []) {
-        const tbl = r.table_name as string;
-        const col = r.column_name as string;
-        const dt = r.data_type as string;
+      for (const r of (refreshResult.data as BqColumnRow[]) || []) {
+        const tbl = r.table_name;
+        const col = r.column_name;
+        const dt = r.data_type;
         if (tbl === liveTable) {
           liveCols.add(col);
           liveTypes.set(col, dt);
@@ -668,8 +611,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flowId: string,
     suffix?: string,
   ): string {
-    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    return `${tableName}__${flowToken}__${suffix || "staging"}`;
+    return getStagingTableName(tableName, flowId, suffix);
   }
 
   private async resolveDestination(): Promise<IDatabaseConnection> {
@@ -702,13 +644,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
   }> {
     if (this._resolvedClient) return this._resolvedClient;
 
-    const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
+    const destination = (await this.resolveDestination()) as BqConnectionFields;
+    const conn = destination.connection;
     const credentials =
       typeof conn.service_account_json === "string"
         ? JSON.parse(conn.service_account_json)
         : conn.service_account_json;
-    const projectId = conn.project_id;
+    const projectId = conn.project_id!;
     const dataset = this.config.tableDestination.schema;
     const connLocation: string | undefined = conn.location;
     const bq = new BigQuery({ projectId, credentials, location: connLocation });
@@ -727,14 +669,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
     }
 
-    this._resolvedClient = {
+    const client = {
       bq,
       projectId,
       dataset,
-      destination,
+      destination: destination as IDatabaseConnection,
       datasetLocation: this._datasetLocation,
     };
-    return this._resolvedClient;
+    this._resolvedClient = client;
+    return client;
   }
 
   private async ensureDataset(): Promise<void> {
@@ -760,18 +703,23 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
           });
 
-        const meta = metadata as Record<string, any>;
-        if (meta?.status?.errorResult) {
-          throw new Error(
-            meta.status.errorResult.message || "BigQuery load job failed",
-          );
+        const meta = metadata as Record<string, unknown>;
+        const status = meta?.status as Record<string, unknown> | undefined;
+        const errorResult = status?.errorResult as
+          | { message?: string }
+          | undefined;
+        if (errorResult) {
+          throw new Error(errorResult.message || "BigQuery load job failed");
         }
         return meta;
       },
       { label: `loadParquetToStaging(${stagingTable})` },
     );
 
-    const loaded = Number(jobMeta?.statistics?.load?.outputRows || 0);
+    const stats = (
+      jobMeta as Record<string, Record<string, Record<string, unknown>>>
+    )?.statistics?.load;
+    const loaded = Number(stats?.outputRows || 0);
 
     if (!options?.skipParquetCleanup) {
       await fs.rm(parquetPath, { force: true }).catch(() => undefined);
@@ -861,7 +809,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
 
     const ids = deletes.map(e => `'${String(e.recordId).replace(/'/g, "''")}'`);
-    const CHUNK = 10_000;
+    const CHUNK = CDC_HARD_DELETE_CHUNK_SIZE;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       let where = `\`id\` IN (${chunk.join(", ")})`;

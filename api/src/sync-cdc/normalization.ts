@@ -1,4 +1,8 @@
 import * as crypto from "crypto";
+import type {
+  ConnectorEntitySchema,
+  ConnectorLogicalType,
+} from "../connectors/base/BaseConnector";
 
 const FLOW_TOKEN_LENGTH = 12;
 
@@ -155,7 +159,6 @@ function cdcFlowToken(flowId: string): string {
 export function cdcLiveTableName(
   basePrefix: string | undefined,
   entity: string,
-  _flowId?: string,
 ): string {
   return baseEntityTableName(basePrefix || "", entity);
 }
@@ -172,11 +175,6 @@ export function cdcStageTableName(
 // ---------------------------------------------------------------------------
 // Schema-driven payload normalization
 // ---------------------------------------------------------------------------
-
-import type {
-  ConnectorEntitySchema,
-  ConnectorLogicalType,
-} from "../connectors/base/BaseConnector";
 
 export interface CoercionWarning {
   field: string;

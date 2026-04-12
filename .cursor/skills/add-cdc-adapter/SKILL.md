@@ -1,6 +1,6 @@
 ---
 name: add-cdc-adapter
-description: Scaffold a new CDC (Change Data Capture) destination adapter for the Mako sync-cdc pipeline. Use when adding a new database target for CDC materialization (e.g., ClickHouse, MySQL, Snowflake).
+description: Scaffold a new CDC (Change Data Capture) destination adapter for the Mako sync-cdc pipeline. Use when adding a new database target for CDC materialization (e.g., MySQL, Snowflake).
 ---
 
 # Add a CDC Destination Adapter
@@ -37,17 +37,17 @@ interface CdcDestinationAdapter {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ applied: number }>;
   applyBatch(params: {
     records: Array<Record<string, unknown>>;
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }>;
 
-  // Optional (bulk/Parquet backfill)
-  getLiveTableColumnTypes?(
-    layout: CdcEntityLayout,
-  ): Promise<Map<string, string> | undefined>;
+  // Optional
+  prepareStaging?(layout: CdcEntityLayout, flowId: string): Promise<void>;
   loadStagingFromParquet?(
     parquetPath: string,
     layout: CdcEntityLayout,
@@ -57,6 +57,7 @@ interface CdcDestinationAdapter {
     layout: CdcEntityLayout,
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
+    entitySchema?: ConnectorEntitySchema,
   ): Promise<{ written: number }>;
   cleanupStaging?(layout: CdcEntityLayout, flowId: string): Promise<void>;
 }
@@ -70,63 +71,86 @@ Create `api/src/sync-cdc/adapters/<name>.ts`:
 
 ```typescript
 import { loggers } from "../../logging";
-import { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
-import { CdcStoredEvent } from "../events";
-import { IFlow } from "../../database/workspace-schema";
+import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
+import type { CdcStoredEvent } from "../events";
+import type { IFlow } from "../../database/workspace-schema";
+import type { ConnectorEntitySchema } from "../../connectors/base/BaseConnector";
 import { databaseConnectionService } from "../../services/database-connection.service";
+import {
+  buildUpsertRow,
+  buildSoftDeleteRow,
+  buildBatchRow,
+  partitionEventsByOperation,
+  resolveDeleteMode,
+  resolveFallbackDataSourceId,
+} from "./shared";
+import { selectLatestChangePerRecord } from "../normalization";
+import { CDC_HARD_DELETE_CHUNK_SIZE } from "../constants";
 
-const log = loggers.sync();
+const log = loggers.sync("cdc.adapter.mydb");
 
 export class MyDbDestinationAdapter implements CdcDestinationAdapter {
   readonly destinationType = "mydb";
 
-  private destinationDatabaseId: string;
-  private destinationDatabaseName?: string;
-  private tableDestination: {
-    connectionId: string;
-    schema: string;
-    tableName: string;
-  };
-
-  constructor(params: {
-    destinationDatabaseId: string;
-    destinationDatabaseName?: string;
-    tableDestination: {
-      connectionId: string;
-      schema: string;
-      tableName: string;
-    };
-  }) {
-    this.destinationDatabaseId = params.destinationDatabaseId;
-    this.destinationDatabaseName = params.destinationDatabaseName;
-    this.tableDestination = params.tableDestination;
-  }
+  constructor(
+    private readonly config: {
+      destinationDatabaseId: string;
+      destinationDatabaseName?: string;
+      tableDestination: {
+        connectionId: string;
+        schema: string;
+        tableName: string;
+      };
+    },
+  ) {}
 
   async ensureLiveTable(layout: CdcEntityLayout): Promise<void> {
     // Create the target table if it doesn't exist.
-    // Include columns for all key columns + a _deleted_at column for soft deletes.
-    // Use layout.partitioning and layout.clustering if the database supports them.
+    // Include _mako_deleted_at, is_deleted, deleted_at for soft deletes.
+    // Respect layout.partitioning and layout.clustering if supported.
   }
 
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ applied: number }> {
-    // Materialize CDC events into the live table.
-    // Group by operation type (insert/update/delete).
-    // For deletes: soft-delete (set _deleted_at) or hard-delete based on flow.deleteMode.
-    // Return { applied: number of events processed }.
+    if (params.events.length === 0) return { applied: 0 };
+
+    const latest = selectLatestChangePerRecord(params.events);
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const { upserts, deletes } = partitionEventsByOperation(latest);
+    const deleteMode = resolveDeleteMode(params.flow, params.layout);
+
+    const rows = upserts.map(e => buildUpsertRow(e, fallbackDsId));
+    if (deleteMode === "soft") {
+      rows.push(...deletes.map(e => buildSoftDeleteRow(e, fallbackDsId)));
+    }
+
+    // Write rows to destination ...
+
+    if (deleteMode === "hard" && deletes.length > 0) {
+      // Hard-delete by record IDs, chunk by CDC_HARD_DELETE_CHUNK_SIZE
+    }
+
+    return { applied: latest.length };
   }
 
   async applyBatch(params: {
     records: Array<Record<string, unknown>>;
     layout: CdcEntityLayout;
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">;
+    entitySchema?: ConnectorEntitySchema;
   }): Promise<{ written: number }> {
-    // Bulk-write backfill records to the live table.
-    // Upsert by layout.keyColumns.
-    // Return { written: number of rows written }.
+    if (params.records.length === 0) return { written: 0 };
+
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const rows = params.records.map(r => buildBatchRow(r, fallbackDsId));
+
+    // Bulk-write rows to destination ...
+
+    return { written: rows.length };
   }
 }
 ```
@@ -150,7 +174,9 @@ if (normalizedType === "mydb") {
 // In hasCdcDestinationAdapter(), update the check:
 return (
   normalizedType === "bigquery" ||
+  normalizedType === "clickhouse" ||
   normalizedType === "postgresql" ||
+  normalizedType === "mongodb" ||
   normalizedType === "mydb"
 );
 ```
@@ -169,30 +195,36 @@ The Flow form UI at `app/src/components/WebhookFlowForm.tsx` may restrict CDC en
 
 ## Method Implementation Guide
 
-| Method                    | What it does                                  | Key considerations                                                                                                                                 |
-| ------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ensureLiveTable`         | DDL — create table if missing                 | Include `_deleted_at` column for soft deletes. Respect `layout.partitioning` and `layout.clustering` if your DB supports them. Must be idempotent. |
-| `applyEvents`             | Materialize CDC events (insert/update/delete) | Group operations for efficiency. Handle `deleteMode: "hard"` vs `"soft"`. Use `layout.keyColumns` for upsert/merge logic.                          |
-| `applyBatch`              | Bulk backfill (non-CDC path)                  | Upsert by key columns. Used during initial sync and periodic backfills.                                                                            |
-| `getLiveTableColumnTypes` | Return existing column types                  | Optional. Used by Parquet bulk-flush to match types.                                                                                               |
-| `loadStagingFromParquet`  | Load Parquet file into a staging table        | Optional. For high-volume backfills.                                                                                                               |
-| `mergeFromStaging`        | Merge staging → live table                    | Optional. Paired with `loadStagingFromParquet`.                                                                                                    |
-| `cleanupStaging`          | Drop staging table                            | Optional. Cleanup after merge.                                                                                                                     |
+| Method | What it does | Key considerations |
+| --- | --- | --- |
+| `ensureLiveTable` | DDL — create table if missing | Include `_mako_deleted_at`, `is_deleted`, `deleted_at` columns for soft deletes. Respect `layout.partitioning` and `layout.clustering`. Must be idempotent. |
+| `applyEvents` | Materialize CDC events | Use `shared.ts` helpers: `buildUpsertRow`, `buildSoftDeleteRow`, `partitionEventsByOperation`, `resolveDeleteMode`. Handle hard vs soft deletes. |
+| `applyBatch` | Bulk backfill | Use `shared.ts` `buildBatchRow`. Upsert by key columns. |
+| `prepareStaging` | Pre-create staging table | Optional. For databases needing explicit staging setup before Parquet load. |
+| `loadStagingFromParquet` | Load Parquet file into staging | Optional. For high-volume backfills (BigQuery, ClickHouse). |
+| `mergeFromStaging` | Merge staging → live table | Optional. Paired with `loadStagingFromParquet`. |
+| `cleanupStaging` | Drop staging table | Optional. Cleanup after merge. |
 
 ## Key Rules
 
 - Get database connections via `databaseConnectionService` (never raw clients).
-- Use structured loggers (`loggers.sync()`), not `console.log`.
-- The adapter receives `tableDestination.connectionId` — resolve it to a connection via the connection service.
+- Use structured loggers (`loggers.sync("cdc.adapter.<name>")`), not `console.log`.
+- Use shared helpers from `adapters/shared.ts` for row building, delete mode resolution, and staging table naming.
+- Use constants from `constants.ts` for batch sizes and chunk limits.
 - `applyEvents` and `applyBatch` must handle empty inputs gracefully (return `{ applied: 0 }` / `{ written: 0 }`).
-- The optional staging/Parquet methods are only needed for databases that benefit from bulk-load paths (like BigQuery).
+- The optional staging/Parquet methods are only needed for databases that benefit from bulk-load paths (like BigQuery, ClickHouse).
 
 ## Reference Files
 
 - Interface & registry: `api/src/sync-cdc/adapters/registry.ts`
+- Shared helpers: `api/src/sync-cdc/adapters/shared.ts`
+- Constants: `api/src/sync-cdc/constants.ts`
 - BigQuery example: `api/src/sync-cdc/adapters/bigquery.ts`
+- ClickHouse example: `api/src/sync-cdc/adapters/clickhouse.ts`
 - PostgreSQL example: `api/src/sync-cdc/adapters/postgresql.ts`
+- MongoDB example: `api/src/sync-cdc/adapters/mongodb.ts`
 - CDC consumer (caller): `api/src/sync-cdc/consumer.ts`
 - CDC events type: `api/src/sync-cdc/events.ts`
 - Entity layout builder: `buildCdcEntityLayout` in `registry.ts`
+- Backfill subsystem: `api/src/sync-cdc/backfill/`
 - Inngest materialization: `api/src/inngest/functions/webhook-flow.ts`

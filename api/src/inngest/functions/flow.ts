@@ -1165,7 +1165,6 @@ export const flowFunction = inngest.createFunction(
               return cdcBackfillCheckpointService.listCompletedEntities({
                 workspaceId: String(flow.workspaceId),
                 flowId: String(flow._id),
-                runId: cdcBackfillRunId!,
               });
             },
           )) as string[];

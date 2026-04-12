@@ -8,17 +8,23 @@ import {
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
 import { buildParquetFromBatches } from "../../utils/streaming-parquet-builder";
-import {
-  normalizePayloadKeys,
-  resolveSourceTimestamp,
-  selectLatestChangePerRecord,
-} from "../normalization";
+import { CDC_HARD_DELETE_CHUNK_SIZE } from "../constants";
+import { selectLatestChangePerRecord } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 import type {
   ConnectorEntitySchema,
   ConnectorLogicalType,
 } from "../../connectors/base/BaseConnector";
+import {
+  buildUpsertRow,
+  buildSoftDeleteRow,
+  buildBatchRow,
+  partitionEventsByOperation,
+  resolveDeleteMode,
+  resolveFallbackDataSourceId,
+  getStagingTableName,
+} from "./shared";
 
 function mapLogicalTypeToClickHouse(logicalType: ConnectorLogicalType): string {
   switch (logicalType) {
@@ -105,11 +111,16 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     flowId: string,
     suffix?: string,
   ): string {
-    const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
-    return `${tableName}__${flowToken}__${suffix || "staging"}`;
+    return getStagingTableName(tableName, flowId, suffix);
   }
 
-  private async executeQuery(query: string): Promise<any> {
+  private async executeQuery(
+    query: string,
+  ): Promise<{
+    success: boolean;
+    data?: Record<string, string>[];
+    error?: string;
+  }> {
     const destination = await this.resolveDestination();
     return databaseConnectionService.executeQuery(destination, query);
   }
@@ -172,53 +183,15 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     if (params.events.length === 0) return { applied: 0 };
 
     const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(e => e.operation === "upsert");
-    const deletes = latest.filter(e => e.operation === "delete");
-    const deleteMode =
-      params.flow.deleteMode || params.layout.deleteMode || "hard";
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const { upserts, deletes } = partitionEventsByOperation(latest);
+    const deleteMode = resolveDeleteMode(params.flow, params.layout);
 
-    const rows: Record<string, unknown>[] = [];
-
-    for (const event of upserts) {
-      const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
-    }
-
+    const rows: Record<string, unknown>[] = upserts.map(e =>
+      buildUpsertRow(e, fallbackDsId),
+    );
     if (deleteMode === "soft") {
-      for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
-      }
+      rows.push(...deletes.map(e => buildSoftDeleteRow(e, fallbackDsId)));
     }
 
     if (rows.length > 0) {
@@ -231,7 +204,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     }
 
     if (deleteMode === "hard" && deletes.length > 0) {
-      await this.hardDeleteBatch(params.layout, deletes, fallbackDataSourceId);
+      await this.hardDeleteBatch(params.layout, deletes, fallbackDsId);
     }
 
     return { applied: latest.length };
@@ -245,22 +218,8 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
   }): Promise<{ written: number }> {
     if (params.records.length === 0) return { written: 0 };
 
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-
-    const rows = params.records.map(record => {
-      const payload = normalizePayloadKeys(record);
-      return {
-        ...payload,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: resolveSourceTimestamp(payload),
-        _mako_ingest_seq:
-          typeof payload._mako_ingest_seq === "number"
-            ? payload._mako_ingest_seq
-            : undefined,
-      };
-    });
+    const fallbackDsId = resolveFallbackDataSourceId(params.flow);
+    const rows = params.records.map(r => buildBatchRow(r, fallbackDsId));
 
     await this.writeViaParquet({
       records: rows,
@@ -350,7 +309,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     options?: { skipDrop?: boolean; skipParquetCleanup?: boolean },
   ): Promise<{ loaded: number }> {
     const destination = await this.resolveDestination();
-    const conn = destination.connection as any;
+    const conn = destination.connection;
     const db = this.getDatabase();
     const fullStaging = `${escId(db)}.${escId(stagingTable)}`;
 
@@ -387,7 +346,9 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       const parquetStream = createReadStream(parquetPath);
       await client.insert({
         table: `${db}.${stagingTable}`,
-        values: parquetStream as any,
+        // ClickHouse Node.js client accepts a Node Readable for Parquet format,
+        // but the type definitions don't reflect this.
+        values: parquetStream as never,
         format: "Parquet",
       });
 
@@ -566,7 +527,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     const fullLive = `${escId(db)}.${escId(layout.tableName)}`;
 
     const ids = deletes.map(e => `'${escStr(String(e.recordId))}'`);
-    const CHUNK = 10_000;
+    const CHUNK = CDC_HARD_DELETE_CHUNK_SIZE;
     for (let i = 0; i < ids.length; i += CHUNK) {
       const chunk = ids.slice(i, i + CHUNK);
       let where = `${escId("id")} IN (${chunk.join(", ")})`;
@@ -596,7 +557,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     );
   }
 
-  private buildClientConfig(conn: any): {
+  private buildClientConfig(conn: IDatabaseConnection["connection"]): {
     url: string;
     username: string;
     password: string;
@@ -625,7 +586,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
     return {
       url: url.toString().replace(/\/$/, ""),
-      username: conn.username || conn.user || "default",
+      username: conn.username || "default",
       password: conn.password || "",
       database: conn.database || this.getDatabase(),
       ...baseConfig,

@@ -1,3 +1,11 @@
+/**
+ * CDC event consumer — reads pending events from the event store and
+ * materializes them into the destination via the resolved adapter.
+ *
+ * Called by the `cdc/materialize` Inngest function per entity. Advances
+ * the entity cursor after successful writes and marks events as
+ * applied, dropped, or failed.
+ */
 import { Types } from "mongoose";
 import {
   CdcEntityState,
@@ -7,6 +15,7 @@ import {
   WebhookEvent,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { CDC_MATERIALIZE_BATCH_SIZE } from "./constants";
 import { getCdcEventStore } from "./event-store";
 import {
   buildCdcEntityLayout,
@@ -63,7 +72,6 @@ export class CdcConsumerService {
     const tableName = cdcLiveTableName(
       flow.tableDestination.tableName,
       params.entity,
-      String(flow._id),
     );
     const adapter = resolveCdcDestinationAdapter({
       destinationType: destination.type,
@@ -101,7 +109,7 @@ export class CdcConsumerService {
       flowId: params.flowId,
       entity: params.entity,
       afterIngestSeq,
-      limit: params.maxEvents || 2500,
+      limit: params.maxEvents || CDC_MATERIALIZE_BATCH_SIZE,
     });
 
     if (pending.length === 0) {
@@ -116,7 +124,7 @@ export class CdcConsumerService {
 
     const latestIngestSeq =
       pending[pending.length - 1]?.ingestSeq || afterIngestSeq;
-    const enabled = isEntityEnabledForFlow(flow as any, params.entity);
+    const enabled = isEntityEnabledForFlow(flow, params.entity);
     if (!enabled) {
       await eventStore.markEventsDropped({
         eventIds: pending.map(event => event.id),
@@ -254,8 +262,9 @@ export class CdcConsumerService {
     }
   }
 
-  private async syncWebhookApplyStatus(
+  private async updateWebhookEventStatus(
     webhookEventIds: Array<string | undefined>,
+    update: Record<string, unknown>,
   ): Promise<void> {
     const ids = Array.from(
       new Set(
@@ -265,77 +274,45 @@ export class CdcConsumerService {
         ),
       ),
     );
-    if (ids.length === 0) {
-      return;
-    }
+    if (ids.length === 0) return;
 
     await WebhookEvent.updateMany(
       { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: {
-          applyStatus: "applied",
-          applyError: null,
-        },
-      },
+      update,
     );
+  }
+
+  private async syncWebhookApplyStatus(
+    webhookEventIds: Array<string | undefined>,
+  ): Promise<void> {
+    await this.updateWebhookEventStatus(webhookEventIds, {
+      $set: { applyStatus: "applied", applyError: null },
+    });
   }
 
   private async syncWebhookApplyDroppedStatus(
     webhookEventIds: Array<string | undefined>,
     failure: { code: string; message: string },
   ): Promise<void> {
-    const ids = Array.from(
-      new Set(
-        webhookEventIds.filter(
-          (eventId): eventId is string =>
-            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
-        ),
-      ),
-    );
-    if (ids.length === 0) {
-      return;
-    }
-
-    await WebhookEvent.updateMany(
-      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: {
-          applyStatus: "dropped",
-          applyError: failure,
-        },
-        $unset: { appliedAt: "" },
-      },
-    );
+    await this.updateWebhookEventStatus(webhookEventIds, {
+      $set: { applyStatus: "dropped", applyError: failure },
+      $unset: { appliedAt: "" },
+    });
   }
 
   private async syncWebhookApplyFailedStatus(
     webhookEventIds: Array<string | undefined>,
     failure: { code: string; message: string },
   ): Promise<void> {
-    const ids = Array.from(
-      new Set(
-        webhookEventIds.filter(
-          (eventId): eventId is string =>
-            typeof eventId === "string" && Types.ObjectId.isValid(eventId),
-        ),
-      ),
-    );
-    if (ids.length === 0) {
-      return;
-    }
-
-    await WebhookEvent.updateMany(
-      { _id: { $in: ids.map(id => new Types.ObjectId(id)) } },
-      {
-        $set: {
-          applyStatus: "failed",
-          applyError: failure,
-          status: "failed",
-          error: failure,
-        },
-        $unset: { appliedAt: "" },
+    await this.updateWebhookEventStatus(webhookEventIds, {
+      $set: {
+        applyStatus: "failed",
+        applyError: failure,
+        status: "failed",
+        error: failure,
       },
-    );
+      $unset: { appliedAt: "" },
+    });
   }
 }
 
