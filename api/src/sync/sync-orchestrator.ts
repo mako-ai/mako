@@ -19,6 +19,7 @@ import {
 import { createDestinationWriter } from "../services/destination-writer.service";
 import {
   buildParquetFromBatches,
+  isDuckDBMemoryError,
   type FieldMeta,
 } from "../utils/streaming-parquet-builder";
 import { Db, Collection } from "mongodb";
@@ -970,6 +971,12 @@ const FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
   10_000,
 );
 
+/** Absolute minimum rows per parquet flush — below this we surface the OOM error. */
+const MIN_FLUSH_BATCH_SIZE = resolvePositiveIntEnv(
+  process.env.SYNC_BULK_FLUSH_MIN_BATCH_SIZE,
+  100,
+);
+
 /** Rows passed per DuckDB insertBatch from Mongo (parquet builder micro-chunks SQL). */
 const MONGO_TO_PARQUET_CHUNK = resolvePositiveIntEnv(
   process.env.SYNC_BULK_MONGO_TO_PARQUET_CHUNK,
@@ -1006,65 +1013,116 @@ async function flushBulkBuffer(
   logger?: SyncLogger,
   schemaFields?: FieldMeta[],
 ): Promise<{ flushed: number }> {
-  const totalCount = await tempCollection.countDocuments();
-  if (totalCount === 0) return { flushed: 0 };
+  const initialCount = await tempCollection.countDocuments();
+  if (initialCount === 0) return { flushed: 0 };
 
-  const totalBatches = Math.ceil(totalCount / FLUSH_BATCH_SIZE);
+  let currentBatchSize = FLUSH_BATCH_SIZE;
   let totalFlushed = 0;
+  let batchNum = 0;
 
   logger?.log(
     "info",
-    `Flushing ${entity} buffer to staging (${totalCount.toLocaleString()} rows in ${totalBatches} batch${totalBatches > 1 ? "es" : ""})`,
+    `Flushing ${entity} buffer to staging (${initialCount.toLocaleString()} rows, starting batch size ${currentBatchSize.toLocaleString()})`,
     {
       entity,
-      totalCount,
-      totalBatches,
-      batchSize: FLUSH_BATCH_SIZE,
+      totalCount: initialCount,
+      batchSize: currentBatchSize,
+      minBatchSize: MIN_FLUSH_BATCH_SIZE,
       mongoStreamChunk: MONGO_TO_PARQUET_CHUNK,
       memoryBefore: syncMemorySnapshot(),
     },
   );
 
   const DELETE_CHUNK = 2000;
+  const CONSECUTIVE_OK_TO_GROW = 3;
+  let consecutiveSuccesses = 0;
 
-  for (let batchNum = 0; batchNum < totalBatches; batchNum++) {
+  let remaining = await tempCollection.countDocuments();
+  while (remaining > 0) {
+    batchNum++;
+    const effectiveBatchSize = Math.min(currentBatchSize, remaining);
+
     let docIdChunks: unknown[][] = [];
     let currentChunk: unknown[] = [];
-    const cursor = tempCollection
-      .find({}, { projection: { _bulkRunId: 0 } })
-      .sort({ _id: 1 })
-      .limit(FLUSH_BATCH_SIZE);
 
     const tParquetStart = Date.now();
 
-    const parquet = await buildParquetFromBatches({
-      filenameBase: `backfill-${entity}`,
-      fields: schemaFields,
-      streamBatches: async insertBatch => {
-        let buffer: Record<string, unknown>[] = [];
-        for await (const doc of cursor) {
-          const d = doc as Record<string, unknown>;
-          const { _id, ...rest } = d;
-          currentChunk.push(_id);
-          if (currentChunk.length >= DELETE_CHUNK) {
+    let parquet;
+    try {
+      parquet = await buildParquetFromBatches({
+        filenameBase: `backfill-${entity}`,
+        fields: schemaFields,
+        streamBatches: async insertBatch => {
+          const cursor = tempCollection
+            .find({}, { projection: { _bulkRunId: 0 } })
+            .sort({ _id: 1 })
+            .limit(effectiveBatchSize);
+
+          let buffer: Record<string, unknown>[] = [];
+          for await (const doc of cursor) {
+            const d = doc as Record<string, unknown>;
+            const { _id, ...rest } = d;
+            currentChunk.push(_id);
+            if (currentChunk.length >= DELETE_CHUNK) {
+              docIdChunks.push(currentChunk);
+              currentChunk = [];
+            }
+            buffer.push(rest);
+            if (buffer.length >= MONGO_TO_PARQUET_CHUNK) {
+              await insertBatch(buffer);
+              buffer = [];
+            }
+          }
+          if (buffer.length > 0) {
+            await insertBatch(buffer);
+          }
+          if (currentChunk.length > 0) {
             docIdChunks.push(currentChunk);
             currentChunk = [];
           }
-          buffer.push(rest);
-          if (buffer.length >= MONGO_TO_PARQUET_CHUNK) {
-            await insertBatch(buffer);
-            buffer = [];
-          }
+        },
+      });
+    } catch (err) {
+      if (isDuckDBMemoryError(err)) {
+        const shrunkSize = Math.max(
+          MIN_FLUSH_BATCH_SIZE,
+          Math.floor(currentBatchSize / 2),
+        );
+
+        if (
+          shrunkSize <= MIN_FLUSH_BATCH_SIZE &&
+          currentBatchSize <= MIN_FLUSH_BATCH_SIZE
+        ) {
+          logger?.log(
+            "error",
+            `${entity} flush: DuckDB memory error at minimum batch size (${currentBatchSize}), cannot shrink further`,
+            {
+              entity,
+              batchSize: currentBatchSize,
+              minBatchSize: MIN_FLUSH_BATCH_SIZE,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+          throw err;
         }
-        if (buffer.length > 0) {
-          await insertBatch(buffer);
-        }
-        if (currentChunk.length > 0) {
-          docIdChunks.push(currentChunk);
-          currentChunk = [];
-        }
-      },
-    });
+
+        logger?.log(
+          "warn",
+          `${entity} flush batch ${batchNum}: DuckDB memory error, reducing batch size from ${currentBatchSize} to ${shrunkSize} and retrying`,
+          {
+            entity,
+            previousBatchSize: currentBatchSize,
+            newBatchSize: shrunkSize,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+        currentBatchSize = shrunkSize;
+        consecutiveSuccesses = 0;
+        batchNum--;
+        continue;
+      }
+      throw err;
+    }
 
     const parquetMs = Date.now() - tParquetStart;
 
@@ -1072,7 +1130,7 @@ async function flushBulkBuffer(
       logger?.log(
         "warn",
         `${entity} flush: empty parquet (possible race), stopping flush loop`,
-        { entity, batch: batchNum + 1, totalBatches },
+        { entity, batch: batchNum },
       );
       break;
     }
@@ -1098,8 +1156,8 @@ async function flushBulkBuffer(
           const backoffMs = Math.min(1000 * 2 ** (attempt - 1), 15_000);
           logger?.log(
             "warn",
-            `${entity} flush batch ${batchNum + 1}/${totalBatches} load failed (attempt ${attempt}/${LOAD_MAX_RETRIES}), retrying in ${backoffMs}ms`,
-            { entity, batch: batchNum + 1, attempt, error: String(err) },
+            `${entity} flush batch ${batchNum} load failed (attempt ${attempt}/${LOAD_MAX_RETRIES}), retrying in ${backoffMs}ms`,
+            { entity, batch: batchNum, attempt, error: String(err) },
           );
           await new Promise(r => setTimeout(r, backoffMs));
         }
@@ -1121,30 +1179,52 @@ async function flushBulkBuffer(
       global.gc();
     }
 
+    consecutiveSuccesses++;
+    if (
+      consecutiveSuccesses >= CONSECUTIVE_OK_TO_GROW &&
+      currentBatchSize < FLUSH_BATCH_SIZE
+    ) {
+      const grownSize = Math.min(currentBatchSize * 2, FLUSH_BATCH_SIZE);
+      logger?.log(
+        "info",
+        `${entity} flush: ${consecutiveSuccesses} consecutive successes, growing batch size from ${currentBatchSize} to ${grownSize}`,
+        {
+          entity,
+          previousBatchSize: currentBatchSize,
+          newBatchSize: grownSize,
+        },
+      );
+      currentBatchSize = grownSize;
+      consecutiveSuccesses = 0;
+    }
+
     logger?.log(
       "info",
-      `📦 ${entity} flush ${batchNum + 1}/${totalBatches} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${totalCount.toLocaleString()}) [parquet ${parquetMs}ms, load ${loadMs}ms]`,
+      `📦 ${entity} flush batch ${batchNum} — ${batchRows.toLocaleString()} rows (${totalFlushed.toLocaleString()}/${initialCount.toLocaleString()}) [parquet ${parquetMs}ms, load ${loadMs}ms, batchSize ${effectiveBatchSize}]`,
       {
         entity,
-        batch: batchNum + 1,
-        totalBatches,
+        batch: batchNum,
         batchRows,
         totalFlushed,
-        totalCount,
+        totalCount: initialCount,
+        effectiveBatchSize,
         durationParquetMs: parquetMs,
         durationLoadStagingMs: loadMs,
         memory: syncMemorySnapshot(),
       },
     );
+
+    remaining = await tempCollection.countDocuments();
   }
 
   logger?.log(
     "info",
-    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows)`,
+    `✅ ${entity} buffer fully flushed to staging (${totalFlushed.toLocaleString()} rows in ${batchNum} batch${batchNum !== 1 ? "es" : ""})`,
     {
       entity,
       totalFlushed,
-      batches: totalBatches,
+      batches: batchNum,
+      finalBatchSize: currentBatchSize,
       memory: syncMemorySnapshot(),
     },
   );
