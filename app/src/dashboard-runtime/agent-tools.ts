@@ -11,11 +11,14 @@ import {
   updateDashboardWidget,
 } from "./commands";
 import { useDashboardStore } from "../store/dashboardStore";
-import { useConsoleStore } from "../store/consoleStore";
-import { useUIStore } from "../store/uiStore";
 import type { DashboardDataSource, DashboardWidget } from "./types";
 import { classifyDuckDBError, classifySourceError } from "./error-kinds";
 import { computeDashboardStateHash } from "../utils/stateHash";
+import {
+  DASHBOARD_EXECUTOR_TOOL_NAMES,
+  type AgentToolName,
+} from "../agent-runtime/client-tool-manifest";
+import { focusDashboardTab, getCurrentWorkspaceId } from "./shell";
 import {
   validateCrossFilterWidgetSql,
   validateDuckDBQuery,
@@ -79,7 +82,6 @@ const READ_ONLY_TOOLS = new Set([
   "get_dashboard_state",
   "preview_data_source",
   "get_data_preview",
-  "suggest_charts",
   "get_chart_templates",
   "get_chart_template",
   "list_open_dashboards",
@@ -93,44 +95,16 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
   "open_dashboard",
 ]);
 
-const DASHBOARD_TOOLS = new Set([
-  "list_open_dashboards",
-  "open_dashboard",
-  "create_dashboard",
-  "enter_edit_mode",
-  "add_data_source",
-  "import_console_as_data_source",
-  "create_data_source",
-  "update_data_source_query",
-  "run_data_source_query",
-  "get_chart_templates",
-  "get_chart_template",
-  "get_dashboard_state",
-  "get_data_preview",
-  "preview_data_source",
-  "add_widget",
-  "modify_widget",
-  "remove_widget",
-  "add_global_filter",
-  "remove_global_filter",
-  "link_tables",
-  "set_time_dimension",
-]);
-
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  fallbackDashboardId?: string | null,
   options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<Record<string, unknown> | null> {
-  const signal = options?.signal;
-  if (
-    DASHBOARD_TOOLS.has(toolName) &&
-    fallbackDashboardId &&
-    typeof input.dashboardId !== "string"
-  ) {
-    input = { ...input, dashboardId: fallbackDashboardId };
+  if (!DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+    return null;
   }
+
+  const signal = options?.signal;
   if (toolName === "list_open_dashboards") {
     const store = useDashboardStore.getState();
     const dashboards = Object.values(store.openDashboards).map((d: any) => ({
@@ -164,14 +138,7 @@ export async function executeDashboardAgentTool(
           s.activeDashboardId = dashboardId;
         });
       }
-      const consoleStore = useConsoleStore.getState();
-      const existingTab = Object.values(consoleStore.tabs).find(
-        (t: any) =>
-          t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
-      );
-      if (existingTab) {
-        consoleStore.setActiveTab((existingTab as any).id);
-      }
+      focusDashboardTab(dashboardId, (existing as any).title);
       return {
         success: true,
         dashboardId,
@@ -180,7 +147,7 @@ export async function executeDashboardAgentTool(
       };
     }
 
-    const workspaceId = useUIStore.getState().currentWorkspaceId;
+    const workspaceId = getCurrentWorkspaceId();
     if (!workspaceId) {
       return { success: false, error: "No active workspace" };
     }
@@ -197,23 +164,7 @@ export async function executeDashboardAgentTool(
         };
       }
 
-      const consoleStore = useConsoleStore.getState();
-      const existingTab = Object.values(consoleStore.tabs).find(
-        (t: any) =>
-          t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
-      );
-      if (!existingTab) {
-        const tabId = consoleStore.openTab({
-          title: (dashboard as any).title,
-          content: "",
-          kind: "dashboard",
-          metadata: { dashboardId },
-        });
-        consoleStore.setActiveTab(tabId);
-      } else {
-        consoleStore.setActiveTab((existingTab as any).id);
-      }
-      useUIStore.getState().setLeftPane("dashboards");
+      focusDashboardTab(dashboardId, (dashboard as any).title);
 
       return {
         success: true,
@@ -229,7 +180,7 @@ export async function executeDashboardAgentTool(
   }
 
   if (toolName === "create_dashboard") {
-    const workspaceId = useUIStore.getState().currentWorkspaceId;
+    const workspaceId = getCurrentWorkspaceId();
     if (!workspaceId || typeof workspaceId !== "string") {
       return { success: false, error: "No active workspace" };
     }
@@ -269,15 +220,7 @@ export async function executeDashboardAgentTool(
         .catch(() => {});
       throwIfAborted(signal);
 
-      const consoleStore = useConsoleStore.getState();
-      const tabId = consoleStore.openTab({
-        title: dashboard.title,
-        content: "",
-        kind: "dashboard",
-        metadata: { dashboardId: dashboard._id },
-      });
-      consoleStore.setActiveTab(tabId);
-      useUIStore.getState().setLeftPane("dashboards");
+      focusDashboardTab(dashboard._id, dashboard.title);
 
       return {
         success: true,

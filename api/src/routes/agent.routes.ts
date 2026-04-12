@@ -143,12 +143,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     databaseName?: string;
   }
 
+  interface OpenDashboardContext {
+    id: string;
+    title: string;
+    isActive: boolean;
+  }
+
   const {
     messages,
     chatId,
     workspaceId,
     openConsoles,
     openTabs,
+    openDashboards,
     consoleId,
     modelId,
     activeConsoleResults,
@@ -165,6 +172,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     workspaceId?: string;
     openConsoles?: OpenConsoleContext[];
     openTabs?: OpenTabContext[];
+    openDashboards?: OpenDashboardContext[];
     consoleId?: string;
     modelId?: string;
     activeConsoleResults?: ActiveConsoleResults;
@@ -413,6 +421,17 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     }
   }
 
+  const dashboardContext =
+    activeView === "dashboard"
+      ? {
+          openDashboards,
+          activeDashboardContext,
+        }
+      : {
+          openDashboards: undefined,
+          activeDashboardContext: undefined,
+        };
+
   // Build agent context
   const agentContext: AgentContext = {
     workspaceId,
@@ -421,6 +440,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     consoles: enrichedConsoles,
     consoleId,
     openTabs,
+    openDashboards: dashboardContext.openDashboards,
     databases: workspaceDatabases.map(db => ({
       id: db._id.toString(),
       name: db.name,
@@ -432,7 +452,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     selfDirective,
     consoleHints,
     activeConsoleResults,
-    activeDashboardContext,
+    activeDashboardContext: dashboardContext.activeDashboardContext,
     toolExecutionContext,
   };
 

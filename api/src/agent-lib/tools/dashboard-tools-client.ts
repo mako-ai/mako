@@ -141,11 +141,6 @@ const setTimeDimensionSchema = z.object({
     .describe("The datetime column to use as default time dimension"),
 });
 
-const suggestChartsSchema = z.object({
-  dashboardId: z.string().describe("Dashboard ID"),
-  dataSourceId: z.string().describe("Data source to analyze"),
-});
-
 const importConsoleAsDataSourceSchema = z.object({
   dashboardId: z
     .string()
@@ -364,13 +359,6 @@ export const clientDashboardTools = {
     description:
       "Legacy alias for preview_data_source. Runs SQL against the loaded DuckDB table.",
     inputSchema: getDataPreviewSchema,
-  },
-  suggest_charts: {
-    description:
-      "Analyze the data sources and suggest 3-5 chart configurations. " +
-      "Returns suggestions without adding them to the dashboard. " +
-      "The user can then choose which ones to add.",
-    inputSchema: suggestChartsSchema,
   },
   add_global_filter: {
     description:

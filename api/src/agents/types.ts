@@ -65,6 +65,12 @@ export interface AgentContext {
     connectionId?: string;
     databaseName?: string;
   }>;
+  /** Lightweight summary of open dashboards for explicit dashboard selection */
+  openDashboards?: Array<{
+    id: string;
+    title: string;
+    isActive: boolean;
+  }>;
   /** Database connections in workspace */
   databases?: Array<{
     id: string;
