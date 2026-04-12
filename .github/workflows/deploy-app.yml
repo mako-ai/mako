@@ -475,7 +475,6 @@ jobs:
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
-            --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
@@ -509,7 +508,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          INNGEST_URL="${BASE_URL}/api/inngest"
+          INNGEST_URL="${{ steps.deploy.outputs.cloud_run_url }}/api/inngest"
 
           echo "Waiting for preview endpoint to become ready at ${INNGEST_URL}..."
           for attempt in 1 2 3 4 5; do
