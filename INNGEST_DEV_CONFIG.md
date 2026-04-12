@@ -91,6 +91,34 @@ DASHBOARD_ARTIFACT_PREFIX=dashboard-artifacts/local-<your-name>
 GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/dev-service-account.json
 ```
 
+## Sync / DuckDB Parquet Tuning
+
+The backfill pipeline flushes buffered rows from a MongoDB temp collection into
+Parquet files via DuckDB, then loads them into the destination (BigQuery,
+ClickHouse, etc.). Several environment variables control memory and batch sizing:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB` | `512` | DuckDB per-instance memory cap. Raise if entities contain very large text (e.g. meeting notes). |
+| `SYNC_PARQUET_DUCKDB_THREADS` | `1` | DuckDB thread count. Keep at 1 to minimize peak memory. |
+| `SYNC_BULK_FLUSH_BATCH_SIZE` | `10000` | Max rows per Parquet file in the bulk flush loop. |
+| `SYNC_BULK_FLUSH_MIN_BATCH_SIZE` | `100` | Floor for adaptive batch shrinking (see below). |
+| `SYNC_BULK_MONGO_TO_PARQUET_CHUNK` | `200` | Rows per DuckDB `INSERT` micro-batch from Mongo cursor. |
+
+### Adaptive batch sizing
+
+When a Parquet build fails with a DuckDB memory error (e.g. `failed to pin block`),
+the flush loop automatically halves the batch size and retries with the same rows.
+It continues halving down to `SYNC_BULK_FLUSH_MIN_BATCH_SIZE`. If the minimum
+still fails, the error is surfaced to the Inngest step for retry/alerting.
+
+After 3 consecutive successful flushes at a reduced size, the batch size doubles
+back toward `SYNC_BULK_FLUSH_BATCH_SIZE` so throughput recovers for normal data.
+
+This means entities with unusually large payloads (long meeting notes, embedded
+documents) will self-heal without operator intervention, while normal entities
+continue at full batch throughput.
+
 ## Environment summary
 
 | Environment    | Artifact Store | Artifact Prefix                         | Inngest Routing           | Schedulers             |
