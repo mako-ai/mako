@@ -91,6 +91,7 @@ Key capabilities:
 - **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local data
 - **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
+- **Debugging & Guardrails** — enforces cross-filter diagnosis and source-query edit safety, verifying causes before modifying charts or retrying broken SQL edits.
 - **Multi-dashboard** — multiple dashboards can be open simultaneously, each with its own isolated DuckDB instance
 
 The agent handles edit-mode locking, so concurrent users cannot conflict.

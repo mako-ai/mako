@@ -23,6 +23,14 @@ Each flow run:
 4. Saves the new cursor position
 5. Repeats until no more records
 
+## Change Data Capture (CDC) & Streaming
+
+In addition to scheduled batch syncing, Mako supports experimental Change Data Capture (CDC) for near real-time updates.
+
+- **Streaming Sync** — continuous event consumption via webhooks or log streams
+- **Backfills** — historical data backfills run robustly within 1Gi Cloud Run memory limits, safely handling bulk flushes by cycling DuckDB instances
+- **BigQuery Staging** — streams events into region-aligned BigQuery staging tables (safely preserved during recovery)
+
 ## Job Queue
 
 Flows run on [Inngest](https://www.inngest.com/), a job queue that handles:

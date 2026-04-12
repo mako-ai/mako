@@ -14,7 +14,7 @@ Connectors pull data from external services and sync it into your connected data
 | Connector     | Source          | Entities                                                                         |
 | ------------- | --------------- | -------------------------------------------------------------------------------- |
 | **Stripe**    | Stripe API      | Customers, Subscriptions, Charges, Invoices, Products, Plans                     |
-| **Close CRM** | Close API       | Leads, Opportunities, Activities (10+ sub-types), Contacts, Users, Custom Fields |
+| **Close CRM** | Close API       | Leads, Opportunities, Activities (10+ sub-types), Contacts, Users, Custom Fields. *Webhooks are automatically scoped to synced entities only.* |
 | **PostHog**   | PostHog HogQL   | Dynamic — each configured HogQL query becomes an entity                          |
 | **GraphQL**   | Any GraphQL API | Dynamic — each configured query becomes an entity                                |
 | **BigQuery**  | Google BigQuery | Dynamic — each configured query becomes an entity                                |
