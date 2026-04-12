@@ -52,9 +52,10 @@ the existing artifact. This applies equally to consoles and dashboards.
 
 ## Tool Availability
 
-All tools are always registered, but client-side tools (console editing, dashboard widgets,
-flow form fields) operate on the active UI tab. If no dashboard is open, dashboard widget
-tools will fail. Use \`create_console\` or \`create_dashboard\` to open a new tab when needed.
+All tools are always registered. Console editing and flow form tools operate on the active
+UI tab. Dashboard tools require an explicit \`dashboardId\`; use \`list_open_dashboards\`
+to get the current IDs and pass that ID on every dashboard tool call. If no dashboard is
+open, use \`create_dashboard\` or \`open_dashboard\` first.
 
 When you create or modify source queries, use the source connection type and SQL dialect.
 When you create or modify dashboard widgets, the widget \`localSql\` always runs in DuckDB.
@@ -165,10 +166,7 @@ function buildConsoleContext(context: AgentContext): string[] {
 
 function buildDashboardContext(context: AgentContext): string[] {
   const parts: string[] = [];
-  const raw = context as unknown as Record<string, unknown>;
-  const openDashboards = raw.openDashboards as
-    | Array<{ id: string; title: string; isActive: boolean }>
-    | undefined;
+  const openDashboards = context.openDashboards;
   const dashboard = context.activeDashboardContext;
 
   if (openDashboards && openDashboards.length > 0) {
@@ -375,11 +373,7 @@ export function buildCurrentScreenContext(context: AgentContext): string {
   sections.push(...buildConsoleContext(context));
   sections.push("");
 
-  const rawCtx = context as unknown as Record<string, unknown>;
-  if (
-    context.activeDashboardContext ||
-    (rawCtx.openDashboards as unknown[] | undefined)?.length
-  ) {
+  if (context.activeDashboardContext || context.openDashboards?.length) {
     sections.push(...buildDashboardContext(context));
     sections.push("");
   }

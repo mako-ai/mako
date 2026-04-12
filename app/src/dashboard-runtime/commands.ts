@@ -230,23 +230,14 @@ export async function activateDashboardSession(
 }
 
 export async function closeDashboardSession(
-  dashboardId?: string,
+  dashboardId: string,
 ): Promise<void> {
-  const id = dashboardId ?? useDashboardStore.getState().activeDashboardId;
-  if (!id) return;
-  await disposeDashboardRuntime(id);
+  await disposeDashboardRuntime(dashboardId);
 }
 
-export async function getDashboardMosaicInstance(dashboardId?: string) {
-  const resolvedDashboardId =
-    dashboardId || useDashboardStore.getState().activeDashboardId;
-  if (!resolvedDashboardId) {
-    throw new Error("No active dashboard");
-  }
-
+export async function getDashboardMosaicInstance(dashboardId: string) {
   return (
-    getMosaicInstance(resolvedDashboardId) ||
-    (await ensureMosaicInstance(resolvedDashboardId))
+    getMosaicInstance(dashboardId) || (await ensureMosaicInstance(dashboardId))
   );
 }
 
@@ -653,7 +644,7 @@ export function refreshDashboardWidgetCommand(options: {
     );
 }
 
-export function getDashboardStateSnapshot(dashboardId?: string) {
+export function getDashboardStateSnapshot(dashboardId: string) {
   const dashboard = getDashboardOrThrow(dashboardId);
 
   return {

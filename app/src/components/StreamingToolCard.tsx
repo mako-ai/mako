@@ -37,6 +37,11 @@ import {
   X,
   ExternalLink,
 } from "lucide-react";
+import {
+  getAgentToolManifestEntry,
+  type ToolIconKey,
+  type ToolUiConfig,
+} from "../agent-runtime/client-tool-manifest";
 
 export type ToolPartState =
   | "input-streaming"
@@ -53,316 +58,7 @@ interface StreamingToolCardProps {
   onDetailClick?: () => void;
 }
 
-interface ToolConfig {
-  getLabel: (input?: unknown) => string;
-  icon: React.ReactNode;
-  preview?: { field: string; language: string };
-}
-
 const ICON_SIZE = 13;
-
-const TOOL_CONFIG: Record<string, ToolConfig> = {
-  // ── Console ──────────────────────────────────────────────
-  modify_console: {
-    getLabel: input => {
-      const action = (input as Record<string, unknown>)?.action;
-      return action === "patch" ? "Patching console" : "Editing console";
-    },
-    icon: <Pencil size={ICON_SIZE} />,
-    preview: { field: "content", language: "sql" },
-  },
-  create_console: {
-    getLabel: input => {
-      const title = (input as Record<string, unknown>)?.title;
-      return title ? `Creating "${title}"` : "Creating console";
-    },
-    icon: <Plus size={ICON_SIZE} />,
-    preview: { field: "content", language: "sql" },
-  },
-  read_console: {
-    getLabel: () => "Reading console",
-    icon: <Eye size={ICON_SIZE} />,
-  },
-  list_open_consoles: {
-    getLabel: () => "Listing open consoles",
-    icon: <List size={ICON_SIZE} />,
-  },
-  set_console_connection: {
-    getLabel: () => "Setting connection",
-    icon: <Link size={ICON_SIZE} />,
-  },
-  open_console: {
-    getLabel: () => "Opening console",
-    icon: <ExternalLink size={ICON_SIZE} />,
-  },
-
-  // ── SQL ──────────────────────────────────────────────────
-  sql_execute_query: {
-    getLabel: () => "Executing SQL query",
-    icon: <Play size={ICON_SIZE} />,
-    preview: { field: "query", language: "sql" },
-  },
-  sql_list_connections: {
-    getLabel: () => "Listing SQL connections",
-    icon: <Database size={ICON_SIZE} />,
-  },
-  sql_list_databases: {
-    getLabel: () => "Listing databases",
-    icon: <Database size={ICON_SIZE} />,
-  },
-  sql_list_tables: {
-    getLabel: input => {
-      const db = (input as Record<string, unknown>)?.database;
-      return db ? `Listing tables in ${db}` : "Listing tables";
-    },
-    icon: <Table2 size={ICON_SIZE} />,
-  },
-  sql_inspect_table: {
-    getLabel: input => {
-      const table = (input as Record<string, unknown>)?.table;
-      return table ? `Inspecting ${table}` : "Inspecting table";
-    },
-    icon: <Search size={ICON_SIZE} />,
-  },
-
-  // ── MongoDB ──────────────────────────────────────────────
-  mongo_execute_query: {
-    getLabel: () => "Executing MongoDB query",
-    icon: <Play size={ICON_SIZE} />,
-    preview: { field: "query", language: "javascript" },
-  },
-  mongo_list_connections: {
-    getLabel: () => "Listing MongoDB connections",
-    icon: <Database size={ICON_SIZE} />,
-  },
-  mongo_list_databases: {
-    getLabel: () => "Listing databases",
-    icon: <Database size={ICON_SIZE} />,
-  },
-  mongo_list_collections: {
-    getLabel: input => {
-      const db = (input as Record<string, unknown>)?.databaseName;
-      return db ? `Listing collections in ${db}` : "Listing collections";
-    },
-    icon: <Table2 size={ICON_SIZE} />,
-  },
-  mongo_inspect_collection: {
-    getLabel: input => {
-      const coll = (input as Record<string, unknown>)?.collectionName;
-      return coll ? `Inspecting ${coll}` : "Inspecting collection";
-    },
-    icon: <Search size={ICON_SIZE} />,
-  },
-
-  // ── Universal discovery ──────────────────────────────────
-  list_connections: {
-    getLabel: () => "Listing connections",
-    icon: <Database size={ICON_SIZE} />,
-  },
-
-  // ── Chart ────────────────────────────────────────────────
-  modify_chart_spec: {
-    getLabel: () => "Setting chart specification",
-    icon: <BarChart3 size={ICON_SIZE} />,
-    preview: { field: "vegaLiteSpec", language: "json" },
-  },
-
-  // ── Dashboard ────────────────────────────────────────────
-  list_open_dashboards: {
-    getLabel: () => "Listing open dashboards",
-    icon: <List size={ICON_SIZE} />,
-  },
-  search_dashboards: {
-    getLabel: input => {
-      const query = (input as Record<string, unknown>)?.query;
-      return query
-        ? `Searching dashboards: "${query}"`
-        : "Searching dashboards";
-    },
-    icon: <Search size={ICON_SIZE} />,
-  },
-  open_dashboard: {
-    getLabel: () => "Opening dashboard",
-    icon: <ExternalLink size={ICON_SIZE} />,
-  },
-  create_dashboard: {
-    getLabel: input => {
-      const title = (input as Record<string, unknown>)?.title;
-      return title ? `Creating dashboard "${title}"` : "Creating dashboard";
-    },
-    icon: <Plus size={ICON_SIZE} />,
-  },
-  add_widget: {
-    getLabel: input => {
-      const type = (input as Record<string, unknown>)?.type;
-      return type ? `Adding ${type} widget` : "Adding widget";
-    },
-    icon: <Plus size={ICON_SIZE} />,
-    preview: { field: "localSql", language: "sql" },
-  },
-  modify_widget: {
-    getLabel: () => "Modifying widget",
-    icon: <Pencil size={ICON_SIZE} />,
-    preview: { field: "localSql", language: "sql" },
-  },
-  remove_widget: {
-    getLabel: () => "Removing widget",
-    icon: <Trash2 size={ICON_SIZE} />,
-  },
-  create_data_source: {
-    getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
-      return name ? `Creating data source "${name}"` : "Creating data source";
-    },
-    icon: <Plus size={ICON_SIZE} />,
-    preview: { field: "code", language: "sql" },
-  },
-  update_data_source_query: {
-    getLabel: input => {
-      const inp = input as Record<string, unknown>;
-      const action = inp?.action;
-      const run = inp?.run === true;
-      const suffix = run ? "" : " (definition only)";
-      if (action === "patch") return `Patching data source query${suffix}`;
-      if (action === "append") return `Appending to data source query${suffix}`;
-      return `Updating data source query${suffix}`;
-    },
-    icon: <Pencil size={ICON_SIZE} />,
-    preview: { field: "code", language: "sql" },
-  },
-  run_data_source_query: {
-    getLabel: () => "Running data source query",
-    icon: <Play size={ICON_SIZE} />,
-  },
-  import_console_as_data_source: {
-    getLabel: () => "Importing console as data source",
-    icon: <Download size={ICON_SIZE} />,
-  },
-  add_data_source: {
-    getLabel: () => "Importing data source",
-    icon: <Download size={ICON_SIZE} />,
-  },
-  get_dashboard_state: {
-    getLabel: () => "Reading dashboard state",
-    icon: <Eye size={ICON_SIZE} />,
-  },
-  preview_data_source: {
-    getLabel: () => "Previewing data",
-    icon: <Eye size={ICON_SIZE} />,
-    preview: { field: "sql", language: "sql" },
-  },
-  get_data_preview: {
-    getLabel: () => "Previewing data",
-    icon: <Eye size={ICON_SIZE} />,
-    preview: { field: "sql", language: "sql" },
-  },
-  suggest_charts: {
-    getLabel: () => "Suggesting charts",
-    icon: <BarChart3 size={ICON_SIZE} />,
-  },
-  add_global_filter: {
-    getLabel: input => {
-      const label = (input as Record<string, unknown>)?.label;
-      return label ? `Adding filter "${label}"` : "Adding filter";
-    },
-    icon: <Filter size={ICON_SIZE} />,
-  },
-  remove_global_filter: {
-    getLabel: () => "Removing filter",
-    icon: <Trash2 size={ICON_SIZE} />,
-  },
-  link_tables: {
-    getLabel: () => "Linking tables",
-    icon: <Link size={ICON_SIZE} />,
-  },
-  set_time_dimension: {
-    getLabel: () => "Setting time dimension",
-    icon: <Clock size={ICON_SIZE} />,
-  },
-
-  // ── Search ───────────────────────────────────────────────
-  search_consoles: {
-    getLabel: input => {
-      const query = (input as Record<string, unknown>)?.query;
-      return query ? `Searching "${query}"` : "Searching consoles";
-    },
-    icon: <Search size={ICON_SIZE} />,
-  },
-
-  // ── Self-directive / memory ──────────────────────────────
-  read_self_directive: {
-    getLabel: () => "Reading memory",
-    icon: <Brain size={ICON_SIZE} />,
-  },
-  update_self_directive: {
-    getLabel: () => "Updating memory",
-    icon: <Brain size={ICON_SIZE} />,
-  },
-
-  // ── Flow tools ───────────────────────────────────────────
-  get_form_state: {
-    getLabel: () => "Reading form state",
-    icon: <Eye size={ICON_SIZE} />,
-  },
-  set_form_field: {
-    getLabel: input => {
-      const field = (input as Record<string, unknown>)?.fieldName;
-      return field ? `Setting ${field}` : "Setting form field";
-    },
-    icon: <Pencil size={ICON_SIZE} />,
-  },
-  set_multiple_fields: {
-    getLabel: input => {
-      const fields = (input as Record<string, unknown>)?.fields;
-      const count =
-        fields && typeof fields === "object" ? Object.keys(fields).length : 0;
-      return count > 0 ? `Setting ${count} fields` : "Setting form fields";
-    },
-    icon: <Pencil size={ICON_SIZE} />,
-  },
-  create_flow_tab: {
-    getLabel: () => "Creating flow tab",
-    icon: <Plus size={ICON_SIZE} />,
-  },
-  list_flow_tabs: {
-    getLabel: () => "Listing flow tabs",
-    icon: <List size={ICON_SIZE} />,
-  },
-
-  // ── Flow discovery ───────────────────────────────────────
-  list_databases: {
-    getLabel: () => "Listing databases",
-    icon: <Database size={ICON_SIZE} />,
-  },
-  list_tables: {
-    getLabel: () => "Listing tables",
-    icon: <Table2 size={ICON_SIZE} />,
-  },
-  inspect_table: {
-    getLabel: input => {
-      const table = (input as Record<string, unknown>)?.table;
-      return table ? `Inspecting ${table}` : "Inspecting table";
-    },
-    icon: <Search size={ICON_SIZE} />,
-  },
-  execute_query: {
-    getLabel: () => "Executing query",
-    icon: <Play size={ICON_SIZE} />,
-    preview: { field: "query", language: "sql" },
-  },
-  validate_query: {
-    getLabel: () => "Validating query",
-    icon: <ShieldCheck size={ICON_SIZE} />,
-    preview: { field: "query", language: "sql" },
-  },
-  explain_template: {
-    getLabel: input => {
-      const ph = (input as Record<string, unknown>)?.placeholder;
-      return ph ? `Explaining {{${ph}}}` : "Explaining template";
-    },
-    icon: <HelpCircle size={ICON_SIZE} />,
-  },
-};
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -370,11 +66,55 @@ function humanizeToolName(name: string): string {
   return name.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function getToolConfig(toolName: string): ToolConfig {
+function renderToolIcon(iconKey: ToolIconKey): React.ReactNode {
+  switch (iconKey) {
+    case "pencil":
+      return <Pencil size={ICON_SIZE} />;
+    case "plus":
+      return <Plus size={ICON_SIZE} />;
+    case "eye":
+      return <Eye size={ICON_SIZE} />;
+    case "list":
+      return <List size={ICON_SIZE} />;
+    case "link":
+      return <Link size={ICON_SIZE} />;
+    case "external-link":
+      return <ExternalLink size={ICON_SIZE} />;
+    case "play":
+      return <Play size={ICON_SIZE} />;
+    case "database":
+      return <Database size={ICON_SIZE} />;
+    case "table":
+      return <Table2 size={ICON_SIZE} />;
+    case "search":
+      return <Search size={ICON_SIZE} />;
+    case "bar-chart":
+      return <BarChart3 size={ICON_SIZE} />;
+    case "download":
+      return <Download size={ICON_SIZE} />;
+    case "trash":
+      return <Trash2 size={ICON_SIZE} />;
+    case "filter":
+      return <Filter size={ICON_SIZE} />;
+    case "clock":
+      return <Clock size={ICON_SIZE} />;
+    case "brain":
+      return <Brain size={ICON_SIZE} />;
+    case "shield-check":
+      return <ShieldCheck size={ICON_SIZE} />;
+    case "help-circle":
+      return <HelpCircle size={ICON_SIZE} />;
+    default:
+      return <Wrench size={ICON_SIZE} />;
+  }
+}
+
+function getToolConfig(toolName: string): ToolUiConfig {
+  const config = getAgentToolManifestEntry(toolName);
   return (
-    TOOL_CONFIG[toolName] ?? {
+    config ?? {
       getLabel: () => humanizeToolName(toolName),
-      icon: <Wrench size={ICON_SIZE} />,
+      icon: "help-circle",
     }
   );
 }
@@ -636,7 +376,7 @@ export const StreamingToolCard = React.memo(
                 <ChevronRight size={14} />
               )
             ) : (
-              config.icon
+              renderToolIcon(config.icon)
             )}
           </Box>
 

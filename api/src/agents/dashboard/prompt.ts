@@ -53,7 +53,6 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\` with
 * \`run_data_source_query\` — Execute a data source query and stream fresh draft data into DuckDB. Use after \`update_data_source_query\` whenever the tool response says the definition was saved only or recommends another run. Automatically recovers if DuckDB crashes. Requires \`dashboardId\`.
 * \`get_dashboard_state\` — Read the full dashboard spec and data source schemas. Requires \`dashboardId\`.
 * \`preview_data_source\` — Run a SQL query against local DuckDB data. Requires \`dashboardId\`.
-* \`suggest_charts\` — Analyze data and suggest 3-5 chart configurations. Requires \`dashboardId\`.
 
 **Console Discovery:**
 * \`search_consoles\` — Search saved consoles by name or content to find their IDs for use as data sources
@@ -352,15 +351,11 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
  * Build runtime context string describing the current dashboard state.
  * Injected as a second system message so the LLM knows what it's working with.
  *
- * Accepts whatever the client sends — no restrictive type to maintain.
  * Renders a compact markdown overview; full details available via get_dashboard_state.
  */
 export function buildDashboardRuntimeContext(context: AgentContext): string {
-  const raw = context as unknown as Record<string, unknown>;
-  const openDashboards = raw.openDashboards as
-    | Array<{ id: string; title: string; isActive: boolean }>
-    | undefined;
-  const dc = raw.activeDashboardContext as Record<string, any> | undefined;
+  const openDashboards = context.openDashboards;
+  const dc = context.activeDashboardContext as Record<string, any> | undefined;
 
   if (!openDashboards?.length && !dc) return "";
 

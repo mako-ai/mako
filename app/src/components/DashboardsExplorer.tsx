@@ -25,9 +25,32 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDashboardTreeStore } from "../store/dashboardTreeStore";
 import { useExplorerStore } from "../store/explorerStore";
+import { focusDashboardTab } from "../dashboard-runtime/shell";
+import type { Dashboard } from "../dashboard-runtime/types";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 
 const EMPTY_TREE: ResourceTreeNode[] = [];
+const NEW_DASHBOARD_TEMPLATE = {
+  title: "Untitled Dashboard",
+  dataSources: [],
+  widgets: [],
+  relationships: [],
+  globalFilters: [],
+  crossFilter: {
+    enabled: true,
+    resolution: "intersect",
+    engine: "mosaic",
+  },
+  materializationSchedule: {
+    enabled: true,
+    cron: "0 0 * * *",
+    timezone: "UTC",
+  },
+  layout: { columns: 12, rowHeight: 80 },
+  cache: {},
+  access: "private",
+} satisfies Partial<Dashboard>;
 
 export function DashboardsExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -55,6 +78,7 @@ export function DashboardsExplorer() {
   const renameItem = useDashboardTreeStore(s => s.renameItem);
   const deleteItem = useDashboardTreeStore(s => s.deleteItem);
   const resortItem = useDashboardTreeStore(s => s.resortItem);
+  const createDashboard = useDashboardStore(s => s.createDashboard);
   const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
 
   const isDashboardFolderExpanded = useExplorerStore(
@@ -79,15 +103,22 @@ export function DashboardsExplorer() {
     if (workspaceId) await fetchTree(workspaceId);
   }, [workspaceId, fetchTree]);
 
-  const handleCreate = useCallback(() => {
-    const id = openTab({
-      title: "New Dashboard",
-      content: "",
-      kind: "dashboard",
-      metadata: { isNew: true },
+  const handleCreate = useCallback(async () => {
+    if (!workspaceId) return;
+
+    const created = await createDashboard(workspaceId, NEW_DASHBOARD_TEMPLATE);
+    if (!created) return;
+
+    useDashboardStore.setState(state => {
+      state.openDashboards[created._id] = created;
+      state.activeDashboardId = created._id;
+      state.historyMap[created._id] = { stack: [], index: -1 };
+      state.savedStateHashes[created._id] = computeDashboardStateHash(created);
     });
-    setActiveTab(id);
-  }, [openTab, setActiveTab]);
+
+    focusDashboardTab(created._id, created.title);
+    void fetchTree(workspaceId);
+  }, [workspaceId, createDashboard, fetchTree]);
 
   const handleItemClick = useCallback(
     (node: ResourceTreeNode) => {

@@ -56,23 +56,26 @@ import {
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
-import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
 import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
-import { useDashboardStore } from "../store/dashboardStore";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
-import {
-  ConsoleModification,
-  ConsoleModificationPayload,
-} from "../hooks/useMonacoConsole";
-import { applyModification } from "../utils/consoleModification";
+import { ConsoleModificationPayload } from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
+import {
+  buildChatRequestBody,
+  type ActiveConsoleResultsContext,
+} from "../agent-runtime/request-context";
+import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
+import {
+  LONG_RUNNING_DASHBOARD_TOOL_NAMES,
+  type AgentToolName,
+} from "../agent-runtime/client-tool-manifest";
 
 interface ChatSessionMeta {
   _id: string;
@@ -266,21 +269,6 @@ interface ActiveClientToolCall {
   cancellationOutput: Record<string, unknown>;
   settled: boolean;
 }
-
-const LONG_RUNNING_DASHBOARD_TOOLS = new Set([
-  "open_dashboard",
-  "create_dashboard",
-  "enter_edit_mode",
-  "add_data_source",
-  "import_console_as_data_source",
-  "create_data_source",
-  "update_data_source_query",
-  "run_data_source_query",
-  "preview_data_source",
-  "get_data_preview",
-  "add_widget",
-  "modify_widget",
-]);
 
 // ReasoningDisplay for showing reasoning/thinking parts inline.
 // - Auto-opens while streaming, auto-collapses when done.
@@ -892,9 +880,10 @@ const Chat: React.FC<ChatProps> = ({
 
   // Get connections to check if only database is the demo
   const connections = useSchemaStore(s => s.connections);
-  const workspaceConnections = currentWorkspace
-    ? connections[currentWorkspace.id] || []
-    : [];
+  const workspaceConnections = useMemo(
+    () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
+    [connections, currentWorkspace],
+  );
 
   // Show Chinook suggestions if the only database in workspace is the demo database
   const hasOnlyDemoDatabase =
@@ -950,6 +939,9 @@ const Chat: React.FC<ChatProps> = ({
   const [selectedTool, setSelectedTool] = useState<ToolInvocationInfo | null>(
     null,
   );
+  const [capturedConsoleTitle, setCapturedConsoleTitle] = useState<
+    string | null
+  >(null);
 
   // Filter to only real console tabs (used for capturedConsoleTitle)
   const realConsoleTabs = useMemo(
@@ -959,14 +951,6 @@ const Chat: React.FC<ChatProps> = ({
       ),
     [consoleTabs],
   );
-
-  // Get the captured console's title for the visual indicator
-  const capturedConsoleTitle = useMemo(() => {
-    const capturedId = capturedConsoleIdRef.current;
-    if (!capturedId) return null;
-    const tab = realConsoleTabs.find(t => t.id === capturedId);
-    return tab?.title || null;
-  }, [realConsoleTabs]);
 
   // Ref to get current activeConsoleId at request time (avoids stale closure)
   const activeConsoleIdRef = useRef(activeConsoleId);
@@ -1003,157 +987,42 @@ const Chat: React.FC<ChatProps> = ({
           const tabs = Object.values(store.tabs) as ConsoleTab[];
           const activeTab = tabs.find(t => t.id === store.activeTabId);
 
-          const openConsoles = tabs
-            .filter(t => t?.kind === undefined || t?.kind === "console")
-            .map(tab => {
-              const content = tab.content || "";
-              const lines = content.split("\n");
-              const maxLines = 50;
-              const truncated = lines.length > maxLines;
-              const displayContent = truncated
-                ? lines.slice(0, maxLines).join("\n")
-                : content;
-
-              return {
-                id: tab.id,
-                title: tab.title,
-                connectionId: tab.connectionId,
-                databaseId: tab.databaseId,
-                databaseName: tab.databaseName,
-                content: displayContent,
-                contentTruncated: truncated,
-                lineCount: lines.length,
-              };
-            });
-
-          const openTabs = tabs.map(tab => ({
-            id: tab.id,
-            kind: tab.kind || "console",
-            title: tab.title,
-            isActive: tab.id === store.activeTabId,
-            dashboardId:
-              tab.kind === "dashboard"
-                ? (tab.metadata?.dashboardId as string | undefined)
-                : undefined,
-            flowId:
-              tab.kind === "flow-editor"
-                ? (tab.metadata?.flowId as string | undefined)
-                : undefined,
-            connectionId:
-              tab.kind === "console" || !tab.kind
-                ? tab.connectionId
-                : undefined,
-            databaseName:
-              tab.kind === "console" || !tab.kind
-                ? tab.databaseName
-                : undefined,
-          }));
-
           const flowFormState = dbFlowFormRefCurrent.current?.current
             ? dbFlowFormRefCurrent.current.current.getFormState()
             : undefined;
 
           // Read results context from Editor at request time
           const resultsCtx = resultsContextRef?.current ?? null;
-          const activeConsoleResults = resultsCtx
-            ? {
-                viewMode: resultsCtx.viewMode,
-                hasResults: resultsCtx.hasResults,
-                rowCount: resultsCtx.rowCount,
-                columns: resultsCtx.columns,
-                sampleRows: resultsCtx.sampleRows,
-                chartSpec: resultsCtx.chartSpec,
-              }
-            : undefined;
-
-          const requestBody = {
-            messages,
-            workspaceId: workspaceIdRef.current,
-            modelId: modelIdRef.current,
-            chatId: chatIdRef.current,
-            openConsoles,
-            openTabs,
-            consoleId: activeConsoleIdRef.current,
-            activeConsoleResults,
-            // Unified agent selection
-            agentId: "unified",
-            activeView,
-            tabKind: activeTab?.kind,
-            flowType: activeTab?.metadata?.flowType,
-            flowFormState,
-            ...(() => {
-              try {
-                const dashboardStore = useDashboardStore.getState();
-                const connectionById = new Map(
-                  workspaceConnections.map(connection => [
-                    connection.id,
-                    connection,
-                  ]),
-                );
-                const SAMPLE_LIMIT = 3;
-
-                const pinnedDashboardId =
-                  capturedDashboardIdRef.current ??
-                  dashboardStore.activeDashboardId;
-
-                const openDashboardsList = Object.values(
-                  dashboardStore.openDashboards,
-                ).map((d: any) => ({
-                  id: d._id,
-                  title: d.title,
-                  isActive: d._id === pinnedDashboardId,
-                }));
-
-                if (openDashboardsList.length === 0) return {};
-
-                const activeId = pinnedDashboardId;
-                const snapshot = activeId
-                  ? getDashboardStateSnapshot(activeId)
-                  : null;
-
-                if (!snapshot) {
-                  return { openDashboards: openDashboardsList };
+          const activeConsoleResults: ActiveConsoleResultsContext | undefined =
+            resultsCtx
+              ? {
+                  viewMode: resultsCtx.viewMode,
+                  hasResults: resultsCtx.hasResults,
+                  rowCount: resultsCtx.rowCount,
+                  columns: resultsCtx.columns,
+                  sampleRows: resultsCtx.sampleRows,
+                  chartSpec: resultsCtx.chartSpec,
                 }
-
-                return {
-                  openDashboards: openDashboardsList,
-                  activeDashboardContext: {
-                    dashboardId: snapshot._id,
-                    title: snapshot.title,
-                    description: snapshot.description,
-                    crossFilter: snapshot.crossFilter,
-                    layout: snapshot.layout,
-                    materializationSchedule: snapshot.materializationSchedule,
-                    dataSources: snapshot.dataSources.map((ds: any) => {
-                      const { _id: _dsId, sampleRows, ...rest } = ds;
-                      return {
-                        ...rest,
-                        sampleRows: sampleRows?.slice(0, SAMPLE_LIMIT),
-                        connectionType:
-                          connectionById.get(ds.query?.connectionId)?.type ||
-                          undefined,
-                        sqlDialect:
-                          (
-                            connectionById.get(ds.query?.connectionId) as
-                              | { sqlDialect?: string }
-                              | undefined
-                          )?.sqlDialect ||
-                          (ds.query?.language === "sql" ? "duckdb" : undefined),
-                      };
-                    }),
-                    widgets: snapshot.widgets.map(
-                      ({ _id: _wId, ...w }: any) => w,
-                    ),
-                  },
-                };
-              } catch {
-                return {};
-              }
-            })(),
-          };
+              : undefined;
 
           return {
-            body: toJsonSafe(requestBody) as Record<string, unknown>,
+            body: toJsonSafe(
+              buildChatRequestBody({
+                messages,
+                workspaceId: workspaceIdRef.current,
+                modelId: modelIdRef.current,
+                chatId: chatIdRef.current,
+                tabs,
+                activeTabId: store.activeTabId,
+                activeTab,
+                activeView,
+                activeConsoleId: activeConsoleIdRef.current,
+                activeConsoleResults,
+                flowFormState,
+                workspaceConnections,
+                pinnedDashboardId: capturedDashboardIdRef.current,
+              }),
+            ) as Record<string, unknown>,
           };
         },
       }),
@@ -1192,645 +1061,36 @@ const Chat: React.FC<ChatProps> = ({
       const input = toolCall.input as Record<string, unknown>;
 
       try {
-        // Handle read_console - requires explicit consoleId
-        if (toolName === "read_console") {
-          const consoleId = input.consoleId as string | undefined;
-
-          if (!consoleId) {
-            addToolOutput({
-              tool: "read_console",
+        if (
+          await executeConsoleAgentTool({
+            toolCall: {
+              toolName,
               toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "consoleId is required. Use list_open_consoles first to get available console IDs.",
-              },
-            });
-            return;
-          }
-
-          // Get fresh state to avoid stale closure issues
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-          const targetConsole = currentTabs.find(
-            (c: any) => c.id === consoleId,
-          );
-
-          if (!targetConsole) {
-            addToolOutput({
-              tool: "read_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-              },
-            });
-            return;
-          }
-
-          // Add line numbers to help AI accurately specify patch ranges
-          const rawContent = targetConsole.content || "";
-          const lines = rawContent.split("\n");
-          const totalLines = lines.length;
-          const lineNumberWidth = String(totalLines).length;
-          // Format: "  1| code here" - line numbers are for reference only
-          const content = lines
-            .map(
-              (line: string, i: number) =>
-                `${String(i + 1).padStart(lineNumberWidth)}| ${line}`,
-            )
-            .join("\n");
-
-          addToolOutput({
-            tool: "read_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              consoleId: targetConsole.id,
-              title: targetConsole.title,
-              content,
-              totalLines,
-              connectionId: targetConsole.connectionId,
-              connectionType: (
-                targetConsole.metadata as { connectionType?: string }
-              )?.connectionType,
-              databaseId: targetConsole.databaseId,
-              databaseName: targetConsole.databaseName,
             },
-          });
-          return;
-        }
-
-        // Handle modify_console - requires explicit consoleId
-        if (toolName === "modify_console") {
-          const action = input.action as
-            | "replace"
-            | "insert"
-            | "append"
-            | "patch";
-          const content = input.content as string;
-          const position = input.position as number | null;
-          const consoleId = input.consoleId as string | undefined;
-          const modifyTitle = input.title as string | undefined;
-          const startLine = input.startLine as number | undefined;
-          const endLine = input.endLine as number | undefined;
-
-          if (!consoleId) {
-            addToolOutput({
-              tool: "modify_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
-              },
-            });
-            return;
-          }
-
-          // Get fresh state to avoid stale closure issues
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-
-          const targetConsole = currentTabs.find(
-            (c: any) => c.id === consoleId,
-          );
-          if (!targetConsole) {
-            addToolOutput({
-              tool: "modify_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-              },
-            });
-            return;
-          }
-
-          // Check if the console is read-only (shared/workspace without write access)
-          if ((targetConsole as any).readOnly) {
-            addToolOutput({
-              tool: "modify_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "This console is shared as read-only. Use create_console to create a copy with the desired changes instead.",
-              },
-            });
-            return;
-          }
-
-          // Validate insert action has position
-          if (
-            action === "insert" &&
-            (position === null || position === undefined)
-          ) {
-            addToolOutput({
-              tool: "modify_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "Position is required for insert action",
-              },
-            });
-            return;
-          }
-
-          // Validate patch action has startLine and endLine
-          if (action === "patch" && (!startLine || !endLine)) {
-            addToolOutput({
-              tool: "modify_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "startLine and endLine are required for patch action. Use read_console first to see line numbers.",
-              },
-            });
-            return;
-          }
-
-          // Dispatch through the event system - this ensures Monaco editor gets updated
-          // The App.tsx handleConsoleModification callback will:
-          // 1. Dispatch a CustomEvent that Editor.tsx listens to
-          // 2. Editor.tsx calls showDiff() on the Console ref
-          // 3. Console.tsx updates Monaco editor via the diff mode
-          if (onConsoleModificationRef.current) {
-            onConsoleModificationRef.current({
-              action,
-              content,
-              // Convert line number to position format expected by ConsoleModification
-              position:
-                position !== null && position !== undefined
-                  ? { line: position, column: 1 }
-                  : undefined,
-              consoleId,
-              startLine,
-              endLine,
-            });
-          }
-
-          // Also update store for consistency using shared utility
-          const currentContent = targetConsole.content || "";
-          const modification: ConsoleModification = {
-            action,
-            content,
-            position:
-              position !== null && position !== undefined
-                ? { line: position, column: 1 }
-                : undefined,
-            startLine,
-            endLine,
-          };
-          const newContent = applyModification(currentContent, modification);
-          currentStore.updateContent(consoleId, newContent);
-
-          if (modifyTitle) {
-            currentStore.updateTitle(consoleId, modifyTitle);
-          }
-
-          addToolOutput({
-            tool: "modify_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              consoleId,
-              message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
-            },
-          });
-          return;
-        }
-
-        // Handle create_console - dispatch through event system
-        if (toolName === "create_console") {
-          // Get fresh state to avoid stale closure issues
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-          const currentActiveId = currentStore.activeTabId;
-
-          const title = input.title as string;
-          const content = input.content as string;
-          const connectionId =
-            (input.connectionId as string | null) ?? undefined;
-          const databaseId = (input.databaseId as string | null) ?? undefined;
-          const databaseName =
-            (input.databaseName as string | null) ?? undefined;
-
-          // Use captured console ID (from message submission time) as the primary fallback
-          // This prevents the race condition where user switches consoles while agent is thinking
-          const capturedId = capturedConsoleIdRef.current;
-
-          // If connection info not provided, inherit from captured/active console
-          const baseConsole =
-            currentTabs.find((c: any) => c.id === capturedId) ||
-            currentTabs.find((c: any) => c.id === currentActiveId) ||
-            currentTabs[0];
-
-          const effectiveConnectionId =
-            connectionId ?? baseConsole?.connectionId;
-          const effectiveDatabaseId = databaseId ?? baseConsole?.databaseId;
-          const effectiveDatabaseName =
-            databaseName ?? baseConsole?.databaseName;
-
-          // Generate a new ID for the console
-          const newConsoleId = generateObjectId();
-
-          // Dispatch through the event system - App.tsx handleConsoleModification will:
-          // 1. Call openTab with the provided consoleId
-          // 2. Call setActiveTab
-          if (onConsoleModificationRef.current) {
-            onConsoleModificationRef.current({
-              action: "create",
-              content,
-              consoleId: newConsoleId,
-              title,
-              connectionId: effectiveConnectionId,
-              databaseId: effectiveDatabaseId,
-              databaseName: effectiveDatabaseName,
-              isDirty: true, // Mark as dirty so it won't be replaced by pristine tab logic
-            });
-          }
-
-          addToolOutput({
-            tool: "create_console",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              _eventType: "console_creation",
-              consoleId: newConsoleId,
-              title,
-              content,
-              connectionId: effectiveConnectionId,
-              databaseId: effectiveDatabaseId,
-              databaseName: effectiveDatabaseName,
-              message: `✓ New console "${title}" created successfully`,
-            },
-          });
-          return;
-        }
-
-        // Handle list_open_consoles - return all open console tabs
-        if (toolName === "list_open_consoles") {
-          // Get fresh state to avoid stale closure issues
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-          const currentActiveId = currentStore.activeTabId;
-
-          const consoles = currentTabs
-            .filter(
-              (tab: any) => tab?.kind === undefined || tab?.kind === "console",
-            )
-            .map((tab: any) => ({
-              id: tab.id,
-              title: tab.title || "Untitled",
-              connectionId: tab.connectionId,
-              connectionName: tab.metadata?.connectionName || tab.connectionId,
-              databaseName:
-                tab.databaseName || tab.metadata?.queryOptions?.databaseName,
-              contentPreview:
-                (tab.content || "").slice(0, 100) +
-                ((tab.content || "").length > 100 ? "..." : ""),
-              isActive: tab.id === currentActiveId,
-            }));
-
-          addToolOutput({
-            tool: "list_open_consoles",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              consoles,
-              message: `Found ${consoles.length} open console(s)`,
-            },
-          });
-          return;
-        }
-
-        // Handle set_console_connection - requires explicit consoleId
-        if (toolName === "set_console_connection") {
-          const consoleId = input.consoleId as string | undefined;
-          const connectionId = input.connectionId as string;
-          const databaseId = input.databaseId as string | undefined;
-          const databaseName = input.databaseName as string | undefined;
-
-          if (!consoleId) {
-            addToolOutput({
-              tool: "set_console_connection",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "consoleId is required. Use list_open_consoles to get IDs of existing consoles, or create_console to create a new one.",
-              },
-            });
-            return;
-          }
-
-          // Get fresh state to avoid stale closure issues
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-
-          const targetConsole = currentTabs.find(
-            (c: any) => c.id === consoleId,
-          );
-          if (!targetConsole) {
-            addToolOutput({
-              tool: "set_console_connection",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-              },
-            });
-            return;
-          }
-
-          // Update the console's connection and database
-          currentStore.updateConnection(consoleId, connectionId);
-          if (databaseId !== undefined || databaseName !== undefined) {
-            currentStore.updateDatabase(consoleId, databaseId, databaseName);
-          }
-
-          addToolOutput({
-            tool: "set_console_connection",
-            toolCallId: toolCall.toolCallId,
-            output: {
-              success: true,
-              consoleId,
-              connectionId,
-              databaseId,
-              databaseName,
-              message: `Console "${targetConsole.title}" attached to connection ${connectionId}${databaseName ? ` (database: ${databaseName})` : ""}`,
-            },
-          });
-          return;
-        }
-
-        // Handle open_console - fetch and open a saved console
-        if (toolName === "open_console") {
-          const consoleId = input.consoleId as string | undefined;
-          if (!consoleId) {
-            addToolOutput({
-              tool: "open_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "consoleId is required.",
-              },
-            });
-            return;
-          }
-
-          const { abortController } = registerActiveClientToolCall(
-            "open_console",
-            toolCall.toolCallId,
-          );
-
-          try {
-            const currentStore = useConsoleStore.getState();
-            const existingTab = currentStore.tabs[consoleId];
-            if (existingTab) {
-              currentStore.setActiveTab(consoleId);
-              settleActiveClientToolCall("open_console", toolCall.toolCallId, {
-                success: true,
-                consoleId,
-                title: existingTab.title,
-                message: `Console "${existingTab.title}" is already open — switched to it.`,
-              });
-              return;
-            }
-
-            const data = await currentStore.fetchConsoleContent(
-              workspaceIdRef.current!,
-              consoleId,
-              { signal: abortController.signal },
-            );
-            if (abortController.signal.aborted) {
-              return;
-            }
-            if (!data) {
-              settleActiveClientToolCall("open_console", toolCall.toolCallId, {
-                success: false,
-                error: `Console ${consoleId} not found or access denied.`,
-              });
-              return;
-            }
-
-            const title = data.name || data.path || "Untitled";
-            currentStore.openTab({
-              id: consoleId,
-              title,
-              content: data.content || "",
-              connectionId: data.connectionId,
-              databaseId: data.databaseId,
-              databaseName: data.databaseName,
-            });
-            currentStore.setActiveTab(consoleId);
-
-            settleActiveClientToolCall("open_console", toolCall.toolCallId, {
-              success: true,
-              consoleId,
-              title,
-              message: `Console "${title}" opened successfully.`,
-            });
-          } catch (err) {
-            if (abortController.signal.aborted) {
-              return;
-            }
-            settleActiveClientToolCall("open_console", toolCall.toolCallId, {
-              success: false,
-              error: `Failed to open console: ${err instanceof Error ? err.message : String(err)}`,
-            });
-          }
-          return;
-        }
-
-        // Handle get_chart_template — pure lookup, no side effects
-        if (toolName === "get_chart_template") {
-          const { getTemplate } = await import("@mako/schemas");
-          const templateId = (input as Record<string, unknown>).templateId as
-            | string
-            | undefined;
-          if (!templateId) {
-            addToolOutput({
-              tool: "get_chart_template",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "templateId is required.",
-              },
-            });
-            return;
-          }
-          const tpl = getTemplate(templateId);
-          if (!tpl) {
-            addToolOutput({
-              tool: "get_chart_template",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Template "${templateId}" not found. Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline.`,
-              },
-            });
-            return;
-          }
-          addToolOutput({
-            tool: "get_chart_template",
-            toolCallId: toolCall.toolCallId,
-            output: { success: true, template: tpl },
-          });
-          return;
-        }
-
-        // Handle modify_chart_spec - set chart visualization for current results
-        if (toolName === "modify_chart_spec") {
-          const vegaLiteSpec = input.vegaLiteSpec as
-            | Record<string, unknown>
-            | undefined;
-          if (!vegaLiteSpec) {
-            addToolOutput({
-              tool: "modify_chart_spec",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "vegaLiteSpec is required.",
-              },
-            });
-            return;
-          }
-
-          // Validate the spec structure with Zod before sending to the renderer
-          const { MakoChartSpec: MakoChartSpecSchema } = await import(
-            "../lib/chart-spec"
-          );
-          const parsed = MakoChartSpecSchema.safeParse(vegaLiteSpec);
-          if (!parsed.success) {
-            const issues = parsed.error.issues
-              .slice(0, 5)
-              .map((i: any) => `${i.path.join(".")}: ${i.message}`)
-              .join("; ");
-            addToolOutput({
-              tool: "modify_chart_spec",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Invalid Vega-Lite spec: ${issues}. Fix the spec and try again.`,
-              },
-            });
-            return;
-          }
-
-          if (!onChartSpecChangeRef?.current) {
-            addToolOutput({
-              tool: "modify_chart_spec",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "No active console tab to display the chart in.",
-              },
-            });
-            return;
-          }
-
-          const { abortController } = registerActiveClientToolCall(
-            "modify_chart_spec",
-            toolCall.toolCallId,
-          );
-
-          try {
-            // Send the spec to the renderer and wait for render result
-            const renderResult = await new Promise<{
-              success: boolean;
-              error?: string;
-            }>((resolve, reject) => {
-              const timeout = setTimeout(() => {
-                abortController.signal.removeEventListener(
-                  "abort",
-                  handleAbort,
-                );
-                resolve({ success: true });
-              }, 5000);
-              const handleAbort = () => {
-                clearTimeout(timeout);
-                abortController.signal.removeEventListener(
-                  "abort",
-                  handleAbort,
-                );
-                reject(
-                  new DOMException("Chart update cancelled", "AbortError"),
-                );
-              };
-
-              if (abortController.signal.aborted) {
-                handleAbort();
-                return;
-              }
-
-              abortController.signal.addEventListener("abort", handleAbort, {
-                once: true,
-              });
-              onChartSpecChangeRef.current!({
-                spec: parsed.data,
-                onRenderResult: result => {
-                  clearTimeout(timeout);
-                  abortController.signal.removeEventListener(
-                    "abort",
-                    handleAbort,
-                  );
-                  resolve(result);
-                },
-              });
-            });
-
-            if (renderResult.success) {
-              settleActiveClientToolCall(
-                "modify_chart_spec",
-                toolCall.toolCallId,
-                {
-                  success: true,
-                  message: "Chart rendered successfully in the results panel.",
-                },
-              );
-            } else {
-              settleActiveClientToolCall(
-                "modify_chart_spec",
-                toolCall.toolCallId,
-                {
-                  success: false,
-                  error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
-                },
-              );
-            }
-          } catch (chartError) {
-            if (abortController.signal.aborted) {
-              return;
-            }
-
-            settleActiveClientToolCall(
-              "modify_chart_spec",
-              toolCall.toolCallId,
-              {
-                success: false,
-                error:
-                  chartError instanceof Error
-                    ? chartError.message
-                    : "Chart rendering failed unexpectedly.",
-              },
-            );
-          }
+            input,
+            workspaceId: workspaceIdRef.current,
+            capturedConsoleId: capturedConsoleIdRef.current,
+            onConsoleModification: onConsoleModificationRef.current,
+            onChartSpecChange: onChartSpecChangeRef?.current,
+            addToolOutput,
+            registerActiveClientToolCall,
+            settleActiveClientToolCall,
+          })
+        ) {
           return;
         }
 
         // --- Dashboard tools (client-side) ---
         try {
-          const activeDashboardTool = LONG_RUNNING_DASHBOARD_TOOLS.has(toolName)
+          const activeDashboardTool = LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(
+            toolName as AgentToolName,
+          )
             ? registerActiveClientToolCall(toolName, toolCall.toolCallId)
             : null;
 
           const dashboardToolOutput = await executeDashboardAgentTool(
             toolName,
             input,
-            capturedDashboardIdRef.current,
             activeDashboardTool
               ? {
                   executionId: activeDashboardTool.executionId,
@@ -1856,7 +1116,9 @@ const Chat: React.FC<ChatProps> = ({
             return;
           }
         } catch (dashboardError) {
-          if (LONG_RUNNING_DASHBOARD_TOOLS.has(toolName)) {
+          if (
+            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName)
+          ) {
             if (manualStopRequestedRef.current) {
               return;
             }
@@ -1878,201 +1140,6 @@ const Chat: React.FC<ChatProps> = ({
                     ? dashboardError.message
                     : "Dashboard tool execution failed",
               },
-            });
-          }
-          return;
-        }
-
-        // Handle run_console - execute the query in a console tab
-        if (toolName === "run_console") {
-          const consoleId = input.consoleId as string | undefined;
-
-          if (!consoleId) {
-            addToolOutput({
-              tool: "run_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "consoleId is required. Use list_open_consoles to get IDs of existing consoles.",
-              },
-            });
-            return;
-          }
-
-          const currentStore = useConsoleStore.getState();
-          const currentTabs = Object.values(currentStore.tabs);
-          const targetConsole = currentTabs.find(
-            (c: any) => c.id === consoleId,
-          ) as ConsoleTab | undefined;
-
-          if (!targetConsole) {
-            addToolOutput({
-              tool: "run_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: `Console with ID ${consoleId} not found. Use list_open_consoles to see available consoles.`,
-              },
-            });
-            return;
-          }
-
-          const content = targetConsole.content;
-          const connectionId = targetConsole.connectionId;
-          const workspaceId = workspaceIdRef.current;
-
-          if (!content?.trim()) {
-            addToolOutput({
-              tool: "run_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "Console is empty. Write a query first using modify_console.",
-              },
-            });
-            return;
-          }
-
-          if (!connectionId) {
-            addToolOutput({
-              tool: "run_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error:
-                  "Console has no database connection. Use set_console_connection to attach one first.",
-              },
-            });
-            return;
-          }
-
-          if (!workspaceId) {
-            addToolOutput({
-              tool: "run_console",
-              toolCallId: toolCall.toolCallId,
-              output: {
-                success: false,
-                error: "No workspace selected.",
-              },
-            });
-            return;
-          }
-
-          const QUERY_TIMEOUT_MS = 120_000; // 2 minutes
-          const { abortController, executionId } = registerActiveClientToolCall(
-            "run_console",
-            toolCall.toolCallId,
-            {
-              cancel: async () => {
-                await useConsoleStore
-                  .getState()
-                  .cancelQuery(workspaceId, executionId);
-              },
-            },
-          );
-          const timeoutId = setTimeout(
-            () => abortController.abort("query-timeout"),
-            QUERY_TIMEOUT_MS,
-          );
-
-          window.dispatchEvent(
-            new CustomEvent("console-execution-start", {
-              detail: { consoleId },
-            }),
-          );
-
-          try {
-            const startTime = Date.now();
-            const result = await currentStore.executeQuery(
-              workspaceId,
-              connectionId,
-              content,
-              {
-                executionId,
-                databaseName: targetConsole.databaseName,
-                databaseId: targetConsole.databaseId,
-                signal: abortController.signal,
-              },
-            );
-            clearTimeout(timeoutId);
-            const executionTime = Date.now() - startTime;
-
-            if (result.success) {
-              const data = result.rows || [];
-              const rowCount = Array.isArray(data) ? data.length : 1;
-              const preview = Array.isArray(data) ? data.slice(0, 50) : data;
-
-              window.dispatchEvent(
-                new CustomEvent("console-execution-result", {
-                  detail: {
-                    consoleId,
-                    result: {
-                      results: data,
-                      executedAt: new Date().toISOString(),
-                      resultCount: rowCount,
-                      executionTime,
-                      fields: result.fields,
-                      pageInfo: result.pageInfo || null,
-                    },
-                  },
-                }),
-              );
-
-              settleActiveClientToolCall("run_console", toolCall.toolCallId, {
-                success: true,
-                rowCount,
-                preview,
-                message: `Query executed successfully. ${rowCount} row(s) returned.`,
-              });
-            } else {
-              const abortReason =
-                typeof abortController.signal.reason === "string"
-                  ? abortController.signal.reason
-                  : undefined;
-              window.dispatchEvent(
-                new CustomEvent("console-execution-result", {
-                  detail: { consoleId, result: null },
-                }),
-              );
-
-              if (abortReason === "chat-stop") {
-                return;
-              }
-
-              settleActiveClientToolCall("run_console", toolCall.toolCallId, {
-                success: false,
-                error:
-                  abortReason === "query-timeout"
-                    ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
-                    : result.error || "Query execution failed.",
-              });
-            }
-          } catch (e: any) {
-            clearTimeout(timeoutId);
-
-            const abortReason =
-              typeof abortController.signal.reason === "string"
-                ? abortController.signal.reason
-                : undefined;
-
-            window.dispatchEvent(
-              new CustomEvent("console-execution-result", {
-                detail: { consoleId, result: null },
-              }),
-            );
-
-            if (abortReason === "chat-stop") {
-              return;
-            }
-
-            settleActiveClientToolCall("run_console", toolCall.toolCallId, {
-              success: false,
-              error:
-                abortReason === "query-timeout"
-                  ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
-                  : e?.message || "Query execution failed unexpectedly.",
             });
           }
           return;
@@ -2577,17 +1644,24 @@ const Chat: React.FC<ChatProps> = ({
       manualStopRequestedRef.current = false;
       capturedConsoleIdRef.current = activeConsoleIdRef.current;
       capturedDashboardIdRef.current =
-        useDashboardStore.getState().activeDashboardId ?? null;
+        activeTab?.kind === "dashboard"
+          ? ((activeTab.metadata?.dashboardId as string | undefined) ?? null)
+          : null;
       const store = useConsoleStore.getState();
       const currentTabs = Object.values(store.tabs);
       const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
+      setCapturedConsoleTitle(
+        activeConsole?.kind === undefined || activeConsole?.kind === "console"
+          ? activeConsole?.title || null
+          : null,
+      );
       trackEvent("ai_chat_message_sent", {
         model: modelIdRef.current,
         has_context: !!activeConsole?.content,
       });
       sendMessage({ text });
     },
-    [sendMessage],
+    [activeTab, sendMessage],
   );
 
   // Copy chat history handler
@@ -2814,8 +1888,16 @@ const Chat: React.FC<ChatProps> = ({
                   manualStopRequestedRef.current = false;
                   // Submit the suggestion immediately
                   capturedConsoleIdRef.current = activeConsoleId;
+                  const activeConsole = realConsoleTabs.find(
+                    tab => tab.id === activeConsoleId,
+                  );
+                  setCapturedConsoleTitle(activeConsole?.title || null);
                   capturedDashboardIdRef.current =
-                    useDashboardStore.getState().activeDashboardId ?? null;
+                    activeTab?.kind === "dashboard"
+                      ? ((activeTab.metadata?.dashboardId as
+                          | string
+                          | undefined) ?? null)
+                      : null;
                   trackEvent("ai_chat_message_sent", {
                     model: selectedModelId,
                     has_context: false,
