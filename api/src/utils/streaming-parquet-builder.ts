@@ -8,7 +8,7 @@ const logger = loggers.api("streaming-parquet-builder");
 
 /** Max rows per INSERT VALUES clause to cap peak JS heap (SQL string materialization). */
 const INSERT_MICRO_BATCH_ROWS = 120;
-const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 128;
+const DEFAULT_DUCKDB_MEMORY_LIMIT_MB = 512;
 const DEFAULT_DUCKDB_THREADS = 1;
 
 function parsePositiveInt(
@@ -180,6 +180,25 @@ function escapeDuckDBValue(
 
 function escapeIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the error looks like a DuckDB out-of-memory / memory-limit
+ * failure. Used by callers that want to retry with a smaller batch size.
+ */
+export function isDuckDBMemoryError(err: unknown): boolean {
+  const msg =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return (
+    msg.includes("failed to pin block") ||
+    msg.includes("could not allocate") ||
+    msg.includes("Out of Memory") ||
+    msg.includes("memory_limit")
+  );
 }
 
 // ---------------------------------------------------------------------------
