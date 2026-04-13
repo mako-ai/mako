@@ -105,12 +105,26 @@ export class CdcConsumerService {
     });
 
     if (pending.length === 0) {
+      // Close the sequence gap so the scheduler stops treating this entity
+      // as stale.  This happens when all events after lastMaterializedSeq
+      // have already been applied/failed/dropped by a previous run.
+      const currentIngestSeq = Number(state?.lastIngestSeq || 0);
+      if (currentIngestSeq > afterIngestSeq) {
+        await cdcSyncStateService.advanceConsumerCursor({
+          workspaceId: params.workspaceId,
+          flowId: params.flowId,
+          entity: params.entity,
+          lastIngestSeq: currentIngestSeq,
+          processedEventsDelta: 0,
+          rowsAppliedDelta: 0,
+        });
+      }
       return {
         processed: 0,
         applied: 0,
         failed: 0,
         dropped: 0,
-        latestIngestSeq: afterIngestSeq,
+        latestIngestSeq: currentIngestSeq,
       };
     }
 
