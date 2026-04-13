@@ -531,6 +531,24 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 `Flushing ${entity} buffer batch ${flushIndex} to live (${tempCount} rows in temp)`,
                 { entity, flushIndex, tempCount },
               );
+              // Rescue any orphaned staging rows from a previous failed attempt
+              // before dropping the staging table. Without this, rows flushed
+              // from temp (and deleted) but not yet merged to live would be lost
+              // if the step retries after a staging-load success but merge failure.
+              try {
+                const rescued = await performStagingMerge(
+                  bulkSyncOptions as any,
+                );
+                if (rescued.written > 0) {
+                  logExec(
+                    "info",
+                    `Rescued ${rescued.written} orphaned staging rows before re-flush`,
+                    { entity, flushIndex, rescued: rescued.written },
+                  );
+                }
+              } catch {
+                // Staging table may not exist — that's fine
+              }
               await performPrepareStaging(bulkSyncOptions as any);
               await performBulkFlush(bulkSyncOptions as any, () =>
                 touchHeartbeat(executionId),
@@ -586,6 +604,18 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             `Flushing ${entity} remaining buffer to staging (${finalRowsInTemp} rows)`,
             { entity, tempCount: finalRowsInTemp },
           );
+          try {
+            const rescued = await performStagingMerge(bulkSyncOptions as any);
+            if (rescued.written > 0) {
+              logExec(
+                "info",
+                `Rescued ${rescued.written} orphaned staging rows before final flush`,
+                { entity, rescued: rescued.written },
+              );
+            }
+          } catch {
+            // Staging table may not exist — that's fine
+          }
           await performPrepareStaging(bulkSyncOptions as any);
           await performBulkFlush(bulkSyncOptions as any, () =>
             touchHeartbeat(executionId),
