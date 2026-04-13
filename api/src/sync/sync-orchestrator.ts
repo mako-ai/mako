@@ -1012,6 +1012,7 @@ async function flushBulkBuffer(
   flowId: string,
   logger?: SyncLogger,
   schemaFields?: FieldMeta[],
+  onBatchFlushed?: () => Promise<void>,
 ): Promise<{ flushed: number }> {
   const initialCount = await tempCollection.countDocuments();
   if (initialCount === 0) return { flushed: 0 };
@@ -1207,6 +1208,8 @@ async function flushBulkBuffer(
       global.gc();
     }
 
+    await onBatchFlushed?.();
+
     consecutiveSuccesses++;
     if (
       consecutiveSuccesses >= CONSECUTIVE_OK_TO_GROW &&
@@ -1291,6 +1294,7 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
 
 export async function performBulkFlush(
   options: SyncChunkOptions,
+  onBatchFlushed?: () => Promise<void>,
 ): Promise<{ flushed: number }> {
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { flushed: 0 };
@@ -1333,6 +1337,7 @@ export async function performBulkFlush(
     options.flowId!,
     options.logger,
     schemaFields,
+    onBatchFlushed,
   );
 }
 

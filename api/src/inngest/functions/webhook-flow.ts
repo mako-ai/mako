@@ -35,7 +35,7 @@ const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
 );
 
 const CDC_MATERIALIZE_THROTTLE_PERIOD = (process.env
-  .CDC_MATERIALIZE_THROTTLE_PERIOD || "30s") as `${number}s`;
+  .CDC_MATERIALIZE_THROTTLE_PERIOD || "10s") as `${number}s`;
 
 async function runWebhookEventProcess({
   event,
@@ -933,8 +933,24 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
         count: cdcEvents.length,
         dropped: droppedIds.length,
         total: webhookEvents.length,
+        workspaceId: String(flow.workspaceId),
+        entities: [...new Set(cdcEvents.map(e => e.entity))],
       };
     });
+
+    const { entities: ingestedEntities, workspaceId } = result as {
+      entities?: string[];
+      workspaceId?: string;
+    };
+    if (ingestedEntities && ingestedEntities.length > 0 && workspaceId) {
+      await step.sendEvent(
+        "trigger-materialize",
+        ingestedEntities.map(entity => ({
+          name: "cdc/materialize" as const,
+          data: { workspaceId, flowId, entity, force: false },
+        })),
+      );
+    }
 
     return { success: true, ...result };
   },
