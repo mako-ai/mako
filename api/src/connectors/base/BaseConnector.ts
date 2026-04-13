@@ -110,6 +110,7 @@ export interface ConnectorEntitySchema {
   entity: string;
   fields: Record<string, ConnectorFieldSchema>;
   unknownFieldPolicy: "string" | "drop";
+  keyColumns?: string[];
 }
 
 export const MAKO_SYSTEM_FIELDS: Record<string, ConnectorFieldSchema> = {

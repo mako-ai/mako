@@ -75,9 +75,28 @@ export class CdcConsumerService {
         tableName,
       },
     });
+    let connectorSchema: ConnectorEntitySchema | null = null;
+    if (flow.dataSourceId) {
+      try {
+        const ds = await databaseDataSourceManager.getDataSource(
+          String(flow.dataSourceId),
+        );
+        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        if (conn) {
+          connectorSchema = await conn.resolveSchema(params.entity);
+        }
+      } catch {
+        log.warn("Schema resolution failed for layout key columns", {
+          entity: params.entity,
+          flowId: params.flowId,
+        });
+      }
+    }
+
     const layout = buildCdcEntityLayout({
       entity: params.entity,
       tableName,
+      keyColumns: connectorSchema?.keyColumns,
       deleteMode: flow.deleteMode,
       partitioning: resolveEntityPartitioning(
         entityLayout,
@@ -166,25 +185,7 @@ export class CdcConsumerService {
       const effectiveDeleteMode =
         flow.deleteMode === "hard" && isBackfilling ? "soft" : flow.deleteMode;
 
-      let entitySchema: ConnectorEntitySchema | null = null;
-      if (flow.dataSourceId) {
-        try {
-          const decrypted = await databaseDataSourceManager.getDataSource(
-            String(flow.dataSourceId),
-          );
-          const connector = decrypted
-            ? await syncConnectorRegistry.getConnector(decrypted)
-            : null;
-          if (connector) {
-            entitySchema = await connector.resolveSchema(params.entity);
-          }
-        } catch {
-          log.warn("Schema resolution failed, proceeding without schema", {
-            entity: params.entity,
-            flowId: params.flowId,
-          });
-        }
-      }
+      const entitySchema = connectorSchema;
 
       const normalizedEvents = entitySchema
         ? pending.map(event => {
