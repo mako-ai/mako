@@ -532,7 +532,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
                 { entity, flushIndex, tempCount },
               );
               await performPrepareStaging(bulkSyncOptions as any);
-              await performBulkFlush(bulkSyncOptions as any);
+              await performBulkFlush(bulkSyncOptions as any, () =>
+                touchHeartbeat(executionId),
+              );
               await performStagingMerge(bulkSyncOptions as any);
               await performStagingCleanup(bulkSyncOptions as any);
             },
@@ -580,7 +582,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             { entity, tempCount: finalRowsInTemp },
           );
           await performPrepareStaging(bulkSyncOptions as any);
-          await performBulkFlush(bulkSyncOptions as any);
+          await performBulkFlush(bulkSyncOptions as any, () =>
+            touchHeartbeat(executionId),
+          );
         });
 
         await step.run(`merge-final-${safeEntityStepId}`, async () => {

@@ -33,8 +33,9 @@ export async function performSyncChunk(
 
 export async function performBulkFlush(
   options: SyncChunkOptions,
+  onBatchFlushed?: () => Promise<void>,
 ): Promise<{ flushed: number }> {
-  return performBulkFlushOrchestrated(options);
+  return performBulkFlushOrchestrated(options, onBatchFlushed);
 }
 
 export async function performPrepareStaging(
