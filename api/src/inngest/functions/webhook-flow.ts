@@ -34,6 +34,9 @@ const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
   5,
 );
 
+const CDC_MATERIALIZE_THROTTLE_PERIOD = (process.env
+  .CDC_MATERIALIZE_THROTTLE_PERIOD || "30s") as `${number}s`;
+
 async function runWebhookEventProcess({
   event,
   step,
@@ -1174,7 +1177,7 @@ export const cdcMaterializeFunction = inngest.createFunction(
     },
     throttle: {
       limit: 1,
-      period: "3m",
+      period: CDC_MATERIALIZE_THROTTLE_PERIOD,
       key: "event.data.flowId + ':' + event.data.entity",
     },
   },

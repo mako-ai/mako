@@ -2218,7 +2218,29 @@ export const flowSchedulerFunction = inngest.createFunction(
           });
 
           // Use the alternative logic instead
-          return alternativeShouldRun || missedRun;
+          if (!(alternativeShouldRun || missedRun)) return false;
+
+          // Skip dispatch if a previous execution is still running —
+          // prevents pending event pile-up when flows take longer than
+          // their cron interval.
+          const activeExecution = await Flow.db
+            .collection("flow_executions")
+            .findOne({
+              flowId: new Types.ObjectId(flow._id),
+              status: "running",
+            });
+          if (activeExecution) {
+            flowLogger.info(
+              "Skipping dispatch: flow already has active execution",
+              {
+                flowId: flow._id.toString(),
+                activeExecutionId: activeExecution._id.toString(),
+              },
+            );
+            return false;
+          }
+
+          return true;
         } catch (error) {
           logger.error(`Failed to parse cron expression for flow ${flow._id}`, {
             error,
