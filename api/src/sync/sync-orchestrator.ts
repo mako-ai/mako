@@ -929,10 +929,23 @@ async function performSyncChunkSql(
       await writer.finalize();
     }
 
+    const fetchWriteDelta = fetchState.totalProcessed - runningRowsWritten;
     logger?.log(
       "info",
       `✅ ${entity} SQL sync completed (${runningRowsWritten} written, ${fetchState.totalProcessed} fetched)`,
     );
+    if (fetchWriteDelta !== 0) {
+      logger?.log(
+        "warn",
+        `⚠️ ${entity} fetch/write mismatch: ${fetchState.totalProcessed} fetched but ${runningRowsWritten} written (delta: ${fetchWriteDelta})`,
+        {
+          entity,
+          totalFetched: fetchState.totalProcessed,
+          totalWritten: runningRowsWritten,
+          delta: fetchWriteDelta,
+        },
+      );
+    }
   } else {
     logger?.log(
       "info",
@@ -1150,10 +1163,11 @@ async function flushBulkBuffer(
     );
 
     if (parquet.rowCount === 0) {
+      const actualRemaining = await tempCollection.countDocuments();
       logger?.log(
         "warn",
-        `${entity} flush: empty parquet (possible race), stopping flush loop`,
-        { entity, batch: batchNum },
+        `${entity} flush: empty parquet (possible race), stopping flush loop (${actualRemaining} rows still in temp, ${totalFlushed} flushed so far)`,
+        { entity, batch: batchNum, actualRemaining, totalFlushed },
       );
       break;
     }
@@ -1257,11 +1271,25 @@ async function flushBulkBuffer(
     {
       entity,
       totalFlushed,
+      initialCount,
       batches: batchNum,
       finalBatchSize: currentBatchSize,
       memory: syncMemorySnapshot(),
     },
   );
+
+  if (totalFlushed !== initialCount) {
+    logger?.log(
+      "warn",
+      `⚠️ ${entity} flush mismatch: ${initialCount} rows in temp but only ${totalFlushed} flushed to staging (${initialCount - totalFlushed} lost)`,
+      {
+        entity,
+        initialCount,
+        totalFlushed,
+        delta: initialCount - totalFlushed,
+      },
+    );
+  }
 
   return { flushed: totalFlushed };
 }

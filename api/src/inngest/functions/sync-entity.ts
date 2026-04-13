@@ -551,10 +551,15 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       }
     }
 
+    const totalFetched = state?.totalProcessed ?? totalWrittenForEntity;
     logger.info("Completed chunked sync for entity", {
       flowId,
       entity,
       totalChunks: chunkIndex,
+      totalFetched,
+      totalWrittenForEntity,
+      fetchWriteDelta: totalFetched - totalWrittenForEntity,
+      useBulkPath,
     });
 
     // ── Flush remaining + merge for bulk path ─────────────────────────
@@ -592,13 +597,20 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           logExec("info", `Merging ${entity} staging table to live`, {
             entity,
           });
-          await performStagingMerge(bulkSyncOptions as any);
+          const mergeResult = await performStagingMerge(bulkSyncOptions as any);
           await performStagingCleanup(bulkSyncOptions as any);
           logExec(
             "info",
-            `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live)`,
-            { entity },
+            `✅ ${entity} bulk backfill complete (buffer → Parquet → staging → live, ${mergeResult.written} rows merged)`,
+            { entity, mergedRows: mergeResult.written },
           );
+          logger.info("Final merge result", {
+            flowId,
+            entity,
+            mergedRows: mergeResult.written,
+            totalFetched,
+            totalWrittenToTemp: totalWrittenForEntity,
+          });
         });
       }
 
