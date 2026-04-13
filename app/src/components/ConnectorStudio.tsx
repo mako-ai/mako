@@ -656,7 +656,12 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                   <Tabs
                     value={bottomView}
                     onChange={(_, value: BottomView) => setBottomView(value)}
-                    sx={{ px: 1, borderBottom: 1, borderColor: "divider" }}
+                    sx={{
+                      px: 1,
+                      borderBottom: 1,
+                      borderColor: "divider",
+                      flexShrink: 0,
+                    }}
                   >
                     <Tab value="output" label="Output" />
                     <Tab value="logs" label="Logs" />
