@@ -184,6 +184,16 @@ export interface DatabaseDriver {
   ): Promise<{ success: boolean; error?: string }>;
 
   /**
+   * Add columns to an existing table.
+   */
+  addColumns?(
+    database: IDatabaseConnection,
+    tableName: string,
+    columns: ColumnDefinition[],
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }>;
+
+  /**
    * Check if a table exists
    */
   tableExists?(

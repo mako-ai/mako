@@ -14,6 +14,7 @@ import {
   SquareChevronRight as ConsoleIcon,
   Database as DatabaseIcon,
   Plug as DataSourceIcon,
+  SquareTerminal as ConnectorBuilderIcon,
   ArrowLeftRight as FlowsIcon,
   ChartPie as DashboardIcon,
   CircleUserRound as UserIcon,
@@ -27,6 +28,7 @@ import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { useFlowStore } from "../store/flowStore";
+import { useConnectorBuilderStore } from "../store/connectorBuilderStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { trackEvent, resetIdentity } from "../lib/analytics";
@@ -56,6 +58,7 @@ type NavigationView =
   | "databases"
   | "consoles"
   | "connectors"
+  | "user-connectors"
   | "flows"
   | "dashboards"
   | "settings"
@@ -67,6 +70,11 @@ const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
     { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
     { view: "flows", icon: FlowsIcon, label: "Flows" },
     { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
+    {
+      view: "user-connectors",
+      icon: ConnectorBuilderIcon,
+      label: "Connector Builder",
+    },
     { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
   ];
 
@@ -121,6 +129,7 @@ function Sidebar() {
       useExplorerStore.getState().reset();
       useChatStore.getState().reset();
       useFlowStore.getState().reset();
+      useConnectorBuilderStore.getState().reset();
 
       await logout();
 
@@ -137,6 +146,7 @@ function Sidebar() {
       view === "databases" ||
       view === "consoles" ||
       view === "connectors" ||
+      view === "user-connectors" ||
       view === "flows" ||
       view === "dashboards"
     ) {
@@ -146,6 +156,7 @@ function Sidebar() {
             | "databases"
             | "consoles"
             | "connectors"
+            | "user-connectors"
             | "flows"
             | "dashboards",
         );

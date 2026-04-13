@@ -516,6 +516,37 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     };
   }
 
+  async addColumns(
+    database: IDatabaseConnection,
+    tableName: string,
+    columns: ColumnDefinition[],
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    if (columns.length === 0) {
+      return { success: true };
+    }
+
+    const schema = options?.schema || "public";
+    const fullTableName = `${escapeIdentifier(schema)}.${escapeIdentifier(tableName)}`;
+    const clauses = columns.map(column => {
+      let clause = `ADD COLUMN IF NOT EXISTS ${escapeIdentifier(column.name)} ${column.type}`;
+      if (!column.nullable && !column.primaryKey) {
+        clause += " NOT NULL";
+      }
+      return clause;
+    });
+
+    const query = `ALTER TABLE ${fullTableName} ${clauses.join(", ")};`;
+    const result = await this.executeQuery(database, query, {
+      databaseName: options?.schema ? undefined : database.connection.database,
+    });
+
+    return {
+      success: result.success,
+      error: result.error,
+    };
+  }
+
   /**
    * Check if a table exists
    */

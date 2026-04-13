@@ -21,6 +21,7 @@ import { useExplorerStore } from "../store/explorerStore";
 import { useChatStore } from "../store/chatStore";
 
 import { useFlowStore } from "../store/flowStore";
+import { useConnectorBuilderStore } from "../store/connectorBuilderStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
 
@@ -324,6 +325,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           useChatStore.getState().reset();
           useConsoleStore.getState().clearAllConsoles();
           useFlowStore.getState().reset();
+          useConnectorBuilderStore.getState().reset();
 
           // Reload the page to refresh all data with new workspace context
           window.location.reload();

@@ -19,6 +19,7 @@ import {
   SquareTerminal as ConsoleIcon,
   Settings as SettingsIcon,
   CloudUpload as DataSourceIcon,
+  Plug as ConnectorStudioIcon,
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
@@ -30,6 +31,7 @@ import Console, { ConsoleRef } from "./Console";
 import ResultsTable from "./ResultsTable";
 import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
+import ConnectorStudio from "./ConnectorStudio";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
@@ -1257,6 +1259,8 @@ function Editor({
                         <SettingsIcon size={20} strokeWidth={1.5} />
                       ) : tab.kind === "connectors" ? (
                         <DataSourceIcon size={20} strokeWidth={1.5} />
+                      ) : tab.kind === "connector-studio" ? (
+                        <ConnectorStudioIcon size={20} strokeWidth={1.5} />
                       ) : tab.kind === "flow-editor" ? (
                         tab.metadata?.flowType === "webhook" ? (
                           <WebhookIcon size={20} strokeWidth={1.5} />
@@ -1331,6 +1335,16 @@ function Editor({
                     tabId={tab.id}
                     sourceId={
                       typeof tab.content === "string" ? tab.content : undefined
+                    }
+                  />
+                ) : tab.kind === "connector-studio" ? (
+                  <ConnectorStudio
+                    tabId={tab.id}
+                    connectorId={
+                      (tab.metadata?.connectorId as string | undefined) ||
+                      (typeof tab.content === "string"
+                        ? tab.content
+                        : undefined)
                     }
                   />
                 ) : tab.kind === "flow-editor" ? (

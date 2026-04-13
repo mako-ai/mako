@@ -36,6 +36,7 @@ import Chat from "./components/Chat";
 import DatabaseExplorer from "./components/DatabaseExplorer";
 import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
+import ConnectorBuilderExplorer from "./components/ConnectorBuilderExplorer";
 import Editor from "./components/Editor";
 import { FlowsExplorer } from "./components/FlowsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
@@ -448,6 +449,8 @@ function MainApp() {
         );
       case "connectors":
         return <DataSourceExplorer />;
+      case "user-connectors":
+        return <ConnectorBuilderExplorer />;
       case "flows":
         return <FlowsExplorer />;
       case "dashboards":
