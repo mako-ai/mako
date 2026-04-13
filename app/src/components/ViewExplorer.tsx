@@ -197,7 +197,7 @@ const ViewExplorer: React.FC<ViewExplorerProps> = ({
               const collections = Object.keys(groupedViews).sort();
 
               return collections.map(collection => {
-                const isExpanded = expandedCollections.has(collection);
+                const isExpanded = !!expandedCollections[collection];
                 const collectionViews = groupedViews[collection];
 
                 return (

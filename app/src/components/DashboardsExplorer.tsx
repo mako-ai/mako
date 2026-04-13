@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Box,
+  Chip,
   IconButton,
+  Stack,
   Typography,
   Tooltip,
   Alert,
@@ -53,7 +55,7 @@ const NEW_DASHBOARD_TEMPLATE = {
 } satisfies Partial<Dashboard>;
 
 export function DashboardsExplorer() {
-  const { currentWorkspace } = useWorkspace();
+  const { currentWorkspace, members } = useWorkspace();
   const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
   const isAdmin =
@@ -81,17 +83,24 @@ export function DashboardsExplorer() {
   const createDashboard = useDashboardStore(s => s.createDashboard);
   const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
 
-  const isDashboardFolderExpanded = useExplorerStore(
-    s => s.isDashboardFolderExpanded,
+  const dashboardExpandedFolders = useExplorerStore(
+    s => s.dashboard.expandedFolders,
   );
   const toggleDashboardFolder = useExplorerStore(s => s.toggleDashboardFolder);
   const expandDashboardFolder = useExplorerStore(s => s.expandDashboardFolder);
+
+  const isDashboardFolderExpanded = useCallback(
+    (key: string) => !!dashboardExpandedFolders[key],
+    [dashboardExpandedFolders],
+  );
 
   const { openTab, setActiveTab, activeTabId, tabs } = useConsoleStore();
 
   const [deleteTarget, setDeleteTarget] = useState<ResourceTreeNode | null>(
     null,
   );
+  const [moveTarget, setMoveTarget] = useState<ResourceTreeNode | null>(null);
+  const [infoTarget, setInfoTarget] = useState<ResourceTreeNode | null>(null);
 
   useEffect(() => {
     if (workspaceId) {
@@ -173,14 +182,15 @@ export function DashboardsExplorer() {
     async (
       parentId: string | null,
       access?: string,
-    ): Promise<string | null> => {
+    ): Promise<{ id: string; name: string } | null> => {
       if (!workspaceId) return null;
-      return createFolder(
+      const id = await createFolder(
         workspaceId,
         "New Folder",
         parentId,
         (access as "private" | "workspace") || undefined,
       );
+      return id ? { id, name: "New Folder" } : null;
     },
     [workspaceId, createFolder],
   );
@@ -235,6 +245,14 @@ export function DashboardsExplorer() {
     },
     [isAdmin, user?.id],
   );
+
+  const handleMoveRequest = useCallback((node: ResourceTreeNode) => {
+    setMoveTarget(node);
+  }, []);
+
+  const handleInfoRequest = useCallback((node: ResourceTreeNode) => {
+    setInfoTarget(node);
+  }, []);
 
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
     if (node.access === "workspace") {
@@ -359,9 +377,15 @@ export function DashboardsExplorer() {
             onDuplicateItem={handleDuplicate}
             onCreateFolder={handleCreateFolder}
             onResortItem={handleResortItem}
+            enableMove
+            enableInfo
+            onMoveRequest={handleMoveRequest}
+            onInfoRequest={handleInfoRequest}
+            onFolderInfoRequest={handleInfoRequest}
             isFolderExpanded={isDashboardFolderExpanded}
             onToggleFolder={toggleDashboardFolder}
             onExpandFolder={expandDashboardFolder}
+            getFolderExpansionKey={node => node.id}
             canManageItem={canManageItem}
           />
         )}
@@ -387,7 +411,164 @@ export function DashboardsExplorer() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Move Dialog */}
+      <Dialog
+        open={!!moveTarget}
+        onClose={() => setMoveTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>
+          Move {moveTarget?.isDirectory ? "Folder" : "Dashboard"}
+        </DialogTitle>
+        <DialogContent sx={{ p: 0, height: 320 }}>
+          <ResourceTree
+            sections={sectionsDef}
+            mode="picker"
+            showFiles={false}
+            getItemIcon={getItemIcon}
+            isFolderExpanded={isDashboardFolderExpanded}
+            onToggleFolder={toggleDashboardFolder}
+            onExpandFolder={expandDashboardFolder}
+            getFolderExpansionKey={node => node.id}
+            onLocationChange={(folderId, sectionKey) => {
+              if (!moveTarget || !workspaceId) return;
+              const access =
+                sectionKey === "workspace" ? "workspace" : "private";
+              if (moveTarget.isDirectory) {
+                moveFolder(workspaceId, moveTarget.id, folderId, access);
+              } else {
+                moveItem(workspaceId, moveTarget.id, folderId, access);
+              }
+              setMoveTarget(null);
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMoveTarget(null)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Information Dialog */}
+      <DashboardInfoDialog
+        item={infoTarget}
+        onClose={() => setInfoTarget(null)}
+        members={members}
+      />
     </Box>
+  );
+}
+
+const accessLabels: Record<string, string> = {
+  private: "Private",
+  workspace: "Shared with workspace",
+};
+
+function formatDate(value?: string): string {
+  if (!value) return "Unknown";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "Unknown";
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function DashboardInfoDialog({
+  item,
+  onClose,
+  members,
+}: {
+  item: ResourceTreeNode | null;
+  onClose: () => void;
+  members: { userId: string; email: string }[];
+}) {
+  const ownerEmail = item?.owner_id
+    ? members.find(m => m.userId === item.owner_id)?.email || item.owner_id
+    : "Unknown";
+
+  const dashboardEntry = item as ResourceTreeNode & {
+    createdAt?: string;
+    updatedAt?: string;
+  };
+
+  return (
+    <Dialog open={!!item} onClose={onClose} maxWidth="sm" fullWidth>
+      <DialogTitle sx={{ pb: 1 }}>
+        {item?.isDirectory ? "Folder" : "Dashboard"} Information
+      </DialogTitle>
+      <DialogContent sx={{ pt: 1 }}>
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+              Name
+            </Typography>
+            <Typography variant="body2">{item?.name ?? "—"}</Typography>
+          </Box>
+
+          <Box>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+              Created by
+            </Typography>
+            <Typography variant="body2">{ownerEmail}</Typography>
+          </Box>
+
+          {dashboardEntry?.createdAt && (
+            <Box>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mb: 0.5 }}
+              >
+                Created at
+              </Typography>
+              <Typography variant="body2">
+                {formatDate(dashboardEntry.createdAt)}
+              </Typography>
+            </Box>
+          )}
+
+          {dashboardEntry?.updatedAt && (
+            <Box>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mb: 0.5 }}
+              >
+                Last modified
+              </Typography>
+              <Typography variant="body2">
+                {formatDate(dashboardEntry.updatedAt)}
+              </Typography>
+            </Box>
+          )}
+
+          {item?.access && (
+            <Box>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mb: 0.5 }}
+              >
+                Access
+              </Typography>
+              <Chip
+                label={accessLabels[item.access] || item.access}
+                size="small"
+                variant="outlined"
+              />
+            </Box>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 

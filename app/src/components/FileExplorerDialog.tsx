@@ -41,7 +41,7 @@ interface FileExplorerDialogProps {
   isDirectory?: boolean;
 
   /** new-folder mode: called with parent folderId (null = root) */
-  onNewFolder?: (parentFolderId: string | null) => void;
+  onNewFolder?: (parentFolderId: string | null, name: string) => void;
 
   /** Pre-select this folder on open (e.g. the item's current parent) */
   initialFolderId?: string | null;
@@ -159,7 +159,7 @@ export default function FileExplorerDialog({
       onMove?.(selectedFolderId, nameChanged ? newName : undefined);
     } else if (mode === "new-folder") {
       if (!folderName.trim()) return;
-      onNewFolder?.(selectedFolderId);
+      onNewFolder?.(selectedFolderId, folderName.trim());
     }
   };
 
@@ -221,7 +221,9 @@ export default function FileExplorerDialog({
       <DialogTitle
         sx={{ pb: 0, pt: 1.5, px: 2, display: "flex", alignItems: "center" }}
       >
-        <Box sx={{ flex: 1 }}>{dialogTitle}</Box>
+        <Box sx={{ flex: 1, minWidth: 0 }} className="app-truncate">
+          {dialogTitle}
+        </Box>
         <Tooltip title="New Folder">
           <IconButton size="small" onClick={handleNewFolder}>
             <CreateFolderIcon size={18} strokeWidth={1.5} />
@@ -279,7 +281,7 @@ export default function FileExplorerDialog({
             border: 1,
             borderColor: "divider",
             borderRadius: 1,
-            overflow: "hidden",
+            overflow: "auto",
             display: "flex",
             flexDirection: "column",
           }}
@@ -297,6 +299,7 @@ export default function FileExplorerDialog({
             onLocationChange={handleLocationChange}
             onFileClick={handleFileClick}
             selectedLocationId={selectedFolderId}
+            selectedSectionKey={selectedSection}
             initialFolderId={initialFolderId}
           />
         </Box>

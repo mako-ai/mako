@@ -7,14 +7,16 @@
  * Used by both consoleTreeStore and dashboardTreeStore.
  */
 
-export interface TreeNode {
+export interface ManagedTreeNode {
   id?: string;
   name: string;
   isDirectory: boolean;
-  children?: TreeNode[];
+  children?: ManagedTreeNode[];
 }
 
-export function findTargetArray<T extends TreeNode>(
+export type TreeNode = ManagedTreeNode;
+
+export function findTargetArray<T extends ManagedTreeNode>(
   nodes: T[],
   remainingSegments: string[],
 ): T[] | null {
@@ -28,7 +30,7 @@ export function findTargetArray<T extends TreeNode>(
   return findTargetArray(folder.children as T[], remainingSegments.slice(1));
 }
 
-export function removeById<T extends TreeNode>(
+export function removeById<T extends ManagedTreeNode>(
   nodes: T[],
   targetId: string,
 ): T | null {
@@ -43,7 +45,7 @@ export function removeById<T extends TreeNode>(
   return null;
 }
 
-export function insertAlphabetically<T extends TreeNode>(
+export function insertAlphabetically<T extends ManagedTreeNode>(
   nodes: T[],
   entry: T,
 ): void {
@@ -64,11 +66,14 @@ export function insertAlphabetically<T extends TreeNode>(
   nodes.splice(insertIndex, 0, entry);
 }
 
-export function insertAtTop<T extends TreeNode>(nodes: T[], entry: T): void {
+export function insertAtTop<T extends ManagedTreeNode>(
+  nodes: T[],
+  entry: T,
+): void {
   nodes.unshift(entry);
 }
 
-export function findById<T extends TreeNode>(
+export function findById<T extends ManagedTreeNode>(
   nodes: T[],
   targetId: string,
 ): T | null {
@@ -82,7 +87,7 @@ export function findById<T extends TreeNode>(
   return null;
 }
 
-export function findParentArray<T extends TreeNode>(
+export function findParentArray<T extends ManagedTreeNode>(
   nodes: T[],
   targetId: string,
 ): T[] | null {
@@ -100,17 +105,30 @@ export function findParentArray<T extends TreeNode>(
  * Client-side filter: case-insensitive match on node name.
  * Folders pass if their name matches or any descendant matches.
  */
-export function filterTree<T extends TreeNode>(nodes: T[], query: string): T[] {
+export interface FilterTreeOptions {
+  includeMatchingFolders?: boolean;
+}
+
+export function filterTree<T extends ManagedTreeNode>(
+  nodes: T[],
+  query: string,
+  options: FilterTreeOptions = {},
+): T[] {
   const lower = query.toLowerCase();
+  const includeMatchingFolders = options.includeMatchingFolders ?? true;
   const result: T[] = [];
   for (const node of nodes) {
     if (node.isDirectory && node.children) {
-      const filteredChildren = filterTree(node.children as T[], query);
+      const filteredChildren = filterTree(node.children as T[], query, options);
       if (
         filteredChildren.length > 0 ||
-        node.name.toLowerCase().includes(lower)
+        (includeMatchingFolders && node.name.toLowerCase().includes(lower))
       ) {
         result.push({ ...node, children: filteredChildren } as T);
+      }
+    } else if (node.isDirectory && includeMatchingFolders) {
+      if (node.name.toLowerCase().includes(lower)) {
+        result.push({ ...node, children: [] } as T);
       }
     } else if (node.name.toLowerCase().includes(lower)) {
       result.push(node);
@@ -120,7 +138,7 @@ export function filterTree<T extends TreeNode>(nodes: T[], query: string): T[] {
 }
 
 /** Count all non-directory items in a tree (recursive) */
-export function countItems<T extends TreeNode>(nodes: T[]): number {
+export function countItems<T extends ManagedTreeNode>(nodes: T[]): number {
   let count = 0;
   for (const node of nodes) {
     if (node.isDirectory && node.children) {
