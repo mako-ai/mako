@@ -114,13 +114,23 @@ export const ModelSelector: React.FC = () => {
           fontSize: 12,
           py: 0.25,
           px: 1,
-          minWidth: "auto",
+          minWidth: 0,
+          maxWidth: "100%",
+          minHeight: 28,
+          flexShrink: 1,
+          justifyContent: "space-between",
           "&:hover": {
             backgroundColor: "action.hover",
           },
         }}
       >
-        {displayName}
+        <Box
+          component="span"
+          className="app-truncate-inline"
+          sx={{ flex: "1 1 auto", minWidth: 0 }}
+        >
+          {displayName}
+        </Box>
       </Button>
       <Menu
         anchorEl={anchorEl}
@@ -168,13 +178,16 @@ export const ModelSelector: React.FC = () => {
                 px: 2,
               }}
             >
-              <Box>
-                <Typography variant="body2">{model.name}</Typography>
+              <Box sx={{ minWidth: 0, width: "100%" }}>
+                <Typography variant="body2" noWrap>
+                  {model.name}
+                </Typography>
                 {model.description && (
                   <Typography
                     variant="caption"
                     color="text.secondary"
                     sx={{ display: "block" }}
+                    noWrap
                   >
                     {model.description}
                   </Typography>

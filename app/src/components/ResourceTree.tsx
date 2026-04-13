@@ -1,49 +1,61 @@
 import React, {
   type ReactNode,
-  useState,
-  useEffect,
+  forwardRef,
   useCallback,
+  useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import {
   Box,
   Chip,
+  Divider,
   List,
   ListItemButton,
   ListItemIcon,
+  ListItemText as MuiListItemText,
   Menu,
   MenuItem,
-  ListItemText as MuiListItemText,
   Typography,
-  Divider,
 } from "@mui/material";
 import {
-  ChevronRight,
+  ArrowRightLeft,
   ChevronDown,
+  ChevronRight,
+  Copy,
   Folder,
   FolderOpen,
-  Pencil,
-  Copy,
-  Trash2,
   FolderPlus,
-  ArrowRightLeft,
   Info,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  closestCenter,
+  pointerWithin,
   useSensor,
   useSensors,
-  closestCenter,
+  type CollisionDetection,
   type DragEndEvent,
-  useDraggable,
-  useDroppable,
+  type DragOverEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
-import { filterTree, countItems } from "../store/lib/tree-helpers";
-
-// ── Public types ──
+import { countItems, filterTree } from "../store/lib/tree-helpers";
+import {
+  DraggableTreeItem,
+  DroppableFolderContent,
+  DroppableSectionHeader,
+} from "./resource-tree/dnd";
+import {
+  findNodeInSections,
+  getFolderDropTargetId,
+  resolveTreeDropTarget,
+} from "./resource-tree/utils";
 
 export interface ResourceTreeNode {
   id: string;
@@ -59,10 +71,19 @@ export interface ResourceTreeNode {
 export interface ResourceTreeSection {
   key: string;
   label: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   nodes: ResourceTreeNode[];
   droppableId?: string;
   defaultAccess?: "private" | "workspace";
+}
+
+export interface CreatedFolderResult {
+  id: string;
+  name: string;
+}
+
+export interface ResourceTreeRef {
+  createFolder: (parentId: string | null, access?: string) => Promise<void>;
 }
 
 export interface ResourceTreeProps {
@@ -71,7 +92,7 @@ export interface ResourceTreeProps {
   activeItemId?: string | null;
   searchQuery?: string;
 
-  getItemIcon?: (node: ResourceTreeNode) => React.ReactNode;
+  getItemIcon?: (node: ResourceTreeNode) => ReactNode;
   showFiles?: boolean;
 
   enableDragDrop?: boolean;
@@ -83,6 +104,13 @@ export interface ResourceTreeProps {
   enableNewFolder?: boolean;
 
   onItemClick?: (node: ResourceTreeNode) => void;
+  onPickerFileClick?: (node: ResourceTreeNode) => void;
+  onLocationChange?: (folderId: string | null, sectionKey: string) => void;
+  selectedLocationId?: string | null;
+  selectedSectionKey?: string;
+  initialFolderId?: string | null;
+  initialSectionKey?: string;
+
   onMoveItem?: (
     itemId: string,
     targetFolderId: string | null,
@@ -99,55 +127,68 @@ export interface ResourceTreeProps {
   onCreateFolder?: (
     parentId: string | null,
     access?: string,
-  ) => Promise<string | null>;
+  ) => Promise<CreatedFolderResult | null>;
   onInfoRequest?: (node: ResourceTreeNode) => void;
+  onFolderInfoRequest?: (node: ResourceTreeNode) => void;
+  onMoveRequest?: (node: ResourceTreeNode) => void;
   onResortItem?: (id: string) => void;
+  onUndo?: () => void;
 
-  isFolderExpanded: (path: string) => boolean;
-  onToggleFolder: (path: string) => void;
-  onExpandFolder: (path: string) => void;
+  isFolderExpanded: (expansionKey: string) => boolean;
+  onToggleFolder: (expansionKey: string) => void;
+  onExpandFolder: (expansionKey: string) => void;
+  getFolderExpansionKey?: (node: ResourceTreeNode) => string;
 
   canManageItem?: (node: ResourceTreeNode) => boolean;
 }
 
-// ── Component ──
+const collisionDetectionStrategy: CollisionDetection = args => {
+  const pointerCollisions = pointerWithin(args);
+  return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
+};
 
-export default function ResourceTree({
-  sections,
-  mode = "sidebar",
-  activeItemId,
-  searchQuery = "",
-
-  getItemIcon,
-  showFiles = true,
-
-  enableDragDrop = true,
-  enableRename = true,
-  enableDuplicate = false,
-  enableDelete = true,
-  enableMove = false,
-  enableInfo = false,
-  enableNewFolder = true,
-
-  onItemClick,
-  onMoveItem,
-  onMoveFolder,
-  onRenameItem,
-  onDeleteItem,
-  onDuplicateItem,
-  onCreateFolder,
-  onInfoRequest,
-  onResortItem,
-
-  isFolderExpanded,
-  onToggleFolder,
-  onExpandFolder,
-
-  canManageItem,
-}: ResourceTreeProps) {
-  // ── State ──
-
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+function ResourceTreeInner(
+  {
+    sections,
+    mode = "sidebar",
+    activeItemId,
+    searchQuery = "",
+    getItemIcon,
+    showFiles = true,
+    enableDragDrop = true,
+    enableRename = true,
+    enableDuplicate = false,
+    enableDelete = true,
+    enableMove = false,
+    enableInfo = false,
+    enableNewFolder = true,
+    onItemClick,
+    onPickerFileClick,
+    onLocationChange,
+    selectedLocationId,
+    selectedSectionKey,
+    initialFolderId,
+    initialSectionKey,
+    onMoveItem,
+    onMoveFolder,
+    onRenameItem,
+    onDeleteItem,
+    onDuplicateItem,
+    onCreateFolder,
+    onInfoRequest,
+    onFolderInfoRequest,
+    onMoveRequest,
+    onResortItem,
+    onUndo,
+    isFolderExpanded,
+    onToggleFolder,
+    onExpandFolder,
+    getFolderExpansionKey,
+    canManageItem,
+  }: ResourceTreeProps,
+  ref: React.Ref<ResourceTreeRef>,
+) {
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -155,9 +196,8 @@ export default function ResourceTree({
   const [contextMenu, setContextMenu] = useState<{
     anchorPosition: { top: number; left: number };
     item: ResourceTreeNode;
-    readOnly?: boolean;
+    readOnly: boolean;
   } | null>(null);
-
   const [sectionContextMenu, setSectionContextMenu] = useState<{
     anchorPosition: { top: number; left: number };
     sectionKey: string;
@@ -165,11 +205,30 @@ export default function ResourceTree({
 
   const [sectionExpanded, setSectionExpanded] = useState<
     Record<string, boolean>
-  >(() => Object.fromEntries(sections.map(s => [s.key, true])));
+  >(() => Object.fromEntries(sections.map(section => [section.key, true])));
 
   const [draggedNode, setDraggedNode] = useState<ResourceTreeNode | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [pendingCreatedFolderId, setPendingCreatedFolderId] = useState<
+    string | null
+  >(null);
+  const [didInitialExpand, setDidInitialExpand] = useState(false);
 
-  // ── DnD ──
+  const [internalSelectedLocation, setInternalSelectedLocation] = useState<
+    string | null
+  >(null);
+  const [internalSelectedSectionKey, setInternalSelectedSectionKey] = useState(
+    sections[0]?.key ?? "",
+  );
+
+  const currentSelectedLocation =
+    selectedLocationId !== undefined
+      ? selectedLocationId
+      : internalSelectedLocation;
+  const currentSelectedSectionKey =
+    selectedSectionKey !== undefined
+      ? selectedSectionKey
+      : internalSelectedSectionKey;
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -177,115 +236,212 @@ export default function ResourceTree({
     }),
   );
 
-  const findNodeById = useCallback(
-    (id: string): ResourceTreeNode | null => {
-      const search = (nodes: ResourceTreeNode[]): ResourceTreeNode | null => {
-        for (const n of nodes) {
-          if (n.id === id) return n;
-          if (n.isDirectory && n.children) {
-            const found = search(n.children);
-            if (found) return found;
-          }
+  useEffect(() => {
+    setSectionExpanded(prev => {
+      const next = { ...prev };
+      for (const section of sections) {
+        if (!(section.key in next)) {
+          next[section.key] = true;
         }
-        return null;
-      };
-      for (const s of sections) {
-        const found = search(s.nodes);
-        if (found) return found;
       }
-      return null;
-    },
+      return next;
+    });
+    if (!internalSelectedSectionKey && sections[0]?.key) {
+      setInternalSelectedSectionKey(sections[0].key);
+    }
+  }, [sections, internalSelectedSectionKey]);
+
+  useEffect(() => {
+    setDidInitialExpand(false);
+  }, [initialFolderId, initialSectionKey, mode]);
+
+  const findNodeLocation = useCallback(
+    (id: string) => findNodeInSections(sections, id),
     [sections],
   );
 
-  const handleDragStart = useCallback(
-    (event: { active: { id: string | number } }) => {
-      const node = findNodeById(String(event.active.id));
-      setDraggedNode(node);
-    },
-    [findNodeById],
+  const getExpansionKey = useCallback(
+    (node: ResourceTreeNode) => getFolderExpansionKey?.(node) ?? node.id,
+    [getFolderExpansionKey],
   );
 
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      setDraggedNode(null);
-      const { active, over } = event;
-      if (!over || !active) return;
-
-      const activeId = String(active.id);
-      const overId = String(over.id);
-      if (activeId === overId) return;
-
-      const activeNode = findNodeById(activeId);
-      if (!activeNode) return;
-
-      for (const s of sections) {
-        if (overId === s.droppableId) {
-          if (activeNode.isDirectory) {
-            onMoveFolder?.(activeId, null, s.defaultAccess);
-          } else {
-            onMoveItem?.(activeId, null, s.defaultAccess);
+  const findAncestorExpansionKeys = useCallback(
+    (
+      nodes: ResourceTreeNode[],
+      targetId: string,
+      ancestors: string[] = [],
+    ): string[] => {
+      for (const node of nodes) {
+        if (node.id === targetId) return ancestors;
+        if (node.isDirectory && node.children) {
+          const found = findAncestorExpansionKeys(node.children, targetId, [
+            ...ancestors,
+            getExpansionKey(node),
+          ]);
+          if (
+            found.length > 0 ||
+            node.children.some(child => child.id === targetId)
+          ) {
+            return found;
           }
-          return;
         }
       }
+      return [];
+    },
+    [getExpansionKey],
+  );
 
-      if (overId.startsWith("__folder_content_")) {
-        const folderId = overId.replace("__folder_content_", "");
-        if (activeNode.isDirectory) {
-          onMoveFolder?.(activeId, folderId);
-        } else {
-          onMoveItem?.(activeId, folderId);
+  const isNodeExpanded = useCallback(
+    (node: ResourceTreeNode) =>
+      searchQuery.length >= 2 ? true : isFolderExpanded(getExpansionKey(node)),
+    [getExpansionKey, isFolderExpanded, searchQuery],
+  );
+
+  const filteredSections = useMemo(
+    () =>
+      sections.map(section => ({
+        ...section,
+        nodes:
+          searchQuery.length >= 2
+            ? filterTree(section.nodes, searchQuery)
+            : section.nodes,
+      })),
+    [sections, searchQuery],
+  );
+
+  const flatNodeIds = useMemo(() => {
+    const ids: string[] = [];
+
+    const collect = (nodes: ResourceTreeNode[], sectionVisible: boolean) => {
+      if (!sectionVisible) return;
+      for (const node of nodes) {
+        if (!showFiles && !node.isDirectory) continue;
+        ids.push(node.id);
+        if (node.isDirectory && node.children && isNodeExpanded(node)) {
+          collect(node.children, true);
         }
-        return;
       }
+    };
 
-      const overNode = findNodeById(overId);
-      if (overNode?.isDirectory) {
-        if (activeNode.isDirectory) {
-          onMoveFolder?.(activeId, overId);
-        } else {
-          onMoveItem?.(activeId, overId);
-        }
-      }
+    for (const section of filteredSections) {
+      collect(section.nodes, sectionExpanded[section.key] !== false);
+    }
+
+    return ids;
+  }, [filteredSections, isNodeExpanded, sectionExpanded, showFiles]);
+
+  const resolveCanManage = useCallback(
+    (node: ResourceTreeNode) => {
+      if (canManageItem) return canManageItem(node);
+      return !node.readOnly;
     },
-    [findNodeById, onMoveItem, onMoveFolder, sections],
+    [canManageItem],
   );
 
-  // ── Inline rename ──
-
-  const startInlineRename = useCallback(
-    (item: ResourceTreeNode) => {
-      if (!item.id || !enableRename) return;
-      setRenamingItemId(item.id);
-      setRenameValue(item.name);
-      setContextMenu(null);
+  const updateLocationSelection = useCallback(
+    (folderId: string | null, sectionKey: string) => {
+      if (selectedLocationId === undefined) {
+        setInternalSelectedLocation(folderId);
+      }
+      if (selectedSectionKey === undefined) {
+        setInternalSelectedSectionKey(sectionKey);
+      }
+      onLocationChange?.(folderId, sectionKey);
     },
-    [enableRename],
+    [onLocationChange, selectedLocationId, selectedSectionKey],
   );
 
-  const commitInlineRename = useCallback(
-    (itemId: string) => {
-      const trimmed = renameValue.trim();
-      const node = findNodeById(itemId);
-      if (!node) {
-        setRenamingItemId(null);
-        return;
-      }
-      if (trimmed && trimmed !== node.name) {
-        onRenameItem?.(itemId, trimmed, node.isDirectory);
-      } else {
-        onResortItem?.(itemId);
-      }
-      setRenamingItemId(null);
-    },
-    [renameValue, findNodeById, onRenameItem, onResortItem],
-  );
+  useEffect(() => {
+    if (mode !== "picker" || didInitialExpand) return;
 
-  const cancelInlineRename = useCallback(() => {
-    setRenamingItemId(null);
-    setRenameValue("");
-  }, []);
+    const fallbackSectionKey = initialSectionKey || sections[0]?.key;
+    if (!fallbackSectionKey) return;
+
+    if (!initialFolderId) {
+      updateLocationSelection(null, fallbackSectionKey);
+      setDidInitialExpand(true);
+      return;
+    }
+
+    const location = findNodeLocation(initialFolderId);
+    if (!location) {
+      updateLocationSelection(null, fallbackSectionKey);
+      setFocusedNodeId(null);
+      setDidInitialExpand(true);
+      return;
+    }
+    const sectionKey =
+      initialSectionKey || location.sectionKey || fallbackSectionKey;
+    const sectionNodes =
+      sections.find(section => section.key === sectionKey)?.nodes ?? [];
+
+    for (const expansionKey of findAncestorExpansionKeys(
+      sectionNodes,
+      initialFolderId,
+    )) {
+      onExpandFolder(expansionKey);
+    }
+
+    setSectionExpanded(prev => ({ ...prev, [sectionKey]: true }));
+    updateLocationSelection(initialFolderId, sectionKey);
+    setFocusedNodeId(initialFolderId);
+    setDidInitialExpand(true);
+  }, [
+    didInitialExpand,
+    findAncestorExpansionKeys,
+    findNodeLocation,
+    initialFolderId,
+    initialSectionKey,
+    mode,
+    onExpandFolder,
+    sections,
+    updateLocationSelection,
+  ]);
+
+  useEffect(() => {
+    if (!pendingCreatedFolderId) return;
+    const location = findNodeLocation(pendingCreatedFolderId);
+    if (!location) return;
+
+    const sectionNodes =
+      sections.find(section => section.key === location.sectionKey)?.nodes ??
+      [];
+    for (const expansionKey of findAncestorExpansionKeys(
+      sectionNodes,
+      pendingCreatedFolderId,
+    )) {
+      onExpandFolder(expansionKey);
+    }
+
+    setSectionExpanded(prev => ({ ...prev, [location.sectionKey]: true }));
+    setFocusedNodeId(pendingCreatedFolderId);
+    setRenamingItemId(pendingCreatedFolderId);
+    setRenameValue(location.node.name);
+    if (mode === "picker" && location.node.isDirectory) {
+      updateLocationSelection(location.node.id, location.sectionKey);
+    }
+    setPendingCreatedFolderId(null);
+  }, [
+    findAncestorExpansionKeys,
+    findNodeLocation,
+    mode,
+    onExpandFolder,
+    pendingCreatedFolderId,
+    sections,
+    updateLocationSelection,
+  ]);
+
+  useEffect(() => {
+    if (!pendingCreatedFolderId) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setPendingCreatedFolderId(current =>
+        current === pendingCreatedFolderId ? null : current,
+      );
+    }, 2000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [pendingCreatedFolderId]);
 
   useEffect(() => {
     if (renamingItemId && renameInputRef.current) {
@@ -294,230 +450,427 @@ export default function ResourceTree({
     }
   }, [renamingItemId]);
 
-  // ── Context menus ──
+  const triggerCreateFolder = useCallback(
+    async (parentId: string | null, access?: string) => {
+      const created = await onCreateFolder?.(parentId, access);
+      if (created) {
+        setPendingCreatedFolderId(created.id);
+      }
+    },
+    [onCreateFolder],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      createFolder: triggerCreateFolder,
+    }),
+    [triggerCreateFolder],
+  );
+
+  const startInlineRename = useCallback(
+    (item: ResourceTreeNode) => {
+      if (!enableRename) return;
+      setRenamingItemId(item.id);
+      setRenameValue(item.name);
+      setContextMenu(null);
+    },
+    [enableRename],
+  );
+
+  const cancelInlineRename = useCallback(() => {
+    setRenamingItemId(null);
+    setRenameValue("");
+  }, []);
+
+  const commitInlineRename = useCallback(
+    (itemId: string) => {
+      const nextName = renameValue.trim();
+      const location = findNodeLocation(itemId);
+      if (!location) {
+        cancelInlineRename();
+        return;
+      }
+
+      if (nextName && nextName !== location.node.name) {
+        onRenameItem?.(itemId, nextName, location.node.isDirectory);
+      } else {
+        onResortItem?.(itemId);
+      }
+
+      cancelInlineRename();
+    },
+    [
+      cancelInlineRename,
+      findNodeLocation,
+      onRenameItem,
+      onResortItem,
+      renameValue,
+    ],
+  );
 
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent, item: ResourceTreeNode, readOnly?: boolean) => {
-      e.preventDefault();
-      e.stopPropagation();
+    (event: React.MouseEvent, item: ResourceTreeNode) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const readOnly = !resolveCanManage(item);
       setContextMenu({
-        anchorPosition: { top: e.clientY + 2, left: e.clientX + 2 },
+        anchorPosition: { top: event.clientY + 2, left: event.clientX + 2 },
         item,
         readOnly,
       });
-      setSelectedNodeId(item.id);
+      setFocusedNodeId(item.id);
     },
-    [],
+    [resolveCanManage],
   );
 
   const handleSectionContextMenu = useCallback(
-    (e: React.MouseEvent, sectionKey: string) => {
-      e.preventDefault();
-      e.stopPropagation();
+    (event: React.MouseEvent, sectionKey: string) => {
+      event.preventDefault();
+      event.stopPropagation();
       setSectionContextMenu({
-        anchorPosition: { top: e.clientY + 2, left: e.clientX + 2 },
+        anchorPosition: { top: event.clientY + 2, left: event.clientX + 2 },
         sectionKey,
       });
     },
     [],
   );
 
-  // ── Filtered trees ──
-
-  const filteredSections = useMemo(
-    () =>
-      sections.map(s => ({
-        ...s,
-        nodes:
-          searchQuery.length >= 2 ? filterTree(s.nodes, searchQuery) : s.nodes,
-      })),
-    [sections, searchQuery],
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const location = findNodeLocation(String(event.active.id));
+      setDraggedNode(location?.node ?? null);
+    },
+    [findNodeLocation],
   );
 
-  // ── Flat node IDs for keyboard nav ──
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    setDropTargetId(event.over ? String(event.over.id) : null);
+  }, []);
 
-  const flatNodeIds = useMemo(() => {
-    const ids: string[] = [];
-    const collect = (nodes: ResourceTreeNode[], sectionVisible: boolean) => {
-      if (!sectionVisible) return;
-      for (const node of nodes) {
-        if (!showFiles && !node.isDirectory) continue;
-        if (node.id) ids.push(node.id);
-        if (node.isDirectory && node.children && isFolderExpanded(node.path)) {
-          collect(node.children, true);
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      setDraggedNode(null);
+      setDropTargetId(null);
+
+      const { active, over } = event;
+      if (!active || !over) return;
+
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      if (activeId === overId) return;
+
+      const activeLocation = findNodeLocation(activeId);
+      if (!activeLocation) return;
+
+      const target = resolveTreeDropTarget(sections, overId);
+      if (!target) return;
+
+      if (target.kind === "section") {
+        if (activeLocation.node.isDirectory) {
+          onMoveFolder?.(activeId, null, target.access);
+        } else {
+          onMoveItem?.(activeId, null, target.access);
         }
+        return;
       }
-    };
-    for (const s of filteredSections) {
-      collect(s.nodes, sectionExpanded[s.key] !== false);
-    }
-    return ids;
-  }, [filteredSections, isFolderExpanded, sectionExpanded, showFiles]);
 
-  // ── Keyboard navigation ──
+      if (target.targetFolderId === activeId) return;
+      if (
+        activeLocation.node.isDirectory &&
+        findNodeInSections(
+          [
+            {
+              key: activeLocation.sectionKey,
+              nodes: activeLocation.node.children ?? [],
+            },
+          ],
+          target.targetFolderId,
+        )
+      ) {
+        return;
+      }
+
+      if (activeLocation.node.isDirectory) {
+        onMoveFolder?.(activeId, target.targetFolderId);
+      } else {
+        onMoveItem?.(activeId, target.targetFolderId);
+      }
+    },
+    [findNodeLocation, onMoveFolder, onMoveItem, sections],
+  );
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
 
-      const focusId = selectedNodeId || activeItemId;
+      const focusId =
+        focusedNodeId ||
+        (mode === "sidebar" ? activeItemId : currentSelectedLocation) ||
+        null;
+      const focusLocation = focusId ? findNodeLocation(focusId) : null;
+      const focusItem = focusLocation?.node ?? null;
+      const canManageFocused = focusItem ? resolveCanManage(focusItem) : false;
+      const meta = event.metaKey || event.ctrlKey;
 
-      if (e.key === "F2" && enableRename && focusId) {
-        const node = findNodeById(focusId);
-        if (node) {
-          e.preventDefault();
-          startInlineRename(node);
+      if (event.key === "F2" && focusItem && enableRename && canManageFocused) {
+        event.preventDefault();
+        startInlineRename(focusItem);
+        return;
+      }
+
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        focusItem &&
+        enableDelete &&
+        canManageFocused &&
+        !meta
+      ) {
+        event.preventDefault();
+        onDeleteItem?.(focusItem);
+        return;
+      }
+
+      if (
+        meta &&
+        event.key.toLowerCase() === "d" &&
+        focusItem &&
+        enableDuplicate &&
+        !focusItem.isDirectory
+      ) {
+        event.preventDefault();
+        onDuplicateItem?.(focusItem);
+        return;
+      }
+
+      if (meta && event.key.toLowerCase() === "i" && focusItem && enableInfo) {
+        event.preventDefault();
+        if (focusItem.isDirectory) {
+          onFolderInfoRequest?.(focusItem);
+        } else {
+          onInfoRequest?.(focusItem);
         }
         return;
       }
 
       if (
-        (e.key === "Delete" || e.key === "Backspace") &&
-        enableDelete &&
-        !e.metaKey &&
-        focusId
+        meta &&
+        event.key.toLowerCase() === "z" &&
+        !event.shiftKey &&
+        onUndo
       ) {
-        const node = findNodeById(focusId);
-        if (node) {
-          e.preventDefault();
-          onDeleteItem?.(node);
+        event.preventDefault();
+        onUndo();
+        return;
+      }
+
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const currentIndex = focusId ? flatNodeIds.indexOf(focusId) : -1;
+        const nextIndex =
+          event.key === "ArrowDown"
+            ? Math.min(currentIndex + 1, flatNodeIds.length - 1)
+            : Math.max(currentIndex - 1, 0);
+        if (flatNodeIds[nextIndex]) {
+          setFocusedNodeId(flatNodeIds[nextIndex]);
         }
         return;
       }
 
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        const currentIdx = focusId ? flatNodeIds.indexOf(focusId) : -1;
-        const nextIdx =
-          e.key === "ArrowDown"
-            ? Math.min(currentIdx + 1, flatNodeIds.length - 1)
-            : Math.max(currentIdx - 1, 0);
-        if (flatNodeIds[nextIdx]) {
-          setSelectedNodeId(flatNodeIds[nextIdx]);
+      if (event.key === "ArrowRight" && focusItem?.isDirectory) {
+        event.preventDefault();
+        if (!isNodeExpanded(focusItem)) {
+          onExpandFolder(getExpansionKey(focusItem));
         }
         return;
       }
 
-      if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && focusId) {
-        const node = findNodeById(focusId);
-        if (node?.isDirectory) {
-          e.preventDefault();
-          if (e.key === "ArrowRight") {
-            onExpandFolder(node.path);
+      if (event.key === "ArrowLeft" && focusItem?.isDirectory) {
+        event.preventDefault();
+        if (isNodeExpanded(focusItem)) {
+          onToggleFolder(getExpansionKey(focusItem));
+        }
+        return;
+      }
+
+      if (event.key === "Enter" && focusItem && focusLocation) {
+        event.preventDefault();
+        if (focusItem.isDirectory) {
+          if (mode === "picker") {
+            updateLocationSelection(focusItem.id, focusLocation.sectionKey);
           } else {
-            if (isFolderExpanded(node.path)) {
-              onToggleFolder(node.path);
-            }
+            onToggleFolder(getExpansionKey(focusItem));
           }
-        }
-        return;
-      }
-
-      if (e.key === "Enter" && focusId) {
-        const node = findNodeById(focusId);
-        if (!node) return;
-        e.preventDefault();
-        if (node.isDirectory) {
-          onToggleFolder(node.path);
+        } else if (mode === "picker") {
+          onPickerFileClick?.(focusItem);
         } else {
-          onItemClick?.(node);
+          onItemClick?.(focusItem);
         }
       }
     };
 
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    selectedNodeId,
     activeItemId,
-    flatNodeIds,
-    isFolderExpanded,
-    enableRename,
+    currentSelectedLocation,
     enableDelete,
-    findNodeById,
-    startInlineRename,
+    enableDuplicate,
+    enableInfo,
+    enableRename,
+    findNodeLocation,
+    flatNodeIds,
+    focusedNodeId,
+    getExpansionKey,
+    isNodeExpanded,
+    mode,
     onDeleteItem,
+    onDuplicateItem,
+    onFolderInfoRequest,
+    onInfoRequest,
     onItemClick,
+    onPickerFileClick,
     onToggleFolder,
     onExpandFolder,
+    onUndo,
+    resolveCanManage,
+    startInlineRename,
+    updateLocationSelection,
   ]);
-
-  // ── Rename input ──
 
   const renderInlineRenameInput = (nodeId: string) => (
     <input
       ref={renameInputRef}
       value={renameValue}
-      onChange={e => setRenameValue(e.target.value)}
+      onChange={event => setRenameValue(event.target.value)}
       onBlur={() => commitInlineRename(nodeId)}
-      onKeyDown={e => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
+      onKeyDown={event => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+          event.preventDefault();
           commitInlineRename(nodeId);
         }
-        if (e.key === "Escape") {
-          e.preventDefault();
+        if (event.key === "Escape") {
+          event.preventDefault();
           cancelInlineRename();
         }
       }}
-      onClick={e => e.stopPropagation()}
+      onClick={event => event.stopPropagation()}
       style={{
-        fontSize: "0.8125rem",
-        fontFamily: "inherit",
+        width: "100%",
         border: "1px solid",
         borderColor: "var(--mui-palette-divider, #ccc)",
         borderRadius: 4,
         padding: "1px 4px",
         outline: "none",
-        width: "100%",
         background: "transparent",
         color: "inherit",
+        fontSize: "0.8125rem",
+        fontFamily: "inherit",
       }}
     />
   );
 
-  // ── Recursive tree render ──
+  const buildRowSx = ({
+    depth,
+    isDropTarget,
+    isFocused,
+    isSelected,
+  }: {
+    depth: number;
+    isDropTarget?: boolean;
+    isFocused?: boolean;
+    isSelected?: boolean;
+  }) => ({
+    pl: 0.5 + depth * 1.5,
+    minWidth: 0,
+    py: 0.25,
+    minHeight: 28,
+    bgcolor: isDropTarget
+      ? "action.hover"
+      : isSelected
+        ? "action.selected"
+        : undefined,
+    outline: isDropTarget ? "2px dashed" : isFocused ? "1px solid" : undefined,
+    outlineColor: isDropTarget
+      ? "primary.main"
+      : isFocused
+        ? "divider"
+        : undefined,
+    borderRadius: 0,
+  });
 
   const renderTree = (
     nodes: ResourceTreeNode[],
-    depth: number = 0,
-    readOnlyContext: boolean = false,
+    depth: number,
+    sectionKey: string,
   ): ReactNode[] => {
     const items: ReactNode[] = [];
 
     for (const node of nodes) {
       if (!showFiles && !node.isDirectory) continue;
 
-      const isExpanded = node.isDirectory && isFolderExpanded(node.path);
+      const canManage = resolveCanManage(node);
+      const isExpanded = node.isDirectory && isNodeExpanded(node);
+      const isFocused = focusedNodeId === node.id;
+      const isSelectedLocation =
+        mode === "picker" && currentSelectedLocation === node.id;
       const isActive = mode === "sidebar" && activeItemId === node.id;
-      const isSelected = selectedNodeId === node.id;
       const isRenaming = renamingItemId === node.id;
+      const isDropTarget =
+        dropTargetId === node.id ||
+        dropTargetId === getFolderDropTargetId(node.id);
 
       if (node.isDirectory) {
         const folderRow = (
           <ListItemButton
             key={node.id}
             data-node-id={node.id}
-            selected={isSelected}
+            selected={isSelectedLocation}
             onClick={() => {
-              onToggleFolder(node.path);
-              setSelectedNodeId(node.id);
+              setFocusedNodeId(node.id);
+              if (mode === "picker") {
+                updateLocationSelection(node.id, sectionKey);
+              } else {
+                onToggleFolder(getExpansionKey(node));
+              }
             }}
-            onContextMenu={e => handleContextMenu(e, node, readOnlyContext)}
-            sx={{
-              pl: 0.5 + depth * 1.5,
-              py: 0.25,
-              minHeight: 28,
+            onContextMenu={event => handleContextMenu(event, node)}
+            onDoubleClick={event => {
+              if (enableRename && canManage) {
+                event.stopPropagation();
+                startInlineRename(node);
+              }
             }}
+            sx={buildRowSx({
+              depth,
+              isDropTarget,
+              isFocused,
+              isSelected: isSelectedLocation,
+            })}
           >
-            <ListItemIcon sx={{ minWidth: 22 }}>
-              {isExpanded ? (
-                <ChevronDown size={14} strokeWidth={1.5} />
-              ) : (
-                <ChevronRight size={14} strokeWidth={1.5} />
-              )}
+            <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+              <Box
+                component="span"
+                onClick={event => {
+                  event.stopPropagation();
+                  onToggleFolder(getExpansionKey(node));
+                }}
+                sx={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 18,
+                  height: 18,
+                }}
+              >
+                {isExpanded ? (
+                  <ChevronDown size={14} strokeWidth={1.5} />
+                ) : (
+                  <ChevronRight size={14} strokeWidth={1.5} />
+                )}
+              </Box>
             </ListItemIcon>
             <ListItemIcon sx={{ minWidth: 22 }}>
               {isExpanded ? (
@@ -543,12 +896,12 @@ export default function ResourceTree({
           </ListItemButton>
         );
 
-        const wrappedRow = enableDragDrop ? (
+        const wrappedFolderRow = enableDragDrop ? (
           <DraggableTreeItem
-            key={`drag-${node.id}`}
+            key={`drag-folder-${node.id}`}
             id={node.id}
             isFolder
-            disabled={readOnlyContext}
+            disabled={!canManage}
           >
             {folderRow}
           </DraggableTreeItem>
@@ -556,136 +909,196 @@ export default function ResourceTree({
           folderRow
         );
 
-        items.push(wrappedRow);
+        items.push(wrappedFolderRow);
 
-        if (isExpanded && node.children) {
-          const childContent = renderTree(
-            node.children,
+        if (isExpanded) {
+          const childItems = renderTree(
+            node.children ?? [],
             depth + 1,
-            readOnlyContext,
+            sectionKey,
+          );
+          const childList = (
+            <List component="div" disablePadding dense>
+              {childItems.length === 0 ? (
+                <Typography
+                  variant="caption"
+                  color="text.disabled"
+                  sx={{
+                    pl: 0.5 + (depth + 1) * 1.5 + 2.75,
+                    py: 0.5,
+                    display: "block",
+                  }}
+                >
+                  Empty
+                </Typography>
+              ) : (
+                childItems
+              )}
+            </List>
           );
 
-          if (enableDragDrop) {
-            items.push(
+          items.push(
+            enableDragDrop ? (
               <DroppableFolderContent
-                key={`drop-${node.id}`}
+                key={`folder-drop-${node.id}`}
                 folderId={node.id}
               >
-                {childContent}
-              </DroppableFolderContent>,
-            );
-          } else {
-            items.push(...childContent);
-          }
+                {childList}
+              </DroppableFolderContent>
+            ) : (
+              <React.Fragment key={`folder-children-${node.id}`}>
+                {childList}
+              </React.Fragment>
+            ),
+          );
         }
-      } else {
-        const icon = getItemIcon ? getItemIcon(node) : null;
-        const fileRow = (
-          <ListItemButton
-            key={node.id}
-            data-node-id={node.id}
-            selected={isActive || isSelected}
-            onClick={() => {
-              setSelectedNodeId(node.id);
-              onItemClick?.(node);
-            }}
-            onContextMenu={e =>
-              handleContextMenu(e, node, readOnlyContext || node.readOnly)
-            }
-            sx={{
-              pl: 0.5 + depth * 1.5 + (icon ? 0 : 1.5),
-              py: 0.25,
-              minHeight: 28,
-            }}
-          >
-            {icon && (
-              <ListItemIcon sx={{ minWidth: 22, visibility: "visible" }}>
-                <Box sx={{ width: 14 }} />
-              </ListItemIcon>
-            )}
-            {icon && <ListItemIcon sx={{ minWidth: 22 }}>{icon}</ListItemIcon>}
-            {!icon && (
-              <ListItemIcon sx={{ minWidth: 22, visibility: "hidden" }}>
-                <ChevronRight size={14} />
-              </ListItemIcon>
-            )}
-            <MuiListItemText
-              primary={
-                isRenaming ? renderInlineRenameInput(node.id) : node.name
-              }
-              primaryTypographyProps={{
-                variant: "body2",
-                sx: {
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                },
-              }}
-            />
-          </ListItemButton>
-        );
 
-        items.push(
-          enableDragDrop ? (
-            <DraggableTreeItem
-              key={`drag-${node.id}`}
-              id={node.id}
-              disabled={readOnlyContext || node.readOnly}
-            >
-              {fileRow}
-            </DraggableTreeItem>
-          ) : (
-            fileRow
-          ),
-        );
+        continue;
       }
+
+      const fileRow = (
+        <ListItemButton
+          key={node.id}
+          data-node-id={node.id}
+          selected={isActive}
+          onClick={() => {
+            setFocusedNodeId(node.id);
+            if (mode === "picker") {
+              onPickerFileClick?.(node);
+            } else {
+              onItemClick?.(node);
+            }
+          }}
+          onContextMenu={event => handleContextMenu(event, node)}
+          onDoubleClick={event => {
+            if (enableRename && canManage) {
+              event.stopPropagation();
+              startInlineRename(node);
+            }
+          }}
+          sx={buildRowSx({
+            depth,
+            isFocused,
+            isSelected: isActive,
+          })}
+        >
+          <ListItemIcon sx={{ minWidth: 22, visibility: "hidden", mr: 0 }} />
+          <ListItemIcon sx={{ minWidth: 22 }}>
+            {getItemIcon ? getItemIcon(node) : null}
+          </ListItemIcon>
+          <MuiListItemText
+            primary={isRenaming ? renderInlineRenameInput(node.id) : node.name}
+            primaryTypographyProps={{
+              variant: "body2",
+              sx: {
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              },
+            }}
+          />
+        </ListItemButton>
+      );
+
+      items.push(
+        enableDragDrop ? (
+          <DraggableTreeItem
+            key={`drag-file-${node.id}`}
+            id={node.id}
+            disabled={!canManage}
+          >
+            {fileRow}
+          </DraggableTreeItem>
+        ) : (
+          fileRow
+        ),
+      );
     }
+
     return items;
   };
 
-  // ── Section header ──
-
   const renderSectionHeader = (section: ResourceTreeSection) => {
-    const isExpanded = sectionExpanded[section.key] !== false;
-    const filtered = filteredSections.find(s => s.key === section.key);
-    const count = filtered ? countItems(filtered.nodes) : 0;
+    const headerSelected =
+      mode === "picker" &&
+      currentSelectedLocation === null &&
+      currentSelectedSectionKey === section.key;
+    const isDropTarget = section.droppableId === dropTargetId;
 
     const header = (
       <ListItemButton
-        onClick={() =>
-          setSectionExpanded(prev => ({
-            ...prev,
-            [section.key]: !isExpanded,
-          }))
-        }
-        onContextMenu={e => handleSectionContextMenu(e, section.key)}
-        sx={{ px: 1, py: 0.5, gap: 0.5, minHeight: 32 }}
+        selected={headerSelected}
+        onClick={() => {
+          if (mode === "picker") {
+            updateLocationSelection(null, section.key);
+          } else {
+            setSectionExpanded(prev => ({
+              ...prev,
+              [section.key]: !prev[section.key],
+            }));
+          }
+        }}
+        onContextMenu={event => handleSectionContextMenu(event, section.key)}
+        sx={{
+          py: 0.25,
+          pl: 0.5,
+          minWidth: 0,
+          bgcolor: isDropTarget
+            ? "action.hover"
+            : headerSelected
+              ? "action.selected"
+              : undefined,
+          outline: isDropTarget ? "2px dashed" : undefined,
+          outlineColor: isDropTarget ? "primary.main" : undefined,
+          borderRadius: 0,
+          "& .MuiListItemText-root": {
+            minWidth: 0,
+            flex: "1 1 auto",
+          },
+        }}
       >
-        {isExpanded ? (
-          <ChevronDown size={16} strokeWidth={1.5} />
-        ) : (
-          <ChevronRight size={16} strokeWidth={1.5} />
-        )}
-        <Box sx={{ display: "flex", flexShrink: 0 }}>{section.icon}</Box>
-        <Typography
-          variant="body2"
-          sx={{
-            fontWeight: 600,
-            textTransform: "uppercase",
-            fontSize: "0.7rem",
-            letterSpacing: "0.05em",
-            flex: 1,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
+        <ListItemIcon sx={{ minWidth: 22 }}>
+          <Box
+            component="span"
+            onClick={event => {
+              event.stopPropagation();
+              setSectionExpanded(prev => ({
+                ...prev,
+                [section.key]: !prev[section.key],
+              }));
+            }}
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 18,
+              height: 18,
+            }}
+          >
+            {sectionExpanded[section.key] !== false ? (
+              <ChevronDown size={14} strokeWidth={1.5} />
+            ) : (
+              <ChevronRight size={14} strokeWidth={1.5} />
+            )}
+          </Box>
+        </ListItemIcon>
+        <ListItemIcon sx={{ minWidth: 22 }}>{section.icon}</ListItemIcon>
+        <MuiListItemText
+          primary={section.label}
+          primaryTypographyProps={{
+            variant: "body2",
+            sx: {
+              fontWeight: 600,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            },
           }}
-        >
-          {section.label}
-        </Typography>
+        />
         <Chip
-          label={count}
+          label={countItems(section.nodes)}
           size="small"
-          sx={{ height: 20, fontSize: "0.7rem" }}
+          sx={{ height: 18, fontSize: "0.7rem", flexShrink: 0, maxWidth: 56 }}
         />
       </ListItemButton>
     );
@@ -700,50 +1113,50 @@ export default function ResourceTree({
         </DroppableSectionHeader>
       );
     }
+
     return (
       <React.Fragment key={`section-${section.key}`}>{header}</React.Fragment>
     );
   };
 
-  // ── Render ──
+  const treeContent = (
+    <List component="nav" dense>
+      {filteredSections.map(section => (
+        <React.Fragment key={section.key}>
+          {renderSectionHeader(section)}
+          {sectionExpanded[section.key] !== false &&
+            (section.nodes.length > 0 ? (
+              renderTree(section.nodes, 1, section.key)
+            ) : (
+              <Typography
+                sx={{
+                  pl: 3,
+                  py: 0.5,
+                  color: "text.disabled",
+                  fontSize: "0.8rem",
+                  fontStyle: "italic",
+                }}
+                variant="body2"
+              >
+                Nothing here yet
+              </Typography>
+            ))}
+        </React.Fragment>
+      ))}
+    </List>
+  );
 
-  return (
+  const content = enableDragDrop ? (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCenter}
+      collisionDetection={collisionDetectionStrategy}
       onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <List dense disablePadding>
-        {filteredSections.map(section => (
-          <React.Fragment key={section.key}>
-            {renderSectionHeader(section)}
-            {sectionExpanded[section.key] !== false && (
-              <>
-                {section.nodes.length > 0 ? (
-                  renderTree(
-                    section.nodes,
-                    1,
-                    section.defaultAccess === "workspace",
-                  )
-                ) : (
-                  <Typography
-                    variant="caption"
-                    color="text.disabled"
-                    sx={{ display: "block", pl: 4, py: 0.5 }}
-                  >
-                    Empty
-                  </Typography>
-                )}
-              </>
-            )}
-          </React.Fragment>
-        ))}
-      </List>
-
-      {/* Drag overlay */}
+      {treeContent}
       <DragOverlay>
-        {draggedNode && (
+        {draggedNode ? (
           <Box
             sx={{
               display: "flex",
@@ -762,12 +1175,19 @@ export default function ResourceTree({
             ) : (
               getItemIcon?.(draggedNode) || null
             )}
-            <span>{draggedNode.name}</span>
+            <span className="app-truncate-inline">{draggedNode.name}</span>
           </Box>
-        )}
+        ) : null}
       </DragOverlay>
+    </DndContext>
+  ) : (
+    treeContent
+  );
 
-      {/* Item context menu */}
+  return (
+    <>
+      {content}
+
       <Menu
         open={!!contextMenu}
         onClose={() => setContextMenu(null)}
@@ -777,7 +1197,7 @@ export default function ResourceTree({
         {contextMenu &&
           (() => {
             const { item, readOnly } = contextMenu;
-            const canManage = canManageItem ? canManageItem(item) : !readOnly;
+            const canManage = !readOnly;
 
             return [
               enableRename && canManage && (
@@ -808,44 +1228,57 @@ export default function ResourceTree({
                   key="subfolder"
                   onClick={async () => {
                     setContextMenu(null);
-                    onExpandFolder(item.path);
-                    await onCreateFolder?.(item.id, item.access);
+                    onExpandFolder(getExpansionKey(item));
+                    await triggerCreateFolder(item.id, item.access);
                   }}
                 >
                   <FolderPlus size={14} style={{ marginRight: 8 }} />
                   New Subfolder
                 </MenuItem>
               ),
-              enableMove && canManage && (
+              enableMove && canManage && onMoveRequest && (
                 <MenuItem
                   key="move"
                   onClick={() => {
                     setContextMenu(null);
+                    onMoveRequest(item);
                   }}
                 >
                   <ArrowRightLeft size={14} style={{ marginRight: 8 }} />
                   Move to...
                 </MenuItem>
               ),
-              enableInfo && (
+              enableInfo && !item.isDirectory && onInfoRequest && (
                 <MenuItem
-                  key="info"
+                  key="info-file"
                   onClick={() => {
                     setContextMenu(null);
-                    onInfoRequest?.(item);
+                    onInfoRequest(item);
                   }}
                 >
                   <Info size={14} style={{ marginRight: 8 }} />
                   Information
                 </MenuItem>
               ),
-              enableDelete && canManage && (
+              enableInfo && item.isDirectory && onFolderInfoRequest && (
+                <MenuItem
+                  key="info-folder"
+                  onClick={() => {
+                    setContextMenu(null);
+                    onFolderInfoRequest(item);
+                  }}
+                >
+                  <Info size={14} style={{ marginRight: 8 }} />
+                  Information
+                </MenuItem>
+              ),
+              enableDelete && canManage && onDeleteItem && (
                 <React.Fragment key="delete-group">
                   <Divider />
                   <MenuItem
                     onClick={() => {
                       setContextMenu(null);
-                      onDeleteItem?.(item);
+                      onDeleteItem(item);
                     }}
                     sx={{ color: "error.main" }}
                   >
@@ -858,20 +1291,20 @@ export default function ResourceTree({
           })()}
       </Menu>
 
-      {/* Section context menu */}
       <Menu
         open={!!sectionContextMenu}
         onClose={() => setSectionContextMenu(null)}
         anchorReference="anchorPosition"
         anchorPosition={sectionContextMenu?.anchorPosition}
       >
-        {sectionContextMenu && enableNewFolder && (
+        {sectionContextMenu && enableNewFolder && onCreateFolder && (
           <MenuItem
             onClick={async () => {
-              const sk = sectionContextMenu.sectionKey;
+              const section = sections.find(
+                entry => entry.key === sectionContextMenu.sectionKey,
+              );
               setSectionContextMenu(null);
-              const section = sections.find(s => s.key === sk);
-              await onCreateFolder?.(null, section?.defaultAccess);
+              await triggerCreateFolder(null, section?.defaultAccess);
             }}
           >
             <FolderPlus size={14} style={{ marginRight: 8 }} />
@@ -879,72 +1312,14 @@ export default function ResourceTree({
           </MenuItem>
         )}
       </Menu>
-    </DndContext>
+    </>
   );
 }
 
-// ── DnD helper components ──
+const ResourceTree = forwardRef<ResourceTreeRef, ResourceTreeProps>(
+  ResourceTreeInner,
+);
 
-function DroppableSectionHeader({
-  id,
-  children,
-}: {
-  id: string;
-  children: ReactNode;
-}) {
-  const { setNodeRef } = useDroppable({ id });
-  return <div ref={setNodeRef}>{children}</div>;
-}
+ResourceTree.displayName = "ResourceTree";
 
-function DroppableFolderContent({
-  folderId,
-  children,
-}: {
-  folderId: string;
-  children: ReactNode;
-}) {
-  const { setNodeRef } = useDroppable({
-    id: `__folder_content_${folderId}`,
-  });
-  return <div ref={setNodeRef}>{children}</div>;
-}
-
-function DraggableTreeItem({
-  id,
-  disabled,
-  isFolder,
-  children,
-}: {
-  id: string;
-  disabled?: boolean;
-  isFolder?: boolean;
-  children: ReactNode;
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef: setDragRef,
-    isDragging,
-  } = useDraggable({ id, disabled });
-
-  const { setNodeRef: setDropRef } = useDroppable({
-    id,
-    disabled: !isFolder,
-  });
-
-  const setRef = (el: HTMLElement | null) => {
-    setDragRef(el);
-    if (isFolder) setDropRef(el);
-  };
-
-  return (
-    <div
-      ref={setRef}
-      style={{ opacity: isDragging ? 0.4 : 1 }}
-      {...attributes}
-      {...listeners}
-    >
-      {children}
-    </div>
-  );
-}
+export default ResourceTree;

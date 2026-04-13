@@ -744,11 +744,20 @@ const ChatInputArea = React.memo(
           <Box
             sx={{
               display: "flex",
-              justifyContent: "space-between",
               alignItems: "center",
+              gap: 0.5,
+              minWidth: 0,
             }}
           >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.5,
+                flex: "1 1 auto",
+                minWidth: 0,
+              }}
+            >
               <ModelSelector />
             </Box>
 
@@ -766,6 +775,7 @@ const ChatInputArea = React.memo(
                   "&:hover": {
                     backgroundColor: "action.selected",
                   },
+                  flexShrink: 0,
                 }}
               >
                 <Box
@@ -804,6 +814,7 @@ const ChatInputArea = React.memo(
                     backgroundColor: "action.disabledBackground",
                     color: "text.disabled",
                   },
+                  flexShrink: 0,
                 }}
               >
                 <ArrowUp size={18} />

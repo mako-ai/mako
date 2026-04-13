@@ -121,14 +121,15 @@ export function WorkspaceSwitcher() {
           minWidth: 200,
           justifyContent: "space-between",
           px: 2,
+          maxWidth: "100%",
         }}
       >
-        <Box sx={{ textAlign: "left", flex: 1 }}>
+        <Box sx={{ textAlign: "left", flex: 1, minWidth: 0 }}>
           <Typography variant="body2" noWrap>
             {currentWorkspace?.name || "Select Workspace"}
           </Typography>
           {currentWorkspace && (
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" color="text.secondary" noWrap>
               {currentWorkspace.role}
             </Typography>
           )}
@@ -168,6 +169,7 @@ export function WorkspaceSwitcher() {
                     alignItems: "center",
                     gap: 1,
                     mt: 0.5,
+                    minWidth: 0,
                   }}
                 >
                   <Chip
@@ -175,7 +177,11 @@ export function WorkspaceSwitcher() {
                     size="small"
                     color={getRoleBadgeColor(workspace.role)}
                   />
-                  <Typography variant="caption" color="text.secondary">
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    className="app-truncate"
+                  >
                     {workspace.settings.billingTier}
                   </Typography>
                 </Box>
