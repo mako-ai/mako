@@ -60,6 +60,12 @@ class CdcIngestService {
       deduped: result.deduped,
       attempted: result.attempted,
       entities: result.entities.map(entity => entity.entity),
+      entityBreakdown: result.entities.map(entity => ({
+        entity: entity.entity,
+        source: entity.source,
+        lastIngestSeq: entity.lastIngestSeq,
+        runId: entity.runId,
+      })),
     });
 
     return result;
