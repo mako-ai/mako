@@ -1130,46 +1130,41 @@ async function runCdcMaterialization(params: {
     force?: boolean;
   };
 
-  const isBackfilling = await params.step.run(
-    "check-backfill-state",
-    async () => {
-      const flow = await Flow.findById(flowId)
-        .select("backfillState.status")
-        .lean();
-      return flow?.backfillState?.status === "running";
-    },
-  );
-
-  const maxEvents = isBackfilling
-    ? CDC_MATERIALIZE_MAX_EVENTS_BACKFILL
-    : CDC_MATERIALIZE_MAX_EVENTS;
-
   const materializeStartedAt = Date.now();
-  const result = await params.step.run("materialize-cdc-entity", async () => {
-    return cdcConsumerService.materializeEntity({
+  const result = (await params.step.run("materialize-cdc-entity", async () => {
+    const flow = await Flow.findById(flowId)
+      .select("backfillState.status")
+      .lean();
+    const isBackfilling = flow?.backfillState?.status === "running";
+    const maxEvents = isBackfilling
+      ? CDC_MATERIALIZE_MAX_EVENTS_BACKFILL
+      : CDC_MATERIALIZE_MAX_EVENTS;
+
+    const materializeResult = await cdcConsumerService.materializeEntity({
       workspaceId,
       flowId,
       entity,
       maxEvents,
     });
-  });
+    return { ...materializeResult, isBackfilling, maxEvents };
+  })) as any;
   const materializeStepDurationMs = Date.now() - materializeStartedAt;
 
   params.logger.info("CDC materialization completed", {
     flowId,
     entity,
     force: Boolean(force),
-    isBackfilling,
-    maxEvents,
+    isBackfilling: result.isBackfilling,
+    maxEvents: result.maxEvents,
     materializeStepDurationMs,
-    processed: (result as any).processed,
-    applied: (result as any).applied,
-    latestIngestSeq: (result as any).latestIngestSeq,
-    skipped: (result as any).skipped,
-    reason: (result as any).reason,
+    processed: result.processed,
+    applied: result.applied,
+    latestIngestSeq: result.latestIngestSeq,
+    skipped: result.skipped,
+    reason: result.reason,
   });
 
-  if ((result as any).processed >= maxEvents) {
+  if (result.processed >= result.maxEvents) {
     await params.step.sendEvent("continue-materialize", {
       name: params.continuationEventName,
       data: { workspaceId, flowId, entity, force: true },
@@ -1221,11 +1216,19 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
     id: "cdc-materialize-scheduler",
     name: "CDC Materialize Scheduler",
   },
-  { cron: "*/1 * * * *" },
+  { cron: "*/2 * * * *" },
   async ({ step, logger }) => {
     const staleEntities = await step.run("find-stale-entities", async () => {
+      // Skip entities materialized within the last 45 s — they already have
+      // a queued or throttled run and re-emitting is pure waste.
+      const staleThreshold = new Date(Date.now() - 45_000);
+
       const candidates = await CdcEntityState.find({
         $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
+        $or: [
+          { lastMaterializedAt: { $exists: false } },
+          { lastMaterializedAt: { $lt: staleThreshold } },
+        ],
       })
         .select("workspaceId flowId entity")
         .lean();
