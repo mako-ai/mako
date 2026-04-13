@@ -799,7 +799,7 @@ jobs:
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
             --timeout=3600 \
-            --memory=2Gi \
+            --memory=4Gi \
             --concurrency=10 \
             --min-instances=1 \
             --max-instances=15 \

@@ -1034,8 +1034,9 @@ async function flushBulkBuffer(
   );
 
   const DELETE_CHUNK = 2000;
-  const CONSECUTIVE_OK_TO_GROW = 3;
+  const CONSECUTIVE_OK_TO_GROW = 5;
   let consecutiveSuccesses = 0;
+  let oomCeiling = FLUSH_BATCH_SIZE;
 
   let remaining = await tempCollection.countDocuments();
   while (remaining > 0) {
@@ -1113,13 +1114,15 @@ async function flushBulkBuffer(
           throw err;
         }
 
+        oomCeiling = currentBatchSize;
         logger?.log(
           "warn",
-          `${entity} flush batch ${batchNum}: DuckDB memory error, reducing batch size from ${currentBatchSize} to ${shrunkSize} and retrying`,
+          `${entity} flush batch ${batchNum}: DuckDB memory error, reducing batch size from ${currentBatchSize} to ${shrunkSize} and retrying (ceiling now ${oomCeiling})`,
           {
             entity,
             previousBatchSize: currentBatchSize,
             newBatchSize: shrunkSize,
+            oomCeiling,
             error: err instanceof Error ? err.message : String(err),
           },
         );
@@ -1207,19 +1210,22 @@ async function flushBulkBuffer(
     consecutiveSuccesses++;
     if (
       consecutiveSuccesses >= CONSECUTIVE_OK_TO_GROW &&
-      currentBatchSize < FLUSH_BATCH_SIZE
+      currentBatchSize < oomCeiling
     ) {
-      const grownSize = Math.min(currentBatchSize * 2, FLUSH_BATCH_SIZE);
-      logger?.log(
-        "info",
-        `${entity} flush: ${consecutiveSuccesses} consecutive successes, growing batch size from ${currentBatchSize} to ${grownSize}`,
-        {
-          entity,
-          previousBatchSize: currentBatchSize,
-          newBatchSize: grownSize,
-        },
-      );
-      currentBatchSize = grownSize;
+      const grownSize = Math.min(currentBatchSize * 2, oomCeiling);
+      if (grownSize > currentBatchSize) {
+        logger?.log(
+          "info",
+          `${entity} flush: ${consecutiveSuccesses} consecutive successes, growing batch size from ${currentBatchSize} to ${grownSize} (ceiling ${oomCeiling})`,
+          {
+            entity,
+            previousBatchSize: currentBatchSize,
+            newBatchSize: grownSize,
+            oomCeiling,
+          },
+        );
+        currentBatchSize = grownSize;
+      }
       consecutiveSuccesses = 0;
     }
 
