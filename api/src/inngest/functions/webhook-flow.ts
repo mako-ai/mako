@@ -938,19 +938,10 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
       };
     });
 
-    const { entities: ingestedEntities, workspaceId } = result as {
-      entities?: string[];
-      workspaceId?: string;
-    };
-    if (ingestedEntities && ingestedEntities.length > 0 && workspaceId) {
-      await step.sendEvent(
-        "trigger-materialize",
-        ingestedEntities.map(entity => ({
-          name: "cdc/materialize" as const,
-          data: { workspaceId, flowId, entity, force: false },
-        })),
-      );
-    }
+    // Materialization is NOT triggered inline — the scheduler cron picks up
+    // stale entities every 2 min by comparing lastIngestSeq vs
+    // lastMaterializedSeq.  Emitting here would duplicate the scheduler's
+    // work and flood the Inngest queue with redundant cdc/materialize events.
 
     return { success: true, ...result };
   },
