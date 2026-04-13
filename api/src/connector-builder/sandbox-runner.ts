@@ -54,11 +54,12 @@ export interface ConnectorBuildResult {
 }
 
 export interface ConnectorExecutionResult {
-  output: ConnectorOutput;
+  output: ConnectorOutput | null;
   logs: ConnectorExecutionLog[];
   runtime: "e2b" | "local-fallback";
   durationMs: number;
   rawOutput: string;
+  error?: string;
 }
 
 function sha256(input: string): string {
@@ -297,19 +298,29 @@ async function runBundleInSandbox(
     });
 
     const rawOutput = command.stdout.trim();
-    if (command.exitCode !== 0) {
-      throw new Error(
-        command.stderr || command.error || "Sandbox execution failed",
-      );
-    }
-
     const parsed = JSON.parse(rawOutput || "{}") as {
       result?: unknown;
       logs?: ConnectorExecutionLog[];
+      error?: string;
     };
+    const logs = Array.isArray(parsed.logs) ? parsed.logs : [];
+
+    if (command.exitCode !== 0) {
+      return {
+        output: null,
+        logs,
+        runtime: "e2b",
+        durationMs: Date.now() - startedAt,
+        rawOutput,
+        error:
+          parsed.error ||
+          command.stderr ||
+          command.error ||
+          "Sandbox execution failed",
+      };
+    }
 
     const output = connectorOutputSchema.parse(parsed.result ?? {});
-    const logs = Array.isArray(parsed.logs) ? parsed.logs : [];
 
     return {
       output: mergeLogsIntoOutput(output, logs),
@@ -345,23 +356,42 @@ async function runBundleLocally(
       "utf8",
     );
 
-    const { stdout, stderr } = await execFileAsync("node", ["runner.js"], {
-      cwd: tempDirectory,
-      timeout: DEFAULT_SANDBOX_TIMEOUT_MS,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    let stdout = "";
+    let stderr = "";
+    try {
+      const result = await execFileAsync("node", ["runner.js"], {
+        cwd: tempDirectory,
+        timeout: DEFAULT_SANDBOX_TIMEOUT_MS,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      stdout = result.stdout;
+      stderr = result.stderr;
+    } catch (execError) {
+      const failure = extractCommandFailure(execError);
+      stdout = failure.stdout;
+      stderr = failure.stderr;
+    }
 
     const rawOutput = stdout.trim();
-    if (!rawOutput && stderr.trim()) {
-      throw new Error(stderr.trim());
-    }
     const parsed = JSON.parse(rawOutput || "{}") as {
       result?: unknown;
       logs?: ConnectorExecutionLog[];
+      error?: string;
     };
+    const logs = Array.isArray(parsed.logs) ? parsed.logs : [];
+
+    if (parsed.error || (!parsed.result && stderr.trim())) {
+      return {
+        output: null,
+        logs,
+        runtime: "local-fallback",
+        durationMs: Date.now() - startedAt,
+        rawOutput,
+        error: parsed.error || stderr.trim() || "Local execution failed",
+      };
+    }
 
     const output = connectorOutputSchema.parse(parsed.result ?? {});
-    const logs = Array.isArray(parsed.logs) ? parsed.logs : [];
 
     return {
       output: mergeLogsIntoOutput(output, logs),
@@ -427,6 +457,22 @@ function serializeLogValue(value) {
   }
 }
 
+const logs = [];
+
+const pushLog = (level, args) => {
+  logs.push({
+    level,
+    message: args.map(serializeLogValue).join(" "),
+    timestamp: new Date().toISOString(),
+  });
+};
+
+console.log = (...args) => pushLog("info", args);
+console.info = (...args) => pushLog("info", args);
+console.warn = (...args) => pushLog("warn", args);
+console.error = (...args) => pushLog("error", args);
+console.debug = (...args) => pushLog("debug", args);
+
 async function main() {
   const mod = require("./bundle.js");
   const pull =
@@ -438,22 +484,7 @@ async function main() {
     throw new Error('Connector bundle must export a "pull" function');
   }
 
-  const logs = [];
   const input = JSON.parse(fs.readFileSync("./input.json", "utf8"));
-
-  const pushLog = (level, args) => {
-    logs.push({
-      level,
-      message: args.map(serializeLogValue).join(" "),
-      timestamp: new Date().toISOString(),
-    });
-  };
-
-  console.log = (...args) => pushLog("info", args);
-  console.info = (...args) => pushLog("info", args);
-  console.warn = (...args) => pushLog("warn", args);
-  console.error = (...args) => pushLog("error", args);
-  console.debug = (...args) => pushLog("debug", args);
 
   const ctx = {
     fetch: globalThis.fetch.bind(globalThis),
@@ -470,9 +501,13 @@ async function main() {
 }
 
 main().catch(error => {
-  process.stderr.write(
-    error instanceof Error ? error.stack || error.message : String(error),
-  );
+  const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
+  logs.push({
+    level: "error",
+    message: errorMessage,
+    timestamp: new Date().toISOString(),
+  });
+  process.stdout.write(JSON.stringify({ result: null, logs, error: errorMessage }));
   process.exit(1);
 });
 `;

@@ -212,6 +212,11 @@ export type ConnectorDevRunState = {
   runtime?: "e2b" | "local-fallback";
   runtimeError?: ConnectorRuntimeError;
 };
+export type ConnectorLogEntry = {
+  level: string;
+  message: string;
+  timestamp: string;
+};
 
 interface ConnectorBuilderStore {
   connectors: Record<string, UserConnector[]>;
@@ -222,6 +227,9 @@ interface ConnectorBuilderStore {
   selectedConnectorId: string | null;
   buildState: Record<string, ConnectorBuildState>;
   devRunState: Record<string, ConnectorDevRunState>;
+  logHistory: Record<string, ConnectorLogEntry[]>;
+  pushLog: (connectorId: string, level: string, message: string) => void;
+  clearLogHistory: (connectorId: string) => void;
   fetchConnectors: (workspaceId: string) => Promise<UserConnector[]>;
   fetchTemplates: (workspaceId: string) => Promise<ConnectorTemplateSummary[]>;
   createConnector: (
@@ -454,6 +462,48 @@ const persistedInitialState: PersistedConnectorBuilderState = {
   error: {},
 };
 
+function collectRunLogs(
+  parsed: z.infer<typeof devRunResponseSchema>,
+): ConnectorLogEntry[] {
+  const now = new Date().toISOString();
+  const entries: ConnectorLogEntry[] = [];
+
+  if (parsed.build.buildLog) {
+    entries.push({
+      level: "info",
+      message: parsed.build.buildLog,
+      timestamp: now,
+    });
+  }
+
+  for (const log of parsed.logs) {
+    entries.push({
+      level: log.level,
+      message: log.message,
+      timestamp: log.timestamp || now,
+    });
+  }
+
+  if (parsed.runtimeError?.stack) {
+    entries.push({
+      level: "error",
+      message: parsed.runtimeError.stack,
+      timestamp: now,
+    });
+  }
+
+  return entries;
+}
+
+function appendLogs(
+  history: ConnectorLogEntry[],
+  entries: ConnectorLogEntry[],
+): ConnectorLogEntry[] {
+  const next = [...history, ...entries];
+  // Cap at 2000 entries to avoid unbounded growth
+  return next.length > 2000 ? next.slice(next.length - 2000) : next;
+}
+
 export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
   persist(
     immer(set => ({
@@ -465,6 +515,22 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
       selectedConnectorId: null,
       buildState: {},
       devRunState: {},
+      logHistory: {},
+
+      pushLog: (connectorId, level, message) => {
+        set(state => {
+          state.logHistory[connectorId] = appendLogs(
+            state.logHistory[connectorId] || [],
+            [{ level, message, timestamp: new Date().toISOString() }],
+          );
+        });
+      },
+
+      clearLogHistory: connectorId => {
+        set(state => {
+          state.logHistory[connectorId] = [];
+        });
+      },
 
       fetchConnectors: async workspaceId => {
         set(state => {
@@ -643,6 +709,19 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
                 buildLog: parsed.build.buildLog,
                 errors: parsed.build.errors,
               };
+              if (parsed.build.buildLog) {
+                const now = new Date().toISOString();
+                state.logHistory[connectorId] = appendLogs(
+                  state.logHistory[connectorId] || [],
+                  [
+                    {
+                      level: "error",
+                      message: parsed.build.buildLog,
+                      timestamp: now,
+                    },
+                  ],
+                );
+              }
             });
             throw new Error(response.error || "Failed to build connector");
           }
@@ -657,6 +736,19 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
               buildLog: parsed.build.buildLog,
               errors: parsed.build.errors,
             };
+            if (parsed.build.buildLog) {
+              const now = new Date().toISOString();
+              state.logHistory[connectorId] = appendLogs(
+                state.logHistory[connectorId] || [],
+                [
+                  {
+                    level: "info",
+                    message: parsed.build.buildLog,
+                    timestamp: now,
+                  },
+                ],
+              );
+            }
           });
 
           return parsed;
@@ -673,6 +765,11 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
               buildLog,
               errors: buildErrors,
             };
+            const now = new Date().toISOString();
+            state.logHistory[connectorId] = appendLogs(
+              state.logHistory[connectorId] || [],
+              [{ level: "error", message: buildLog, timestamp: now }],
+            );
           });
 
           throw error;
@@ -725,6 +822,8 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
           );
 
           const parsed = devRunResponseSchema.parse(response.data);
+          const runLogEntries = collectRunLogs(parsed);
+
           if (!response.success) {
             set(state => {
               state.connectors[workspaceId] = upsertConnector(
@@ -741,7 +840,14 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
                 running: false,
                 error: response.error || "Failed to run connector",
                 runtimeError: parsed.runtimeError,
+                logs: parsed.logs,
+                duration: parsed.durationMs,
+                runtime: parsed.runtime,
               };
+              state.logHistory[connectorId] = appendLogs(
+                state.logHistory[connectorId] || [],
+                runLogEntries,
+              );
             });
             throw new Error(response.error || "Failed to run connector");
           }
@@ -765,6 +871,10 @@ export const useConnectorBuilderStore = create<ConnectorBuilderStore>()(
               runtime: parsed.runtime,
               runtimeError: parsed.runtimeError,
             };
+            state.logHistory[connectorId] = appendLogs(
+              state.logHistory[connectorId] || [],
+              runLogEntries,
+            );
           });
 
           return parsed;

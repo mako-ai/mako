@@ -19,6 +19,7 @@ import {
   SquareTerminal as ConsoleIcon,
   Settings as SettingsIcon,
   CloudUpload as DataSourceIcon,
+  Plug as ConnectorStudioIcon,
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
@@ -1259,7 +1260,7 @@ function Editor({
                       ) : tab.kind === "connectors" ? (
                         <DataSourceIcon size={20} strokeWidth={1.5} />
                       ) : tab.kind === "connector-studio" ? (
-                        <DataSourceIcon size={20} strokeWidth={1.5} />
+                        <ConnectorStudioIcon size={20} strokeWidth={1.5} />
                       ) : tab.kind === "flow-editor" ? (
                         tab.metadata?.flowType === "webhook" ? (
                           <WebhookIcon size={20} strokeWidth={1.5} />

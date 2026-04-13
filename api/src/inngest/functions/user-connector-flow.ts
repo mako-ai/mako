@@ -144,10 +144,15 @@ export const userConnectorFlowFunction = inngest.createFunction(
           return sandboxRunner.execute(connector.bundle.js, parsedInput);
         });
 
+        if (chunkResult.error || !chunkResult.output) {
+          throw new Error(chunkResult.error || "Connector execution failed");
+        }
+
+        const chunkOutput = chunkResult.output;
         runtime = chunkResult.runtime;
-        currentState = chunkResult.output.state || {};
-        hasMore = chunkResult.output.hasMore || false;
-        totalRows += chunkResult.output.batches.reduce(
+        currentState = chunkOutput.state || {};
+        hasMore = chunkOutput.hasMore || false;
+        totalRows += chunkOutput.batches.reduce(
           (sum, batch) => sum + batch.rows.length,
           0,
         );
@@ -169,7 +174,7 @@ export const userConnectorFlowFunction = inngest.createFunction(
 
         if (
           instance.output?.destinationDatabaseId &&
-          chunkResult.output.batches.length > 0
+          chunkOutput.batches.length > 0
         ) {
           await step.run(`write-${chunkIndex}`, async () => {
             const outputConfig = instance.output;
@@ -195,7 +200,7 @@ export const userConnectorFlowFunction = inngest.createFunction(
               outputConfig.destinationSchema || "public",
             );
 
-            await writeAllBatches(chunkResult.output.batches, {
+            await writeAllBatches(chunkOutput.batches, {
               driver,
               database: destination.toObject(),
               driverType: destination.type,

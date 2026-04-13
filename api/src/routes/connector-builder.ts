@@ -868,26 +868,13 @@ connectorBuilderRoutes.post(
         },
       };
 
-      try {
-        const execution = await sandboxRunner.execute(build.js, executionInput);
+      const execution = await sandboxRunner.execute(build.js, executionInput);
 
-        return c.json({
-          success: true,
-          data: {
-            build,
-            connector: serializeUserConnector(updatedConnector.toObject()),
-            output: execution.output,
-            logs: execution.logs,
-            durationMs: execution.durationMs,
-            runtime: execution.runtime,
-          },
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Failed to execute connector";
-        const runtimeError = await mapRuntimeError(message, build.sourceMap);
+      if (execution.error) {
+        const runtimeError = await mapRuntimeError(
+          execution.error,
+          build.sourceMap,
+        );
 
         return c.json({
           success: false,
@@ -895,10 +882,25 @@ connectorBuilderRoutes.post(
           data: {
             build,
             connector: serializeUserConnector(updatedConnector.toObject()),
+            logs: execution.logs,
             runtimeError,
+            durationMs: execution.durationMs,
+            runtime: execution.runtime,
           },
         });
       }
+
+      return c.json({
+        success: true,
+        data: {
+          build,
+          connector: serializeUserConnector(updatedConnector.toObject()),
+          output: execution.output,
+          logs: execution.logs,
+          durationMs: execution.durationMs,
+          runtime: execution.runtime,
+        },
+      });
     } catch (error) {
       logger.error("Failed to execute connector dev run", { error });
       return c.json(

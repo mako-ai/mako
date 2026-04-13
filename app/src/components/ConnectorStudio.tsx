@@ -1,16 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Box,
   Button,
   Chip,
   Divider,
+  IconButton,
   Stack,
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
+import {
+  Save as SaveIcon,
+  Hammer as BuildIcon,
+  Info as InfoIcon,
+  Square as StopIcon,
+  Trash2 as ClearIcon,
+} from "lucide-react";
+import { PlayArrow as PlayIcon } from "@mui/icons-material";
 import { DataGridPremium, type GridColDef } from "@mui/x-data-grid-premium";
 import MonacoEditor from "@monaco-editor/react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -87,6 +96,82 @@ function flattenOutputRows(output?: ConnectorOutput) {
   return { rows, columns };
 }
 
+const ConnectorLogsPanel = memo(function ConnectorLogsPanel({
+  connectorId,
+}: {
+  connectorId: string;
+}) {
+  const logs = useConnectorBuilderStore(state => state.logHistory[connectorId]);
+  const clearLogHistory = useConnectorBuilderStore(
+    state => state.clearLogHistory,
+  );
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [logs]);
+
+  return (
+    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "flex-end",
+          px: 1,
+          py: 0.5,
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
+        <Tooltip title="Clear logs">
+          <span>
+            <IconButton
+              size="small"
+              onClick={() => clearLogHistory(connectorId)}
+              disabled={!logs || logs.length === 0}
+            >
+              <ClearIcon size={14} />
+            </IconButton>
+          </span>
+        </Tooltip>
+      </Box>
+      <Box
+        ref={scrollRef}
+        sx={{
+          flexGrow: 1,
+          minHeight: 0,
+          overflow: "auto",
+          p: 2,
+          fontSize: 12,
+          fontFamily: "monospace",
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {!logs || logs.length === 0
+          ? "No logs yet."
+          : logs.map((entry, i) => (
+              <Box
+                component="span"
+                key={i}
+                sx={
+                  entry.level === "error"
+                    ? { color: "error.main" }
+                    : entry.level === "warn"
+                      ? { color: "warning.main" }
+                      : undefined
+                }
+              >
+                {`${entry.timestamp} [${entry.level}] ${entry.message}\n`}
+              </Box>
+            ))}
+      </Box>
+    </Box>
+  );
+});
+
 function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
@@ -108,6 +193,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
     runInstance,
     cancelInstanceRun,
   } = useConnectorBuilderStore();
+  const pushLog = useConnectorBuilderStore(state => state.pushLog);
   const { updateContent, updateTitle, updateDirty } = useConsoleStore();
   const openRightPane = useUIStore(state => state.openRightPane);
   const [bottomView, setBottomView] = useState<BottomView>("output");
@@ -118,7 +204,6 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
   const [configJson, setConfigJson] = useState("{}");
   const [secretsJson, setSecretsJson] = useState("{}");
   const [stateJson, setStateJson] = useState("{}");
-  const [localError, setLocalError] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(
     null,
@@ -298,8 +383,6 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
       return;
     }
 
-    setLocalError(null);
-
     try {
       if (isDirty) {
         await persistConnector();
@@ -307,7 +390,12 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
       await buildConnector(workspaceId, connectorId);
       setBottomView("logs");
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : "Build failed");
+      pushLog(
+        connectorId,
+        "error",
+        error instanceof Error ? error.message : "Build failed",
+      );
+      setBottomView("logs");
     }
   };
 
@@ -316,15 +404,14 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
       return;
     }
 
-    setLocalError(null);
-
     const config = safeParseJson(configJson, "Config");
     const secrets = safeParseJson(secretsJson, "Secrets");
     const state = safeParseJson(stateJson, "State");
     const firstError = config.error || secrets.error || state.error;
 
     if (firstError) {
-      setLocalError(firstError);
+      pushLog(connectorId, "error", firstError);
+      setBottomView("logs");
       return;
     }
 
@@ -340,8 +427,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
         trigger: { type: "manual" },
       });
       setBottomView("output");
-    } catch (error) {
-      setLocalError(error instanceof Error ? error.message : "Run failed");
+    } catch {
       setBottomView("logs");
     }
   };
@@ -396,125 +482,127 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
-        <Stack spacing={1.5}>
-          <Stack
-            direction={{ xs: "column", md: "row" }}
-            spacing={1.5}
-            alignItems={{ xs: "stretch", md: "center" }}
-            justifyContent="space-between"
-          >
-            <Stack
-              direction={{ xs: "column", md: "row" }}
-              spacing={1.5}
-              flex={1}
-            >
-              <TextField
-                label="Connector name"
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          backgroundColor: "background.paper",
+          p: 0.5,
+          gap: 0.5,
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {currentRunState?.running ? (
+            <Tooltip title="Cancel">
+              <IconButton
                 size="small"
-                value={name}
-                onChange={event => {
-                  const nextName = event.target.value;
-                  setName(nextName);
-                  updateTitle(tabId, nextName || "Untitled Connector");
-                  updateDirty(tabId, true);
-                  setIsDirty(true);
-                }}
-                sx={{ minWidth: 260 }}
-              />
-              <TextField
-                label="Description"
-                size="small"
-                value={description}
-                onChange={event => {
-                  setDescription(event.target.value);
-                  updateDirty(tabId, true);
-                  setIsDirty(true);
-                }}
-                fullWidth
-              />
-            </Stack>
-            <Stack direction="row" spacing={1}>
-              <Button
-                variant="outlined"
+                color="error"
                 onClick={() => {
-                  setLocalError(null);
+                  /* run state will clear on completion */
+                }}
+              >
+                <StopIcon size={18} />
+              </IconButton>
+            </Tooltip>
+          ) : (
+            <Tooltip title="Run (⌘/Ctrl+Enter)">
+              <span>
+                <IconButton
+                  size="small"
+                  color="primary"
+                  onClick={() => void handleRun()}
+                  disabled={currentRunState?.running}
+                >
+                  <PlayIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+
+          <Tooltip title={isDirty ? "Save (⌘/Ctrl+S)" : "No changes to save"}>
+            <span>
+              <IconButton
+                size="small"
+                onClick={() => {
                   void persistConnector().catch(error => {
-                    setLocalError(
+                    pushLog(
+                      connectorId,
+                      "error",
                       error instanceof Error ? error.message : "Save failed",
                     );
                   });
                 }}
+                disabled={!isDirty}
               >
-                Save
-              </Button>
-              <Button
-                variant="outlined"
+                <SaveIcon strokeWidth={2} size={22} />
+              </IconButton>
+            </span>
+          </Tooltip>
+
+          <Tooltip
+            title={
+              currentBuildState?.building ? "Building..." : "Build connector"
+            }
+          >
+            <span>
+              <IconButton
+                size="small"
                 onClick={() => void handleBuild()}
                 disabled={currentBuildState?.building}
               >
-                {currentBuildState?.building ? "Building..." : "Build"}
-              </Button>
-              <Button
-                variant="contained"
-                onClick={() => void handleRun()}
-                disabled={currentRunState?.running}
-              >
-                {currentRunState?.running ? "Running..." : "Run"}
-              </Button>
-            </Stack>
-          </Stack>
+                <BuildIcon strokeWidth={2} size={22} />
+              </IconButton>
+            </span>
+          </Tooltip>
 
-          <Stack
-            direction="row"
-            spacing={1}
-            alignItems="center"
-            flexWrap="wrap"
-          >
+          <Divider orientation="vertical" flexItem />
+
+          <Tooltip title={description || "No description"}>
+            <IconButton size="small">
+              <InfoIcon strokeWidth={2} size={22} />
+            </IconButton>
+          </Tooltip>
+
+          <Divider orientation="vertical" flexItem />
+
+          <Chip
+            size="small"
+            label={isDirty ? "Unsaved changes" : "Saved"}
+            color={isDirty ? "warning" : "default"}
+          />
+          <Chip
+            size="small"
+            label={
+              connector.bundle.buildHash ? "Bundle ready" : "No bundle yet"
+            }
+            color={connector.bundle.buildHash ? "success" : "default"}
+          />
+          {currentRunState?.duration ? (
             <Chip
               size="small"
-              label={isDirty ? "Unsaved changes" : "Saved"}
-              color={isDirty ? "warning" : "default"}
+              label={`Last run ${currentRunState.duration} ms`}
+              variant="outlined"
             />
+          ) : null}
+          {currentRunState?.output?.metrics?.rowCount !== undefined ? (
             <Chip
               size="small"
-              label={
-                connector.bundle.buildHash ? "Bundle ready" : "No bundle yet"
-              }
-              color={connector.bundle.buildHash ? "success" : "default"}
+              label={`${currentRunState.output.metrics.rowCount} rows`}
+              variant="outlined"
             />
-            {currentRunState?.duration ? (
-              <Chip
-                size="small"
-                label={`Last run ${currentRunState.duration} ms`}
-                variant="outlined"
-              />
-            ) : null}
-            {currentRunState?.output?.metrics?.rowCount !== undefined ? (
-              <Chip
-                size="small"
-                label={`${currentRunState.output.metrics.rowCount} rows`}
-                variant="outlined"
-              />
-            ) : null}
-            {currentRunState?.runtime ? (
-              <Chip
-                size="small"
-                label={`Runtime: ${currentRunState.runtime}`}
-                variant="outlined"
-              />
-            ) : null}
-          </Stack>
-        </Stack>
+          ) : null}
+          {currentRunState?.runtime ? (
+            <Chip
+              size="small"
+              label={`Runtime: ${currentRunState.runtime}`}
+              variant="outlined"
+            />
+          ) : null}
+        </Box>
       </Box>
-
-      {(localError || currentRunState?.error) && (
-        <Alert severity="error" sx={{ m: 2, mb: 0 }}>
-          {currentRunState?.runtimeError?.stack ||
-            localError ||
-            currentRunState?.error}
-        </Alert>
-      )}
 
       <Box sx={{ flexGrow: 1, minHeight: 0 }}>
         <PanelGroup
@@ -585,28 +673,7 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                         sx={{ border: 0 }}
                       />
                     ) : bottomView === "logs" ? (
-                      <Box
-                        component="pre"
-                        sx={{
-                          m: 0,
-                          p: 2,
-                          height: "100%",
-                          overflow: "auto",
-                          fontSize: 12,
-                          fontFamily: "monospace",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {[
-                          currentBuildState?.buildLog,
-                          ...(currentRunState?.logs || []).map(
-                            log =>
-                              `[${log.level}]${log.timestamp ? ` ${log.timestamp}` : ""} ${log.message}`,
-                          ),
-                        ]
-                          .filter(Boolean)
-                          .join("\n") || "No logs yet."}
-                      </Box>
+                      <ConnectorLogsPanel connectorId={connectorId} />
                     ) : (
                       <Box
                         component="pre"
@@ -957,7 +1024,9 @@ function ConnectorStudio({ tabId, connectorId }: ConnectorStudioProps) {
                                     connectorId,
                                     version.version,
                                   ).catch(error => {
-                                    setLocalError(
+                                    pushLog(
+                                      connectorId,
+                                      "error",
                                       error instanceof Error
                                         ? error.message
                                         : "Rollback failed",
