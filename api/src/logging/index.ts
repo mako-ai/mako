@@ -151,6 +151,12 @@ async function doInitialize(): Promise<void> {
         lowestLevel: minLevel,
         sinks: [sinkName],
       },
+      // SSH tunnel operations
+      {
+        category: ["ssh-tunnel"],
+        lowestLevel: minLevel,
+        sinks: [sinkName],
+      },
     ],
   });
 

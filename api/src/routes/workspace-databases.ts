@@ -525,23 +525,6 @@ workspaceDatabaseRoutes.post(
         updatedAt: new Date(),
       });
 
-      // Test connection before saving using RAW (unencrypted) connection from body
-      const testResult = await databaseConnectionService.testConnection({
-        _id: database._id,
-        type: body.type,
-        connection: body.connection || {},
-      } as any);
-
-      if (!testResult.success) {
-        return c.json(
-          {
-            success: false,
-            error: `Connection test failed: ${testResult.error}`,
-          },
-          400,
-        );
-      }
-
       await database.save();
 
       return c.json(
@@ -606,24 +589,6 @@ workspaceDatabaseRoutes.put(
           (database.toObject({ getters: true }) as any).connection || {};
         const candidate = { ...previous, ...body.connection };
 
-        // Test new connection using RAW candidate (unencrypted)
-        const testResult = await databaseConnectionService.testConnection({
-          _id: database._id,
-          type: database.type,
-          connection: candidate,
-        } as any);
-
-        if (!testResult.success) {
-          return c.json(
-            {
-              success: false,
-              error: `Connection test failed: ${testResult.error}`,
-            },
-            400,
-          );
-        }
-
-        // Only assign after successful test (setter will encrypt)
         database.connection = candidate as any;
       }
 

@@ -226,7 +226,10 @@ export interface IDatabaseConnection extends Document {
       host?: string;
       port?: number;
       username?: string;
+      authMethod?: "password" | "privateKey";
+      password?: string;
       privateKey?: string;
+      passphrase?: string;
     };
   };
   isDemo?: boolean; // True if this is a demo database connection
