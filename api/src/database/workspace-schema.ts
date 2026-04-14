@@ -138,6 +138,7 @@ export interface IWorkspace extends Document {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
+    enabledModelIds?: string[];
   };
   selfDirective?: string;
   apiKeys?: IWorkspaceApiKey[];
@@ -888,6 +889,7 @@ Add any specific instructions for how the AI should interpret your data or respo
 
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
       },
+      enabledModelIds: [{ type: String }],
     },
     selfDirective: {
       type: String,

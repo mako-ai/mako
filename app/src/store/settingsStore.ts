@@ -6,18 +6,40 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { apiClient } from "../lib/api-client";
-import type { AIModel, ModelListResponse } from "../lib/api-types";
+import type {
+  AIModel,
+  ModelListResponse,
+  GatewayModelInfo,
+  GatewayModelsResponse,
+  EnabledModelsResponse,
+} from "../lib/api-types";
 
 interface SettingsState {
   // AI Model selection
   selectedModelId: string;
   setSelectedModelId: (modelId: string) => void;
 
-  // Available models
+  // Available models (workspace-filtered, used by chat)
   models: AIModel[];
   modelsLoading: boolean;
   modelsError: string | null;
   fetchModels: () => Promise<void>;
+
+  // Gateway model catalog (all models from Vercel gateway)
+  gatewayModels: GatewayModelInfo[];
+  gatewayModelsLoading: boolean;
+  gatewayModelsError: string | null;
+  fetchGatewayModels: () => Promise<void>;
+
+  // Workspace enabled model IDs
+  enabledModelIds: string[];
+  enabledModelsLoading: boolean;
+  enabledModelsError: string | null;
+  fetchEnabledModels: (workspaceId: string) => Promise<void>;
+  saveEnabledModels: (
+    workspaceId: string,
+    modelIds: string[],
+  ) => Promise<boolean>;
 
   // General settings
   theme: "light" | "dark" | "system";
@@ -49,7 +71,6 @@ export const useSettingsStore = create<SettingsState>()(
 
           set({ models });
 
-          // Ensure selected model exists
           if (models.length > 0) {
             const current = get().selectedModelId;
             const isAvailable = models.some(model => model.id === current);
@@ -58,10 +79,59 @@ export const useSettingsStore = create<SettingsState>()(
             }
           }
         } catch (error) {
-          console.error("[SettingsStore] Failed to fetch models:", error);
           set({ modelsError: "Failed to load models" });
         } finally {
           set({ modelsLoading: false });
+        }
+      },
+
+      // Gateway model catalog
+      gatewayModels: [],
+      gatewayModelsLoading: false,
+      gatewayModelsError: null,
+      fetchGatewayModels: async () => {
+        set({ gatewayModelsLoading: true, gatewayModelsError: null });
+        try {
+          const response = await apiClient.get<GatewayModelsResponse>(
+            "/agent/gateway-models",
+          );
+          set({ gatewayModels: response.models || [] });
+        } catch (error) {
+          set({ gatewayModelsError: "Failed to load gateway models" });
+        } finally {
+          set({ gatewayModelsLoading: false });
+        }
+      },
+
+      // Workspace enabled models
+      enabledModelIds: [],
+      enabledModelsLoading: false,
+      enabledModelsError: null,
+      fetchEnabledModels: async (workspaceId: string) => {
+        set({ enabledModelsLoading: true, enabledModelsError: null });
+        try {
+          const response = await apiClient.get<EnabledModelsResponse>(
+            `/workspaces/${workspaceId}/settings/models`,
+          );
+          set({ enabledModelIds: response.enabledModelIds || [] });
+        } catch (error) {
+          set({ enabledModelsError: "Failed to load enabled models" });
+        } finally {
+          set({ enabledModelsLoading: false });
+        }
+      },
+      saveEnabledModels: async (
+        workspaceId: string,
+        modelIds: string[],
+      ): Promise<boolean> => {
+        try {
+          await apiClient.put(`/workspaces/${workspaceId}/settings/models`, {
+            enabledModelIds: modelIds,
+          });
+          set({ enabledModelIds: modelIds });
+          return true;
+        } catch (error) {
+          return false;
         }
       },
 
@@ -88,7 +158,6 @@ export const useSettingsStore = create<SettingsState>()(
         }
         return state as unknown as SettingsState;
       },
-      // Only persist specific fields
       partialize: state => ({
         selectedModelId: state.selectedModelId,
         theme: state.theme,

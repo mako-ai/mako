@@ -21,7 +21,9 @@ import {
   getModelById,
   getAvailableModels,
   getDefaultModelId,
+  isGatewayMode,
 } from "../agent-lib/ai-models";
+import { getGatewayModels } from "../services/gateway-models.service";
 import {
   Workspace,
   DatabaseConnection,
@@ -62,10 +64,42 @@ export const agentRoutes = new Hono();
 agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
- * GET /models - List available AI models based on configured API keys
+ * GET /models - List available AI models, filtered by workspace settings
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
-  const models = getAvailableModels();
+  const workspaceId =
+    c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
+
+  let enabledModelIds: string[] | undefined;
+  if (workspaceId) {
+    const ws = await Workspace.findById(workspaceId)
+      .select({ "settings.enabledModelIds": 1 })
+      .lean();
+    if (ws?.settings?.enabledModelIds?.length) {
+      enabledModelIds = ws.settings.enabledModelIds;
+    }
+  }
+
+  const models = getAvailableModels(enabledModelIds);
+  return c.json({ models });
+});
+
+/**
+ * GET /gateway-models - Full model catalog from Vercel AI Gateway
+ * Used by the settings UI to show all models that can be enabled.
+ */
+agentRoutes.get("/gateway-models", async (c: AuthenticatedContext) => {
+  if (!isGatewayMode()) {
+    return c.json(
+      {
+        success: false,
+        error: "Gateway mode is not enabled",
+      },
+      400,
+    );
+  }
+
+  const models = await getGatewayModels();
   return c.json({ models });
 });
 
@@ -293,9 +327,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     }
   }
 
-  // Load workspace for custom prompt and self-directive
+  // Load workspace for custom prompt, self-directive, and enabled models
   let workspaceCustomPrompt = "";
   let selfDirective = "";
+  let wsEnabledModelIds: string[] | undefined;
   try {
     const workspace = await Workspace.findById(workspaceId).select({
       settings: 1,
@@ -303,6 +338,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
     selfDirective = workspace?.selfDirective || "";
+    if (workspace?.settings?.enabledModelIds?.length) {
+      wsEnabledModelIds = workspace.settings.enabledModelIds;
+    }
   } catch (err) {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
@@ -470,7 +508,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       503,
     );
   }
-  const available = getAvailableModels();
+  const available = getAvailableModels(wsEnabledModelIds);
   const resolvedModelId =
     modelId && available.find(m => m.id === modelId) ? modelId : defaultId;
   const model = getModel(resolvedModelId);

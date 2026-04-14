@@ -479,6 +479,86 @@ workspaceRoutes.put(
   },
 );
 
+// Update enabled AI models for the workspace
+workspaceRoutes.put(
+  "/:id/settings/models",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const workspaceId = c.req.param("id");
+
+      if (workspaceId !== workspace._id.toString()) {
+        return c.json({ success: false, error: "Workspace ID mismatch" }, 400);
+      }
+
+      const body = await c.req.json();
+      const { enabledModelIds } = body as { enabledModelIds?: string[] };
+
+      if (!Array.isArray(enabledModelIds)) {
+        return c.json(
+          { success: false, error: "enabledModelIds must be an array" },
+          400,
+        );
+      }
+
+      if (enabledModelIds.length === 0) {
+        return c.json(
+          { success: false, error: "At least one model must be enabled" },
+          400,
+        );
+      }
+
+      const deduped = [...new Set(enabledModelIds)];
+
+      await Workspace.findByIdAndUpdate(workspaceId, {
+        $set: { "settings.enabledModelIds": deduped },
+      });
+
+      logger.info("Updated enabled models for workspace", {
+        workspaceId,
+        modelCount: deduped.length,
+      });
+
+      return c.json({ success: true, enabledModelIds: deduped });
+    } catch (error) {
+      logger.error("Error updating enabled models", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update enabled models",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// Get enabled AI model IDs for the workspace
+workspaceRoutes.get(
+  "/:id/settings/models",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const enabledModelIds = workspace.settings?.enabledModelIds ?? [];
+      return c.json({ success: true, enabledModelIds });
+    } catch (error) {
+      logger.error("Error fetching enabled models", { error });
+      return c.json(
+        { success: false, error: "Failed to fetch enabled models" },
+        500,
+      );
+    }
+  },
+);
+
 // Delete workspace
 workspaceRoutes.delete(
   "/:id",

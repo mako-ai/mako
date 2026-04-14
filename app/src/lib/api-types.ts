@@ -282,9 +282,27 @@ export interface AIModel {
   supportsTools?: boolean;
 }
 
+export interface GatewayModelInfo {
+  id: string;
+  name: string;
+  description: string;
+  provider: string;
+  contextWindow: number | null;
+  tags: string[];
+}
+
 export interface ModelListResponse {
   success: boolean;
   models: AIModel[];
+}
+
+export interface GatewayModelsResponse {
+  models: GatewayModelInfo[];
+}
+
+export interface EnabledModelsResponse {
+  success: boolean;
+  enabledModelIds: string[];
 }
 
 // ==================== Generic Response Types ====================
