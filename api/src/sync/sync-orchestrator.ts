@@ -616,13 +616,6 @@ async function performSyncChunkSql(
         },
       })
     : undefined;
-  const cdcLayout = isCdcEnabled
-    ? buildCdcEntityLayout({
-        entity,
-        tableName: entityTableName,
-      })
-    : undefined;
-
   const writer = isCdcEnabled
     ? undefined
     : await createDestinationWriter(
@@ -702,6 +695,14 @@ async function performSyncChunkSql(
     hasSchema: !!entitySchema,
     fieldCount: entitySchema ? Object.keys(entitySchema.fields).length : 0,
   });
+
+  const cdcLayout = isCdcEnabled
+    ? buildCdcEntityLayout({
+        entity,
+        tableName: entityTableName,
+        keyColumns: entitySchema?.keyColumns,
+      })
+    : undefined;
 
   const useBulkPath =
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
@@ -1332,10 +1333,6 @@ export async function performBulkFlush(
 
   if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
-  const cdcLayout = buildCdcEntityLayout({
-    entity,
-    tableName: entityTableName,
-  });
   const db = Flow.db;
   const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
   const tempCollection = db.collection(collName);
@@ -1344,6 +1341,11 @@ export async function performBulkFlush(
     entity,
     dataSourceId: options.dataSourceId,
     context: "performBulkFlush",
+  });
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+    keyColumns: entitySchema?.keyColumns,
   });
   const schemaFields: FieldMeta[] | undefined = entitySchema
     ? Object.entries(entitySchema.fields).map(([name, f]) => ({
@@ -1412,12 +1414,6 @@ export async function performStagingMerge(
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
 
-  const cdcLayout = buildCdcEntityLayout({
-    entity,
-    tableName: entityTableName,
-    partitioning: options.entityPartitioning,
-    clustering: options.entityClustering,
-  });
   const dataSource = await databaseDataSourceManager.getDataSource(
     options.dataSourceId,
   );
@@ -1425,6 +1421,13 @@ export async function performStagingMerge(
     entity,
     dataSource,
     context: "performStagingMerge",
+  });
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+    keyColumns: entitySchema?.keyColumns,
+    partitioning: options.entityPartitioning,
+    clustering: options.entityClustering,
   });
 
   orchestratorLogger.info("performStagingMerge: merging staging to live", {

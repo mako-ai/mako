@@ -207,7 +207,7 @@ export function buildCdcEntityLayout(params: {
     keyColumns:
       params.keyColumns && params.keyColumns.length > 0
         ? params.keyColumns
-        : ["id", "_dataSourceId"],
+        : ["id"],
     deleteMode: params.deleteMode,
     partitioning: params.partitioning,
     clustering: params.clustering,
