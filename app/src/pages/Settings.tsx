@@ -503,10 +503,15 @@ function AIModelsSection({
       return;
     }
     setSaving(true);
-    const success = await saveEnabledModels(
-      workspaceId,
-      Array.from(localEnabled),
-    );
+    const modelsToSave = gatewayModels
+      .filter(m => localEnabled.has(m.id))
+      .map(m => ({
+        id: m.id,
+        name: m.name,
+        provider: m.provider,
+        description: m.description,
+      }));
+    const success = await saveEnabledModels(workspaceId, modelsToSave);
     setSaving(false);
     if (success) {
       onSnackbar("AI models updated successfully!");

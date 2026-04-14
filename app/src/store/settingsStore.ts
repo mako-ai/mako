@@ -38,7 +38,12 @@ interface SettingsState {
   fetchEnabledModels: (workspaceId: string) => Promise<void>;
   saveEnabledModels: (
     workspaceId: string,
-    modelIds: string[],
+    models: Array<{
+      id: string;
+      name: string;
+      provider: string;
+      description?: string;
+    }>,
   ) => Promise<boolean>;
 
   // General settings
@@ -122,13 +127,18 @@ export const useSettingsStore = create<SettingsState>()(
       },
       saveEnabledModels: async (
         workspaceId: string,
-        modelIds: string[],
+        models: Array<{
+          id: string;
+          name: string;
+          provider: string;
+          description?: string;
+        }>,
       ): Promise<boolean> => {
         try {
           await apiClient.put(`/workspaces/${workspaceId}/settings/models`, {
-            enabledModelIds: modelIds,
+            models,
           });
-          set({ enabledModelIds: modelIds });
+          set({ enabledModelIds: models.map(m => m.id) });
           return true;
         } catch (error) {
           return false;

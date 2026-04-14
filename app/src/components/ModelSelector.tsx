@@ -167,6 +167,7 @@ export const ModelSelector: React.FC = () => {
           paper: {
             sx: {
               minWidth: 220,
+              maxWidth: 350,
               maxHeight: 400,
             },
           },

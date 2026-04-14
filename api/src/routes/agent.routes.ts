@@ -66,73 +66,51 @@ agentRoutes.use("*", unifiedAuthMiddleware);
 /**
  * GET /models - List available AI models, filtered by workspace settings.
  *
- * In gateway mode with enabledModelIds set, models are built from the
- * gateway catalog so that models not in the static ALL_MODELS list still
- * appear. Static ALL_MODELS entries are preferred (they carry metadata
- * like supportsThinking). For IDs only in the gateway catalog, a basic
- * AIModel is synthesized from the catalog data.
+ * When the workspace has `enabledModels` (full objects saved by the settings
+ * UI), those are returned directly -- no gateway fetch needed. Static
+ * ALL_MODELS entries are merged in for metadata like `supportsThinking`.
+ *
+ * Falls back to the legacy `enabledModelIds` field, then to the static
+ * ALL_MODELS list.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const workspaceId =
     c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
 
-  let enabledModelIds: string[] | undefined;
   if (workspaceId) {
     const ws = await Workspace.findById(workspaceId)
-      .select({ "settings.enabledModelIds": 1 })
+      .select({ "settings.enabledModels": 1, "settings.enabledModelIds": 1 })
       .lean();
+
+    if (ws?.settings?.enabledModels?.length) {
+      const staticMap = new Map(getAvailableModels().map(m => [m.id, m]));
+      const models = ws.settings.enabledModels.map(
+        (em: {
+          id: string;
+          name: string;
+          provider: string;
+          description?: string;
+        }) => {
+          const staticModel = staticMap.get(em.id);
+          if (staticModel) return staticModel;
+          return {
+            id: em.id,
+            provider: em.provider,
+            name: em.name,
+            description: em.description || "",
+          };
+        },
+      );
+      return c.json({ models });
+    }
+
     if (ws?.settings?.enabledModelIds?.length) {
-      enabledModelIds = ws.settings.enabledModelIds;
+      const models = getAvailableModels(ws.settings.enabledModelIds);
+      return c.json({ models });
     }
   }
 
-  if (isGatewayMode() && enabledModelIds && enabledModelIds.length > 0) {
-    const staticMap = new Map(getAvailableModels().map(m => [m.id, m]));
-
-    let gatewayMap: Map<
-      string,
-      { id: string; name: string; description: string; provider: string }
-    > | null = null;
-    try {
-      const gatewayList = await getGatewayModels();
-      gatewayMap = new Map(gatewayList.map(m => [m.id, m]));
-    } catch {
-      // Gateway catalog unavailable; we'll synthesize from IDs below
-    }
-
-    const models = enabledModelIds
-      .map(id => {
-        const staticModel = staticMap.get(id);
-        if (staticModel) return staticModel;
-
-        if (gatewayMap) {
-          const gw = gatewayMap.get(id);
-          if (gw) {
-            return {
-              id: gw.id,
-              provider: gw.provider,
-              name: gw.name,
-              description: gw.description,
-            };
-          }
-        }
-
-        // Synthesize a basic model entry from the ID itself
-        const provider = id.split("/")[0] || "unknown";
-        const modelName = id.split("/").slice(1).join("/");
-        return {
-          id,
-          provider,
-          name: modelName,
-          description: "",
-        };
-      })
-      .filter(Boolean);
-
-    return c.json({ models });
-  }
-
-  const models = getAvailableModels(enabledModelIds);
+  const models = getAvailableModels();
   return c.json({ models });
 });
 

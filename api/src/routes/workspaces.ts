@@ -479,7 +479,8 @@ workspaceRoutes.put(
   },
 );
 
-// Update enabled AI models for the workspace
+// Update enabled AI models for the workspace.
+// Accepts full model objects so GET /agent/models never needs the gateway.
 workspaceRoutes.put(
   "/:id/settings/models",
   unifiedAuthMiddleware,
@@ -495,26 +496,57 @@ workspaceRoutes.put(
       }
 
       const body = await c.req.json();
-      const { enabledModelIds } = body as { enabledModelIds?: string[] };
+      const { models } = body as {
+        models?: Array<{
+          id: string;
+          name: string;
+          provider: string;
+          description?: string;
+        }>;
+      };
 
-      if (!Array.isArray(enabledModelIds)) {
+      if (!Array.isArray(models)) {
         return c.json(
-          { success: false, error: "enabledModelIds must be an array" },
+          { success: false, error: "models must be an array" },
           400,
         );
       }
 
-      if (enabledModelIds.length === 0) {
+      if (models.length === 0) {
         return c.json(
           { success: false, error: "At least one model must be enabled" },
           400,
         );
       }
 
-      const deduped = [...new Set(enabledModelIds)];
+      // Validate each entry has required fields
+      for (const m of models) {
+        if (!m.id || !m.name || !m.provider) {
+          return c.json(
+            {
+              success: false,
+              error: "Each model must have id, name, and provider",
+            },
+            400,
+          );
+        }
+      }
+
+      // Deduplicate by id
+      const seen = new Set<string>();
+      const deduped = models.filter(m => {
+        if (seen.has(m.id)) return false;
+        seen.add(m.id);
+        return true;
+      });
+
+      const enabledModelIds = deduped.map(m => m.id);
 
       await Workspace.findByIdAndUpdate(workspaceId, {
-        $set: { "settings.enabledModelIds": deduped },
+        $set: {
+          "settings.enabledModels": deduped,
+          "settings.enabledModelIds": enabledModelIds,
+        },
       });
 
       logger.info("Updated enabled models for workspace", {
@@ -522,7 +554,7 @@ workspaceRoutes.put(
         modelCount: deduped.length,
       });
 
-      return c.json({ success: true, enabledModelIds: deduped });
+      return c.json({ success: true, enabledModelIds });
     } catch (error) {
       logger.error("Error updating enabled models", { error });
       return c.json(
