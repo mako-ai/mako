@@ -7,3 +7,4 @@ packages:
   - packages/*
 ignoredBuiltDependencies:
   - bcrypt
+onlyBuiltDependencies: '["ssh2"]'

@@ -447,18 +447,22 @@ StreamingIndicator.displayName = "StreamingIndicator";
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
 
-const userMessageSx = { flex: 1, mt: 2 } as const;
+const userMessageSx = { flex: 1, mt: 2, minWidth: 0 } as const;
 const userMessagePaperSx = {
   p: 1,
   borderRadius: 1,
   backgroundColor: "background.paper",
   overflow: "hidden",
 } as const;
-const userMessageBoxSx = { overflow: "auto", maxWidth: "100%" } as const;
-const userMessageTextSx = {
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  overflowWrap: "break-word",
+const userMessageBoxSx = {
+  maxWidth: "100%",
+  "& .MuiListItemText-primary": {
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    overflowWrap: "break-word",
+    overflow: "visible",
+    textOverflow: "unset",
+  },
 } as const;
 const assistantMessageSx = {
   flex: 1,
@@ -534,7 +538,6 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 primaryTypographyProps={{
                   variant: "body2",
                   color: "text.primary",
-                  sx: userMessageTextSx,
                 }}
               />
             </Box>

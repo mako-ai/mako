@@ -20,6 +20,10 @@ import {
   IconButton,
   InputAdornment,
 } from "@mui/material";
+import Accordion from "@mui/material/Accordion";
+import AccordionSummary from "@mui/material/AccordionSummary";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
@@ -38,6 +42,23 @@ import {
   parseMySQLConnectionString,
   buildMySQLConnectionString,
 } from "../utils/mysql-connection-string";
+
+/** Set a value at a dot-separated path inside a nested object, creating intermediate objects as needed. */
+function setNested(obj: Record<string, any>, path: string, value: any) {
+  const keys = path.split(".");
+  let curr = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (!curr[keys[i]] || typeof curr[keys[i]] !== "object") curr[keys[i]] = {};
+    curr = curr[keys[i]];
+  }
+  curr[keys[keys.length - 1]] = value;
+}
+
+/** Resolve a dot-separated path on a potentially nested object. */
+function getNested(obj: Record<string, any> | undefined, path: string): any {
+  if (!obj) return undefined;
+  return path.split(".").reduce((acc: any, key) => acc?.[key], obj);
+}
 
 interface CreateDatabaseDialogProps {
   open: boolean;
@@ -316,6 +337,7 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     }
     setLoading(true);
     setError(null);
+    setTestResult(null);
     try {
       const res = await saveDatabase(currentWorkspace.id, values, databaseId);
 
@@ -360,9 +382,13 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     const defaults: Record<string, any> = {};
     if (schema?.fields) {
       schema.fields.forEach(f => {
-        if (f.default !== undefined) defaults[f.name] = f.default;
-        else if (f.type === "boolean") defaults[f.name] = false;
-        else defaults[f.name] = "";
+        const val =
+          f.default !== undefined
+            ? f.default
+            : f.type === "boolean"
+              ? false
+              : "";
+        setNested(defaults, f.name, val);
       });
     }
     reset(prev => ({ ...prev, type: newType, connection: defaults }));
@@ -503,246 +529,278 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                 </Box>
               ) : (
                 selectedType &&
-                schemas[selectedType]?.fields && (
-                  <>
-                    {schemas[selectedType].fields.map(field => {
-                      const fieldName = `connection.${field.name}` as const;
-                      // For password fields in edit mode, make them optional if they are empty (meaning unchanged)
-                      // BUT, the user sees the value if we pre-fill it.
-                      // If we pre-fill, the value is there, so "required" check passes.
+                schemas[selectedType]?.fields &&
+                (() => {
+                  const allFields = schemas[selectedType].fields;
+                  const primaryFields = allFields.filter(f => !f.advanced);
+                  const advancedFields = allFields.filter(f => f.advanced);
 
-                      const requiredRule = field.required
-                        ? { required: `${field.label} is required` }
-                        : {};
+                  const advancedGroups = advancedFields.reduce<
+                    Record<string, typeof advancedFields>
+                  >((acc, f) => {
+                    const g = f.group || "Advanced";
+                    (acc[g] ||= []).push(f);
+                    return acc;
+                  }, {});
 
-                      const fieldError =
-                        (errors.connection?.[
-                          field.name as keyof FormValues["connection"]
-                        ]?.message as string) || undefined;
-                      switch (field.type) {
-                        case "boolean":
-                          return (
-                            <FormControl
-                              key={field.name}
-                              fullWidth
-                              margin="normal"
-                            >
-                              <Box
-                                sx={{ display: "flex", alignItems: "center" }}
-                              >
-                                <Typography sx={{ mr: 2 }}>
-                                  {field.label}
-                                </Typography>
-                                <Controller
-                                  control={control}
-                                  name={fieldName as `connection.${string}`}
-                                  rules={requiredRule}
-                                  render={({
-                                    field: ctrlField,
-                                    fieldState,
-                                  }) => (
-                                    <input
-                                      type="checkbox"
-                                      checked={Boolean(ctrlField.value)}
-                                      onChange={e =>
-                                        ctrlField.onChange(e.target.checked)
-                                      }
-                                      aria-invalid={
-                                        fieldState.error ? "true" : "false"
-                                      }
-                                    />
-                                  )}
-                                />
-                              </Box>
-                              {fieldError ? (
-                                <Typography variant="caption" color="error">
-                                  {fieldError}
-                                </Typography>
-                              ) : (
-                                field.helperText && (
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                  >
-                                    {field.helperText}
-                                  </Typography>
-                                )
-                              )}
-                            </FormControl>
-                          );
-                        case "textarea":
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              multiline
-                              rows={field.rows || 3}
-                              {...register(
-                                fieldName as `connection.${string}`,
-                                requiredRule,
-                              )}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                            />
-                          );
-                        case "password":
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              type={
-                                showPassword[field.name] ? "text" : "password"
-                              }
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              {...register(
-                                fieldName as `connection.${string}`,
-                                requiredRule,
-                              )}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                              slotProps={{
-                                input: {
-                                  endAdornment: (
-                                    <InputAdornment position="end">
-                                      <IconButton
-                                        aria-label={
-                                          showPassword[field.name]
-                                            ? "Hide password"
-                                            : "Show password"
-                                        }
-                                        onClick={() =>
-                                          togglePasswordVisibility(field.name)
-                                        }
-                                        edge="end"
-                                        size="small"
-                                      >
-                                        {showPassword[field.name] ? (
-                                          <VisibilityOff fontSize="small" />
-                                        ) : (
-                                          <Visibility fontSize="small" />
-                                        )}
-                                      </IconButton>
-                                    </InputAdornment>
-                                  ),
-                                },
-                                htmlInput: {
-                                  "data-1p-ignore": true,
-                                  "data-lpignore": "true",
-                                  "data-form-type": "other",
-                                },
+                  const isFieldVisible = (
+                    field: (typeof allFields)[number],
+                  ) => {
+                    if (!field.visibleWhen) return true;
+                    const val = getNested(
+                      watchedConnection,
+                      field.visibleWhen.field,
+                    );
+                    return val === field.visibleWhen.equals;
+                  };
+
+                  const renderField = (field: (typeof allFields)[number]) => {
+                    if (!isFieldVisible(field)) return null;
+
+                    const fieldName =
+                      `connection.${field.name}` as `connection.${string}`;
+                    const requiredRule = field.required
+                      ? { required: `${field.label} is required` }
+                      : {};
+                    const fieldError =
+                      (getNested(errors, fieldName)?.message as string) ||
+                      undefined;
+
+                    switch (field.type) {
+                      case "boolean":
+                        return (
+                          <FormControl
+                            key={field.name}
+                            fullWidth
+                            margin="normal"
+                          >
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
                               }}
-                            />
-                          );
-                        case "number":
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              type="number"
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              {...register(
-                                fieldName as `connection.${string}`,
-                                {
-                                  ...requiredRule,
-                                  valueAsNumber: true,
-                                },
-                              )}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                            />
-                          );
-                        case "select":
-                          return (
-                            <FormControl
-                              key={field.name}
-                              fullWidth
-                              margin="normal"
-                              required={field.required}
-                              error={Boolean(fieldError)}
                             >
-                              <InputLabel>{field.label}</InputLabel>
+                              <Typography sx={{ mr: 2 }}>
+                                {field.label}
+                              </Typography>
                               <Controller
                                 control={control}
-                                name={fieldName as `connection.${string}`}
+                                name={fieldName}
                                 rules={requiredRule}
-                                render={({ field: ctrlField }) => (
-                                  <Select
-                                    label={field.label}
-                                    value={ctrlField.value ?? ""}
+                                render={({ field: ctrlField, fieldState }) => (
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(ctrlField.value)}
                                     onChange={e =>
-                                      ctrlField.onChange(String(e.target.value))
+                                      ctrlField.onChange(e.target.checked)
                                     }
-                                  >
-                                    {(field.options || []).map(opt => (
-                                      <MenuItem
-                                        key={opt.value}
-                                        value={opt.value}
-                                      >
-                                        {opt.label}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
+                                    aria-invalid={
+                                      fieldState.error ? "true" : "false"
+                                    }
+                                  />
                                 )}
                               />
-                              {fieldError ? (
-                                <Typography variant="caption" color="error">
-                                  {fieldError}
+                            </Box>
+                            {fieldError ? (
+                              <Typography variant="caption" color="error">
+                                {fieldError}
+                              </Typography>
+                            ) : (
+                              field.helperText && (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  {field.helperText}
                                 </Typography>
-                              ) : (
-                                field.helperText && (
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                  >
-                                    {field.helperText}
-                                  </Typography>
-                                )
+                              )
+                            )}
+                          </FormControl>
+                        );
+                      case "textarea":
+                        return (
+                          <TextField
+                            key={field.name}
+                            fullWidth
+                            label={field.label}
+                            margin="normal"
+                            placeholder={field.placeholder}
+                            multiline
+                            rows={field.rows || 3}
+                            {...register(fieldName, requiredRule)}
+                            error={Boolean(fieldError)}
+                            helperText={fieldError ?? field.helperText}
+                            autoComplete="off"
+                          />
+                        );
+                      case "password":
+                        return (
+                          <TextField
+                            key={field.name}
+                            fullWidth
+                            type={
+                              showPassword[field.name] ? "text" : "password"
+                            }
+                            label={field.label}
+                            margin="normal"
+                            placeholder={field.placeholder}
+                            {...register(fieldName, requiredRule)}
+                            error={Boolean(fieldError)}
+                            helperText={fieldError ?? field.helperText}
+                            autoComplete="off"
+                            slotProps={{
+                              input: {
+                                endAdornment: (
+                                  <InputAdornment position="end">
+                                    <IconButton
+                                      aria-label={
+                                        showPassword[field.name]
+                                          ? "Hide password"
+                                          : "Show password"
+                                      }
+                                      onClick={() =>
+                                        togglePasswordVisibility(field.name)
+                                      }
+                                      edge="end"
+                                      size="small"
+                                    >
+                                      {showPassword[field.name] ? (
+                                        <VisibilityOff fontSize="small" />
+                                      ) : (
+                                        <Visibility fontSize="small" />
+                                      )}
+                                    </IconButton>
+                                  </InputAdornment>
+                                ),
+                              },
+                              htmlInput: {
+                                "data-1p-ignore": true,
+                                "data-lpignore": "true",
+                                "data-form-type": "other",
+                              },
+                            }}
+                          />
+                        );
+                      case "number":
+                        return (
+                          <TextField
+                            key={field.name}
+                            fullWidth
+                            type="number"
+                            label={field.label}
+                            margin="normal"
+                            placeholder={field.placeholder}
+                            {...register(fieldName, {
+                              ...requiredRule,
+                              valueAsNumber: true,
+                            })}
+                            error={Boolean(fieldError)}
+                            helperText={fieldError ?? field.helperText}
+                            autoComplete="off"
+                          />
+                        );
+                      case "select":
+                        return (
+                          <FormControl
+                            key={field.name}
+                            fullWidth
+                            margin="normal"
+                            required={field.required}
+                            error={Boolean(fieldError)}
+                          >
+                            <InputLabel>{field.label}</InputLabel>
+                            <Controller
+                              control={control}
+                              name={fieldName}
+                              rules={requiredRule}
+                              render={({ field: ctrlField }) => (
+                                <Select
+                                  label={field.label}
+                                  value={ctrlField.value ?? ""}
+                                  onChange={e =>
+                                    ctrlField.onChange(String(e.target.value))
+                                  }
+                                >
+                                  {(field.options || []).map(opt => (
+                                    <MenuItem key={opt.value} value={opt.value}>
+                                      {opt.label}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
                               )}
-                            </FormControl>
-                          );
-                        case "string":
-                        default:
-                          return (
-                            <TextField
-                              key={field.name}
-                              fullWidth
-                              label={field.label}
-                              margin="normal"
-                              placeholder={field.placeholder}
-                              {...register(
-                                fieldName as `connection.${string}`,
-                                requiredRule,
-                              )}
-                              error={Boolean(fieldError)}
-                              helperText={fieldError ?? field.helperText}
-                              autoComplete="off"
-                              slotProps={
-                                field.name === "username"
-                                  ? {
-                                      htmlInput: {
-                                        "data-1p-ignore": true,
-                                        "data-lpignore": "true",
-                                        "data-form-type": "other",
-                                      },
-                                    }
-                                  : undefined
-                              }
                             />
-                          );
-                      }
-                    })}
-                  </>
-                )
+                            {fieldError ? (
+                              <Typography variant="caption" color="error">
+                                {fieldError}
+                              </Typography>
+                            ) : (
+                              field.helperText && (
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                >
+                                  {field.helperText}
+                                </Typography>
+                              )
+                            )}
+                          </FormControl>
+                        );
+                      case "string":
+                      default:
+                        return (
+                          <TextField
+                            key={field.name}
+                            fullWidth
+                            label={field.label}
+                            margin="normal"
+                            placeholder={field.placeholder}
+                            {...register(fieldName, requiredRule)}
+                            error={Boolean(fieldError)}
+                            helperText={fieldError ?? field.helperText}
+                            autoComplete="off"
+                            slotProps={
+                              field.name === "username"
+                                ? {
+                                    htmlInput: {
+                                      "data-1p-ignore": true,
+                                      "data-lpignore": "true",
+                                      "data-form-type": "other",
+                                    },
+                                  }
+                                : undefined
+                            }
+                          />
+                        );
+                    }
+                  };
+
+                  return (
+                    <>
+                      {primaryFields.map(renderField)}
+                      {Object.entries(advancedGroups).map(([group, fields]) => (
+                        <Accordion
+                          key={group}
+                          disableGutters
+                          elevation={0}
+                          sx={{
+                            mt: 2,
+                            border: 1,
+                            borderColor: "divider",
+                            borderRadius: 1,
+                            "&::before": { display: "none" },
+                          }}
+                        >
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Typography variant="subtitle2">{group}</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails sx={{ pt: 0 }}>
+                            {fields.map(renderField)}
+                          </AccordionDetails>
+                        </Accordion>
+                      ))}
+                    </>
+                  );
+                })()
               )}
             </Box>
           </DialogContent>

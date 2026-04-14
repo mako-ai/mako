@@ -41,6 +41,7 @@ import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
+import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { isGatewayMode } from "./agent-lib/ai-models";
@@ -304,6 +305,10 @@ async function gracefulShutdown(
 
   let exitCode = forcedExitCode ?? 0;
   try {
+    // Close SSH tunnels
+    logger.info("Closing SSH tunnels");
+    await sshTunnelManager.closeAll();
+
     // Close unified MongoDB connection pool
     logger.info("Closing MongoDB connection pool");
     await databaseConnectionService.closeAllConnections();
