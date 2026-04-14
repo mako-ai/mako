@@ -228,6 +228,18 @@ export class CdcConsumerService {
         rowsAppliedDelta: apply.applied,
       });
 
+      if (state?.consecutiveFailures) {
+        await CdcEntityState.updateOne(
+          {
+            flowId: new Types.ObjectId(params.flowId),
+            entity: params.entity,
+          },
+          {
+            $set: { consecutiveFailures: 0, lastFailureError: null },
+          },
+        );
+      }
+
       return {
         processed: pending.length,
         applied: apply.applied,
@@ -248,6 +260,19 @@ export class CdcConsumerService {
         {
           code: "MATERIALIZATION_FAILED",
           message: errorMessage,
+        },
+      );
+      await CdcEntityState.updateOne(
+        {
+          flowId: new Types.ObjectId(params.flowId),
+          entity: params.entity,
+        },
+        {
+          $inc: { consecutiveFailures: 1 },
+          $set: {
+            lastFailedAt: new Date(),
+            lastFailureError: errorMessage.slice(0, 500),
+          },
         },
       );
       await cdcSyncStateService.applyStreamTransition({
