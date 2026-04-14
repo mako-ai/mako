@@ -9,10 +9,10 @@ class CdcIngestService {
   /**
    * Append normalized CDC events to the event store and update ingest state.
    *
-   * The caller (webhookEventProcessCdcFunction) is responsible for triggering
-   * materialization by emitting cdc/materialize events after this call.
-   * The cdcMaterializeSchedulerFunction cron acts as a safety net for any
-   * entities missed by the inline trigger.
+   * The caller (webhookEventProcessCdcFunction) triggers materialization
+   * inline by emitting cdc/materialize events immediately after this call.
+   * The cdcMaterializeSchedulerFunction cron (every 1 min) acts as a safety
+   * net for any entities missed by the inline trigger.
    */
   async appendNormalizedEvents(params: {
     workspaceId: string;

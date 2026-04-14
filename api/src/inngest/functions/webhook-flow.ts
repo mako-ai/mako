@@ -35,7 +35,7 @@ const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
 );
 
 const CDC_MATERIALIZE_THROTTLE_PERIOD = (process.env
-  .CDC_MATERIALIZE_THROTTLE_PERIOD || "10s") as `${number}s`;
+  .CDC_MATERIALIZE_THROTTLE_PERIOD || "5s") as `${number}s`;
 
 async function runWebhookEventProcess({
   event,
@@ -938,10 +938,31 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
       };
     });
 
-    // Materialization is NOT triggered inline — the scheduler cron picks up
-    // stale entities every 2 min by comparing lastIngestSeq vs
-    // lastMaterializedSeq.  Emitting here would duplicate the scheduler's
-    // work and flood the Inngest queue with redundant cdc/materialize events.
+    const typedResult = result as {
+      processed: boolean;
+      count: number;
+      workspaceId?: string;
+      entities?: string[];
+    } | null;
+
+    if (
+      typedResult?.processed &&
+      typedResult.count > 0 &&
+      typedResult.entities?.length
+    ) {
+      await step.sendEvent(
+        "trigger-inline-materialize",
+        typedResult.entities.map(entity => ({
+          name: "cdc/materialize" as const,
+          data: {
+            workspaceId: typedResult.workspaceId!,
+            flowId,
+            entity,
+            force: false,
+          },
+        })),
+      );
+    }
 
     return { success: true, ...result };
   },
@@ -1195,24 +1216,24 @@ export const cdcMaterializeFunction = inngest.createFunction(
 );
 
 /**
- * Periodic scheduler that finds entities with un-materialized CDC events
+ * Safety-net scheduler that finds entities with un-materialized CDC events
  * and emits one cdc/materialize per stale (flowId, entity) pair.
  *
- * This decouples materialization timing from ingest volume: instead of
- * N webhooks producing N materialize triggers (of which N-1 are redundant),
- * the scheduler fires at most one per entity every 30 s.
+ * Primary materialization is triggered inline after CDC ingest. This
+ * scheduler catches any entities missed by the inline trigger or delayed
+ * by transient failures. Fires every minute with a 20 s staleness window.
  */
 export const cdcMaterializeSchedulerFunction = inngest.createFunction(
   {
     id: "cdc-materialize-scheduler",
     name: "CDC Materialize Scheduler",
   },
-  { cron: "*/2 * * * *" },
+  { cron: "*/1 * * * *" },
   async ({ step, logger }) => {
     const staleEntities = await step.run("find-stale-entities", async () => {
-      // Skip entities materialized within the last 45 s — they already have
+      // Skip entities materialized within the last 20 s — they already have
       // a queued or throttled run and re-emitting is pure waste.
-      const staleThreshold = new Date(Date.now() - 45_000);
+      const staleThreshold = new Date(Date.now() - 20_000);
 
       const candidates = await CdcEntityState.find({
         $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
