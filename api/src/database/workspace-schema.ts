@@ -781,6 +781,9 @@ export interface ICdcEntityState extends Document {
   lastEnqueuedAt?: Date;
   mergeIntervalSeconds: number;
   backfillCursor?: Record<string, unknown>;
+  consecutiveFailures: number;
+  lastFailedAt?: Date;
+  lastFailureError?: string;
 }
 
 export type IBigQueryChangeEvent = ICdcChangeEvent;
@@ -2055,6 +2058,9 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     lastEnqueuedAt: Date,
     mergeIntervalSeconds: { type: Number, default: 300 },
     backfillCursor: Schema.Types.Mixed,
+    consecutiveFailures: { type: Number, default: 0 },
+    lastFailedAt: Date,
+    lastFailureError: String,
   },
   {
     collection: "cdc_entity_state",

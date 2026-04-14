@@ -35,7 +35,7 @@ const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
 );
 
 const CDC_MATERIALIZE_THROTTLE_PERIOD = (process.env
-  .CDC_MATERIALIZE_THROTTLE_PERIOD || "10s") as `${number}s`;
+  .CDC_MATERIALIZE_THROTTLE_PERIOD || "5s") as `${number}s`;
 
 async function runWebhookEventProcess({
   event,
@@ -938,10 +938,31 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
       };
     });
 
-    // Materialization is NOT triggered inline — the scheduler cron picks up
-    // stale entities every 2 min by comparing lastIngestSeq vs
-    // lastMaterializedSeq.  Emitting here would duplicate the scheduler's
-    // work and flood the Inngest queue with redundant cdc/materialize events.
+    const typedResult = result as {
+      processed: boolean;
+      count: number;
+      workspaceId?: string;
+      entities?: string[];
+    } | null;
+
+    if (
+      typedResult?.processed &&
+      typedResult.count > 0 &&
+      typedResult.entities?.length
+    ) {
+      await step.sendEvent(
+        "trigger-inline-materialize",
+        typedResult.entities.map(entity => ({
+          name: "cdc/materialize" as const,
+          data: {
+            workspaceId: typedResult.workspaceId!,
+            flowId,
+            entity,
+            force: false,
+          },
+        })),
+      );
+    }
 
     return { success: true, ...result };
   },
@@ -1108,6 +1129,17 @@ const CDC_MATERIALIZE_MAX_EVENTS_BACKFILL = Math.max(
   100,
 );
 
+const CDC_CIRCUIT_BREAKER_BASE_BACKOFF_S = 60;
+const CDC_CIRCUIT_BREAKER_MAX_BACKOFF_S = 30 * 60;
+
+function circuitBreakerBackoffMs(consecutiveFailures: number): number {
+  const seconds = Math.min(
+    CDC_CIRCUIT_BREAKER_BASE_BACKOFF_S * 2 ** (consecutiveFailures - 1),
+    CDC_CIRCUIT_BREAKER_MAX_BACKOFF_S,
+  );
+  return seconds * 1000;
+}
+
 async function runCdcMaterialization(params: {
   eventData: unknown;
   step: any;
@@ -1120,6 +1152,58 @@ async function runCdcMaterialization(params: {
     entity: string;
     force?: boolean;
   };
+
+  const circuitCheck = (await params.step.run(
+    "check-circuit-breaker",
+    async () => {
+      const entityState = await CdcEntityState.findOne({
+        flowId: new Types.ObjectId(flowId),
+        entity,
+      })
+        .select("consecutiveFailures lastFailedAt lastFailureError")
+        .lean();
+
+      const failures = entityState?.consecutiveFailures || 0;
+      if (failures === 0) return { open: false, failures: 0 };
+
+      const lastFailedAt = entityState?.lastFailedAt
+        ? new Date(entityState.lastFailedAt).getTime()
+        : 0;
+      const backoffMs = circuitBreakerBackoffMs(failures);
+      const elapsed = Date.now() - lastFailedAt;
+
+      if (elapsed < backoffMs) {
+        return {
+          open: true,
+          failures,
+          backoffMs,
+          elapsedMs: elapsed,
+          retryAfterMs: backoffMs - elapsed,
+          lastError: entityState?.lastFailureError,
+        };
+      }
+
+      return { open: false, failures, halfOpen: true };
+    },
+  )) as any;
+
+  if (circuitCheck.open && !force) {
+    params.logger.info("CDC materialization skipped (circuit breaker open)", {
+      flowId,
+      entity,
+      consecutiveFailures: circuitCheck.failures,
+      backoffMs: circuitCheck.backoffMs,
+      retryAfterMs: circuitCheck.retryAfterMs,
+      lastError: circuitCheck.lastError,
+    });
+    return {
+      success: true,
+      skipped: true,
+      reason: "circuit_breaker_open",
+      consecutiveFailures: circuitCheck.failures,
+      retryAfterMs: circuitCheck.retryAfterMs,
+    };
+  }
 
   const materializeStartedAt = Date.now();
   const result = (await params.step.run("materialize-cdc-entity", async () => {
@@ -1195,24 +1279,24 @@ export const cdcMaterializeFunction = inngest.createFunction(
 );
 
 /**
- * Periodic scheduler that finds entities with un-materialized CDC events
+ * Safety-net scheduler that finds entities with un-materialized CDC events
  * and emits one cdc/materialize per stale (flowId, entity) pair.
  *
- * This decouples materialization timing from ingest volume: instead of
- * N webhooks producing N materialize triggers (of which N-1 are redundant),
- * the scheduler fires at most one per entity every 30 s.
+ * Primary materialization is triggered inline after CDC ingest. This
+ * scheduler catches any entities missed by the inline trigger or delayed
+ * by transient failures. Fires every minute with a 20 s staleness window.
  */
 export const cdcMaterializeSchedulerFunction = inngest.createFunction(
   {
     id: "cdc-materialize-scheduler",
     name: "CDC Materialize Scheduler",
   },
-  { cron: "*/2 * * * *" },
+  { cron: "*/1 * * * *" },
   async ({ step, logger }) => {
     const staleEntities = await step.run("find-stale-entities", async () => {
-      // Skip entities materialized within the last 45 s — they already have
+      // Skip entities materialized within the last 20 s — they already have
       // a queued or throttled run and re-emitting is pure waste.
-      const staleThreshold = new Date(Date.now() - 45_000);
+      const staleThreshold = new Date(Date.now() - 20_000);
 
       const candidates = await CdcEntityState.find({
         $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
@@ -1221,16 +1305,27 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
           { lastMaterializedAt: { $lt: staleThreshold } },
         ],
       })
-        .select("workspaceId flowId entity")
+        .select("workspaceId flowId entity consecutiveFailures lastFailedAt")
         .lean();
 
       if (candidates.length === 0) {
         return [];
       }
 
+      const now = Date.now();
+      const eligible = candidates.filter(c => {
+        const failures = (c as any).consecutiveFailures || 0;
+        if (failures === 0) return true;
+        const lastFailed = (c as any).lastFailedAt
+          ? new Date((c as any).lastFailedAt).getTime()
+          : 0;
+        return now - lastFailed >= circuitBreakerBackoffMs(failures);
+      });
+
       const flowIds = Array.from(
-        new Set(candidates.map(c => c.flowId.toString())),
+        new Set(eligible.map(c => c.flowId.toString())),
       );
+      if (flowIds.length === 0) return [];
       const existingFlows = await Flow.find({ _id: { $in: flowIds } })
         .select("_id")
         .lean();
@@ -1238,7 +1333,7 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
         existingFlows.map(f => f._id.toString()),
       );
 
-      return candidates.filter(c => existingFlowIdSet.has(c.flowId.toString()));
+      return eligible.filter(c => existingFlowIdSet.has(c.flowId.toString()));
     });
 
     const entities = staleEntities as Array<{
