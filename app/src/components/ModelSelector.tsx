@@ -24,13 +24,27 @@ const PROVIDER_NAMES: Record<string, string> = {
   openai: "OpenAI",
   anthropic: "Anthropic",
   google: "Google",
+  meta: "Meta",
+  mistral: "Mistral",
+  deepseek: "DeepSeek",
+  xai: "xAI",
+  cohere: "Cohere",
+  amazon: "Amazon",
+  alibaba: "Alibaba",
+  nvidia: "NVIDIA",
+  perplexity: "Perplexity",
 };
 
-// Provider order for display
-const PROVIDER_ORDER: Array<AIModel["provider"]> = [
+// Preferred provider order; unlisted providers appear at the end alphabetically
+const PROVIDER_PRIORITY: string[] = [
   "openai",
   "anthropic",
   "google",
+  "meta",
+  "deepseek",
+  "mistral",
+  "xai",
+  "cohere",
 ];
 
 export const ModelSelector: React.FC = () => {
@@ -65,17 +79,22 @@ export const ModelSelector: React.FC = () => {
   const selectedModel = models.find(m => m.id === selectedModelId);
   const displayName = selectedModel?.name || selectedModelId || "Select Model";
 
-  // Group models by provider
-  const modelsByProvider = PROVIDER_ORDER.reduce(
-    (acc, provider) => {
-      const providerModels = models.filter(m => m.provider === provider);
-      if (providerModels.length > 0) {
-        acc[provider] = providerModels;
-      }
-      return acc;
-    },
-    {} as Record<string, AIModel[]>,
-  );
+  // Group models by provider, ordered by priority then alphabetically
+  const modelsByProvider = (() => {
+    const groups: Record<string, AIModel[]> = {};
+    for (const m of models) {
+      if (!groups[m.provider]) groups[m.provider] = [];
+      groups[m.provider].push(m);
+    }
+    const priorityIdx = new Map(PROVIDER_PRIORITY.map((p, i) => [p, i]));
+    const sortedEntries = Object.entries(groups).sort(([a], [b]) => {
+      const ai = priorityIdx.get(a) ?? Infinity;
+      const bi = priorityIdx.get(b) ?? Infinity;
+      if (ai !== bi) return ai - bi;
+      return a.localeCompare(b);
+    });
+    return Object.fromEntries(sortedEntries) as Record<string, AIModel[]>;
+  })();
 
   if (loading) {
     return (

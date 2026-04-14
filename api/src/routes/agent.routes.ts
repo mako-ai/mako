@@ -64,7 +64,13 @@ export const agentRoutes = new Hono();
 agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
- * GET /models - List available AI models, filtered by workspace settings
+ * GET /models - List available AI models, filtered by workspace settings.
+ *
+ * In gateway mode with enabledModelIds set, models are built from the
+ * gateway catalog so that models not in the static ALL_MODELS list still
+ * appear. Static ALL_MODELS entries are preferred (they carry metadata
+ * like supportsThinking). For IDs only in the gateway catalog, a basic
+ * AIModel is synthesized from the catalog data.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const workspaceId =
@@ -78,6 +84,32 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
     if (ws?.settings?.enabledModelIds?.length) {
       enabledModelIds = ws.settings.enabledModelIds;
     }
+  }
+
+  if (isGatewayMode() && enabledModelIds && enabledModelIds.length > 0) {
+    const gatewayList = await getGatewayModels();
+    const gatewayMap = new Map(gatewayList.map(m => [m.id, m]));
+    const staticMap = new Map(getAvailableModels().map(m => [m.id, m]));
+
+    const models = enabledModelIds
+      .map(id => {
+        const staticModel = staticMap.get(id);
+        if (staticModel) return staticModel;
+
+        const gw = gatewayMap.get(id);
+        if (gw) {
+          return {
+            id: gw.id,
+            provider: gw.provider,
+            name: gw.name,
+            description: gw.description,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean);
+
+    return c.json({ models });
   }
 
   const models = getAvailableModels(enabledModelIds);
@@ -509,8 +541,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     );
   }
   const available = getAvailableModels(wsEnabledModelIds);
-  const resolvedModelId =
-    modelId && available.find(m => m.id === modelId) ? modelId : defaultId;
+  const isModelAllowed =
+    isGatewayMode() && wsEnabledModelIds?.length
+      ? wsEnabledModelIds.includes(modelId || "")
+      : available.some(m => m.id === modelId);
+  const resolvedModelId = modelId && isModelAllowed ? modelId : defaultId;
   const model = getModel(resolvedModelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
