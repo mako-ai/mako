@@ -44,9 +44,11 @@ import {
   Copy,
   Check,
   History,
+  ImagePlus,
   Plus,
   MessageSquare,
   Trash2,
+  X,
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
@@ -54,6 +56,7 @@ import { useStickToBottom } from "use-stick-to-bottom";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
+  type FileUIPart,
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -520,27 +523,59 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
   onToolClick,
 }: ChatMessageRowProps) {
   if (message.role === "user") {
+    const fileParts = (message.parts || []).filter(
+      (p): p is { type: "file"; url: string; mediaType: string } =>
+        p.type === "file" && "url" in p,
+    );
+    const textContent =
+      (message.parts || [])
+        .filter(
+          (p): p is { type: "text"; text: string } =>
+            p.type === "text" && "text" in p,
+        )
+        .map(p => p.text)
+        .join("") || "";
+
     return (
       <ListItem alignItems="flex-start" sx={listItemSx}>
         <Box sx={userMessageSx}>
           <Paper variant="outlined" sx={userMessagePaperSx}>
-            <Box sx={userMessageBoxSx}>
-              <ListItemText
-                primary={
-                  (message.parts || [])
-                    .filter(
-                      (p): p is { type: "text"; text: string } =>
-                        p.type === "text" && "text" in p,
-                    )
-                    .map(p => p.text)
-                    .join("") || ""
-                }
-                primaryTypographyProps={{
-                  variant: "body2",
-                  color: "text.primary",
+            {fileParts.length > 0 && (
+              <Box
+                sx={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 1,
+                  mb: textContent ? 1 : 0,
                 }}
-              />
-            </Box>
+              >
+                {fileParts.map((fp, i) => (
+                  <Box
+                    key={i}
+                    component="img"
+                    src={fp.url}
+                    alt="Attached image"
+                    sx={{
+                      maxWidth: 200,
+                      maxHeight: 200,
+                      borderRadius: 1,
+                      objectFit: "contain",
+                    }}
+                  />
+                ))}
+              </Box>
+            )}
+            {textContent && (
+              <Box sx={userMessageBoxSx}>
+                <ListItemText
+                  primary={textContent}
+                  primaryTypographyProps={{
+                    variant: "body2",
+                    color: "text.primary",
+                  }}
+                />
+              </Box>
+            )}
           </Paper>
         </Box>
       </ListItem>
@@ -626,23 +661,125 @@ ChatMessageRow.displayName = "ChatMessageRow";
 
 // Isolated input component — owns its own `input` state so keystrokes
 // never re-render the (expensive) message list above it.
+
+interface ImageAttachment {
+  id: string;
+  file: File;
+  previewUrl: string;
+}
+
 interface ChatInputAreaProps {
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, files?: FileUIPart[]) => void;
   onStop: () => void;
   isLoading: boolean;
   disabled: boolean;
   focusKey: string | number;
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 const ChatInputArea = React.memo(
   ({ onSubmit, onStop, isLoading, disabled, focusKey }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
+    const [images, setImages] = useState<ImageAttachment[]>([]);
+    const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const imagesRef = useRef<ImageAttachment[]>([]);
+    imagesRef.current = images;
 
     useEffect(() => {
       const timer = setTimeout(() => inputRef.current?.focus(), 100);
       return () => clearTimeout(timer);
     }, [focusKey]);
+
+    useEffect(() => {
+      return () => {
+        imagesRef.current.forEach(img => URL.revokeObjectURL(img.previewUrl));
+      };
+    }, []);
+
+    const addImages = useCallback((files: File[]) => {
+      const imageFiles = files.filter(f => f.type.startsWith("image/"));
+      if (imageFiles.length === 0) return;
+      setImages(prev => [
+        ...prev,
+        ...imageFiles.map(file => ({
+          id: crypto.randomUUID(),
+          file,
+          previewUrl: URL.createObjectURL(file),
+        })),
+      ]);
+    }, []);
+
+    const removeImage = useCallback((id: string) => {
+      setImages(prev => {
+        const img = prev.find(i => i.id === id);
+        if (img) URL.revokeObjectURL(img.previewUrl);
+        return prev.filter(i => i.id !== id);
+      });
+    }, []);
+
+    const handlePaste = useCallback(
+      (e: React.ClipboardEvent) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        const files: File[] = [];
+        for (const item of items) {
+          if (item.kind === "file" && item.type.startsWith("image/")) {
+            const file = item.getAsFile();
+            if (file) files.push(file);
+          }
+        }
+        if (files.length > 0) {
+          e.preventDefault();
+          addImages(files);
+        }
+      },
+      [addImages],
+    );
+
+    const submitMessage = useCallback(async () => {
+      const trimmedInput = input.trim();
+      const currentImages = images;
+      const hasText = trimmedInput.length > 0;
+      const hasImages = currentImages.length > 0;
+      if ((!hasText && !hasImages) || isLoading || isPreparingSubmission) {
+        return;
+      }
+
+      setIsPreparingSubmission(true);
+      let fileParts: FileUIPart[] | undefined;
+      try {
+        if (hasImages) {
+          fileParts = await Promise.all(
+            currentImages.map(async img => ({
+              type: "file" as const,
+              url: await readFileAsDataUrl(img.file),
+              mediaType: img.file.type,
+            })),
+          );
+          currentImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
+        }
+
+        onSubmit(input, fileParts);
+        setInput("");
+        setImages([]);
+      } finally {
+        setIsPreparingSubmission(false);
+      }
+    }, [images, input, isLoading, isPreparingSubmission, onSubmit]);
+
+    const hasContent = input.trim() || images.length > 0;
+    const isSubmitDisabled =
+      !hasContent || disabled || isLoading || isPreparingSubmission;
 
     return (
       <Paper
@@ -661,12 +798,78 @@ const ChatInputArea = React.memo(
         <form
           onSubmit={e => {
             e.preventDefault();
-            if (input.trim() && !isLoading) {
-              onSubmit(input);
-              setInput("");
-            }
+            submitMessage();
           }}
+          onPaste={handlePaste}
         >
+          {images.length > 0 && (
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 1,
+                px: 0.5,
+                pt: 0.5,
+              }}
+            >
+              {images.map(img => (
+                <Box
+                  key={img.id}
+                  sx={{
+                    position: "relative",
+                    width: 56,
+                    height: 56,
+                    borderRadius: 1.5,
+                    overflow: "visible",
+                    flexShrink: 0,
+                    "&:hover .remove-btn": {
+                      opacity: 1,
+                    },
+                  }}
+                >
+                  <Box
+                    component="img"
+                    src={img.previewUrl}
+                    alt="Attachment"
+                    sx={{
+                      width: 56,
+                      height: 56,
+                      borderRadius: 1.5,
+                      objectFit: "cover",
+                      border: 1,
+                      borderColor: "divider",
+                    }}
+                  />
+                  <IconButton
+                    type="button"
+                    className="remove-btn"
+                    onClick={() => removeImage(img.id)}
+                    size="small"
+                    disabled={isPreparingSubmission}
+                    sx={{
+                      position: "absolute",
+                      top: -6,
+                      right: -6,
+                      width: 18,
+                      height: 18,
+                      p: 0,
+                      opacity: 0,
+                      transition: "opacity 0.15s",
+                      backgroundColor: "background.paper",
+                      border: 1,
+                      borderColor: "divider",
+                      "&:hover": {
+                        backgroundColor: "action.hover",
+                      },
+                    }}
+                  >
+                    <X size={10} />
+                  </IconButton>
+                </Box>
+              ))}
+            </Box>
+          )}
+
           <TextField
             fullWidth
             autoFocus
@@ -679,10 +882,12 @@ const ChatInputArea = React.memo(
             onKeyDown={e => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (input.trim() && !isLoading) {
-                  onSubmit(input);
-                  setInput("");
-                }
+                submitMessage();
+              }
+              if (e.key === "Backspace" && !input && images.length > 0) {
+                e.preventDefault();
+                const last = images[images.length - 1];
+                if (last) removeImage(last.id);
               }
             }}
             variant="outlined"
@@ -712,6 +917,20 @@ const ChatInputArea = React.memo(
             }}
           />
 
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: "none" }}
+            onChange={e => {
+              if (e.target.files) {
+                addImages(Array.from(e.target.files));
+                e.target.value = "";
+              }
+            }}
+          />
+
           <Box
             sx={{
               display: "flex",
@@ -732,8 +951,27 @@ const ChatInputArea = React.memo(
               <ModelSelector />
             </Box>
 
+            <Tooltip title="Attach image" placement="top">
+              <IconButton
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                size="small"
+                disabled={isPreparingSubmission || disabled || isLoading}
+                sx={{
+                  width: 28,
+                  height: 28,
+                  flexShrink: 0,
+                  color: "text.secondary",
+                  "&:hover": { color: "text.primary" },
+                }}
+              >
+                <ImagePlus size={16} />
+              </IconButton>
+            </Tooltip>
+
             {isLoading ? (
               <IconButton
+                type="button"
                 onClick={onStop}
                 size="small"
                 sx={{
@@ -761,25 +999,22 @@ const ChatInputArea = React.memo(
             ) : (
               <IconButton
                 type="submit"
-                disabled={!input.trim() || disabled}
+                disabled={isSubmitDisabled}
                 size="small"
                 sx={{
                   width: 28,
                   height: 28,
                   borderRadius: "50%",
-                  backgroundColor:
-                    input.trim() && !disabled
-                      ? "primary.main"
-                      : "action.disabledBackground",
-                  color:
-                    input.trim() && !disabled
-                      ? "primary.contrastText"
-                      : "text.disabled",
+                  backgroundColor: !isSubmitDisabled
+                    ? "primary.main"
+                    : "action.disabledBackground",
+                  color: !isSubmitDisabled
+                    ? "primary.contrastText"
+                    : "text.disabled",
                   "&:hover": {
-                    backgroundColor:
-                      input.trim() && !disabled
-                        ? "primary.dark"
-                        : "action.disabledBackground",
+                    backgroundColor: !isSubmitDisabled
+                      ? "primary.dark"
+                      : "action.disabledBackground",
                   },
                   "&.Mui-disabled": {
                     backgroundColor: "action.disabledBackground",
@@ -1635,7 +1870,7 @@ const Chat: React.FC<ChatProps> = ({
   // to keep the callback identity stable during streaming.
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
-  const handleChatSubmit = useCallback((text: string) => {
+  const handleChatSubmit = useCallback((text: string, files?: FileUIPart[]) => {
     manualStopRequestedRef.current = false;
     capturedConsoleIdRef.current = activeConsoleIdRef.current;
     const store = useConsoleStore.getState();
@@ -1656,8 +1891,9 @@ const Chat: React.FC<ChatProps> = ({
     trackEvent("ai_chat_message_sent", {
       model: modelIdRef.current,
       has_context: !!activeConsole?.content,
+      has_images: (files?.length ?? 0) > 0,
     });
-    sendMessageRef.current({ text });
+    sendMessageRef.current({ text, files });
   }, []);
 
   // Copy chat history handler
