@@ -12,19 +12,21 @@ interface StreamingMarkdownProps {
   children: string;
 }
 
-export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = ({
-  children,
-}) => {
-  return (
-    <Streamdown
-      // streamdown and @streamdown/code currently expose mismatched shiki typings.
-      plugins={{ code: code as unknown as CodeHighlighterPlugin }}
-      shikiTheme={["github-light", "github-dark"]}
-      controls={false}
-    >
-      {children}
-    </Streamdown>
-  );
-};
+export const StreamingMarkdown: React.FC<StreamingMarkdownProps> = React.memo(
+  ({ children }) => {
+    return (
+      <Streamdown
+        // streamdown and @streamdown/code currently expose mismatched shiki typings.
+        plugins={{ code: code as unknown as CodeHighlighterPlugin }}
+        shikiTheme={["github-light", "github-dark"]}
+        controls={false}
+      >
+        {children}
+      </Streamdown>
+    );
+  },
+);
+
+StreamingMarkdown.displayName = "StreamingMarkdown";
 
 export default StreamingMarkdown;
