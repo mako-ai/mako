@@ -87,25 +87,45 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   }
 
   if (isGatewayMode() && enabledModelIds && enabledModelIds.length > 0) {
-    const gatewayList = await getGatewayModels();
-    const gatewayMap = new Map(gatewayList.map(m => [m.id, m]));
     const staticMap = new Map(getAvailableModels().map(m => [m.id, m]));
+
+    let gatewayMap: Map<
+      string,
+      { id: string; name: string; description: string; provider: string }
+    > | null = null;
+    try {
+      const gatewayList = await getGatewayModels();
+      gatewayMap = new Map(gatewayList.map(m => [m.id, m]));
+    } catch {
+      // Gateway catalog unavailable; we'll synthesize from IDs below
+    }
 
     const models = enabledModelIds
       .map(id => {
         const staticModel = staticMap.get(id);
         if (staticModel) return staticModel;
 
-        const gw = gatewayMap.get(id);
-        if (gw) {
-          return {
-            id: gw.id,
-            provider: gw.provider,
-            name: gw.name,
-            description: gw.description,
-          };
+        if (gatewayMap) {
+          const gw = gatewayMap.get(id);
+          if (gw) {
+            return {
+              id: gw.id,
+              provider: gw.provider,
+              name: gw.name,
+              description: gw.description,
+            };
+          }
         }
-        return null;
+
+        // Synthesize a basic model entry from the ID itself
+        const provider = id.split("/")[0] || "unknown";
+        const modelName = id.split("/").slice(1).join("/");
+        return {
+          id,
+          provider,
+          name: modelName,
+          description: "",
+        };
       })
       .filter(Boolean);
 
