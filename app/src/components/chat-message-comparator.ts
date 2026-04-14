@@ -13,8 +13,7 @@ export interface ChatMessageRowProps {
   };
   isLastMessage: boolean;
   isStreaming: boolean;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- comparator never inspects this
-  onToolClick: (...args: any[]) => void;
+  onToolClick: (tool: any) => void;
 }
 
 /**

@@ -1020,7 +1020,6 @@ const Chat: React.FC<ChatProps> = ({
           };
         },
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally stable: all dynamic values read via refs/getState
     [resultsContextRef],
   );
 
