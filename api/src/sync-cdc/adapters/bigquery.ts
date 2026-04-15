@@ -803,7 +803,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           .load(parquetPath, {
             sourceFormat: "PARQUET",
             writeDisposition: "WRITE_TRUNCATE",
-            schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
           });
 
         const meta = metadata as Record<string, any>;
