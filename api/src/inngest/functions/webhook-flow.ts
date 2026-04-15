@@ -1274,6 +1274,7 @@ export const cdcMaterializeFunction = inngest.createFunction(
   {
     id: "cdc-materialize",
     name: "CDC Materialize",
+    retries: 0,
     singleton: {
       key: "event.data.flowId + ':' + event.data.entity",
       mode: "skip",
