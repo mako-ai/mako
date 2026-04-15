@@ -9,7 +9,6 @@ import {
 import {
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,
-  webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -35,7 +34,6 @@ const baseFunctions = [
 const allWebhookFunctions = [
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,
-  webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -104,7 +102,6 @@ export {
   syncBackfillEntityFunction,
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,
-  webhookCleanupFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
