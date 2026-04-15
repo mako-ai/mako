@@ -603,35 +603,10 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
 );
 
 /**
- * Cleanup old webhook events (simplified version)
+ * webhookCleanupFunction — REMOVED.
+ * Superseded by a TTL index on webhookevents.receivedAt (7 days).
+ * MongoDB's background thread handles expiration automatically.
  */
-export const webhookCleanupFunction = inngest.createFunction(
-  {
-    id: "webhook-cleanup",
-    name: "Cleanup Old Webhook Events",
-  },
-  { cron: "0 2 * * *" }, // Run daily at 2 AM
-  async ({ step, logger }) => {
-    const result = await step.run("cleanup-old-events", async () => {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-      // Delete completed events older than 30 days
-      const deleteResult = await WebhookEvent.deleteMany({
-        status: "completed",
-        processedAt: { $lt: thirtyDaysAgo },
-      });
-
-      logger.info("Cleaned up old webhook events", {
-        deleted: deleteResult.deletedCount,
-      });
-
-      return { deleted: deleteResult.deletedCount };
-    });
-
-    return result;
-  },
-);
 
 /**
  * Retry failed / stuck webhook events.
@@ -1312,7 +1287,7 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
     name: "CDC Ingest + Materialize Scheduler",
     concurrency: { limit: 1 },
   },
-  { cron: "*/2 * * * *" },
+  { cron: "*/5 * * * *" },
   async ({ step, logger }) => {
     const ingestResult = (await step.run("ingest-pending-webhooks", () =>
       ingestPendingWebhookEvents(logger),
