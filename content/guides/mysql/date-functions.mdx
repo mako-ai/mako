@@ -1,0 +1,187 @@
+---
+title: "MySQL Date and Time Functions"
+description: "A practical guide to MySQL date functions: DATE_FORMAT, DATEDIFF, DATE_ADD, DATE_SUB, STR_TO_DATE, NOW, CURDATE, TIMESTAMPDIFF, and timezone handling."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "dates", "date-functions", "datetime"]
+date: "2026-04-15"
+---
+
+Date and time manipulation is a constant in real-world SQL. MySQL provides a comprehensive set of functions for formatting, calculating, converting, and filtering temporal data.
+
+## Getting the Current Date and Time
+
+```sql
+NOW()          -- '2026-04-15 21:00:00'  -- current datetime (server timezone)
+CURDATE()      -- '2026-04-15'           -- current date only
+CURTIME()      -- '21:00:00'             -- current time only
+UTC_TIMESTAMP() -- '2026-04-15 19:00:00' -- current UTC datetime
+UNIX_TIMESTAMP() -- 1744750800           -- current Unix timestamp (seconds since epoch)
+```
+
+`NOW()` and `SYSDATE()` look similar but behave differently in replicated or statement-based logging: `NOW()` returns the statement start time; `SYSDATE()` returns the current time at the moment of evaluation. Prefer `NOW()` for consistency.
+
+## Formatting Dates
+
+`DATE_FORMAT(date, format)` converts a date or datetime to a string using format specifiers:
+
+```sql
+SELECT DATE_FORMAT(NOW(), '%Y-%m-%d');          -- '2026-04-15'
+SELECT DATE_FORMAT(NOW(), '%d/%m/%Y');          -- '15/04/2026'
+SELECT DATE_FORMAT(NOW(), '%W, %M %d, %Y');     -- 'Wednesday, April 15, 2026'
+SELECT DATE_FORMAT(NOW(), '%Y-%m');             -- '2026-04' (year-month for grouping)
+SELECT DATE_FORMAT(NOW(), '%H:%i:%s');          -- '21:00:00'
+```
+
+Common format specifiers:
+
+| Specifier | Value |
+|-----------|-------|
+| `%Y` | 4-digit year |
+| `%m` | 2-digit month (01-12) |
+| `%d` | 2-digit day (01-31) |
+| `%H` | Hour (00-23) |
+| `%i` | Minutes (00-59) |
+| `%s` | Seconds (00-59) |
+| `%W` | Weekday name |
+| `%M` | Month name |
+
+## Extracting Date Parts
+
+```sql
+SELECT YEAR('2026-04-15');    -- 2026
+SELECT MONTH('2026-04-15');   -- 4
+SELECT DAY('2026-04-15');     -- 15
+SELECT HOUR('2026-04-15 21:00:00');   -- 21
+SELECT MINUTE('2026-04-15 21:30:45'); -- 30
+SELECT DAYOFWEEK('2026-04-15'); -- 4 (1=Sunday, 2=Monday, ..., 7=Saturday)
+SELECT DAYNAME('2026-04-15');   -- 'Wednesday'
+SELECT WEEK('2026-04-15');      -- 15 (week number of the year)
+SELECT QUARTER('2026-04-15');   -- 2
+```
+
+`EXTRACT` is the SQL standard equivalent:
+
+```sql
+SELECT EXTRACT(YEAR FROM '2026-04-15');  -- 2026
+SELECT EXTRACT(MONTH FROM '2026-04-15'); -- 4
+```
+
+## Date Arithmetic
+
+### DATE_ADD() and DATE_SUB()
+
+```sql
+SELECT DATE_ADD('2026-04-15', INTERVAL 7 DAY);    -- '2026-04-22'
+SELECT DATE_ADD('2026-04-15', INTERVAL 1 MONTH);  -- '2026-05-15'
+SELECT DATE_ADD('2026-04-15', INTERVAL 2 YEAR);   -- '2028-04-15'
+SELECT DATE_SUB('2026-04-15', INTERVAL 30 DAY);   -- '2026-03-16'
+SELECT DATE_ADD(NOW(), INTERVAL 6 HOUR);           -- 6 hours from now
+```
+
+The `+` and `-` operators also work for adding/subtracting intervals:
+
+```sql
+SELECT '2026-04-15' + INTERVAL 7 DAY;  -- '2026-04-22'
+```
+
+### DATEDIFF()
+
+Returns the number of days between two dates:
+
+```sql
+SELECT DATEDIFF('2026-12-31', '2026-04-15');  -- 260
+SELECT DATEDIFF(NOW(), created_at) AS days_old FROM orders;
+```
+
+Note: `DATEDIFF` always returns days. For other units, use `TIMESTAMPDIFF`.
+
+### TIMESTAMPDIFF()
+
+Calculates the difference in a specified unit:
+
+```sql
+SELECT TIMESTAMPDIFF(SECOND, '2026-04-15 09:00:00', '2026-04-15 21:00:00');  -- 43200
+SELECT TIMESTAMPDIFF(MINUTE, '2026-04-15 09:00:00', '2026-04-15 21:30:00');  -- 750
+SELECT TIMESTAMPDIFF(HOUR,   start_time, end_time) AS duration_hours FROM events;
+SELECT TIMESTAMPDIFF(MONTH,  signup_date, CURDATE()) AS months_as_customer FROM users;
+SELECT TIMESTAMPDIFF(YEAR,   birth_date, CURDATE()) AS age FROM people;
+```
+
+## Converting Strings to Dates
+
+`STR_TO_DATE(str, format)` parses a string into a DATE, TIME, or DATETIME value:
+
+```sql
+SELECT STR_TO_DATE('15/04/2026', '%d/%m/%Y');          -- '2026-04-15'
+SELECT STR_TO_DATE('April 15, 2026', '%M %d, %Y');     -- '2026-04-15'
+SELECT STR_TO_DATE('2026-04-15 21:00:00', '%Y-%m-%d %H:%i:%s'); -- datetime
+```
+
+This is essential when importing data where dates arrive in non-standard formats.
+
+```sql
+-- Convert on insert
+INSERT INTO events (name, event_date)
+VALUES ('Launch', STR_TO_DATE('15-Apr-2026', '%d-%b-%Y'));
+```
+
+## Truncating to Periods
+
+To group data by week, month, or year, truncate the date to the desired granularity:
+
+```sql
+-- Group by month
+SELECT DATE_FORMAT(order_date, '%Y-%m') AS month, COUNT(*) AS orders
+FROM orders
+GROUP BY month;
+
+-- Group by week (ISO week start = Monday)
+SELECT YEARWEEK(order_date, 3) AS iso_week, COUNT(*) AS orders
+FROM orders
+GROUP BY iso_week;
+
+-- Group by day
+SELECT DATE(created_at) AS day, SUM(amount) AS daily_revenue
+FROM orders
+GROUP BY day;
+```
+
+## Filtering by Date Ranges
+
+```sql
+-- Orders in the last 30 days
+SELECT * FROM orders WHERE order_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY);
+
+-- Orders this month
+SELECT * FROM orders
+WHERE YEAR(order_date) = YEAR(CURDATE())
+  AND MONTH(order_date) = MONTH(CURDATE());
+
+-- Between two dates
+SELECT * FROM orders WHERE order_date BETWEEN '2026-01-01' AND '2026-03-31';
+```
+
+**Index tip:** `WHERE YEAR(order_date) = 2026` prevents index usage because the function wraps the column. Rewrite as a range for better performance:
+
+```sql
+-- Index-friendly equivalent
+WHERE order_date >= '2026-01-01' AND order_date < '2027-01-01'
+```
+
+## Timezone Handling
+
+MySQL stores DATETIME values without timezone info. TIMESTAMP columns store UTC and convert to the session timezone on display.
+
+```sql
+-- Check current timezone
+SELECT @@global.time_zone, @@session.time_zone;
+
+-- Convert between timezones (requires timezone tables installed)
+SELECT CONVERT_TZ(NOW(), 'UTC', 'Europe/Paris');
+SELECT CONVERT_TZ(created_at, '+00:00', 'Europe/Berlin') FROM events;
+```
+
+If `CONVERT_TZ` returns NULL, the timezone tables aren't loaded. Load them with `mysql_tzinfo_to_sql` or use fixed offsets instead of named zones.
+
+Mako connects to MySQL and provides AI autocomplete for date function syntax. Try it at [mako.ai](https://mako.ai).
