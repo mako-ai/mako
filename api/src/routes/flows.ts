@@ -11,10 +11,8 @@ import {
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
-import {
-  enqueueWebhookProcess,
-  type WebhookFlowRoutingHint,
-} from "../inngest/webhook-process-enqueue";
+import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
+import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -3247,19 +3245,27 @@ flowRoutes.get("/:flowId/webhook/events/:eventId", async c => {
   }
 });
 
-// POST retry webhook event
+// POST retry webhook event — resets to pending.
+// CDC: 2-min cron picks it up. Non-CDC: enqueues via Inngest.
 flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const flowId = c.req.param("flowId");
     const eventId = c.req.param("eventId");
 
-    const event = await WebhookEvent.findOne({
-      _id: new Types.ObjectId(eventId),
-      flowId: new Types.ObjectId(flowId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      status: { $in: ["failed", "completed"] }, // Can retry failed or completed events
-    });
+    const event = await WebhookEvent.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(eventId),
+        flowId: new Types.ObjectId(flowId),
+        workspaceId: new Types.ObjectId(workspaceId),
+        status: { $in: ["failed", "completed"] },
+      },
+      {
+        $set: { status: "pending" },
+        $unset: { applyError: "", error: "", processedAt: "" },
+      },
+      { new: true, projection: { eventId: 1, flowId: 1 } },
+    );
 
     if (!event) {
       return c.json(
@@ -3271,11 +3277,8 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
       );
     }
 
-    // Reset event for retry
-    event.status = "pending";
-    await event.save();
-
-    const flowDoc = await Flow.findById(event.flowId)
+    // Non-CDC flows need explicit Inngest enqueue
+    const flowDoc = await Flow.findById(flowId)
       .select("syncEngine destinationDatabaseId tableDestination")
       .lean();
     const destConn =
@@ -3284,20 +3287,24 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
             .select("type")
             .lean()
         : null;
+    const isCdc =
+      flowDoc?.syncEngine === "cdc" &&
+      Boolean((flowDoc as any).tableDestination?.connectionId) &&
+      hasCdcDestinationAdapter(destConn?.type);
 
-    await enqueueWebhookProcess({
-      flowId: event.flowId.toString(),
-      eventId: event.eventId,
-      flow: flowDoc as WebhookFlowRoutingHint,
-      destinationTypeHint: destConn?.type,
-    });
+    if (!isCdc) {
+      await enqueueWebhookProcess({
+        flowId: event.flowId.toString(),
+        eventId: event.eventId,
+      });
+    }
 
     return c.json({
       success: true,
-      message: "Webhook event queued for retry",
-      data: {
-        eventId: event._id,
-      },
+      message: isCdc
+        ? "Webhook event reset to pending — will be picked up by next cron cycle"
+        : "Webhook event queued for retry",
+      data: { eventId },
     });
   } catch (error) {
     logger.error("Error retrying webhook event", { error });
@@ -3305,7 +3312,8 @@ flowRoutes.post("/:flowId/webhook/events/:eventId/retry", async c => {
   }
 });
 
-// POST retry all failed webhook events for a flow
+// POST retry all failed webhook events for a flow — resets to pending.
+// CDC: cron picks up. Non-CDC: enqueues each via Inngest.
 flowRoutes.post("/:flowId/webhook/events/retry-all-failed", async c => {
   try {
     const workspaceId = c.req.param("workspaceId");
@@ -3328,11 +3336,12 @@ flowRoutes.post("/:flowId/webhook/events/retry-all-failed", async c => {
     await WebhookEvent.updateMany(
       { _id: { $in: failedEvents.map(e => e._id) } },
       {
-        $set: { status: "pending", applyStatus: "pending" },
+        $set: { status: "pending" },
         $unset: { applyError: "", error: "", processedAt: "" },
       },
     );
 
+    // Non-CDC flows: enqueue each event via Inngest
     const flowDoc = await Flow.findById(flowId)
       .select("syncEngine destinationDatabaseId tableDestination")
       .lean();
@@ -3342,27 +3351,35 @@ flowRoutes.post("/:flowId/webhook/events/retry-all-failed", async c => {
             .select("type")
             .lean()
         : null;
+    const isCdc =
+      flowDoc?.syncEngine === "cdc" &&
+      Boolean((flowDoc as any).tableDestination?.connectionId) &&
+      hasCdcDestinationAdapter(destConn?.type);
 
     let enqueued = 0;
-    for (const evt of failedEvents) {
-      try {
-        await enqueueWebhookProcess({
-          flowId: evt.flowId.toString(),
-          eventId: evt.eventId,
-          flow: flowDoc as WebhookFlowRoutingHint,
-          destinationTypeHint: destConn?.type,
-        });
-        enqueued++;
-      } catch {
-        logger.warn("Failed to enqueue event during retry-all", {
-          eventId: evt.eventId,
-        });
+    if (!isCdc) {
+      for (const evt of failedEvents) {
+        try {
+          await enqueueWebhookProcess({
+            flowId: evt.flowId.toString(),
+            eventId: evt.eventId,
+          });
+          enqueued++;
+        } catch {
+          logger.warn("Failed to enqueue event during retry-all", {
+            eventId: evt.eventId,
+          });
+        }
       }
     }
 
     return c.json({
       success: true,
-      data: { retried: enqueued, total: failedEvents.length },
+      data: {
+        retried: failedEvents.length,
+        total: failedEvents.length,
+        enqueued,
+      },
     });
   } catch (error) {
     logger.error("Error retrying all failed webhook events", { error });

@@ -9,16 +9,13 @@ class CdcIngestService {
   /**
    * Append normalized CDC events to the event store and update ingest state.
    *
-   * The caller (webhookEventProcessCdcFunction) triggers materialization
-   * inline by emitting cdc/materialize events immediately after this call.
-   * The cdcMaterializeSchedulerFunction cron (every 1 min) acts as a safety
-   * net for any entities missed by the inline trigger.
+   * Called by the 2-min cron scheduler (cdcMaterializeSchedulerFunction)
+   * during the ingest step, and by the backfill system.
    */
   async appendNormalizedEvents(params: {
     workspaceId: string;
     flowId: string;
     events: Array<NormalizedCdcEvent & { webhookEventId?: string }>;
-    enqueue?: boolean;
   }): Promise<{ inserted: number; deduped: number }> {
     const normalized = params.events.map(event => ({
       ...normalizeCdcEvent(event),

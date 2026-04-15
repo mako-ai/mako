@@ -12,35 +12,46 @@ import {
   isEntityEnabledForFlow,
   resolveConfiguredEntities,
 } from "../sync-cdc/entity-selection";
+import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { loggers } from "../logging";
 
 const logger = loggers.inngest("webhook");
 
 const router = new Hono();
 
+function isCdcFlow(
+  flow: { syncEngine?: string; tableDestination?: { connectionId?: unknown } },
+  destinationType?: string,
+): boolean {
+  return (
+    flow.syncEngine === "cdc" &&
+    Boolean(flow.tableDestination?.connectionId) &&
+    hasCdcDestinationAdapter(destinationType)
+  );
+}
+
 /**
  * Webhook endpoint handler
  * URL structure: /api/webhooks/:workspaceId/:flowId
+ *
+ * CDC flows: saves WebhookEvent as "pending" and returns 200 immediately.
+ * The 2-min cron (cdcMaterializeSchedulerFunction) ingests pending events
+ * into CdcChangeEvents and triggers materialization — no per-webhook Inngest
+ * events are emitted.
+ *
+ * Non-CDC (legacy SQL) flows: saves WebhookEvent and enqueues via Inngest
+ * for immediate processing (unchanged).
  */
 router.post("/webhooks/:workspaceId/:flowId", async c => {
   const { workspaceId, flowId } = c.req.param();
 
   logger.debug("Webhook received", { workspaceId, flowId });
 
-  // For Stripe webhooks, we need the raw body as Buffer
-  // Using arrayBuffer and converting to Buffer preserves the exact bytes
   const rawBodyBuffer = Buffer.from(await c.req.arrayBuffer());
   const rawBodyText = rawBodyBuffer.toString("utf8");
   const headers = c.req.header();
 
-  logger.debug("Webhook payload details", {
-    headers,
-    bodyLength: rawBodyBuffer.length,
-    bodyPreview: rawBodyText.substring(0, 200),
-  });
-
   try {
-    // 1. Quick validation - find the flow
     const flow = await Flow.findOne({
       _id: flowId,
       workspaceId: workspaceId,
@@ -57,13 +68,11 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       return c.json({ error: "Webhook endpoint disabled" }, 403);
     }
 
-    // 2. Get the data source and connector
     const dataSource = await DataSource.findById(flow.dataSourceId);
     if (!dataSource) {
       return c.json({ error: "Data source not found" }, 404);
     }
 
-    // Get the connector for this data source type
     const connector = connectorRegistry.getConnector(dataSource);
     if (!connector) {
       return c.json(
@@ -72,15 +81,9 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       );
     }
 
-    // 3. Verify webhook signature using connector
     let event: any;
 
     if (connector.supportsWebhooks()) {
-      logger.debug("Verifying webhook signature", {
-        secretLength: flow.webhookConfig.secret?.length,
-        secretPrefix: flow.webhookConfig.secret?.substring(0, 10),
-      });
-
       const verificationResult = await connector.verifyWebhook({
         payload: rawBodyText,
         headers: headers,
@@ -97,11 +100,8 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
         );
       }
 
-      logger.info("Webhook signature verified successfully");
       event = verificationResult.event;
     } else {
-      // Connector doesn't support webhooks but we received one anyway
-      // Parse the raw body as JSON
       try {
         event = JSON.parse(rawBodyText);
       } catch (e) {
@@ -110,7 +110,6 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       }
     }
 
-    // 3. Store the raw event for processing
     const webhookEvent = new WebhookEvent({
       flowId,
       workspaceId,
@@ -126,12 +125,11 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       status: "pending",
       attempts: 0,
       rawPayload: event,
-      signature: JSON.stringify(headers), // Store all headers for audit/debugging
+      signature: JSON.stringify(headers),
     });
 
     await webhookEvent.save();
 
-    // 5. Update webhook stats
     await Flow.updateOne(
       { _id: flowId },
       {
@@ -140,10 +138,22 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       },
     );
 
-    // 5b. Early entity filtering — drop events for disabled entities
-    //     immediately without burning an Inngest concurrency slot.
-    //     Skip when sub-types exist (e.g. activities → activities:Call) since
-    //     we can't resolve the sub-type without extracting payload data.
+    // CDC flows: save and return. The 2-min cron handles ingest + materialization.
+    const destConn = flow.destinationDatabaseId
+      ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+          .select("type")
+          .lean()
+      : null;
+
+    if (isCdcFlow(flow, destConn?.type)) {
+      logger.info("Webhook saved for CDC cron ingest", {
+        eventId: webhookEvent.eventId,
+        flowId,
+      });
+      return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
+    }
+
+    // Non-CDC flows: early entity filter + enqueue via Inngest (existing path)
     const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
     if (mapping) {
       const baseEntity = mapping.entity.split(":")[0];
@@ -173,11 +183,6 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
             $unset: { appliedAt: "" },
           },
         );
-        logger.debug("Webhook event dropped early (entity disabled)", {
-          eventId: webhookEvent.eventId,
-          entity: mapping.entity,
-          eventType: webhookEvent.eventType,
-        });
         return c.json(
           { received: true, eventId: webhookEvent.eventId, dropped: true },
           200,
@@ -185,15 +190,8 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       }
     }
 
-    // 6. Trigger immediate processing via Inngest (retry briefly on transient failures)
     try {
-      const destConn = flow.destinationDatabaseId
-        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-            .select("type")
-            .lean()
-        : null;
-
-      const enqueuePayload = {
+      await enqueueWebhookProcess({
         flowId,
         workspaceId,
         eventId: webhookEvent.eventId,
@@ -203,28 +201,7 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
           tableDestination: flow.tableDestination,
         },
         destinationTypeHint: destConn?.type,
-      };
-
-      const maxEnqueueAttempts = 3;
-      const enqueueRetryDelayMs = 500;
-      let enqueueError: unknown;
-      for (let attempt = 1; attempt <= maxEnqueueAttempts; attempt++) {
-        try {
-          await enqueueWebhookProcess(enqueuePayload);
-          enqueueError = undefined;
-          break;
-        } catch (err) {
-          enqueueError = err;
-          if (attempt < maxEnqueueAttempts) {
-            await new Promise(resolve =>
-              setTimeout(resolve, enqueueRetryDelayMs),
-            );
-          }
-        }
-      }
-      if (enqueueError) {
-        throw enqueueError;
-      }
+      });
     } catch (enqueueError) {
       await WebhookEvent.updateOne(
         { _id: webhookEvent._id },
@@ -252,7 +229,6 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
 
       logger.error("Failed to enqueue webhook event for processing", {
         flowId,
-        workspaceId,
         eventId: webhookEvent.eventId,
         error:
           enqueueError instanceof Error
@@ -260,32 +236,13 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
             : String(enqueueError),
       });
 
-      return c.json(
-        {
-          received: false,
-          eventId: webhookEvent.eventId,
-          error: "Failed to enqueue webhook event for processing",
-        },
-        200,
-      );
+      return c.json({ received: false, eventId: webhookEvent.eventId }, 200);
     }
 
-    // 8. Return success immediately
-    logger.info("Webhook processed successfully", {
-      eventId: webhookEvent.eventId,
-    });
     return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
   } catch (error) {
     logger.error("Webhook handler error", { error });
-
-    // Still return 200 to prevent retries for our errors
-    return c.json(
-      {
-        received: false,
-        error: "Internal processing error, event saved for retry",
-      },
-      200,
-    );
+    return c.json({ received: false, error: "Internal processing error" }, 200);
   }
 });
 
@@ -337,6 +294,15 @@ router.post("/webhooks/:workspaceId/:flowId/test", async c => {
           .select("type")
           .lean()
       : null;
+
+    if (isCdcFlow(flow, destConn?.type)) {
+      return c.json({
+        success: true,
+        message:
+          "Test webhook saved — will be ingested on next cron cycle (<=2 min)",
+        eventId: testEvent.id,
+      });
+    }
 
     await enqueueWebhookProcess({
       flowId,
