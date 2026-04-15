@@ -802,7 +802,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           .table(stagingTable)
           .load(parquetPath, {
             sourceFormat: "PARQUET",
-            writeDisposition: "WRITE_TRUNCATE",
+            writeDisposition: "WRITE_APPEND",
             schemaUpdateOptions: ["ALLOW_FIELD_ADDITION"],
           });
 
