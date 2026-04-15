@@ -1,0 +1,252 @@
+---
+title: "PostgreSQL Date and Time Functions: A Practical Guide"
+description: "How to work with dates and timestamps in PostgreSQL: date_trunc, extract, age, intervals, timezone handling, and common patterns for time-series analysis."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "dates", "timestamps", "time-series"]
+date: "2026-04-15"
+---
+
+# PostgreSQL Date and Time Functions
+
+PostgreSQL's date/time handling is thorough but has enough edge cases (timezone-awareness, epoch arithmetic, interval quirks) that it's worth going through the important functions systematically.
+
+## Date/Time Types
+
+| Type | Storage | Description |
+|---|---|---|
+| `date` | 4 bytes | Date only (no time) |
+| `time` | 8 bytes | Time only (no date) |
+| `timestamp` | 8 bytes | Date + time, no timezone |
+| `timestamptz` | 8 bytes | Date + time, stored as UTC |
+| `interval` | 16 bytes | A span of time |
+
+**Always use `timestamptz` for anything user-facing.** `timestamp` stores the value as-is with no timezone context -- if your application server and database server are in different timezones, you'll get wrong results. `timestamptz` stores UTC internally and converts to the session timezone on output.
+
+## Current Time
+
+```sql
+SELECT now();               -- timestamptz (current transaction time)
+SELECT current_timestamp;   -- same as now()
+SELECT current_date;        -- date only (no time)
+SELECT current_time;        -- time only (with timezone)
+SELECT clock_timestamp();   -- actual wall clock time (changes within a transaction)
+```
+
+`now()` returns the start of the current transaction, not the actual clock time. Use `clock_timestamp()` inside long transactions if you need a fresh timestamp.
+
+## Casting and Literals
+
+```sql
+-- String to date
+SELECT '2024-03-15'::date;
+SELECT CAST('2024-03-15' AS date);
+
+-- String to timestamp
+SELECT '2024-03-15 14:30:00'::timestamp;
+SELECT '2024-03-15 14:30:00+01'::timestamptz;
+
+-- Current date arithmetic
+SELECT now() - INTERVAL '7 days';
+SELECT now() + INTERVAL '3 months';
+SELECT '2024-01-01'::date + 90;  -- add 90 days
+```
+
+## date_trunc: Truncate to a Unit
+
+`date_trunc(unit, timestamp)` truncates a timestamp to the specified precision. This is the workhorse for time-series grouping.
+
+```sql
+SELECT date_trunc('hour',  '2024-03-15 14:37:42'::timestamp);
+-- 2024-03-15 14:00:00
+
+SELECT date_trunc('day',   '2024-03-15 14:37:42'::timestamp);
+-- 2024-03-15 00:00:00
+
+SELECT date_trunc('month', '2024-03-15 14:37:42'::timestamp);
+-- 2024-03-01 00:00:00
+
+SELECT date_trunc('year',  '2024-03-15 14:37:42'::timestamp);
+-- 2024-01-01 00:00:00
+```
+
+Valid units: `microseconds`, `milliseconds`, `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`, `decade`, `century`, `millennium`.
+
+### Grouping by time period (most common use)
+
+```sql
+-- Revenue by month
+SELECT
+    date_trunc('month', created_at) AS month,
+    SUM(amount) AS revenue
+FROM orders
+GROUP BY 1
+ORDER BY 1;
+
+-- Signups by week
+SELECT
+    date_trunc('week', created_at) AS week,
+    COUNT(*) AS signups
+FROM users
+GROUP BY 1
+ORDER BY 1;
+```
+
+## extract / date_part: Get a Specific Component
+
+```sql
+SELECT extract(year   FROM now());   -- 2024
+SELECT extract(month  FROM now());   -- 3
+SELECT extract(day    FROM now());   -- 15
+SELECT extract(hour   FROM now());   -- 14
+SELECT extract(dow    FROM now());   -- 0=Sunday, 1=Monday, ... 6=Saturday
+SELECT extract(doy    FROM now());   -- Day of year (1-366)
+SELECT extract(week   FROM now());   -- ISO week number
+SELECT extract(epoch  FROM now());   -- Unix timestamp (seconds since 1970-01-01)
+```
+
+`date_part` is functionally identical to `extract` with a slightly different syntax:
+
+```sql
+SELECT date_part('month', now());  -- same as extract(month FROM now())
+```
+
+### epoch: converting to/from Unix timestamps
+
+```sql
+-- Timestamp to epoch
+SELECT extract(epoch FROM now())::bigint;
+
+-- Epoch to timestamp
+SELECT to_timestamp(1710000000);
+-- 2024-03-09 16:00:00+00
+```
+
+## age: Human-Readable Intervals
+
+`age(timestamp, timestamp)` returns the difference as a human-readable interval:
+
+```sql
+SELECT age('2024-03-15'::date, '1990-06-20'::date);
+-- 33 years 8 months 23 days
+
+-- Age from now
+SELECT age(now(), birth_date) FROM users LIMIT 1;
+-- 45 years 2 months 4 days
+```
+
+For numeric age in years, `extract` is more useful:
+
+```sql
+SELECT extract(year FROM age(birth_date)) AS age_years FROM users;
+```
+
+## Interval Arithmetic
+
+```sql
+-- Add an interval
+SELECT '2024-01-31'::date + INTERVAL '1 month';
+-- 2024-02-29 (handles leap year correctly)
+
+-- Subtract dates to get an interval
+SELECT '2024-03-15'::date - '2024-01-01'::date;
+-- 74 (days, as integer)
+
+SELECT '2024-03-15'::timestamp - '2024-01-01'::timestamp;
+-- 74 days (as interval)
+
+-- Multiply/divide intervals
+SELECT INTERVAL '1 day' * 30;
+-- 30 days
+
+SELECT INTERVAL '10 hours' / 4;
+-- 02:30:00
+```
+
+## Timezone Handling
+
+```sql
+-- Convert a timestamp to a specific timezone
+SELECT now() AT TIME ZONE 'America/New_York';
+SELECT now() AT TIME ZONE 'Europe/Berlin';
+
+-- Set session timezone
+SET timezone = 'Europe/Zurich';
+SELECT now();  -- will display in Zurich time
+
+-- Convert timestamptz between timezones
+SELECT '2024-03-15 10:00:00+00'::timestamptz AT TIME ZONE 'America/Los_Angeles';
+-- 2024-03-15 03:00:00 (UTC-7 in March)
+```
+
+List all available timezone names:
+
+```sql
+SELECT name FROM pg_timezone_names ORDER BY name;
+```
+
+## Formatting and Parsing
+
+```sql
+-- Format a timestamp as a string
+SELECT to_char(now(), 'YYYY-MM-DD HH24:MI:SS');
+-- 2024-03-15 14:30:00
+
+SELECT to_char(now(), 'Day, DD Month YYYY');
+-- Friday, 15 March  2024
+
+-- Parse a string to a timestamp
+SELECT to_timestamp('15/03/2024 14:30', 'DD/MM/YYYY HH24:MI');
+```
+
+`to_char` format patterns: `YYYY` (4-digit year), `MM` (month 01-12), `DD` (day 01-31), `HH24` (hour 00-23), `MI` (minute), `SS` (second), `Day` (full weekday name), `Mon` (abbreviated month).
+
+## Common Patterns
+
+### Last N days
+
+```sql
+SELECT * FROM events
+WHERE created_at > now() - INTERVAL '30 days';
+```
+
+### Date gaps: find missing days in a series
+
+```sql
+-- Generate all days in range
+SELECT generate_series::date AS day
+FROM generate_series('2024-01-01'::date, '2024-01-31'::date, '1 day'::interval) AS generate_series
+EXCEPT
+SELECT date_trunc('day', created_at)::date
+FROM events
+WHERE created_at BETWEEN '2024-01-01' AND '2024-01-31';
+```
+
+### Bucketing by time of day
+
+```sql
+SELECT
+    CASE
+        WHEN extract(hour FROM created_at) BETWEEN 6 AND 11 THEN 'morning'
+        WHEN extract(hour FROM created_at) BETWEEN 12 AND 17 THEN 'afternoon'
+        WHEN extract(hour FROM created_at) BETWEEN 18 AND 22 THEN 'evening'
+        ELSE 'night'
+    END AS time_of_day,
+    COUNT(*) AS orders
+FROM orders
+GROUP BY 1;
+```
+
+## Common Mistakes
+
+**Using `timestamp` instead of `timestamptz`**: Your application will break when server timezones differ. Default to `timestamptz`.
+
+**Comparing `timestamptz` without considering session timezone**: `WHERE created_at = '2024-03-15'` works, but the implicit cast to `timestamptz` uses the session timezone. Be explicit: `WHERE created_at >= '2024-03-15 00:00:00+00'`.
+
+**`age()` for numeric calculations**: `age()` returns a human interval, not a number. To get age in years as a number, use `extract(year FROM age(...))`.
+
+**`date_trunc('week', ...)` starts on Monday**: ISO weeks start Monday. If your business week starts Sunday, you need to adjust: `date_trunc('week', created_at) - INTERVAL '1 day'`.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
