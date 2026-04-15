@@ -1,0 +1,203 @@
+---
+title: "PostgreSQL Views and Materialized Views: A Complete Guide"
+description: "Learn how to create and use regular views and materialized views in PostgreSQL, when to use each, and how to manage refresh strategies."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "views", "materialized-views", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Views and Materialized Views: A Complete Guide
+
+PostgreSQL has two types of views: regular views, which are saved queries that execute at runtime, and materialized views, which store the query results physically and must be refreshed. Each solves a different problem.
+
+## Regular Views
+
+A view is a named query stored in the database. It behaves like a table in `SELECT` statements but contains no data itself -- every query against a view re-executes the underlying SQL.
+
+### Creating a View
+
+```sql
+CREATE VIEW active_customers AS
+SELECT
+  customer_id,
+  name,
+  email,
+  created_at
+FROM customers
+WHERE status = 'active';
+```
+
+Query it like a table:
+
+```sql
+SELECT * FROM active_customers WHERE created_at > '2025-01-01';
+```
+
+### Updating a View
+
+```sql
+CREATE OR REPLACE VIEW active_customers AS
+SELECT
+  customer_id,
+  name,
+  email,
+  created_at,
+  country
+FROM customers
+WHERE status = 'active';
+```
+
+`CREATE OR REPLACE` preserves existing permissions. You can only add columns or change the query body -- you cannot remove columns or change data types with this syntax. For structural changes, drop and recreate.
+
+### Dropping a View
+
+```sql
+DROP VIEW active_customers;
+-- Or, to avoid error if it doesn't exist:
+DROP VIEW IF EXISTS active_customers;
+-- To also drop dependent objects:
+DROP VIEW active_customers CASCADE;
+```
+
+### Updatable Views
+
+Simple views -- those based on a single table with no aggregation, DISTINCT, LIMIT, UNION, or window functions -- are automatically updatable in PostgreSQL. This means you can `INSERT`, `UPDATE`, and `DELETE` through them:
+
+```sql
+UPDATE active_customers SET email = 'new@example.com' WHERE customer_id = 42;
+```
+
+For complex views, use `INSTEAD OF` triggers to handle DML operations.
+
+## Materialized Views
+
+A materialized view stores the query result on disk. Queries against it read cached data, not the source tables. You must explicitly refresh it to pick up new data.
+
+### Creating a Materialized View
+
+```sql
+CREATE MATERIALIZED VIEW monthly_revenue AS
+SELECT
+  date_trunc('month', created_at) AS month,
+  SUM(amount) AS revenue,
+  COUNT(*) AS order_count
+FROM orders
+GROUP BY 1;
+```
+
+### Querying a Materialized View
+
+```sql
+SELECT * FROM monthly_revenue ORDER BY month DESC LIMIT 12;
+```
+
+The query hits the materialized cache, not the underlying `orders` table.
+
+### Refreshing
+
+```sql
+-- Locks the view for reads during refresh (data unavailable during update)
+REFRESH MATERIALIZED VIEW monthly_revenue;
+
+-- Non-blocking: old data remains readable while refresh runs
+-- Requires a UNIQUE index on the view
+REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_revenue;
+```
+
+For `CONCURRENTLY` to work, you need at least one unique index on the view:
+
+```sql
+CREATE UNIQUE INDEX ON monthly_revenue (month);
+```
+
+### Dropping a Materialized View
+
+```sql
+DROP MATERIALIZED VIEW monthly_revenue;
+```
+
+## Regular Views vs Materialized Views
+
+| Characteristic | Regular View | Materialized View |
+|---|---|---|
+| Data freshness | Always current | As of last refresh |
+| Query speed | Depends on base tables | Fast (cached) |
+| Storage | None | Yes (disk space) |
+| Write-through | Possible (simple views) | No |
+| Maintenance | None | Requires REFRESH |
+| Use case | Simplification, security | Heavy aggregations, reporting |
+
+## Common Patterns
+
+### Automatic Refresh with pg_cron
+
+If you have `pg_cron` installed:
+
+```sql
+SELECT cron.schedule('refresh-monthly-revenue', '0 3 * * *',
+  'REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_revenue');
+```
+
+### Conditional Refresh
+
+Track when source data last changed and only refresh if needed:
+
+```sql
+DO $$
+DECLARE
+  last_refresh TIMESTAMP;
+  latest_order TIMESTAMP;
+BEGIN
+  SELECT MAX(created_at) INTO latest_order FROM orders;
+  SELECT last_value INTO last_refresh FROM pg_matviews WHERE matviewname = 'monthly_revenue';
+
+  IF latest_order > last_refresh THEN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY monthly_revenue;
+  END IF;
+END $$;
+```
+
+### Views for Security
+
+Views can expose a subset of columns, hiding sensitive fields:
+
+```sql
+CREATE VIEW public_users AS
+SELECT user_id, username, created_at
+FROM users;
+-- Hides: email, password_hash, last_login_ip
+```
+
+Grant access to the view without exposing the underlying table:
+
+```sql
+GRANT SELECT ON public_users TO reporting_role;
+```
+
+## Inspecting Views
+
+```sql
+-- List all regular views
+SELECT viewname, definition FROM pg_views WHERE schemaname = 'public';
+
+-- List all materialized views and last refresh
+SELECT matviewname, ispopulated FROM pg_matviews WHERE schemaname = 'public';
+
+-- Check when a materialized view was last refreshed
+SELECT schemaname, matviewname, last_value
+FROM pg_matviews
+WHERE matviewname = 'monthly_revenue';
+```
+
+## Common Mistakes
+
+**Forgetting `CONCURRENTLY` on busy tables:** A regular `REFRESH` locks the view for readers. If your reporting dashboard queries the view, it will block until refresh completes. Always use `CONCURRENTLY` in production with a unique index.
+
+**Stale data in CI/testing:** Materialized views don't auto-update. If your tests insert data and immediately query a materialized view, they'll see stale data unless you refresh.
+
+**Cascading drops:** `DROP TABLE orders` will fail if `monthly_revenue` depends on it. Use `CASCADE` with care -- it will drop the dependent view too.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
