@@ -29,7 +29,7 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Mirror fork branch to origin (workaround for claude-code-action fork bug)
@@ -74,7 +74,7 @@ jobs:
       issues: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Mirror fork branch to origin (workaround for claude-code-action fork bug)
