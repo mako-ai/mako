@@ -1,0 +1,230 @@
+---
+title: "PostgreSQL Recursive Queries: WITH RECURSIVE for Hierarchical Data"
+description: "Learn how to use PostgreSQL's WITH RECURSIVE to query hierarchical and graph-structured data -- org charts, categories, file trees, and bill-of-materials -- with practical examples and performance tips."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "recursive", "cte", "hierarchical-data", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Recursive Queries: WITH RECURSIVE for Hierarchical Data
+
+Hierarchical data -- parent-child relationships, org charts, category trees, file systems -- is common but awkward to query with plain SQL. `WITH RECURSIVE` solves this by letting a CTE reference itself, allowing you to traverse a tree or graph structure entirely in SQL.
+
+## How WITH RECURSIVE Works
+
+A recursive CTE has two parts separated by `UNION ALL`:
+
+1. **Anchor query** -- the base case. Runs once to produce the starting set.
+2. **Recursive query** -- references the CTE name, joins against it, and produces the next level. Runs repeatedly until no new rows are produced.
+
+```sql
+WITH RECURSIVE cte_name AS (
+  -- Anchor: starting rows
+  SELECT ...
+
+  UNION ALL
+
+  -- Recursive: join CTE against the table to get next level
+  SELECT ... FROM table JOIN cte_name ON ...
+)
+SELECT * FROM cte_name;
+```
+
+PostgreSQL internally maintains a "working table" (current level) and an "intermediate table" (accumulated results). On each iteration, it joins the table against the working table to produce the next working table. It stops when the working table is empty.
+
+## Example: Organizational Hierarchy
+
+```sql
+CREATE TABLE employees (
+  id INT PRIMARY KEY,
+  name TEXT NOT NULL,
+  manager_id INT REFERENCES employees(id)
+);
+
+INSERT INTO employees VALUES
+  (1, 'Alice', NULL),   -- CEO
+  (2, 'Bob', 1),        -- CTO
+  (3, 'Carol', 1),      -- CFO
+  (4, 'Dave', 2),       -- Engineer
+  (5, 'Eve', 2),        -- Engineer
+  (6, 'Frank', 3);      -- Accountant
+```
+
+### Get All Reports Under a Manager
+
+```sql
+WITH RECURSIVE org AS (
+  -- Anchor: start with the target manager
+  SELECT id, name, manager_id, 0 AS depth
+  FROM employees
+  WHERE id = 2  -- Bob (CTO)
+
+  UNION ALL
+
+  -- Recursive: find direct reports of each level
+  SELECT e.id, e.name, e.manager_id, org.depth + 1
+  FROM employees e
+  JOIN org ON e.manager_id = org.id
+)
+SELECT depth, repeat('  ', depth) || name AS org_chart, id
+FROM org
+ORDER BY depth, name;
+```
+
+Result:
+```
+depth | org_chart       | id
+------+-----------------+----
+    0 | Bob             |  2
+    1 |   Dave          |  4
+    1 |   Eve           |  5
+```
+
+### Get the Full Path to Root
+
+```sql
+WITH RECURSIVE path AS (
+  -- Anchor: start with a leaf node
+  SELECT id, name, manager_id, name::TEXT AS path
+  FROM employees
+  WHERE id = 4  -- Dave
+
+  UNION ALL
+
+  -- Recursive: walk up to parent
+  SELECT e.id, e.name, e.manager_id, e.name || ' > ' || path.path
+  FROM employees e
+  JOIN path ON e.id = path.manager_id
+)
+SELECT path
+FROM path
+WHERE manager_id IS NULL;  -- Stop at root (CEO)
+```
+
+Result: `Alice > Bob > Dave`
+
+## Example: Category Tree
+
+```sql
+CREATE TABLE categories (
+  id INT PRIMARY KEY,
+  name TEXT,
+  parent_id INT REFERENCES categories(id)
+);
+
+-- Get all descendants of category 5
+WITH RECURSIVE subtree AS (
+  SELECT id, name, parent_id, 0 AS level
+  FROM categories
+  WHERE id = 5
+
+  UNION ALL
+
+  SELECT c.id, c.name, c.parent_id, subtree.level + 1
+  FROM categories c
+  JOIN subtree ON c.parent_id = subtree.id
+)
+SELECT level, name FROM subtree ORDER BY level;
+```
+
+## Example: Bill of Materials
+
+A classic use case: a product is made of components, which are themselves made of other components.
+
+```sql
+CREATE TABLE components (
+  parent_id INT,
+  child_id INT,
+  quantity INT
+);
+
+-- Total quantity of part #15 needed to build product #1
+WITH RECURSIVE bom AS (
+  SELECT child_id, quantity, quantity AS total
+  FROM components
+  WHERE parent_id = 1  -- top-level product
+
+  UNION ALL
+
+  SELECT c.child_id, c.quantity, bom.total * c.quantity
+  FROM components c
+  JOIN bom ON c.parent_id = bom.child_id
+)
+SELECT child_id, SUM(total) AS total_qty
+FROM bom
+WHERE child_id = 15
+GROUP BY child_id;
+```
+
+## Controlling Depth and Preventing Cycles
+
+### Depth Limit
+
+Add a depth counter and stop at a maximum:
+
+```sql
+WITH RECURSIVE org AS (
+  SELECT id, name, manager_id, 0 AS depth
+  FROM employees WHERE id = 1
+
+  UNION ALL
+
+  SELECT e.id, e.name, e.manager_id, org.depth + 1
+  FROM employees e
+  JOIN org ON e.manager_id = org.id
+  WHERE org.depth < 10  -- stop after 10 levels
+)
+SELECT * FROM org;
+```
+
+### Cycle Detection
+
+For graph data (not strict trees), rows can appear multiple times. Track the visited path:
+
+```sql
+WITH RECURSIVE graph_walk AS (
+  SELECT id, ARRAY[id] AS visited
+  FROM nodes WHERE id = 1
+
+  UNION ALL
+
+  SELECT n.id, graph_walk.visited || n.id
+  FROM edges e
+  JOIN nodes n ON e.to_id = n.id
+  JOIN graph_walk ON e.from_id = graph_walk.id
+  WHERE NOT n.id = ANY(graph_walk.visited)  -- skip already-visited nodes
+)
+SELECT id FROM graph_walk;
+```
+
+PostgreSQL 14+ has `SEARCH` and `CYCLE` clauses that handle this more cleanly:
+
+```sql
+WITH RECURSIVE graph_walk AS (
+  SELECT id FROM nodes WHERE id = 1
+  UNION ALL
+  SELECT n.id FROM edges e JOIN nodes n ON e.to_id = n.id
+  JOIN graph_walk ON e.from_id = graph_walk.id
+)
+CYCLE id SET is_cycle USING path;
+```
+
+## Performance Tips
+
+- **Index the join column:** `CREATE INDEX ON employees (manager_id)`. The recursive join fires once per level, and each iteration does a lookup by the parent ID.
+- **Limit rows early:** Filter in the anchor query, not just at the end. Fewer starting rows means fewer recursive iterations.
+- **Avoid `UNION` (without ALL):** `UNION` deduplicates at every iteration, which is expensive. Use `UNION ALL` and handle duplicates in the outer query if needed.
+- **Monitor with EXPLAIN:** Recursive queries show an additional `WorkTable Scan` node. Check its actual row count -- unexpectedly high numbers indicate a cycle or missing depth limit.
+
+## Common Mistakes
+
+**Missing the termination condition:** If the recursive step always produces rows, the query runs forever. PostgreSQL doesn't have a built-in row limit for recursive queries by default -- set `statement_timeout` on long-running environments.
+
+**Using UNION instead of UNION ALL:** Deduplication inside the recursion makes cycle detection impossible and slows down large traversals significantly.
+
+**Traversing from root when you need descendants:** The anchor is the starting set. To get all descendants of node X, anchor on X and recursively join `parent_id = current.id`. To get ancestors, anchor on X and recursively join `id = current.parent_id`.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

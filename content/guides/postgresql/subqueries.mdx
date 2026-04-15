@@ -1,0 +1,174 @@
+---
+title: "PostgreSQL Subqueries: A Practical Guide"
+description: "Learn how to use subqueries in PostgreSQL -- scalar, row, table, correlated, EXISTS, and ANY/ALL -- with real examples and performance guidance."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "subqueries", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Subqueries: A Practical Guide
+
+A subquery is a query nested inside another query. PostgreSQL evaluates the inner query first and uses its result in the outer query. Subqueries appear in `SELECT`, `FROM`, `WHERE`, and `HAVING` clauses, and each placement has different semantics and performance characteristics.
+
+## Types of Subqueries
+
+### Scalar Subqueries
+
+A scalar subquery returns exactly one row and one column. It can appear anywhere a single value is expected.
+
+```sql
+SELECT
+  product_name,
+  price,
+  price - (SELECT AVG(price) FROM products) AS diff_from_avg
+FROM products;
+```
+
+If the subquery returns more than one row, PostgreSQL raises an error at runtime.
+
+### Row Subqueries
+
+A row subquery returns a single row with multiple columns. Compare it using a row constructor:
+
+```sql
+SELECT * FROM employees
+WHERE (department_id, salary) = (SELECT department_id, MAX(salary) FROM employees GROUP BY department_id LIMIT 1);
+```
+
+### Table Subqueries (Derived Tables)
+
+A subquery in the `FROM` clause acts like a temporary table:
+
+```sql
+SELECT dept, avg_salary
+FROM (
+  SELECT department_id AS dept, AVG(salary) AS avg_salary
+  FROM employees
+  GROUP BY department_id
+) AS dept_stats
+WHERE avg_salary > 80000;
+```
+
+The alias (`dept_stats`) is required. Derived tables are also called inline views.
+
+### Correlated Subqueries
+
+A correlated subquery references a column from the outer query. PostgreSQL re-evaluates it for every row in the outer query.
+
+```sql
+-- Films with above-average length for their rating
+SELECT title, rating, length
+FROM film f
+WHERE length > (
+  SELECT AVG(length)
+  FROM film
+  WHERE rating = f.rating
+);
+```
+
+The reference to `f.rating` is what makes it correlated. Performance scales with the number of rows in the outer query -- index the columns used in the join condition.
+
+## EXISTS and NOT EXISTS
+
+`EXISTS` tests whether a subquery returns any rows. It short-circuits as soon as one row is found, making it efficient for existence checks.
+
+```sql
+-- Customers who have placed at least one order
+SELECT customer_id, name
+FROM customers c
+WHERE EXISTS (
+  SELECT 1 FROM orders o
+  WHERE o.customer_id = c.customer_id
+);
+
+-- Customers with no orders
+SELECT customer_id, name
+FROM customers c
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o
+  WHERE o.customer_id = c.customer_id
+);
+```
+
+`SELECT 1` inside an `EXISTS` is conventional -- the actual columns returned don't matter.
+
+### EXISTS vs IN
+
+Both can express the same logic, but with differences:
+
+```sql
+-- IN version
+SELECT * FROM customers
+WHERE customer_id IN (SELECT customer_id FROM orders);
+
+-- EXISTS version
+SELECT * FROM customers c
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id);
+```
+
+`IN` materializes the subquery result set first. If the subquery returns many rows or if the values list contains `NULL`, `IN` can behave unexpectedly -- `NULL IN (1, 2, NULL)` evaluates to `NULL`, not `FALSE`. `EXISTS` avoids NULL pitfalls and is generally faster on large datasets because it stops at the first match.
+
+## ANY and ALL
+
+`ANY` (equivalent to `SOME`) returns true if the condition holds for at least one value in the subquery. `ALL` requires the condition to hold for every value.
+
+```sql
+-- Products cheaper than any product in the 'Gadgets' category
+SELECT product_name, price
+FROM products
+WHERE price < ANY (
+  SELECT price FROM products WHERE category = 'Gadgets'
+);
+
+-- Products cheaper than all products in the 'Gadgets' category
+SELECT product_name, price
+FROM products
+WHERE price < ALL (
+  SELECT price FROM products WHERE category = 'Gadgets'
+);
+```
+
+`= ANY(...)` is functionally identical to `IN (...)`.
+
+## Subqueries in HAVING
+
+Filter aggregate results using a subquery in `HAVING`:
+
+```sql
+SELECT department_id, AVG(salary) AS avg_sal
+FROM employees
+GROUP BY department_id
+HAVING AVG(salary) > (SELECT AVG(salary) FROM employees);
+```
+
+## Performance Considerations
+
+- **Correlated subqueries** execute once per outer row. For large tables, convert them to JOINs or CTEs when possible.
+- **EXISTS** is almost always faster than `IN` with large subquery result sets -- it short-circuits.
+- **Derived tables** (subqueries in `FROM`) are often equivalent to CTEs in performance since PostgreSQL 12 inlines both by default.
+- Add indexes on the columns used in correlated conditions (`WHERE o.customer_id = c.customer_id` benefits from an index on `orders.customer_id`).
+
+## Common Mistakes
+
+**Returning multiple rows from a scalar context:**
+```sql
+-- Breaks if multiple rows match
+SELECT * FROM orders WHERE amount = (SELECT MAX(amount) FROM orders WHERE status = 'pending');
+-- Safer:
+SELECT * FROM orders WHERE amount = (SELECT MAX(amount) FROM orders WHERE status = 'pending') LIMIT 1;
+```
+
+**NULL handling with IN:**
+```sql
+-- Returns no rows if subquery result contains any NULL
+SELECT * FROM products WHERE id NOT IN (SELECT product_id FROM discontinued);
+-- Use NOT EXISTS instead:
+SELECT * FROM products p WHERE NOT EXISTS (
+  SELECT 1 FROM discontinued d WHERE d.product_id = p.id
+);
+```
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

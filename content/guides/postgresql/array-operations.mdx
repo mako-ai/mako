@@ -1,0 +1,179 @@
+---
+title: "PostgreSQL Arrays: Operators, Functions, and Practical Patterns"
+description: "Learn how to work with PostgreSQL array types -- creation, operators, functions like unnest and array_agg, indexing with GIN, and common patterns for storing and querying arrays."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "arrays", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Arrays: Operators, Functions, and Practical Patterns
+
+PostgreSQL has a native array type that lets you store multiple values in a single column. Every data type has a corresponding array type: `INT[]`, `TEXT[]`, `UUID[]`, and so on. This is genuinely useful for tags, categories, feature flags, and multi-valued attributes -- but arrays are a tradeoff. They trade normalization flexibility for query simplicity.
+
+## Creating Array Columns
+
+```sql
+CREATE TABLE articles (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  tags TEXT[],
+  scores INT[]
+);
+
+INSERT INTO articles (title, tags, scores)
+VALUES
+  ('PostgreSQL Arrays', ARRAY['postgresql', 'sql', 'backend'], ARRAY[95, 82, 88]),
+  ('Python Basics', ARRAY['python', 'beginner'], ARRAY[70, 75]);
+```
+
+You can also use the literal syntax:
+
+```sql
+INSERT INTO articles (title, tags)
+VALUES ('Redis Guide', '{redis, caching, nosql}');
+```
+
+## Accessing Elements
+
+Arrays in PostgreSQL are 1-indexed (unlike most programming languages):
+
+```sql
+SELECT title, tags[1] AS first_tag FROM articles;
+-- Returns the first element of the tags array
+
+SELECT tags[2:3] FROM articles;
+-- Slice: elements 2 through 3
+```
+
+## Key Operators
+
+| Operator | Meaning | Example |
+|---|---|---|
+| `@>` | Contains | `tags @> ARRAY['sql']` |
+| `<@` | Is contained by | `ARRAY['sql'] <@ tags` |
+| `&&` | Overlaps (any element in common) | `tags && ARRAY['sql', 'nosql']` |
+| `=` | Equal arrays | `tags = ARRAY['a', 'b']` |
+| `\|\|` | Concatenate | `tags \|\| ARRAY['new']` |
+
+```sql
+-- Articles tagged with both 'postgresql' AND 'sql'
+SELECT title FROM articles WHERE tags @> ARRAY['postgresql', 'sql'];
+
+-- Articles tagged with either 'python' OR 'redis'
+SELECT title FROM articles WHERE tags && ARRAY['python', 'redis'];
+
+-- Check if a single value is in the array
+SELECT title FROM articles WHERE 'postgresql' = ANY(tags);
+```
+
+## Essential Functions
+
+### `unnest()` -- Expand Array to Rows
+
+```sql
+SELECT title, unnest(tags) AS tag FROM articles;
+-- Returns one row per tag per article
+```
+
+This is the primary way to JOIN arrays to other tables or aggregate across array values.
+
+### `array_agg()` -- Aggregate Rows to Array
+
+The inverse of `unnest`:
+
+```sql
+SELECT department_id, array_agg(employee_name ORDER BY employee_name) AS team
+FROM employees
+GROUP BY department_id;
+```
+
+### `array_length()` and `cardinality()`
+
+```sql
+SELECT title, array_length(tags, 1) AS tag_count FROM articles;
+-- array_length requires dimension argument (1 for 1D arrays)
+
+SELECT title, cardinality(tags) AS tag_count FROM articles;
+-- cardinality() is simpler; returns 0 for empty, NULL for null
+```
+
+### `array_append()`, `array_prepend()`, `array_remove()`
+
+```sql
+-- Add a tag
+UPDATE articles SET tags = array_append(tags, 'featured') WHERE id = 1;
+
+-- Remove a tag
+UPDATE articles SET tags = array_remove(tags, 'beginner') WHERE id = 2;
+
+-- Prepend
+UPDATE articles SET tags = array_prepend('breaking', tags) WHERE id = 1;
+```
+
+### `array_position()` and `array_positions()`
+
+```sql
+-- Find index of first occurrence
+SELECT array_position(ARRAY['a', 'b', 'c', 'b'], 'b'); -- returns 2
+
+-- Find all occurrences
+SELECT array_positions(ARRAY['a', 'b', 'c', 'b'], 'b'); -- returns {2,4}
+```
+
+### `array_to_string()` and `string_to_array()`
+
+```sql
+SELECT array_to_string(ARRAY['a', 'b', 'c'], ', '); -- 'a, b, c'
+SELECT string_to_array('a,b,c', ',');               -- {a,b,c}
+```
+
+## Indexing with GIN
+
+For containment and overlap queries (`@>`, `<@`, `&&`), GIN indexes are the right choice:
+
+```sql
+CREATE INDEX idx_articles_tags ON articles USING GIN (tags);
+```
+
+After creating this index, `tags @> ARRAY['postgresql']` and `tags && ARRAY['sql', 'nosql']` will use it efficiently.
+
+For `= ANY(tags)` queries, GIN indexes may not be used -- verify with `EXPLAIN`. A standard B-tree index is also ineffective on array columns for containment queries.
+
+## Real-World Pattern: Tag Counts
+
+```sql
+-- How many articles per tag?
+SELECT tag, COUNT(*) AS article_count
+FROM articles, unnest(tags) AS tag
+GROUP BY tag
+ORDER BY article_count DESC;
+```
+
+This is the standard pattern: join the table to its own unnested array, then aggregate.
+
+## Arrays vs Normalized Tables
+
+Arrays are appropriate when:
+- The list of values is small and bounded
+- You never need to join the array values to another table by foreign key
+- Order within the list matters
+- You want to avoid a join table for simple multi-value attributes (e.g. tags, flags)
+
+Prefer a separate table when:
+- Array elements have their own attributes (id, created_at, metadata)
+- You need foreign key constraints
+- The list is large or unbounded
+- You frequently query "all articles for a given tag" (normalized table + index is faster at scale)
+
+## Common Mistakes
+
+**Forgetting 1-based indexing:** `tags[0]` always returns `NULL`. `tags[1]` is the first element.
+
+**Using `= ANY()` expecting GIN:** `= ANY(tags)` does not use GIN indexes efficiently in most cases. Use `@>` containment for indexed lookups.
+
+**NULL inside arrays:** `array_remove(tags, NULL)` does not work as expected -- `NULL` elements require `array_remove(tags, NULL::text)` with explicit type, and even then PostgreSQL comparisons with NULL are tricky. Consider `NOT NULL` constraints on array columns where appropriate.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
