@@ -1,0 +1,220 @@
+---
+title: "Window Functions in MySQL 8.0"
+description: "Learn how to use MySQL window functions including ROW_NUMBER, RANK, DENSE_RANK, NTILE, LAG, and LEAD with the OVER and PARTITION BY clauses."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "analytics", "window-functions"]
+date: "2026-04-15"
+---
+
+Window functions in MySQL let you perform calculations across a set of related rows without collapsing them into a single output row. They were introduced in **MySQL 8.0** -- if you're on MySQL 5.7 or earlier, you won't have access to them.
+
+The defining feature is the `OVER` clause: it defines the "window" of rows the function operates on.
+
+## Basic Syntax
+
+```sql
+SELECT
+  column_name,
+  WINDOW_FUNCTION() OVER (
+    PARTITION BY grouping_column
+    ORDER BY sorting_column
+  ) AS alias
+FROM table_name;
+```
+
+- `PARTITION BY` -- divides rows into groups; the function resets for each group
+- `ORDER BY` -- sets the logical order within each partition
+- Both are optional, but `ORDER BY` is almost always needed for ranking functions
+
+## Ranking Functions
+
+### ROW_NUMBER()
+
+Assigns a unique sequential integer to each row within a partition. Ties get different numbers -- the order is deterministic only if the `ORDER BY` is unique.
+
+```sql
+SELECT
+  name,
+  department,
+  salary,
+  ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS row_num
+FROM employees;
+```
+
+Use this when you need exactly one row per partition (top-N queries, deduplication).
+
+### RANK()
+
+Assigns the same rank to tied rows, then skips numbers. Two rows tied at rank 2 produce the sequence 1, 2, 2, 4.
+
+```sql
+SELECT
+  name,
+  score,
+  RANK() OVER (ORDER BY score DESC) AS rank_position
+FROM exam_results;
+```
+
+### DENSE_RANK()
+
+Like `RANK()`, but without gaps. Two rows tied at rank 2 produce 1, 2, 2, 3.
+
+```sql
+SELECT
+  name,
+  score,
+  DENSE_RANK() OVER (ORDER BY score DESC) AS dense_rank_position
+FROM exam_results;
+```
+
+**Which to use:** `ROW_NUMBER` for deduplication, `RANK` when gaps make business sense (e.g., competition standings), `DENSE_RANK` when you want a continuous rank count.
+
+### NTILE(n)
+
+Divides rows into `n` roughly equal buckets and assigns a bucket number.
+
+```sql
+SELECT
+  name,
+  salary,
+  NTILE(4) OVER (ORDER BY salary) AS quartile
+FROM employees;
+```
+
+Useful for percentile analysis -- quartile 4 is the top earners.
+
+## Value Functions
+
+### LAG() and LEAD()
+
+`LAG` accesses a value from a previous row; `LEAD` from a following row. Both accept an optional offset (default 1) and a default value when no row exists.
+
+```sql
+SELECT
+  order_date,
+  revenue,
+  LAG(revenue, 1, 0) OVER (ORDER BY order_date) AS prev_day_revenue,
+  revenue - LAG(revenue, 1, 0) OVER (ORDER BY order_date) AS day_over_day_change
+FROM daily_sales;
+```
+
+```sql
+-- Compare current month to same month last year
+SELECT
+  month,
+  revenue,
+  LAG(revenue, 12) OVER (ORDER BY month) AS same_month_last_year
+FROM monthly_sales;
+```
+
+### FIRST_VALUE() and LAST_VALUE()
+
+Return the first or last value within the window frame.
+
+```sql
+SELECT
+  name,
+  department,
+  salary,
+  FIRST_VALUE(name) OVER (
+    PARTITION BY department
+    ORDER BY salary DESC
+  ) AS highest_earner_in_dept
+FROM employees;
+```
+
+**Note on LAST_VALUE:** By default, the window frame ends at the current row, so `LAST_VALUE` returns the current row's value. To get the true last value in the partition, add an explicit frame clause:
+
+```sql
+LAST_VALUE(name) OVER (
+  PARTITION BY department
+  ORDER BY salary DESC
+  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+)
+```
+
+## Aggregate Functions as Window Functions
+
+Any aggregate can be used with `OVER` to compute running totals, moving averages, or partition-level aggregates while retaining individual rows.
+
+```sql
+-- Running total
+SELECT
+  order_date,
+  amount,
+  SUM(amount) OVER (ORDER BY order_date) AS running_total
+FROM orders;
+
+-- Percentage of department total
+SELECT
+  name,
+  department,
+  salary,
+  salary / SUM(salary) OVER (PARTITION BY department) * 100 AS pct_of_dept_total
+FROM employees;
+
+-- 7-day moving average
+SELECT
+  day,
+  visitors,
+  AVG(visitors) OVER (
+    ORDER BY day
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) AS seven_day_avg
+FROM traffic;
+```
+
+## Named Windows
+
+If you use the same window definition multiple times, define it once using the `WINDOW` clause:
+
+```sql
+SELECT
+  name,
+  salary,
+  RANK() OVER w AS salary_rank,
+  DENSE_RANK() OVER w AS salary_dense_rank,
+  NTILE(4) OVER w AS salary_quartile
+FROM employees
+WINDOW w AS (PARTITION BY department ORDER BY salary DESC);
+```
+
+## Top-N Per Group
+
+A common pattern: get the top 3 employees by salary in each department.
+
+```sql
+SELECT *
+FROM (
+  SELECT
+    name,
+    department,
+    salary,
+    ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) AS rn
+  FROM employees
+) ranked
+WHERE rn <= 3;
+```
+
+## Common Mistakes
+
+**Using WHERE to filter on window function output** -- you can't; window functions are evaluated after WHERE. Use a subquery or CTE:
+
+```sql
+-- Wrong (will error)
+SELECT name, RANK() OVER (ORDER BY salary DESC) AS r FROM employees WHERE r <= 5;
+
+-- Right
+SELECT * FROM (
+  SELECT name, RANK() OVER (ORDER BY salary DESC) AS r FROM employees
+) t WHERE r <= 5;
+```
+
+**Forgetting MySQL 8.0 requirement** -- window functions don't exist in MySQL 5.7. Check with `SELECT VERSION();`.
+
+**Inconsistent ORDER BY** -- if your `ORDER BY` isn't unique, `ROW_NUMBER` produces non-deterministic results. Add the primary key as a tiebreaker.
+
+## Exploring These Queries
+
+Mako's AI autocomplete can suggest window function syntax as you type. Connect your MySQL instance at [mako.ai](https://mako.ai) and try these queries interactively.

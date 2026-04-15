@@ -1,0 +1,154 @@
+---
+title: "Full-Text Search in MySQL"
+description: "How to use MySQL FULLTEXT indexes and MATCH AGAINST for natural language search, boolean mode, and query expansion, with relevance scoring and gotchas."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "full-text-search", "fulltext", "match-against"]
+date: "2026-04-15"
+---
+
+MySQL's FULLTEXT search lets you search text columns for words and phrases much more efficiently than `LIKE '%term%'` -- which can't use indexes and scans every row.
+
+FULLTEXT indexes are available on `CHAR`, `VARCHAR`, and `TEXT` columns in InnoDB (MySQL 5.6+) and MyISAM tables.
+
+## Creating a FULLTEXT Index
+
+```sql
+CREATE TABLE articles (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(200),
+  body TEXT,
+  published_at DATE
+);
+
+-- Add FULLTEXT index on one or multiple columns
+ALTER TABLE articles ADD FULLTEXT INDEX ft_article (title, body);
+
+-- Or at table creation time
+CREATE TABLE posts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(200),
+  content TEXT,
+  FULLTEXT(title, content)
+);
+```
+
+A FULLTEXT index across multiple columns is searched together -- you can't independently search just one of the indexed columns using that index.
+
+## Basic Search: Natural Language Mode
+
+Natural language mode is the default. MySQL parses the search string into words, looks them up in the full-text index, and ranks results by relevance.
+
+```sql
+SELECT id, title,
+  MATCH(title, body) AGAINST('mysql index performance') AS relevance_score
+FROM articles
+ORDER BY relevance_score DESC;
+
+-- With a WHERE clause to filter zero-relevance rows
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('mysql index performance');
+```
+
+Relevance score is a float. Higher = more relevant. In `WHERE` clause usage (without `ORDER BY relevance_score`), MySQL can use the FULLTEXT index directly for rows with non-zero score.
+
+### Stop Words
+
+MySQL ignores common English stop words (like "the", "is", "and") from natural language searches. Words shorter than `ft_min_word_len` (default: 4 characters) are also ignored.
+
+```sql
+-- Check current minimum word length
+SHOW VARIABLES LIKE 'ft_min_word_len';
+-- or for InnoDB:
+SHOW VARIABLES LIKE 'innodb_ft_min_token_size';
+```
+
+This means searching for "a" or "is" returns no results -- these terms aren't indexed.
+
+## Boolean Mode
+
+Boolean mode gives you control over matching logic via operators:
+
+| Operator | Meaning |
+|----------|---------|
+| `+word` | Word must be present |
+| `-word` | Word must not be present |
+| `word` | Word is optional (boosts relevance if present) |
+| `*` | Wildcard prefix (e.g., `index*` matches "index", "indexes", "indexing") |
+| `"phrase"` | Exact phrase match |
+| `>word` | Word present and boosts relevance |
+| `<word` | Word present but reduces relevance |
+
+```sql
+-- Must contain 'mysql', must not contain 'slow'
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('+mysql -slow' IN BOOLEAN MODE);
+
+-- Must contain 'index' and 'performance', optional 'optimization'
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('+index +performance optimization' IN BOOLEAN MODE);
+
+-- Exact phrase match
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('"query optimizer"' IN BOOLEAN MODE);
+
+-- Prefix match
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('optim*' IN BOOLEAN MODE);
+```
+
+Boolean mode does not rank results by relevance by default -- all matching rows are returned equally. To get a relevance score in boolean mode, include the `MATCH...AGAINST` expression in the `SELECT` list.
+
+## Query Expansion Mode
+
+Query expansion does two passes: first a normal natural language search, then it expands the query using words from the top results to find additional related rows.
+
+```sql
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('database' WITH QUERY EXPANSION);
+```
+
+Useful when users search with single broad terms. Be cautious: results can become noisy for ambiguous queries. Not useful for precise technical searches.
+
+## Combining Full-Text with Regular Filters
+
+```sql
+-- Full-text search filtered by date
+SELECT id, title, MATCH(title, body) AGAINST('replication') AS score
+FROM articles
+WHERE MATCH(title, body) AGAINST('replication')
+  AND published_at >= '2025-01-01'
+ORDER BY score DESC;
+```
+
+The FULLTEXT index handles the text search; the `published_at` filter narrows the result set further. Using both together is efficient.
+
+## Limitations
+
+**No index on partial columns.** FULLTEXT searches the entire column content -- you can't restrict the search to the first N characters.
+
+**No prefix operator on short terms.** The minimum word length applies to wildcard matches too. `inde*` won't match "index" if "inde" is shorter than `innodb_ft_min_token_size`.
+
+**Language-specific.** The built-in parser is word-oriented and primarily suited for languages with space-delimited words. For CJK languages (Chinese, Japanese, Korean), configure the MeCab or N-gram parser.
+
+**Not a replacement for a search engine.** For advanced requirements -- stemming, synonyms, fuzzy matching, relevance tuning, multi-language support -- dedicated search tools like Elasticsearch or Typesense are better fits. FULLTEXT is the right choice when you need search on a MySQL table without adding infrastructure.
+
+**MyISAM vs InnoDB.** Historically, FULLTEXT only worked with MyISAM. InnoDB support was added in MySQL 5.6 and is now complete. Use InnoDB.
+
+## When to Use LIKE Instead
+
+`LIKE 'term%'` (prefix match, no leading wildcard) can use a regular B-tree index and performs well. Only reach for FULLTEXT when you need:
+- Mid-string word matching (`WHERE body LIKE '%term%'` has no index path)
+- Relevance ranking
+- Multi-word natural language queries
+- Boolean operators
+
+For simple prefix searches or filtering on a moderate-sized table, `LIKE 'term%'` with a regular index is cheaper and simpler.
+
+Mako connects to MySQL with AI autocomplete that can suggest MATCH AGAINST syntax as you type. Try it at [mako.ai](https://mako.ai).

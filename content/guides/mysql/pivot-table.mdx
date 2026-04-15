@@ -1,0 +1,163 @@
+---
+title: "Pivot Tables in MySQL"
+description: "How to pivot rows into columns in MySQL using CASE/GROUP BY for static pivots and dynamic SQL with prepared statements for runtime column generation."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "pivot", "case", "group-by", "prepared-statements"]
+date: "2026-04-15"
+---
+
+MySQL has no native `PIVOT` keyword. To rotate rows into columns, you use a combination of conditional aggregation (`CASE` + `GROUP BY`) for static pivots, or dynamically built SQL with prepared statements when column values aren't known ahead of time.
+
+## The Problem: Rows That Should Be Columns
+
+Suppose you have monthly sales by product:
+
+```sql
+CREATE TABLE sales (
+  salesperson VARCHAR(50),
+  product VARCHAR(50),
+  month VARCHAR(7),
+  revenue DECIMAL(10,2)
+);
+
+INSERT INTO sales VALUES
+('Alice', 'Widget', '2026-01', 1200),
+('Alice', 'Gadget', '2026-01', 800),
+('Alice', 'Widget', '2026-02', 1500),
+('Bob', 'Widget', '2026-01', 900),
+('Bob', 'Gadget', '2026-02', 1100);
+```
+
+You want one row per salesperson, with a column per product:
+
+| salesperson | Widget | Gadget |
+|-------------|--------|--------|
+| Alice | 2700 | 800 |
+| Bob | 900 | 1100 |
+
+## Static Pivot with CASE and GROUP BY
+
+When you know the column values in advance, use `CASE` inside an aggregate:
+
+```sql
+SELECT
+  salesperson,
+  SUM(CASE WHEN product = 'Widget' THEN revenue ELSE 0 END) AS Widget,
+  SUM(CASE WHEN product = 'Gadget' THEN revenue ELSE 0 END) AS Gadget
+FROM sales
+GROUP BY salesperson;
+```
+
+The pattern is: for each output column, aggregate only the rows where the condition matches, defaulting everything else to 0 (or NULL).
+
+### With COUNT instead of SUM
+
+```sql
+SELECT
+  department,
+  COUNT(CASE WHEN status = 'active' THEN 1 END) AS active_count,
+  COUNT(CASE WHEN status = 'inactive' THEN 1 END) AS inactive_count,
+  COUNT(CASE WHEN status = 'pending' THEN 1 END) AS pending_count
+FROM employees
+GROUP BY department;
+```
+
+### With IF() shorthand
+
+MySQL's `IF(condition, true_val, false_val)` can make the syntax slightly shorter:
+
+```sql
+SELECT
+  salesperson,
+  SUM(IF(product = 'Widget', revenue, 0)) AS Widget,
+  SUM(IF(product = 'Gadget', revenue, 0)) AS Gadget
+FROM sales
+GROUP BY salesperson;
+```
+
+Both are equivalent. `CASE` is more portable to other databases.
+
+## Dynamic Pivot with Prepared Statements
+
+When product names (or any pivot dimension) aren't known until runtime, hardcoding them is impractical. The approach:
+1. Use `GROUP_CONCAT` to build the column list dynamically
+2. Concatenate it into a full SQL string
+3. Execute via a prepared statement
+
+```sql
+-- Step 1: Build the CASE expressions
+SET @cols = NULL;
+SELECT
+  GROUP_CONCAT(
+    DISTINCT CONCAT(
+      'SUM(CASE WHEN product = ''', product, ''' THEN revenue ELSE 0 END) AS `', product, '`'
+    )
+    ORDER BY product
+  )
+INTO @cols
+FROM sales;
+
+-- Step 2: Build the full query
+SET @sql = CONCAT(
+  'SELECT salesperson, ', @cols,
+  ' FROM sales GROUP BY salesperson'
+);
+
+-- Step 3: Execute it
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+```
+
+Running this against the sample data produces a result with columns `Gadget` and `Widget` without ever hardcoding those names.
+
+### Limitations of Dynamic Pivots
+
+- The backtick-quoted column names handle spaces and special characters, but the column list is assembled via string concatenation -- SQL injection is possible if product names come from user input. Always validate or sanitize the source.
+- `GROUP_CONCAT` has a default max length of 1024 characters. If you have many distinct pivot values, increase it: `SET SESSION group_concat_max_len = 65536;`
+- Prepared statements can't be used inside stored procedures in older MySQL versions. Test on your target version.
+
+## WITH ROLLUP: Adding Subtotals
+
+`WITH ROLLUP` adds subtotal rows at each grouping level, which is useful for crosstab reports:
+
+```sql
+SELECT
+  salesperson,
+  product,
+  SUM(revenue) AS total_revenue
+FROM sales
+GROUP BY salesperson, product WITH ROLLUP;
+```
+
+This produces rows for each `(salesperson, product)` combination, plus a subtotal per salesperson (with NULL for `product`), plus a grand total (with NULL for both).
+
+Use `GROUPING(column)` (MySQL 8.0.1+) to distinguish rollup NULLs from actual NULLs in data:
+
+```sql
+SELECT
+  IF(GROUPING(salesperson), 'Grand Total', salesperson) AS salesperson,
+  IF(GROUPING(product), 'All Products', product) AS product,
+  SUM(revenue) AS total_revenue
+FROM sales
+GROUP BY salesperson, product WITH ROLLUP;
+```
+
+## Unpivoting: Columns Back to Rows
+
+To reverse a pivot (wide format back to long format), MySQL lacks `UNPIVOT` too. Use `UNION ALL`:
+
+```sql
+-- Suppose you have a pre-pivoted table: monthly_totals(salesperson, jan, feb, mar)
+SELECT salesperson, 'jan' AS month, jan AS revenue FROM monthly_totals
+UNION ALL
+SELECT salesperson, 'feb', feb FROM monthly_totals
+UNION ALL
+SELECT salesperson, 'mar', mar FROM monthly_totals
+ORDER BY salesperson, month;
+```
+
+Verbose but predictable. For a variable number of columns, this has to be done in application code.
+
+Mako connects to MySQL and lets you run and iterate on pivot queries interactively. Try it at [mako.ai](https://mako.ai).

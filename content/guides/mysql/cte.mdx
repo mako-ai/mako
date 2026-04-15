@@ -1,0 +1,225 @@
+---
+title: "Common Table Expressions (CTEs) in MySQL"
+description: "Learn how to use CTEs in MySQL 8.0+, including recursive CTEs for hierarchical data, multi-step queries, and version compatibility notes."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "cte", "with-clause", "recursive"]
+date: "2026-04-15"
+---
+
+A Common Table Expression (CTE) is a named temporary result set defined within a query using the `WITH` keyword. Think of it as a named subquery that you can reference one or more times inside the same statement.
+
+CTEs were introduced in **MySQL 8.0**. If you're on MySQL 5.7, you'll need to use derived tables (subqueries in FROM) instead.
+
+## Basic Syntax
+
+```sql
+WITH cte_name AS (
+  SELECT ...
+)
+SELECT * FROM cte_name;
+```
+
+A CTE lives only for the duration of the query that defines it. It's not stored anywhere.
+
+## Why Use CTEs?
+
+**Readability.** A deeply nested subquery is hard to follow. Breaking it into named steps makes intent obvious:
+
+```sql
+-- Without CTE
+SELECT dept, avg_salary
+FROM (
+  SELECT department AS dept, AVG(salary) AS avg_salary
+  FROM employees
+  WHERE active = 1
+  GROUP BY department
+) dept_avg
+WHERE avg_salary > 50000;
+
+-- With CTE
+WITH active_dept_avg AS (
+  SELECT department AS dept, AVG(salary) AS avg_salary
+  FROM employees
+  WHERE active = 1
+  GROUP BY department
+)
+SELECT dept, avg_salary
+FROM active_dept_avg
+WHERE avg_salary > 50000;
+```
+
+**Reuse.** Reference the CTE multiple times in the same query without repeating the subquery.
+
+```sql
+WITH monthly_revenue AS (
+  SELECT
+    DATE_FORMAT(order_date, '%Y-%m') AS month,
+    SUM(amount) AS revenue
+  FROM orders
+  GROUP BY month
+)
+SELECT
+  current.month,
+  current.revenue,
+  current.revenue - prev.revenue AS growth
+FROM monthly_revenue AS current
+LEFT JOIN monthly_revenue AS prev
+  ON prev.month = DATE_FORMAT(DATE_SUB(STR_TO_DATE(CONCAT(current.month, '-01'), '%Y-%m-%d'), INTERVAL 1 MONTH), '%Y-%m');
+```
+
+## Multiple CTEs
+
+Chain multiple CTEs by separating them with commas:
+
+```sql
+WITH
+  orders_this_year AS (
+    SELECT customer_id, SUM(amount) AS total
+    FROM orders
+    WHERE YEAR(order_date) = YEAR(CURDATE())
+    GROUP BY customer_id
+  ),
+  high_value_customers AS (
+    SELECT customer_id
+    FROM orders_this_year
+    WHERE total > 1000
+  )
+SELECT c.name, o.total
+FROM customers c
+JOIN orders_this_year o ON c.id = o.customer_id
+JOIN high_value_customers hvc ON c.id = hvc.customer_id;
+```
+
+## Recursive CTEs
+
+MySQL 8.0 supports recursive CTEs via `WITH RECURSIVE`. This is useful for hierarchical data -- org charts, bill of materials, category trees -- where the depth isn't known ahead of time.
+
+A recursive CTE has two parts connected by `UNION ALL`:
+1. **Anchor member**: the base case (returns the starting rows)
+2. **Recursive member**: references the CTE itself to generate additional rows
+
+```sql
+WITH RECURSIVE cte_name AS (
+  -- Anchor
+  SELECT ...
+  UNION ALL
+  -- Recursive member (references cte_name)
+  SELECT ... FROM cte_name WHERE <stop_condition>
+)
+SELECT * FROM cte_name;
+```
+
+### Example: Number Series
+
+```sql
+WITH RECURSIVE numbers AS (
+  SELECT 1 AS n
+  UNION ALL
+  SELECT n + 1 FROM numbers WHERE n < 10
+)
+SELECT n FROM numbers;
+-- Returns: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+```
+
+### Example: Org Chart Traversal
+
+```sql
+CREATE TABLE employees (
+  id INT PRIMARY KEY,
+  name VARCHAR(100),
+  manager_id INT
+);
+
+WITH RECURSIVE org_chart AS (
+  -- Anchor: start from the CEO (no manager)
+  SELECT id, name, manager_id, 0 AS depth, CAST(name AS CHAR(1000)) AS path
+  FROM employees
+  WHERE manager_id IS NULL
+
+  UNION ALL
+
+  -- Recursive: each employee whose manager is already in the CTE
+  SELECT e.id, e.name, e.manager_id, oc.depth + 1, CONCAT(oc.path, ' > ', e.name)
+  FROM employees e
+  JOIN org_chart oc ON e.manager_id = oc.id
+)
+SELECT depth, name, path
+FROM org_chart
+ORDER BY path;
+```
+
+### Example: Category Tree
+
+```sql
+WITH RECURSIVE category_tree AS (
+  SELECT id, name, parent_id, 1 AS level
+  FROM categories
+  WHERE parent_id IS NULL
+
+  UNION ALL
+
+  SELECT c.id, c.name, c.parent_id, ct.level + 1
+  FROM categories c
+  JOIN category_tree ct ON c.parent_id = ct.id
+)
+SELECT REPEAT('  ', level - 1) || name AS indented_name
+FROM category_tree
+ORDER BY level, name;
+```
+
+## Cycle Detection
+
+Recursive CTEs can loop infinitely if there's a cycle in your data (e.g., an employee who is their own manager). MySQL has a built-in recursion limit (`cte_max_recursion_depth`, default 1000) that will throw an error when hit. To detect cycles explicitly:
+
+```sql
+WITH RECURSIVE safe_traversal AS (
+  SELECT id, name, manager_id, CAST(id AS CHAR(1000)) AS visited_ids
+  FROM employees WHERE manager_id IS NULL
+
+  UNION ALL
+
+  SELECT e.id, e.name, e.manager_id, CONCAT(st.visited_ids, ',', e.id)
+  FROM employees e
+  JOIN safe_traversal st ON e.manager_id = st.id
+  WHERE FIND_IN_SET(e.id, st.visited_ids) = 0  -- stop if we've already seen this id
+)
+SELECT * FROM safe_traversal;
+```
+
+## CTEs vs. Derived Tables (MySQL 5.7 Workaround)
+
+If you're stuck on MySQL 5.7, replace a CTE with a derived table in the FROM clause:
+
+```sql
+-- CTE (MySQL 8.0+)
+WITH active_users AS (SELECT * FROM users WHERE active = 1)
+SELECT * FROM active_users WHERE country = 'US';
+
+-- Derived table (MySQL 5.7 compatible)
+SELECT * FROM (SELECT * FROM users WHERE active = 1) AS active_users
+WHERE country = 'US';
+```
+
+The main difference: derived tables can only be referenced once. For multiple references, you'd need to repeat the subquery, which CTEs avoid cleanly.
+
+## CTEs vs. Temporary Tables
+
+| | CTE | Temporary Table |
+|---|---|---|
+| Scope | Single query | Session duration |
+| Stored | No (computed inline) | Yes (in temp tablespace) |
+| Indexable | No | Yes (you can add indexes) |
+| Recursive | Yes | No |
+
+For large intermediate datasets that you query multiple times in different statements, a temporary table may perform better. For single-query complexity management, CTEs are the right tool.
+
+## Common Mistakes
+
+**MySQL version check** -- CTEs require 8.0+. Confirm with `SELECT VERSION();`. If on 5.7, you'll get a syntax error.
+
+**Referencing a CTE before defining it** -- CTEs are evaluated in order. A later CTE can reference an earlier one, but not vice versa.
+
+**Mutating data with CTEs** -- CTEs can be used in INSERT, UPDATE, and DELETE statements in MySQL, but the CTE itself is read-only.
+
+Mako connects to MySQL 8.0+ and supports multi-CTE queries with AI autocomplete. Try it at [mako.ai](https://mako.ai).

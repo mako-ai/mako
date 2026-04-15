@@ -1,0 +1,182 @@
+---
+title: "MySQL Indexes Explained"
+description: "Understand MySQL index types (B-tree, FULLTEXT, spatial, covering indexes), how to create them, read EXPLAIN output, and avoid common pitfalls."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "indexes", "performance", "explain"]
+date: "2026-04-15"
+---
+
+Indexes are the single most impactful performance tool in MySQL. Without them, every query that filters, sorts, or joins data scans the entire table. With the right indexes, the same queries scan a handful of rows.
+
+This guide covers how indexes work internally, the different types MySQL supports, how to create them, and how to read `EXPLAIN` output to verify they're being used.
+
+## How B-tree Indexes Work
+
+MySQL's default index type (for InnoDB) is a **B+ tree**. The structure is a balanced tree where:
+- Internal nodes contain key values used for navigation
+- Leaf nodes contain the full index entries
+- Leaf nodes are linked in sorted order, enabling efficient range scans
+
+When you query `WHERE email = 'alice@example.com'`, MySQL traverses the tree in O(log n) steps instead of scanning all rows.
+
+### The Clustered Index
+
+In InnoDB, the primary key is the **clustered index** -- the table rows are physically stored in primary key order. This means:
+- Primary key lookups are fast (the data is the index)
+- Secondary indexes store the primary key value as the row pointer, not a physical offset
+
+If you don't define a primary key, InnoDB creates a hidden one using an auto-incrementing integer.
+
+## Creating Indexes
+
+```sql
+-- Single column
+CREATE INDEX idx_email ON users(email);
+
+-- Composite (multi-column)
+CREATE INDEX idx_dept_salary ON employees(department, salary);
+
+-- Unique
+CREATE UNIQUE INDEX idx_username ON users(username);
+
+-- On table creation
+CREATE TABLE orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  customer_id INT,
+  status VARCHAR(20),
+  created_at DATETIME,
+  INDEX idx_customer (customer_id),
+  INDEX idx_status_date (status, created_at)
+);
+```
+
+## Composite Index Column Order
+
+The order of columns in a composite index matters significantly. MySQL can use the index for:
+- All columns in order from the left
+- A leading prefix of columns
+
+For `INDEX idx_dept_salary(department, salary)`:
+
+```sql
+-- Uses the index (leftmost column)
+SELECT * FROM employees WHERE department = 'Engineering';
+
+-- Uses the index (both columns)
+SELECT * FROM employees WHERE department = 'Engineering' AND salary > 80000;
+
+-- Does NOT use the index (skipped leftmost column)
+SELECT * FROM employees WHERE salary > 80000;
+```
+
+Design composite indexes with your most-selective or most-filtered column first, unless range conditions force a different order.
+
+## Covering Indexes
+
+A **covering index** is one that contains all the columns a query needs -- no need to look up the actual row. This is faster because MySQL reads the index only, not the table.
+
+```sql
+-- Query needs: customer_id, status, created_at
+SELECT customer_id, status, created_at FROM orders WHERE status = 'pending';
+
+-- A covering index for this query:
+CREATE INDEX idx_covering ON orders(status, customer_id, created_at);
+```
+
+In `EXPLAIN` output, a covering index shows `Using index` in the `Extra` column -- that's a good sign.
+
+## FULLTEXT Indexes
+
+FULLTEXT indexes enable natural language and boolean text search on `VARCHAR`, `TEXT`, and `CHAR` columns. They're available on InnoDB (since MySQL 5.6) and MyISAM.
+
+```sql
+CREATE TABLE articles (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(200),
+  body TEXT,
+  FULLTEXT INDEX ft_search (title, body)
+);
+
+-- Natural language search (relevance-ranked)
+SELECT id, title, MATCH(title, body) AGAINST('mysql index performance') AS score
+FROM articles
+ORDER BY score DESC;
+
+-- Boolean mode
+SELECT id, title
+FROM articles
+WHERE MATCH(title, body) AGAINST('+mysql +index -slow' IN BOOLEAN MODE);
+```
+
+FULLTEXT indexes do not support prefix matching or exact-phrase substring search. For simple `LIKE '%word%'` patterns on small tables, a FULLTEXT index may be overkill.
+
+## Prefix Indexes
+
+For long `VARCHAR` or `TEXT` columns, indexing just the first N characters reduces index size:
+
+```sql
+CREATE INDEX idx_url_prefix ON pages(url(100));
+```
+
+The tradeoff: prefix indexes can't satisfy covering index queries and may have higher collision rates. Use them when full-column indexing is impractical (e.g., TEXT columns can't be indexed without a prefix).
+
+## Reading EXPLAIN Output
+
+`EXPLAIN` shows MySQL's execution plan before running the query:
+
+```sql
+EXPLAIN SELECT * FROM orders WHERE customer_id = 42 AND status = 'shipped';
+```
+
+Key columns to focus on:
+
+| Column | What to look for |
+|--------|-----------------|
+| `type` | `const` > `ref` > `range` > `index` > `ALL` (ALL = full table scan, usually bad) |
+| `key` | Which index is being used (NULL = no index) |
+| `rows` | Estimated rows examined -- lower is better |
+| `Extra` | `Using index` (covering), `Using filesort` (no index sort), `Using temporary` (implicit temp table) |
+
+```sql
+-- Example output analysis
+EXPLAIN SELECT name, salary FROM employees WHERE department = 'Eng' AND salary > 90000;
+
+-- If you see:
+--   type: ref, key: idx_dept_salary, rows: 12, Extra: Using index
+-- That's optimal.
+
+-- If you see:
+--   type: ALL, key: NULL, rows: 50000, Extra: Using where
+-- You need an index.
+```
+
+For more detail, use `EXPLAIN FORMAT=JSON` or `EXPLAIN ANALYZE` (MySQL 8.0.18+, which actually runs the query and shows real row counts).
+
+## When NOT to Add an Index
+
+Indexes have costs:
+- **Write overhead**: every INSERT, UPDATE, DELETE must update all affected indexes
+- **Storage**: indexes consume disk space
+- **Optimizer confusion**: too many indexes can make the query planner choose poorly
+
+Don't index:
+- Low-cardinality columns (e.g., a boolean `is_active` with only two values -- MySQL often prefers a full scan)
+- Columns that are rarely queried in WHERE, JOIN, or ORDER BY
+- Tiny tables where a full scan is faster than the index lookup
+
+## Maintenance
+
+**Unused indexes** slow down writes for no benefit. Check `sys.schema_unused_indexes` to find them:
+
+```sql
+SELECT * FROM sys.schema_unused_indexes WHERE object_schema = 'your_database';
+```
+
+**Duplicate indexes** waste space. Check with:
+
+```sql
+SELECT * FROM sys.schema_redundant_indexes WHERE table_schema = 'your_database';
+```
+
+Mako connects to MySQL and surfaces EXPLAIN output alongside your query results. Try it at [mako.ai](https://mako.ai).

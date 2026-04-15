@@ -1,0 +1,183 @@
+---
+title: "MySQL Joins: INNER, LEFT, RIGHT, CROSS, Self, and Anti-Joins"
+description: "A complete guide to MySQL join types with examples: INNER JOIN, LEFT JOIN, RIGHT JOIN, CROSS JOIN, self-joins, anti-joins, and join order optimization."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "joins", "inner-join", "left-join"]
+date: "2026-04-15"
+---
+
+Joins combine rows from two or more tables based on a related column. Understanding which join type to use -- and how MySQL executes them -- is fundamental to writing correct, performant queries.
+
+## Setup: Sample Tables
+
+```sql
+CREATE TABLE customers (
+  id INT PRIMARY KEY,
+  name VARCHAR(100),
+  country VARCHAR(50)
+);
+
+CREATE TABLE orders (
+  id INT PRIMARY KEY,
+  customer_id INT,
+  amount DECIMAL(10,2),
+  status VARCHAR(20)
+);
+```
+
+## INNER JOIN
+
+Returns only rows where the join condition matches in both tables. Rows with no match on either side are excluded.
+
+```sql
+SELECT c.name, o.id AS order_id, o.amount
+FROM customers c
+INNER JOIN orders o ON c.id = o.customer_id;
+```
+
+Customers without orders don't appear. Orders without a valid customer don't appear. This is the most common join type.
+
+`JOIN` without a qualifier defaults to `INNER JOIN` in MySQL.
+
+## LEFT JOIN (LEFT OUTER JOIN)
+
+Returns all rows from the left table, plus matching rows from the right. When there's no match, right-side columns are `NULL`.
+
+```sql
+SELECT c.name, o.id AS order_id, o.amount
+FROM customers c
+LEFT JOIN orders o ON c.id = o.customer_id;
+```
+
+Customers without orders appear with `NULL` for order columns. Use `LEFT JOIN` when you want to keep all records from one table regardless of whether a match exists.
+
+## RIGHT JOIN (RIGHT OUTER JOIN)
+
+The mirror of LEFT JOIN: all rows from the right table, plus matching rows from the left.
+
+```sql
+SELECT c.name, o.id AS order_id, o.amount
+FROM customers c
+RIGHT JOIN orders o ON c.id = o.customer_id;
+```
+
+Orders without a matching customer appear with `NULL` for customer columns. In practice, `RIGHT JOIN` is rare -- most developers restructure the query as a `LEFT JOIN` by swapping table order.
+
+**MySQL does not support FULL OUTER JOIN.** To simulate it, combine a LEFT JOIN and a RIGHT JOIN with UNION:
+
+```sql
+SELECT c.name, o.id
+FROM customers c LEFT JOIN orders o ON c.id = o.customer_id
+UNION
+SELECT c.name, o.id
+FROM customers c RIGHT JOIN orders o ON c.id = o.customer_id;
+```
+
+## CROSS JOIN
+
+Returns the Cartesian product: every row in the left table paired with every row in the right table. No join condition needed.
+
+```sql
+SELECT c.name, p.name AS product
+FROM customers c
+CROSS JOIN products p;
+```
+
+If `customers` has 100 rows and `products` has 50, the result has 5,000 rows. Use intentionally for generating combinations (e.g., a date-range calendar × sales regions). Accidental cross joins on large tables will bring a server down.
+
+## Self-Join
+
+A table joined to itself. Useful for hierarchical data (org charts, parent-child relationships) or comparing rows within the same table.
+
+```sql
+CREATE TABLE employees (
+  id INT PRIMARY KEY,
+  name VARCHAR(100),
+  manager_id INT
+);
+
+-- Find each employee and their manager's name
+SELECT e.name AS employee, m.name AS manager
+FROM employees e
+LEFT JOIN employees m ON e.manager_id = m.id;
+```
+
+The trick is aliasing the same table twice (`e` and `m`) so MySQL treats them as separate tables.
+
+## Anti-Join
+
+Returns rows from the left table that have no match in the right table. MySQL doesn't have a dedicated `ANTI JOIN` keyword -- simulate it with `LEFT JOIN ... WHERE ... IS NULL` or `NOT EXISTS`:
+
+```sql
+-- Customers who have never placed an order
+-- Method 1: LEFT JOIN + IS NULL
+SELECT c.name
+FROM customers c
+LEFT JOIN orders o ON c.id = o.customer_id
+WHERE o.id IS NULL;
+
+-- Method 2: NOT EXISTS (often more readable)
+SELECT c.name
+FROM customers c
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.customer_id = c.id
+);
+
+-- Method 3: NOT IN (careful with NULLs -- see below)
+SELECT c.name
+FROM customers c
+WHERE c.id NOT IN (SELECT customer_id FROM orders WHERE customer_id IS NOT NULL);
+```
+
+**NULL trap with NOT IN:** If the subquery returns any `NULL`, `NOT IN` returns no rows at all (because `NULL` comparisons are always `UNKNOWN`). Always filter NULLs in the subquery, or prefer `NOT EXISTS`.
+
+## JOIN with Multiple Conditions
+
+Join conditions can have multiple predicates:
+
+```sql
+SELECT *
+FROM inventory i
+JOIN shipments s
+  ON i.product_id = s.product_id
+  AND i.warehouse_id = s.warehouse_id
+  AND s.shipped_date >= i.restock_date;
+```
+
+## Filtering: ON vs. WHERE
+
+For `INNER JOIN`, conditions in `ON` and `WHERE` are equivalent. For `LEFT JOIN`, the placement matters:
+
+```sql
+-- Filters orders BEFORE the join (returns customers with pending orders + customers with no orders)
+SELECT c.name, o.amount
+FROM customers c
+LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'pending';
+
+-- Filters orders AFTER the join (returns only customers with pending orders)
+SELECT c.name, o.amount
+FROM customers c
+LEFT JOIN orders o ON c.id = o.customer_id
+WHERE o.status = 'pending';
+```
+
+The second query effectively turns a `LEFT JOIN` into an `INNER JOIN` by filtering out NULLs.
+
+## Join Order and Performance
+
+MySQL's optimizer generally chooses the best join order, but you can influence it:
+- Put the most-selective filter on the driving table (usually the one with fewer matching rows)
+- Ensure join columns are indexed on both sides
+- Use `EXPLAIN` to verify the chosen order and index usage
+
+```sql
+EXPLAIN SELECT c.name, o.amount
+FROM customers c
+INNER JOIN orders o ON c.id = o.customer_id
+WHERE c.country = 'DE';
+```
+
+If you see `type: ALL` on the orders table, add an index on `orders.customer_id`.
+
+Mako connects to MySQL and renders join query results with AI autocomplete to help you build the right join syntax. Try it at [mako.ai](https://mako.ai).
