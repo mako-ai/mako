@@ -1,0 +1,161 @@
+---
+title: "PostgreSQL UPSERT: INSERT ON CONFLICT Explained"
+description: "Learn how to use PostgreSQL's INSERT ON CONFLICT to upsert data -- insert new rows or update existing ones atomically, with examples covering DO NOTHING, DO UPDATE, and partial indexes."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "upsert", "insert", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL UPSERT: INSERT ON CONFLICT Explained
+
+UPSERT -- insert or update -- is a common operation in data pipelines: you want to insert a new row if it doesn't exist, or update it if it does. PostgreSQL handles this with `INSERT ... ON CONFLICT`, introduced in PostgreSQL 9.5. It's atomic, which means no race conditions between the check and the write.
+
+## Basic Syntax
+
+```sql
+INSERT INTO table_name (column1, column2, ...)
+VALUES (value1, value2, ...)
+ON CONFLICT (conflict_target)
+DO UPDATE SET column1 = excluded.column1, ...;
+```
+
+The `conflict_target` specifies which unique constraint or index to check. The special `EXCLUDED` table refers to the row that was proposed for insertion.
+
+## DO NOTHING
+
+If you just want to silently skip conflicts without any update:
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('ABC-123', 'Widget', 9.99)
+ON CONFLICT (sku) DO NOTHING;
+```
+
+No error is raised and no changes are made if a row with `sku = 'ABC-123'` already exists.
+
+## DO UPDATE (Standard Upsert)
+
+Update the existing row when a conflict occurs:
+
+```sql
+INSERT INTO products (sku, name, price, updated_at)
+VALUES ('ABC-123', 'Widget Pro', 12.99, NOW())
+ON CONFLICT (sku)
+DO UPDATE SET
+  name = EXCLUDED.name,
+  price = EXCLUDED.price,
+  updated_at = EXCLUDED.updated_at;
+```
+
+`EXCLUDED.name` refers to the value that was proposed in the `INSERT` -- in this case, `'Widget Pro'`.
+
+## Updating Only Some Columns
+
+You don't have to update everything. Keep fields like `created_at` immutable:
+
+```sql
+INSERT INTO users (email, name, created_at)
+VALUES ('alice@example.com', 'Alice', NOW())
+ON CONFLICT (email)
+DO UPDATE SET
+  name = EXCLUDED.name;
+  -- created_at is left unchanged
+```
+
+## Conditional Updates with WHERE
+
+Add a `WHERE` clause to the `DO UPDATE` to make the update conditional:
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('ABC-123', 'Widget Pro', 12.99)
+ON CONFLICT (sku)
+DO UPDATE SET
+  price = EXCLUDED.price
+WHERE products.price <> EXCLUDED.price;
+-- Only updates if the price actually changed
+```
+
+This avoids unnecessary write amplification, which matters for heavily indexed tables.
+
+## Conflict on Multiple Columns
+
+When your unique constraint spans multiple columns, list all of them in the conflict target:
+
+```sql
+-- Table has UNIQUE(user_id, product_id)
+INSERT INTO favorites (user_id, product_id, added_at)
+VALUES (42, 101, NOW())
+ON CONFLICT (user_id, product_id)
+DO UPDATE SET added_at = EXCLUDED.added_at;
+```
+
+## Using ON CONFLICT ON CONSTRAINT
+
+If the constraint has a name, you can reference it directly:
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('ABC-123', 'Widget', 9.99)
+ON CONFLICT ON CONSTRAINT products_sku_key
+DO NOTHING;
+```
+
+## Bulk Upsert
+
+`INSERT ... ON CONFLICT` works with multi-row inserts:
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES
+  ('A-001', 'Gadget Alpha', 19.99),
+  ('A-002', 'Gadget Beta', 24.99),
+  ('A-003', 'Gadget Gamma', 29.99)
+ON CONFLICT (sku)
+DO UPDATE SET
+  name = EXCLUDED.name,
+  price = EXCLUDED.price;
+```
+
+This is the preferred pattern for data sync pipelines -- stage your data in one round trip.
+
+## Partial Index Conflicts
+
+If your unique constraint is on a partial index, the conflict target must match the index:
+
+```sql
+-- Unique index: only active products have unique SKUs
+CREATE UNIQUE INDEX products_sku_active ON products (sku) WHERE active = TRUE;
+
+INSERT INTO products (sku, name, price, active)
+VALUES ('ABC-123', 'Widget', 9.99, TRUE)
+ON CONFLICT (sku) WHERE active = TRUE
+DO UPDATE SET price = EXCLUDED.price;
+```
+
+## Returning Updated Rows
+
+Chain `RETURNING` to get back the affected rows:
+
+```sql
+INSERT INTO products (sku, name, price)
+VALUES ('ABC-123', 'Widget', 9.99)
+ON CONFLICT (sku)
+DO UPDATE SET price = EXCLUDED.price
+RETURNING id, sku, price, (xmax = 0) AS was_inserted;
+```
+
+`xmax = 0` is a PostgreSQL trick: a transaction ID of 0 means the row was newly inserted; non-zero means it was updated.
+
+## Common Mistakes
+
+**No unique constraint on the conflict column:** `ON CONFLICT (sku)` requires a unique index or constraint on `sku`. Without one, PostgreSQL raises an error.
+
+**Referencing the wrong table in DO UPDATE:** `SET price = products.price` sets the column to its own current value (a no-op). Use `EXCLUDED.price` to reference the proposed new value.
+
+**Race conditions with DO NOTHING:** `DO NOTHING` is safe against duplicate key errors but does not guarantee the most recent value wins. If two concurrent sessions upsert the same row, one will succeed and one will silently skip. Use `DO UPDATE` if you need last-write-wins semantics.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
