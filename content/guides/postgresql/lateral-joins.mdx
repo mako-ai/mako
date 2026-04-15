@@ -1,0 +1,161 @@
+---
+title: "PostgreSQL LATERAL Joins: When and How to Use Them"
+description: "Understand PostgreSQL LATERAL joins -- what they are, how they differ from regular subqueries, and practical patterns like top-N per group, calling functions row-by-row, and flattening arrays."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "lateral", "joins", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL LATERAL Joins: When and How to Use Them
+
+A `LATERAL` subquery in PostgreSQL can reference columns from tables that appear earlier in the `FROM` clause. This is the key difference from a regular subquery, which is evaluated in isolation. `LATERAL` turns a subquery into something that runs once per row of the outer query, with access to that outer row's values.
+
+## The Core Idea
+
+Without `LATERAL`, a subquery in `FROM` is a black box:
+
+```sql
+-- Regular subquery: cannot reference outer_table
+SELECT o.id, stats.max_price
+FROM orders o,
+     (SELECT MAX(price) FROM order_items WHERE order_id = o.id) AS stats(max_price);
+-- ERROR: reference to o.id is not valid here
+```
+
+With `LATERAL`, the subquery sees the outer row:
+
+```sql
+SELECT o.id, stats.max_price
+FROM orders o,
+LATERAL (SELECT MAX(price) FROM order_items WHERE order_id = o.id) AS stats(max_price);
+-- Works: the subquery runs once per order row
+```
+
+## Top-N Per Group
+
+This is the most common use case: get the N most recent or highest-ranked rows per group.
+
+```sql
+-- Last 3 orders per customer
+SELECT c.id, c.name, recent.order_id, recent.amount, recent.created_at
+FROM customers c
+JOIN LATERAL (
+  SELECT order_id, amount, created_at
+  FROM orders
+  WHERE customer_id = c.id
+  ORDER BY created_at DESC
+  LIMIT 3
+) AS recent ON TRUE;
+```
+
+Without `LATERAL`, this requires a window function + filter or a correlated subquery that can only return one column. `LATERAL` returns multiple columns and multiple rows cleanly.
+
+`ON TRUE` is used with `JOIN LATERAL` when you want to keep all outer rows regardless of whether the subquery returns any rows (though `JOIN` will still exclude customers with no orders -- use `LEFT JOIN LATERAL ... ON TRUE` to keep them).
+
+```sql
+-- Include customers with no orders (recent.* will be NULL)
+SELECT c.id, c.name, recent.order_id, recent.amount
+FROM customers c
+LEFT JOIN LATERAL (
+  SELECT order_id, amount
+  FROM orders
+  WHERE customer_id = c.id
+  ORDER BY amount DESC
+  LIMIT 1
+) AS recent ON TRUE;
+```
+
+## Historical / Point-in-Time Lookups
+
+When a related table has versioned records, `LATERAL` makes it easy to get the version valid at a specific time:
+
+```sql
+-- Get each statement's address as it was at statement time
+SELECT s.id, s.statement_date, s.balance, a.address
+FROM statements s
+JOIN LATERAL (
+  SELECT address
+  FROM addresses
+  WHERE customer_id = s.customer_id
+    AND effective_on <= s.statement_date
+  ORDER BY effective_on DESC
+  LIMIT 1
+) AS a ON TRUE;
+```
+
+## Calling Set-Returning Functions
+
+`LATERAL` is implied (and required) when calling a set-returning function in `FROM`:
+
+```sql
+-- unnest is a set-returning function; LATERAL is implicit
+SELECT id, tag
+FROM articles, unnest(tags) AS tag;
+
+-- Explicit LATERAL (equivalent):
+SELECT id, tag
+FROM articles
+CROSS JOIN LATERAL unnest(tags) AS tag;
+```
+
+For functions that return multiple columns (`json_to_recordset`, `jsonb_array_elements`, custom functions):
+
+```sql
+SELECT id, elem->>'name' AS item_name, (elem->>'qty')::int AS qty
+FROM orders,
+LATERAL jsonb_array_elements(line_items) AS elem;
+```
+
+## Multiple Columns from a Correlated Subquery
+
+A regular correlated subquery in `SELECT` can only return one column. `LATERAL` returns a full row:
+
+```sql
+-- Correlated subquery: limited to one column
+SELECT
+  d.name,
+  (SELECT MAX(salary) FROM employees WHERE department_id = d.id) AS max_salary,
+  (SELECT MIN(salary) FROM employees WHERE department_id = d.id) AS min_salary
+  -- Two separate correlated subqueries = two scans
+FROM departments d;
+
+-- LATERAL: one scan, multiple columns
+SELECT d.name, stats.max_salary, stats.min_salary, stats.headcount
+FROM departments d
+JOIN LATERAL (
+  SELECT MAX(salary) AS max_salary, MIN(salary) AS min_salary, COUNT(*) AS headcount
+  FROM employees WHERE department_id = d.id
+) AS stats ON TRUE;
+```
+
+## LATERAL vs CTE vs Correlated Subquery
+
+All three can express similar logic. The practical differences:
+
+- **Correlated subquery in SELECT** -- one column only, re-evaluated per row
+- **LATERAL in FROM** -- multiple columns, multiple rows, re-evaluated per outer row
+- **CTE** -- evaluates once, not correlated to outer rows (except when inlined by the optimizer)
+- **Window function** -- usually the right tool for ranking/top-N if you don't need other columns from the ranked subquery
+
+For top-N per group, `LATERAL` with `LIMIT` is typically faster than a window function approach because it can use an index to fetch the top N directly rather than scanning all rows in the group.
+
+## Performance
+
+`LATERAL` subqueries execute once per outer row, so they benefit strongly from indexes on the join columns. For the customer-orders example, an index on `orders(customer_id, created_at DESC)` makes each lateral execution near-instant.
+
+```sql
+CREATE INDEX ON orders (customer_id, created_at DESC);
+```
+
+Check the plan with `EXPLAIN ANALYZE` -- each lateral execution should show an `Index Scan` or `Index Only Scan`, not a `Seq Scan`.
+
+## Common Mistakes
+
+**Forgetting `ON TRUE` with `JOIN LATERAL`:** When the lateral subquery can return zero rows, `JOIN LATERAL` will exclude the outer row. Use `LEFT JOIN LATERAL ... ON TRUE` if you want to keep outer rows with null lateral results.
+
+**Using LATERAL where a window function is cleaner:** For simple ranking (`ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC)`), window functions are more readable and often equivalent in performance. `LATERAL` shines when you need to pass multiple values from the subquery or use complex `ORDER BY` with `LIMIT`.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
