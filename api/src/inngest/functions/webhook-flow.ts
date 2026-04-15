@@ -34,9 +34,6 @@ const WEBHOOK_CDC_INGEST_PROCESS_CONCURRENCY = Math.max(
   5,
 );
 
-const CDC_MATERIALIZE_THROTTLE_PERIOD = (process.env
-  .CDC_MATERIALIZE_THROTTLE_PERIOD || "5s") as `${number}s`;
-
 async function runWebhookEventProcess({
   event,
   step,
@@ -1140,11 +1137,12 @@ function circuitBreakerBackoffMs(consecutiveFailures: number): number {
   return seconds * 1000;
 }
 
+const CDC_MATERIALIZE_MAX_ITERATIONS = 20;
+
 async function runCdcMaterialization(params: {
   eventData: unknown;
   step: any;
   logger: any;
-  continuationEventName: string;
 }) {
   const { workspaceId, flowId, entity, force } = params.eventData as {
     workspaceId: string;
@@ -1205,48 +1203,67 @@ async function runCdcMaterialization(params: {
     };
   }
 
-  const materializeStartedAt = Date.now();
-  const result = (await params.step.run("materialize-cdc-entity", async () => {
-    const flow = await Flow.findById(flowId)
-      .select("backfillState.status")
-      .lean();
-    const isBackfilling = flow?.backfillState?.status === "running";
-    const maxEvents = isBackfilling
-      ? CDC_MATERIALIZE_MAX_EVENTS_BACKFILL
-      : CDC_MATERIALIZE_MAX_EVENTS;
+  let totalProcessed = 0;
+  let totalApplied = 0;
+  let iterations = 0;
+  let lastResult: any = null;
 
-    const materializeResult = await cdcConsumerService.materializeEntity({
-      workspaceId,
+  while (iterations < CDC_MATERIALIZE_MAX_ITERATIONS) {
+    const iteration = iterations;
+    const materializeStartedAt = Date.now();
+    const result = (await params.step.run(
+      `materialize-cdc-entity-${iteration}`,
+      async () => {
+        const flow = await Flow.findById(flowId)
+          .select("backfillState.status")
+          .lean();
+        const isBackfilling = flow?.backfillState?.status === "running";
+        const maxEvents = isBackfilling
+          ? CDC_MATERIALIZE_MAX_EVENTS_BACKFILL
+          : CDC_MATERIALIZE_MAX_EVENTS;
+
+        const materializeResult = await cdcConsumerService.materializeEntity({
+          workspaceId,
+          flowId,
+          entity,
+          maxEvents,
+        });
+        return { ...materializeResult, isBackfilling, maxEvents };
+      },
+    )) as any;
+    const materializeStepDurationMs = Date.now() - materializeStartedAt;
+
+    params.logger.info("CDC materialization iteration completed", {
       flowId,
       entity,
-      maxEvents,
+      iteration,
+      isBackfilling: result.isBackfilling,
+      maxEvents: result.maxEvents,
+      materializeStepDurationMs,
+      processed: result.processed,
+      applied: result.applied,
+      latestIngestSeq: result.latestIngestSeq,
+      skipped: result.skipped,
+      reason: result.reason,
     });
-    return { ...materializeResult, isBackfilling, maxEvents };
-  })) as any;
-  const materializeStepDurationMs = Date.now() - materializeStartedAt;
 
-  params.logger.info("CDC materialization completed", {
-    flowId,
-    entity,
-    force: Boolean(force),
-    isBackfilling: result.isBackfilling,
-    maxEvents: result.maxEvents,
-    materializeStepDurationMs,
-    processed: result.processed,
-    applied: result.applied,
-    latestIngestSeq: result.latestIngestSeq,
-    skipped: result.skipped,
-    reason: result.reason,
-  });
+    totalProcessed += result.processed || 0;
+    totalApplied += result.applied || 0;
+    lastResult = result;
+    iterations++;
 
-  if (result.processed >= result.maxEvents) {
-    await params.step.sendEvent("continue-materialize", {
-      name: params.continuationEventName,
-      data: { workspaceId, flowId, entity, force: true },
-    });
+    if (result.processed < result.maxEvents) {
+      break;
+    }
   }
 
-  return { success: true, ...result };
+  return {
+    success: true,
+    totalProcessed,
+    totalApplied,
+    iterations,
+    ...lastResult,
+  };
 }
 
 /**
@@ -1257,14 +1274,9 @@ export const cdcMaterializeFunction = inngest.createFunction(
   {
     id: "cdc-materialize",
     name: "CDC Materialize",
-    concurrency: {
-      limit: 1,
+    singleton: {
       key: "event.data.flowId + ':' + event.data.entity",
-    },
-    throttle: {
-      limit: 1,
-      period: CDC_MATERIALIZE_THROTTLE_PERIOD,
-      key: "event.data.flowId + ':' + event.data.entity",
+      mode: "skip",
     },
   },
   { event: "cdc/materialize" },
@@ -1273,7 +1285,6 @@ export const cdcMaterializeFunction = inngest.createFunction(
       eventData: event.data,
       step,
       logger,
-      continuationEventName: "cdc/materialize",
     });
   },
 );
