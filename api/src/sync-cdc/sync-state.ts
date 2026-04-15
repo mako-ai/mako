@@ -524,12 +524,18 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
   lagSeconds: number | null;
 }> {
   const flowObjectId = new Types.ObjectId(params.flowId);
-  const [states, pendingCount] = await Promise.all([
+  const [states, pendingCount, oldestPendingResult] = await Promise.all([
     CdcEntityState.find({ flowId: flowObjectId }).lean(),
     CdcChangeEvent.countDocuments({
       flowId: flowObjectId,
       materializationStatus: "pending",
     }),
+    CdcChangeEvent.findOne(
+      { flowId: flowObjectId, materializationStatus: "pending" },
+      { ingestTs: 1 },
+    )
+      .sort({ ingestTs: 1 })
+      .lean(),
   ]);
   if (states.length === 0) {
     return {
@@ -558,22 +564,32 @@ export async function getCdcFlowStats(params: { flowId: string }): Promise<{
     : "steady";
   let lagSeconds: number | null;
   if (backlogCount > 0) {
-    const withBacklog = states.filter(
-      s =>
-        Math.max(
-          (s.lastIngestSeq || 0) - (s.lastMaterializedSeq || 0),
-          s.backlogCount || 0,
-        ) > 0,
-    );
-    const candidates = withBacklog.length > 0 ? withBacklog : states;
-    const oldest = candidates
-      .map(s => s.lastMaterializedAt)
-      .filter(Boolean)
-      .map(d => new Date(d as Date).getTime())
-      .sort((a, b) => a - b)[0];
-    lagSeconds = oldest
-      ? Math.max(Math.floor((Date.now() - oldest) / 1000), 0)
-      : -1;
+    const oldestPendingTs = oldestPendingResult?.ingestTs
+      ? new Date(oldestPendingResult.ingestTs).getTime()
+      : null;
+    if (oldestPendingTs) {
+      lagSeconds = Math.max(
+        Math.floor((Date.now() - oldestPendingTs) / 1000),
+        0,
+      );
+    } else {
+      const withBacklog = states.filter(
+        s =>
+          Math.max(
+            (s.lastIngestSeq || 0) - (s.lastMaterializedSeq || 0),
+            s.backlogCount || 0,
+          ) > 0,
+      );
+      const candidates = withBacklog.length > 0 ? withBacklog : states;
+      const oldest = candidates
+        .map(s => s.lastMaterializedAt)
+        .filter(Boolean)
+        .map(d => new Date(d as Date).getTime())
+        .sort((a, b) => a - b)[0];
+      lagSeconds = oldest
+        ? Math.max(Math.floor((Date.now() - oldest) / 1000), 0)
+        : -1;
+    }
   } else {
     lagSeconds = 0;
   }

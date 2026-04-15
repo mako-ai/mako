@@ -2388,14 +2388,24 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         .limit(200)
         .lean(),
       CdcChangeEvent.countDocuments(failedQuery),
-      CdcChangeEvent.aggregate<{ _id: string; count: number }>([
+      CdcChangeEvent.aggregate<{
+        _id: string;
+        count: number;
+        oldestIngestTs: Date | null;
+      }>([
         {
           $match: {
             flowId: flowObjectId,
             materializationStatus: "pending",
           },
         },
-        { $group: { _id: "$entity", count: { $sum: 1 } } },
+        {
+          $group: {
+            _id: "$entity",
+            count: { $sum: 1 },
+            oldestIngestTs: { $min: "$ingestTs" },
+          },
+        },
       ]),
       WebhookEvent.countDocuments({
         flowId: flowObjectId,
@@ -2462,6 +2472,11 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     }
 
     const pendingCountMap = new Map(pendingByEntity.map(r => [r._id, r.count]));
+    const pendingOldestTsMap = new Map(
+      pendingByEntity
+        .filter(r => r.oldestIngestTs)
+        .map(r => [r._id, new Date(r.oldestIngestTs!)] as const),
+    );
 
     const entities = uniqueEntities.map(entity => {
       const state = stateByEntity.get(entity);
@@ -2486,12 +2501,18 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
         ingestSeq - materializedSeq,
         state?.backlogCount || 0,
       );
+      const oldestPendingTs = pendingOldestTsMap.get(entity) ?? null;
       return {
         entity,
         lastIngestSeq: ingestSeq,
         lastMaterializedSeq: materializedSeq,
         backlogCount,
-        lagSeconds: toLagSeconds(lastMaterializedAt),
+        lagSeconds:
+          backlogCount > 0
+            ? oldestPendingTs
+              ? toLagSeconds(oldestPendingTs)
+              : toLagSeconds(lastMaterializedAt)
+            : 0,
         lastMaterializedAt,
         destinationRowCount: (state as any)?.destinationRowCount ?? null,
         lifetimeEventsProcessed,
@@ -2511,12 +2532,19 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
     if (totalBacklog === 0) {
       lagSeconds = 0;
     } else {
-      const oldestPending = entities
-        .filter(e => e.backlogCount > 0)
-        .map(e => e.lastMaterializedAt)
-        .filter((d): d is Date => d instanceof Date)
-        .sort((a, b) => a.getTime() - b.getTime())[0];
-      lagSeconds = oldestPending ? toLagSeconds(oldestPending) : -1;
+      const oldestPendingTs = Array.from(pendingOldestTsMap.values()).sort(
+        (a, b) => a.getTime() - b.getTime(),
+      )[0];
+      if (oldestPendingTs) {
+        lagSeconds = toLagSeconds(oldestPendingTs);
+      } else {
+        const oldestMaterialized = entities
+          .filter(e => e.backlogCount > 0)
+          .map(e => e.lastMaterializedAt)
+          .filter((d): d is Date => d instanceof Date)
+          .sort((a, b) => a.getTime() - b.getTime())[0];
+        lagSeconds = oldestMaterialized ? toLagSeconds(oldestMaterialized) : -1;
+      }
     }
 
     let backfillStatus = flow.backfillState?.status || "idle";
