@@ -940,33 +940,17 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
 );
 
 /**
- * Cleanup old webhook events (simplified version)
+ * @deprecated TTL index on receivedAt (7 days) now handles cleanup automatically.
+ * Kept as a no-op so Inngest doesn't error on the registered function ID.
  */
 export const webhookCleanupFunction = inngest.createFunction(
   {
     id: "webhook-cleanup",
-    name: "Cleanup Old Webhook Events",
+    name: "Cleanup Old Webhook Events (deprecated - TTL handles this)",
   },
-  { cron: "0 2 * * *" }, // Run daily at 2 AM
-  async ({ step, logger }) => {
-    const result = await step.run("cleanup-old-events", async () => {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-      // Delete completed events older than 30 days
-      const deleteResult = await WebhookEvent.deleteMany({
-        status: "completed",
-        processedAt: { $lt: thirtyDaysAgo },
-      });
-
-      logger.info("Cleaned up old webhook events", {
-        deleted: deleteResult.deletedCount,
-      });
-
-      return { deleted: deleteResult.deletedCount };
-    });
-
-    return result;
+  { cron: "0 2 * * *" },
+  async () => {
+    return { skipped: true, reason: "TTL index on receivedAt handles cleanup" };
   },
 );
 
