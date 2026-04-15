@@ -1,0 +1,202 @@
+---
+title: "PostgreSQL Table Partitioning: Range, List, and Hash"
+description: "Learn how to use declarative table partitioning in PostgreSQL -- range, list, and hash strategies -- with examples, partition pruning, indexing, and maintenance patterns for large tables."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "partitioning", "performance", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Table Partitioning: Range, List, and Hash
+
+Table partitioning splits a single logical table into multiple physical storage units (partitions). PostgreSQL's query planner can then skip partitions that can't match the query's filters -- a technique called partition pruning. For tables with hundreds of millions of rows, partitioning can reduce query time from minutes to seconds and make operations like bulk deletes nearly instant.
+
+PostgreSQL introduced declarative partitioning in version 10. Before that, inheritance-based partitioning was the only option -- avoid it for new tables.
+
+## When Partitioning Helps
+
+Partitioning is most effective when:
+- Tables are very large (100M+ rows, or 10+ GB) and queries consistently filter on the partition key
+- You need to delete old data regularly (e.g. drop partitions for expired time ranges)
+- You want to distribute data across tablespaces (e.g. hot data on SSD, cold data on HDD)
+
+Partitioning adds overhead for small tables and queries that don't filter on the partition key. A well-indexed regular table often outperforms a poorly partitioned one.
+
+## Range Partitioning
+
+Range partitioning assigns rows based on value ranges. This is the most common strategy for time-series data.
+
+```sql
+CREATE TABLE events (
+  id BIGSERIAL,
+  event_type TEXT NOT NULL,
+  payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL
+) PARTITION BY RANGE (created_at);
+
+-- Create monthly partitions
+CREATE TABLE events_2025_01 PARTITION OF events
+  FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+
+CREATE TABLE events_2025_02 PARTITION OF events
+  FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
+
+-- Default partition catches anything outside defined ranges
+CREATE TABLE events_default PARTITION OF events DEFAULT;
+```
+
+Ranges are inclusive at the lower bound and exclusive at the upper bound.
+
+### Dropping Old Partitions
+
+```sql
+-- Drop a year's worth of data in milliseconds
+DROP TABLE events_2023_01;
+DROP TABLE events_2023_02;
+-- ...
+```
+
+This is far faster than `DELETE FROM events WHERE created_at < '2024-01-01'`, which would scan rows and generate dead tuples.
+
+## List Partitioning
+
+List partitioning assigns rows based on specific values. Useful for regional or categorical splits.
+
+```sql
+CREATE TABLE orders (
+  id BIGSERIAL,
+  region TEXT NOT NULL,
+  amount NUMERIC,
+  created_at TIMESTAMPTZ NOT NULL
+) PARTITION BY LIST (region);
+
+CREATE TABLE orders_us     PARTITION OF orders FOR VALUES IN ('us', 'ca', 'mx');
+CREATE TABLE orders_eu     PARTITION OF orders FOR VALUES IN ('de', 'fr', 'gb', 'es', 'it');
+CREATE TABLE orders_apac   PARTITION OF orders FOR VALUES IN ('jp', 'au', 'sg', 'in');
+CREATE TABLE orders_other  PARTITION OF orders DEFAULT;
+```
+
+## Hash Partitioning
+
+Hash partitioning distributes rows evenly across a fixed number of partitions using a hash of the partition key. Use this when you need to distribute load evenly and don't have a natural range or list key.
+
+```sql
+CREATE TABLE user_events (
+  id BIGSERIAL,
+  user_id BIGINT NOT NULL,
+  event_type TEXT,
+  created_at TIMESTAMPTZ NOT NULL
+) PARTITION BY HASH (user_id);
+
+CREATE TABLE user_events_0 PARTITION OF user_events
+  FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE user_events_1 PARTITION OF user_events
+  FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE user_events_2 PARTITION OF user_events
+  FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE user_events_3 PARTITION OF user_events
+  FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+```
+
+Hash partitioning doesn't support partition pruning on range queries -- it's only useful when you query by exact key value (e.g. `WHERE user_id = 12345`).
+
+## Partition Pruning
+
+Partition pruning is the planner's ability to skip irrelevant partitions. It works when the filter uses the partition key with a comparison that the planner can statically resolve.
+
+```sql
+-- Pruning works: planner knows to only scan events_2025_01
+SELECT * FROM events WHERE created_at BETWEEN '2025-01-15' AND '2025-01-20';
+
+-- No pruning: the function result isn't known at plan time in some cases
+SELECT * FROM events WHERE date_trunc('month', created_at) = '2025-01-01';
+-- Use this instead:
+SELECT * FROM events WHERE created_at >= '2025-01-01' AND created_at < '2025-02-01';
+```
+
+Check pruning with `EXPLAIN`:
+
+```sql
+EXPLAIN SELECT * FROM events WHERE created_at BETWEEN '2025-01-15' AND '2025-01-20';
+-- Should show only events_2025_01 in the plan, not all partitions
+```
+
+## Indexes on Partitioned Tables
+
+In PostgreSQL 11+, you can create indexes on the parent table and they automatically propagate to all partitions:
+
+```sql
+CREATE INDEX ON events (created_at);
+-- Creates an index on each partition automatically
+```
+
+For unique constraints and primary keys, the partition key must be part of the constraint:
+
+```sql
+-- This works in PG 11+
+ALTER TABLE events ADD PRIMARY KEY (id, created_at);
+```
+
+## Sub-Partitioning
+
+Partitions can themselves be partitioned:
+
+```sql
+CREATE TABLE events_2025_01 PARTITION OF events
+  FOR VALUES FROM ('2025-01-01') TO ('2025-02-01')
+  PARTITION BY HASH (event_type);
+
+CREATE TABLE events_2025_01_h0 PARTITION OF events_2025_01
+  FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+-- ...
+```
+
+Sub-partitioning adds complexity. Be sure you actually need it before adding a second level.
+
+## Automating Partition Maintenance
+
+Creating monthly partitions manually doesn't scale. `pg_partman` is the standard extension for automated partition management (as of April 2026):
+
+```sql
+CREATE EXTENSION pg_partman;
+
+SELECT partman.create_parent(
+  p_parent_table => 'public.events',
+  p_control => 'created_at',
+  p_type => 'range',
+  p_interval => '1 month',
+  p_premake => 3  -- create 3 future partitions in advance
+);
+```
+
+`pg_partman` includes a background worker that creates future partitions and optionally retains or drops old ones.
+
+## Migrating an Existing Table
+
+You can't convert an existing table to a partitioned table in place. The standard approach:
+
+```sql
+-- 1. Create the new partitioned table
+CREATE TABLE events_new (...) PARTITION BY RANGE (created_at);
+-- 2. Create partitions
+-- 3. Copy data in batches
+INSERT INTO events_new SELECT * FROM events WHERE created_at < '2025-01-01';
+-- 4. Rename tables
+ALTER TABLE events RENAME TO events_old;
+ALTER TABLE events_new RENAME TO events;
+-- 5. Verify, then drop events_old
+```
+
+For zero-downtime migrations on live tables, use logical replication or the `pg_repack` approach.
+
+## Common Mistakes
+
+**Querying without the partition key:** A query with no filter on the partition key scans all partitions. Partitioning won't help -- it may actually hurt due to planning overhead.
+
+**Wrong index strategy:** Unique indexes on partitioned tables must include the partition key. `CREATE UNIQUE INDEX ON events (id)` fails unless `id` is the partition key or part of it.
+
+**Forgetting the default partition:** Inserts with values outside all defined ranges fail with an error if there's no default partition. Add one unless you want strict enforcement.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
