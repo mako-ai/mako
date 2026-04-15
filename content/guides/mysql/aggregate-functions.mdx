@@ -1,0 +1,221 @@
+---
+title: "Aggregate Functions in MySQL"
+description: "How to use MySQL aggregate functions: COUNT, SUM, AVG, MIN, MAX, GROUP BY, HAVING, GROUP_CONCAT, and GROUP BY WITH ROLLUP for multi-level summaries."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "aggregate-functions", "group-by", "having", "rollup"]
+date: "2026-04-15"
+---
+
+Aggregate functions compute a single result from a set of rows. They're the foundation of reporting and analytics in MySQL: counting orders, summing revenue, finding the highest value, calculating averages across groups.
+
+## The Core Aggregates
+
+```sql
+SELECT
+  COUNT(*)              AS total_rows,
+  COUNT(amount)         AS non_null_amounts,
+  SUM(amount)           AS total_revenue,
+  AVG(amount)           AS average_order_value,
+  MIN(amount)           AS smallest_order,
+  MAX(amount)           AS largest_order
+FROM orders;
+```
+
+### COUNT(*) vs COUNT(column)
+
+`COUNT(*)` counts all rows including NULLs. `COUNT(column)` counts only non-NULL values in that column.
+
+```sql
+-- Table has 100 rows, but only 80 have a non-NULL discount
+SELECT COUNT(*), COUNT(discount) FROM orders;
+-- Returns: 100, 80
+```
+
+`COUNT(DISTINCT column)` counts distinct non-NULL values:
+
+```sql
+SELECT COUNT(DISTINCT customer_id) AS unique_customers FROM orders;
+```
+
+## GROUP BY
+
+`GROUP BY` divides rows into groups and applies the aggregate function to each group:
+
+```sql
+SELECT
+  department,
+  COUNT(*) AS headcount,
+  AVG(salary) AS avg_salary,
+  MAX(salary) AS max_salary
+FROM employees
+GROUP BY department;
+```
+
+You can group by multiple columns:
+
+```sql
+SELECT
+  department,
+  job_title,
+  COUNT(*) AS count,
+  AVG(salary) AS avg_salary
+FROM employees
+GROUP BY department, job_title
+ORDER BY department, avg_salary DESC;
+```
+
+### MySQL's Non-Standard GROUP BY Behavior
+
+By default, MySQL (with `sql_mode` not including `ONLY_FULL_GROUP_BY`) allows selecting columns that aren't in the `GROUP BY` clause or wrapped in an aggregate. Other databases (PostgreSQL, SQL Server) reject this.
+
+```sql
+-- This works in MySQL but not in strict mode or other databases
+SELECT department, name, MAX(salary) FROM employees GROUP BY department;
+-- 'name' is non-deterministic here
+```
+
+With `ONLY_FULL_GROUP_BY` mode (enabled by default in MySQL 5.7.5+), this throws an error. Write explicit aggregates for all non-grouped columns:
+
+```sql
+-- Correct: use ANY_VALUE() if non-determinism is acceptable
+SELECT department, ANY_VALUE(name), MAX(salary) FROM employees GROUP BY department;
+```
+
+## HAVING
+
+`WHERE` filters rows before aggregation. `HAVING` filters groups after aggregation:
+
+```sql
+-- Departments with more than 10 employees AND average salary over 70k
+SELECT department, COUNT(*) AS headcount, AVG(salary) AS avg_salary
+FROM employees
+GROUP BY department
+HAVING headcount > 10 AND avg_salary > 70000;
+```
+
+A common mistake is using `WHERE` for aggregate conditions -- that fails because aggregates aren't computed until after WHERE:
+
+```sql
+-- Wrong
+SELECT department, AVG(salary) FROM employees WHERE AVG(salary) > 70000 GROUP BY department;
+
+-- Right
+SELECT department, AVG(salary) FROM employees GROUP BY department HAVING AVG(salary) > 70000;
+```
+
+## Combining WHERE and HAVING
+
+Both can be used together: `WHERE` reduces the input rows, then `GROUP BY` groups them, then `HAVING` filters the groups:
+
+```sql
+-- Active employees only, departments with avg salary > 80k
+SELECT department, COUNT(*) AS headcount, AVG(salary) AS avg_salary
+FROM employees
+WHERE status = 'active'
+GROUP BY department
+HAVING avg_salary > 80000;
+```
+
+## GROUP BY WITH ROLLUP
+
+`WITH ROLLUP` adds subtotal rows at each level of grouping, then a grand total:
+
+```sql
+SELECT
+  department,
+  job_title,
+  SUM(salary) AS total_salary
+FROM employees
+GROUP BY department, job_title WITH ROLLUP;
+```
+
+This produces:
+- Rows for each `(department, job_title)` combination
+- A subtotal row per `department` (with NULL for `job_title`)
+- A grand total row (with NULL for both `department` and `job_title`)
+
+### Distinguishing Rollup NULLs from Real NULLs
+
+Use `GROUPING()` (MySQL 8.0.1+) to tell the difference:
+
+```sql
+SELECT
+  IF(GROUPING(department), 'ALL DEPARTMENTS', department) AS department,
+  IF(GROUPING(job_title),  'ALL TITLES', job_title)       AS job_title,
+  SUM(salary) AS total_salary
+FROM employees
+GROUP BY department, job_title WITH ROLLUP;
+```
+
+## GROUP_CONCAT
+
+Aggregates string values from multiple rows into a single delimited string:
+
+```sql
+SELECT
+  department,
+  GROUP_CONCAT(name ORDER BY name SEPARATOR ', ') AS team_members
+FROM employees
+GROUP BY department;
+```
+
+Combine with DISTINCT and a length limit:
+
+```sql
+SELECT
+  project_id,
+  GROUP_CONCAT(DISTINCT skill ORDER BY skill SEPARATOR ', ') AS required_skills
+FROM project_requirements
+GROUP BY project_id;
+```
+
+The default maximum output is 1024 characters. Increase for large groups:
+
+```sql
+SET SESSION group_concat_max_len = 65536;
+```
+
+## Conditional Aggregation
+
+Aggregate only a subset of rows using CASE or IF inside the aggregate:
+
+```sql
+SELECT
+  department,
+  COUNT(*) AS total,
+  SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_count,
+  SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) AS inactive_count,
+  AVG(CASE WHEN status = 'active' THEN salary END) AS active_avg_salary
+FROM employees
+GROUP BY department;
+```
+
+Note: `AVG(CASE WHEN ... THEN salary END)` correctly excludes NULLs from the average (only active employees count).
+
+## Execution Order
+
+Understanding the logical order helps write correct queries:
+
+1. `FROM` -- choose tables
+2. `WHERE` -- filter rows
+3. `GROUP BY` -- group remaining rows
+4. Aggregate functions -- compute per group
+5. `HAVING` -- filter groups
+6. `SELECT` -- compute output columns
+7. `ORDER BY` -- sort results
+8. `LIMIT` -- restrict output count
+
+This is why you can't use a SELECT alias in a HAVING clause in most databases (the alias is computed after HAVING). MySQL is more lenient about this, but don't rely on it for portability.
+
+## Common Mistakes
+
+**COUNT(*) vs COUNT(col)** -- if NULL values in a column represent missing data, use `COUNT(*)` for total rows and `COUNT(col)` for populated rows. Using the wrong one gives silently wrong numbers.
+
+**Filtering aggregates with WHERE instead of HAVING** -- causes an error in strict mode. Always use HAVING for aggregate conditions.
+
+**GROUP_CONCAT silent truncation** -- increase `group_concat_max_len` before running queries on large groups.
+
+**Non-deterministic SELECT columns with GROUP BY** -- in `ONLY_FULL_GROUP_BY` mode (default since 5.7.5), all selected columns must be in GROUP BY or wrapped in an aggregate. Use `ANY_VALUE()` if non-determinism is genuinely acceptable.
+
+Mako connects to MySQL and provides AI autocomplete for aggregate query syntax. Try it at [mako.ai](https://mako.ai).
