@@ -1,7 +1,0 @@
-{
-  "outputDirectory": "app/dist",
-  "buildCommand": "pnpm run build",
-  "installCommand": "pnpm install",
-  "framework": null,
-  "regions": ["iad1"]
-}
