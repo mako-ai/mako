@@ -184,6 +184,12 @@ jobs:
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      BILLING_ENABLED: "true"
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+      STRIPE_PRO_PRICE_ID: ${{ secrets.STRIPE_TEST_PRO_PRICE_ID }}
+      STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_TEST_OVERAGE_PRICE_ID }}
+      STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
     steps:
       - name: Set PR-specific variables
@@ -497,6 +503,12 @@ jobs:
             --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
+            --set-env-vars BILLING_ENABLED=${BILLING_ENABLED} \
+            --set-env-vars STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY} \
+            --set-env-vars STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET} \
+            --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
+            --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
+            --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
             --quiet
 
           # Get the Cloud Run URL
@@ -705,6 +717,12 @@ jobs:
       VITE_MUI_LICENSE_KEY: ${{ secrets.VITE_MUI_LICENSE_KEY }}
       VITE_GTM_ID: ${{ vars.VITE_GTM_ID }}
       DEMO_DATABASE_URL: ${{ secrets.DEMO_DATABASE_URL }}
+      BILLING_ENABLED: "true"
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      STRIPE_PRO_PRICE_ID: ${{ secrets.STRIPE_PRO_PRICE_ID }}
+      STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_OVERAGE_PRICE_ID }}
+      STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
     steps:
       - name: Checkout
@@ -844,6 +862,12 @@ jobs:
             --set-env-vars SESSION_SECRET=${SESSION_SECRET} \
             --set-env-vars VITE_API_URL=${VITE_API_URL} \
             --set-env-vars DEMO_DATABASE_URL=${DEMO_DATABASE_URL} \
+            --set-env-vars BILLING_ENABLED=${BILLING_ENABLED} \
+            --set-env-vars STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY} \
+            --set-env-vars STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET} \
+            --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
+            --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
+            --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
             --quiet
 
       - name: Sync Inngest app

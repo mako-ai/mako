@@ -37,9 +37,7 @@ stripeWebhookRoutes.post("/", async c => {
   let event: Stripe.Event;
 
   try {
-    const stripe = new Stripe(getStripeSecretKey(), {
-      apiVersion: "2025-12-18.acacia" as Stripe.LatestApiVersion,
-    });
+    const stripe = new Stripe(getStripeSecretKey());
 
     const rawBody = await c.req.text();
     const signature = c.req.header("stripe-signature");

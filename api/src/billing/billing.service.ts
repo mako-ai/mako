@@ -16,6 +16,7 @@ import { LlmUsage } from "../database/schema";
 import {
   getStripeSecretKey,
   getStripeProPriceId,
+  getStripeOveragePriceId,
   getModelTier,
   isModelAvailableForPlan,
   PLAN_DEFINITIONS,
@@ -29,9 +30,7 @@ let _stripe: Stripe | null = null;
 
 function getStripe(): Stripe {
   if (!_stripe) {
-    _stripe = new Stripe(getStripeSecretKey(), {
-      apiVersion: "2025-12-18.acacia" as Stripe.LatestApiVersion,
-    });
+    _stripe = new Stripe(getStripeSecretKey());
   }
   return _stripe;
 }
@@ -90,6 +89,9 @@ export async function createCheckoutSession(
       {
         price: getStripeProPriceId(),
         quantity: 1,
+      },
+      {
+        price: getStripeOveragePriceId(),
       },
     ],
     success_url: successUrl,
@@ -323,15 +325,23 @@ export async function syncSubscriptionToWorkspace(
     status === "active" || status === "trialing" ? "pro" : "free";
   const planDef = PLAN_DEFINITIONS[plan];
 
-  const newPeriodStart = new Date(subscription.current_period_start * 1000);
+  const periodStartTs =
+    (subscription as any).current_period_start ??
+    subscription.items?.data?.[0]?.current_period_start;
+  const periodEndTs =
+    (subscription as any).current_period_end ??
+    subscription.items?.data?.[0]?.current_period_end;
+
+  const newPeriodStart = periodStartTs
+    ? new Date(periodStartTs * 1000)
+    : new Date();
+  const newPeriodEnd = periodEndTs ? new Date(periodEndTs * 1000) : null;
 
   const update: Record<string, unknown> = {
     "billing.stripeSubscriptionId": subscription.id,
     "billing.subscriptionStatus": status,
     "billing.currentPeriodStart": newPeriodStart,
-    "billing.currentPeriodEnd": new Date(
-      subscription.current_period_end * 1000,
-    ),
+    ...(newPeriodEnd && { "billing.currentPeriodEnd": newPeriodEnd }),
     "billing.plan": plan,
     "billing.usageQuotaUsd": planDef.usageQuotaUsd,
     "billing.hardLimitUsd": planDef.hardLimitUsd,
