@@ -138,7 +138,7 @@ BigQuery maps nested JSON objects to STRUCT types and JSON arrays to REPEATED fi
 With auto-detect, BigQuery creates:
 
 - `name` STRING
-- `address` STRUCT<city STRING, zip STRING>
+- `address` `STRUCT<city STRING, zip STRING>`
 - `tags` REPEATED STRING (ARRAY)
 
 Query nested fields with dot notation:
