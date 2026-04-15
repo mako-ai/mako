@@ -11,26 +11,20 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Chip,
   CircularProgress,
   ListItemIcon,
   ListItemText,
-  IconButton,
-  Tooltip,
 } from "@mui/material";
 import {
   KeyboardArrowDown,
   Add,
   Check,
-  Settings,
-  Business,
+  ApartmentRounded,
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useAuth } from "../contexts/auth-context";
 import { trackEvent } from "../lib/analytics";
 
 export function WorkspaceSwitcher() {
-  const { user } = useAuth();
   const {
     workspaces,
     currentWorkspace,
@@ -90,21 +84,6 @@ export function WorkspaceSwitcher() {
     }
   };
 
-  const getRoleBadgeColor = (role: string) => {
-    switch (role) {
-      case "owner":
-        return "error";
-      case "admin":
-        return "warning";
-      case "member":
-        return "primary";
-      case "viewer":
-        return "default";
-      default:
-        return "default";
-    }
-  };
-
   if (loading) {
     return <CircularProgress size={20} />;
   }
@@ -113,26 +92,59 @@ export function WorkspaceSwitcher() {
     <>
       <Button
         onClick={handleClick}
-        startIcon={<Business />}
-        endIcon={<KeyboardArrowDown />}
+        endIcon={
+          <KeyboardArrowDown sx={{ fontSize: 18, color: "text.secondary" }} />
+        }
         sx={{
           textTransform: "none",
           color: "text.primary",
-          minWidth: 200,
+          width: "100%",
+          minWidth: 0,
           justifyContent: "space-between",
-          px: 2,
+          px: 1.25,
+          py: 1,
           maxWidth: "100%",
+          borderRadius: 2,
+          border: "1px solid",
+          borderColor: "divider",
+          bgcolor: "background.paper",
+          "&:hover": {
+            bgcolor: "action.hover",
+            borderColor: "action.selected",
+          },
         }}
       >
-        <Box sx={{ textAlign: "left", flex: 1, minWidth: 0 }}>
-          <Typography variant="body2" noWrap>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1.25,
+            textAlign: "left",
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          <Box
+            sx={{
+              width: 28,
+              height: 28,
+              borderRadius: 1.5,
+              bgcolor: "action.hover",
+              color: "text.secondary",
+              display: "grid",
+              placeItems: "center",
+              flexShrink: 0,
+            }}
+          >
+            <ApartmentRounded sx={{ fontSize: 18 }} />
+          </Box>
+          <Typography
+            variant="body2"
+            noWrap
+            sx={{ fontSize: "0.95rem", fontWeight: 600 }}
+          >
             {currentWorkspace?.name || "Select Workspace"}
           </Typography>
-          {currentWorkspace && (
-            <Typography variant="caption" color="text.secondary" noWrap>
-              {currentWorkspace.role}
-            </Typography>
-          )}
         </Box>
       </Button>
 
@@ -141,75 +153,49 @@ export function WorkspaceSwitcher() {
         open={Boolean(anchorEl)}
         onClose={handleClose}
         PaperProps={{
-          sx: { minWidth: 280, maxHeight: 400 },
+          sx: { minWidth: 240, maxHeight: 360, py: 0.5 },
         }}
       >
-        <Box sx={{ px: 2, py: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            {user?.email}
-          </Typography>
-        </Box>
-        <Divider />
-
         {workspaces.map(workspace => (
           <MenuItem
             key={workspace.id}
             onClick={() => handleSwitchWorkspace(workspace.id)}
             selected={workspace.id === currentWorkspace?.id}
+            sx={{
+              minHeight: 40,
+              px: 1.5,
+              py: 0.75,
+            }}
           >
-            <ListItemIcon>
-              {workspace.id === currentWorkspace?.id && <Check />}
+            <ListItemIcon sx={{ minWidth: 24, color: "text.primary" }}>
+              {workspace.id === currentWorkspace?.id ? (
+                <Check fontSize="small" />
+              ) : null}
             </ListItemIcon>
             <ListItemText
               primary={workspace.name}
-              secondary={
-                <Box
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    mt: 0.5,
-                    minWidth: 0,
-                  }}
-                >
-                  <Chip
-                    label={workspace.role}
-                    size="small"
-                    color={getRoleBadgeColor(workspace.role)}
-                  />
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    className="app-truncate"
-                  >
-                    {workspace.settings.billingTier}
-                  </Typography>
-                </Box>
-              }
+              primaryTypographyProps={{
+                fontSize: "0.9rem",
+                fontWeight: workspace.id === currentWorkspace?.id ? 600 : 500,
+                lineHeight: 1.3,
+              }}
             />
-            {(workspace.role === "owner" || workspace.role === "admin") && (
-              <Tooltip title="Workspace Settings">
-                <IconButton
-                  size="small"
-                  onClick={e => {
-                    e.stopPropagation();
-                    // TODO: Navigate to workspace settings
-                  }}
-                >
-                  <Settings fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            )}
           </MenuItem>
         ))}
 
         <Divider sx={{ my: 1 }} />
 
-        <MenuItem onClick={() => setCreateDialogOpen(true)}>
+        <MenuItem
+          onClick={() => setCreateDialogOpen(true)}
+          sx={{ minHeight: 40, px: 1.5, py: 0.75 }}
+        >
           <ListItemIcon>
-            <Add />
+            <Add fontSize="small" />
           </ListItemIcon>
-          <ListItemText primary="Create New Workspace" />
+          <ListItemText
+            primary="Create New Workspace"
+            primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500 }}
+          />
         </MenuItem>
       </Menu>
 

@@ -15,9 +15,10 @@ import {
   CircularProgress,
   Tooltip,
 } from "@mui/material";
-import { KeyboardArrowDown } from "@mui/icons-material";
+import { KeyboardArrowDown, ArrowForward } from "@mui/icons-material";
 import { useSettingsStore } from "../store/settingsStore";
 import { useBillingStore } from "../store/billingStore";
+import { useWorkspace } from "../contexts/workspace-context";
 
 import type { AIModel } from "../lib/api-types";
 
@@ -59,6 +60,8 @@ export const ModelSelector: React.FC = () => {
   const fetchModels = useSettingsStore(s => s.fetchModels);
 
   const billingStatus = useBillingStore(s => s.status);
+  const createCheckoutSession = useBillingStore(s => s.createCheckoutSession);
+  const { currentWorkspace } = useWorkspace();
 
   const open = Boolean(anchorEl);
 
@@ -83,38 +86,31 @@ export const ModelSelector: React.FC = () => {
   const selectedModel = models.find(m => m.id === selectedModelId);
   const displayName = selectedModel?.name || selectedModelId || "Select Model";
 
-  // Group models: free-tier first, then by provider ordered by priority
+  // Group models by provider, ordered by priority
   const modelGroups = (() => {
-    const freeModels = models.filter(m => m.tier === "free");
-    const proModels = models.filter(m => m.tier !== "free");
-
-    const groups: Array<{ label: string; key: string; models: AIModel[] }> = [];
-
-    if (freeModels.length > 0) {
-      groups.push({ label: "Free", key: "free", models: freeModels });
+    const byProvider: Record<string, AIModel[]> = {};
+    for (const m of models) {
+      if (!byProvider[m.provider]) {
+        byProvider[m.provider] = [];
+      }
+      byProvider[m.provider].push(m);
     }
 
-    const proByProvider: Record<string, AIModel[]> = {};
-    for (const m of proModels) {
-      if (!proByProvider[m.provider]) proByProvider[m.provider] = [];
-      proByProvider[m.provider].push(m);
-    }
     const priorityIdx = new Map(PROVIDER_PRIORITY.map((p, i) => [p, i]));
-    const sortedProviders = Object.keys(proByProvider).sort((a, b) => {
+    const sortedProviders = Object.keys(byProvider).sort((a, b) => {
       const ai = priorityIdx.get(a) ?? Infinity;
       const bi = priorityIdx.get(b) ?? Infinity;
-      if (ai !== bi) return ai - bi;
+      if (ai !== bi) {
+        return ai - bi;
+      }
       return a.localeCompare(b);
     });
-    for (const provider of sortedProviders) {
-      groups.push({
-        label: PROVIDER_NAMES[provider] || provider,
-        key: provider,
-        models: proByProvider[provider],
-      });
-    }
 
-    return groups;
+    return sortedProviders.map(provider => ({
+      label: PROVIDER_NAMES[provider] || provider,
+      key: provider,
+      models: byProvider[provider],
+    }));
   })();
 
   if (loading) {
@@ -216,17 +212,23 @@ export const ModelSelector: React.FC = () => {
             const isFreePlan = billingEnabled && billingStatus?.plan === "free";
             const isRestricted = isProModel && isFreePlan;
 
+            const handleModelClick = async () => {
+              if (isRestricted) {
+                handleClose();
+                if (!currentWorkspace?.id) return;
+                const url = await createCheckoutSession(currentWorkspace.id);
+                if (url) window.location.href = url;
+                return;
+              }
+              handleSelectModel(model.id);
+            };
+
             return (
               <MenuItem
                 key={model.id}
-                selected={model.id === selectedModelId}
-                onClick={() => handleSelectModel(model.id)}
-                disabled={isRestricted}
-                sx={{
-                  py: 1,
-                  px: 2,
-                  opacity: isRestricted ? 0.5 : 1,
-                }}
+                selected={!isRestricted && model.id === selectedModelId}
+                onClick={handleModelClick}
+                sx={{ py: 1, px: 2 }}
               >
                 <Box
                   sx={{
@@ -238,18 +240,41 @@ export const ModelSelector: React.FC = () => {
                   }}
                 >
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="body2" noWrap>
+                    <Typography
+                      variant="body2"
+                      noWrap
+                      sx={{
+                        color: isRestricted ? "text.secondary" : undefined,
+                      }}
+                    >
                       {model.name}
                     </Typography>
-                    {model.description && (
+                    {isRestricted ? (
                       <Typography
                         variant="caption"
-                        color="text.secondary"
-                        sx={{ display: "block" }}
                         noWrap
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.25,
+                          color: "primary.main",
+                          fontWeight: 500,
+                        }}
                       >
-                        {model.description}
+                        Upgrade to unlock
+                        <ArrowForward sx={{ fontSize: 11 }} />
                       </Typography>
+                    ) : (
+                      model.description && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block" }}
+                          noWrap
+                        >
+                          {model.description}
+                        </Typography>
+                      )
                     )}
                   </Box>
                   {isFreeModel && billingEnabled && (
@@ -265,8 +290,8 @@ export const ModelSelector: React.FC = () => {
                     <Chip
                       label="Pro"
                       size="small"
-                      color={isRestricted ? "default" : "primary"}
-                      variant="outlined"
+                      color="primary"
+                      variant={isRestricted ? "filled" : "outlined"}
                       sx={{ height: 18, fontSize: 10 }}
                     />
                   )}

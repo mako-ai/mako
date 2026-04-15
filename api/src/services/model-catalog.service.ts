@@ -56,7 +56,6 @@ interface ArenaResponse {
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const ARENA_API_URL =
   "https://api.wulong.dev/arena-ai-leaderboards/v1/leaderboard?name=code";
-const FREE_TIER_COUNT = 3;
 const FREE_TIER_MAX_COST_PER_M = 3.0;
 
 const FALLBACK_FREE: readonly string[] = [
@@ -64,6 +63,17 @@ const FALLBACK_FREE: readonly string[] = [
   "google/gemini-2.5-flash",
   "deepseek/deepseek-chat",
 ];
+
+/**
+ * Trusted providers for default model selection. When picking the default
+ * model for a user who hasn't saved a preference, we prefer these providers.
+ */
+const DEFAULT_PREFERRED_PROVIDERS = new Set([
+  "openai",
+  "anthropic",
+  "google",
+  "deepseek",
+]);
 
 // ---------------------------------------------------------------------------
 // In-memory cache
@@ -88,9 +98,11 @@ async function fetchArenaScores(): Promise<Map<string, number>> {
     if (!res.ok) throw new Error(`Arena fetch failed: ${res.status}`);
     const body = (await res.json()) as ArenaResponse;
     for (const m of body.models) {
-      map.set(normalizeArenaName(m.model), m.score);
+      for (const key of normalizeArenaName(m.model)) {
+        map.set(key, m.score);
+      }
     }
-    logger.info("Fetched arena scores", { modelCount: map.size });
+    logger.info("Fetched arena scores", { modelCount: body.models.length });
   } catch (err) {
     logger.warn("Failed to fetch arena scores, continuing without", {
       error: String(err),
@@ -100,21 +112,130 @@ async function fetchArenaScores(): Promise<Map<string, number>> {
 }
 
 /**
- * Normalize arena model names for fuzzy matching with gateway IDs.
- * Strip parenthetical suffixes, lowercase, replace dots with dashes.
+ * Generate multiple normalized keys for an arena model name to improve
+ * fuzzy matching against gateway IDs.
+ *
+ * Arena names like "claude-opus-4-6", "gemini-2.5-pro",
+ * "claude-haiku-4-5-20251001" need to match gateway IDs like
+ * "claude-opus-4.6", "gemini-2.5-pro", "claude-3.5-haiku".
  */
-function normalizeArenaName(name: string): string {
-  return name
+function normalizeArenaName(name: string): string[] {
+  const base = name
     .replace(/\s*\(.*?\)\s*/g, "")
     .trim()
-    .toLowerCase()
-    .replace(/\./g, "-");
+    .toLowerCase();
+
+  const keys: string[] = [];
+
+  // dots→dashes variant
+  keys.push(base.replace(/\./g, "-"));
+  // dashes→dots variant (for version numbers)
+  keys.push(base.replace(/(\d)-(?=\d)/g, "$1."));
+  // as-is
+  keys.push(base);
+  // strip date suffixes like -20251001, -20250929
+  const noDate = base.replace(/-\d{8}$/, "");
+  if (noDate !== base) {
+    keys.push(noDate.replace(/\./g, "-"));
+    keys.push(noDate);
+  }
+
+  return [...new Set(keys)];
 }
 
-function normalizeGatewayId(id: string): string {
-  const slashIdx = id.indexOf("/");
-  const modelPart = slashIdx >= 0 ? id.slice(slashIdx + 1) : id;
-  return modelPart.toLowerCase().replace(/\./g, "-");
+/**
+ * Hardcoded aliases for models where arena and gateway names diverge
+ * completely (e.g. Anthropic renamed "3.5 Haiku" → "Haiku 4.5" on arena).
+ * Maps gateway model-part (lowercase) → arena key (post-normalization).
+ */
+const GATEWAY_TO_ARENA_ALIASES: Record<string, string> = {
+  "claude-3.5-haiku": "claude-haiku-4-5",
+  "claude-3-5-haiku": "claude-haiku-4-5",
+  "claude-3.5-sonnet": "claude-sonnet-4-6",
+  "claude-3-5-sonnet": "claude-sonnet-4-6",
+};
+
+/**
+ * Extract "significant tokens" from a model name for fuzzy matching.
+ * Returns the model family name and all version-like segments.
+ */
+function modelTokens(name: string): Set<string> {
+  const tokens = new Set<string>();
+  const parts = name.replace(/\./g, "-").split("-");
+  for (const p of parts) {
+    if (p.length > 0) {
+      tokens.add(p);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Look up the arena score for a gateway model ID. Tries multiple
+ * normalization strategies to handle naming divergence.
+ */
+function lookupArenaScore(
+  gatewayId: string,
+  arenaScores: Map<string, number>,
+): number | null {
+  const slashIdx = gatewayId.indexOf("/");
+  const modelPart = slashIdx >= 0 ? gatewayId.slice(slashIdx + 1) : gatewayId;
+  const lower = modelPart.toLowerCase();
+
+  // 1. Hardcoded alias lookup
+  const alias = GATEWAY_TO_ARENA_ALIASES[lower];
+  if (alias) {
+    const score = arenaScores.get(alias);
+    if (score !== undefined) {
+      return score;
+    }
+  }
+
+  // 2. Try exact, dots→dashes, dashes→dots
+  const variants = [
+    lower,
+    lower.replace(/\./g, "-"),
+    lower.replace(/(\d)-(?=\d)/g, "$1."),
+  ];
+  for (const v of variants) {
+    const score = arenaScores.get(v);
+    if (score !== undefined) {
+      return score;
+    }
+  }
+
+  // 3. Prefix match
+  for (const [key, score] of arenaScores) {
+    if (key.startsWith(lower) || lower.startsWith(key)) {
+      return score;
+    }
+  }
+
+  // 4. Token-set match: if >70% of tokens overlap (handles reordering)
+  const gwTokens = modelTokens(lower);
+  if (gwTokens.size >= 2) {
+    let bestScore: number | null = null;
+    let bestOverlap = 0;
+    for (const [key, score] of arenaScores) {
+      const arenaTokens = modelTokens(key);
+      let overlap = 0;
+      for (const t of gwTokens) {
+        if (arenaTokens.has(t)) {
+          overlap++;
+        }
+      }
+      const ratio = overlap / Math.max(gwTokens.size, arenaTokens.size);
+      if (ratio > 0.7 && overlap > bestOverlap) {
+        bestOverlap = overlap;
+        bestScore = score;
+      }
+    }
+    if (bestScore !== null) {
+      return bestScore;
+    }
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,15 +310,22 @@ async function buildCatalog(): Promise<{
     toCatalogModel(gm, arenaScores, pricingMap),
   );
 
-  const freeTierIds = selectFreeTier(models);
+  const freeTierIds = new Set<string>();
   for (const m of models) {
-    m.tier = freeTierIds.has(m.id) ? "free" : "pro";
+    if (
+      m.blendedCostPerM !== null &&
+      m.blendedCostPerM <= FREE_TIER_MAX_COST_PER_M
+    ) {
+      m.tier = "free";
+      freeTierIds.add(m.id);
+    } else {
+      m.tier = "pro";
+    }
   }
 
   logger.info("Built model catalog", {
     totalModels: models.length,
     freeModels: freeTierIds.size,
-    freeModelIds: Array.from(freeTierIds),
   });
 
   return { models, freeTierIds };
@@ -212,8 +340,7 @@ function toCatalogModel(
   const pricing = pricingMap.get(gm.id);
   const blendedCostPerM = pricing ? (pricing.input + pricing.output) / 2 : null;
 
-  const normalizedId = normalizeGatewayId(gm.id);
-  const arenaScore = arenaScores.get(normalizedId) ?? null;
+  const arenaScore = lookupArenaScore(gm.id, arenaScores);
 
   return {
     id: gm.id,
@@ -228,40 +355,6 @@ function toCatalogModel(
     arenaScore,
     tier: "pro", // overwritten by selectFreeTier
   };
-}
-
-function selectFreeTier(models: CatalogModel[]): Set<string> {
-  const candidates = models.filter(
-    m =>
-      m.tags.includes("tool-use") &&
-      m.blendedCostPerM !== null &&
-      m.blendedCostPerM <= FREE_TIER_MAX_COST_PER_M,
-  );
-
-  candidates.sort((a, b) => {
-    if (a.arenaScore !== null && b.arenaScore !== null) {
-      return b.arenaScore - a.arenaScore;
-    }
-    if (a.arenaScore !== null) {
-      return -1;
-    }
-    if (b.arenaScore !== null) {
-      return 1;
-    }
-    return (a.blendedCostPerM ?? Infinity) - (b.blendedCostPerM ?? Infinity);
-  });
-
-  const selected = new Set<string>();
-  for (const c of candidates) {
-    if (selected.size >= FREE_TIER_COUNT) break;
-    selected.add(c.id);
-  }
-
-  if (selected.size === 0) {
-    for (const id of FALLBACK_FREE) selected.add(id);
-  }
-
-  return selected;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,19 +415,46 @@ export async function isFreeTierModel(id: string): Promise<boolean> {
   return cachedFreeTierIds?.has(id) ?? FALLBACK_FREE.includes(id);
 }
 
-export async function getDefaultChatModelId(): Promise<string> {
-  await ensureCatalog();
-  const freeTierIds = cachedFreeTierIds;
-  if (freeTierIds && freeTierIds.size > 0) {
-    const freeModels = (cachedCatalog ?? []).filter(m => freeTierIds.has(m.id));
-    freeModels.sort((a, b) => (b.arenaScore ?? 0) - (a.arenaScore ?? 0));
-    if (freeModels.length > 0) return freeModels[0].id;
+/**
+ * Pick the best default model by ELO, preferring trusted providers.
+ * Used when a user hasn't saved a model preference in their settings.
+ */
+function pickBestByElo(
+  models: CatalogModel[],
+  preferProviders = true,
+): string | null {
+  const sorted = [...models].sort(
+    (a, b) => (b.arenaScore ?? 0) - (a.arenaScore ?? 0),
+  );
+
+  if (preferProviders) {
+    const preferred = sorted.find(
+      m => DEFAULT_PREFERRED_PROVIDERS.has(m.provider) && m.arenaScore !== null,
+    );
+    if (preferred) {
+      return preferred.id;
+    }
   }
-  return FALLBACK_FREE[0];
+
+  return sorted[0]?.id ?? null;
 }
 
+/**
+ * Default model for Pro users (best model overall by ELO from trusted providers).
+ */
+export async function getDefaultChatModelId(): Promise<string> {
+  await ensureCatalog();
+  const all = cachedCatalog ?? [];
+  return pickBestByElo(all) ?? FALLBACK_FREE[0];
+}
+
+/**
+ * Default model for Free users (best free-tier model by ELO from trusted providers).
+ */
 export async function getDefaultFreeChatModelId(): Promise<string> {
-  return getDefaultChatModelId();
+  await ensureCatalog();
+  const freeModels = (cachedCatalog ?? []).filter(m => m.tier === "free");
+  return pickBestByElo(freeModels) ?? FALLBACK_FREE[0];
 }
 
 export async function getUtilityChatModelId(): Promise<string> {
