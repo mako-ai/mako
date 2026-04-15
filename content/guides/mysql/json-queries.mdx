@@ -1,0 +1,212 @@
+---
+title: "Working with JSON in MySQL"
+description: "A practical guide to MySQL JSON functions: JSON_EXTRACT, ->, ->>, JSON_SET, JSON_TABLE, JSON_ARRAYAGG, and JSON_OBJECTAGG, with real query examples."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "json", "json-extract", "json-table"]
+date: "2026-04-15"
+---
+
+MySQL has supported a native JSON data type since version 5.7. Storing JSON in a dedicated column (rather than a TEXT column) gives you validation on insert, optimized storage, and path-based access via dedicated functions.
+
+This guide covers the most useful JSON functions for querying and transforming JSON data.
+
+## Storing JSON
+
+Define a column as `JSON` type:
+
+```sql
+CREATE TABLE users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(50),
+  profile JSON,
+  settings JSON
+);
+
+INSERT INTO users (username, profile, settings) VALUES
+('alice', '{"age": 30, "city": "Berlin", "tags": ["admin", "editor"]}', '{"theme": "dark", "notifications": true}'),
+('bob', '{"age": 25, "city": "Paris", "tags": ["viewer"]}', '{"theme": "light", "notifications": false}');
+```
+
+MySQL validates JSON on insert -- malformed JSON raises an error rather than silently storing garbage.
+
+## Extracting Values
+
+### JSON_EXTRACT() and the -> Operator
+
+`JSON_EXTRACT(doc, path)` retrieves a value at the given JSON path. The `->` operator is shorthand:
+
+```sql
+-- These are equivalent
+SELECT JSON_EXTRACT(profile, '$.city') FROM users;
+SELECT profile -> '$.city' FROM users;
+-- Returns: "Berlin", "Paris" (with quotes)
+```
+
+Use `$.key` for object access, `$[n]` for array index access:
+
+```sql
+SELECT profile -> '$.tags[0]' FROM users;
+-- Returns: "admin", "viewer"
+```
+
+### The ->> Operator (Unquoted)
+
+`->>` is equivalent to `JSON_UNQUOTE(JSON_EXTRACT(...))`. It returns the string value without surrounding quotes:
+
+```sql
+SELECT profile ->> '$.city' FROM users;
+-- Returns: Berlin, Paris (no quotes)
+```
+
+Use `->` when chaining JSON operations; use `->>` when you need a clean string for comparison or display.
+
+```sql
+-- Filter by JSON field value
+SELECT username FROM users WHERE profile ->> '$.city' = 'Berlin';
+```
+
+## Modifying JSON
+
+### JSON_SET()
+
+Updates existing values or inserts new keys if they don't exist:
+
+```sql
+UPDATE users
+SET settings = JSON_SET(settings, '$.theme', 'dark', '$.language', 'en')
+WHERE username = 'bob';
+```
+
+### JSON_INSERT() and JSON_REPLACE()
+
+`JSON_INSERT` only adds new keys (won't overwrite). `JSON_REPLACE` only updates existing keys (won't insert):
+
+```sql
+-- Won't change 'theme' if it already exists
+UPDATE users SET settings = JSON_INSERT(settings, '$.theme', 'dark');
+
+-- Won't add 'timezone' if it doesn't exist
+UPDATE users SET settings = JSON_REPLACE(settings, '$.timezone', 'UTC');
+```
+
+### JSON_REMOVE()
+
+Removes a key from a JSON document:
+
+```sql
+UPDATE users SET profile = JSON_REMOVE(profile, '$.tags');
+```
+
+## Working with Arrays
+
+### JSON_ARRAY() and JSON_ARRAYAGG()
+
+`JSON_ARRAY` builds a JSON array literal:
+
+```sql
+SELECT JSON_ARRAY('a', 'b', 'c');
+-- Returns: ["a", "b", "c"]
+```
+
+`JSON_ARRAYAGG` is an aggregate function that collects values from rows into a JSON array:
+
+```sql
+SELECT
+  department,
+  JSON_ARRAYAGG(name) AS team_members
+FROM employees
+GROUP BY department;
+```
+
+### JSON_OBJECTAGG()
+
+Builds a JSON object from key-value pairs across rows:
+
+```sql
+SELECT JSON_OBJECTAGG(username, profile ->> '$.city') AS user_cities
+FROM users;
+-- Returns: {"alice": "Berlin", "bob": "Paris"}
+```
+
+## JSON_TABLE: Turning JSON into Rows
+
+`JSON_TABLE` (MySQL 8.0+) is the most powerful JSON function. It shreds JSON into a relational table that you can join against.
+
+```sql
+SELECT jt.*
+FROM users,
+JSON_TABLE(
+  profile,
+  '$' COLUMNS (
+    age INT PATH '$.age',
+    city VARCHAR(100) PATH '$.city'
+  )
+) AS jt;
+```
+
+Handling arrays with `JSON_TABLE`:
+
+```sql
+-- Expand the tags array into individual rows
+SELECT u.username, jt.tag
+FROM users u,
+JSON_TABLE(
+  u.profile,
+  '$.tags[*]' COLUMNS (tag VARCHAR(50) PATH '$')
+) AS jt;
+
+-- Result:
+-- alice | admin
+-- alice | editor
+-- bob   | viewer
+```
+
+This is far cleaner than trying to parse arrays with `JSON_EXTRACT` and positional indexes.
+
+## Checking if a Key Exists
+
+Use `JSON_CONTAINS_PATH`:
+
+```sql
+-- Check if the 'city' key exists in profile
+SELECT username
+FROM users
+WHERE JSON_CONTAINS_PATH(profile, 'one', '$.city');
+```
+
+Use `JSON_CONTAINS` to check if a value exists anywhere in a document:
+
+```sql
+-- Find users who have 'admin' in their tags array
+SELECT username
+FROM users
+WHERE JSON_CONTAINS(profile -> '$.tags', '"admin"');
+```
+
+## Indexing JSON Columns
+
+You can't index a JSON column directly, but you can create a virtual generated column from a JSON path and index that:
+
+```sql
+ALTER TABLE users
+  ADD COLUMN city VARCHAR(100) GENERATED ALWAYS AS (profile ->> '$.city') VIRTUAL,
+  ADD INDEX idx_city (city);
+
+-- Now this query uses the index
+SELECT username FROM users WHERE city = 'Berlin';
+```
+
+This is the standard pattern for making JSON queries fast. Without it, every query involving a JSON path triggers a full table scan.
+
+## Common Mistakes
+
+**Using TEXT instead of JSON** -- you lose validation, optimized storage, and path access. Use the `JSON` type unless you have a specific reason not to.
+
+**Forgetting quotes matter** -- `JSON_EXTRACT` returns JSON-encoded strings (with quotes). Use `JSON_UNQUOTE` or `->>`  when comparing to plain strings, or comparisons will fail silently.
+
+**No index on a frequently queried path** -- add a generated column + index for any JSON path you filter on regularly.
+
+**JSON_TABLE requires MySQL 8.0** -- if you're on 5.7, you'll need to handle JSON array expansion in application code.
+
+Mako connects to MySQL and lets you query JSON columns with AI autocomplete. Try it at [mako.ai](https://mako.ai).
