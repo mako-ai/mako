@@ -1,0 +1,238 @@
+---
+title: "PostgreSQL Joins: A Complete Guide with Examples"
+description: "Learn every type of join in PostgreSQL -- INNER, LEFT, RIGHT, FULL, CROSS, SELF, and LATERAL -- with real examples and common pitfalls."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "joins", "data-engineering"]
+date: "2026-04-15"
+---
+
+# PostgreSQL Joins: A Complete Guide
+
+Joins combine rows from two or more tables based on a related column. They're the core of relational SQL, and most data work requires at least a working knowledge of all the join types. This guide covers all of them with concrete examples.
+
+## Sample Schema
+
+All examples below use this schema:
+
+```sql
+CREATE TABLE customers (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    country TEXT
+);
+
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER REFERENCES customers(id),
+    amount NUMERIC,
+    status TEXT
+);
+
+INSERT INTO customers (name, country) VALUES
+('Alice', 'DE'), ('Bob', 'FR'), ('Carol', 'DE'), ('Dave', NULL);
+
+INSERT INTO orders (customer_id, amount, status) VALUES
+(1, 120.00, 'shipped'),
+(1, 45.00, 'pending'),
+(2, 200.00, 'shipped'),
+(99, 50.00, 'pending');  -- no matching customer
+```
+
+## INNER JOIN
+
+Returns rows only where there's a match in both tables. Rows with no match are excluded from both sides.
+
+```sql
+SELECT c.name, o.amount, o.status
+FROM customers c
+INNER JOIN orders o ON c.id = o.customer_id;
+```
+
+Result: Alice (twice), Bob. Carol has no orders (excluded). The order for customer_id 99 has no customer (excluded).
+
+`INNER JOIN` is the default when you write `JOIN`:
+```sql
+-- These are identical
+FROM customers c JOIN orders o ON ...
+FROM customers c INNER JOIN orders o ON ...
+```
+
+## LEFT JOIN (LEFT OUTER JOIN)
+
+Returns all rows from the left table, and matching rows from the right. If there's no match on the right, the right-side columns are `NULL`.
+
+```sql
+SELECT c.name, o.amount
+FROM customers c
+LEFT JOIN orders o ON c.id = o.customer_id;
+```
+
+Result: Alice (twice), Bob, Carol (with `amount = NULL`), Dave (with `amount = NULL`). Every customer appears at least once.
+
+**Common use:** Find customers with no orders.
+
+```sql
+SELECT c.name
+FROM customers c
+LEFT JOIN orders o ON c.id = o.customer_id
+WHERE o.id IS NULL;
+-- Returns: Carol, Dave
+```
+
+## RIGHT JOIN (RIGHT OUTER JOIN)
+
+Mirror image of LEFT JOIN: returns all rows from the right table, and matching rows from the left.
+
+```sql
+SELECT c.name, o.amount
+FROM customers c
+RIGHT JOIN orders o ON c.id = o.customer_id;
+```
+
+Result: Alice (twice), Bob, and the orphan order for customer_id 99 (with `name = NULL`).
+
+In practice, most teams rewrite RIGHT JOINs as LEFT JOINs by swapping table order -- it reads more naturally. The results are equivalent:
+```sql
+-- These are equivalent
+FROM customers c RIGHT JOIN orders o ON ...
+FROM orders o LEFT JOIN customers c ON ...
+```
+
+## FULL OUTER JOIN
+
+Returns all rows from both tables, with NULLs where there's no match on either side.
+
+```sql
+SELECT c.name, o.amount
+FROM customers c
+FULL OUTER JOIN orders o ON c.id = o.customer_id;
+```
+
+Result: Alice (twice), Bob, Carol (NULL amount), Dave (NULL amount), and the orphan order (NULL name).
+
+**Common use:** Finding rows that exist in one table but not the other (data reconciliation, sync checks).
+
+```sql
+SELECT
+    c.name AS customer,
+    o.id AS order_id
+FROM customers c
+FULL OUTER JOIN orders o ON c.id = o.customer_id
+WHERE c.id IS NULL OR o.id IS NULL;
+-- Returns: Carol (no orders), Dave (no orders), order 4 (no customer)
+```
+
+## CROSS JOIN
+
+Returns the Cartesian product: every row from the left table combined with every row from the right. No `ON` condition.
+
+```sql
+SELECT c.name, p.name AS product
+FROM customers c
+CROSS JOIN products p;
+```
+
+With 4 customers and 10 products, you get 40 rows. 
+
+**Common use:** Generating all possible combinations (e.g., a calendar of dates × employees for attendance tracking).
+
+Be careful with large tables -- a CROSS JOIN on two 10,000-row tables produces 100 million rows.
+
+## SELF JOIN
+
+A table joined to itself. Uses different aliases to distinguish the two "copies."
+
+```sql
+-- Employees table with manager_id referencing another employee
+SELECT e.name AS employee, m.name AS manager
+FROM employees e
+LEFT JOIN employees m ON e.manager_id = m.id;
+```
+
+Also useful for finding duplicate rows or comparing rows in the same table:
+
+```sql
+-- Find pairs of customers in the same country
+SELECT a.name, b.name, a.country
+FROM customers a
+JOIN customers b ON a.country = b.country AND a.id < b.id;
+```
+
+## LATERAL JOIN
+
+A `LATERAL` subquery can reference columns from the table(s) to its left -- effectively, it runs once per row of the outer query. Standard subqueries can't do that.
+
+```sql
+-- Get the most recent order for each customer
+SELECT c.name, recent.amount, recent.status
+FROM customers c
+LEFT JOIN LATERAL (
+    SELECT amount, status
+    FROM orders o
+    WHERE o.customer_id = c.id
+    ORDER BY o.id DESC
+    LIMIT 1
+) recent ON true;
+```
+
+Without `LATERAL`, you'd need a window function + CTE to achieve the same. LATERAL joins are particularly useful with set-returning functions:
+
+```sql
+SELECT c.name, tag
+FROM customers c,
+     LATERAL unnest(c.tags) AS tag;  -- equivalent to CROSS JOIN LATERAL
+```
+
+## JOIN Conditions: ON vs USING vs NATURAL
+
+```sql
+-- ON: explicit condition
+JOIN orders o ON c.id = o.customer_id
+
+-- USING: when both tables have the same column name
+-- (projects out one copy of the column)
+JOIN order_items USING (order_id)
+
+-- NATURAL: joins on all columns with matching names (dangerous in production)
+-- Don't use in production -- schema changes silently break queries
+NATURAL JOIN order_status_log
+```
+
+Use `ON` in production code. `USING` is fine when column names are deliberately shared. Avoid `NATURAL JOIN`.
+
+## Performance Notes
+
+**Index your join columns.** Every foreign key should have an index:
+```sql
+CREATE INDEX idx_orders_customer_id ON orders (customer_id);
+```
+
+Without this, every join scans the full orders table for each customer row.
+
+**Hash join vs nested loop.** PostgreSQL's planner chooses the join algorithm automatically. For large tables, it typically uses hash joins. If you see slow nested loop joins on large result sets, check that join columns are indexed and `work_mem` is large enough for hash operations.
+
+**Avoid joining on functions.** `JOIN orders ON lower(c.email) = lower(o.billing_email)` can't use a standard index. Add an expression index or normalize the data.
+
+## Common Mistakes
+
+**Forgetting `WHERE` after LEFT JOIN produces unwanted NULLs**: If you add a `WHERE` filter on the right table's columns after a LEFT JOIN, you've effectively turned it into an INNER JOIN (NULLs fail the filter). Put the filter in the `ON` clause instead:
+
+```sql
+-- Effectively an INNER JOIN (excludes unmatched customers)
+LEFT JOIN orders o ON c.id = o.customer_id
+WHERE o.status = 'shipped'
+
+-- Correct: keeps unmatched customers, filters matched orders
+LEFT JOIN orders o ON c.id = o.customer_id AND o.status = 'shipped'
+```
+
+**Cross-join by accident**: Forgetting the `ON` clause with `INNER JOIN` is a syntax error in PostgreSQL -- but if you use a comma in `FROM`, you silently get a cross join:
+```sql
+-- This is a CROSS JOIN
+SELECT * FROM customers c, orders o;
+```
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete for exploring join queries. Try it free at [mako.ai](https://mako.ai).
