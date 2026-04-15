@@ -1955,6 +1955,10 @@ WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  { expireAfterSeconds: 7 * 24 * 60 * 60 },
+);
 
 /**
  * CdcChangeEvent Schema
