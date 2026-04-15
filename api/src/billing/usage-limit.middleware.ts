@@ -6,7 +6,11 @@
  */
 
 import { Workspace, IWorkspaceBilling } from "../database/workspace-schema";
-import { isBillingEnabled, PLAN_DEFINITIONS } from "./config";
+import {
+  getEffectiveBillingPlan,
+  isBillingEnabled,
+  PLAN_DEFINITIONS,
+} from "./config";
 import { checkUsageLimit, canUseModel } from "./billing.service";
 
 interface UsageLimitResult {
@@ -54,11 +58,7 @@ export async function checkBillingLimits(
   };
 
   // For canceled/past_due subscriptions, degrade to free tier behavior
-  const effectivePlan =
-    billing.subscriptionStatus === "canceled" ||
-    billing.subscriptionStatus === "past_due"
-      ? "free"
-      : billing.plan || "free";
+  const effectivePlan = getEffectiveBillingPlan(billing);
 
   const effectiveBilling: IWorkspaceBilling = {
     ...billing,

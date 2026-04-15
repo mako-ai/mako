@@ -142,6 +142,8 @@ export interface IWorkspaceBilling {
   hardLimitUsd: number | null;
   plan: "free" | "pro" | "enterprise";
   lastReportedOverageCents?: number;
+  pendingReportedOverageCents?: number | null;
+  pendingMeterEventIdempotencyKey?: string | null;
 }
 
 export interface IWorkspace extends Document {
@@ -956,6 +958,8 @@ Add any specific instructions for how the AI should interpret your data or respo
         default: "free",
       },
       lastReportedOverageCents: { type: Number, default: 0 },
+      pendingReportedOverageCents: { type: Number, default: null },
+      pendingMeterEventIdempotencyKey: { type: String, default: null },
     },
     selfDirective: {
       type: String,

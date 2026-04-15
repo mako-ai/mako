@@ -21,6 +21,7 @@ import { useBillingStore } from "../store/billingStore";
 import { useWorkspace } from "../contexts/workspace-context";
 
 import type { AIModel } from "../lib/api-types";
+import { getModelBillingState } from "./model-selector-utils";
 
 // Provider display names for grouping
 const PROVIDER_NAMES: Record<string, string> = {
@@ -59,7 +60,9 @@ export const ModelSelector: React.FC = () => {
   const error = useSettingsStore(s => s.modelsError);
   const fetchModels = useSettingsStore(s => s.fetchModels);
 
+  const billingWorkspaceId = useBillingStore(s => s.workspaceId);
   const billingStatus = useBillingStore(s => s.status);
+  const fetchBillingStatus = useBillingStore(s => s.fetchBillingStatus);
   const createCheckoutSession = useBillingStore(s => s.createCheckoutSession);
   const { currentWorkspace } = useWorkspace();
 
@@ -68,6 +71,17 @@ export const ModelSelector: React.FC = () => {
   useEffect(() => {
     fetchModels();
   }, [fetchModels]);
+
+  useEffect(() => {
+    if (!currentWorkspace?.id) return;
+    if (billingWorkspaceId === currentWorkspace.id && billingStatus) return;
+    void fetchBillingStatus(currentWorkspace.id);
+  }, [
+    billingStatus,
+    billingWorkspaceId,
+    currentWorkspace?.id,
+    fetchBillingStatus,
+  ]);
 
   const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     setAnchorEl(event.currentTarget);
@@ -206,11 +220,8 @@ export const ModelSelector: React.FC = () => {
             {group.label}
           </ListSubheader>,
           ...group.models.map(model => {
-            const isFreeModel = model.tier === "free";
-            const isProModel = !isFreeModel;
-            const billingEnabled = billingStatus?.billingEnabled ?? false;
-            const isFreePlan = billingEnabled && billingStatus?.plan === "free";
-            const isRestricted = isProModel && isFreePlan;
+            const { isFreeModel, isProModel, billingEnabled, isRestricted } =
+              getModelBillingState(model, billingStatus);
 
             const handleModelClick = async () => {
               if (isRestricted) {

@@ -24,6 +24,7 @@ export interface BillingStatus {
 }
 
 interface BillingState {
+  workspaceId: string | null;
   status: BillingStatus | null;
   isLoading: boolean;
   error: string | null;
@@ -42,19 +43,27 @@ interface BillingState {
 }
 
 export const useBillingStore = create<BillingState>()(set => ({
+  workspaceId: null,
   status: null,
   isLoading: false,
   error: null,
 
   fetchBillingStatus: async (workspaceId: string) => {
-    set({ isLoading: true, error: null });
+    set(state => ({
+      workspaceId,
+      status: state.workspaceId === workspaceId ? state.status : null,
+      isLoading: true,
+      error: null,
+    }));
     try {
       const data = await apiClient.get<BillingStatus>(
         `/workspaces/${workspaceId}/billing/status`,
       );
-      set({ status: data, isLoading: false });
+      set({ workspaceId, status: data, isLoading: false });
     } catch (err) {
       set({
+        workspaceId,
+        status: null,
         error:
           err instanceof Error ? err.message : "Failed to fetch billing status",
         isLoading: false,
@@ -101,5 +110,6 @@ export const useBillingStore = create<BillingState>()(set => ({
     }
   },
 
-  reset: () => set({ status: null, isLoading: false, error: null }),
+  reset: () =>
+    set({ workspaceId: null, status: null, isLoading: false, error: null }),
 }));

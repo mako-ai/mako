@@ -54,16 +54,42 @@ billingRoutes.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
+async function assertOwnerOrAdminBillingAccess(
+  c: AuthenticatedContext,
+  workspaceId: string,
+) {
+  const user = c.get("user");
+  if (!user) {
+    return c.json(
+      { error: "Session auth required for billing management" },
+      401,
+    );
+  }
+
+  const isOwnerOrAdmin = await workspaceService.hasRole(workspaceId, user.id, [
+    "owner",
+    "admin",
+  ]);
+  if (!isOwnerOrAdmin) {
+    return c.json({ error: "Owner/admin role required" }, 403);
+  }
+
+  return null;
+}
+
 /**
  * GET /status -- current billing plan, usage, and subscription info
  */
 billingRoutes.get("/status", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId")!;
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) {
+    return c.json({ error: "Missing workspaceId" }, 400);
+  }
 
   if (!isBillingEnabled()) {
     return c.json({
       billingEnabled: false,
-      plan: "pro",
+      plan: "free",
       subscriptionStatus: null,
       currentUsageUsd: 0,
       usageQuotaUsd: 0,
@@ -95,12 +121,19 @@ billingRoutes.post("/checkout", async (c: AuthenticatedContext) => {
     return c.json({ error: "Billing is not enabled" }, 400);
   }
 
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) {
+    return c.json({ error: "Missing workspaceId" }, 400);
+  }
+  const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
+  if (roleError) {
+    return roleError;
+  }
+
   const user = c.get("user");
   if (!user) {
     return c.json({ error: "Session auth required for checkout" }, 401);
   }
-
-  const workspaceId = c.req.param("workspaceId")!;
 
   let body: { successUrl?: string; cancelUrl?: string } = {};
   try {
@@ -165,12 +198,19 @@ billingRoutes.post("/portal", async (c: AuthenticatedContext) => {
     return c.json({ error: "Billing is not enabled" }, 400);
   }
 
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) {
+    return c.json({ error: "Missing workspaceId" }, 400);
+  }
+  const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
+  if (roleError) {
+    return roleError;
+  }
+
   const user = c.get("user");
   if (!user) {
     return c.json({ error: "Session auth required for portal" }, 401);
   }
-
-  const workspaceId = c.req.param("workspaceId")!;
 
   let body: { returnUrl?: string } = {};
   try {

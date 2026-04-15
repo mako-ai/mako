@@ -47,6 +47,7 @@ import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { getEffectiveBillingPlan } from "../billing/config";
 import {
   getAgentFactory,
   detectAgentId,
@@ -294,24 +295,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Load billing plan + enabled model IDs for plan-appropriate defaults and allowlists.
   const wsForModels = await Workspace.findById(workspaceId).select(
-    "billing.plan settings.enabledModelIds",
+    "billing.plan billing.subscriptionStatus settings.enabledModelIds",
   );
-  const plan = wsForModels?.billing?.plan || "free";
+  const effectivePlan = getEffectiveBillingPlan(wsForModels?.billing);
   const wsEnabledModelIdsEarly = wsForModels?.settings?.enabledModelIds?.length
     ? wsForModels.settings.enabledModelIds
     : undefined;
-
-  // When no model is explicitly requested, pick a plan-appropriate default
-  // so free-plan users get a free-tier model instead of the pro-tier default.
-  let effectiveDefaultModelId: string;
-  if (!modelId) {
-    effectiveDefaultModelId =
-      plan === "free"
-        ? await getDefaultFreeModelId()
-        : await getDefaultModelId();
-  } else {
-    effectiveDefaultModelId = await getDefaultModelId();
-  }
 
   // Resolve model early so billing checks run against the actual model used.
   const available = await getAvailableModels(wsEnabledModelIdsEarly);
@@ -319,7 +308,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     ? wsEnabledModelIdsEarly.includes(modelId || "")
     : available.some(m => m.id === modelId);
   const resolvedModelId =
-    modelId && isModelAllowed ? (modelId as string) : effectiveDefaultModelId;
+    modelId && isModelAllowed
+      ? (modelId as string)
+      : effectivePlan === "free"
+        ? await getDefaultFreeModelId()
+        : await getDefaultModelId();
 
   // Check billing limits (model access + usage quota)
   const billingCheck = await checkBillingLimits(workspaceId, resolvedModelId);

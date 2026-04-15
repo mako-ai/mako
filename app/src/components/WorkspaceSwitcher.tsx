@@ -23,8 +23,10 @@ import {
 } from "@mui/icons-material";
 import { useWorkspace } from "../contexts/workspace-context";
 import { trackEvent } from "../lib/analytics";
+import { useBillingStore } from "../store/billingStore";
 
 export function WorkspaceSwitcher() {
+  const resetBillingStore = useBillingStore(s => s.reset);
   const {
     workspaces,
     currentWorkspace,
@@ -50,6 +52,7 @@ export function WorkspaceSwitcher() {
   const handleSwitchWorkspace = async (workspaceId: string) => {
     handleClose();
     if (workspaceId !== currentWorkspace?.id) {
+      resetBillingStore();
       await switchWorkspace(workspaceId);
     }
   };

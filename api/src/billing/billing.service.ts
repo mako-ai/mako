@@ -360,6 +360,8 @@ export async function syncSubscriptionToWorkspace(
     existingPeriodStart.getTime() !== newPeriodStart.getTime();
   if (periodChanged) {
     update["billing.lastReportedOverageCents"] = 0;
+    update["billing.pendingReportedOverageCents"] = null;
+    update["billing.pendingMeterEventIdempotencyKey"] = null;
   }
 
   // Also store customer ID if present
@@ -404,6 +406,9 @@ export async function handleSubscriptionDeleted(
         "billing.plan": "free",
         "billing.usageQuotaUsd": freeDef.usageQuotaUsd,
         "billing.hardLimitUsd": freeDef.hardLimitUsd,
+        "billing.lastReportedOverageCents": 0,
+        "billing.pendingReportedOverageCents": null,
+        "billing.pendingMeterEventIdempotencyKey": null,
         "settings.billingTier": "free",
       },
     },

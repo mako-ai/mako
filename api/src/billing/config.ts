@@ -60,6 +60,20 @@ export const PLAN_DEFINITIONS: Record<BillingPlan, PlanDefinition> = {
   },
 };
 
+export function getEffectiveBillingPlan(input?: {
+  plan?: BillingPlan | null;
+  subscriptionStatus?: SubscriptionStatus;
+}): BillingPlan {
+  if (
+    input?.subscriptionStatus === "canceled" ||
+    input?.subscriptionStatus === "past_due"
+  ) {
+    return "free";
+  }
+
+  return input?.plan || "free";
+}
+
 export async function getModelTier(modelId: string): Promise<ModelTier> {
   return (await isFreeTierModel(modelId)) ? "free" : "pro";
 }
@@ -98,5 +112,7 @@ export function getStripeOveragePriceId(): string {
 }
 
 export function getStripeMeterEventName(): string {
+  // Stripe meters and metered prices are already wired to this legacy event name.
+  // The payload value is still sent in USD cents.
   return process.env.STRIPE_METER_EVENT_NAME || "llm_usage_usd";
 }

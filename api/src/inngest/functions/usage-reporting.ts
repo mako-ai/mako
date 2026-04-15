@@ -24,6 +24,18 @@ import { loggers } from "../../logging";
 
 const logger = loggers.inngest();
 
+interface ReportableWorkspaceBilling {
+  id: string;
+  stripeCustomerId: string;
+  stripeSubscriptionId: string;
+  currentPeriodStart: string | null;
+  usageQuotaUsd: number;
+  plan: "free" | "pro" | "enterprise";
+  lastReportedOverageCents: number;
+  pendingReportedOverageCents: number | null;
+  pendingMeterEventIdempotencyKey: string | null;
+}
+
 export const usageReportingFunction = inngest.createFunction(
   {
     id: "billing/usage-reporting",
@@ -43,16 +55,30 @@ export const usageReportingFunction = inngest.createFunction(
         "billing.subscriptionStatus": "active",
       }).select("_id billing");
 
-      return docs.map(ws => ({
-        id: ws._id.toString(),
-        stripeCustomerId: ws.billing.stripeCustomerId!,
-        stripeSubscriptionId: ws.billing.stripeSubscriptionId!,
-        currentPeriodStart:
-          ws.billing.currentPeriodStart?.toISOString() ?? null,
-        usageQuotaUsd: ws.billing.usageQuotaUsd,
-        plan: ws.billing.plan,
-        lastReportedOverageCents: ws.billing.lastReportedOverageCents ?? 0,
-      }));
+      return docs
+        .map((ws): ReportableWorkspaceBilling | null => {
+          const stripeCustomerId = ws.billing.stripeCustomerId;
+          const stripeSubscriptionId = ws.billing.stripeSubscriptionId;
+          if (!stripeCustomerId || !stripeSubscriptionId) {
+            return null;
+          }
+
+          return {
+            id: ws._id.toString(),
+            stripeCustomerId,
+            stripeSubscriptionId,
+            currentPeriodStart:
+              ws.billing.currentPeriodStart?.toISOString() ?? null,
+            usageQuotaUsd: ws.billing.usageQuotaUsd,
+            plan: ws.billing.plan,
+            lastReportedOverageCents: ws.billing.lastReportedOverageCents ?? 0,
+            pendingReportedOverageCents:
+              ws.billing.pendingReportedOverageCents ?? null,
+            pendingMeterEventIdempotencyKey:
+              ws.billing.pendingMeterEventIdempotencyKey ?? null,
+          };
+        })
+        .filter((ws): ws is ReportableWorkspaceBilling => ws !== null);
     });
 
     if (workspaces.length === 0) {
@@ -91,28 +117,86 @@ export const usageReportingFunction = inngest.createFunction(
           0;
         const overageUsd = Math.max(0, totalCostUsd - includedQuota);
         const overageCents = Math.round(overageUsd * 100);
+        const pendingTargetOverageCents = ws.pendingReportedOverageCents;
+        let targetOverageCents = pendingTargetOverageCents;
+        let meterEventIdempotencyKey = ws.pendingMeterEventIdempotencyKey;
 
-        const deltaCents = overageCents - ws.lastReportedOverageCents;
+        if (targetOverageCents == null) {
+          if (overageCents <= ws.lastReportedOverageCents) {
+            return "skipped" as const;
+          }
 
-        if (deltaCents <= 0) {
+          targetOverageCents = overageCents;
+          meterEventIdempotencyKey = [
+            "billing-overage",
+            ws.id,
+            periodStart.toISOString(),
+            ws.lastReportedOverageCents,
+            targetOverageCents,
+          ].join(":");
+
+          const claimResult = await Workspace.updateOne(
+            {
+              _id: new ObjectId(ws.id),
+              "billing.lastReportedOverageCents": ws.lastReportedOverageCents,
+              $or: [
+                { "billing.pendingReportedOverageCents": null },
+                { "billing.pendingReportedOverageCents": { $exists: false } },
+              ],
+            },
+            {
+              $set: {
+                "billing.pendingReportedOverageCents": targetOverageCents,
+                "billing.pendingMeterEventIdempotencyKey":
+                  meterEventIdempotencyKey,
+              },
+            },
+          );
+
+          if (claimResult.modifiedCount !== 1) {
+            logger.warn("Skipped usage report because overage cursor changed", {
+              workspaceId: ws.id,
+            });
+            return "skipped" as const;
+          }
+        }
+
+        const deltaCents = targetOverageCents - ws.lastReportedOverageCents;
+        if (deltaCents <= 0 || !meterEventIdempotencyKey) {
           return "skipped" as const;
         }
 
         try {
           const stripe = new Stripe(getStripeSecretKey());
 
-          await stripe.billing.meterEvents.create({
-            event_name: getStripeMeterEventName(),
-            payload: {
-              stripe_customer_id: ws.stripeCustomerId,
-              value: String(deltaCents),
+          await stripe.billing.meterEvents.create(
+            {
+              event_name: getStripeMeterEventName(),
+              payload: {
+                stripe_customer_id: ws.stripeCustomerId,
+                value: String(deltaCents),
+              },
+              timestamp: Math.floor(Date.now() / 1000),
             },
-            timestamp: Math.floor(Date.now() / 1000),
-          });
+            {
+              idempotencyKey: meterEventIdempotencyKey,
+            },
+          );
 
           await Workspace.updateOne(
-            { _id: new ObjectId(ws.id) },
-            { $set: { "billing.lastReportedOverageCents": overageCents } },
+            {
+              _id: new ObjectId(ws.id),
+              "billing.pendingReportedOverageCents": targetOverageCents,
+              "billing.pendingMeterEventIdempotencyKey":
+                meterEventIdempotencyKey,
+            },
+            {
+              $set: { "billing.lastReportedOverageCents": targetOverageCents },
+              $unset: {
+                "billing.pendingReportedOverageCents": "",
+                "billing.pendingMeterEventIdempotencyKey": "",
+              },
+            },
           );
 
           logger.info("Reported usage overage to Stripe meter", {
@@ -120,7 +204,7 @@ export const usageReportingFunction = inngest.createFunction(
             totalCostUsd,
             overageUsd,
             deltaCents,
-            overageCents,
+            overageCents: targetOverageCents,
           });
 
           return "reported" as const;
