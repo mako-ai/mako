@@ -1,0 +1,222 @@
+---
+title: "MySQL String Functions"
+description: "A practical reference for MySQL string functions: CONCAT, SUBSTRING, REPLACE, REGEXP_REPLACE, GROUP_CONCAT, TRIM, LENGTH, UPPER, LOWER, and more."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "sql", "string-functions", "concat", "regexp"]
+date: "2026-04-15"
+---
+
+MySQL provides a broad set of string functions for concatenating, slicing, replacing, padding, and transforming text data. This guide covers the functions you'll use regularly, with practical examples.
+
+## Concatenation
+
+### CONCAT()
+
+Joins two or more strings. Returns NULL if any argument is NULL:
+
+```sql
+SELECT CONCAT('Hello', ', ', 'world');  -- 'Hello, world'
+SELECT CONCAT(first_name, ' ', last_name) AS full_name FROM users;
+
+-- NULL handling
+SELECT CONCAT('Hello', NULL, 'world');  -- NULL
+```
+
+### CONCAT_WS()
+
+"Concat with separator" -- joins values with a separator, skipping NULLs automatically:
+
+```sql
+SELECT CONCAT_WS(', ', city, state, country) AS address FROM locations;
+-- If state is NULL: 'Berlin, Germany' instead of 'Berlin, NULL, Germany'
+```
+
+Prefer `CONCAT_WS` over `CONCAT` when any column might be NULL.
+
+## Length
+
+```sql
+SELECT LENGTH('Hello');      -- 5 (bytes)
+SELECT CHAR_LENGTH('Hello'); -- 5 (characters)
+```
+
+For ASCII text, these are identical. For multi-byte UTF-8 characters, `LENGTH` counts bytes while `CHAR_LENGTH` counts characters:
+
+```sql
+SELECT LENGTH('café');      -- 5 (the é is 2 bytes in UTF-8)
+SELECT CHAR_LENGTH('café'); -- 4 (4 characters)
+```
+
+Use `CHAR_LENGTH` for text length validation.
+
+## Extracting Substrings
+
+### SUBSTRING() / SUBSTR()
+
+```sql
+SELECT SUBSTRING('MySQL 8.0', 1, 5);   -- 'MySQL' (start at pos 1, length 5)
+SELECT SUBSTRING('MySQL 8.0', 7);       -- '8.0' (from pos 7 to end)
+SELECT SUBSTRING('MySQL 8.0', -3);      -- '8.0' (last 3 characters)
+```
+
+Positions in MySQL are 1-indexed.
+
+### LEFT() and RIGHT()
+
+```sql
+SELECT LEFT('MySQL', 2);    -- 'My'
+SELECT RIGHT('MySQL', 3);   -- 'SQL'
+```
+
+### SUBSTRING_INDEX()
+
+Extracts the part of a string before or after a delimiter:
+
+```sql
+SELECT SUBSTRING_INDEX('192.168.1.100', '.', 2);   -- '192.168' (first 2 segments)
+SELECT SUBSTRING_INDEX('192.168.1.100', '.', -1);  -- '100' (last segment)
+SELECT SUBSTRING_INDEX(email, '@', -1) AS domain FROM users;  -- extract domain
+```
+
+Very useful for parsing delimited strings when proper normalization isn't an option.
+
+## Searching in Strings
+
+### LOCATE() / INSTR()
+
+Return the position of a substring (0 if not found):
+
+```sql
+SELECT LOCATE('SQL', 'MySQL');        -- 3
+SELECT LOCATE('SQL', 'MySQL', 4);     -- 0 (search starts at position 4)
+SELECT INSTR('MySQL', 'SQL');         -- 3
+```
+
+### LIKE
+
+Pattern matching in WHERE clauses: `%` matches any sequence, `_` matches one character:
+
+```sql
+SELECT * FROM users WHERE email LIKE '%@gmail.com';
+SELECT * FROM users WHERE name LIKE 'A%';
+SELECT * FROM products WHERE sku LIKE 'AB_-____'; -- 'AB' + any char + hyphen + 4 chars
+```
+
+`LIKE` with a leading `%` can't use a standard B-tree index.
+
+## Replacing and Substituting
+
+### REPLACE()
+
+Simple literal string replacement (case-sensitive):
+
+```sql
+SELECT REPLACE('Hello World', 'World', 'MySQL');  -- 'Hello MySQL'
+UPDATE products SET description = REPLACE(description, 'old brand', 'new brand');
+```
+
+### REGEXP_REPLACE() (MySQL 8.0+)
+
+Replaces regex pattern matches:
+
+```sql
+-- Remove all non-digit characters from a phone number
+SELECT REGEXP_REPLACE('+1 (555) 123-4567', '[^0-9]', '');  -- '15551234567'
+
+-- Normalize multiple spaces to single space
+SELECT REGEXP_REPLACE(name, '\\s+', ' ') FROM users;
+```
+
+Available from MySQL 8.0. On 5.7, you'd need a stored function or application-side processing.
+
+## Case Conversion
+
+```sql
+SELECT UPPER('mysql');      -- 'MYSQL'
+SELECT LOWER('MySQL 8.0'); -- 'mysql 8.0'
+
+-- Case-insensitive comparison
+SELECT * FROM users WHERE LOWER(username) = 'alice';
+```
+
+For case-insensitive comparisons on indexed columns, prefer a case-insensitive collation on the column (e.g., `utf8mb4_unicode_ci`) rather than wrapping in `LOWER()` -- the latter prevents index usage.
+
+## Padding and Trimming
+
+### TRIM(), LTRIM(), RTRIM()
+
+```sql
+SELECT TRIM('  MySQL  ');    -- 'MySQL'
+SELECT LTRIM('  MySQL  ');   -- 'MySQL  '
+SELECT RTRIM('  MySQL  ');   -- '  MySQL'
+SELECT TRIM(BOTH '-' FROM '--MySQL--'); -- 'MySQL' (trim specific character)
+```
+
+Always trim user-entered data before storing or comparing.
+
+### LPAD() and RPAD()
+
+Pads a string to a specified length:
+
+```sql
+SELECT LPAD('42', 6, '0');  -- '000042' (zero-pad numbers)
+SELECT RPAD('AB', 5, '-');  -- 'AB---'
+```
+
+Useful for formatting codes, IDs, or fixed-width exports.
+
+## GROUP_CONCAT()
+
+Aggregates multiple rows of strings into a single comma-separated value:
+
+```sql
+-- Collect all tags for each post
+SELECT post_id, GROUP_CONCAT(tag ORDER BY tag SEPARATOR ', ') AS tags
+FROM post_tags
+GROUP BY post_id;
+
+-- Unique values only
+SELECT user_id, GROUP_CONCAT(DISTINCT role ORDER BY role) AS roles
+FROM user_roles
+GROUP BY user_id;
+```
+
+Default max output length is 1024 characters. Increase if needed:
+
+```sql
+SET SESSION group_concat_max_len = 65536;
+```
+
+Truncation silently cuts off the result -- check `group_concat_max_len` if results look incomplete.
+
+## FIELD() for Custom Sort Order
+
+Returns the position of a value in a list -- useful for custom sort orders:
+
+```sql
+SELECT * FROM orders
+ORDER BY FIELD(status, 'pending', 'processing', 'shipped', 'delivered');
+```
+
+## FORMAT() for Number Display
+
+Formats a number with thousands separators and a fixed decimal places:
+
+```sql
+SELECT FORMAT(1234567.89, 2);  -- '1,234,567.89'
+```
+
+This returns a string, not a number. Don't use it for further arithmetic.
+
+## Common Mistakes
+
+**Using LENGTH for character count on UTF-8 data** -- use `CHAR_LENGTH` instead.
+
+**LIKE with leading wildcard** -- `WHERE col LIKE '%term'` triggers a full table scan. Consider FULLTEXT search for mid-string matching on large tables.
+
+**REPLACE modifying data in place without a backup** -- always test with a SELECT first before running an UPDATE with REPLACE.
+
+**GROUP_CONCAT silent truncation** -- if output looks cut off, check and increase `group_concat_max_len`.
+
+Mako connects to MySQL with AI autocomplete for string function syntax. Try it at [mako.ai](https://mako.ai).
