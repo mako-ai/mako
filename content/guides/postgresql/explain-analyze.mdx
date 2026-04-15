@@ -1,0 +1,170 @@
+---
+title: "PostgreSQL EXPLAIN ANALYZE: Reading Query Plans"
+description: "Learn how to use EXPLAIN and EXPLAIN ANALYZE in PostgreSQL to understand query execution, identify bottlenecks, and optimize slow queries -- including how to read nodes, costs, and buffer statistics."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "performance", "query-optimization", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL EXPLAIN ANALYZE: Reading Query Plans
+
+`EXPLAIN` shows PostgreSQL's execution plan for a query -- the sequence of operations the planner chose. `EXPLAIN ANALYZE` actually executes the query and shows real timing alongside estimates. Understanding the difference between estimated and actual costs is the core of PostgreSQL query tuning.
+
+## Basic Usage
+
+```sql
+-- Estimated plan only (does not execute)
+EXPLAIN SELECT * FROM orders WHERE customer_id = 42;
+
+-- Executes the query and shows real timing
+EXPLAIN ANALYZE SELECT * FROM orders WHERE customer_id = 42;
+
+-- Full output with buffers, WAL, and format options
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT * FROM orders WHERE customer_id = 42;
+```
+
+Always use `BUFFERS` when analyzing performance -- it shows whether data came from cache or disk.
+
+## Reading a Query Plan
+
+A query plan is a tree of nodes, each representing one operation. Indentation indicates nesting (child nodes feed into parent nodes).
+
+```
+Seq Scan on orders  (cost=0.00..4523.00 rows=150 width=72) (actual time=0.042..12.381 rows=143 loops=1)
+  Filter: (customer_id = 42)
+  Rows Removed by Filter: 89857
+```
+
+### Cost Fields
+
+`(cost=startup_cost..total_cost rows=estimated_rows width=row_bytes_estimate)`
+
+- **startup_cost** -- Cost to return the first row (sort nodes have high startup cost)
+- **total_cost** -- Cost to return all rows
+- **rows** -- Planner's estimated row count
+- **width** -- Average byte width per row
+
+These are arbitrary planner units, not milliseconds. They're useful for comparing nodes, not as wall-clock predictors.
+
+### Actual Fields
+
+`(actual time=startup_ms..total_ms rows=actual_rows loops=N)`
+
+- **time** -- Milliseconds to start and complete this node per loop
+- **rows** -- Actual rows returned
+- **loops** -- How many times this node ran (e.g. in a nested loop join, inner node loops once per outer row)
+
+**Multiply `time` by `loops` to get total time for that node.**
+
+## Common Node Types
+
+| Node | Meaning |
+|---|---|
+| `Seq Scan` | Full table scan, reading every row |
+| `Index Scan` | Reads index, then fetches rows from heap |
+| `Index Only Scan` | Reads index only (no heap access), requires covering index |
+| `Bitmap Heap Scan` | Collects row pointers via bitmap, then fetches in bulk |
+| `Hash Join` | Builds hash table on inner relation, probes with outer |
+| `Merge Join` | Joins two sorted streams; efficient on large sorted inputs |
+| `Nested Loop` | For each outer row, scan inner relation; efficient with indexes |
+| `Sort` | Sort rows (check whether it spills to disk) |
+| `Hash` | Build a hash table (memory usage shown) |
+| `Aggregate` | Grouping / aggregation |
+| `Limit` | Stop after N rows |
+
+## Reading Buffer Statistics
+
+```
+Buffers: shared hit=440 read=83 dirtied=0 written=0
+```
+
+- **shared hit** -- Pages served from PostgreSQL's shared_buffers (in-memory cache)
+- **shared read** -- Pages read from OS/disk cache or disk
+- **dirtied** -- Pages modified by this query
+- **written** -- Pages written to disk (evicted from cache during this query)
+
+High `read` values relative to `hit` suggest the working set doesn't fit in `shared_buffers`, or the data is cold.
+
+## Diagnosing Common Problems
+
+### Rows Estimate Way Off
+
+```
+Seq Scan on events  (cost=0.00..8200.00 rows=100 width=64)
+                    (actual time=0.030..45.210 rows=98547 loops=1)
+```
+
+The planner estimated 100 rows but got 98,547. This leads to bad plan choices (wrong join strategy, wrong index). Fix: run `ANALYZE events;` to update statistics, or increase `default_statistics_target` for the column.
+
+### Sequential Scan When Index Exists
+
+If the planner chooses a Seq Scan on a large table with an index on the filter column:
+1. The table might be small enough that Seq Scan is cheaper
+2. The filter selectivity is low (e.g. `WHERE status = 'active'` where 90% of rows are active)
+3. Statistics are stale -- run `ANALYZE`
+4. The index is unused because the column is cast or wrapped in a function: `WHERE UPPER(email) = 'X'` -- create a functional index instead
+
+### Sort Spilling to Disk
+
+```
+Sort  (cost=15234.50..15484.50 rows=100000 width=36)
+      (actual time=892.030..1012.450 rows=100000 loops=1)
+  Sort Key: created_at DESC
+  Sort Method: external merge  Disk: 8192kB
+```
+
+`external merge Disk` means the sort spilled to disk. Increase `work_mem` for the session:
+
+```sql
+SET work_mem = '256MB';
+EXPLAIN ANALYZE SELECT ... ORDER BY created_at DESC;
+```
+
+Don't set this globally without understanding memory implications across concurrent connections.
+
+### Nested Loop on Large Tables
+
+Nested loops work well when the inner relation is small or accessed via index. But a Nested Loop where the inner side does a Seq Scan on a large table is slow:
+
+```
+Nested Loop  (actual time=0.030..45230.210 rows=10000 loops=1)
+  -> Seq Scan on large_orders
+  -> Index Scan on customers
+```
+
+The planner chose this because statistics were off. After `ANALYZE`, it may switch to a Hash Join.
+
+## Practical Workflow
+
+```sql
+-- 1. Start with BUFFERS to see cache behavior
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;
+
+-- 2. Identify the most expensive node (highest actual time × loops)
+
+-- 3. Check if estimates are off (rows estimate vs actual)
+
+-- 4. If estimates are off, update stats:
+ANALYZE orders;
+
+-- 5. If a Seq Scan is suspicious, check if an index exists:
+SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'orders';
+
+-- 6. If index exists but unused, try:
+SET enable_seqscan = OFF;
+EXPLAIN SELECT * FROM orders WHERE customer_id = 42;
+-- This forces index use -- if still slow, the index isn't selective enough
+```
+
+## Using pgExplain and Explain.dalibo.com
+
+For complex plans, paste the output of `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` into [explain.dalibo.com](https://explain.dalibo.com) or [pganalyze.com/explain](https://pganalyze.com/explain) for a visual tree with cost annotations.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT ...;
+```
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
