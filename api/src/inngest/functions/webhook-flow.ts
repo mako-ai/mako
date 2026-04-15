@@ -935,32 +935,6 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
       };
     });
 
-    const typedResult = result as {
-      processed: boolean;
-      count: number;
-      workspaceId?: string;
-      entities?: string[];
-    } | null;
-
-    if (
-      typedResult?.processed &&
-      typedResult.count > 0 &&
-      typedResult.entities?.length
-    ) {
-      await step.sendEvent(
-        "trigger-inline-materialize",
-        typedResult.entities.map(entity => ({
-          name: "cdc/materialize" as const,
-          data: {
-            workspaceId: typedResult.workspaceId!,
-            flowId,
-            entity,
-            force: false,
-          },
-        })),
-      );
-    }
-
     return { success: true, ...result };
   },
 );
@@ -1274,6 +1248,7 @@ export const cdcMaterializeFunction = inngest.createFunction(
   {
     id: "cdc-materialize",
     name: "CDC Materialize",
+    retries: 0,
     singleton: {
       key: "event.data.flowId + ':' + event.data.entity",
       mode: "skip",
@@ -1289,13 +1264,74 @@ export const cdcMaterializeFunction = inngest.createFunction(
   },
 );
 
+async function findStaleEntities(): Promise<
+  Array<{
+    workspaceId: { toString(): string };
+    flowId: { toString(): string };
+    entity: string;
+  }>
+> {
+  const staleThreshold = new Date(Date.now() - 20_000);
+
+  const candidates = await CdcEntityState.find({
+    $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
+    $or: [
+      { lastMaterializedAt: { $exists: false } },
+      { lastMaterializedAt: { $lt: staleThreshold } },
+    ],
+  })
+    .select("workspaceId flowId entity consecutiveFailures lastFailedAt")
+    .lean();
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const now = Date.now();
+  const eligible = candidates.filter(c => {
+    const failures = (c as any).consecutiveFailures || 0;
+    if (failures === 0) return true;
+    const lastFailed = (c as any).lastFailedAt
+      ? new Date((c as any).lastFailedAt).getTime()
+      : 0;
+    return now - lastFailed >= circuitBreakerBackoffMs(failures);
+  });
+
+  const flowIds = Array.from(new Set(eligible.map(c => c.flowId.toString())));
+  if (flowIds.length === 0) return [];
+  const existingFlows = await Flow.find({ _id: { $in: flowIds } })
+    .select("_id")
+    .lean();
+  const existingFlowIdSet = new Set(existingFlows.map(f => f._id.toString()));
+
+  return eligible.filter(c => existingFlowIdSet.has(c.flowId.toString()));
+}
+
+function buildMaterializeEvents(
+  entities: Array<{
+    workspaceId: { toString(): string };
+    flowId: { toString(): string };
+    entity: string;
+  }>,
+) {
+  return entities.map(e => ({
+    name: "cdc/materialize" as const,
+    data: {
+      workspaceId: String(e.workspaceId),
+      flowId: String(e.flowId),
+      entity: e.entity,
+      force: false,
+    },
+  }));
+}
+
 /**
- * Safety-net scheduler that finds entities with un-materialized CDC events
- * and emits one cdc/materialize per stale (flowId, entity) pair.
+ * Sole trigger for CDC materialization. Runs every minute with two passes
+ * (30s apart) to keep worst-case latency under 60s.
  *
- * Primary materialization is triggered inline after CDC ingest. This
- * scheduler catches any entities missed by the inline trigger or delayed
- * by transient failures. Fires every minute with a 20 s staleness window.
+ * Webhook ingest writes to the event store; this scheduler detects stale
+ * entities (lastIngestSeq > lastMaterializedSeq) and emits cdc/materialize
+ * events. The singleton on cdc-materialize deduplicates concurrent triggers.
  */
 export const cdcMaterializeSchedulerFunction = inngest.createFunction(
   {
@@ -1304,76 +1340,52 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
   },
   { cron: "*/1 * * * *" },
   async ({ step, logger }) => {
-    const staleEntities = await step.run("find-stale-entities", async () => {
-      // Skip entities materialized within the last 20 s — they already have
-      // a queued or throttled run and re-emitting is pure waste.
-      const staleThreshold = new Date(Date.now() - 20_000);
+    let totalTriggered = 0;
 
-      const candidates = await CdcEntityState.find({
-        $expr: { $gt: ["$lastIngestSeq", "$lastMaterializedSeq"] },
-        $or: [
-          { lastMaterializedAt: { $exists: false } },
-          { lastMaterializedAt: { $lt: staleThreshold } },
-        ],
-      })
-        .select("workspaceId flowId entity consecutiveFailures lastFailedAt")
-        .lean();
-
-      if (candidates.length === 0) {
-        return [];
-      }
-
-      const now = Date.now();
-      const eligible = candidates.filter(c => {
-        const failures = (c as any).consecutiveFailures || 0;
-        if (failures === 0) return true;
-        const lastFailed = (c as any).lastFailedAt
-          ? new Date((c as any).lastFailedAt).getTime()
-          : 0;
-        return now - lastFailed >= circuitBreakerBackoffMs(failures);
-      });
-
-      const flowIds = Array.from(
-        new Set(eligible.map(c => c.flowId.toString())),
-      );
-      if (flowIds.length === 0) return [];
-      const existingFlows = await Flow.find({ _id: { $in: flowIds } })
-        .select("_id")
-        .lean();
-      const existingFlowIdSet = new Set(
-        existingFlows.map(f => f._id.toString()),
-      );
-
-      return eligible.filter(c => existingFlowIdSet.has(c.flowId.toString()));
-    });
-
-    const entities = staleEntities as Array<{
+    const pass1 = (await step.run(
+      "find-stale-entities-1",
+      findStaleEntities,
+    )) as Array<{
       workspaceId: { toString(): string };
       flowId: { toString(): string };
       entity: string;
     }>;
 
-    if (!entities || entities.length === 0) {
-      return { triggered: 0 };
+    if (pass1.length > 0) {
+      await step.sendEvent(
+        "trigger-materializations-1",
+        buildMaterializeEvents(pass1),
+      );
+      totalTriggered += pass1.length;
     }
 
-    await step.sendEvent(
-      "trigger-stale-materializations",
-      entities.map(e => ({
-        name: "cdc/materialize" as const,
-        data: {
-          workspaceId: String(e.workspaceId),
-          flowId: String(e.flowId),
-          entity: e.entity,
-          force: false,
-        },
-      })),
-    );
+    await step.sleep("second-pass-delay", "30s");
 
-    logger.info("CDC materialize scheduler triggered", {
-      triggered: entities.length,
-    });
+    const pass2 = (await step.run(
+      "find-stale-entities-2",
+      findStaleEntities,
+    )) as Array<{
+      workspaceId: { toString(): string };
+      flowId: { toString(): string };
+      entity: string;
+    }>;
 
-    return { triggered: entities.length };
+    if (pass2.length > 0) {
+      await step.sendEvent(
+        "trigger-materializations-2",
+        buildMaterializeEvents(pass2),
+      );
+      totalTriggered += pass2.length;
+    }
+
+    if (totalTriggered > 0) {
+      logger.info("CDC materialize scheduler completed", {
+        pass1: pass1.length,
+        pass2: pass2.length,
+        totalTriggered,
+      });
+    }
+
+    return { triggered: totalTriggered };
   },
 );
