@@ -279,6 +279,9 @@ export interface AIModel {
   provider: string;
   description?: string;
   tier?: "free" | "pro";
+  supportsThinking?: boolean;
+  blendedCostPerM?: number;
+  arenaScore?: number;
   contextLength?: number;
   supportsTools?: boolean;
 }

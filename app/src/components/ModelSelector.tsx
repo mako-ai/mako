@@ -83,21 +83,38 @@ export const ModelSelector: React.FC = () => {
   const selectedModel = models.find(m => m.id === selectedModelId);
   const displayName = selectedModel?.name || selectedModelId || "Select Model";
 
-  // Group models by provider, ordered by priority then alphabetically
-  const modelsByProvider = (() => {
-    const groups: Record<string, AIModel[]> = {};
-    for (const m of models) {
-      if (!groups[m.provider]) groups[m.provider] = [];
-      groups[m.provider].push(m);
+  // Group models: free-tier first, then by provider ordered by priority
+  const modelGroups = (() => {
+    const freeModels = models.filter(m => m.tier === "free");
+    const proModels = models.filter(m => m.tier !== "free");
+
+    const groups: Array<{ label: string; key: string; models: AIModel[] }> = [];
+
+    if (freeModels.length > 0) {
+      groups.push({ label: "Free", key: "free", models: freeModels });
+    }
+
+    const proByProvider: Record<string, AIModel[]> = {};
+    for (const m of proModels) {
+      if (!proByProvider[m.provider]) proByProvider[m.provider] = [];
+      proByProvider[m.provider].push(m);
     }
     const priorityIdx = new Map(PROVIDER_PRIORITY.map((p, i) => [p, i]));
-    const sortedEntries = Object.entries(groups).sort(([a], [b]) => {
+    const sortedProviders = Object.keys(proByProvider).sort((a, b) => {
       const ai = priorityIdx.get(a) ?? Infinity;
       const bi = priorityIdx.get(b) ?? Infinity;
       if (ai !== bi) return ai - bi;
       return a.localeCompare(b);
     });
-    return Object.fromEntries(sortedEntries) as Record<string, AIModel[]>;
+    for (const provider of sortedProviders) {
+      groups.push({
+        label: PROVIDER_NAMES[provider] || provider,
+        key: provider,
+        models: proByProvider[provider],
+      });
+    }
+
+    return groups;
   })();
 
   if (loading) {
@@ -177,9 +194,9 @@ export const ModelSelector: React.FC = () => {
           },
         }}
       >
-        {Object.entries(modelsByProvider).map(([provider, providerModels]) => [
+        {modelGroups.map(group => [
           <ListSubheader
-            key={`header-${provider}`}
+            key={`header-${group.key}`}
             sx={{
               backgroundColor: "background.paper",
               lineHeight: 2.5,
@@ -190,10 +207,11 @@ export const ModelSelector: React.FC = () => {
               color: "text.secondary",
             }}
           >
-            {PROVIDER_NAMES[provider] || provider}
+            {group.label}
           </ListSubheader>,
-          ...providerModels.map(model => {
-            const isProModel = model.tier === "pro";
+          ...group.models.map(model => {
+            const isFreeModel = model.tier === "free";
+            const isProModel = !isFreeModel;
             const billingEnabled = billingStatus?.billingEnabled ?? false;
             const isFreePlan = billingEnabled && billingStatus?.plan === "free";
             const isRestricted = isProModel && isFreePlan;
@@ -234,6 +252,15 @@ export const ModelSelector: React.FC = () => {
                       </Typography>
                     )}
                   </Box>
+                  {isFreeModel && billingEnabled && (
+                    <Chip
+                      label="Free"
+                      size="small"
+                      color="success"
+                      variant="outlined"
+                      sx={{ height: 18, fontSize: 10 }}
+                    />
+                  )}
                   {isProModel && billingEnabled && (
                     <Chip
                       label="Pro"

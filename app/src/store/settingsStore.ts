@@ -54,8 +54,8 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
-      // Default model
-      selectedModelId: "anthropic/claude-opus-4-6",
+      // Default model — empty string means "use the first available model"
+      selectedModelId: "",
       setSelectedModelId: modelId => set({ selectedModelId: modelId }),
 
       // Models list

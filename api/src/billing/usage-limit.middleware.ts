@@ -74,7 +74,7 @@ export async function checkBillingLimits(
   };
 
   // Check model access
-  const modelCheck = canUseModel(effectiveBilling, modelId);
+  const modelCheck = await canUseModel(effectiveBilling, modelId);
   if (!modelCheck.allowed) {
     return {
       allowed: false,

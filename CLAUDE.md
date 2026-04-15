@@ -98,10 +98,11 @@ BASE_URL=http://localhost:8080
 CLIENT_URL=http://localhost:5173
 PUBLIC_URL=http://localhost:5173
 
-# AI/LLM Providers (at least one required)
+# AI Gateway (required for all AI features)
+AI_GATEWAY_API_KEY=your_vercel_ai_gateway_key
+
+# Optional: Embeddings only (text-embedding-3-small)
 OPENAI_API_KEY=your_openai_api_key
-ANTHROPIC_API_KEY=your_anthropic_api_key
-GOOGLE_GENERATIVE_AI_API_KEY=your_google_api_key
 
 # Email (SendGrid)
 SENDGRID_API_KEY=your_sendgrid_api_key

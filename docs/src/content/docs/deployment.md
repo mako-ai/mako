@@ -16,7 +16,7 @@ docker run -p 8080:8080 \
   -e DATABASE_URL=mongodb://your-mongodb-url/mako \
   -e ENCRYPTION_KEY=your-32-byte-hex-key \
   -e SESSION_SECRET=your-session-secret \
-  -e OPENAI_API_KEY=your-openai-key \
+  -e AI_GATEWAY_API_KEY=your-gateway-key \
   mako
 ```
 
@@ -64,9 +64,8 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `SESSION_SECRET`               | Yes         | Session security                         |
 | `BASE_URL`                     | Yes         | Public URL (e.g., `https://app.mako.ai`) |
 | `CLIENT_URL`                   | Yes         | Same as BASE_URL for Cloud Run           |
-| `OPENAI_API_KEY`               | Recommended | AI features                              |
-| `ANTHROPIC_API_KEY`            | Optional    | Anthropic models                         |
-| `GOOGLE_GENERATIVE_AI_API_KEY` | Optional    | Google models                            |
+| `AI_GATEWAY_API_KEY`           | Required    | AI features (Vercel AI Gateway)          |
+| `OPENAI_API_KEY`               | Optional    | Text embeddings only                     |
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
 | `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
 | `SENDGRID_API_KEY`             | Optional    | Email invitations                        |

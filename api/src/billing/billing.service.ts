@@ -183,17 +183,17 @@ export async function getCurrentPeriodUsage(
 /**
  * Check whether a workspace can use a specific model based on its plan.
  */
-export function canUseModel(
+export async function canUseModel(
   billing: IWorkspaceBilling,
   modelId: string,
-): { allowed: boolean; reason?: string } {
+): Promise<{ allowed: boolean; reason?: string }> {
   const plan = billing.plan || "free";
 
-  if (isModelAvailableForPlan(modelId, plan)) {
+  if (await isModelAvailableForPlan(modelId, plan)) {
     return { allowed: true };
   }
 
-  const modelTier = getModelTier(modelId);
+  const modelTier = await getModelTier(modelId);
   return {
     allowed: false,
     reason: `Model requires a ${modelTier} plan. Current plan: ${plan}`,

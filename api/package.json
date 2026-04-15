@@ -15,10 +15,7 @@
     "lint:fix": "eslint . --ext ts --fix"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "3.0.0-beta.96",
     "@ai-sdk/gateway": "^3.0.80",
-    "@ai-sdk/google": "3.0.0-beta.88",
-    "@ai-sdk/openai": "3.0.0-beta.110",
     "@clickhouse/client": "^1.14.0",
     "@duckdb/node-api": "1.5.0-r.1",
     "@google-cloud/bigquery": "^8.1.1",

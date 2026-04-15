@@ -36,7 +36,7 @@ export const generateChatTitle = async (
   ctx?: TitleGenerationContext,
 ): Promise<string> => {
   try {
-    const modelId = getUtilityModelId();
+    const modelId = await getUtilityModelId();
     if (!modelId) {
       logger.warn("No AI provider configured, skipping title generation");
       return "New Conversation";

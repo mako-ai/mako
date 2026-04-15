@@ -46,7 +46,7 @@ import { databaseConnectionService } from "./services/database-connection.servic
 import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { warmPricingCache } from "./services/gateway-pricing.service";
-import { isGatewayMode } from "./agent-lib/ai-models";
+import { warmCatalog } from "./services/model-catalog.service";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 
@@ -258,13 +258,24 @@ async function main(): Promise<void> {
     port,
   });
 
-  if (isGatewayMode()) {
-    warmPricingCache().catch(err => {
-      logger.warn("Startup pricing cache warm failed", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    });
+  if (!process.env.AI_GATEWAY_API_KEY) {
+    logger.error(
+      "AI_GATEWAY_API_KEY is not set. AI features will not work. " +
+        "Generate a key at: Vercel Dashboard > AI Gateway settings.",
+    );
   }
+
+  warmPricingCache().catch(err => {
+    logger.warn("Startup pricing cache warm failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+
+  warmCatalog().catch(err => {
+    logger.warn("Startup model catalog warm failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
 }
 
 let isShuttingDown = false;

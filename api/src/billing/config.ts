@@ -6,7 +6,7 @@
  * giving self-hosted / open-source users unlimited access.
  */
 
-import { ALL_MODELS } from "../agent-lib/ai-models";
+import { isFreeTierModel } from "../services/model-catalog.service";
 
 export function isBillingEnabled(): boolean {
   return process.env.BILLING_ENABLED === "true";
@@ -36,8 +36,8 @@ export interface PlanDefinition {
 export const PLAN_DEFINITIONS: Record<BillingPlan, PlanDefinition> = {
   free: {
     name: "Free",
-    usageQuotaUsd: 0.5,
-    hardLimitUsd: 0.5,
+    usageQuotaUsd: 5,
+    hardLimitUsd: 5,
     modelTier: "free",
     maxDatabases: 3,
     maxMembers: 3,
@@ -60,24 +60,15 @@ export const PLAN_DEFINITIONS: Record<BillingPlan, PlanDefinition> = {
   },
 };
 
-/**
- * Map model IDs to billing tiers, derived from ALL_MODELS to avoid
- * maintaining a duplicate mapping that can silently diverge.
- * Unknown models default to "pro" in getModelTier().
- */
-const MODEL_TIER_MAP: Record<string, ModelTier> = Object.fromEntries(
-  ALL_MODELS.map(m => [m.id, m.tier]),
-);
-
-export function getModelTier(modelId: string): ModelTier {
-  return MODEL_TIER_MAP[modelId] ?? "pro";
+export async function getModelTier(modelId: string): Promise<ModelTier> {
+  return (await isFreeTierModel(modelId)) ? "free" : "pro";
 }
 
-export function isModelAvailableForPlan(
+export async function isModelAvailableForPlan(
   modelId: string,
   plan: BillingPlan,
-): boolean {
-  const modelTier = getModelTier(modelId);
+): Promise<boolean> {
+  const modelTier = await getModelTier(modelId);
   if (modelTier === "free") return true;
   return plan !== "free";
 }
