@@ -23,7 +23,7 @@ jobs:
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # On pull_request: closed, default checkout may be the merge commit or default branch.
           # Pin to the PR head SHA so git diff sees the PR's actual changes.
@@ -31,12 +31,12 @@ jobs:
           fetch-depth: 0
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
@@ -112,7 +112,7 @@ jobs:
           mongosh "$STAGING_DATABASE_URL" --eval "db.getSiblingDB('${DB_NAME}').dropDatabase()" || echo "Database not found or already deleted"
 
       - name: Comment on PR
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = context.payload.pull_request.number;

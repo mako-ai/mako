@@ -61,7 +61,7 @@ jobs:
           echo "Fetched PR #${{ inputs.pr_number }} head ref: ${PR_REF}, SHA: ${PR_SHA}"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ steps.pr-info.outputs.pr_ref || github.ref }}
@@ -193,17 +193,17 @@ jobs:
           echo "SERVICE_NAME=mako-pr-${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ needs.detect-changes.outputs.pr_ref || github.ref }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
           version: 9
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
@@ -228,12 +228,12 @@ jobs:
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
@@ -398,7 +398,13 @@ jobs:
           # to stay within Atlas storage quota limits
           EXCLUDE_COLLECTIONS=(
             "flow_executions"
-            "webhook_events"
+            "webhookevents"
+            "cdc_change_events"
+            "cdc_state_transitions"
+            "query_executions"
+            "materialization_runs"
+            "chats"
+            "llmusages"
           )
           EXCLUDE_ARGS=""
           for col in "${EXCLUDE_COLLECTIONS[@]}"; do
@@ -416,6 +422,58 @@ jobs:
           fi
 
           echo "✅ Production database successfully copied to ephemeral database: ${EPHEMERAL_DB_NAME}"
+
+          # Create empty excluded collections with their indexes so the app
+          # schema is complete even though we skipped the data transfer.
+          echo "Creating empty excluded collections with indexes..."
+          mongosh "$EPHEMERAL_DB_URL" --quiet --eval "
+            db.createCollection('flow_executions');
+            db.flow_executions.createIndex({ flowId: 1, startedAt: -1 });
+
+            db.createCollection('webhookevents');
+            db.webhookevents.createIndex({ flowId: 1, eventId: 1 }, { unique: true });
+            db.webhookevents.createIndex({ flowId: 1, status: 1, receivedAt: 1 });
+            db.webhookevents.createIndex({ flowId: 1, applyStatus: 1, receivedAt: 1 });
+            db.webhookevents.createIndex({ workspaceId: 1, receivedAt: -1 });
+
+            db.createCollection('cdc_change_events');
+            db.cdc_change_events.createIndex({ idempotencyKey: 1 }, { unique: true });
+            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, ingestSeq: 1 });
+            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, recordId: 1, sourceTs: 1, ingestSeq: 1 }, { unique: true });
+            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, sourceTs: 1, ingestSeq: 1 });
+            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, materializationStatus: 1, ingestSeq: 1 });
+            db.cdc_change_events.createIndex({ flowId: 1, entity: 1, stageStatus: 1, ingestSeq: 1 });
+            db.cdc_change_events.createIndex({ appliedAt: 1 }, { expireAfterSeconds: 604800 });
+
+            db.createCollection('cdc_state_transitions');
+            db.cdc_state_transitions.createIndex({ flowId: 1, at: -1 });
+
+            db.createCollection('query_executions');
+            db.query_executions.createIndex({ workspaceId: 1, executedAt: -1 });
+            db.query_executions.createIndex({ userId: 1, executedAt: -1 });
+            db.query_executions.createIndex({ apiKeyId: 1, executedAt: -1 }, { sparse: true });
+            db.query_executions.createIndex({ workspaceId: 1, status: 1 });
+            db.query_executions.createIndex({ executedAt: 1 }, { expireAfterSeconds: 7776000 });
+
+            db.createCollection('materialization_runs');
+            db.materialization_runs.createIndex({ dashboardId: 1, dataSourceId: 1, requestedAt: -1 });
+            db.materialization_runs.createIndex({ workspaceId: 1, requestedAt: -1 });
+            db.materialization_runs.createIndex({ status: 1, lastHeartbeat: 1 });
+            db.materialization_runs.createIndex({ requestedAt: 1 }, { expireAfterSeconds: 2592000 });
+
+            db.createCollection('chats');
+            db.chats.createIndex({ workspaceId: 1 });
+            db.chats.createIndex({ workspaceId: 1, title: 1 });
+            db.chats.createIndex({ workspaceId: 1, createdBy: 1 });
+
+            db.createCollection('llmusages');
+            db.llmusages.createIndex({ workspaceId: 1, createdAt: -1 });
+            db.llmusages.createIndex({ userId: 1, createdAt: -1 });
+            db.llmusages.createIndex({ chatId: 1 });
+            db.llmusages.createIndex({ workspaceId: 1, userId: 1, createdAt: -1 });
+
+            print('Empty collections with indexes created');
+          "
 
           # Reset stale materialization statuses inherited from production.
           # Without this, dashboards stuck in "building" state from prod remain
@@ -550,7 +608,7 @@ jobs:
 
       - name: Comment on PR with deployment URL
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
@@ -619,7 +677,7 @@ jobs:
     needs: detect-changes
     steps:
       - name: Comment on PR about skipped deployment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
@@ -708,18 +766,18 @@ jobs:
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Always checkout master for production deploys to prevent accidental deployments from other branches
           ref: master
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
           version: 9
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: pnpm
@@ -744,12 +802,12 @@ jobs:
           VITE_GTM_ID: ${{ env.VITE_GTM_ID }}
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ env.GCP_SERVICE_ACCOUNT }}
 
       - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
