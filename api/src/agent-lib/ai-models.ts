@@ -124,6 +124,7 @@ export const ALL_MODELS: AIModel[] = [
     name: "Gemma 4 26B",
     description:
       "Open model, fast inference with MoE architecture (3.8B active params)",
+    tier: "free",
   },
 ];
 

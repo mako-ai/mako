@@ -327,10 +327,10 @@ export async function syncSubscriptionToWorkspace(
 
   const periodStartTs =
     (subscription as any).current_period_start ??
-    subscription.items?.data?.[0]?.current_period_start;
+    (subscription.items?.data?.[0] as any)?.current_period_start;
   const periodEndTs =
     (subscription as any).current_period_end ??
-    subscription.items?.data?.[0]?.current_period_end;
+    (subscription.items?.data?.[0] as any)?.current_period_end;
 
   const newPeriodStart = periodStartTs
     ? new Date(periodStartTs * 1000)
