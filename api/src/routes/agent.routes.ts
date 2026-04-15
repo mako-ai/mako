@@ -21,7 +21,9 @@ import {
   getModelById,
   getAvailableModels,
   getDefaultModelId,
+  isGatewayMode,
 } from "../agent-lib/ai-models";
+import { getGatewayModels } from "../services/gateway-models.service";
 import {
   Workspace,
   DatabaseConnection,
@@ -62,10 +64,72 @@ export const agentRoutes = new Hono();
 agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
- * GET /models - List available AI models based on configured API keys
+ * GET /models - List available AI models, filtered by workspace settings.
+ *
+ * When the workspace has `enabledModels` (full objects saved by the settings
+ * UI), those are returned directly -- no gateway fetch needed. Static
+ * ALL_MODELS entries are merged in for metadata like `supportsThinking`.
+ *
+ * Falls back to the legacy `enabledModelIds` field, then to the static
+ * ALL_MODELS list.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
+  const workspaceId =
+    c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
+
+  if (workspaceId) {
+    const ws = await Workspace.findById(workspaceId)
+      .select({ "settings.enabledModels": 1, "settings.enabledModelIds": 1 })
+      .lean();
+
+    if (ws?.settings?.enabledModels?.length) {
+      const staticMap = new Map(getAvailableModels().map(m => [m.id, m]));
+      const models = ws.settings.enabledModels.map(
+        (em: {
+          id: string;
+          name: string;
+          provider: string;
+          description?: string;
+        }) => {
+          const staticModel = staticMap.get(em.id);
+          if (staticModel) return staticModel;
+          return {
+            id: em.id,
+            provider: em.provider,
+            name: em.name,
+            description: em.description || "",
+          };
+        },
+      );
+      return c.json({ models });
+    }
+
+    if (ws?.settings?.enabledModelIds?.length) {
+      const models = getAvailableModels(ws.settings.enabledModelIds);
+      return c.json({ models });
+    }
+  }
+
   const models = getAvailableModels();
+  return c.json({ models });
+});
+
+/**
+ * GET /gateway-models - Full model catalog from Vercel AI Gateway
+ * Used by the settings UI to show all models that can be enabled.
+ */
+agentRoutes.get("/gateway-models", async (c: AuthenticatedContext) => {
+  if (!isGatewayMode()) {
+    return c.json(
+      {
+        success: false,
+        error: "Gateway mode is not enabled",
+      },
+      400,
+    );
+  }
+
+  const models = await getGatewayModels();
   return c.json({ models });
 });
 
@@ -293,9 +357,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     }
   }
 
-  // Load workspace for custom prompt and self-directive
+  // Load workspace for custom prompt, self-directive, and enabled models
   let workspaceCustomPrompt = "";
   let selfDirective = "";
+  let wsEnabledModelIds: string[] | undefined;
   try {
     const workspace = await Workspace.findById(workspaceId).select({
       settings: 1,
@@ -303,6 +368,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
     selfDirective = workspace?.selfDirective || "";
+    if (workspace?.settings?.enabledModelIds?.length) {
+      wsEnabledModelIds = workspace.settings.enabledModelIds;
+    }
   } catch (err) {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
@@ -470,9 +538,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       503,
     );
   }
-  const available = getAvailableModels();
-  const resolvedModelId =
-    modelId && available.find(m => m.id === modelId) ? modelId : defaultId;
+  const available = getAvailableModels(wsEnabledModelIds);
+  const isModelAllowed =
+    isGatewayMode() && wsEnabledModelIds?.length
+      ? wsEnabledModelIds.includes(modelId || "")
+      : available.some(m => m.id === modelId);
+  const resolvedModelId = modelId && isModelAllowed ? modelId : defaultId;
   const model = getModel(resolvedModelId);
   const modelDef = getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });

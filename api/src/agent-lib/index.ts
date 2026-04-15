@@ -32,6 +32,7 @@ export {
   isGatewayMode,
   getConfiguredProviders,
   getAvailableModels,
+  getDefaultModelIds,
   getModelById,
   getDefaultModelId,
   getUtilityModelId,

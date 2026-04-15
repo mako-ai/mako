@@ -134,15 +134,38 @@ export function getConfiguredProviders(): AIProvider[] {
 }
 
 /**
+ * Returns the IDs from the static ALL_MODELS list.
+ * Used as the default when a workspace has no enabledModelIds set.
+ */
+export function getDefaultModelIds(): string[] {
+  return ALL_MODELS.map(m => m.id);
+}
+
+/**
  * Models available to the current deployment. In gateway mode every model
  * is accessible because the gateway manages provider keys. In direct mode
  * only models whose provider API key is present are returned.
+ *
+ * When `enabledModelIds` is provided (from workspace settings), the result
+ * is filtered to only include those IDs. The returned objects come from
+ * ALL_MODELS for backward compatibility with features like `supportsThinking`.
  */
-export function getAvailableModels(): AIModel[] {
-  if (isGatewayMode()) return ALL_MODELS;
+export function getAvailableModels(enabledModelIds?: string[]): AIModel[] {
+  let models: AIModel[];
 
-  const configured = new Set(getConfiguredProviders());
-  return ALL_MODELS.filter(m => configured.has(m.provider));
+  if (isGatewayMode()) {
+    models = ALL_MODELS;
+  } else {
+    const configured = new Set(getConfiguredProviders());
+    models = ALL_MODELS.filter(m => configured.has(m.provider));
+  }
+
+  if (enabledModelIds && enabledModelIds.length > 0) {
+    const allowed = new Set(enabledModelIds);
+    models = models.filter(m => allowed.has(m.id));
+  }
+
+  return models;
 }
 
 // ---------------------------------------------------------------------------
