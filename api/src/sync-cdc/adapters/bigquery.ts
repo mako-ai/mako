@@ -531,41 +531,41 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     }
 
     const dedupKey = keyColumns.map(escId).join(", ");
-    const buildMergeStatements = (columns: string[]): string[] => {
-      const hasSourceTs = columns.includes("_mako_source_ts");
-      const orderExpr = hasSourceTs ? `\`_mako_source_ts\` DESC` : "1";
+    const hasSourceTs = allColumns.includes("_mako_source_ts");
+    const orderExpr = hasSourceTs ? `\`_mako_source_ts\` DESC` : "1";
 
-      const selectCols = columns
-        .map(c => {
-          if (!stagingCols.has(c)) {
-            const targetType = resolveTargetBqType(
-              c,
-              entitySchema,
-              liveTypes.get(c),
-            );
-            return `CAST(NULL AS ${targetType}) AS ${escId(c)}`;
-          }
-          return buildColumnSelectExpr(
+    const selectCols = allColumns
+      .map(c => {
+        if (!stagingCols.has(c)) {
+          const targetType = resolveTargetBqType(
             c,
-            escId,
             entitySchema,
             liveTypes.get(c),
           );
-        })
-        .join(", ");
+          return `CAST(NULL AS ${targetType}) AS ${escId(c)}`;
+        }
+        return buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c));
+      })
+      .join(", ");
 
-      const colList = columns.map(escId).join(", ");
+    const colList = allColumns.map(escId).join(", ");
+    const keyJoin = keyColumns
+      .map(k => `T.${escId(k)} = S.${escId(k)}`)
+      .join(" AND ");
+    const updateSet = allColumns
+      .filter(c => !keyColumns.includes(c))
+      .map(c => {
+        if (!stagingCols.has(c)) return `T.${escId(c)} = T.${escId(c)}`;
+        return `T.${escId(c)} = S.${escId(c)}`;
+      })
+      .join(", ");
+    const insertValues = allColumns.map(c => `S.${escId(c)}`).join(", ");
 
-      const keyJoin = keyColumns
-        .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
-        .join(" AND ");
+    const dedupSubquery = `(SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1)`;
 
-      const deleteStmt = `DELETE FROM ${fullLive} __live WHERE EXISTS (SELECT 1 FROM ${fullStaging} __stg WHERE ${keyJoin})`;
-
-      const insertStmt = `INSERT INTO ${fullLive} (${colList}) SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1`;
-
-      return [deleteStmt, insertStmt];
-    };
+    const mergeStmt = updateSet
+      ? `MERGE ${fullLive} T USING ${dedupSubquery} S ON ${keyJoin} WHEN MATCHED THEN UPDATE SET ${updateSet} WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${insertValues})`
+      : `MERGE ${fullLive} T USING ${dedupSubquery} S ON ${keyJoin} WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${insertValues})`;
 
     const mergeMaxWaitEnv = Number.parseInt(
       process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
@@ -576,106 +576,41 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
         : 50 * 60 * 1000;
 
-    const [deleteStmt, insertStmt] = buildMergeStatements(allColumns);
-
-    let stagingRowCount = 0;
-    try {
-      const countResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT COUNT(*) AS cnt FROM ${fullStaging}`,
-        { location: datasetLocation },
-      );
-      if (
-        countResult.success &&
-        Array.isArray(countResult.data) &&
-        countResult.data[0]
-      ) {
-        stagingRowCount = Number((countResult.data[0] as any).cnt || 0);
-      }
-    } catch {
-      log.warn("Could not count staging rows before merge", { stagingTable });
-    }
-
-    log.info("Starting staging-to-live merge", {
+    log.info("Starting staging-to-live MERGE", {
       liveTable,
       stagingTable,
       dataset,
-      stagingRowCount,
       columnCount: allColumns.length,
     });
 
     await retryOnQuota(
       async () => {
-        const deleteResult = await databaseConnectionService.executeQuery(
+        const mergeResult = await databaseConnectionService.executeQuery(
           destination,
-          deleteStmt,
+          mergeStmt,
           { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
         );
-        if (!deleteResult.success) {
-          const notFound =
-            deleteResult.error &&
-            /not found|does not exist/i.test(deleteResult.error);
-          if (!notFound) {
-            log.error("BigQuery DELETE before INSERT failed", {
-              liveTable,
-              stagingTable,
-              error: deleteResult.error,
-            });
-            throw new Error(deleteResult.error || "BigQuery DELETE failed");
-          }
-        }
-      },
-      { label: `mergeStagingToLive:DELETE(${liveTable})` },
-    );
-
-    await retryOnQuota(
-      async () => {
-        const insertResult = await databaseConnectionService.executeQuery(
-          destination,
-          insertStmt,
-          { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
-        );
-        if (!insertResult.success) {
-          log.error("BigQuery INSERT from staging failed", {
+        if (!mergeResult.success) {
+          log.error("BigQuery MERGE failed", {
             liveTable,
             stagingTable,
-            error: insertResult.error,
-            insertPreview: insertStmt.slice(0, 900),
+            error: mergeResult.error,
+            mergePreview: mergeStmt.slice(0, 900),
           });
-          throw new Error(insertResult.error || "BigQuery INSERT failed");
+          throw new Error(mergeResult.error || "BigQuery MERGE failed");
         }
       },
-      { label: `mergeStagingToLive:INSERT(${liveTable})` },
+      { label: `mergeStagingToLive:MERGE(${liveTable})` },
     );
 
-    let liveRowCount = 0;
-    try {
-      const liveCountResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT COUNT(*) AS cnt FROM ${fullLive}`,
-        { location: datasetLocation },
-      );
-      if (
-        liveCountResult.success &&
-        Array.isArray(liveCountResult.data) &&
-        liveCountResult.data[0]
-      ) {
-        liveRowCount = Number((liveCountResult.data[0] as any).cnt || 0);
-      }
-    } catch {
-      log.warn("Could not count live rows after merge", { liveTable });
-    }
-
-    log.info("Merged staging to live table via DELETE+INSERT", {
+    log.info("Merged staging to live table via MERGE", {
       liveTable,
       stagingTable,
       dataset,
-      stagingRowCount,
-      liveRowCount,
       skippedLiveAdds,
     });
 
-    return { written: stagingRowCount };
+    return { written: 0 };
   }
 
   async cleanupStaging(
