@@ -1,0 +1,192 @@
+---
+title: "PostgreSQL Transactions: ACID, COMMIT, ROLLBACK, and Savepoints"
+description: "Understand how transactions work in PostgreSQL -- BEGIN, COMMIT, ROLLBACK, isolation levels, and savepoints -- with practical examples for reliable data operations."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "transactions", "acid", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Transactions: ACID, COMMIT, ROLLBACK, and Savepoints
+
+A transaction groups multiple SQL operations into a single unit. Either all operations succeed and commit, or none of them do. PostgreSQL's transaction model is one of the most reliable in any relational database -- every write is transactional by default.
+
+## ACID Properties
+
+PostgreSQL guarantees ACID compliance:
+
+- **Atomicity** -- A transaction is all-or-nothing. If any operation fails, all prior operations in the transaction are rolled back automatically.
+- **Consistency** -- The database moves from one valid state to another. Constraints, triggers, and rules are checked at commit time.
+- **Isolation** -- Concurrent transactions don't see each other's uncommitted changes (with configurable levels).
+- **Durability** -- Once committed, the data survives crashes (via Write-Ahead Logging).
+
+## Basic Transaction Syntax
+
+```sql
+BEGIN;
+
+UPDATE accounts SET balance = balance - 500 WHERE account_id = 1;
+UPDATE accounts SET balance = balance + 500 WHERE account_id = 2;
+
+COMMIT;
+```
+
+If any statement fails between `BEGIN` and `COMMIT`, PostgreSQL aborts the transaction:
+
+```sql
+BEGIN;
+
+UPDATE accounts SET balance = balance - 500 WHERE account_id = 1;
+-- If this raises an error (e.g. constraint violation), the transaction is aborted
+UPDATE accounts SET balance = balance + 500 WHERE account_id = 999; -- account doesn't exist
+
+COMMIT; -- This is a no-op; transaction was already aborted
+```
+
+After an error, you must issue `ROLLBACK` before starting a new transaction. Any SQL executed in an aborted transaction state returns `ERROR: current transaction is aborted`.
+
+### ROLLBACK
+
+```sql
+BEGIN;
+
+DELETE FROM audit_log WHERE created_at < '2020-01-01';
+
+-- Changed your mind
+ROLLBACK;
+-- No rows were deleted
+```
+
+### Implicit Transactions
+
+Every statement in PostgreSQL that is not inside an explicit `BEGIN` block runs in its own implicit transaction. A single `INSERT` with no `BEGIN` is atomic by itself.
+
+## Savepoints
+
+Savepoints let you create partial rollback points within a transaction without aborting the whole thing.
+
+```sql
+BEGIN;
+
+INSERT INTO orders (customer_id, product_id, amount)
+VALUES (42, 101, 99.99);
+
+SAVEPOINT before_discount;
+
+-- Apply a discount update
+UPDATE orders SET amount = 89.99 WHERE customer_id = 42 AND product_id = 101;
+
+-- Something went wrong with the discount logic, undo just that step
+ROLLBACK TO SAVEPOINT before_discount;
+
+-- The original insert is still in effect; only the UPDATE was rolled back
+COMMIT;
+```
+
+Release a savepoint when you no longer need it (frees resources):
+
+```sql
+RELEASE SAVEPOINT before_discount;
+```
+
+## Isolation Levels
+
+PostgreSQL supports four isolation levels. The default is `READ COMMITTED`.
+
+| Level | Dirty Read | Non-Repeatable Read | Phantom Read |
+|---|---|---|---|
+| READ UNCOMMITTED | Impossible* | Possible | Possible |
+| READ COMMITTED (default) | Impossible | Possible | Possible |
+| REPEATABLE READ | Impossible | Impossible | Impossible* |
+| SERIALIZABLE | Impossible | Impossible | Impossible |
+
+*PostgreSQL never allows dirty reads, even at READ UNCOMMITTED. Its REPEATABLE READ also prevents phantom reads in practice.
+
+Set isolation level for a transaction:
+
+```sql
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+SELECT balance FROM accounts WHERE account_id = 1;
+-- Another transaction cannot modify account_id = 1 until this commits or rolls back
+UPDATE accounts SET balance = balance - 100 WHERE account_id = 1;
+
+COMMIT;
+```
+
+### When to Use Higher Isolation
+
+- **REPEATABLE READ** -- Financial calculations where you read a value and write back a derived value. Prevents another transaction from changing the value between your read and write.
+- **SERIALIZABLE** -- Full serial safety. Use for complex multi-step workflows where concurrent transactions touching the same rows could produce incorrect results. Comes with performance overhead and the possibility of serialization failures that require retry.
+
+## Transaction Status in psql
+
+```sql
+-- Check current transaction status
+SELECT txid_current();
+
+-- Check if currently in a transaction
+SELECT current_setting('transaction_isolation');
+```
+
+## Common Patterns
+
+### Error Handling (in PL/pgSQL)
+
+```sql
+DO $$
+BEGIN
+  BEGIN
+    UPDATE accounts SET balance = balance - 500 WHERE account_id = 1;
+    UPDATE accounts SET balance = balance + 500 WHERE account_id = 2;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RAISE NOTICE 'Transfer failed: %', SQLERRM;
+      ROLLBACK;
+      RETURN;
+  END;
+  COMMIT;
+END $$;
+```
+
+### Long-running Operations with Savepoints
+
+When processing large batches, use savepoints to checkpoint progress and recover from individual failures without losing all completed work:
+
+```sql
+BEGIN;
+
+DO $$
+DECLARE
+  r RECORD;
+  batch_size INT := 1000;
+  processed INT := 0;
+BEGIN
+  FOR r IN SELECT id FROM large_table ORDER BY id LOOP
+    -- Process each row
+    UPDATE large_table SET processed = TRUE WHERE id = r.id;
+
+    processed := processed + 1;
+
+    IF processed % batch_size = 0 THEN
+      -- Checkpoint every 1000 rows
+      RELEASE SAVEPOINT checkpoint;
+      SAVEPOINT checkpoint;
+    END IF;
+  END LOOP;
+END $$;
+
+COMMIT;
+```
+
+## Common Mistakes
+
+**Forgetting to ROLLBACK after an error:** In psql or application code, after an error mid-transaction, you must explicitly `ROLLBACK` before the connection can accept new transactions.
+
+**Long-held transactions:** A transaction that stays open holds locks and prevents VACUUM from cleaning up dead rows. Keep transactions as short as possible. Avoid user interaction (e.g. waiting for input) inside a transaction.
+
+**Assuming autocommit in drivers:** Most PostgreSQL drivers (psycopg2, pg, etc.) operate in autocommit mode by default, meaning each statement is its own transaction. To use explicit transactions, you typically call `connection.autocommit = False` or use a context manager.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
