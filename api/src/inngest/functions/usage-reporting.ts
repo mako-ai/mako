@@ -99,9 +99,7 @@ export const usageReportingFunction = inngest.createFunction(
         }
 
         try {
-          const stripe = new Stripe(getStripeSecretKey(), {
-            apiVersion: "2025-12-18.acacia" as Stripe.LatestApiVersion,
-          });
+          const stripe = new Stripe(getStripeSecretKey());
 
           await stripe.billing.meterEvents.create({
             event_name: getStripeMeterEventName(),

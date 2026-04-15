@@ -44,7 +44,7 @@ export const PLAN_DEFINITIONS: Record<BillingPlan, PlanDefinition> = {
   },
   pro: {
     name: "Pro",
-    usageQuotaUsd: 10,
+    usageQuotaUsd: 80,
     hardLimitUsd: null,
     modelTier: "pro",
     maxDatabases: 50,
@@ -97,6 +97,12 @@ export function getStripeWebhookSecret(): string {
 export function getStripeProPriceId(): string {
   const id = process.env.STRIPE_PRO_PRICE_ID;
   if (!id) throw new Error("STRIPE_PRO_PRICE_ID is not configured");
+  return id;
+}
+
+export function getStripeOveragePriceId(): string {
+  const id = process.env.STRIPE_OVERAGE_PRICE_ID;
+  if (!id) throw new Error("STRIPE_OVERAGE_PRICE_ID is not configured");
   return id;
 }
 
