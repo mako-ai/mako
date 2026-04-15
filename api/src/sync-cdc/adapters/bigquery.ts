@@ -855,6 +855,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     if (params.records.length === 0) return { written: 0 };
 
     const flowId = String(params.flow._id);
+    const stagingSuffix = `stg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     await this.ensureDataset();
 
@@ -870,6 +871,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       rows: params.records.length,
       parquetBytes: parquet.byteSize,
       flowId,
+      stagingSuffix,
     });
 
     try {
@@ -877,21 +879,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         parquet.filePath,
         params.layout,
         flowId,
+        { stagingSuffix },
       );
       await this.mergeFromStaging(
         params.layout,
         params.flow,
         flowId,
         params.entitySchema,
+        { stagingSuffix },
       );
     } finally {
-      await this.cleanupStaging(params.layout, flowId).catch(err => {
-        log.warn("Failed to cleanup CDC staging table", {
-          flowId,
-          table: params.layout.tableName,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
+      await this.cleanupStaging(params.layout, flowId, { stagingSuffix }).catch(
+        err => {
+          log.warn("Failed to cleanup CDC staging table", {
+            flowId,
+            table: params.layout.tableName,
+            stagingSuffix,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        },
+      );
     }
 
     return { written: params.records.length };
