@@ -1,0 +1,178 @@
+---
+title: "PostgreSQL Generated Columns: STORED and VIRTUAL"
+description: "Learn how to use generated columns in PostgreSQL -- automatically computed values derived from other columns -- including STORED vs VIRTUAL modes (PostgreSQL 18+), use cases, and limitations."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "generated-columns", "schema", "data-engineering"]
+date: "2026-04-16"
+---
+
+# PostgreSQL Generated Columns: STORED and VIRTUAL
+
+A generated column is a column whose value is automatically computed from an expression involving other columns in the same row. You never insert or update a generated column directly -- PostgreSQL maintains it automatically.
+
+Generated columns were introduced in PostgreSQL 12 (STORED only). PostgreSQL 18 adds VIRTUAL generated columns, which compute the value on read rather than storing it on disk.
+
+## STORED Generated Columns
+
+A STORED column computes its value when a row is inserted or updated and writes the result to disk. Storage space is consumed, but reads are fast -- the computed value is already there.
+
+```sql
+CREATE TABLE products (
+  id SERIAL PRIMARY KEY,
+  price_cents INT NOT NULL,
+  tax_rate NUMERIC(4,3) NOT NULL DEFAULT 0.08,
+  price_with_tax NUMERIC GENERATED ALWAYS AS (price_cents * (1 + tax_rate) / 100.0) STORED
+);
+
+INSERT INTO products (price_cents, tax_rate) VALUES (1000, 0.08);
+-- price_with_tax is automatically 10.80
+
+SELECT price_with_tax FROM products WHERE id = 1; -- 10.80
+```
+
+The `GENERATED ALWAYS AS (...) STORED` syntax is the key part. Attempting to insert or update the generated column raises an error.
+
+## VIRTUAL Generated Columns (PostgreSQL 18+)
+
+A VIRTUAL column computes its value at query time -- nothing is written to disk. This saves storage at the cost of computation on every read.
+
+PostgreSQL 18 makes VIRTUAL the default:
+
+```sql
+-- PostgreSQL 18+
+CREATE TABLE products (
+  id SERIAL PRIMARY KEY,
+  price_cents INT NOT NULL,
+  price_dollars NUMERIC GENERATED ALWAYS AS (price_cents / 100.0) VIRTUAL
+  -- or just: price_dollars NUMERIC GENERATED ALWAYS AS (price_cents / 100.0)
+);
+```
+
+Before PostgreSQL 18, only STORED is available. The STORED keyword is required explicitly in versions 12-17.
+
+## Practical Use Cases
+
+### Full Name from First + Last
+
+```sql
+CREATE TABLE contacts (
+  id SERIAL PRIMARY KEY,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  full_name TEXT GENERATED ALWAYS AS (first_name || ' ' || last_name) STORED
+);
+```
+
+This is especially useful when you want to index the full name for search:
+
+```sql
+CREATE INDEX ON contacts (full_name);
+-- Or for case-insensitive search:
+CREATE INDEX ON contacts (lower(full_name));
+```
+
+### Normalized Search Column
+
+```sql
+CREATE TABLE articles (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  title_normalized TEXT GENERATED ALWAYS AS (lower(trim(title))) STORED
+);
+
+CREATE INDEX ON articles (title_normalized);
+-- Now case-insensitive lookups are index-friendly
+SELECT * FROM articles WHERE title_normalized = lower(trim('My Article'));
+```
+
+### Price Calculations
+
+```sql
+CREATE TABLE order_items (
+  id SERIAL PRIMARY KEY,
+  quantity INT NOT NULL,
+  unit_price NUMERIC(10,2) NOT NULL,
+  total NUMERIC(10,2) GENERATED ALWAYS AS (quantity * unit_price) STORED
+);
+```
+
+### Geometry / Spatial Helpers
+
+```sql
+CREATE TABLE locations (
+  id SERIAL PRIMARY KEY,
+  lat DOUBLE PRECISION,
+  lng DOUBLE PRECISION,
+  geom GEOMETRY(POINT, 4326) GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(lng, lat), 4326)) STORED
+);
+
+CREATE INDEX ON locations USING GIST (geom);
+```
+
+Insert with just lat/lng and the geometry column is populated automatically.
+
+## Constraints and Limitations
+
+- Generated columns **cannot reference other generated columns** in their expression.
+- The expression must be **immutable** -- it cannot call non-deterministic functions like `NOW()`, `RANDOM()`, or `CURRENT_TIMESTAMP`. This means you can't auto-generate timestamps from generated columns (use `DEFAULT` with `NOW()` for that instead).
+- Generated columns cannot have `DEFAULT` values or be part of `ON CONFLICT DO UPDATE SET generated_col = ...`.
+- STORED generated columns **consume disk space** like regular columns.
+- You **cannot partition** a table by a generated column.
+- Foreign keys cannot reference generated columns in PostgreSQL 17 and earlier (this may change in future versions).
+
+## Altering Generated Columns
+
+To change the expression, drop and re-add the column:
+
+```sql
+-- Cannot use ALTER COLUMN to change the expression directly
+ALTER TABLE products DROP COLUMN price_with_tax;
+ALTER TABLE products ADD COLUMN price_with_tax NUMERIC
+  GENERATED ALWAYS AS (price_cents * (1 + tax_rate) / 100.0) STORED;
+```
+
+This rewrites the table for STORED columns. On large tables, consider `pg_repack` or an online schema change approach.
+
+## Generated Columns vs Triggers
+
+Before generated columns existed, the pattern was:
+
+```sql
+CREATE FUNCTION update_full_name() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.full_name := NEW.first_name || ' ' || NEW.last_name;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER set_full_name
+BEFORE INSERT OR UPDATE ON contacts
+FOR EACH ROW EXECUTE FUNCTION update_full_name();
+```
+
+Generated columns are strictly better for this use case -- they're declarative, always consistent, can be indexed directly, and don't require trigger maintenance. Use triggers when you need logic that spans multiple tables or has side effects.
+
+## Inspecting Generated Columns
+
+```sql
+SELECT
+  column_name,
+  data_type,
+  generation_expression,
+  is_generated
+FROM information_schema.columns
+WHERE table_name = 'products'
+  AND is_generated = 'ALWAYS';
+```
+
+Or with `psql`:
+
+```sql
+\d products
+-- Generated columns show "(generated always as (expression) stored)" in the schema description
+```
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
