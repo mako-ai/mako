@@ -948,8 +948,8 @@ Add any specific instructions for how the AI should interpret your data or respo
       },
       currentPeriodStart: { type: Date, default: null },
       currentPeriodEnd: { type: Date, default: null },
-      usageQuotaUsd: { type: Number, default: 0.5 },
-      hardLimitUsd: { type: Number, default: 0.5 },
+      usageQuotaUsd: { type: Number, default: 5 },
+      hardLimitUsd: { type: Number, default: 5 },
       plan: {
         type: String,
         enum: ["free", "pro", "enterprise"],
