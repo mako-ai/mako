@@ -17,6 +17,7 @@ import {
 } from "../databases/drivers/postgresql/pg-type-utils";
 import { Connector } from "@google-cloud/cloud-sql-connector";
 import { loggers } from "../logging";
+import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
 import {
   type PreviewPageInfo,
@@ -3555,9 +3556,83 @@ export class DatabaseConnectionService {
   }
 
   // MySQL specific methods
+
+  /**
+   * Build an SshTunnelConfig from the saved connection, or null when SSH is disabled.
+   * Throws on invalid/incomplete configuration so callers get a clear error.
+   */
+  private buildSshTunnelConfig(
+    database: IDatabaseConnection,
+    tunnelKey: string,
+  ): SshTunnelConfig | null {
+    const tunnel = database.connection.sshTunnel;
+    if (!tunnel?.enabled) return null;
+
+    if (!tunnel.host) {
+      throw new Error("SSH tunnel host is required");
+    }
+    if (!tunnel.username) {
+      throw new Error("SSH tunnel username is required");
+    }
+    const authMethod = tunnel.authMethod || "password";
+    if (authMethod === "password" && !tunnel.password) {
+      throw new Error(
+        "SSH tunnel password is required when using password auth",
+      );
+    }
+    if (authMethod === "privateKey" && !tunnel.privateKey) {
+      throw new Error("SSH private key is required when using key auth");
+    }
+
+    // Strip port suffix from host fields if the user accidentally entered host:port
+    const parseHost = (
+      raw: string,
+    ): { host: string; port: number | undefined } => {
+      // Bracketed IPv6: [::1]:3306
+      const bracketMatch = raw.match(/^\[([^\]]+)\](?::(\d+))?$/);
+      if (bracketMatch) {
+        return {
+          host: bracketMatch[1],
+          port: bracketMatch[2] ? Number(bracketMatch[2]) : undefined,
+        };
+      }
+      // Non-bracketed host:port — use lastIndexOf so IPv4 like 127.0.0.1:22 works
+      const lastColon = raw.lastIndexOf(":");
+      if (lastColon > 0) {
+        const maybePart = raw.slice(lastColon + 1);
+        if (/^\d+$/.test(maybePart)) {
+          return { host: raw.slice(0, lastColon), port: Number(maybePart) };
+        }
+      }
+      return { host: raw, port: undefined };
+    };
+
+    const rawRemote = parseHost(database.connection.host || "127.0.0.1");
+    const remoteHost = rawRemote.host;
+    const remotePort = database.connection.port || rawRemote.port || 3306;
+
+    const rawSsh = parseHost(tunnel.host);
+    const sshHost = rawSsh.host;
+    const sshPort = tunnel.port ?? rawSsh.port ?? 22;
+
+    return {
+      key: tunnelKey,
+      sshHost,
+      sshPort,
+      sshUsername: tunnel.username,
+      authMethod,
+      sshPassword: tunnel.password,
+      privateKey: tunnel.privateKey,
+      passphrase: tunnel.passphrase,
+      remoteHost,
+      remotePort,
+    };
+  }
+
   private buildMySQLConfig(
     database: IDatabaseConnection,
     targetDatabase?: string,
+    tunnelEndpoint?: { host: string; port: number },
   ) {
     const conn = database.connection;
     const baseConfig = {
@@ -3587,8 +3662,10 @@ export class DatabaseConnectionService {
           sslMode === "prefer";
 
         return {
-          host: url.hostname || undefined,
-          port: url.port ? Number.parseInt(url.port, 10) : 3306,
+          host: tunnelEndpoint?.host ?? (url.hostname || undefined),
+          port:
+            tunnelEndpoint?.port ??
+            (url.port ? Number.parseInt(url.port, 10) : 3306),
           database: url.pathname.slice(1)
             ? decodeURIComponent(url.pathname.slice(1))
             : undefined,
@@ -3602,9 +3679,20 @@ export class DatabaseConnectionService {
       }
     }
 
+    let host = conn.host;
+    let port = conn.port || 3306;
+    if (host && host.includes(":")) {
+      const idx = host.lastIndexOf(":");
+      const maybePart = host.slice(idx + 1);
+      if (/^\d+$/.test(maybePart)) {
+        port = conn.port || Number(maybePart);
+        host = host.slice(0, idx);
+      }
+    }
+
     return {
-      host: conn.host,
-      port: conn.port || 3306,
+      host: tunnelEndpoint?.host ?? host,
+      port: tunnelEndpoint?.port ?? port,
       database: targetDatabase || conn.database,
       user: conn.username,
       password: conn.password,
@@ -3626,7 +3714,16 @@ export class DatabaseConnectionService {
       return existing.pool;
     }
 
-    const config = this.buildMySQLConfig(database, targetDatabase);
+    const tunnelCfg = this.buildSshTunnelConfig(database, key);
+    const tunnelEndpoint = tunnelCfg
+      ? await sshTunnelManager.openTunnel(tunnelCfg)
+      : undefined;
+
+    const config = this.buildMySQLConfig(
+      database,
+      targetDatabase,
+      tunnelEndpoint,
+    );
     const pool = mysql.createPool({
       ...config,
       waitForConnections: true,
@@ -3653,6 +3750,7 @@ export class DatabaseConnectionService {
             error: endErr,
           });
         });
+        sshTunnelManager.closeTunnel(key).catch(() => {});
       });
     });
 
@@ -3680,6 +3778,12 @@ export class DatabaseConnectionService {
       } catch (error) {
         logger.error("Error closing MySQL pool", { key, error });
       }
+      await sshTunnelManager.closeTunnel(key).catch(err => {
+        logger.error("Error closing SSH tunnel for MySQL pool", {
+          key,
+          error: err,
+        });
+      });
     }
   }
 
@@ -3694,6 +3798,7 @@ export class DatabaseConnectionService {
       } catch (error) {
         logger.error("Error closing MySQL pool", { key, error });
       }
+      await sshTunnelManager.closeTunnel(key).catch(() => {});
     });
     await Promise.all(promises);
   }
@@ -3723,6 +3828,7 @@ export class DatabaseConnectionService {
         } catch (error) {
           logger.error("Error closing idle MySQL pool", { key, error });
         }
+        await sshTunnelManager.closeTunnel(key).catch(() => {});
       }
     }
   }
@@ -3730,9 +3836,15 @@ export class DatabaseConnectionService {
   private async testMySQLConnection(
     database: IDatabaseConnection,
   ): Promise<{ success: boolean; error?: string }> {
+    const ephemeralKey = `test:${Date.now()}`;
     let connection: mysql.Connection | null = null;
     try {
-      const config = this.buildMySQLConfig(database);
+      const tunnelCfg = this.buildSshTunnelConfig(database, ephemeralKey);
+      const tunnelEndpoint = tunnelCfg
+        ? await sshTunnelManager.openTunnel(tunnelCfg)
+        : undefined;
+
+      const config = this.buildMySQLConfig(database, undefined, tunnelEndpoint);
       connection = await mysql.createConnection(config);
       await connection.ping();
       return { success: true };
@@ -3746,6 +3858,7 @@ export class DatabaseConnectionService {
       if (connection) {
         await connection.end();
       }
+      await sshTunnelManager.closeTunnel(ephemeralKey).catch(() => {});
     }
   }
 

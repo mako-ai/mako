@@ -21,6 +21,10 @@ export interface FieldSchema {
   placeholder?: string;
   rows?: number;
   options?: Array<{ label: string; value: any }>;
+  path?: string;
+  advanced?: boolean;
+  group?: string;
+  visibleWhen?: { field: string; equals: unknown };
 }
 
 export interface DatabaseSchemaResponse {

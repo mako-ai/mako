@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import {
+  findById,
+  findParentArray,
+  findTargetArray,
+  insertAlphabetically,
+  insertAtTop,
+  removeById,
+} from "./lib/tree-helpers";
 
 export type ConsoleAccessLevel = "private" | "workspace";
 
@@ -24,90 +32,6 @@ export interface ConsoleEntry {
   owner_id?: string;
   createdAt?: string;
 }
-
-// ── Tree helpers (mutate in place, used inside immer) ──
-
-const findTargetArray = (
-  nodes: ConsoleEntry[],
-  remainingSegments: string[],
-): ConsoleEntry[] | null => {
-  if (remainingSegments.length === 0) return nodes;
-  const folderName = remainingSegments[0];
-  const folder = nodes.find(
-    node => node.isDirectory && node.name === folderName,
-  );
-  if (!folder) return null;
-  if (!folder.children) folder.children = [];
-  return findTargetArray(folder.children, remainingSegments.slice(1));
-};
-
-const removeById = (
-  nodes: ConsoleEntry[],
-  targetId: string,
-): ConsoleEntry | null => {
-  const index = nodes.findIndex(item => item.id === targetId);
-  if (index !== -1) return nodes.splice(index, 1)[0];
-  for (const node of nodes) {
-    if (node.isDirectory && node.children) {
-      const removed = removeById(node.children, targetId);
-      if (removed) return removed;
-    }
-  }
-  return null;
-};
-
-const insertAlphabetically = (
-  nodes: ConsoleEntry[],
-  entry: ConsoleEntry,
-): void => {
-  let insertIndex = nodes.length;
-  for (let i = 0; i < nodes.length; i++) {
-    const item = nodes[i];
-    if (entry.isDirectory && !item.isDirectory) {
-      insertIndex = i;
-      break;
-    }
-    if (entry.isDirectory === item.isDirectory) {
-      if (entry.name.toLowerCase() < item.name.toLowerCase()) {
-        insertIndex = i;
-        break;
-      }
-    }
-  }
-  nodes.splice(insertIndex, 0, entry);
-};
-
-const insertAtTop = (nodes: ConsoleEntry[], entry: ConsoleEntry): void => {
-  nodes.unshift(entry);
-};
-
-const findById = (
-  nodes: ConsoleEntry[],
-  targetId: string,
-): ConsoleEntry | null => {
-  for (const node of nodes) {
-    if (node.id === targetId) return node;
-    if (node.isDirectory && node.children) {
-      const found = findById(node.children, targetId);
-      if (found) return found;
-    }
-  }
-  return null;
-};
-
-const findParentArray = (
-  nodes: ConsoleEntry[],
-  targetId: string,
-): ConsoleEntry[] | null => {
-  if (nodes.some(n => n.id === targetId)) return nodes;
-  for (const node of nodes) {
-    if (node.isDirectory && node.children) {
-      const found = findParentArray(node.children, targetId);
-      if (found) return found;
-    }
-  }
-  return null;
-};
 
 /** Get both section arrays for a workspace */
 const allSections = (state: TreeState, wid: string): ConsoleEntry[][] => [
@@ -479,7 +403,7 @@ export const useConsoleTreeStore = create<TreeState>()(
         }>(`/workspaces/${workspaceId}/consoles/folders`, {
           name,
           parentId: parentId || undefined,
-          isPrivate: false,
+          isPrivate: resolvedAccess !== "workspace",
           access: resolvedAccess,
         });
         if (res.success && res.data) {

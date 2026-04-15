@@ -4,38 +4,38 @@
  * Manages expanded/collapsed state for all explorer panels:
  * - Database explorer (servers, databases, collections, views, nodes)
  * - Console explorer (folders)
+ * - Dashboard explorer (folders)
  * - View explorer (collections)
  *
- * Uses Set<string> internally for O(1) lookups, serializes to arrays for persistence.
+ * Uses Record<string, true> for O(1) lookups.
+ * Previous versions used Set<string> which is unreliable inside immer drafts.
  */
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 
+type ExpandedMap = Record<string, true>;
+
 interface ExplorerState {
-  // Database explorer
   database: {
-    expandedServers: Set<string>;
-    expandedDatabases: Set<string>;
-    expandedCollectionGroups: Set<string>;
-    expandedViewGroups: Set<string>;
-    expandedNodes: Set<string>;
+    expandedServers: ExpandedMap;
+    expandedDatabases: ExpandedMap;
+    expandedCollectionGroups: ExpandedMap;
+    expandedViewGroups: ExpandedMap;
+    expandedNodes: ExpandedMap;
   };
 
-  // Console explorer
   console: {
-    expandedFolders: Set<string>;
+    expandedFolders: ExpandedMap;
   };
 
-  // Dashboard explorer
   dashboard: {
-    expandedFolders: Set<string>;
+    expandedFolders: ExpandedMap;
   };
 
-  // View explorer
   view: {
-    expandedCollections: Set<string>;
+    expandedCollections: ExpandedMap;
   };
 }
 
@@ -49,7 +49,6 @@ interface ExplorerActions {
   expandServer: (serverId: string) => void;
   expandDatabase: (databaseId: string) => void;
 
-  // Helper methods for database explorer
   isServerExpanded: (serverId: string) => boolean;
   isDatabaseExpanded: (databaseId: string) => boolean;
   isCollectionGroupExpanded: (databaseId: string) => boolean;
@@ -57,14 +56,14 @@ interface ExplorerActions {
   isNodeExpanded: (nodeId: string) => boolean;
 
   // Console explorer
-  toggleFolder: (folderPath: string) => void;
-  expandFolder: (folderPath: string) => void;
-  isFolderExpanded: (folderPath: string) => boolean;
+  toggleFolder: (folderKey: string) => void;
+  expandFolder: (folderKey: string) => void;
+  isFolderExpanded: (folderKey: string) => boolean;
 
   // Dashboard explorer
-  toggleDashboardFolder: (folderPath: string) => void;
-  expandDashboardFolder: (folderPath: string) => void;
-  isDashboardFolderExpanded: (folderPath: string) => boolean;
+  toggleDashboardFolder: (folderKey: string) => void;
+  expandDashboardFolder: (folderKey: string) => void;
+  isDashboardFolderExpanded: (folderKey: string) => boolean;
 
   // View explorer
   toggleCollection: (collectionName: string) => void;
@@ -79,29 +78,28 @@ type ExplorerStore = ExplorerState & ExplorerActions;
 
 const createInitialState = (): ExplorerState => ({
   database: {
-    expandedServers: new Set(),
-    expandedDatabases: new Set(),
-    expandedCollectionGroups: new Set(),
-    expandedViewGroups: new Set(),
-    expandedNodes: new Set(),
+    expandedServers: {},
+    expandedDatabases: {},
+    expandedCollectionGroups: {},
+    expandedViewGroups: {},
+    expandedNodes: {},
   },
   console: {
-    expandedFolders: new Set(),
+    expandedFolders: {},
   },
   dashboard: {
-    expandedFolders: new Set(),
+    expandedFolders: {},
   },
   view: {
-    expandedCollections: new Set(),
+    expandedCollections: {},
   },
 });
 
-// Helper to toggle a value in a Set
-const toggleInSet = (set: Set<string>, value: string): void => {
-  if (set.has(value)) {
-    set.delete(value);
+const toggleKey = (map: ExpandedMap, key: string): void => {
+  if (map[key]) {
+    delete map[key];
   } else {
-    set.add(value);
+    map[key] = true;
   }
 };
 
@@ -110,184 +108,149 @@ export const useExplorerStore = create<ExplorerStore>()(
     immer((set, get) => ({
       ...createInitialState(),
 
-      // Database explorer actions
       toggleServer: serverId =>
         set(state => {
-          toggleInSet(state.database.expandedServers, serverId);
+          toggleKey(state.database.expandedServers, serverId);
         }),
 
       toggleDatabase: databaseId =>
         set(state => {
-          toggleInSet(state.database.expandedDatabases, databaseId);
+          toggleKey(state.database.expandedDatabases, databaseId);
         }),
 
       toggleCollectionGroup: databaseId =>
         set(state => {
-          toggleInSet(state.database.expandedCollectionGroups, databaseId);
+          toggleKey(state.database.expandedCollectionGroups, databaseId);
         }),
 
       toggleViewGroup: databaseId =>
         set(state => {
-          toggleInSet(state.database.expandedViewGroups, databaseId);
+          toggleKey(state.database.expandedViewGroups, databaseId);
         }),
 
       toggleNode: nodeId =>
         set(state => {
-          toggleInSet(state.database.expandedNodes, nodeId);
+          toggleKey(state.database.expandedNodes, nodeId);
         }),
 
       expandServer: serverId =>
         set(state => {
-          state.database.expandedServers.add(serverId);
+          state.database.expandedServers[serverId] = true;
         }),
 
       expandDatabase: databaseId =>
         set(state => {
-          state.database.expandedDatabases.add(databaseId);
+          state.database.expandedDatabases[databaseId] = true;
         }),
 
-      // Database explorer helpers
-      isServerExpanded: serverId =>
-        get().database.expandedServers.has(serverId),
+      isServerExpanded: serverId => !!get().database.expandedServers[serverId],
       isDatabaseExpanded: databaseId =>
-        get().database.expandedDatabases.has(databaseId),
+        !!get().database.expandedDatabases[databaseId],
       isCollectionGroupExpanded: databaseId =>
-        get().database.expandedCollectionGroups.has(databaseId),
+        !!get().database.expandedCollectionGroups[databaseId],
       isViewGroupExpanded: databaseId =>
-        get().database.expandedViewGroups.has(databaseId),
-      isNodeExpanded: nodeId => get().database.expandedNodes.has(nodeId),
+        !!get().database.expandedViewGroups[databaseId],
+      isNodeExpanded: nodeId => !!get().database.expandedNodes[nodeId],
 
-      // Console explorer actions
-      toggleFolder: folderPath =>
+      toggleFolder: folderKey =>
         set(state => {
-          toggleInSet(state.console.expandedFolders, folderPath);
+          toggleKey(state.console.expandedFolders, folderKey);
         }),
 
-      expandFolder: folderPath =>
+      expandFolder: folderKey =>
         set(state => {
-          state.console.expandedFolders.add(folderPath);
+          state.console.expandedFolders[folderKey] = true;
         }),
 
-      isFolderExpanded: folderPath =>
-        get().console.expandedFolders.has(folderPath),
+      isFolderExpanded: folderKey => !!get().console.expandedFolders[folderKey],
 
-      // Dashboard explorer actions
-      toggleDashboardFolder: folderPath =>
+      toggleDashboardFolder: folderKey =>
         set(state => {
-          toggleInSet(state.dashboard.expandedFolders, folderPath);
+          toggleKey(state.dashboard.expandedFolders, folderKey);
         }),
 
-      expandDashboardFolder: folderPath =>
+      expandDashboardFolder: folderKey =>
         set(state => {
-          state.dashboard.expandedFolders.add(folderPath);
+          state.dashboard.expandedFolders[folderKey] = true;
         }),
 
-      isDashboardFolderExpanded: folderPath =>
-        get().dashboard.expandedFolders.has(folderPath),
+      isDashboardFolderExpanded: folderKey =>
+        !!get().dashboard.expandedFolders[folderKey],
 
-      // View explorer actions
       toggleCollection: collectionName =>
         set(state => {
-          toggleInSet(state.view.expandedCollections, collectionName);
+          toggleKey(state.view.expandedCollections, collectionName);
         }),
 
       expandCollection: collectionName =>
         set(state => {
-          state.view.expandedCollections.add(collectionName);
+          state.view.expandedCollections[collectionName] = true;
         }),
 
       isCollectionExpanded: collectionName =>
-        get().view.expandedCollections.has(collectionName),
+        !!get().view.expandedCollections[collectionName],
 
-      // Reset
       reset: () => set(createInitialState()),
     })),
     {
       name: "explorer-store",
-      // Custom serialization for Sets
       storage: {
         getItem: name => {
           const str = localStorage.getItem(name);
           if (!str) return null;
 
           const data = JSON.parse(str);
-          // Convert arrays back to Sets
-          if (data.state?.database) {
-            data.state.database.expandedServers = new Set(
-              data.state.database.expandedServers || [],
+          const s = data.state;
+
+          // Migrate legacy Set-serialized arrays to Record<string, true>
+          const migrateArray = (arr: unknown): ExpandedMap => {
+            if (Array.isArray(arr)) {
+              const map: ExpandedMap = {};
+              for (const key of arr) {
+                if (typeof key === "string") map[key] = true;
+              }
+              return map;
+            }
+            if (arr && typeof arr === "object" && !Array.isArray(arr)) {
+              return arr as ExpandedMap;
+            }
+            return {};
+          };
+
+          if (s?.database) {
+            s.database.expandedServers = migrateArray(
+              s.database.expandedServers,
             );
-            data.state.database.expandedDatabases = new Set(
-              data.state.database.expandedDatabases || [],
+            s.database.expandedDatabases = migrateArray(
+              s.database.expandedDatabases,
             );
-            data.state.database.expandedCollectionGroups = new Set(
-              data.state.database.expandedCollectionGroups || [],
+            s.database.expandedCollectionGroups = migrateArray(
+              s.database.expandedCollectionGroups,
             );
-            data.state.database.expandedViewGroups = new Set(
-              data.state.database.expandedViewGroups || [],
+            s.database.expandedViewGroups = migrateArray(
+              s.database.expandedViewGroups,
             );
-            data.state.database.expandedNodes = new Set(
-              data.state.database.expandedNodes || [],
-            );
+            s.database.expandedNodes = migrateArray(s.database.expandedNodes);
           }
-          if (data.state?.console) {
-            data.state.console.expandedFolders = new Set(
-              data.state.console.expandedFolders || [],
-            );
+          if (s?.console) {
+            s.console.expandedFolders = migrateArray(s.console.expandedFolders);
           }
-          if (data.state?.dashboard) {
-            data.state.dashboard.expandedFolders = new Set(
-              data.state.dashboard.expandedFolders || [],
+          if (s?.dashboard) {
+            s.dashboard.expandedFolders = migrateArray(
+              s.dashboard.expandedFolders,
             );
           } else {
-            data.state.dashboard = { expandedFolders: new Set() };
+            s.dashboard = { expandedFolders: {} };
           }
-          if (data.state?.view) {
-            data.state.view.expandedCollections = new Set(
-              data.state.view.expandedCollections || [],
+          if (s?.view) {
+            s.view.expandedCollections = migrateArray(
+              s.view.expandedCollections,
             );
           }
           return data;
         },
         setItem: (name, value) => {
-          // Convert Sets to arrays for JSON serialization
-          const serialized = {
-            ...value,
-            state: {
-              database: {
-                expandedServers: Array.from(
-                  value.state.database.expandedServers || [],
-                ),
-                expandedDatabases: Array.from(
-                  value.state.database.expandedDatabases || [],
-                ),
-                expandedCollectionGroups: Array.from(
-                  value.state.database.expandedCollectionGroups || [],
-                ),
-                expandedViewGroups: Array.from(
-                  value.state.database.expandedViewGroups || [],
-                ),
-                expandedNodes: Array.from(
-                  value.state.database.expandedNodes || [],
-                ),
-              },
-              console: {
-                expandedFolders: Array.from(
-                  value.state.console.expandedFolders || [],
-                ),
-              },
-              dashboard: {
-                expandedFolders: Array.from(
-                  value.state.dashboard?.expandedFolders || [],
-                ),
-              },
-              view: {
-                expandedCollections: Array.from(
-                  value.state.view.expandedCollections || [],
-                ),
-              },
-            },
-          };
-          localStorage.setItem(name, JSON.stringify(serialized));
+          localStorage.setItem(name, JSON.stringify(value));
         },
         removeItem: name => {
           localStorage.removeItem(name);
@@ -302,14 +265,12 @@ export const useDatabaseExplorerStore = () => {
   const store = useExplorerStore();
 
   return {
-    // Expose Sets directly for components expecting the old interface
     expandedServers: store.database.expandedServers,
     expandedDatabases: store.database.expandedDatabases,
     expandedCollectionGroups: store.database.expandedCollectionGroups,
     expandedViewGroups: store.database.expandedViewGroups,
     expandedNodes: store.database.expandedNodes,
 
-    // Actions
     toggleServer: store.toggleServer,
     toggleDatabase: store.toggleDatabase,
     toggleCollectionGroup: store.toggleCollectionGroup,
@@ -318,7 +279,6 @@ export const useDatabaseExplorerStore = () => {
     expandServer: store.expandServer,
     expandDatabase: store.expandDatabase,
 
-    // Helpers
     isServerExpanded: store.isServerExpanded,
     isDatabaseExpanded: store.isDatabaseExpanded,
     isCollectionGroupExpanded: store.isCollectionGroupExpanded,

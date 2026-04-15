@@ -26,6 +26,14 @@ interface FieldSchema {
   placeholder?: string;
   rows?: number;
   options?: Array<{ label: string; value: any }>;
+  /** Dot-path for nested fields (e.g. "sshTunnel.host" → stored as connection.sshTunnel.host) */
+  path?: string;
+  /** If true, rendered in a collapsible advanced section */
+  advanced?: boolean;
+  /** Group label for advanced sections (e.g. "SSH Tunnel") */
+  group?: string;
+  /** Show this field only when another field matches a value */
+  visibleWhen?: { field: string; equals: unknown };
 }
 
 interface DatabaseSchemaResponse {
@@ -386,6 +394,97 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         required: false,
       },
       { name: "ssl", label: "Use SSL/TLS", type: "boolean", default: false },
+      // SSH Tunnel (advanced)
+      {
+        name: "sshTunnel.enabled",
+        path: "sshTunnel.enabled",
+        label: "Connect via SSH Tunnel",
+        type: "boolean",
+        default: false,
+        advanced: true,
+        group: "SSH Tunnel",
+        helperText: "Route the MySQL connection through an SSH bastion host",
+      },
+      {
+        name: "sshTunnel.host",
+        path: "sshTunnel.host",
+        label: "SSH Host",
+        type: "string",
+        required: false,
+        placeholder: "bastion.example.com",
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.enabled", equals: true },
+      },
+      {
+        name: "sshTunnel.port",
+        path: "sshTunnel.port",
+        label: "SSH Port",
+        type: "number",
+        required: false,
+        default: 22,
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.enabled", equals: true },
+      },
+      {
+        name: "sshTunnel.username",
+        path: "sshTunnel.username",
+        label: "SSH Username",
+        type: "string",
+        required: false,
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.enabled", equals: true },
+      },
+      {
+        name: "sshTunnel.authMethod",
+        path: "sshTunnel.authMethod",
+        label: "SSH Auth Method",
+        type: "select",
+        default: "password",
+        options: [
+          { label: "Password", value: "password" },
+          { label: "Private Key", value: "privateKey" },
+        ],
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.enabled", equals: true },
+      },
+      {
+        name: "sshTunnel.password",
+        path: "sshTunnel.password",
+        label: "SSH Password",
+        type: "password",
+        required: false,
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.authMethod", equals: "password" },
+      },
+      {
+        name: "sshTunnel.privateKey",
+        path: "sshTunnel.privateKey",
+        label: "SSH Private Key",
+        type: "textarea",
+        required: false,
+        rows: 4,
+        placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
+        helperText: "Paste your private key contents (PEM or OpenSSH format)",
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.authMethod", equals: "privateKey" },
+      },
+      {
+        name: "sshTunnel.passphrase",
+        path: "sshTunnel.passphrase",
+        label: "Key Passphrase",
+        type: "password",
+        required: false,
+        helperText: "Leave empty if the key is not passphrase-protected",
+        advanced: true,
+        group: "SSH Tunnel",
+        visibleWhen: { field: "sshTunnel.authMethod", equals: "privateKey" },
+      },
     ],
   },
   sqlite: {

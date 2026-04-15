@@ -9,10 +9,10 @@ class CdcIngestService {
   /**
    * Append normalized CDC events to the event store and update ingest state.
    *
-   * Materialization is NOT triggered inline — the cdcMaterializeSchedulerFunction
-   * cron picks up stale entities every ~30 s by comparing lastIngestSeq vs
-   * lastMaterializedSeq in CdcEntityState. The `enqueue` parameter is retained
-   * for backward compatibility but is a no-op.
+   * The caller (webhookEventProcessCdcFunction) triggers materialization
+   * inline by emitting cdc/materialize events immediately after this call.
+   * The cdcMaterializeSchedulerFunction cron (every 1 min) acts as a safety
+   * net for any entities missed by the inline trigger.
    */
   async appendNormalizedEvents(params: {
     workspaceId: string;
@@ -60,6 +60,12 @@ class CdcIngestService {
       deduped: result.deduped,
       attempted: result.attempted,
       entities: result.entities.map(entity => entity.entity),
+      entityBreakdown: result.entities.map(entity => ({
+        entity: entity.entity,
+        source: entity.source,
+        lastIngestSeq: entity.lastIngestSeq,
+        runId: entity.runId,
+      })),
     });
 
     return result;

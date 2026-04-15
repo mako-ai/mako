@@ -41,6 +41,7 @@ import {
   type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
+import { filterTree } from "../store/lib/tree-helpers";
 import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import FolderInfoModal from "./FolderInfoModal";
@@ -122,22 +123,6 @@ function ConsoleExplorer(
       }
     }
     return ids;
-  };
-
-  const filterTree = (nodes: ConsoleEntry[], query: string): ConsoleEntry[] => {
-    const lower = query.toLowerCase();
-    const result: ConsoleEntry[] = [];
-    for (const node of nodes) {
-      if (node.isDirectory && node.children) {
-        const filteredChildren = filterTree(node.children, query);
-        if (filteredChildren.length > 0) {
-          result.push({ ...node, children: filteredChildren });
-        }
-      } else if (node.name.toLowerCase().includes(lower)) {
-        result.push(node);
-      }
-    }
-    return result;
   };
 
   const filteredMyConsoles =

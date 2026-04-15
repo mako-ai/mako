@@ -1,0 +1,117 @@
+---
+title: "Understanding Window Functions in PostgreSQL"
+description: "Master PostgreSQL window functions like ROW_NUMBER(), RANK(), and LAG() to perform advanced analytics and row-level calculations."
+database: "postgresql"
+category: "how-to"
+tags: ["postgresql", "sql", "analytics", "window-functions"]
+date: "2026-04-15"
+---
+
+Window functions in PostgreSQL allow you to perform calculations across a set of rows that are related to the current row. Unlike standard aggregate functions, which group rows into a single output row, window functions return a value for every single row in your result set.
+
+This makes them essential for tasks like ranking, calculating running totals, or comparing a current row's value to a previous one.
+
+## The Core Syntax: The OVER Clause
+
+The defining characteristic of a window function is the `OVER` clause. This clause tells PostgreSQL how to group and order the rows within the "window."
+
+```sql
+SELECT 
+  column_name,
+  WINDOW_FUNCTION() OVER (
+    PARTITION BY grouping_column
+    ORDER BY sorting_column
+  ) as alias_name
+FROM table_name;
+```
+
+- **`PARTITION BY`** (Optional): Divides the rows into groups (partitions). The function is applied to each group separately.
+- **`ORDER BY`** (Optional but common): Defines the logical order of rows within each partition.
+
+## Essential Window Functions
+
+### 1. Ranking Functions
+
+These functions assign a numeric rank to each row within a partition.
+
+#### `ROW_NUMBER()`
+Assigns a unique, sequential integer to each row.
+
+```sql
+-- Assign a unique ID to employees within each department
+SELECT 
+  employee_name, 
+  department, 
+  salary,
+  ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as rank_id
+FROM employees;
+```
+
+#### `RANK()` vs `DENSE_RANK()`
+Both assign ranks based on values, but they handle ties differently.
+- `RANK()`: If two rows tie for 1st, the next row is 3rd (it leaves a gap).
+- `DENSE_RANK()`: If two rows tie for 1st, the next row is 2nd (no gaps).
+
+```sql
+SELECT 
+  product_name, 
+  category, 
+  price,
+  RANK() OVER (PARTITION BY category ORDER BY price DESC) as rank_gap,
+  DENSE_RANK() OVER (PARTITION BY category ORDER BY price DESC) as rank_dense
+FROM products;
+```
+
+### 2. Value (Offset) Functions
+
+These allow you to peek at other rows without using a self-join.
+
+#### `LAG()` and `LEAD()`
+- `LAG()`: Accesses data from a previous row.
+- `LEAD()`: Accesses data from a subsequent row.
+
+```sql
+-- Compare current month sales to previous month
+SELECT 
+  sale_month, 
+  total_sales,
+  LAG(total_sales) OVER (ORDER BY sale_month) as previous_month_sales,
+  total_sales - LAG(total_sales) OVER (ORDER BY sale_month) as monthly_growth
+FROM monthly_sales;
+```
+
+### 3. Aggregate Window Functions
+
+You can use standard aggregates like `SUM()`, `AVG()`, and `COUNT()` as window functions to create running totals or moving averages.
+
+```sql
+-- Calculate a running total of revenue
+SELECT 
+  order_date, 
+  amount,
+  SUM(amount) OVER (ORDER BY order_date) as running_total
+FROM orders;
+```
+
+## Common Pitfalls & Gotchas
+
+### The Importance of ORDER BY in Running Totals
+If you use `SUM(amount) OVER (PARTITION BY user_id)` without an `ORDER BY`, PostgreSQL will sum the entire partition and return that total for every row. To get a true running total, you **must** include `ORDER BY`.
+
+### Performance Impact
+Window functions require sorting or hashing the data to define the partitions and order. On very large datasets, complex window functions can be resource-intensive. Ensure you have appropriate indexes on the columns used in `PARTITION BY` and `ORDER BY` to assist the planner.
+
+## Summary Table
+
+| Function | Type | Use Case |
+| :--- | :--- | :--- |
+| `ROW_NUMBER()` | Ranking | Unique row identification within a group. |
+| `RANK()` | Ranking | Ranking with gaps for ties. |
+| `DENSE_RANK()` | Ranking | Ranking without gaps for ties. |
+| `LAG()` | Value | Accessing previous row data (e.g., MoM growth). |
+| `LEAD()` | Value | Accessing next row data. |
+| `SUM() OVER (...)` | Aggregate | Calculating running totals. |
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

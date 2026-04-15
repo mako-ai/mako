@@ -44,15 +44,19 @@ import {
   Copy,
   Check,
   History,
+  ImagePlus,
   Plus,
   MessageSquare,
   Trash2,
+  X,
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
+import { useStickToBottom } from "use-stick-to-bottom";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
+  type FileUIPart,
 } from "ai";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -67,6 +71,10 @@ import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
+import {
+  chatMessageRowArePropsEqual,
+  type ChatMessageRowProps,
+} from "./chat-message-comparator";
 import {
   buildChatRequestBody,
   type ActiveConsoleResultsContext,
@@ -441,25 +449,23 @@ StreamingIndicator.displayName = "StreamingIndicator";
 
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
-interface ChatMessageRowProps {
-  message: { id: string; role: string; parts?: Array<Record<string, unknown>> };
-  isLastMessage: boolean;
-  isStreaming: boolean;
-  onToolClick: (tool: ToolInvocationInfo) => void;
-}
 
-const userMessageSx = { flex: 1, mt: 2 } as const;
+const userMessageSx = { flex: 1, mt: 2, minWidth: 0 } as const;
 const userMessagePaperSx = {
   p: 1,
   borderRadius: 1,
   backgroundColor: "background.paper",
   overflow: "hidden",
 } as const;
-const userMessageBoxSx = { overflow: "auto", maxWidth: "100%" } as const;
-const userMessageTextSx = {
-  whiteSpace: "pre-wrap",
-  wordBreak: "break-word",
-  overflowWrap: "break-word",
+const userMessageBoxSx = {
+  maxWidth: "100%",
+  "& .MuiListItemText-primary": {
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    overflowWrap: "break-word",
+    overflow: "visible",
+    textOverflow: "unset",
+  },
 } as const;
 const assistantMessageSx = {
   flex: 1,
@@ -510,168 +516,270 @@ function computeReasoningGroups(parts: Array<Record<string, unknown>>) {
   return groups;
 }
 
-const ChatMessageRow = React.memo(
-  function ChatMessageRow({
-    message,
-    isLastMessage,
-    isStreaming,
-    onToolClick,
-  }: ChatMessageRowProps) {
-    if (message.role === "user") {
-      return (
-        <ListItem alignItems="flex-start" sx={listItemSx}>
-          <Box sx={userMessageSx}>
-            <Paper variant="outlined" sx={userMessagePaperSx}>
-              <Box sx={userMessageBoxSx}>
-                <ListItemText
-                  primary={
-                    (message.parts || [])
-                      .filter(
-                        (p): p is { type: "text"; text: string } =>
-                          p.type === "text" && "text" in p,
-                      )
-                      .map(p => p.text)
-                      .join("") || ""
-                  }
-                  primaryTypographyProps={{
-                    variant: "body2",
-                    color: "text.primary",
-                    sx: userMessageTextSx,
-                  }}
-                />
-              </Box>
-            </Paper>
-          </Box>
-        </ListItem>
-      );
-    }
-
-    const parts = (message.parts || []) as Array<Record<string, unknown>>;
-    const isStreamingNow = isStreaming;
-
-    const reasoningGroups = computeReasoningGroups(parts);
-
-    const lastPart = parts.at(-1);
-    const isLastPartReasoning =
-      isLastMessage && isStreamingNow && lastPart?.type === "reasoning";
-
-    let lastGroupStart = -1;
-    for (const [start] of reasoningGroups) {
-      if (start > lastGroupStart) lastGroupStart = start;
-    }
+const ChatMessageRow = React.memo(function ChatMessageRow({
+  message,
+  isLastMessage,
+  isStreaming,
+  onToolClick,
+}: ChatMessageRowProps) {
+  if (message.role === "user") {
+    const fileParts = (message.parts || []).filter(
+      (p): p is { type: "file"; url: string; mediaType: string } =>
+        p.type === "file" && "url" in p,
+    );
+    const textContent =
+      (message.parts || [])
+        .filter(
+          (p): p is { type: "text"; text: string } =>
+            p.type === "text" && "text" in p,
+        )
+        .map(p => p.text)
+        .join("") || "";
 
     return (
       <ListItem alignItems="flex-start" sx={listItemSx}>
-        <Box sx={assistantMessageSx}>
-          {parts.map((part, partIndex) => {
-            const partType = part.type as string;
-
-            if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
-              const toolName =
-                partType === "dynamic-tool"
-                  ? (part.toolName as string)
-                  : partType.split("-").slice(1).join("-");
-              return (
-                <StreamingToolCard
-                  key={partIndex}
-                  toolName={toolName}
-                  state={part.state as ToolPartState}
-                  input={part.input}
-                  output={part.output}
-                  onDetailClick={() =>
-                    onToolClick({
-                      toolCallId: (part.toolCallId as string) || "",
-                      toolName: toolName || "",
-                      state: part.state as ToolInvocationInfo["state"],
-                      input: part.input,
-                      output: part.output,
-                    })
-                  }
+        <Box sx={userMessageSx}>
+          <Paper variant="outlined" sx={userMessagePaperSx}>
+            {fileParts.length > 0 && (
+              <Box
+                sx={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 1,
+                  mb: textContent ? 1 : 0,
+                }}
+              >
+                {fileParts.map((fp, i) => (
+                  <Box
+                    key={i}
+                    component="img"
+                    src={fp.url}
+                    alt="Attached image"
+                    sx={{
+                      maxWidth: 200,
+                      maxHeight: 200,
+                      borderRadius: 1,
+                      objectFit: "contain",
+                    }}
+                  />
+                ))}
+              </Box>
+            )}
+            {textContent && (
+              <Box sx={userMessageBoxSx}>
+                <ListItemText
+                  primary={textContent}
+                  primaryTypographyProps={{
+                    variant: "body2",
+                    color: "text.primary",
+                  }}
                 />
-              );
-            }
-
-            if (partType === "reasoning") {
-              const group = reasoningGroups.get(partIndex);
-              if (!group) return null;
-              const isGroupStreaming =
-                isLastPartReasoning && partIndex === lastGroupStart;
-              return (
-                <ReasoningDisplay
-                  key={`reasoning-${partIndex}`}
-                  reasoningText={group.text}
-                  isStreaming={isGroupStreaming}
-                />
-              );
-            }
-
-            if (partType === "text" && (part as { text?: string }).text) {
-              return (
-                <StreamingMarkdown key={partIndex}>
-                  {(part as { text: string }).text}
-                </StreamingMarkdown>
-              );
-            }
-
-            return null;
-          })}
-          {isStreaming && isLastMessage && <StreamingIndicator />}
+              </Box>
+            )}
+          </Paper>
         </Box>
       </ListItem>
     );
-  },
-  (prev, next) => {
-    if (prev.isLastMessage !== next.isLastMessage) return false;
-    if (prev.isStreaming !== next.isStreaming) return false;
-    if (prev.message === next.message) return true;
+  }
 
-    const prevParts = prev.message.parts || [];
-    const nextParts = next.message.parts || [];
-    if (prevParts.length !== nextParts.length) return false;
+  const parts = (message.parts || []) as Array<Record<string, unknown>>;
+  const isStreamingNow = isStreaming;
 
-    for (let i = 0; i < nextParts.length; i++) {
-      const pp = prevParts[i];
-      const np = nextParts[i];
-      if (pp.type !== np.type) return false;
-      if (pp.state !== np.state) return false;
-      // Actively streaming parts have changing content — must re-render
-      if (np.state === "input-streaming" || np.state === "output-streaming") {
-        return false;
-      }
-      if (
-        (pp.type === "text" || pp.type === "reasoning") &&
-        (pp as { text?: string }).text?.length !==
-          (np as { text?: string }).text?.length
-      ) {
-        return false;
-      }
-    }
+  const reasoningGroups = computeReasoningGroups(parts);
 
-    return true;
-  },
-);
+  const lastPart = parts.at(-1);
+  const isLastPartReasoning =
+    isLastMessage && isStreamingNow && lastPart?.type === "reasoning";
+
+  let lastGroupStart = -1;
+  for (const [start] of reasoningGroups) {
+    if (start > lastGroupStart) lastGroupStart = start;
+  }
+
+  return (
+    <ListItem alignItems="flex-start" sx={listItemSx}>
+      <Box sx={assistantMessageSx}>
+        {parts.map((part, partIndex) => {
+          const partType = part.type as string;
+
+          if (partType?.startsWith("tool-") || partType === "dynamic-tool") {
+            const toolName =
+              partType === "dynamic-tool"
+                ? (part.toolName as string)
+                : partType.split("-").slice(1).join("-");
+            return (
+              <StreamingToolCard
+                key={partIndex}
+                toolName={toolName}
+                state={part.state as ToolPartState}
+                input={part.input}
+                output={part.output}
+                onDetailClick={() =>
+                  onToolClick({
+                    toolCallId: (part.toolCallId as string) || "",
+                    toolName: toolName || "",
+                    state: part.state as ToolInvocationInfo["state"],
+                    input: part.input,
+                    output: part.output,
+                  })
+                }
+              />
+            );
+          }
+
+          if (partType === "reasoning") {
+            const group = reasoningGroups.get(partIndex);
+            if (!group) return null;
+            const isGroupStreaming =
+              isLastPartReasoning && partIndex === lastGroupStart;
+            return (
+              <ReasoningDisplay
+                key={`reasoning-${partIndex}`}
+                reasoningText={group.text}
+                isStreaming={isGroupStreaming}
+              />
+            );
+          }
+
+          if (partType === "text" && (part as { text?: string }).text) {
+            return (
+              <StreamingMarkdown key={partIndex}>
+                {(part as { text: string }).text}
+              </StreamingMarkdown>
+            );
+          }
+
+          return null;
+        })}
+        {isStreaming && isLastMessage && <StreamingIndicator />}
+      </Box>
+    </ListItem>
+  );
+}, chatMessageRowArePropsEqual);
 
 ChatMessageRow.displayName = "ChatMessageRow";
 
 // Isolated input component — owns its own `input` state so keystrokes
 // never re-render the (expensive) message list above it.
+
+interface ImageAttachment {
+  id: string;
+  file: File;
+  previewUrl: string;
+}
+
 interface ChatInputAreaProps {
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, files?: FileUIPart[]) => void;
   onStop: () => void;
   isLoading: boolean;
   disabled: boolean;
   focusKey: string | number;
 }
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 const ChatInputArea = React.memo(
   ({ onSubmit, onStop, isLoading, disabled, focusKey }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
+    const [images, setImages] = useState<ImageAttachment[]>([]);
+    const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const imagesRef = useRef<ImageAttachment[]>([]);
+    imagesRef.current = images;
 
     useEffect(() => {
       const timer = setTimeout(() => inputRef.current?.focus(), 100);
       return () => clearTimeout(timer);
     }, [focusKey]);
+
+    useEffect(() => {
+      return () => {
+        imagesRef.current.forEach(img => URL.revokeObjectURL(img.previewUrl));
+      };
+    }, []);
+
+    const addImages = useCallback((files: File[]) => {
+      const imageFiles = files.filter(f => f.type.startsWith("image/"));
+      if (imageFiles.length === 0) return;
+      setImages(prev => [
+        ...prev,
+        ...imageFiles.map(file => ({
+          id: crypto.randomUUID(),
+          file,
+          previewUrl: URL.createObjectURL(file),
+        })),
+      ]);
+    }, []);
+
+    const removeImage = useCallback((id: string) => {
+      setImages(prev => {
+        const img = prev.find(i => i.id === id);
+        if (img) URL.revokeObjectURL(img.previewUrl);
+        return prev.filter(i => i.id !== id);
+      });
+    }, []);
+
+    const handlePaste = useCallback(
+      (e: React.ClipboardEvent) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        const files: File[] = [];
+        for (const item of items) {
+          if (item.kind === "file" && item.type.startsWith("image/")) {
+            const file = item.getAsFile();
+            if (file) files.push(file);
+          }
+        }
+        if (files.length > 0) {
+          e.preventDefault();
+          addImages(files);
+        }
+      },
+      [addImages],
+    );
+
+    const submitMessage = useCallback(async () => {
+      const trimmedInput = input.trim();
+      const currentImages = images;
+      const hasText = trimmedInput.length > 0;
+      const hasImages = currentImages.length > 0;
+      if ((!hasText && !hasImages) || isLoading || isPreparingSubmission) {
+        return;
+      }
+
+      setIsPreparingSubmission(true);
+      let fileParts: FileUIPart[] | undefined;
+      try {
+        if (hasImages) {
+          fileParts = await Promise.all(
+            currentImages.map(async img => ({
+              type: "file" as const,
+              url: await readFileAsDataUrl(img.file),
+              mediaType: img.file.type,
+            })),
+          );
+          currentImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
+        }
+
+        onSubmit(input, fileParts);
+        setInput("");
+        setImages([]);
+      } finally {
+        setIsPreparingSubmission(false);
+      }
+    }, [images, input, isLoading, isPreparingSubmission, onSubmit]);
+
+    const hasContent = input.trim() || images.length > 0;
+    const isSubmitDisabled =
+      !hasContent || disabled || isLoading || isPreparingSubmission;
 
     return (
       <Paper
@@ -690,12 +798,78 @@ const ChatInputArea = React.memo(
         <form
           onSubmit={e => {
             e.preventDefault();
-            if (input.trim() && !isLoading) {
-              onSubmit(input);
-              setInput("");
-            }
+            submitMessage();
           }}
+          onPaste={handlePaste}
         >
+          {images.length > 0 && (
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 1,
+                px: 0.5,
+                pt: 0.5,
+              }}
+            >
+              {images.map(img => (
+                <Box
+                  key={img.id}
+                  sx={{
+                    position: "relative",
+                    width: 56,
+                    height: 56,
+                    borderRadius: 1.5,
+                    overflow: "visible",
+                    flexShrink: 0,
+                    "&:hover .remove-btn": {
+                      opacity: 1,
+                    },
+                  }}
+                >
+                  <Box
+                    component="img"
+                    src={img.previewUrl}
+                    alt="Attachment"
+                    sx={{
+                      width: 56,
+                      height: 56,
+                      borderRadius: 1.5,
+                      objectFit: "cover",
+                      border: 1,
+                      borderColor: "divider",
+                    }}
+                  />
+                  <IconButton
+                    type="button"
+                    className="remove-btn"
+                    onClick={() => removeImage(img.id)}
+                    size="small"
+                    disabled={isPreparingSubmission}
+                    sx={{
+                      position: "absolute",
+                      top: -6,
+                      right: -6,
+                      width: 18,
+                      height: 18,
+                      p: 0,
+                      opacity: 0,
+                      transition: "opacity 0.15s",
+                      backgroundColor: "background.paper",
+                      border: 1,
+                      borderColor: "divider",
+                      "&:hover": {
+                        backgroundColor: "action.hover",
+                      },
+                    }}
+                  >
+                    <X size={10} />
+                  </IconButton>
+                </Box>
+              ))}
+            </Box>
+          )}
+
           <TextField
             fullWidth
             autoFocus
@@ -708,10 +882,12 @@ const ChatInputArea = React.memo(
             onKeyDown={e => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (input.trim() && !isLoading) {
-                  onSubmit(input);
-                  setInput("");
-                }
+                submitMessage();
+              }
+              if (e.key === "Backspace" && !input && images.length > 0) {
+                e.preventDefault();
+                const last = images[images.length - 1];
+                if (last) removeImage(last.id);
               }
             }}
             variant="outlined"
@@ -741,19 +917,61 @@ const ChatInputArea = React.memo(
             }}
           />
 
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: "none" }}
+            onChange={e => {
+              if (e.target.files) {
+                addImages(Array.from(e.target.files));
+                e.target.value = "";
+              }
+            }}
+          />
+
           <Box
             sx={{
               display: "flex",
-              justifyContent: "space-between",
               alignItems: "center",
+              gap: 0.5,
+              minWidth: 0,
             }}
           >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.5,
+                flex: "1 1 auto",
+                minWidth: 0,
+              }}
+            >
               <ModelSelector />
             </Box>
 
+            <Tooltip title="Attach image" placement="top">
+              <IconButton
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                size="small"
+                disabled={isPreparingSubmission || disabled || isLoading}
+                sx={{
+                  width: 28,
+                  height: 28,
+                  flexShrink: 0,
+                  color: "text.secondary",
+                  "&:hover": { color: "text.primary" },
+                }}
+              >
+                <ImagePlus size={16} />
+              </IconButton>
+            </Tooltip>
+
             {isLoading ? (
               <IconButton
+                type="button"
                 onClick={onStop}
                 size="small"
                 sx={{
@@ -766,6 +984,7 @@ const ChatInputArea = React.memo(
                   "&:hover": {
                     backgroundColor: "action.selected",
                   },
+                  flexShrink: 0,
                 }}
               >
                 <Box
@@ -780,30 +999,28 @@ const ChatInputArea = React.memo(
             ) : (
               <IconButton
                 type="submit"
-                disabled={!input.trim() || disabled}
+                disabled={isSubmitDisabled}
                 size="small"
                 sx={{
                   width: 28,
                   height: 28,
                   borderRadius: "50%",
-                  backgroundColor:
-                    input.trim() && !disabled
-                      ? "primary.main"
-                      : "action.disabledBackground",
-                  color:
-                    input.trim() && !disabled
-                      ? "primary.contrastText"
-                      : "text.disabled",
+                  backgroundColor: !isSubmitDisabled
+                    ? "primary.main"
+                    : "action.disabledBackground",
+                  color: !isSubmitDisabled
+                    ? "primary.contrastText"
+                    : "text.disabled",
                   "&:hover": {
-                    backgroundColor:
-                      input.trim() && !disabled
-                        ? "primary.dark"
-                        : "action.disabledBackground",
+                    backgroundColor: !isSubmitDisabled
+                      ? "primary.dark"
+                      : "action.disabledBackground",
                   },
                   "&.Mui-disabled": {
                     backgroundColor: "action.disabledBackground",
                     color: "text.disabled",
                   },
+                  flexShrink: 0,
                 }}
               >
                 <ArrowUp size={18} />
@@ -861,17 +1078,20 @@ const Chat: React.FC<ChatProps> = ({
 }) => {
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
-  const tabs = useConsoleStore(state => state.tabs);
   const activeTabId = useConsoleStore(state => state.activeTabId);
-  const consoleTabs = useMemo(() => Object.values(tabs), [tabs]);
+  // Narrow selector: only re-render when the active tab's kind changes,
+  // not when unrelated tabs are mutated (e.g. query results arriving).
+  const activeTabKind = useConsoleStore(state => {
+    const tab = state.tabs[state.activeTabId || ""];
+    return tab?.kind;
+  });
   const activeConsoleId = activeTabId;
 
-  const activeTab = tabs[activeTabId || ""];
   const activeView =
-    activeTab?.kind === "dashboard" ||
-    activeTab?.kind === "flow-editor" ||
-    activeTab?.kind === "console"
-      ? activeTab.kind
+    activeTabKind === "dashboard" ||
+    activeTabKind === "flow-editor" ||
+    activeTabKind === "console"
+      ? activeTabKind
       : "empty";
 
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
@@ -897,6 +1117,12 @@ const Chat: React.FC<ChatProps> = ({
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const {
+    scrollRef: scrollContainerRef,
+    contentRef: scrollContentRef,
+    isAtBottom,
+    scrollToBottom,
+  } = useStickToBottom();
 
   // Track if we're viewing an existing chat from history (vs a new chat)
   // Moved before useChat so onFinish callback can access it
@@ -943,15 +1169,6 @@ const Chat: React.FC<ChatProps> = ({
     string | null
   >(null);
 
-  // Filter to only real console tabs (used for capturedConsoleTitle)
-  const realConsoleTabs = useMemo(
-    () =>
-      (consoleTabs || []).filter(
-        t => t?.kind === undefined || t?.kind === "console",
-      ),
-    [consoleTabs],
-  );
-
   // Ref to get current activeConsoleId at request time (avoids stale closure)
   const activeConsoleIdRef = useRef(activeConsoleId);
   activeConsoleIdRef.current = activeConsoleId;
@@ -975,8 +1192,16 @@ const Chat: React.FC<ChatProps> = ({
     return lastAssistantMessageIsCompleteWithToolCalls(options);
   }, []);
 
-  // Create transport with prepareSendMessagesRequest for dynamic body values
-  // prepareSendMessagesRequest REPLACES the body (doesn't merge), so we must include all fields
+  // Refs so the transport closure always reads fresh values without
+  // needing to be recreated (which would reset the useChat hook).
+  const activeViewRef = useRef(activeView);
+  activeViewRef.current = activeView;
+  const workspaceConnectionsRef = useRef(workspaceConnections);
+  workspaceConnectionsRef.current = workspaceConnections;
+
+  // Create transport once — prepareSendMessagesRequest reads all dynamic
+  // values from getState() / refs at request time, so the transport identity
+  // is stable for the lifetime of the component.
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
@@ -986,6 +1211,13 @@ const Chat: React.FC<ChatProps> = ({
           const store = useConsoleStore.getState();
           const tabs = Object.values(store.tabs) as ConsoleTab[];
           const activeTab = tabs.find(t => t.id === store.activeTabId);
+
+          const computedActiveView =
+            activeTab?.kind === "dashboard" ||
+            activeTab?.kind === "flow-editor" ||
+            activeTab?.kind === "console"
+              ? activeTab.kind
+              : "empty";
 
           const flowFormState = dbFlowFormRefCurrent.current?.current
             ? dbFlowFormRefCurrent.current.current.getFormState()
@@ -1015,18 +1247,18 @@ const Chat: React.FC<ChatProps> = ({
                 tabs,
                 activeTabId: store.activeTabId,
                 activeTab,
-                activeView,
+                activeView: computedActiveView,
                 activeConsoleId: activeConsoleIdRef.current,
                 activeConsoleResults,
                 flowFormState,
-                workspaceConnections,
+                workspaceConnections: workspaceConnectionsRef.current,
                 pinnedDashboardId: capturedDashboardIdRef.current,
               }),
             ) as Record<string, unknown>,
           };
         },
       }),
-    [activeView, resultsContextRef, workspaceConnections], // Request body uses live refs plus current screen context
+    [resultsContextRef],
   );
 
   // Note: We use useConsoleStore.getState() inside callbacks to avoid stale closure issues
@@ -1046,6 +1278,7 @@ const Chat: React.FC<ChatProps> = ({
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
     transport,
+    experimental_throttle: 50,
 
     // Automatically submit when all tool results are available
     sendAutomaticallyWhen: autoSendWhenComplete,
@@ -1423,11 +1656,6 @@ const Chat: React.FC<ChatProps> = ({
 
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
   // Session management - fetch available chat sessions for history menu
   useEffect(() => {
     fetchSessionsRef.current?.();
@@ -1638,31 +1866,35 @@ const Chat: React.FC<ChatProps> = ({
     setSelectedTool(null);
   };
 
-  // Stable submit handler — uses refs to avoid stale closures and minimize deps
-  const handleChatSubmit = useCallback(
-    (text: string) => {
-      manualStopRequestedRef.current = false;
-      capturedConsoleIdRef.current = activeConsoleIdRef.current;
-      capturedDashboardIdRef.current =
-        activeTab?.kind === "dashboard"
-          ? ((activeTab.metadata?.dashboardId as string | undefined) ?? null)
-          : null;
-      const store = useConsoleStore.getState();
-      const currentTabs = Object.values(store.tabs);
-      const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
-      setCapturedConsoleTitle(
-        activeConsole?.kind === undefined || activeConsole?.kind === "console"
-          ? activeConsole?.title || null
-          : null,
-      );
-      trackEvent("ai_chat_message_sent", {
-        model: modelIdRef.current,
-        has_context: !!activeConsole?.content,
-      });
-      sendMessage({ text });
-    },
-    [activeTab, sendMessage],
-  );
+  // Stable submit handler — reads store state at call time via getState() and refs
+  // to keep the callback identity stable during streaming.
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+  const handleChatSubmit = useCallback((text: string, files?: FileUIPart[]) => {
+    manualStopRequestedRef.current = false;
+    capturedConsoleIdRef.current = activeConsoleIdRef.current;
+    const store = useConsoleStore.getState();
+    const currentTab = store.tabs[store.activeTabId || ""] as
+      | (ConsoleTab & { metadata?: Record<string, unknown> })
+      | undefined;
+    capturedDashboardIdRef.current =
+      currentTab?.kind === "dashboard"
+        ? ((currentTab.metadata?.dashboardId as string | undefined) ?? null)
+        : null;
+    const currentTabs = Object.values(store.tabs);
+    const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
+    setCapturedConsoleTitle(
+      activeConsole?.kind === undefined || activeConsole?.kind === "console"
+        ? activeConsole?.title || null
+        : null,
+    );
+    trackEvent("ai_chat_message_sent", {
+      model: modelIdRef.current,
+      has_context: !!activeConsole?.content,
+      has_images: (files?.length ?? 0) > 0,
+    });
+    sendMessageRef.current({ text, files });
+  }, []);
 
   // Copy chat history handler
   const [copiedChat, setCopiedChat] = useState(false);
@@ -1886,24 +2118,32 @@ const Chat: React.FC<ChatProps> = ({
                 size="small"
                 onClick={() => {
                   manualStopRequestedRef.current = false;
-                  // Submit the suggestion immediately
-                  capturedConsoleIdRef.current = activeConsoleId;
-                  const activeConsole = realConsoleTabs.find(
-                    tab => tab.id === activeConsoleId,
-                  );
-                  setCapturedConsoleTitle(activeConsole?.title || null);
+                  capturedConsoleIdRef.current = activeConsoleIdRef.current;
+                  const store = useConsoleStore.getState();
+                  const currentTab = store.tabs[store.activeTabId || ""] as
+                    | (ConsoleTab & { metadata?: Record<string, unknown> })
+                    | undefined;
                   capturedDashboardIdRef.current =
-                    activeTab?.kind === "dashboard"
-                      ? ((activeTab.metadata?.dashboardId as
+                    currentTab?.kind === "dashboard"
+                      ? ((currentTab.metadata?.dashboardId as
                           | string
                           | undefined) ?? null)
                       : null;
+                  const currentTabs = Object.values(store.tabs);
+                  const console_ = currentTabs.find(
+                    t => t.id === store.activeTabId,
+                  );
+                  setCapturedConsoleTitle(
+                    console_?.kind === undefined || console_?.kind === "console"
+                      ? console_?.title || null
+                      : null,
+                  );
                   trackEvent("ai_chat_message_sent", {
-                    model: selectedModelId,
+                    model: modelIdRef.current,
                     has_context: false,
                     from_suggestion: true,
                   });
-                  sendMessage({ text: suggestion });
+                  sendMessageRef.current({ text: suggestion });
                 }}
                 sx={{
                   cursor: "pointer",
@@ -1919,19 +2159,52 @@ const Chat: React.FC<ChatProps> = ({
       )}
 
       {/* Messages */}
-      <Box sx={{ flex: messages.length > 0 ? 1 : 0, overflow: "auto", p: 1 }}>
-        <List dense>
-          {messages.map((message, msgIdx) => (
-            <ChatMessageRow
-              key={message.id}
-              message={message}
-              isLastMessage={msgIdx === messages.length - 1}
-              isStreaming={status === "streaming"}
-              onToolClick={handleToolClick}
-            />
-          ))}
-        </List>
-        <div ref={messagesEndRef} />
+      <Box
+        ref={scrollContainerRef}
+        sx={{
+          flex: messages.length > 0 ? 1 : 0,
+          overflow: "auto",
+          p: 1,
+          position: "relative",
+        }}
+      >
+        <div ref={scrollContentRef}>
+          <List dense>
+            {messages.map((message, msgIdx) => (
+              <ChatMessageRow
+                key={message.id}
+                message={message}
+                isLastMessage={msgIdx === messages.length - 1}
+                isStreaming={status === "streaming"}
+                onToolClick={handleToolClick}
+              />
+            ))}
+          </List>
+          <div ref={messagesEndRef} />
+        </div>
+
+        {!isAtBottom && (
+          <IconButton
+            onClick={() => scrollToBottom()}
+            size="small"
+            sx={{
+              position: "sticky",
+              bottom: 8,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 1,
+              backgroundColor: "background.paper",
+              border: 1,
+              borderColor: "divider",
+              boxShadow: 2,
+              "&:hover": { backgroundColor: "action.hover" },
+              width: 32,
+              height: 32,
+            }}
+          >
+            <ChevronDown size={18} />
+          </IconButton>
+        )}
       </Box>
 
       {/* Working on console indicator - shows which console the agent is targeting */}

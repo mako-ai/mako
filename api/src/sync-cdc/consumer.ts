@@ -75,9 +75,28 @@ export class CdcConsumerService {
         tableName,
       },
     });
+    let connectorSchema: ConnectorEntitySchema | null = null;
+    if (flow.dataSourceId) {
+      try {
+        const ds = await databaseDataSourceManager.getDataSource(
+          String(flow.dataSourceId),
+        );
+        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        if (conn) {
+          connectorSchema = await conn.resolveSchema(params.entity);
+        }
+      } catch {
+        log.warn("Schema resolution failed for layout key columns", {
+          entity: params.entity,
+          flowId: params.flowId,
+        });
+      }
+    }
+
     const layout = buildCdcEntityLayout({
       entity: params.entity,
       tableName,
+      keyColumns: connectorSchema?.keyColumns,
       deleteMode: flow.deleteMode,
       partitioning: resolveEntityPartitioning(
         entityLayout,
@@ -105,12 +124,26 @@ export class CdcConsumerService {
     });
 
     if (pending.length === 0) {
+      // Close the sequence gap so the scheduler stops treating this entity
+      // as stale.  This happens when all events after lastMaterializedSeq
+      // have already been applied/failed/dropped by a previous run.
+      const currentIngestSeq = Number(state?.lastIngestSeq || 0);
+      if (currentIngestSeq > afterIngestSeq) {
+        await cdcSyncStateService.advanceConsumerCursor({
+          workspaceId: params.workspaceId,
+          flowId: params.flowId,
+          entity: params.entity,
+          lastIngestSeq: currentIngestSeq,
+          processedEventsDelta: 0,
+          rowsAppliedDelta: 0,
+        });
+      }
       return {
         processed: 0,
         applied: 0,
         failed: 0,
         dropped: 0,
-        latestIngestSeq: afterIngestSeq,
+        latestIngestSeq: currentIngestSeq,
       };
     }
 
@@ -152,25 +185,7 @@ export class CdcConsumerService {
       const effectiveDeleteMode =
         flow.deleteMode === "hard" && isBackfilling ? "soft" : flow.deleteMode;
 
-      let entitySchema: ConnectorEntitySchema | null = null;
-      if (flow.dataSourceId) {
-        try {
-          const decrypted = await databaseDataSourceManager.getDataSource(
-            String(flow.dataSourceId),
-          );
-          const connector = decrypted
-            ? await syncConnectorRegistry.getConnector(decrypted)
-            : null;
-          if (connector) {
-            entitySchema = await connector.resolveSchema(params.entity);
-          }
-        } catch {
-          log.warn("Schema resolution failed, proceeding without schema", {
-            entity: params.entity,
-            flowId: params.flowId,
-          });
-        }
-      }
+      const entitySchema = connectorSchema;
 
       const normalizedEvents = entitySchema
         ? pending.map(event => {
@@ -213,6 +228,18 @@ export class CdcConsumerService {
         rowsAppliedDelta: apply.applied,
       });
 
+      if (state?.consecutiveFailures) {
+        await CdcEntityState.updateOne(
+          {
+            flowId: new Types.ObjectId(params.flowId),
+            entity: params.entity,
+          },
+          {
+            $set: { consecutiveFailures: 0, lastFailureError: null },
+          },
+        );
+      }
+
       return {
         processed: pending.length,
         applied: apply.applied,
@@ -233,6 +260,19 @@ export class CdcConsumerService {
         {
           code: "MATERIALIZATION_FAILED",
           message: errorMessage,
+        },
+      );
+      await CdcEntityState.updateOne(
+        {
+          flowId: new Types.ObjectId(params.flowId),
+          entity: params.entity,
+        },
+        {
+          $inc: { consecutiveFailures: 1 },
+          $set: {
+            lastFailedAt: new Date(),
+            lastFailureError: errorMessage.slice(0, 500),
+          },
         },
       );
       await cdcSyncStateService.applyStreamTransition({

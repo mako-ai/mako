@@ -104,6 +104,13 @@ export const ALL_MODELS: AIModel[] = [
     name: "Gemini 2.5 Flash",
     description: "Fast and efficient for quick tasks",
   },
+  {
+    id: "google/gemma-4-26b-a4b-it",
+    provider: "google",
+    name: "Gemma 4 26B",
+    description:
+      "Open model, fast inference with MoE architecture (3.8B active params)",
+  },
 ];
 
 // ---------------------------------------------------------------------------

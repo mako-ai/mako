@@ -475,7 +475,6 @@ jobs:
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_ENV=${INNGEST_ENV} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
-            --set-env-vars INNGEST_SERVE_ORIGIN=${BASE_URL} \
             --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
             --set-env-vars NODE_ENV=production \
@@ -509,7 +508,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          INNGEST_URL="${BASE_URL}/api/inngest"
+          INNGEST_URL="${{ steps.deploy.outputs.cloud_run_url }}/api/inngest"
 
           echo "Waiting for preview endpoint to become ready at ${INNGEST_URL}..."
           for attempt in 1 2 3 4 5; do
@@ -787,13 +786,20 @@ jobs:
       - name: Clean temporary env.production file
         run: rm -f .env.production
 
+      - name: Get Cloud Run URL
+        id: cloud-run-url
+        run: |
+          CLOUD_RUN_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${GCP_REGION} --format="value(status.url)")
+          echo "cloud_run_url=${CLOUD_RUN_URL}" >> "$GITHUB_OUTPUT"
+          echo "Cloud Run direct URL: ${CLOUD_RUN_URL}"
+
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${SERVICE_NAME} \
             --image ${{ steps.image.outputs.sha_tag }} \
             --region ${GCP_REGION} \
             --timeout=3600 \
-            --memory=2Gi \
+            --memory=4Gi \
             --concurrency=10 \
             --min-instances=1 \
             --max-instances=15 \
@@ -814,6 +820,8 @@ jobs:
             --set-env-vars GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET} \
             --set-env-vars INNGEST_EVENT_KEY=${INNGEST_EVENT_KEY} \
             --set-env-vars INNGEST_SIGNING_KEY=${INNGEST_SIGNING_KEY} \
+            --set-env-vars INNGEST_SERVE_ORIGIN=${{ steps.cloud-run-url.outputs.cloud_run_url }} \
+            --set-env-vars INNGEST_SERVE_PATH=/api/inngest \
             --set-env-vars NODE_ENV=production \
             --set-env-vars AI_GATEWAY_API_KEY=${AI_GATEWAY_API_KEY} \
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
@@ -840,9 +848,10 @@ jobs:
 
       - name: Sync Inngest app
         run: |
-          echo "Syncing Inngest app at ${BASE_URL}/api/inngest"
+          INNGEST_URL="${{ steps.cloud-run-url.outputs.cloud_run_url }}/api/inngest"
+          echo "Syncing Inngest app at ${INNGEST_URL} (direct to Cloud Run, bypassing Cloudflare)"
           for attempt in 1 2 3 4 5; do
-            if curl -X PUT "${BASE_URL}/api/inngest" --fail-with-body --silent --show-error; then
+            if curl -X PUT "${INNGEST_URL}" --fail-with-body --silent --show-error; then
               echo "Inngest sync succeeded"
               break
             fi

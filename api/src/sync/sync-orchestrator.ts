@@ -616,13 +616,6 @@ async function performSyncChunkSql(
         },
       })
     : undefined;
-  const cdcLayout = isCdcEnabled
-    ? buildCdcEntityLayout({
-        entity,
-        tableName: entityTableName,
-      })
-    : undefined;
-
   const writer = isCdcEnabled
     ? undefined
     : await createDestinationWriter(
@@ -702,6 +695,14 @@ async function performSyncChunkSql(
     hasSchema: !!entitySchema,
     fieldCount: entitySchema ? Object.keys(entitySchema.fields).length : 0,
   });
+
+  const cdcLayout = isCdcEnabled
+    ? buildCdcEntityLayout({
+        entity,
+        tableName: entityTableName,
+        keyColumns: entitySchema?.keyColumns,
+      })
+    : undefined;
 
   const useBulkPath =
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
@@ -929,10 +930,23 @@ async function performSyncChunkSql(
       await writer.finalize();
     }
 
+    const fetchWriteDelta = fetchState.totalProcessed - runningRowsWritten;
     logger?.log(
       "info",
       `✅ ${entity} SQL sync completed (${runningRowsWritten} written, ${fetchState.totalProcessed} fetched)`,
     );
+    if (fetchWriteDelta !== 0) {
+      logger?.log(
+        "warn",
+        `⚠️ ${entity} fetch/write mismatch: ${fetchState.totalProcessed} fetched but ${runningRowsWritten} written (delta: ${fetchWriteDelta})`,
+        {
+          entity,
+          totalFetched: fetchState.totalProcessed,
+          totalWritten: runningRowsWritten,
+          delta: fetchWriteDelta,
+        },
+      );
+    }
   } else {
     logger?.log(
       "info",
@@ -1012,6 +1026,7 @@ async function flushBulkBuffer(
   flowId: string,
   logger?: SyncLogger,
   schemaFields?: FieldMeta[],
+  onBatchFlushed?: () => Promise<void>,
 ): Promise<{ flushed: number }> {
   const initialCount = await tempCollection.countDocuments();
   if (initialCount === 0) return { flushed: 0 };
@@ -1034,8 +1049,9 @@ async function flushBulkBuffer(
   );
 
   const DELETE_CHUNK = 2000;
-  const CONSECUTIVE_OK_TO_GROW = 3;
+  const CONSECUTIVE_OK_TO_GROW = 5;
   let consecutiveSuccesses = 0;
+  let oomCeiling = FLUSH_BATCH_SIZE;
 
   let remaining = await tempCollection.countDocuments();
   while (remaining > 0) {
@@ -1113,13 +1129,15 @@ async function flushBulkBuffer(
           throw err;
         }
 
+        oomCeiling = currentBatchSize;
         logger?.log(
           "warn",
-          `${entity} flush batch ${batchNum}: DuckDB memory error, reducing batch size from ${currentBatchSize} to ${shrunkSize} and retrying`,
+          `${entity} flush batch ${batchNum}: DuckDB memory error, reducing batch size from ${currentBatchSize} to ${shrunkSize} and retrying (ceiling now ${oomCeiling})`,
           {
             entity,
             previousBatchSize: currentBatchSize,
             newBatchSize: shrunkSize,
+            oomCeiling,
             error: err instanceof Error ? err.message : String(err),
           },
         );
@@ -1146,10 +1164,11 @@ async function flushBulkBuffer(
     );
 
     if (parquet.rowCount === 0) {
+      const actualRemaining = await tempCollection.countDocuments();
       logger?.log(
         "warn",
-        `${entity} flush: empty parquet (possible race), stopping flush loop`,
-        { entity, batch: batchNum },
+        `${entity} flush: empty parquet (possible race), stopping flush loop (${actualRemaining} rows still in temp, ${totalFlushed} flushed so far)`,
+        { entity, batch: batchNum, actualRemaining, totalFlushed },
       );
       break;
     }
@@ -1204,22 +1223,27 @@ async function flushBulkBuffer(
       global.gc();
     }
 
+    await onBatchFlushed?.();
+
     consecutiveSuccesses++;
     if (
       consecutiveSuccesses >= CONSECUTIVE_OK_TO_GROW &&
-      currentBatchSize < FLUSH_BATCH_SIZE
+      currentBatchSize < oomCeiling
     ) {
-      const grownSize = Math.min(currentBatchSize * 2, FLUSH_BATCH_SIZE);
-      logger?.log(
-        "info",
-        `${entity} flush: ${consecutiveSuccesses} consecutive successes, growing batch size from ${currentBatchSize} to ${grownSize}`,
-        {
-          entity,
-          previousBatchSize: currentBatchSize,
-          newBatchSize: grownSize,
-        },
-      );
-      currentBatchSize = grownSize;
+      const grownSize = Math.min(currentBatchSize * 2, oomCeiling);
+      if (grownSize > currentBatchSize) {
+        logger?.log(
+          "info",
+          `${entity} flush: ${consecutiveSuccesses} consecutive successes, growing batch size from ${currentBatchSize} to ${grownSize} (ceiling ${oomCeiling})`,
+          {
+            entity,
+            previousBatchSize: currentBatchSize,
+            newBatchSize: grownSize,
+            oomCeiling,
+          },
+        );
+        currentBatchSize = grownSize;
+      }
       consecutiveSuccesses = 0;
     }
 
@@ -1248,11 +1272,25 @@ async function flushBulkBuffer(
     {
       entity,
       totalFlushed,
+      initialCount,
       batches: batchNum,
       finalBatchSize: currentBatchSize,
       memory: syncMemorySnapshot(),
     },
   );
+
+  if (totalFlushed !== initialCount) {
+    logger?.log(
+      "warn",
+      `⚠️ ${entity} flush mismatch: ${initialCount} rows in temp but only ${totalFlushed} flushed to staging (${initialCount - totalFlushed} lost)`,
+      {
+        entity,
+        initialCount,
+        totalFlushed,
+        delta: initialCount - totalFlushed,
+      },
+    );
+  }
 
   return { flushed: totalFlushed };
 }
@@ -1285,6 +1323,7 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
 
 export async function performBulkFlush(
   options: SyncChunkOptions,
+  onBatchFlushed?: () => Promise<void>,
 ): Promise<{ flushed: number }> {
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { flushed: 0 };
@@ -1294,10 +1333,6 @@ export async function performBulkFlush(
 
   if (!cdcAdapter.loadStagingFromParquet) return { flushed: 0 };
 
-  const cdcLayout = buildCdcEntityLayout({
-    entity,
-    tableName: entityTableName,
-  });
   const db = Flow.db;
   const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
   const tempCollection = db.collection(collName);
@@ -1306,6 +1341,11 @@ export async function performBulkFlush(
     entity,
     dataSourceId: options.dataSourceId,
     context: "performBulkFlush",
+  });
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+    keyColumns: entitySchema?.keyColumns,
   });
   const schemaFields: FieldMeta[] | undefined = entitySchema
     ? Object.entries(entitySchema.fields).map(([name, f]) => ({
@@ -1327,6 +1367,7 @@ export async function performBulkFlush(
     options.flowId!,
     options.logger,
     schemaFields,
+    onBatchFlushed,
   );
 }
 
@@ -1373,12 +1414,6 @@ export async function performStagingMerge(
 
   if (!cdcAdapter.mergeFromStaging) return { written: 0 };
 
-  const cdcLayout = buildCdcEntityLayout({
-    entity,
-    tableName: entityTableName,
-    partitioning: options.entityPartitioning,
-    clustering: options.entityClustering,
-  });
   const dataSource = await databaseDataSourceManager.getDataSource(
     options.dataSourceId,
   );
@@ -1386,6 +1421,13 @@ export async function performStagingMerge(
     entity,
     dataSource,
     context: "performStagingMerge",
+  });
+  const cdcLayout = buildCdcEntityLayout({
+    entity,
+    tableName: entityTableName,
+    keyColumns: entitySchema?.keyColumns,
+    partitioning: options.entityPartitioning,
+    clustering: options.entityClustering,
   });
 
   orchestratorLogger.info("performStagingMerge: merging staging to live", {

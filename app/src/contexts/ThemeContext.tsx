@@ -13,6 +13,13 @@ import {
 
 export type ThemeMode = "light" | "dark" | "system";
 
+const truncateTextStyles = {
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
 interface ThemeContextType {
   mode: ThemeMode;
   setMode: (mode: ThemeMode) => void;
@@ -201,6 +208,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
             minHeight: 28,
             borderRadius: 4,
             margin: "1px 0",
+            ...truncateTextStyles,
             '&[aria-selected="true"]': {
               backgroundColor: theme.palette.action.selected,
             },
@@ -227,6 +235,11 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         styleOverrides: {
           root: {
             textTransform: "none",
+            ...truncateTextStyles,
+            maxWidth: "100%",
+            "& .MuiButton-startIcon, & .MuiButton-endIcon": {
+              flexShrink: 0,
+            },
           },
           sizeSmall: {
             py: 1,
@@ -253,6 +266,8 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
             "& .MuiSelect-select": {
               fontSize: "0.9em",
               padding: theme.spacing(0.5, 1),
+              display: "block",
+              ...truncateTextStyles,
             },
             // Remove underline for the "standard" variant only (legacy)
             ...(ownerState.variant === "standard" && {
@@ -311,8 +326,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
           root: ({ theme }: any) => ({
             textTransform: "none",
             minHeight: 0,
+            maxWidth: "100%",
             padding: theme.spacing(0.5, 1),
             color: theme.palette.text.secondary,
+            ...truncateTextStyles,
             "&:hover": {
               color: theme.palette.text.primary,
             },
@@ -331,6 +348,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
             padding: "4px 8px",
             borderRadius: 4,
             margin: "1px 0",
+            ...truncateTextStyles,
+            "& .MuiListItemText-root": {
+              minWidth: 0,
+            },
             "&:hover": {
               backgroundColor: theme.palette.action.hover,
             },
@@ -365,6 +386,13 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
               transform: "none",
             },
           }),
+        },
+      },
+      MuiDialogTitle: {
+        styleOverrides: {
+          root: {
+            ...truncateTextStyles,
+          },
         },
       },
       MuiFormLabel: {
@@ -491,14 +519,42 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
           },
         },
       },
+      MuiAccordionSummary: {
+        styleOverrides: {
+          content: {
+            minWidth: 0,
+            overflow: "hidden",
+          },
+        },
+      },
       MuiListItemText: {
         styleOverrides: {
           root: ({ theme, ownerState }: any) => ({
+            minWidth: 0,
             ...(ownerState?.dense && {
               marginTop: theme.spacing(0.25),
               marginBottom: theme.spacing(0.25),
             }),
           }),
+          primary: {
+            display: "block",
+            ...truncateTextStyles,
+          },
+          secondary: {
+            display: "block",
+            ...truncateTextStyles,
+          },
+        },
+      },
+      MuiChip: {
+        styleOverrides: {
+          root: {
+            maxWidth: "100%",
+          },
+          label: {
+            display: "block",
+            ...truncateTextStyles,
+          },
         },
       },
       MuiToggleButtonGroup: {
@@ -523,6 +579,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
             fontSize: "2rem",
             borderRadius: 3,
             textTransform: "none",
+            ...truncateTextStyles,
           },
         },
       },

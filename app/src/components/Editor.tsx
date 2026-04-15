@@ -1238,7 +1238,13 @@ function Editor({
                   value={tab.id}
                   label={
                     <Box
-                      sx={{ display: "flex", alignItems: "center", gap: 0.75 }}
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.75,
+                        minWidth: 0,
+                        maxWidth: "100%",
+                      }}
                     >
                       {tab.icon ? (
                         <Box
@@ -1270,6 +1276,7 @@ function Editor({
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
+                          display: "inline-block",
                           maxWidth: "150px",
                         }}
                         onDoubleClick={e => {

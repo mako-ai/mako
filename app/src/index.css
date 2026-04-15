@@ -2,6 +2,22 @@
 /* Include streamdown styles */
 @source "../node_modules/streamdown/dist/*.js";
 
+.app-truncate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-truncate-inline {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Register shadcn color tokens with Tailwind v4.
    `inline` inlines the hsl(var(--xxx)) expression into each utility,
    so .dark overrides on the raw HSL variables work at runtime. */

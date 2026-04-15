@@ -184,7 +184,7 @@ function DatabaseExplorer({
 
       const checkAndFetchMissingChildren = (node: TreeNode) => {
         const nodeKey = `${db.id}:${node.kind}:${node.id}`;
-        if (!node.hasChildren || !expandedNodes.has(nodeKey)) return;
+        if (!node.hasChildren || !expandedNodes[nodeKey]) return;
 
         const childKey = `${node.kind}:${node.id}`;
         const children = dbTree[childKey];
@@ -312,6 +312,8 @@ function DatabaseExplorer({
   };
 
   // ---------------- Context menu for databases ----------------
+  const [contextFocusKey, setContextFocusKey] = useState<string | null>(null);
+
   const [databaseContextMenu, setDatabaseContextMenu] = useState<{
     mouseX: number;
     mouseY: number;
@@ -329,17 +331,14 @@ function DatabaseExplorer({
     (event: React.MouseEvent, databaseId: string, databaseName: string) => {
       event.preventDefault();
       event.stopPropagation();
-      setDatabaseContextMenu(
-        contextMenu === null
-          ? {
-              mouseX: event.clientX + 2,
-              mouseY: event.clientY - 6,
-              item: { databaseId, databaseName },
-            }
-          : null,
-      );
+      setDatabaseContextMenu({
+        mouseX: event.clientX + 2,
+        mouseY: event.clientY - 6,
+        item: { databaseId, databaseName },
+      });
+      setContextFocusKey(databaseId);
     },
-    [contextMenu],
+    [],
   );
 
   const handleEditDatabase = useCallback(() => {
@@ -411,7 +410,7 @@ function DatabaseExplorer({
     level: number,
   ): React.ReactNode => {
     const nodeKey = `${connectionId}:${node.kind}:${node.id}`;
-    const isExpanded = expandedNodes.has(nodeKey);
+    const isExpanded = !!expandedNodes[nodeKey];
     const childKey = `${node.kind}:${node.id}`;
     const children = treeNodes[connectionId]?.[childKey];
     const isLoading = loading[`tree:${connectionId}:${childKey}`];
@@ -462,9 +461,29 @@ function DatabaseExplorer({
                 });
               }
             }}
+            onContextMenu={event => {
+              if (
+                !node.hasChildren &&
+                (node.kind === "collection" || node.kind === "table")
+              ) {
+                event.preventDefault();
+                event.stopPropagation();
+                setContextMenu({
+                  mouseX: event.clientX + 2,
+                  mouseY: event.clientY - 6,
+                  item: {
+                    databaseId: connectionId,
+                    collectionName: node.label,
+                  },
+                });
+                setContextFocusKey(nodeKey);
+              }
+            }}
             sx={{
               py: 0.25,
               pl: 1 + level * 1.5,
+              outline: contextFocusKey === nodeKey ? "1px solid" : undefined,
+              outlineColor: contextFocusKey === nodeKey ? "divider" : undefined,
             }}
           >
             <ListItemIcon sx={{ minWidth: 22 }}>
@@ -581,9 +600,7 @@ function DatabaseExplorer({
             </Box>
           ) : (
             databases.map(database => {
-              const isDatabaseExpandedLocal = expandedDatabases.has(
-                database.id,
-              );
+              const isDatabaseExpandedLocal = !!expandedDatabases[database.id];
               const isLoadingData = loadingData.has(database.id);
               const dbRootNodes: TreeNode[] =
                 treeNodes[database.id]?.["root"] || [];
@@ -601,7 +618,18 @@ function DatabaseExplorer({
                           database.displayName,
                         )
                       }
-                      sx={{ py: 0.5, pl: 1 }}
+                      sx={{
+                        py: 0.5,
+                        pl: 1,
+                        outline:
+                          contextFocusKey === database.id
+                            ? "1px solid"
+                            : undefined,
+                        outlineColor:
+                          contextFocusKey === database.id
+                            ? "divider"
+                            : undefined,
+                      }}
                     >
                       <ListItemIcon sx={{ minWidth: 22 }}>
                         {isDatabaseExpandedLocal ? (
@@ -671,7 +699,10 @@ function DatabaseExplorer({
       {/* Context Menu for collection */}
       <Menu
         open={contextMenu !== null}
-        onClose={() => setContextMenu(null)}
+        onClose={() => {
+          setContextMenu(null);
+          setContextFocusKey(null);
+        }}
         anchorReference="anchorPosition"
         anchorPosition={
           contextMenu !== null
@@ -706,7 +737,10 @@ function DatabaseExplorer({
       {/* Context Menu for database */}
       <Menu
         open={databaseContextMenu !== null}
-        onClose={() => setDatabaseContextMenu(null)}
+        onClose={() => {
+          setDatabaseContextMenu(null);
+          setContextFocusKey(null);
+        }}
         anchorReference="anchorPosition"
         anchorPosition={
           databaseContextMenu !== null

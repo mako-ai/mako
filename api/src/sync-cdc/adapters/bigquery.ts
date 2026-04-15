@@ -578,6 +578,32 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const [deleteStmt, insertStmt] = buildMergeStatements(allColumns);
 
+    let stagingRowCount = 0;
+    try {
+      const countResult = await databaseConnectionService.executeQuery(
+        destination,
+        `SELECT COUNT(*) AS cnt FROM ${fullStaging}`,
+        { location: datasetLocation },
+      );
+      if (
+        countResult.success &&
+        Array.isArray(countResult.data) &&
+        countResult.data[0]
+      ) {
+        stagingRowCount = Number((countResult.data[0] as any).cnt || 0);
+      }
+    } catch {
+      log.warn("Could not count staging rows before merge", { stagingTable });
+    }
+
+    log.info("Starting staging-to-live merge", {
+      liveTable,
+      stagingTable,
+      dataset,
+      stagingRowCount,
+      columnCount: allColumns.length,
+    });
+
     await retryOnQuota(
       async () => {
         const deleteResult = await databaseConnectionService.executeQuery(
@@ -622,14 +648,34 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       { label: `mergeStagingToLive:INSERT(${liveTable})` },
     );
 
+    let liveRowCount = 0;
+    try {
+      const liveCountResult = await databaseConnectionService.executeQuery(
+        destination,
+        `SELECT COUNT(*) AS cnt FROM ${fullLive}`,
+        { location: datasetLocation },
+      );
+      if (
+        liveCountResult.success &&
+        Array.isArray(liveCountResult.data) &&
+        liveCountResult.data[0]
+      ) {
+        liveRowCount = Number((liveCountResult.data[0] as any).cnt || 0);
+      }
+    } catch {
+      log.warn("Could not count live rows after merge", { liveTable });
+    }
+
     log.info("Merged staging to live table via DELETE+INSERT", {
       liveTable,
       stagingTable,
       dataset,
+      stagingRowCount,
+      liveRowCount,
       skippedLiveAdds,
     });
 
-    return { written: 0 };
+    return { written: stagingRowCount };
   }
 
   async cleanupStaging(
