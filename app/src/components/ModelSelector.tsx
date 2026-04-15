@@ -7,6 +7,7 @@ import React, { useEffect, useState } from "react";
 import {
   Box,
   Button,
+  Chip,
   Menu,
   MenuItem,
   ListSubheader,
@@ -14,10 +15,13 @@ import {
   CircularProgress,
   Tooltip,
 } from "@mui/material";
-import { KeyboardArrowDown } from "@mui/icons-material";
+import { KeyboardArrowDown, ArrowForward } from "@mui/icons-material";
 import { useSettingsStore } from "../store/settingsStore";
+import { useBillingStore } from "../store/billingStore";
+import { useWorkspace } from "../contexts/workspace-context";
 
 import type { AIModel } from "../lib/api-types";
+import { getModelBillingState } from "./model-selector-utils";
 
 // Provider display names for grouping
 const PROVIDER_NAMES: Record<string, string> = {
@@ -56,11 +60,28 @@ export const ModelSelector: React.FC = () => {
   const error = useSettingsStore(s => s.modelsError);
   const fetchModels = useSettingsStore(s => s.fetchModels);
 
+  const billingWorkspaceId = useBillingStore(s => s.workspaceId);
+  const billingStatus = useBillingStore(s => s.status);
+  const fetchBillingStatus = useBillingStore(s => s.fetchBillingStatus);
+  const createCheckoutSession = useBillingStore(s => s.createCheckoutSession);
+  const { currentWorkspace } = useWorkspace();
+
   const open = Boolean(anchorEl);
 
   useEffect(() => {
     fetchModels();
   }, [fetchModels]);
+
+  useEffect(() => {
+    if (!currentWorkspace?.id) return;
+    if (billingWorkspaceId === currentWorkspace.id && billingStatus) return;
+    void fetchBillingStatus(currentWorkspace.id);
+  }, [
+    billingStatus,
+    billingWorkspaceId,
+    currentWorkspace?.id,
+    fetchBillingStatus,
+  ]);
 
   const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     setAnchorEl(event.currentTarget);
@@ -79,21 +100,31 @@ export const ModelSelector: React.FC = () => {
   const selectedModel = models.find(m => m.id === selectedModelId);
   const displayName = selectedModel?.name || selectedModelId || "Select Model";
 
-  // Group models by provider, ordered by priority then alphabetically
-  const modelsByProvider = (() => {
-    const groups: Record<string, AIModel[]> = {};
+  // Group models by provider, ordered by priority
+  const modelGroups = (() => {
+    const byProvider: Record<string, AIModel[]> = {};
     for (const m of models) {
-      if (!groups[m.provider]) groups[m.provider] = [];
-      groups[m.provider].push(m);
+      if (!byProvider[m.provider]) {
+        byProvider[m.provider] = [];
+      }
+      byProvider[m.provider].push(m);
     }
+
     const priorityIdx = new Map(PROVIDER_PRIORITY.map((p, i) => [p, i]));
-    const sortedEntries = Object.entries(groups).sort(([a], [b]) => {
+    const sortedProviders = Object.keys(byProvider).sort((a, b) => {
       const ai = priorityIdx.get(a) ?? Infinity;
       const bi = priorityIdx.get(b) ?? Infinity;
-      if (ai !== bi) return ai - bi;
+      if (ai !== bi) {
+        return ai - bi;
+      }
       return a.localeCompare(b);
     });
-    return Object.fromEntries(sortedEntries) as Record<string, AIModel[]>;
+
+    return sortedProviders.map(provider => ({
+      label: PROVIDER_NAMES[provider] || provider,
+      key: provider,
+      models: byProvider[provider],
+    }));
   })();
 
   if (loading) {
@@ -173,9 +204,9 @@ export const ModelSelector: React.FC = () => {
           },
         }}
       >
-        {Object.entries(modelsByProvider).map(([provider, providerModels]) => [
+        {modelGroups.map(group => [
           <ListSubheader
-            key={`header-${provider}`}
+            key={`header-${group.key}`}
             sx={{
               backgroundColor: "background.paper",
               lineHeight: 2.5,
@@ -186,35 +217,99 @@ export const ModelSelector: React.FC = () => {
               color: "text.secondary",
             }}
           >
-            {PROVIDER_NAMES[provider] || provider}
+            {group.label}
           </ListSubheader>,
-          ...providerModels.map(model => (
-            <MenuItem
-              key={model.id}
-              selected={model.id === selectedModelId}
-              onClick={() => handleSelectModel(model.id)}
-              sx={{
-                py: 1,
-                px: 2,
-              }}
-            >
-              <Box sx={{ minWidth: 0, width: "100%" }}>
-                <Typography variant="body2" noWrap>
-                  {model.name}
-                </Typography>
-                {model.description && (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: "block" }}
-                    noWrap
-                  >
-                    {model.description}
-                  </Typography>
-                )}
-              </Box>
-            </MenuItem>
-          )),
+          ...group.models.map(model => {
+            const { isFreeModel, isProModel, billingEnabled, isRestricted } =
+              getModelBillingState(model, billingStatus);
+
+            const handleModelClick = async () => {
+              if (isRestricted) {
+                handleClose();
+                if (!currentWorkspace?.id) return;
+                const url = await createCheckoutSession(currentWorkspace.id);
+                if (url) window.location.href = url;
+                return;
+              }
+              handleSelectModel(model.id);
+            };
+
+            return (
+              <MenuItem
+                key={model.id}
+                selected={!isRestricted && model.id === selectedModelId}
+                onClick={handleModelClick}
+                sx={{ py: 1, px: 2 }}
+              >
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    minWidth: 0,
+                    width: "100%",
+                  }}
+                >
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography
+                      variant="body2"
+                      noWrap
+                      sx={{
+                        color: isRestricted ? "text.secondary" : undefined,
+                      }}
+                    >
+                      {model.name}
+                    </Typography>
+                    {isRestricted ? (
+                      <Typography
+                        variant="caption"
+                        noWrap
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.25,
+                          color: "primary.main",
+                          fontWeight: 500,
+                        }}
+                      >
+                        Upgrade to unlock
+                        <ArrowForward sx={{ fontSize: 11 }} />
+                      </Typography>
+                    ) : (
+                      model.description && (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: "block" }}
+                          noWrap
+                        >
+                          {model.description}
+                        </Typography>
+                      )
+                    )}
+                  </Box>
+                  {isFreeModel && billingEnabled && (
+                    <Chip
+                      label="Free"
+                      size="small"
+                      color="success"
+                      variant="outlined"
+                      sx={{ height: 18, fontSize: 10 }}
+                    />
+                  )}
+                  {isProModel && billingEnabled && (
+                    <Chip
+                      label="Pro"
+                      size="small"
+                      color="primary"
+                      variant={isRestricted ? "filled" : "outlined"}
+                      sx={{ height: 18, fontSize: 10 }}
+                    />
+                  )}
+                </Box>
+              </MenuItem>
+            );
+          }),
         ])}
       </Menu>
     </>

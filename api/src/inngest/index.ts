@@ -19,6 +19,7 @@ import {
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
+import { usageReportingFunction } from "./functions/usage-reporting";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -29,6 +30,7 @@ const baseFunctions = [
   syncBackfillEntityFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  usageReportingFunction,
 ];
 
 const allWebhookFunctions = [
@@ -108,4 +110,5 @@ export {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  usageReportingFunction,
 };

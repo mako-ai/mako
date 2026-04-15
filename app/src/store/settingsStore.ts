@@ -14,6 +14,9 @@ import type {
   EnabledModelsResponse,
 } from "../lib/api-types";
 
+let modelsInFlight: Promise<void> | null = null;
+let gatewayModelsInFlight: Promise<void> | null = null;
+
 interface SettingsState {
   // AI Model selection
   selectedModelId: string;
@@ -54,8 +57,8 @@ interface SettingsState {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
-      // Default model
-      selectedModelId: "anthropic/claude-opus-4-6",
+      // Default model — empty string means "use the first available model"
+      selectedModelId: "",
       setSelectedModelId: modelId => set({ selectedModelId: modelId }),
 
       // Models list
@@ -63,31 +66,39 @@ export const useSettingsStore = create<SettingsState>()(
       modelsLoading: false,
       modelsError: null,
       fetchModels: async () => {
-        set({ modelsLoading: true, modelsError: null });
-        try {
-          const response = await apiClient.get<
-            ModelListResponse | { models: AIModel[] }
-          >("/agent/models");
+        if (modelsInFlight) return modelsInFlight;
 
-          const models =
-            "success" in response
-              ? response.models || []
-              : response.models || [];
+        const doFetch = async () => {
+          set({ modelsLoading: true, modelsError: null });
+          try {
+            const response = await apiClient.get<
+              ModelListResponse | { models: AIModel[] }
+            >("/agent/models");
 
-          set({ models });
+            const models =
+              "success" in response
+                ? response.models || []
+                : response.models || [];
 
-          if (models.length > 0) {
-            const current = get().selectedModelId;
-            const isAvailable = models.some(model => model.id === current);
-            if (!isAvailable) {
-              set({ selectedModelId: models[0].id });
+            set({ models });
+
+            if (models.length > 0) {
+              const current = get().selectedModelId;
+              const isAvailable = models.some(model => model.id === current);
+              if (!isAvailable) {
+                set({ selectedModelId: models[0].id });
+              }
             }
+          } catch (error) {
+            set({ modelsError: "Failed to load models" });
+          } finally {
+            set({ modelsLoading: false });
+            modelsInFlight = null;
           }
-        } catch (error) {
-          set({ modelsError: "Failed to load models" });
-        } finally {
-          set({ modelsLoading: false });
-        }
+        };
+
+        modelsInFlight = doFetch();
+        return modelsInFlight;
       },
 
       // Gateway model catalog
@@ -95,17 +106,25 @@ export const useSettingsStore = create<SettingsState>()(
       gatewayModelsLoading: false,
       gatewayModelsError: null,
       fetchGatewayModels: async () => {
-        set({ gatewayModelsLoading: true, gatewayModelsError: null });
-        try {
-          const response = await apiClient.get<GatewayModelsResponse>(
-            "/agent/gateway-models",
-          );
-          set({ gatewayModels: response.models || [] });
-        } catch (error) {
-          set({ gatewayModelsError: "Failed to load gateway models" });
-        } finally {
-          set({ gatewayModelsLoading: false });
-        }
+        if (gatewayModelsInFlight) return gatewayModelsInFlight;
+
+        const doFetch = async () => {
+          set({ gatewayModelsLoading: true, gatewayModelsError: null });
+          try {
+            const response = await apiClient.get<GatewayModelsResponse>(
+              "/agent/gateway-models",
+            );
+            set({ gatewayModels: response.models || [] });
+          } catch (error) {
+            set({ gatewayModelsError: "Failed to load gateway models" });
+          } finally {
+            set({ gatewayModelsLoading: false });
+            gatewayModelsInFlight = null;
+          }
+        };
+
+        gatewayModelsInFlight = doFetch();
+        return gatewayModelsInFlight;
       },
 
       // Workspace enabled models

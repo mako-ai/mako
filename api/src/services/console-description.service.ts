@@ -1,12 +1,7 @@
 import { generateText } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
-import {
-  isGatewayMode,
-  getUtilityModelId,
-  getUtilityModelPreference,
-  getConfiguredProviders,
-  getAvailableModels,
-} from "../agent-lib/ai-models";
+import { getUtilityModelId } from "../agent-lib/ai-models";
+import { getUtilityModelIds } from "./model-catalog.service";
 import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
 import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
@@ -49,11 +44,10 @@ function processDescriptionResult(
 }
 
 /**
- * Description generation requires at least one configured LLM provider
- * (or the AI Gateway).
+ * Description generation is always available (gateway mode is the only mode).
  */
 export function isDescriptionGenAvailable(): boolean {
-  return isGatewayMode() || getConfiguredProviders().length > 0;
+  return true;
 }
 
 const DESCRIPTION_SYSTEM_PROMPT = `You are a concise technical writer. Generate a 1-2 sentence description of the given database query.
@@ -119,92 +113,49 @@ export async function generateConsoleDescription(
 
   const prompt = parts.join("\n");
 
-  if (!isDescriptionGenAvailable()) return null;
+  try {
+    const utilityModel = await getUtilityModelId();
+    if (!utilityModel) return null;
 
-  if (isGatewayMode()) {
-    try {
-      const utilityModel = getUtilityModelId();
-      if (!utilityModel) return null;
-      const baseOpts = trackingCtx
-        ? buildProviderOptions({
-            userId: trackingCtx.userId,
-            workspaceId: trackingCtx.workspaceId,
-            invocationType: "description_generation",
-          })
-        : {};
-      const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
-      const { text, usage, response } = await generateText({
-        model: getModel(utilityModel),
-        system: DESCRIPTION_SYSTEM_PROMPT,
-        prompt,
-        providerOptions: {
-          gateway: {
-            ...gatewayBase,
-            models: [
-              utilityModel,
-              ...getUtilityModelPreference().filter(id => id !== utilityModel),
-            ],
-          } satisfies GatewayLanguageModelOptions,
-        },
-      });
+    const failoverModels = await getUtilityModelIds(3);
 
-      const actualModelId = (response as Record<string, unknown>)?.modelId as
-        | string
-        | undefined;
+    const baseOpts = trackingCtx
+      ? buildProviderOptions({
+          userId: trackingCtx.userId,
+          workspaceId: trackingCtx.workspaceId,
+          invocationType: "description_generation",
+        })
+      : {};
+    const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
+    const { text, usage, response } = await generateText({
+      model: getModel(utilityModel),
+      system: DESCRIPTION_SYSTEM_PROMPT,
+      prompt,
+      providerOptions: {
+        gateway: {
+          ...gatewayBase,
+          models: [
+            utilityModel,
+            ...failoverModels.filter(id => id !== utilityModel),
+          ],
+        } satisfies GatewayLanguageModelOptions,
+      },
+    });
 
-      return processDescriptionResult(
-        text,
-        usage as Record<string, unknown>,
-        actualModelId || utilityModel,
-        trackingCtx,
-      );
-    } catch (err) {
-      logger.error("Console description generation failed", { error: err });
-      return null;
-    }
+    const actualModelId = (response as Record<string, unknown>)?.modelId as
+      | string
+      | undefined;
+
+    return processDescriptionResult(
+      text,
+      usage as Record<string, unknown>,
+      actualModelId || utilityModel,
+      trackingCtx,
+    );
+  } catch (err) {
+    logger.error("Console description generation failed", { error: err });
+    return null;
   }
-
-  const utilityIds = new Set(getUtilityModelPreference());
-  const available = getAvailableModels()
-    .filter(m => utilityIds.has(m.id))
-    .map(m => m.id);
-
-  const preferredId = getUtilityModelId();
-  if (!preferredId && available.length === 0) return null;
-  const modelsToTry =
-    preferredId && available.includes(preferredId)
-      ? [preferredId, ...available.filter(id => id !== preferredId)]
-      : preferredId
-        ? [preferredId, ...available]
-        : available;
-
-  for (const modelId of modelsToTry) {
-    try {
-      const { text, usage } = await generateText({
-        model: getModel(modelId),
-        system: DESCRIPTION_SYSTEM_PROMPT,
-        prompt,
-      });
-
-      return processDescriptionResult(
-        text,
-        usage as Record<string, unknown>,
-        modelId,
-        trackingCtx,
-      );
-    } catch (err) {
-      logger.warn(
-        "Console description generation failed for model, trying next",
-        {
-          modelId,
-          error: err,
-        },
-      );
-    }
-  }
-
-  logger.error("Console description generation failed for all models");
-  return null;
 }
 
 export interface DescriptionAndEmbeddingResult {

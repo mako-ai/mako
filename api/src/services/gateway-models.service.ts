@@ -16,6 +16,14 @@ const logger = loggers.app();
 // Types matching the gateway /v1/models response shape
 // ---------------------------------------------------------------------------
 
+export interface GatewayRawPricing {
+  input?: string;
+  output?: string;
+  input_cache_read?: string;
+  input_cache_write?: string;
+  output_reasoning?: string;
+}
+
 interface GatewayModelRaw {
   id: string;
   name?: string;
@@ -24,6 +32,7 @@ interface GatewayModelRaw {
   type?: string;
   context_window?: number;
   tags?: string[];
+  pricing?: GatewayRawPricing;
 }
 
 interface GatewayModelsResponse {
@@ -43,6 +52,11 @@ export interface GatewayModelInfo {
   tags: string[];
 }
 
+export interface GatewayModelPricing {
+  input: number;
+  output: number;
+}
+
 // ---------------------------------------------------------------------------
 // In-memory cache
 // ---------------------------------------------------------------------------
@@ -51,6 +65,8 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const GATEWAY_API_URL = "https://ai-gateway.vercel.sh/v1/models";
 
 let cachedModels: GatewayModelInfo[] | null = null;
+let cachedPricingMap: Map<string, GatewayModelPricing> | null = null;
+let cachedRawPricingMap: Map<string, GatewayRawPricing> | null = null;
 let cacheTimestamp = 0;
 let fetchInFlight: Promise<GatewayModelInfo[]> | null = null;
 
@@ -79,15 +95,31 @@ async function fetchAllModels(): Promise<GatewayModelInfo[]> {
 
   const body = (await res.json()) as GatewayModelsResponse;
   const models: GatewayModelInfo[] = [];
+  const pricingMap = new Map<string, GatewayModelPricing>();
+  const rawPricingMap = new Map<string, GatewayRawPricing>();
 
   for (const raw of body.data) {
     if (raw.type !== "language") continue;
     models.push(normalizeModel(raw));
+    if (raw.pricing) {
+      rawPricingMap.set(raw.id, raw.pricing);
+      if (raw.pricing.input && raw.pricing.output) {
+        pricingMap.set(raw.id, {
+          input: parseFloat(raw.pricing.input) * 1_000_000,
+          output: parseFloat(raw.pricing.output) * 1_000_000,
+        });
+      }
+    }
   }
 
   models.sort((a, b) => a.id.localeCompare(b.id));
+  cachedPricingMap = pricingMap;
+  cachedRawPricingMap = rawPricingMap;
 
-  logger.info("Refreshed gateway models cache", { modelCount: models.length });
+  logger.info("Refreshed gateway models cache", {
+    modelCount: models.length,
+    pricedModels: pricingMap.size,
+  });
   return models;
 }
 
@@ -120,10 +152,35 @@ export async function getGatewayModels(): Promise<GatewayModelInfo[]> {
 }
 
 /**
+ * Returns per-model pricing (cost per 1M tokens) extracted from the same
+ * gateway response. Triggers a fetch if the cache is empty.
+ */
+export async function getGatewayPricingMap(): Promise<
+  Map<string, GatewayModelPricing>
+> {
+  await getGatewayModels();
+  return cachedPricingMap ?? new Map();
+}
+
+/**
+ * Returns full raw pricing strings (input, output, cache_read, cache_write,
+ * reasoning) from the gateway response. Used by the cost calculator for
+ * detailed per-token-type pricing.
+ */
+export async function getGatewayRawPricingMap(): Promise<
+  Map<string, GatewayRawPricing>
+> {
+  await getGatewayModels();
+  return cachedRawPricingMap ?? new Map();
+}
+
+/**
  * Force-refresh the models cache.
  */
 export async function warmModelsCache(): Promise<void> {
   cachedModels = null;
+  cachedPricingMap = null;
+  cachedRawPricingMap = null;
   cacheTimestamp = 0;
   await getGatewayModels();
 }

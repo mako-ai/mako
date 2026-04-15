@@ -21,7 +21,7 @@ import {
   getModelById,
   getAvailableModels,
   getDefaultModelId,
-  isGatewayMode,
+  getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
 import { getGatewayModels } from "../services/gateway-models.service";
 import {
@@ -46,6 +46,8 @@ import {
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import { checkBillingLimits } from "../billing/usage-limit.middleware";
+import { getEffectiveBillingPlan } from "../billing/config";
 import {
   getAgentFactory,
   detectAgentId,
@@ -67,11 +69,9 @@ agentRoutes.use("*", unifiedAuthMiddleware);
  * GET /models - List available AI models, filtered by workspace settings.
  *
  * When the workspace has `enabledModels` (full objects saved by the settings
- * UI), those are returned directly -- no gateway fetch needed. Static
- * ALL_MODELS entries are merged in for metadata like `supportsThinking`.
+ * UI), those are merged with catalog data for metadata like `supportsThinking`.
  *
- * Falls back to the legacy `enabledModelIds` field, then to the static
- * ALL_MODELS list.
+ * Falls back to the legacy `enabledModelIds` field, then to the full catalog.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   const workspaceId =
@@ -83,7 +83,8 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
       .lean();
 
     if (ws?.settings?.enabledModels?.length) {
-      const staticMap = new Map(getAvailableModels().map(m => [m.id, m]));
+      const catalogModels = await getAvailableModels();
+      const catalogMap = new Map(catalogModels.map(m => [m.id, m]));
       const models = ws.settings.enabledModels.map(
         (em: {
           id: string;
@@ -91,8 +92,8 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
           provider: string;
           description?: string;
         }) => {
-          const staticModel = staticMap.get(em.id);
-          if (staticModel) return staticModel;
+          const catalogModel = catalogMap.get(em.id);
+          if (catalogModel) return catalogModel;
           return {
             id: em.id,
             provider: em.provider,
@@ -105,12 +106,12 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
     }
 
     if (ws?.settings?.enabledModelIds?.length) {
-      const models = getAvailableModels(ws.settings.enabledModelIds);
+      const models = await getAvailableModels(ws.settings.enabledModelIds);
       return c.json({ models });
     }
   }
 
-  const models = getAvailableModels();
+  const models = await getAvailableModels();
   return c.json({ models });
 });
 
@@ -119,16 +120,6 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
  * Used by the settings UI to show all models that can be enabled.
  */
 agentRoutes.get("/gateway-models", async (c: AuthenticatedContext) => {
-  if (!isGatewayMode()) {
-    return c.json(
-      {
-        success: false,
-        error: "Gateway mode is not enabled",
-      },
-      400,
-    );
-  }
-
   const models = await getGatewayModels();
   return c.json({ models });
 });
@@ -302,6 +293,33 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
 
+  // Load billing plan + enabled model IDs for plan-appropriate defaults and allowlists.
+  const wsForModels = await Workspace.findById(workspaceId).select(
+    "billing.plan billing.subscriptionStatus settings.enabledModelIds",
+  );
+  const effectivePlan = getEffectiveBillingPlan(wsForModels?.billing);
+  const wsEnabledModelIdsEarly = wsForModels?.settings?.enabledModelIds?.length
+    ? wsForModels.settings.enabledModelIds
+    : undefined;
+
+  // Resolve model early so billing checks run against the actual model used.
+  const available = await getAvailableModels(wsEnabledModelIdsEarly);
+  const isModelAllowed = wsEnabledModelIdsEarly?.length
+    ? wsEnabledModelIdsEarly.includes(modelId || "")
+    : available.some(m => m.id === modelId);
+  const resolvedModelId =
+    modelId && isModelAllowed
+      ? (modelId as string)
+      : effectivePlan === "free"
+        ? await getDefaultFreeModelId()
+        : await getDefaultModelId();
+
+  // Check billing limits (model access + usage quota)
+  const billingCheck = await checkBillingLimits(workspaceId, resolvedModelId);
+  if (!billingCheck.allowed) {
+    return c.json(billingCheck.error, billingCheck.statusCode || 402);
+  }
+
   if (!chatId || !ObjectId.isValid(chatId)) {
     return c.json(
       { error: "'chatId' is required and must be a valid ObjectId" },
@@ -357,10 +375,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     }
   }
 
-  // Load workspace for custom prompt, self-directive, and enabled models
+  // Load workspace for custom prompt and self-directive
   let workspaceCustomPrompt = "";
   let selfDirective = "";
-  let wsEnabledModelIds: string[] | undefined;
   try {
     const workspace = await Workspace.findById(workspaceId).select({
       settings: 1,
@@ -368,9 +385,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     });
     workspaceCustomPrompt = workspace?.settings?.customPrompt || "";
     selfDirective = workspace?.selfDirective || "";
-    if (workspace?.settings?.enabledModelIds?.length) {
-      wsEnabledModelIds = workspace.settings.enabledModelIds;
-    }
   } catch (err) {
     logger.warn("Failed to load workspace custom prompt", { error: err });
   }
@@ -528,24 +542,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const agentConfig = agentFactory(agentContext);
   const { systemPrompt, tools } = agentConfig;
 
-  // Resolve model: validate against available models, fall back to default
-  const defaultId = getDefaultModelId();
-  if (!defaultId) {
-    return c.json(
-      {
-        error: "No AI providers configured. Set at least one provider API key.",
-      },
-      503,
-    );
-  }
-  const available = getAvailableModels(wsEnabledModelIds);
-  const isModelAllowed =
-    isGatewayMode() && wsEnabledModelIds?.length
-      ? wsEnabledModelIds.includes(modelId || "")
-      : available.some(m => m.id === modelId);
-  const resolvedModelId = modelId && isModelAllowed ? modelId : defaultId;
   const model = getModel(resolvedModelId);
-  const modelDef = getModelById(resolvedModelId);
+  const modelDef = await getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
 
   // Sanitize messages to remove incomplete tool calls from interrupted streams

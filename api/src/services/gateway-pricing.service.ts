@@ -1,43 +1,21 @@
 /**
  * Gateway Pricing Service
  *
- * Fetches live model pricing from the Vercel AI Gateway API and caches it
- * in process memory. The cache lives for the duration of the Cloud Run
- * instance (refreshed every CACHE_TTL_MS) so we never rely on stale
- * static seed data.
+ * Provides detailed per-token-type pricing (input, output, cache_read,
+ * cache_write, reasoning) for cost calculation.
  *
- * Endpoint: https://ai-gateway.vercel.sh/v1/models
- *
- * Pricing values come back as per-token strings (e.g. "0.00000175").
- * We convert to per-million-token numbers for internal use.
+ * Consumes raw pricing data from the shared gateway-models cache to avoid
+ * duplicate fetches to https://ai-gateway.vercel.sh/v1/models.
  */
 
-import { isGatewayMode } from "../agent-lib/ai-models";
+import {
+  getGatewayRawPricingMap,
+  warmModelsCache,
+  type GatewayRawPricing,
+} from "./gateway-models.service";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
-
-// ---------------------------------------------------------------------------
-// Types matching the gateway /v1/models response shape
-// ---------------------------------------------------------------------------
-
-interface GatewayModelPricing {
-  input?: string;
-  output?: string;
-  input_cache_read?: string;
-  input_cache_write?: string;
-  output_reasoning?: string;
-}
-
-interface GatewayModel {
-  id: string;
-  type: string;
-  pricing?: GatewayModelPricing;
-}
-
-interface GatewayModelsResponse {
-  data: GatewayModel[];
-}
 
 // ---------------------------------------------------------------------------
 // Internal pricing format (per-million tokens)
@@ -55,115 +33,45 @@ export interface PricingRow {
   pricePerMillion: number;
 }
 
-// ---------------------------------------------------------------------------
-// In-memory cache
-// ---------------------------------------------------------------------------
-
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-const GATEWAY_API_URL = "https://ai-gateway.vercel.sh/v1/models";
-
-let cachedPricingMap: Map<string, PricingRow[]> | null = null;
-let cacheTimestamp = 0;
-let fetchInFlight: Promise<Map<string, PricingRow[]>> | null = null;
-
 function perTokenToPerMillion(perToken: string): number {
   return parseFloat(perToken) * 1_000_000;
 }
 
-function parseModelPricing(model: GatewayModel): PricingRow[] {
-  const p = model.pricing;
-  if (!p) return [];
-
+function parseRawPricing(raw: GatewayRawPricing): PricingRow[] {
   const rows: PricingRow[] = [];
 
-  if (p.input) {
+  if (raw.input) {
     rows.push({
       tokenType: "input",
-      pricePerMillion: perTokenToPerMillion(p.input),
+      pricePerMillion: perTokenToPerMillion(raw.input),
     });
   }
-  if (p.output) {
+  if (raw.output) {
     rows.push({
       tokenType: "output",
-      pricePerMillion: perTokenToPerMillion(p.output),
+      pricePerMillion: perTokenToPerMillion(raw.output),
     });
   }
-  if (p.input_cache_read) {
+  if (raw.input_cache_read) {
     rows.push({
       tokenType: "cache_read",
-      pricePerMillion: perTokenToPerMillion(p.input_cache_read),
+      pricePerMillion: perTokenToPerMillion(raw.input_cache_read),
     });
   }
-  if (p.input_cache_write) {
+  if (raw.input_cache_write) {
     rows.push({
       tokenType: "cache_write",
-      pricePerMillion: perTokenToPerMillion(p.input_cache_write),
+      pricePerMillion: perTokenToPerMillion(raw.input_cache_write),
     });
   }
-  if (p.output_reasoning) {
+  if (raw.output_reasoning) {
     rows.push({
       tokenType: "reasoning",
-      pricePerMillion: perTokenToPerMillion(p.output_reasoning),
+      pricePerMillion: perTokenToPerMillion(raw.output_reasoning),
     });
   }
 
   return rows;
-}
-
-async function fetchAllPricing(): Promise<Map<string, PricingRow[]>> {
-  const res = await fetch(GATEWAY_API_URL, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(10_000),
-  });
-
-  if (!res.ok) {
-    throw new Error(
-      `Gateway pricing fetch failed: ${res.status} ${res.statusText}`,
-    );
-  }
-
-  const body = (await res.json()) as GatewayModelsResponse;
-  const map = new Map<string, PricingRow[]>();
-
-  for (const model of body.data) {
-    if (model.type !== "language") continue;
-
-    const rows = parseModelPricing(model);
-    if (rows.length > 0) {
-      map.set(model.id, rows);
-    }
-  }
-
-  logger.info("Refreshed gateway pricing cache", { modelCount: map.size });
-  return map;
-}
-
-/**
- * Returns the full pricing map, fetching from the gateway if the cache
- * has expired. Deduplicates concurrent requests.
- */
-async function getPricingMap(): Promise<Map<string, PricingRow[]>> {
-  if (cachedPricingMap && Date.now() - cacheTimestamp < CACHE_TTL_MS) {
-    return cachedPricingMap;
-  }
-
-  if (fetchInFlight) return fetchInFlight;
-
-  fetchInFlight = fetchAllPricing()
-    .then(map => {
-      cachedPricingMap = map;
-      cacheTimestamp = Date.now();
-      fetchInFlight = null;
-      return map;
-    })
-    .catch(err => {
-      fetchInFlight = null;
-      logger.warn("Failed to fetch gateway pricing", { error: String(err) });
-      if (cachedPricingMap) return cachedPricingMap;
-      return new Map<string, PricingRow[]>();
-    });
-
-  return fetchInFlight;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,26 +86,24 @@ async function getPricingMap(): Promise<Map<string, PricingRow[]>> {
  * uses dash notation ("claude-opus-4-6"). We try both forms.
  */
 export async function lookupPricing(modelId: string): Promise<PricingRow[]> {
-  if (!isGatewayMode()) return [];
+  const rawMap = await getGatewayRawPricingMap();
 
-  const map = await getPricingMap();
-
-  const direct = map.get(modelId);
-  if (direct) return direct;
+  const direct = rawMap.get(modelId);
+  if (direct) return parseRawPricing(direct);
 
   // Try converting dashes to dots for Anthropic-style IDs:
   // "anthropic/claude-opus-4-6" → "anthropic/claude-opus-4.6"
   const dotVariant = modelId.replace(/(\d)-(?=\d)/g, "$1.");
   if (dotVariant !== modelId) {
-    const dotMatch = map.get(dotVariant);
-    if (dotMatch) return dotMatch;
+    const dotMatch = rawMap.get(dotVariant);
+    if (dotMatch) return parseRawPricing(dotMatch);
   }
 
   // Try converting dots to dashes for the reverse case
   const dashVariant = modelId.replace(/(\d)\.(?=\d)/g, "$1-");
   if (dashVariant !== modelId) {
-    const dashMatch = map.get(dashVariant);
-    if (dashMatch) return dashMatch;
+    const dashMatch = rawMap.get(dashVariant);
+    if (dashMatch) return parseRawPricing(dashMatch);
   }
 
   logger.debug("No pricing found for model", { modelId });
@@ -205,10 +111,8 @@ export async function lookupPricing(modelId: string): Promise<PricingRow[]> {
 }
 
 /**
- * Force-refresh the pricing cache. Useful on startup or after deploy.
+ * Force-refresh the pricing cache (delegates to the shared gateway-models cache).
  */
 export async function warmPricingCache(): Promise<void> {
-  cachedPricingMap = null;
-  cacheTimestamp = 0;
-  await getPricingMap();
+  await warmModelsCache();
 }

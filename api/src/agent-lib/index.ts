@@ -28,13 +28,10 @@ export { UNIVERSAL_PROMPT_V2 } from "./prompts/universal";
 // AI Models
 export type { AIModel, AIProvider } from "./ai-models";
 export {
-  ALL_MODELS,
-  isGatewayMode,
-  getConfiguredProviders,
   getAvailableModels,
-  getDefaultModelIds,
   getModelById,
   getDefaultModelId,
+  getDefaultFreeModelId,
   getUtilityModelId,
 } from "./ai-models";
 

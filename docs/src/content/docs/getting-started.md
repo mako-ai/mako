@@ -25,14 +25,14 @@ cp .env.example .env
 
 Edit `.env` with your configuration. Required:
 
-| Variable         | Default                          | Purpose                                                    |
-| ---------------- | -------------------------------- | ---------------------------------------------------------- |
-| `DATABASE_URL`   | `mongodb://localhost:27017/mako` | Application database                                       |
-| `ENCRYPTION_KEY` | —                                | Encryption for stored credentials (`openssl rand -hex 32`) |
-| `SESSION_SECRET` | —                                | Session security                                           |
-| `OPENAI_API_KEY` | —                                | AI features (at least one AI provider required)            |
+| Variable             | Default                          | Purpose                                                    |
+| -------------------- | -------------------------------- | ---------------------------------------------------------- |
+| `DATABASE_URL`       | `mongodb://localhost:27017/mako` | Application database                                       |
+| `ENCRYPTION_KEY`     | —                                | Encryption for stored credentials (`openssl rand -hex 32`) |
+| `SESSION_SECRET`     | —                                | Session security                                           |
+| `AI_GATEWAY_API_KEY` | —                                | AI features (Vercel AI Gateway — required)                 |
 
-Optional AI providers: `ANTHROPIC_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`.
+Optional: `OPENAI_API_KEY` (only needed for text embeddings).
 
 For OAuth login, set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and/or `GH_CLIENT_ID`/`GH_CLIENT_SECRET`.
 

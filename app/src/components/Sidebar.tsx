@@ -294,10 +294,19 @@ function Sidebar() {
               vertical: "bottom",
               horizontal: "right",
             }}
+            PaperProps={{
+              sx: {
+                minWidth: 300,
+              },
+            }}
           >
             {/* Workspace Switcher in User Menu */}
-            <Box sx={{ px: 2, py: 1, minWidth: 250 }}>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            <Box sx={{ px: 1.5, py: 1.25, minWidth: 0 }}>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ mb: 0.75, display: "block", letterSpacing: 0.2 }}
+              >
                 Workspace
               </Typography>
               <WorkspaceSwitcher />
