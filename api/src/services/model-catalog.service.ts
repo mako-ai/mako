@@ -10,7 +10,9 @@
 
 import {
   getGatewayModels,
+  getGatewayPricingMap,
   type GatewayModelInfo,
+  type GatewayModelPricing,
 } from "./gateway-models.service";
 import { loggers } from "../logging";
 
@@ -239,60 +241,6 @@ function lookupArenaScore(
 }
 
 // ---------------------------------------------------------------------------
-// Pricing helpers
-// ---------------------------------------------------------------------------
-
-interface GatewayModelPricing {
-  input?: string;
-  output?: string;
-}
-
-/**
- * Compute blended cost: (input + output) / 2 * 1M tokens.
- * The gateway models service doesn't expose pricing, so we fetch directly.
- */
-const GATEWAY_API_URL = "https://ai-gateway.vercel.sh/v1/models";
-
-let cachedPricingMap: Map<string, { input: number; output: number }> | null =
-  null;
-
-async function fetchPricingMap(): Promise<
-  Map<string, { input: number; output: number }>
-> {
-  if (cachedPricingMap) return cachedPricingMap;
-  const map = new Map<string, { input: number; output: number }>();
-  try {
-    const res = await fetch(GATEWAY_API_URL, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) throw new Error(`Pricing fetch failed: ${res.status}`);
-    const body = (await res.json()) as {
-      data: Array<{
-        id: string;
-        type: string;
-        pricing?: GatewayModelPricing;
-      }>;
-    };
-    for (const m of body.data) {
-      if (m.type !== "language" || !m.pricing?.input || !m.pricing?.output) {
-        continue;
-      }
-      map.set(m.id, {
-        input: parseFloat(m.pricing.input) * 1_000_000,
-        output: parseFloat(m.pricing.output) * 1_000_000,
-      });
-    }
-    cachedPricingMap = map;
-  } catch (err) {
-    logger.warn("Failed to fetch pricing for catalog", {
-      error: String(err),
-    });
-  }
-  return map;
-}
-
-// ---------------------------------------------------------------------------
 // Core: build catalog
 // ---------------------------------------------------------------------------
 
@@ -303,7 +251,7 @@ async function buildCatalog(): Promise<{
   const [gatewayModels, arenaScores, pricingMap] = await Promise.all([
     getGatewayModels(),
     fetchArenaScores(),
-    fetchPricingMap(),
+    getGatewayPricingMap(),
   ]);
 
   const models: CatalogModel[] = gatewayModels.map(gm =>
@@ -334,7 +282,7 @@ async function buildCatalog(): Promise<{
 function toCatalogModel(
   gm: GatewayModelInfo,
   arenaScores: Map<string, number>,
-  pricingMap: Map<string, { input: number; output: number }>,
+  pricingMap: Map<string, GatewayModelPricing>,
 ): CatalogModel {
   const supportsThinking = gm.tags.includes("reasoning");
   const pricing = pricingMap.get(gm.id);
@@ -485,7 +433,6 @@ export async function getUtilityModelIds(count = 3): Promise<string[]> {
 export async function warmCatalog(): Promise<void> {
   cachedCatalog = null;
   cachedFreeTierIds = null;
-  cachedPricingMap = null;
   cacheTimestamp = 0;
   await ensureCatalog();
 }
