@@ -1,0 +1,233 @@
+---
+title: "Full-Text Search in PostgreSQL: tsvector, tsquery, and GIN Indexes"
+description: "How to implement full-text search in PostgreSQL using tsvector and tsquery, ranking results, handling multiple languages, and indexing for performance."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "full-text-search", "tsvector", "tsquery"]
+date: "2026-04-15"
+---
+
+# Full-Text Search in PostgreSQL
+
+PostgreSQL has a built-in full-text search engine that handles stemming, stop words, ranking, and multiple languages. For most applications, it's good enough to avoid running a separate search service like Elasticsearch.
+
+It won't match Elasticsearch's relevance tuning or faceting, but it handles the common case -- "find documents containing these words" -- at zero operational overhead.
+
+## Core Concepts
+
+Full-text search in PostgreSQL works through two data types:
+
+- **`tsvector`**: A preprocessed representation of a document. Words are reduced to their lexeme (stem), stop words are removed, and positions are recorded.
+- **`tsquery`**: A search query: words and Boolean operators to match against a `tsvector`.
+
+The match operator is `@@`:
+
+```sql
+SELECT 'the quick brown fox jumps'::tsvector @@ 'fox'::tsquery;
+-- true
+
+SELECT to_tsvector('english', 'The quick brown foxes jumped over the lazy dogs')
+    @@ to_tsquery('english', 'jump & fox');
+-- true (stemming reduces "foxes" -> "fox", "jumped" -> "jump")
+```
+
+## tsvector: Document Preprocessing
+
+`to_tsvector(config, text)` tokenizes and normalizes a text string:
+
+```sql
+SELECT to_tsvector('english', 'The quick brown foxes jumped over the lazy dogs');
+-- 'brown':3 'dog':9 'fox':4 'jump':5 'lazi':8 'quick':2
+```
+
+Notice:
+- Stop words (`the`, `over`) are removed
+- `foxes` is stemmed to `fox`
+- `jumped` is stemmed to `jump`
+- `lazy` is stemmed to `lazi`
+- Positions are stored (`:3` means the word appeared in position 3)
+
+The first argument is the text search configuration. PostgreSQL ships with configurations for many languages: `english`, `french`, `german`, `spanish`, `simple` (no stemming), and others.
+
+```sql
+SELECT cfgname FROM pg_ts_config;
+-- Lists all available configurations
+```
+
+## tsquery: Search Expressions
+
+`to_tsquery(config, query)` parses a search expression:
+
+```sql
+-- AND: both words must appear
+to_tsquery('english', 'quick & fox')
+
+-- OR: either word
+to_tsquery('english', 'cat | dog')
+
+-- NOT: word must not appear
+to_tsquery('english', 'fox & !lazy')
+
+-- Phrase: words must appear adjacent in order
+phraseto_tsquery('english', 'quick brown fox')
+
+-- Prefix: word must start with this
+to_tsquery('english', 'jump:*')
+-- Matches: jump, jumper, jumping, jumped
+```
+
+For user-supplied input (search box queries), use `plainto_tsquery`, which treats the input as a list of space-separated words without requiring Boolean operators:
+
+```sql
+-- Safe for user input -- no syntax errors
+plainto_tsquery('english', 'quick brown fox')
+-- Equivalent to: 'quick' & 'brown' & 'fox'
+
+-- websearch_to_tsquery: handles "quoted phrases" and -exclusions
+websearch_to_tsquery('english', '"quick fox" -lazy')
+```
+
+Prefer `websearch_to_tsquery` for user-facing search boxes -- it parses natural search syntax similar to Google.
+
+## Basic Search
+
+```sql
+CREATE TABLE articles (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    body TEXT
+);
+
+INSERT INTO articles (title, body) VALUES
+('PostgreSQL performance tuning', 'Learn how to tune queries and indexes in PostgreSQL for faster results'),
+('Introduction to databases', 'A beginner guide to relational databases and SQL'),
+('Advanced JSON in PostgreSQL', 'Working with JSONB, operators, and GIN indexes');
+
+-- Search for articles about indexes
+SELECT id, title
+FROM articles
+WHERE to_tsvector('english', title || ' ' || body)
+    @@ websearch_to_tsquery('english', 'index');
+```
+
+## Ranking Results
+
+Use `ts_rank` or `ts_rank_cd` to order results by relevance:
+
+```sql
+SELECT
+    id,
+    title,
+    ts_rank(
+        to_tsvector('english', title || ' ' || body),
+        websearch_to_tsquery('english', 'index performance')
+    ) AS rank
+FROM articles
+WHERE to_tsvector('english', title || ' ' || body)
+    @@ websearch_to_tsquery('english', 'index performance')
+ORDER BY rank DESC;
+```
+
+`ts_rank` weights based on term frequency. `ts_rank_cd` also considers cover density (how close the search terms are to each other). For most use cases, `ts_rank` is fine.
+
+### Weighting title vs body
+
+You can give different weights (A/B/C/D) to different parts of a document, then tune `ts_rank` to value highly-weighted matches more:
+
+```sql
+-- Weight A (highest) for title, B for body
+SELECT
+    id,
+    title,
+    ts_rank(
+        setweight(to_tsvector('english', title), 'A') ||
+        setweight(to_tsvector('english', body), 'B'),
+        websearch_to_tsquery('english', 'index')
+    ) AS rank
+FROM articles
+ORDER BY rank DESC;
+```
+
+## Indexing for Performance
+
+Without an index, every full-text search is a full table scan. For any table you search repeatedly, add a GIN index.
+
+### Option 1: Index a stored tsvector column (recommended)
+
+```sql
+ALTER TABLE articles ADD COLUMN search_vector TSVECTOR;
+
+-- Populate it
+UPDATE articles SET search_vector =
+    setweight(to_tsvector('english', title), 'A') ||
+    setweight(to_tsvector('english', body), 'B');
+
+-- Index it
+CREATE INDEX idx_articles_search ON articles USING GIN (search_vector);
+
+-- Keep it up to date with a trigger
+CREATE FUNCTION articles_search_vector_update() RETURNS trigger AS $$
+BEGIN
+    NEW.search_vector :=
+        setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
+        setweight(to_tsvector('english', COALESCE(NEW.body,  '')), 'B');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER articles_search_vector_trigger
+BEFORE INSERT OR UPDATE ON articles
+FOR EACH ROW EXECUTE FUNCTION articles_search_vector_update();
+```
+
+Now search uses the pre-computed index:
+
+```sql
+SELECT id, title, ts_rank(search_vector, query) AS rank
+FROM articles, websearch_to_tsquery('english', 'index') query
+WHERE search_vector @@ query
+ORDER BY rank DESC;
+```
+
+### Option 2: Expression index (simpler, less flexible)
+
+```sql
+CREATE INDEX idx_articles_fts
+ON articles USING GIN (to_tsvector('english', title || ' ' || body));
+```
+
+Queries must use exactly the same expression to hit this index. Less flexible than the stored column approach.
+
+## Highlighting Matches
+
+`ts_headline` generates a snippet with matched terms highlighted:
+
+```sql
+SELECT
+    id,
+    title,
+    ts_headline(
+        'english',
+        body,
+        websearch_to_tsquery('english', 'index'),
+        'StartSel=<b>, StopSel=</b>, MaxWords=20, MinWords=10'
+    ) AS snippet
+FROM articles
+WHERE search_vector @@ websearch_to_tsquery('english', 'index');
+```
+
+`ts_headline` is slow on large texts -- it doesn't use the index, it re-processes the original text. Don't call it on thousands of rows.
+
+## Limitations
+
+PostgreSQL full-text search doesn't support:
+- Fuzzy matching (typos): use `pg_trgm` with `similarity()` for that
+- Synonyms out of the box: you can add custom dictionaries, but it's complex
+- Relevance tuning comparable to Elasticsearch's BM25 + boosting
+- Cross-language search in a single column (one configuration per query)
+
+For applications where search relevance is central to the product, Elasticsearch or Typesense are worth the operational overhead. For everything else, PostgreSQL FTS is a solid default.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

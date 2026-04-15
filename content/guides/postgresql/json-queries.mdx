@@ -1,0 +1,222 @@
+---
+title: "JSON and JSONB Queries in PostgreSQL"
+description: "A practical guide to querying JSON and JSONB data in PostgreSQL, covering operators, path expressions, indexing, and common patterns."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "json", "jsonb", "data-engineering"]
+date: "2026-04-15"
+---
+
+# JSON and JSONB Queries in PostgreSQL
+
+PostgreSQL has supported JSON storage since version 9.2, but the real power came in 9.4 with the `jsonb` type -- a binary representation that's stored decomposed and indexed. If you're storing JSON in PostgreSQL today, you should almost certainly be using `jsonb`.
+
+This guide covers both types, but the focus is on `jsonb` because that's what you'll use in production.
+
+## JSON vs JSONB: What's the Difference?
+
+| Feature | `json` | `jsonb` |
+|---|---|---|
+| Storage | Text, preserved as-is | Decomposed binary |
+| Insert speed | Faster | Slightly slower |
+| Query speed | Slower (re-parses each time) | Faster |
+| Indexing | Limited | GIN, GiST, hash |
+| Duplicate keys | Preserved (last wins) | Deduplicated |
+| Key ordering | Preserved | Not preserved |
+| Operators | Subset | Full set |
+
+For most use cases, use `jsonb`. Use `json` only if you need to preserve exact key ordering or whitespace (rare).
+
+## Core Extraction Operators
+
+These operators work on both `json` and `jsonb`.
+
+### `->` Extract as JSON
+
+Returns the value as a JSON/JSONB type (keeps objects as objects, arrays as arrays):
+
+```sql
+SELECT data -> 'name' FROM users;
+-- Returns: "Alice"  (a jsonb string, not a SQL text)
+```
+
+### `->>` Extract as Text
+
+Returns the value as SQL `text`:
+
+```sql
+SELECT data ->> 'name' FROM users;
+-- Returns: Alice  (a SQL text value)
+```
+
+Use `->>` when you want to compare with SQL text, cast to other types, or output to application code.
+
+### `#>` and `#>>` Path Extraction
+
+Navigate nested structures using an array of keys:
+
+```sql
+-- Get nested value as JSONB
+SELECT data #> '{address, city}' FROM users;
+
+-- Get nested value as text
+SELECT data #>> '{address, city}' FROM users;
+```
+
+## Practical Examples
+
+Create a sample table:
+
+```sql
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    data JSONB
+);
+
+INSERT INTO orders (data) VALUES
+('{"customer": "Alice", "total": 125.50, "items": [{"sku": "A1", "qty": 2}, {"sku": "B3", "qty": 1}], "shipping": {"city": "Berlin", "country": "DE"}}'),
+('{"customer": "Bob",   "total": 89.00,  "items": [{"sku": "C2", "qty": 5}],                               "shipping": {"city": "Paris",  "country": "FR"}}');
+```
+
+### Filter by a JSON field
+
+```sql
+SELECT id, data ->> 'customer' AS customer
+FROM orders
+WHERE data ->> 'customer' = 'Alice';
+```
+
+### Filter by nested field
+
+```sql
+SELECT id, data ->> 'customer' AS customer
+FROM orders
+WHERE data #>> '{shipping, country}' = 'DE';
+```
+
+### Cast to a SQL type for comparisons
+
+```sql
+SELECT id, (data ->> 'total')::numeric AS total
+FROM orders
+WHERE (data ->> 'total')::numeric > 100;
+```
+
+### Check key existence
+
+```sql
+-- Does the 'shipping' key exist?
+SELECT id FROM orders WHERE data ? 'shipping';
+
+-- Do ALL of these keys exist?
+SELECT id FROM orders WHERE data ?& ARRAY['customer', 'total'];
+
+-- Does ANY of these keys exist?
+SELECT id FROM orders WHERE data ?| ARRAY['discount', 'coupon'];
+```
+
+### Query inside JSON arrays
+
+Use `jsonb_array_elements` to unnest arrays:
+
+```sql
+SELECT o.id, item ->> 'sku' AS sku, (item ->> 'qty')::int AS qty
+FROM orders o,
+     jsonb_array_elements(o.data -> 'items') AS item
+WHERE (item ->> 'qty')::int > 1;
+```
+
+## JSONB Path Queries (PostgreSQL 12+)
+
+PostgreSQL 12 introduced `jsonpath`, a SQL/JSON standard for querying JSONB:
+
+```sql
+-- Find orders where any item has qty > 2
+SELECT id
+FROM orders
+WHERE data @@ '$.items[*].qty > 2';
+
+-- Extract all SKUs from all orders
+SELECT id, jsonb_path_query(data, '$.items[*].sku') AS sku
+FROM orders;
+```
+
+The `@@` operator returns a boolean -- useful in `WHERE` clauses. `jsonb_path_query` returns matching values.
+
+## Containment Operators
+
+```sql
+-- Does this document contain this sub-document?
+SELECT id FROM orders
+WHERE data @> '{"shipping": {"country": "DE"}}';
+
+-- Is this sub-document contained in the document?
+SELECT id FROM orders
+WHERE '{"customer": "Alice"}' <@ data;
+```
+
+`@>` (contains) is the most commonly used containment check and is supported by GIN indexes.
+
+## Indexing JSONB
+
+Without indexes, every JSONB query is a full table scan. For production data, add indexes.
+
+### GIN Index (best for `@>`, `?`, `?&`, `?|`)
+
+```sql
+CREATE INDEX idx_orders_data ON orders USING GIN (data);
+```
+
+This indexes every key-value pair in the document. It supports containment (`@>`) and key existence (`?`) operators.
+
+### Expression Index (best for filtering on a specific key)
+
+If you always filter on `data ->> 'customer'`, a GIN index on the whole document is overkill:
+
+```sql
+CREATE INDEX idx_orders_customer ON orders ((data ->> 'customer'));
+```
+
+### GIN jsonb_path_ops (smaller, faster for `@>`)
+
+```sql
+CREATE INDEX idx_orders_data_path ON orders USING GIN (data jsonb_path_ops);
+```
+
+`jsonb_path_ops` only supports `@>` and `@?`, but the index is smaller and faster for containment queries.
+
+## Updating JSONB Fields
+
+```sql
+-- Set a key (overwrites if exists)
+UPDATE orders SET data = jsonb_set(data, '{total}', '200.00') WHERE id = 1;
+
+-- Remove a key
+UPDATE orders SET data = data - 'discount' WHERE id = 1;
+
+-- Merge (PostgreSQL 9.5+)
+UPDATE orders SET data = data || '{"status": "shipped"}' WHERE id = 1;
+```
+
+## Common Mistakes
+
+**Forgetting to cast `->>` output**: `->>` returns `text`. Comparing with a number won't work:
+```sql
+-- Wrong: '125.50' = 100 is a text-to-integer comparison that errors or silently fails
+WHERE data ->> 'total' > 100
+
+-- Right
+WHERE (data ->> 'total')::numeric > 100
+```
+
+**Using `json` instead of `jsonb`**: `json` can't use GIN indexes, making large-table queries much slower.
+
+**Querying deeply nested arrays without unnesting**: You can't filter inside arrays with `->>` alone. Use `jsonb_array_elements` or `jsonb_path_query`.
+
+## Summary
+
+For most JSON work in PostgreSQL: use `jsonb`, add a GIN index, use `->>` to extract text for comparisons, `@>` for containment filters, and `jsonb_array_elements` or `jsonb_path_query` for arrays. The `jsonpath` syntax (PostgreSQL 12+) is worth learning for complex document traversal.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete for writing JSONB queries. Try it free at [mako.ai](https://mako.ai).

@@ -1,0 +1,187 @@
+---
+title: "Pivot Tables in PostgreSQL: crosstab, CASE, and FILTER"
+description: "How to create pivot tables in PostgreSQL using the crosstab() function from tablefunc, CASE expressions, and the FILTER clause. With working examples."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "pivot", "crosstab", "reporting"]
+date: "2026-04-15"
+---
+
+# Pivot Tables in PostgreSQL
+
+PostgreSQL doesn't have a built-in `PIVOT` keyword like some databases. Instead, you have three approaches:
+
+1. **`CASE` + aggregate**: Verbose but simple, no extension required
+2. **`FILTER` clause**: Cleaner syntax for the same pattern
+3. **`crosstab()` from tablefunc**: More concise, but requires the extension and has quirks
+
+All three produce the same output: rows of categories turned into columns.
+
+## Sample Data
+
+```sql
+CREATE TABLE sales (
+    region TEXT,
+    month TEXT,
+    revenue NUMERIC
+);
+
+INSERT INTO sales VALUES
+('North', 'Jan', 1200), ('North', 'Feb', 1500), ('North', 'Mar', 1100),
+('South', 'Jan',  900), ('South', 'Feb', 1000), ('South', 'Mar',  800),
+('East',  'Jan', 1400), ('East',  'Feb', 1300), ('East',  'Mar', 1600);
+```
+
+**Goal:** One row per region, with Jan/Feb/Mar as columns.
+
+## Method 1: CASE Expressions
+
+No extension needed. Works in any PostgreSQL version.
+
+```sql
+SELECT
+    region,
+    SUM(CASE WHEN month = 'Jan' THEN revenue ELSE 0 END) AS jan,
+    SUM(CASE WHEN month = 'Feb' THEN revenue ELSE 0 END) AS feb,
+    SUM(CASE WHEN month = 'Mar' THEN revenue ELSE 0 END) AS mar
+FROM sales
+GROUP BY region
+ORDER BY region;
+```
+
+Result:
+```
+ region |  jan  |  feb  |  mar  
+--------+-------+-------+-------
+ East   |  1400 |  1300 |  1600
+ North  |  1200 |  1500 |  1100
+ South  |   900 |  1000 |   800
+```
+
+This works well for a known, fixed set of categories. The downside is verbosity when there are many columns.
+
+## Method 2: FILTER Clause (PostgreSQL 9.4+)
+
+`FILTER` is cleaner syntax for the same pattern -- it filters which rows are passed to the aggregate:
+
+```sql
+SELECT
+    region,
+    SUM(revenue) FILTER (WHERE month = 'Jan') AS jan,
+    SUM(revenue) FILTER (WHERE month = 'Feb') AS feb,
+    SUM(revenue) FILTER (WHERE month = 'Mar') AS mar
+FROM sales
+GROUP BY region
+ORDER BY region;
+```
+
+Identical output. The `FILTER` version is slightly more readable and works with any aggregate function: `COUNT`, `AVG`, `MAX`, `MIN`, etc.
+
+```sql
+-- Count of orders per status per region
+SELECT
+    region,
+    COUNT(*) FILTER (WHERE status = 'shipped') AS shipped_count,
+    COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+    AVG(revenue) FILTER (WHERE status = 'shipped') AS avg_shipped_revenue
+FROM orders
+GROUP BY region;
+```
+
+## Method 3: crosstab() from tablefunc
+
+The `crosstab()` function lives in the `tablefunc` extension. Enable it once per database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS tablefunc;
+```
+
+### Basic crosstab
+
+`crosstab` takes a single SQL query that produces 3 columns: row identifier, category, value. You define the output columns in the calling `SELECT`.
+
+```sql
+SELECT *
+FROM crosstab(
+    'SELECT region, month, revenue
+     FROM sales
+     ORDER BY 1, 2'
+) AS pivot(region TEXT, jan NUMERIC, feb NUMERIC, mar NUMERIC);
+```
+
+**The order matters.** The inner query must be sorted by row identifier, then by category. The output columns must match the categories in alphabetical or sorted order.
+
+### The fragility problem
+
+The basic `crosstab` assigns values positionally. If a category is missing for a row, values shift left:
+
+```sql
+-- If 'East' has no 'Feb' row, its 'Mar' value will appear in the 'feb' column
+```
+
+To avoid this, use the two-argument version of `crosstab`, which takes a second query to define the explicit category list:
+
+```sql
+SELECT *
+FROM crosstab(
+    'SELECT region, month, revenue
+     FROM sales
+     ORDER BY 1',
+    'SELECT DISTINCT month FROM sales ORDER BY 1'
+) AS pivot(region TEXT, feb NUMERIC, jan NUMERIC, mar NUMERIC);
+```
+
+This version fills in `NULL` for missing category/row combinations, which is the correct behavior.
+
+### When to use crosstab vs CASE
+
+`crosstab()` is more concise for many columns, but has real footguns:
+- Requires an extension
+- Output column names must be manually specified (can't be dynamic)
+- Column order depends on the sort order of the category query
+
+**Recommendation:** For up to ~10 columns, `CASE` or `FILTER` is clearer and more maintainable. For wider pivots, `crosstab` saves typing but requires care with the category query.
+
+## Dynamic Pivots
+
+PostgreSQL doesn't support dynamic column generation in a single query. The column names must be known at query time.
+
+For a truly dynamic pivot (where categories are unknown until runtime), you have two options:
+
+### Option 1: Generate SQL in application code
+
+```python
+# Fetch distinct months first
+months = db.execute("SELECT DISTINCT month FROM sales ORDER BY 1").fetchall()
+
+# Build the SQL dynamically
+cols = ", ".join(
+    f"SUM(revenue) FILTER (WHERE month = '{m[0]}') AS {m[0].lower()}"
+    for m in months
+)
+query = f"SELECT region, {cols} FROM sales GROUP BY region ORDER BY region"
+result = db.execute(query)
+```
+
+### Option 2: Use `jsonb_object_agg` + application unpacking
+
+```sql
+SELECT region, jsonb_object_agg(month, revenue ORDER BY month) AS monthly
+FROM sales
+GROUP BY region;
+-- Returns: {"East": {"Feb": 1300, "Jan": 1400, "Mar": 1600}, ...}
+```
+
+Unpack the JSON in your application layer. This avoids dynamic SQL entirely, at the cost of doing the pivot in application code.
+
+## Common Mistakes
+
+**Using CASE without GROUP BY**: The CASE expression produces column values, but you still need `GROUP BY` and an aggregate (`SUM`, `MAX`, etc.) to collapse the rows.
+
+**Wrong sort order in crosstab**: The category values shift silently if the inner query isn't sorted correctly. Always use the two-argument form in production.
+
+**Assuming PostgreSQL has a `PIVOT` keyword**: It doesn't. Every solution here requires explicit column specification.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete for building analytical queries. Try it free at [mako.ai](https://mako.ai).

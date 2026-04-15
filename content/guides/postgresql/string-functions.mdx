@@ -1,0 +1,223 @@
+---
+title: "PostgreSQL String Functions: A Practical Reference"
+description: "How to manipulate text in PostgreSQL: substring, concat, trim, regexp_replace, split_part, format, and more -- with real-world examples."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "string-functions", "text", "data-cleaning"]
+date: "2026-04-15"
+---
+
+# PostgreSQL String Functions
+
+PostgreSQL has a large library of string functions. This guide covers the ones that come up repeatedly in practice: text extraction, cleaning, pattern matching, and formatting.
+
+## Length and Case
+
+```sql
+SELECT length('PostgreSQL');       -- 10
+SELECT char_length('hello');       -- 5 (same as length for text)
+SELECT octet_length('hello');      -- 5 (bytes, not characters -- differs for multibyte)
+
+SELECT upper('hello world');       -- HELLO WORLD
+SELECT lower('Hello World');       -- hello world
+SELECT initcap('hello world');     -- Hello World
+```
+
+## Concatenation
+
+```sql
+-- Operator: || propagates NULL
+SELECT 'hello' || ' ' || 'world';   -- hello world
+SELECT 'hello' || NULL;             -- NULL
+
+-- concat() ignores NULLs
+SELECT concat('hello', NULL, ' world');    -- hello world
+
+-- concat_ws() inserts a separator between non-null values
+SELECT concat_ws(', ', 'Alice', NULL, 'Berlin', 'DE');
+-- Alice, Berlin, DE
+```
+
+`concat_ws` is particularly useful for building comma-separated lists or addresses where some fields might be NULL.
+
+## Trimming
+
+```sql
+SELECT trim('  hello  ');          -- hello (removes leading and trailing spaces)
+SELECT ltrim('  hello  ');         -- 'hello  ' (leading only)
+SELECT rtrim('  hello  ');         -- '  hello' (trailing only)
+
+-- Remove specific characters
+SELECT trim(BOTH 'x' FROM 'xxxhelloxx');    -- hello
+SELECT trim(LEADING '0' FROM '000123');     -- 123
+```
+
+## Substring Extraction
+
+```sql
+-- substring(string, start, length) -- 1-indexed
+SELECT substring('PostgreSQL', 1, 4);    -- Post
+SELECT substring('PostgreSQL', 5);       -- greSQL (to end)
+
+-- substring with regex
+SELECT substring('Phone: 555-1234' FROM '[0-9-]+');    -- 555-1234
+
+-- left() and right()
+SELECT left('PostgreSQL', 4);     -- Post
+SELECT right('PostgreSQL', 3);    -- SQL
+```
+
+## Position and Search
+
+```sql
+SELECT position('SQL' IN 'PostgreSQL');    -- 8 (1-indexed, 0 if not found)
+SELECT strpos('PostgreSQL', 'SQL');        -- 8 (same)
+
+-- Check if string contains substring
+SELECT 'PostgreSQL' LIKE '%SQL%';          -- true
+SELECT 'PostgreSQL' ILIKE '%sql%';         -- true (case-insensitive)
+```
+
+## Replace and Pattern Matching
+
+```sql
+-- Simple replace (all occurrences)
+SELECT replace('hello world world', 'world', 'SQL');
+-- hello SQL SQL
+
+-- regexp_replace(string, pattern, replacement [, flags])
+SELECT regexp_replace('Hello World 2024', '[0-9]+', 'XXXX');
+-- Hello World XXXX
+
+-- 'g' flag: replace all occurrences
+SELECT regexp_replace('phone: 555-1234, fax: 555-5678', '[0-9]', 'X', 'g');
+-- phone: XXX-XXXX, fax: XXX-XXXX
+
+-- 'i' flag: case-insensitive
+SELECT regexp_replace('Hello HELLO hello', 'hello', 'hi', 'gi');
+-- hi hi hi
+```
+
+## Splitting
+
+```sql
+-- split_part(string, delimiter, field_number) -- 1-indexed
+SELECT split_part('alice@example.com', '@', 1);   -- alice
+SELECT split_part('alice@example.com', '@', 2);   -- example.com
+SELECT split_part('a,b,c', ',', 3);               -- c
+
+-- Returns empty string for out-of-range field numbers (not an error)
+SELECT split_part('a,b', ',', 5);   -- '' (empty)
+
+-- string_to_array: splits into an array
+SELECT string_to_array('a,b,c', ',');   -- {a,b,c}
+
+-- unnest an array to rows
+SELECT unnest(string_to_array('a,b,c', ','));
+-- a
+-- b
+-- c
+```
+
+## Padding
+
+```sql
+SELECT lpad('42', 6, '0');     -- 000042 (left-pad to length 6)
+SELECT rpad('hello', 10, '.');  -- hello..... (right-pad)
+SELECT lpad('too long string', 5, '0');  -- too l (truncates if longer than length)
+```
+
+## Formatting
+
+```sql
+-- format() -- sprintf-style
+SELECT format('Hello, %s! You are %s years old.', 'Alice', 30);
+-- Hello, Alice! You are 30 years old.
+
+-- %I: quote as SQL identifier (for dynamic SQL)
+-- %L: quote as SQL literal (for dynamic SQL)
+SELECT format('SELECT * FROM %I WHERE id = %L', 'my_table', 'some value');
+-- SELECT * FROM my_table WHERE id = 'some value'
+
+-- to_char for number formatting
+SELECT to_char(12345.678, 'FM999,999.99');   -- 12,345.68
+SELECT to_char(0.45, 'FM90%');               -- 45% (FM removes leading space)
+```
+
+## Regex Matching
+
+```sql
+-- ~ operator: matches POSIX regex (case-sensitive)
+SELECT 'PostgreSQL 16' ~ '^PostgreSQL';   -- true
+SELECT 'PostgreSQL 16' ~ '[0-9]+';        -- true
+
+-- ~* operator: case-insensitive
+SELECT 'PostgreSQL 16' ~* 'postgresql';   -- true
+
+-- !~ and !~*: negation
+SELECT 'hello' !~ '[0-9]';               -- true (no digits)
+
+-- regexp_match: returns array of captured groups
+SELECT regexp_match('Phone: 555-1234', '([0-9]{3})-([0-9]{4})');
+-- {555,1234}
+
+-- regexp_matches: returns all matches (with 'g' flag)
+SELECT regexp_matches('cat bat sat', '[a-z]at', 'g');
+-- Returns rows: {cat}, {bat}, {sat}
+```
+
+## Common Data Cleaning Patterns
+
+### Normalize phone numbers
+
+```sql
+UPDATE contacts
+SET phone = regexp_replace(phone, '[^0-9]', '', 'g')
+WHERE phone !~ '^[0-9]+$';
+```
+
+### Extract domain from email
+
+```sql
+SELECT split_part(email, '@', 2) AS domain FROM users;
+```
+
+### Normalize whitespace
+
+```sql
+SELECT regexp_replace(trim(input), '\s+', ' ', 'g') AS cleaned
+FROM messy_data;
+```
+
+### Capitalize first letter only
+
+```sql
+SELECT initcap(lower(name)) FROM users;
+-- Handles "ALICE SMITH" -> "Alice Smith"
+```
+
+### Parse structured text
+
+```sql
+-- Extract amount from "USD 1,234.56"
+SELECT
+    split_part(amount_str, ' ', 1) AS currency,
+    replace(split_part(amount_str, ' ', 2), ',', '')::numeric AS amount
+FROM prices;
+```
+
+## Common Mistakes
+
+**`position()` returns 0 when not found, not NULL**: Unlike most functions, `position('x' IN 'hello')` returns `0` when not found. Check `> 0`, not `IS NOT NULL`.
+
+**`substring()` doesn't error on out-of-bounds**: `substring('hello', 10, 5)` returns an empty string, not an error.
+
+**`LIKE` vs `~`**: `LIKE` uses SQL wildcards (`%`, `_`). `~` uses POSIX regular expressions. They are different syntaxes for different use cases.
+
+**Case sensitivity of `~` vs `ILIKE`**: `~` is case-sensitive; use `~*` for case-insensitive. `LIKE` is case-sensitive; use `ILIKE` for case-insensitive.
+
+**`replace()` replaces ALL occurrences**: Unlike `regexp_replace` without `'g'` flag (which replaces only the first), `replace()` replaces every occurrence.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

@@ -1,0 +1,227 @@
+---
+title: "PostgreSQL Indexes Explained: B-tree, GIN, GiST, BRIN, and More"
+description: "Understand every PostgreSQL index type, when to use each, how they affect query performance, and common pitfalls to avoid."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "indexes", "performance", "data-engineering"]
+date: "2026-04-15"
+---
+
+# PostgreSQL Indexes Explained
+
+An index is a data structure that lets PostgreSQL find rows without scanning every row in a table. The tradeoff is write overhead and storage: every `INSERT`, `UPDATE`, and `DELETE` must update every index on the table.
+
+PostgreSQL ships with 7 index types: B-tree, Hash, GiST, SP-GiST, GIN, BRIN, and (as an extension) Bloom. In practice, 90% of use cases are covered by B-tree, GIN, and BRIN. The rest exist for specific data types and query patterns.
+
+## B-tree (Default)
+
+B-tree is PostgreSQL's default index. If you run `CREATE INDEX` without a `USING` clause, you get a B-tree.
+
+```sql
+CREATE INDEX idx_users_email ON users (email);
+-- Same as:
+CREATE INDEX idx_users_email ON users USING btree (email);
+```
+
+**Supports:** `=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `IS NULL`, `LIKE 'prefix%'` (prefix only)
+
+**Good for:** Most columns you filter, join, or sort on. Integers, timestamps, UUIDs, text, enums.
+
+**Not good for:** JSONB, arrays, full-text search, geometric data.
+
+### Composite B-tree indexes
+
+```sql
+CREATE INDEX idx_orders_user_created ON orders (user_id, created_at);
+```
+
+Column order matters. This index supports:
+- `WHERE user_id = 1`
+- `WHERE user_id = 1 AND created_at > '2024-01-01'`
+
+But it does **not** efficiently support:
+- `WHERE created_at > '2024-01-01'` (leading column skipped)
+
+Put the most selective column (or the one you use for equality) first.
+
+### Partial indexes
+
+Index only a subset of rows -- useful when most queries filter on a specific condition:
+
+```sql
+-- Only index active users
+CREATE INDEX idx_users_email_active ON users (email) WHERE active = true;
+
+-- Only index unprocessed orders
+CREATE INDEX idx_orders_pending ON orders (created_at) WHERE status = 'pending';
+```
+
+Partial indexes are smaller, faster, and don't bloat with rows you never query.
+
+### Expression indexes
+
+Index a computed value, not just a column:
+
+```sql
+-- Enable case-insensitive email lookups
+CREATE INDEX idx_users_email_lower ON users (lower(email));
+```
+
+Your query must use the same expression to hit the index:
+```sql
+SELECT * FROM users WHERE lower(email) = 'alice@example.com';
+```
+
+## Hash
+
+Hash indexes were unreliable before PostgreSQL 10, but have been WAL-logged and safe since then.
+
+```sql
+CREATE INDEX idx_sessions_token ON sessions USING hash (token);
+```
+
+**Supports:** `=` only.
+
+**Good for:** Equality lookups on long strings (UUIDs, tokens, hashes) where `=` is all you need. Smaller index size than B-tree for these cases.
+
+**Not good for:** Range queries, ordering, or partial matching.
+
+## GIN (Generalized Inverted Index)
+
+GIN indexes each element inside a composite value. Think of it as a "word index" for things that contain multiple items.
+
+```sql
+-- Index every key/value in a JSONB column
+CREATE INDEX idx_products_attrs ON products USING GIN (attributes);
+
+-- Index every word in a tsvector for full-text search
+CREATE INDEX idx_articles_tsv ON articles USING GIN (to_tsvector('english', body));
+
+-- Index every element in an array column
+CREATE INDEX idx_tags ON posts USING GIN (tags);
+```
+
+**Supports:** `@>`, `<@`, `?`, `?|`, `?&` (JSONB/array), `@@` (full-text)
+
+**Good for:** JSONB containment queries, array overlap queries, full-text search.
+
+**Not good for:** Simple scalar columns; B-tree is faster for those.
+
+**Build time:** GIN indexes build slowly and consume more disk than B-tree. For large tables, set `maintenance_work_mem` high before building.
+
+### `jsonb_path_ops` variant
+
+A smaller, faster GIN variant that supports only `@>` (containment):
+
+```sql
+CREATE INDEX idx_products_attrs_path ON products USING GIN (attributes jsonb_path_ops);
+```
+
+Use this if your queries are mostly `WHERE data @> '{...}'` and you don't need key-existence checks.
+
+## GiST (Generalized Search Tree)
+
+GiST is a framework for building indexes on complex data types. You use it indirectly through extensions.
+
+```sql
+-- Geometric data (point, box, circle, polygon)
+CREATE INDEX idx_locations_point ON locations USING GIST (coordinates);
+
+-- Range types
+CREATE INDEX idx_bookings_range ON bookings USING GIST (date_range);
+
+-- Full-text (less common; GIN is usually faster)
+CREATE INDEX idx_articles_tsv ON articles USING GIST (to_tsvector('english', body));
+```
+
+**Supports:** Operators specific to the data type: `&&` (overlap), `@>` (contains), `<@` (within), distance operators (`<->`) for nearest-neighbor searches.
+
+**Good for:** Geospatial queries (with PostGIS), range type overlap queries, nearest-neighbor searches.
+
+**Build time:** Faster than GIN to build. Supports incremental updates better than GIN.
+
+## SP-GiST (Space-Partitioned GiST)
+
+SP-GiST supports non-balanced partitioned search trees (quad-trees, k-d trees, radix trees). Used primarily with PostGIS and point data.
+
+```sql
+CREATE INDEX idx_points ON locations USING spgist (point_column);
+```
+
+**Good for:** Geospatial point data, IP address range lookups (with `inet` operators), text prefix searches.
+
+## BRIN (Block Range Index)
+
+BRIN stores min/max values for ranges of physical disk blocks. The index is tiny, but only works when the physical data order correlates with the query predicate.
+
+```sql
+CREATE INDEX idx_events_created ON events USING BRIN (created_at);
+```
+
+**Supports:** `=`, `<`, `<=`, `>`, `>=`
+
+**Good for:** Very large tables where data is naturally ordered: time-series tables with an append-only `created_at`, log tables, sensor readings, event streams.
+
+**Not good for:** Tables with no natural physical order, columns with many distinct values scattered across the table.
+
+**Size:** A BRIN index on a billion-row table can be under 1 MB. A B-tree on the same table could be gigabytes.
+
+## Bloom (Extension)
+
+Bloom is a space-efficient probabilistic index (extension, not built-in) useful when you need to filter on multiple low-cardinality columns and a composite B-tree doesn't help.
+
+```sql
+CREATE EXTENSION bloom;
+CREATE INDEX idx_bloom ON records USING bloom (status, region, category);
+```
+
+It produces false positives (rows that match the index but fail the actual filter), so PostgreSQL re-checks every hit. Useful for AND conditions across many columns.
+
+## Choosing the Right Index
+
+| Scenario | Index type |
+|---|---|
+| Equality / range on scalar column | B-tree |
+| Equality only on long strings | Hash |
+| JSONB containment / key existence | GIN |
+| Array overlap (`&&`) / containment | GIN |
+| Full-text search | GIN (on `tsvector`) |
+| Geospatial (PostGIS) | GiST or SP-GiST |
+| Date range overlap | GiST (range type) |
+| Huge append-only time-series | BRIN |
+| Multi-column low-cardinality OR | Bloom |
+
+## Checking Index Usage
+
+Use `EXPLAIN (ANALYZE, BUFFERS)` to see whether your index is being hit:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM orders WHERE user_id = 42;
+```
+
+Look for "Index Scan" or "Bitmap Index Scan". If you see "Seq Scan", the planner decided a full table scan was cheaper -- often because the table is small, the index is on a low-selectivity column, or statistics are stale.
+
+```sql
+-- Update statistics if the planner is making bad choices
+ANALYZE orders;
+```
+
+## Common Mistakes
+
+**Indexing every column**: Indexes slow down writes. Index columns you actually query.
+
+**Wrong column order in composite indexes**: The leading column determines whether the index can be used.
+
+**Not using partial indexes**: If 90% of your queries filter `WHERE status = 'active'`, an index only on active rows is much faster.
+
+**Forgetting `CONCURRENTLY` on large tables**: `CREATE INDEX` locks the table. Use `CREATE INDEX CONCURRENTLY` in production:
+```sql
+CREATE INDEX CONCURRENTLY idx_orders_user_id ON orders (user_id);
+```
+
+**Ignoring bloat**: Indexes bloat over time with updates and deletes. Periodically run `REINDEX CONCURRENTLY` or use `pg_repack` on high-churn tables.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete for writing and analyzing queries. Try it free at [mako.ai](https://mako.ai).

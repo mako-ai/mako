@@ -1,0 +1,116 @@
+---
+title: "PostgreSQL CTE: A Guide to Common Table Expressions"
+description: "Learn how to use Common Table Expressions (CTEs) in PostgreSQL to write cleaner, more maintainable, and complex queries."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "cte", "data-engineering"]
+date: "2026-04-15"
+---
+
+# PostgreSQL CTE: A Guide to Common Table Expressions
+
+Common Table Expressions (CTEs) are a powerful way to structure complex queries in PostgreSQL. Often referred to as `WITH` queries, they allow you to define a temporary result set that you can reference within a larger `SELECT`, `INSERT`, `UPDATE`, or `DELETE` statement.
+
+For data engineers and developers, CTEs are essential for breaking down monolithic, unreadable queries into logical, manageable steps.
+
+## What is a CTE?
+
+A CTE acts like a temporary view that exists only for the duration of the query. Instead of nesting multiple subqueries within each other—which can quickly become a "pyramid of doom"—you define your components at the top and then use them below.
+
+### Basic Syntax
+
+The basic structure of a CTE involves the `WITH` keyword, followed by the name of the expression and the query that defines it.
+
+```sql
+WITH cte_name AS (
+    SELECT column1, column2
+    FROM your_table
+    WHERE condition
+)
+SELECT *
+FROM cte_name;
+```
+
+## Why Use CTEs?
+
+### 1. Improved Readability
+The most significant advantage of CTEs is how they clean up your code. By naming your subqueries, you give them semantic meaning, making it obvious to the next developer (or your future self) what each part of the query is doing.
+
+### 2. Reusability Within a Single Query
+Unlike a standard subquery, which you must redefine every time you want to use it, a CTE is defined once and can be referenced multiple times within the same statement.
+
+### 3. Handling Recursive Data
+PostgreSQL supports **Recursive CTEs**, which are indispensable for querying hierarchical data structures like organizational charts, file systems, or category trees.
+
+## Practical Examples
+
+### Example 1: Simplifying a Complex Join
+Imagine you need to find customers who have spent more than the average order value.
+
+**Without a CTE (Subquery approach):**
+```sql
+SELECT customer_name, total_spent
+FROM (
+    SELECT customer_name, SUM(amount) as total_spent
+    FROM orders
+    GROUP BY customer_name
+) AS customer_totals
+WHERE total_spent > (SELECT AVG(amount) FROM orders);
+```
+
+**With a CTE:**
+```sql
+WITH customer_totals AS (
+    SELECT customer_name, SUM(amount) as total_spent
+    FROM orders
+    GROUP BY customer_name
+)
+SELECT customer_name, total_spent
+FROM customer_totals
+WHERE total_spent > (SELECT AVG(total_spent) FROM customer_totals);
+```
+
+### Example 2: Recursive CTE for an Org Chart
+To traverse a hierarchy, you use the `RECURSIVE` keyword.
+
+```sql
+WITH RECURSIVE org_chart AS (
+    -- Base case: start with the CEO
+    SELECT employee_id, name, manager_id, 1 AS level
+    FROM employees
+    WHERE manager_id IS NULL
+
+    UNION ALL
+
+    -- Recursive step: join employees to their managers
+    SELECT e.employee_id, e.name, e.manager_id, oc.level + 1
+    FROM employees e
+    INNER JOIN org_chart oc ON e.manager_id = oc.employee_id
+)
+SELECT * FROM org_chart ORDER BY level;
+```
+
+## Performance Considerations
+
+In older versions of PostgreSQL, CTEs acted as "optimization barriers," meaning the database would materialize the CTE (write it to memory/disk) before running the rest of the query. This prevented the optimizer from pushing filters down into the CTE.
+
+Since **PostgreSQL 12**, the optimizer is much smarter. It can "inline" a CTE if it determines that doing so is more efficient. However, if you explicitly want to prevent inlining (for instance, to force a specific execution order or to use a materialized view-like behavior), you can use:
+
+```sql
+WITH cte_name AS MATERIALIZED (
+    ...
+)
+```
+
+## Common Pitfalls
+
+- **Overuse:** While CTEs improve readability, using too many can sometimes make the query flow harder to follow if they are excessively long.
+- **Memory Usage:** Materializing very large CTEs can consume significant memory. Monitor your `work_mem` settings if dealing with massive datasets.
+
+## Summary
+
+CTEs are a fundamental tool in the PostgreSQL toolkit. They transform "spaghetti SQL" into structured, professional code that is easier to debug, maintain, and scale.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

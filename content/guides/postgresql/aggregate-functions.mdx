@@ -1,0 +1,283 @@
+---
+title: "PostgreSQL Aggregate Functions: COUNT, SUM, AVG, ARRAY_AGG, and More"
+description: "How to use PostgreSQL aggregate functions with GROUP BY, HAVING, FILTER, DISTINCT, and ordered aggregates. Covers standard and advanced aggregates."
+database: "postgresql"
+category: "sql-how-to"
+tags: ["postgresql", "sql", "aggregate-functions", "group-by", "analytics"]
+date: "2026-04-15"
+---
+
+# PostgreSQL Aggregate Functions
+
+Aggregate functions collapse multiple rows into a single value. They're the foundation of analytical queries: counts, sums, averages, concatenations, and statistical measures.
+
+## Sample Schema
+
+```sql
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    customer_id INTEGER,
+    region TEXT,
+    product TEXT,
+    amount NUMERIC,
+    status TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+## Basic Aggregates
+
+```sql
+SELECT
+    COUNT(*)                    AS total_rows,
+    COUNT(amount)               AS rows_with_amount,  -- excludes NULLs
+    COUNT(DISTINCT customer_id) AS unique_customers,
+    SUM(amount)                 AS total_revenue,
+    AVG(amount)                 AS average_order,
+    MIN(amount)                 AS smallest_order,
+    MAX(amount)                 AS largest_order
+FROM orders;
+```
+
+The difference between `COUNT(*)` and `COUNT(column)`:
+- `COUNT(*)` counts all rows including those with NULLs in any column
+- `COUNT(amount)` counts only rows where `amount` is not NULL
+- `COUNT(DISTINCT amount)` counts distinct non-null values
+
+## GROUP BY
+
+`GROUP BY` partitions rows into groups, and aggregates are computed per group:
+
+```sql
+SELECT
+    region,
+    COUNT(*)   AS order_count,
+    SUM(amount) AS revenue,
+    AVG(amount) AS avg_order
+FROM orders
+GROUP BY region
+ORDER BY revenue DESC;
+```
+
+**Grouping by multiple columns:**
+
+```sql
+SELECT
+    region,
+    product,
+    SUM(amount) AS revenue
+FROM orders
+GROUP BY region, product
+ORDER BY region, revenue DESC;
+```
+
+Any column in `SELECT` that isn't an aggregate must appear in `GROUP BY`.
+
+## HAVING: Filter on Aggregates
+
+`WHERE` filters rows before grouping. `HAVING` filters groups after aggregation:
+
+```sql
+-- Only regions with more than 100 orders
+SELECT region, COUNT(*) AS order_count
+FROM orders
+GROUP BY region
+HAVING COUNT(*) > 100;
+
+-- Customers with total spend over 1000
+SELECT customer_id, SUM(amount) AS total
+FROM orders
+GROUP BY customer_id
+HAVING SUM(amount) > 1000
+ORDER BY total DESC;
+```
+
+## FILTER: Conditional Aggregation
+
+`FILTER (WHERE condition)` applies a condition to a specific aggregate, without affecting other aggregates or the row set:
+
+```sql
+SELECT
+    region,
+    COUNT(*)                                    AS total_orders,
+    COUNT(*) FILTER (WHERE status = 'shipped')  AS shipped,
+    COUNT(*) FILTER (WHERE status = 'pending')  AS pending,
+    SUM(amount) FILTER (WHERE status = 'shipped') AS shipped_revenue
+FROM orders
+GROUP BY region;
+```
+
+This replaces the `CASE WHEN ... END` pivot pattern with cleaner syntax. See also: [Pivot Tables in PostgreSQL](/guides/postgresql/pivot-table).
+
+## String Aggregation
+
+### string_agg
+
+Concatenates strings in a group, with a separator:
+
+```sql
+SELECT
+    customer_id,
+    string_agg(product, ', ' ORDER BY product) AS products_ordered
+FROM orders
+GROUP BY customer_id;
+-- customer_id | products_ordered
+-- 1           | Keyboard, Monitor, Mouse
+```
+
+The `ORDER BY` inside `string_agg` controls the order of concatenation.
+
+### array_agg
+
+Collects values into a PostgreSQL array:
+
+```sql
+SELECT
+    customer_id,
+    array_agg(product ORDER BY created_at) AS product_sequence
+FROM orders
+GROUP BY customer_id;
+-- Returns: {Mouse,Keyboard,Monitor}
+
+-- Remove NULLs
+SELECT array_agg(product) FILTER (WHERE product IS NOT NULL) FROM orders;
+
+-- Get distinct values
+SELECT array_agg(DISTINCT region) FROM orders;
+```
+
+## JSON Aggregation
+
+```sql
+-- Build a JSON object per group
+SELECT
+    customer_id,
+    json_agg(json_build_object('product', product, 'amount', amount)) AS order_details
+FROM orders
+GROUP BY customer_id;
+-- [{"product": "Mouse", "amount": 25.00}, {"product": "Keyboard", "amount": 79.00}]
+
+-- Build key-value pairs
+SELECT jsonb_object_agg(product, amount) FROM orders WHERE customer_id = 1;
+-- {"Mouse": 25.00, "Keyboard": 79.00}
+```
+
+## Statistical Aggregates
+
+PostgreSQL includes standard statistical functions:
+
+```sql
+SELECT
+    STDDEV(amount)        AS std_deviation,
+    STDDEV_POP(amount)    AS population_std_dev,
+    VARIANCE(amount)      AS variance,
+    CORR(amount, quantity) AS correlation,
+    REGR_SLOPE(amount, quantity)     AS regression_slope,
+    REGR_INTERCEPT(amount, quantity) AS regression_intercept
+FROM orders;
+```
+
+For percentiles, PostgreSQL uses ordered-set aggregates:
+
+```sql
+SELECT
+    percentile_cont(0.5)  WITHIN GROUP (ORDER BY amount) AS median,
+    percentile_cont(0.95) WITHIN GROUP (ORDER BY amount) AS p95,
+    percentile_disc(0.5)  WITHIN GROUP (ORDER BY amount) AS median_disc
+FROM orders;
+```
+
+- `percentile_cont`: interpolates between values (continuous)
+- `percentile_disc`: returns an actual value from the dataset (discrete)
+
+```sql
+-- Multiple percentiles at once
+SELECT
+    percentile_cont(ARRAY[0.25, 0.5, 0.75, 0.95])
+        WITHIN GROUP (ORDER BY amount) AS quartiles
+FROM orders;
+-- {12.50, 45.00, 120.00, 350.00}
+```
+
+## Ordered Aggregates
+
+Several aggregates accept an `ORDER BY` clause inside them:
+
+```sql
+-- First and last value in a group (ordered)
+SELECT
+    region,
+    (array_agg(product ORDER BY created_at))[1]           AS first_product,
+    (array_agg(product ORDER BY created_at DESC))[1]      AS last_product
+FROM orders
+GROUP BY region;
+```
+
+For window-function-style "first/last value", see [Window Functions in PostgreSQL](/guides/postgresql/window-functions).
+
+## GROUPING SETS, ROLLUP, CUBE
+
+For multi-level subtotals without multiple queries:
+
+```sql
+-- ROLLUP: hierarchical totals (region total + grand total)
+SELECT region, product, SUM(amount) AS revenue
+FROM orders
+GROUP BY ROLLUP (region, product);
+-- Adds subtotal rows: (region, NULL) and (NULL, NULL)
+
+-- CUBE: all possible grouping combinations
+SELECT region, product, status, SUM(amount) AS revenue
+FROM orders
+GROUP BY CUBE (region, product, status);
+
+-- GROUPING SETS: explicit combinations
+SELECT region, product, SUM(amount) AS revenue
+FROM orders
+GROUP BY GROUPING SETS (
+    (region, product),  -- by region + product
+    (region),           -- by region only
+    ()                  -- grand total
+);
+```
+
+Use `GROUPING(column)` to distinguish subtotal rows from regular rows (returns 1 for subtotal, 0 for regular):
+
+```sql
+SELECT
+    CASE WHEN GROUPING(region) = 1 THEN 'All regions' ELSE region END AS region,
+    SUM(amount)
+FROM orders
+GROUP BY ROLLUP (region);
+```
+
+## Performance Notes
+
+**Aggregates on large tables without indexes are slow.** If you frequently aggregate by a specific column, index it -- not for the aggregation itself, but for the `WHERE` clause that filters before grouping.
+
+**COUNT(DISTINCT x) is slow on large tables.** It requires sorting or hashing the full distinct-value set. For approximate counts, the `pg_stat_statements` extension and `hll` (HyperLogLog) extension provide faster alternatives.
+
+**`string_agg` on large groups can produce very long strings.** Consider limiting with `LIMIT` inside a subquery or using `array_agg` + application-side joining.
+
+## Common Mistakes
+
+**Using a non-grouped column in SELECT without an aggregate:** This is a PostgreSQL error:
+```sql
+-- Error: column "orders.product" must appear in GROUP BY or be used in aggregate
+SELECT region, product, SUM(amount) FROM orders GROUP BY region;
+```
+
+**Filtering on aggregate in WHERE instead of HAVING:**
+```sql
+-- Error: aggregate functions not allowed in WHERE
+SELECT region, COUNT(*) FROM orders WHERE COUNT(*) > 10 GROUP BY region;
+
+-- Correct: use HAVING
+SELECT region, COUNT(*) FROM orders GROUP BY region HAVING COUNT(*) > 10;
+```
+
+**NULL handling in aggregates:** `SUM`, `AVG`, `MIN`, `MAX` all ignore NULLs. `COUNT(*)` counts NULLs; `COUNT(column)` doesn't. A group of all NULLs returns NULL from `SUM`, not 0. Use `COALESCE(SUM(amount), 0)` if you need 0.
+
+---
+
+Mako connects to PostgreSQL with AI-powered autocomplete for analytical queries. Try it free at [mako.ai](https://mako.ai).
