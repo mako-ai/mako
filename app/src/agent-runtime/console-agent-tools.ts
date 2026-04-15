@@ -380,66 +380,68 @@ export async function executeConsoleAgentTool({
       toolCallId,
     );
 
-    try {
-      const currentStore = useConsoleStore.getState();
-      const existingTab = currentStore.tabs[consoleId];
-      if (existingTab) {
-        currentStore.setActiveTab(consoleId);
-        settleActiveClientToolCall(toolName, toolCallId, {
-          success: true,
-          consoleId,
-          title: existingTab.title,
-          message: `Console "${existingTab.title}" is already open — switched to it.`,
-        });
-        return true;
-      }
-
-      const data = await currentStore.fetchConsoleContent(
-        workspaceId,
-        consoleId,
-        {
-          signal: abortController.signal,
-        },
-      );
-      if (abortController.signal.aborted) {
-        return true;
-      }
-
-      if (!data) {
-        settleActiveClientToolCall(toolName, toolCallId, {
-          success: false,
-          error: `Console ${consoleId} not found or access denied.`,
-        });
-        return true;
-      }
-
-      const title = data.name || data.path || "Untitled";
-      currentStore.openTab({
-        id: consoleId,
-        title,
-        content: data.content || "",
-        connectionId: data.connectionId,
-        databaseId: data.databaseId,
-        databaseName: data.databaseName,
-      });
-      currentStore.setActiveTab(consoleId);
-
+    const currentStoreForOpen = useConsoleStore.getState();
+    const existingTab = currentStoreForOpen.tabs[consoleId];
+    if (existingTab) {
+      currentStoreForOpen.setActiveTab(consoleId);
       settleActiveClientToolCall(toolName, toolCallId, {
         success: true,
         consoleId,
-        title,
-        message: `Console "${title}" opened successfully.`,
+        title: existingTab.title,
+        message: `Console "${existingTab.title}" is already open — switched to it.`,
       });
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        return true;
-      }
-
-      settleActiveClientToolCall(toolName, toolCallId, {
-        success: false,
-        error: `Failed to open console: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      return true;
     }
+
+    void (async () => {
+      try {
+        const data = await currentStoreForOpen.fetchConsoleContent(
+          workspaceId,
+          consoleId,
+          {
+            signal: abortController.signal,
+          },
+        );
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        if (!data) {
+          settleActiveClientToolCall(toolName, toolCallId, {
+            success: false,
+            error: `Console ${consoleId} not found or access denied.`,
+          });
+          return;
+        }
+
+        const title = data.name || data.path || "Untitled";
+        currentStoreForOpen.openTab({
+          id: consoleId,
+          title,
+          content: data.content || "",
+          connectionId: data.connectionId,
+          databaseId: data.databaseId,
+          databaseName: data.databaseName,
+        });
+        currentStoreForOpen.setActiveTab(consoleId);
+
+        settleActiveClientToolCall(toolName, toolCallId, {
+          success: true,
+          consoleId,
+          title,
+          message: `Console "${title}" opened successfully.`,
+        });
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          return;
+        }
+
+        settleActiveClientToolCall(toolName, toolCallId, {
+          success: false,
+          error: `Failed to open console: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    })();
     return true;
   }
 
@@ -484,65 +486,67 @@ export async function executeConsoleAgentTool({
       toolCallId,
     );
 
-    try {
-      const renderResult = await new Promise<{
-        success: boolean;
-        error?: string;
-      }>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          abortController.signal.removeEventListener("abort", handleAbort);
-          resolve({ success: true });
-        }, 5000);
+    void (async () => {
+      try {
+        const renderResult = await new Promise<{
+          success: boolean;
+          error?: string;
+        }>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            abortController.signal.removeEventListener("abort", handleAbort);
+            resolve({ success: true });
+          }, 5000);
 
-        const handleAbort = () => {
-          clearTimeout(timeout);
-          abortController.signal.removeEventListener("abort", handleAbort);
-          reject(new DOMException("Chart update cancelled", "AbortError"));
-        };
+          const handleAbort = () => {
+            clearTimeout(timeout);
+            abortController.signal.removeEventListener("abort", handleAbort);
+            reject(new DOMException("Chart update cancelled", "AbortError"));
+          };
 
+          if (abortController.signal.aborted) {
+            handleAbort();
+            return;
+          }
+
+          abortController.signal.addEventListener("abort", handleAbort, {
+            once: true,
+          });
+
+          onChartSpecChange({
+            spec: parsed.data,
+            onRenderResult: result => {
+              clearTimeout(timeout);
+              abortController.signal.removeEventListener("abort", handleAbort);
+              resolve(result);
+            },
+          });
+        });
+
+        if (renderResult.success) {
+          settleActiveClientToolCall(toolName, toolCallId, {
+            success: true,
+            message: "Chart rendered successfully in the results panel.",
+          });
+        } else {
+          settleActiveClientToolCall(toolName, toolCallId, {
+            success: false,
+            error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
+          });
+        }
+      } catch (error) {
         if (abortController.signal.aborted) {
-          handleAbort();
           return;
         }
 
-        abortController.signal.addEventListener("abort", handleAbort, {
-          once: true,
-        });
-
-        onChartSpecChange({
-          spec: parsed.data,
-          onRenderResult: result => {
-            clearTimeout(timeout);
-            abortController.signal.removeEventListener("abort", handleAbort);
-            resolve(result);
-          },
-        });
-      });
-
-      if (renderResult.success) {
-        settleActiveClientToolCall(toolName, toolCallId, {
-          success: true,
-          message: "Chart rendered successfully in the results panel.",
-        });
-      } else {
         settleActiveClientToolCall(toolName, toolCallId, {
           success: false,
-          error: `Chart failed to render: ${renderResult.error}. Fix the Vega-Lite spec and try again.`,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Chart rendering failed unexpectedly.",
         });
       }
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        return true;
-      }
-
-      settleActiveClientToolCall(toolName, toolCallId, {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Chart rendering failed unexpectedly.",
-      });
-    }
+    })();
     return true;
   }
 
@@ -623,50 +627,84 @@ export async function executeConsoleAgentTool({
       }),
     );
 
-    try {
-      const startTime = Date.now();
-      const result = await currentStore.executeQuery(
-        workspaceId,
-        connectionId,
-        content,
-        {
-          executionId,
-          databaseName: targetConsole.databaseName,
-          databaseId: targetConsole.databaseId,
-          signal: abortController.signal,
-        },
-      );
-      clearTimeout(timeoutId);
-      const executionTime = Date.now() - startTime;
-
-      if (result.success) {
-        const data = result.rows || [];
-        const rowCount = Array.isArray(data) ? data.length : 1;
-        const preview = Array.isArray(data) ? data.slice(0, 50) : data;
-
-        window.dispatchEvent(
-          new CustomEvent("console-execution-result", {
-            detail: {
-              consoleId,
-              result: {
-                results: data,
-                executedAt: new Date().toISOString(),
-                resultCount: rowCount,
-                executionTime,
-                fields: result.fields,
-                pageInfo: result.pageInfo || null,
-              },
-            },
-          }),
+    // Fire-and-forget: don't block onToolCall while the query executes.
+    // The AI SDK's processUIMessageStream awaits onToolCall for each chunk,
+    // so a long-running await here blocks ALL subsequent SSE chunk processing
+    // (including other tool calls in the same step and the finish chunks).
+    // By returning immediately, the stream can close and other tools can
+    // settle. When this query completes, settleActiveClientToolCall calls
+    // addToolOutput which triggers auto-send once every tool has output.
+    void (async () => {
+      try {
+        const startTime = Date.now();
+        const result = await currentStore.executeQuery(
+          workspaceId,
+          connectionId,
+          content,
+          {
+            executionId,
+            databaseName: targetConsole.databaseName,
+            databaseId: targetConsole.databaseId,
+            signal: abortController.signal,
+          },
         );
+        clearTimeout(timeoutId);
+        const executionTime = Date.now() - startTime;
 
-        settleActiveClientToolCall(toolName, toolCallId, {
-          success: true,
-          rowCount,
-          preview,
-          message: `Query executed successfully. ${rowCount} row(s) returned.`,
-        });
-      } else {
+        if (result.success) {
+          const data = result.rows || [];
+          const rowCount = Array.isArray(data) ? data.length : 1;
+          const preview = Array.isArray(data) ? data.slice(0, 50) : data;
+
+          window.dispatchEvent(
+            new CustomEvent("console-execution-result", {
+              detail: {
+                consoleId,
+                result: {
+                  results: data,
+                  executedAt: new Date().toISOString(),
+                  resultCount: rowCount,
+                  executionTime,
+                  fields: result.fields,
+                  pageInfo: result.pageInfo || null,
+                },
+              },
+            }),
+          );
+
+          settleActiveClientToolCall(toolName, toolCallId, {
+            success: true,
+            rowCount,
+            preview,
+            message: `Query executed successfully. ${rowCount} row(s) returned.`,
+          });
+        } else {
+          const abortReason =
+            typeof abortController.signal.reason === "string"
+              ? abortController.signal.reason
+              : undefined;
+
+          window.dispatchEvent(
+            new CustomEvent("console-execution-result", {
+              detail: { consoleId, result: null },
+            }),
+          );
+
+          if (abortReason === "chat-stop") {
+            return;
+          }
+
+          settleActiveClientToolCall(toolName, toolCallId, {
+            success: false,
+            error:
+              abortReason === "query-timeout"
+                ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
+                : result.error || "Query execution failed.",
+          });
+        }
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+
         const abortReason =
           typeof abortController.signal.reason === "string"
             ? abortController.signal.reason
@@ -679,7 +717,7 @@ export async function executeConsoleAgentTool({
         );
 
         if (abortReason === "chat-stop") {
-          return true;
+          return;
         }
 
         settleActiveClientToolCall(toolName, toolCallId, {
@@ -687,35 +725,10 @@ export async function executeConsoleAgentTool({
           error:
             abortReason === "query-timeout"
               ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
-              : result.error || "Query execution failed.",
+              : error?.message || "Query execution failed unexpectedly.",
         });
       }
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-
-      const abortReason =
-        typeof abortController.signal.reason === "string"
-          ? abortController.signal.reason
-          : undefined;
-
-      window.dispatchEvent(
-        new CustomEvent("console-execution-result", {
-          detail: { consoleId, result: null },
-        }),
-      );
-
-      if (abortReason === "chat-stop") {
-        return true;
-      }
-
-      settleActiveClientToolCall(toolName, toolCallId, {
-        success: false,
-        error:
-          abortReason === "query-timeout"
-            ? `Query timed out after ${QUERY_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
-            : error?.message || "Query execution failed unexpectedly.",
-      });
-    }
+    })();
     return true;
   }
 
