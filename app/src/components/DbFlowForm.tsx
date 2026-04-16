@@ -116,6 +116,7 @@ interface FormData {
     keyColumns: string[];
     strategy: "update" | "ignore" | "replace" | "upsert";
   };
+  bulkMode?: "off" | "auto" | "on";
   paginationConfig?: {
     mode: "offset" | "keyset";
     keysetColumn?: string;
@@ -180,6 +181,7 @@ const DEFAULT_FORM_VALUES: FormData = {
   },
   syncMode: "full",
   batchSize: 2000,
+  bulkMode: "off",
   incrementalConfig: undefined,
   conflictConfig: undefined,
   paginationConfig: {
@@ -755,6 +757,7 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
             },
             syncMode: flow.syncMode as "full" | "incremental",
             batchSize: flow.batchSize || 2000,
+            bulkMode: (flow as any).bulkConfig?.mode || "off",
             incrementalConfig: flow.incrementalConfig
               ? {
                   trackingColumn: flow.incrementalConfig.trackingColumn || "",
@@ -896,6 +899,9 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
           },
           syncMode: data.syncMode,
           batchSize: data.batchSize,
+          bulkConfig: {
+            mode: data.bulkMode || "off",
+          },
         };
 
         // Add incremental config if applicable
@@ -2142,6 +2148,35 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             />
                           )}
                         />
+
+                        {/* Bulk Sync Mode */}
+                        {isBigQuerySource && (
+                          <Controller
+                            name="bulkMode"
+                            control={control}
+                            render={({ field }) => (
+                              <FormControl sx={{ maxWidth: 300 }}>
+                                <InputLabel>Bulk Sync</InputLabel>
+                                <Select
+                                  {...field}
+                                  value={field.value || "off"}
+                                  label="Bulk Sync"
+                                >
+                                  <MenuItem value="off">Off</MenuItem>
+                                  <MenuItem value="auto">
+                                    Auto (when supported)
+                                  </MenuItem>
+                                  <MenuItem value="on">On (required)</MenuItem>
+                                </Select>
+                                <FormHelperText>
+                                  Streams large tables directly from source to
+                                  destination via staging. Requires key columns
+                                  and a compatible destination.
+                                </FormHelperText>
+                              </FormControl>
+                            )}
+                          />
+                        )}
 
                         <Divider />
 

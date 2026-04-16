@@ -178,6 +178,11 @@ const flowSchema = z.object({
     )
     .optional(),
   batchSize: z.coerce.number().optional(),
+  bulkConfig: z
+    .object({
+      mode: z.enum(["auto", "on", "off"]).optional(),
+    })
+    .optional(),
 });
 
 export type Flow = z.infer<typeof flowSchema>;

@@ -26,7 +26,12 @@ import {
   syncMachineService,
 } from "../../sync-cdc/sync-state";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
-import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
+import {
+  hasCdcDestinationAdapter,
+  resolveCdcDestinationAdapter,
+  hasStreamStagingSupport,
+  buildCdcEntityLayout,
+} from "../../sync-cdc/adapters/registry";
 import {
   cdcBackfillService,
   forceDrainCdcFlow,
@@ -34,11 +39,7 @@ import {
   purgeSoftDeletesAfterBackfill,
 } from "../../sync-cdc/backfill";
 import { syncBackfillEntityFunction } from "./sync-entity";
-import {
-  canUseBulkRead,
-  streamBigQueryViaStorageApi,
-  getClickHouseMaxTrackingValue,
-} from "../../services/bigquery-bulk-export.service";
+import { resolveBulkExtractor } from "../../sync-cdc/extractors/registry";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -791,143 +792,224 @@ export const flowFunction = inngest.createFunction(
           },
         );
 
-        // ============ BULK READ (BigQuery Storage Read API) ============
-        const bulkReadResult = await step.run("check-bulk-read", async () => {
-          const sourceConn = await DatabaseConnection.findById(
-            flow.databaseSource!.connectionId,
-          );
+        // ============ BULK PIPELINE (capability-based) ============
+        const bulkCheckResult = await step.run(
+          "check-bulk-pipeline",
+          async () => {
+            const bulkMode = flow.bulkConfig?.mode || "off";
+            if (bulkMode === "off") {
+              return { useBulk: false as const, reason: "bulk mode is off" };
+            }
 
-          const canBulk = canUseBulkRead(
-            sourceConn?.type,
-            flow.bulkExportConfig,
-          );
+            const sourceConn = await DatabaseConnection.findById(
+              flow.databaseSource!.connectionId,
+            );
+            if (!sourceConn) {
+              return {
+                useBulk: false as const,
+                reason: "source connection not found",
+              };
+            }
 
-          if (!canBulk) {
+            const extractor = resolveBulkExtractor(sourceConn.type);
+            if (!extractor) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  `Bulk mode 'on' but no bulk extractor for source type '${sourceConn.type}'`,
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: `no bulk extractor for source type '${sourceConn.type}'`,
+              };
+            }
+
+            if (!flow.tableDestination?.connectionId) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  "Bulk mode 'on' but no table destination configured",
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: "no table destination configured",
+              };
+            }
+
+            const destConn = await DatabaseConnection.findById(
+              flow.tableDestination.connectionId,
+            );
+            if (!destConn) {
+              return {
+                useBulk: false as const,
+                reason: "destination connection not found",
+              };
+            }
+
+            const adapter = resolveCdcDestinationAdapter({
+              destinationType: destConn.type,
+              destinationDatabaseId: flow.destinationDatabaseId.toString(),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              tableDestination: {
+                connectionId: flow.tableDestination.connectionId.toString(),
+                schema: flow.tableDestination.schema || "default",
+                tableName: flow.tableDestination.tableName,
+              },
+            });
+
+            if (!hasStreamStagingSupport(adapter)) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  `Bulk mode 'on' but destination type '${destConn.type}' does not support stream staging`,
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: `destination '${destConn.type}' lacks stream staging support`,
+              };
+            }
+
+            const keyColumns = flow.conflictConfig?.keyColumns;
+            if (!keyColumns || keyColumns.length === 0) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  "Bulk mode 'on' but no key columns configured (required for staging merge)",
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: "no key columns configured",
+              };
+            }
+
             void appendExecutionLog(
               "info",
-              "Using chunked sync (bulk read not available)",
+              `Using bulk pipeline (${sourceConn.type} → ${destConn.type})`,
             );
-            return { useBulk: false as const };
-          }
+            return {
+              useBulk: true as const,
+              sourceType: sourceConn.type,
+              destType: destConn.type,
+            };
+          },
+        );
 
-          void appendExecutionLog(
-            "info",
-            "Using bulk read path (BigQuery Storage Read API → ClickHouse)",
-          );
-          return { useBulk: true as const };
-        });
-
-        if (bulkReadResult.useBulk) {
-          const streamResult = await step.run(
-            "bulk-stream-to-clickhouse",
+        if (bulkCheckResult.useBulk) {
+          const bulkResult = await step.run(
+            "bulk-extract-and-load",
             async () => {
-              void appendExecutionLog(
-                "info",
-                "Materializing query to temp table and streaming via Storage Read API...",
-              );
-
               const sourceConn = await DatabaseConnection.findById(
                 flow.databaseSource!.connectionId,
               );
-              if (!sourceConn) {
-                throw new Error("Source connection not found");
+              if (!sourceConn) throw new Error("Source connection not found");
+
+              const destConn = await DatabaseConnection.findById(
+                flow.tableDestination!.connectionId,
+              );
+              if (!destConn)
+                throw new Error("Destination connection not found");
+
+              const extractor = resolveBulkExtractor(sourceConn.type);
+              if (!extractor) throw new Error("Bulk extractor unavailable");
+
+              const adapter = resolveCdcDestinationAdapter({
+                destinationType: destConn.type,
+                destinationDatabaseId: flow.destinationDatabaseId.toString(),
+                destinationDatabaseName: flow.destinationDatabaseName,
+                tableDestination: {
+                  connectionId: flow.tableDestination!.connectionId.toString(),
+                  schema: flow.tableDestination!.schema || "default",
+                  tableName: flow.tableDestination!.tableName,
+                },
+              });
+
+              if (!hasStreamStagingSupport(adapter)) {
+                throw new Error("Adapter lost stream staging support");
               }
 
-              const destinationWriter = await createDestinationWriter(
-                {
-                  destinationDatabaseId: flow.destinationDatabaseId,
-                  destinationDatabaseName: flow.destinationDatabaseName,
-                  tableDestination: flow.tableDestination,
-                  dataSourceId: flow.databaseSource!.connectionId,
-                },
-                sourceConn.name,
-              );
-
-              let rowsWritten = 0;
-
-              const result = await streamBigQueryViaStorageApi({
-                sourceConnection: sourceConn,
-                sourceQuery: flow.databaseSource!.query,
-                syncMode: flow.syncMode,
-                incrementalConfig: flow.incrementalConfig,
-                batchSize: flow.batchSize || 50_000,
-                onBatch: async rows => {
-                  const writeResult = await destinationWriter.writeBatch(rows, {
-                    keyColumns: flow.conflictConfig?.keyColumns,
-                    conflictStrategy: "update",
-                    typeCoercions: flow.typeCoercions,
-                  });
-                  if (!writeResult.success) {
-                    throw new Error(
-                      `Failed to write batch: ${writeResult.error}`,
-                    );
-                  }
-                  rowsWritten += writeResult.rowsWritten;
-                  void appendExecutionLog(
-                    "info",
-                    `Streamed ${rowsWritten.toLocaleString()} rows to destination...`,
-                    { totalProcessed: rowsWritten },
-                  );
-                },
-                onProgress: totalRead => {
-                  void appendExecutionLog(
-                    "debug",
-                    `Read ${totalRead.toLocaleString()} rows from BigQuery`,
-                  );
-                },
+              const layout = buildCdcEntityLayout({
+                entity: "database_query",
+                tableName: flow.tableDestination!.tableName,
+                keyColumns: flow.conflictConfig?.keyColumns,
+                deleteMode: flow.deleteMode,
               });
 
               void appendExecutionLog(
                 "info",
-                `Bulk stream complete (${result.totalRows.toLocaleString()} rows)`,
-                { totalProcessed: result.totalRows },
+                "Materializing query and streaming via bulk extractor...",
               );
 
-              return { totalRows: result.totalRows, rowsWritten };
+              const extraction = await extractor.extract({
+                connection: sourceConn,
+                query: flow.databaseSource!.query,
+                syncMode: flow.syncMode,
+                incrementalConfig: flow.incrementalConfig,
+                trackingColumn: flow.incrementalConfig?.trackingColumn,
+              });
+
+              try {
+                await adapter.prepareStaging(layout, flowId);
+
+                const { loaded } = await adapter.loadStagingFromStream({
+                  rows: extraction.rows,
+                  layout,
+                  flowId,
+                  onProgress: rowsLoaded => {
+                    void appendExecutionLog(
+                      "info",
+                      `Streamed ${rowsLoaded.toLocaleString()} rows to staging`,
+                      { totalProcessed: rowsLoaded },
+                    );
+                  },
+                });
+
+                void appendExecutionLog(
+                  "info",
+                  `Staging complete (${loaded.toLocaleString()} rows), merging to live table...`,
+                  { totalProcessed: loaded },
+                );
+
+                await adapter.mergeFromStaging(layout, flow, flowId);
+
+                void appendExecutionLog(
+                  "info",
+                  `Bulk sync complete (${loaded.toLocaleString()} rows merged)`,
+                  { totalProcessed: loaded },
+                );
+
+                return {
+                  totalRows: loaded,
+                  maxTrackingValue: extraction.maxTrackingValue,
+                };
+              } finally {
+                await Promise.allSettled([
+                  extraction.cleanup(),
+                  adapter.cleanupStaging(layout, flowId),
+                ]);
+              }
             },
           );
 
           if (
             flow.syncMode === "incremental" &&
-            flow.incrementalConfig?.trackingColumn
+            flow.incrementalConfig?.trackingColumn &&
+            bulkResult.maxTrackingValue
           ) {
-            await step.run("bulk-update-tracking", async () => {
+            await step.run("bulk-save-tracking", async () => {
+              await Flow.findByIdAndUpdate(flowId, {
+                $set: {
+                  "incrementalConfig.lastValue": bulkResult.maxTrackingValue,
+                },
+              });
               void appendExecutionLog(
                 "info",
-                "Updating tracking value for incremental sync...",
+                `Tracking value updated: ${flow.incrementalConfig!.trackingColumn} = ${bulkResult.maxTrackingValue}`,
               );
-
-              const destConn = await DatabaseConnection.findById(
-                flow.tableDestination!.connectionId,
-              );
-              if (!destConn) return;
-
-              const maxVal = await getClickHouseMaxTrackingValue(
-                destConn,
-                flow.tableDestination!.schema || "default",
-                flow.tableDestination!.tableName,
-                flow.incrementalConfig!.trackingColumn,
-              );
-
-              if (maxVal) {
-                await Flow.findByIdAndUpdate(flowId, {
-                  $set: { "incrementalConfig.lastValue": maxVal },
-                });
-                void appendExecutionLog(
-                  "info",
-                  `Tracking value updated: ${flow.incrementalConfig!.trackingColumn} = ${maxVal}`,
-                );
-              }
             });
           }
 
-          await step.run("complete-execution", async () => {
+          await step.run("bulk-complete-execution", async () => {
             const completedAt = new Date();
-            void appendExecutionLog(
-              "info",
-              `Bulk sync completed (${streamResult.totalRows.toLocaleString()} rows)`,
-              { totalProcessed: streamResult.totalRows },
-            );
 
             if (executionId) {
               const db = Flow.db;
@@ -941,9 +1023,9 @@ export const flowFunction = inngest.createFunction(
                     status: "completed",
                     success: true,
                     stats: {
-                      recordsProcessed: streamResult.totalRows,
+                      recordsProcessed: bulkResult.totalRows,
                       syncedEntities: ["database_query"],
-                      mode: "bulk-read",
+                      mode: "bulk-pipeline",
                     },
                   },
                 },
@@ -958,10 +1040,17 @@ export const flowFunction = inngest.createFunction(
 
           return {
             success: true,
-            message: "Bulk read sync completed",
-            totalRows: streamResult.totalRows,
-            mode: "bulk-read",
+            message: "Bulk pipeline sync completed",
+            totalRows: bulkResult.totalRows,
+            mode: "bulk-pipeline",
           };
+        }
+
+        if (!bulkCheckResult.useBulk) {
+          void appendExecutionLog(
+            "debug",
+            `Bulk pipeline skipped: ${bulkCheckResult.reason}`,
+          );
         }
 
         // ============ CHUNKED EXECUTION (fallback) ============

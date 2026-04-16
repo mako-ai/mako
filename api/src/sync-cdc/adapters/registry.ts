@@ -69,6 +69,13 @@ export interface CdcDestinationAdapter {
     flowId: string,
     options?: { stagingSuffix?: string },
   ): Promise<void>;
+
+  loadStagingFromStream?(params: {
+    rows: AsyncIterable<Record<string, unknown>>;
+    layout: CdcEntityLayout;
+    flowId: string;
+    onProgress?: (rowsLoaded: number) => void;
+  }): Promise<{ loaded: number }>;
 }
 
 export function resolveCdcDestinationAdapter(params: {
@@ -143,6 +150,24 @@ export function hasStagingSupport(
 } {
   return Boolean(
     adapter?.loadStagingFromParquet &&
+      adapter?.mergeFromStaging &&
+      adapter?.cleanupStaging &&
+      adapter?.prepareStaging,
+  );
+}
+
+export function hasStreamStagingSupport(
+  adapter?: CdcDestinationAdapter,
+): adapter is CdcDestinationAdapter & {
+  loadStagingFromStream: NonNullable<
+    CdcDestinationAdapter["loadStagingFromStream"]
+  >;
+  mergeFromStaging: NonNullable<CdcDestinationAdapter["mergeFromStaging"]>;
+  cleanupStaging: NonNullable<CdcDestinationAdapter["cleanupStaging"]>;
+  prepareStaging: NonNullable<CdcDestinationAdapter["prepareStaging"]>;
+} {
+  return Boolean(
+    adapter?.loadStagingFromStream &&
       adapter?.mergeFromStaging &&
       adapter?.cleanupStaging &&
       adapter?.prepareStaging,

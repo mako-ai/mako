@@ -637,6 +637,99 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     };
   }
 
+  private static readonly STREAM_FLUSH_THRESHOLD = 1_000_000;
+
+  async loadStagingFromStream(params: {
+    rows: AsyncIterable<Record<string, unknown>>;
+    layout: CdcEntityLayout;
+    flowId: string;
+    onProgress?: (rowsLoaded: number) => void;
+  }): Promise<{ loaded: number }> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const db = this.getDatabase();
+    const stagingTable = this.getStagingTableName(
+      params.layout.tableName,
+      params.flowId,
+    );
+    const fullStaging = `${escId(db)}.${escId(stagingTable)}`;
+
+    const config = this.buildClientConfig(conn);
+    const client = createClient({
+      ...config,
+      request_timeout: 600_000,
+    });
+
+    try {
+      await client.command({
+        query: `DROP TABLE IF EXISTS ${fullStaging}`,
+      });
+
+      const liveTable = this.config.tableDestination.tableName;
+      const fullLive = `${escId(db)}.${escId(liveTable)}`;
+      let tableCreated = false;
+
+      try {
+        await client.command({
+          query: `CREATE TABLE ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
+        });
+        tableCreated = true;
+      } catch {
+        log.info(
+          "Live table not found, will create staging from first batch columns",
+          { stagingTable, liveTable },
+        );
+      }
+
+      let loaded = 0;
+      let buffer: Record<string, unknown>[] = [];
+
+      const flushBuffer = async () => {
+        if (buffer.length === 0) return;
+
+        if (!tableCreated) {
+          const columns = Object.keys(buffer[0]);
+          const colDefs = columns
+            .map(c => `${escId(c)} Nullable(String)`)
+            .join(", ");
+          await client.command({
+            query: `CREATE TABLE IF NOT EXISTS ${fullStaging} (${colDefs}) ENGINE = MergeTree() ORDER BY tuple()`,
+          });
+          tableCreated = true;
+        }
+
+        await client.insert({
+          table: `${db}.${stagingTable}`,
+          values: buffer,
+          format: "JSONEachRow",
+        });
+        loaded += buffer.length;
+        buffer = [];
+        params.onProgress?.(loaded);
+      };
+
+      for await (const row of params.rows) {
+        buffer.push(row);
+        if (
+          buffer.length >= ClickHouseDestinationAdapter.STREAM_FLUSH_THRESHOLD
+        ) {
+          await flushBuffer();
+        }
+      }
+
+      await flushBuffer();
+
+      log.info("Loaded stream to ClickHouse staging", {
+        stagingTable,
+        loaded,
+      });
+
+      return { loaded };
+    } finally {
+      await client.close();
+    }
+  }
+
   /**
    * Load Parquet files from GCS directly into a ClickHouse table using
    * the gcs() table function. Requires GCS HMAC keys for authentication.

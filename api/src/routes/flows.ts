@@ -716,6 +716,13 @@ flowRoutes.post("/", async c => {
       if (body.batchSize) {
         flowData.batchSize = Number(body.batchSize);
       }
+      if (body.bulkConfig) {
+        flowData.bulkConfig = {
+          mode: ["auto", "on", "off"].includes(body.bulkConfig.mode)
+            ? body.bulkConfig.mode
+            : "off",
+        };
+      }
     } else {
       flowData.dataSourceId = new Types.ObjectId(body.dataSourceId);
       flowData.entityFilter = body.entityFilter || [];
@@ -1014,6 +1021,15 @@ flowRoutes.put("/:flowId", async c => {
       }
       if (body.batchSize !== undefined) {
         flow.batchSize = Number(body.batchSize);
+      }
+      if (body.bulkConfig !== undefined) {
+        flow.bulkConfig = body.bulkConfig
+          ? {
+              mode: ["auto", "on", "off"].includes(body.bulkConfig.mode)
+                ? body.bulkConfig.mode
+                : "off",
+            }
+          : undefined;
       }
     }
 
