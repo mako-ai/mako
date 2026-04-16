@@ -1,0 +1,177 @@
+---
+title: "MySQL Generated Columns: VIRTUAL vs STORED, Indexing, and Use Cases"
+description: "How MySQL generated columns work -- the difference between VIRTUAL and STORED, when to index them, practical use cases for computed columns, and the limitations to know."
+database: mysql
+category: sql-how-to
+tags: [mysql, generated-columns, virtual-column, stored-column, functional-index]
+date: 2026-04-16
+---
+
+# MySQL Generated Columns: VIRTUAL vs STORED, Indexing, and Use Cases
+
+A generated column's value is computed from an expression rather than stored directly. You define the expression once in the schema; MySQL derives the column value automatically on reads (VIRTUAL) or on writes (STORED).
+
+Generated columns were introduced in MySQL 5.7 and are supported in InnoDB.
+
+## Syntax
+
+```sql
+CREATE TABLE products (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  price DECIMAL(10,2) NOT NULL,
+  quantity INT NOT NULL,
+  total_value DECIMAL(12,2) GENERATED ALWAYS AS (price * quantity) VIRTUAL,
+  price_category VARCHAR(20) GENERATED ALWAYS AS (
+    CASE
+      WHEN price < 10 THEN 'budget'
+      WHEN price < 100 THEN 'mid-range'
+      ELSE 'premium'
+    END
+  ) STORED
+);
+```
+
+`GENERATED ALWAYS AS (expression)` is required syntax. `VIRTUAL` or `STORED` is optional -- `VIRTUAL` is the default if omitted.
+
+## VIRTUAL vs STORED
+
+### VIRTUAL
+
+- Value is computed at query time, on every read
+- No extra disk space used (the column is not persisted)
+- The expression is re-evaluated for every row returned
+- Can be indexed (the index stores the computed value, but the base column doesn't)
+
+### STORED
+
+- Value is computed and written to disk at insert/update time
+- Takes up disk space like a regular column
+- Reads are fast -- no computation needed
+- Can be indexed, used in foreign keys, and referenced by other generated columns
+
+### Which to choose
+
+Start with `VIRTUAL`. Use `STORED` when:
+- The expression is computationally expensive and the column is read far more often than written
+- You need to reference the column in a foreign key
+- You need to use the column in a partition expression
+- The column needs to be part of a full-text index
+
+For simple arithmetic and string manipulation, `VIRTUAL` with an index is usually the right choice.
+
+## Adding generated columns to existing tables
+
+```sql
+ALTER TABLE orders
+ADD COLUMN order_year INT GENERATED ALWAYS AS (YEAR(created_at)) VIRTUAL;
+```
+
+Adding a `VIRTUAL` generated column is nearly instant -- it's a metadata-only change. Adding a `STORED` generated column requires computing and writing the value for every existing row, which takes time proportional to table size.
+
+## Indexing generated columns
+
+The most valuable use of generated columns is creating indexes on computed values that would otherwise require a function call in `WHERE` clauses.
+
+Without a generated column, a function in `WHERE` prevents index use:
+
+```sql
+-- This can't use an index on created_at:
+SELECT * FROM orders WHERE YEAR(created_at) = 2025;
+```
+
+With a generated column + index:
+
+```sql
+ALTER TABLE orders
+ADD COLUMN order_year INT GENERATED ALWAYS AS (YEAR(created_at)) VIRTUAL,
+ADD INDEX idx_order_year (order_year);
+
+-- Now this uses the index:
+SELECT * FROM orders WHERE order_year = 2025;
+```
+
+MySQL 8.0+ also supports functional indexes directly, which are equivalent to a hidden generated column + index:
+
+```sql
+-- MySQL 8.0+ only, equivalent to the generated column approach:
+CREATE INDEX idx_order_year ON orders((YEAR(created_at)));
+
+-- Same query works:
+SELECT * FROM orders WHERE YEAR(created_at) = 2025;
+```
+
+Both approaches produce the same execution plan. Functional indexes are syntactically cleaner; explicit generated columns are more visible in the schema.
+
+## Practical use cases
+
+### JSON field extraction and indexing
+
+A common pattern when using JSON columns with frequently-queried fields:
+
+```sql
+CREATE TABLE events (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  payload JSON NOT NULL,
+  user_id INT GENERATED ALWAYS AS (payload->>'$.user_id') STORED,
+  event_type VARCHAR(50) GENERATED ALWAYS AS (payload->>'$.type') VIRTUAL,
+  INDEX idx_user_id (user_id),
+  INDEX idx_event_type (event_type)
+);
+
+-- Now these queries use indexes:
+SELECT * FROM events WHERE user_id = 42;
+SELECT * FROM events WHERE event_type = 'purchase';
+```
+
+Without generated columns, querying JSON fields requires full table scans.
+
+### Case-insensitive search on a case-sensitive column
+
+```sql
+ALTER TABLE customers
+ADD COLUMN email_lower VARCHAR(255) GENERATED ALWAYS AS (LOWER(email)) VIRTUAL,
+ADD UNIQUE INDEX idx_email_lower (email_lower);
+
+-- Case-insensitive lookup with index:
+SELECT * FROM customers WHERE email_lower = 'user@example.com';
+```
+
+### Computed totals
+
+```sql
+CREATE TABLE invoice_lines (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  unit_price DECIMAL(10,2) NOT NULL,
+  quantity INT NOT NULL,
+  tax_rate DECIMAL(5,4) NOT NULL DEFAULT 0.20,
+  line_total DECIMAL(12,2) GENERATED ALWAYS AS (unit_price * quantity) VIRTUAL,
+  line_total_with_tax DECIMAL(12,2) GENERATED ALWAYS AS
+    (unit_price * quantity * (1 + tax_rate)) STORED
+);
+```
+
+## Constraints and limitations
+
+- The expression can only reference columns in the same row (no subqueries, no references to other tables)
+- Cannot use non-deterministic functions (`NOW()`, `RAND()`, `UUID()`)
+- Cannot reference other generated columns in a `VIRTUAL` generated column expression (can reference them in `STORED`)
+- Cannot be used directly in `DEFAULT` expressions for other columns
+- `AUTO_INCREMENT` is not allowed
+- Cannot be written to directly -- `INSERT` or `UPDATE` on a generated column raises an error
+
+```sql
+-- This fails:
+UPDATE products SET total_value = 100 WHERE id = 1;
+-- ERROR 3105: The value specified for generated column 'total_value' is not allowed.
+```
+
+## Inspecting generated columns
+
+```sql
+SELECT column_name, generation_expression, extra
+FROM information_schema.columns
+WHERE table_name = 'products' AND table_schema = DATABASE()
+  AND extra LIKE '%GENERATED%';
+```
+
+Mako's query editor shows generated column values in query results just like regular columns -- useful for validating expression logic against real data. Try it free at [mako.ai](https://mako.ai).

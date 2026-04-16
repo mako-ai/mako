@@ -1,0 +1,198 @@
+---
+title: "MySQL Triggers: BEFORE and AFTER INSERT, UPDATE, DELETE -- Use Cases and Pitfalls"
+description: "How MySQL triggers work, how to write BEFORE and AFTER triggers for INSERT, UPDATE, and DELETE, practical use cases, and the performance and debugging pitfalls to know before using them."
+database: mysql
+category: sql-how-to
+tags: [mysql, triggers, before-insert, after-update, audit-log]
+date: 2026-04-16
+---
+
+# MySQL Triggers: BEFORE and AFTER INSERT, UPDATE, DELETE -- Use Cases and Pitfalls
+
+A trigger is a stored procedure that fires automatically when a specific DML event (`INSERT`, `UPDATE`, or `DELETE`) occurs on a table. MySQL supports triggers at the row level: the trigger body executes once per affected row, not once per statement.
+
+## Trigger timing and events
+
+Each trigger is defined on:
+- **Event:** `INSERT`, `UPDATE`, or `DELETE`
+- **Timing:** `BEFORE` (fires before the row change) or `AFTER` (fires after the row change is committed to the table)
+
+This gives six possible trigger types:
+- `BEFORE INSERT`, `AFTER INSERT`
+- `BEFORE UPDATE`, `AFTER UPDATE`
+- `BEFORE DELETE`, `AFTER DELETE`
+
+MySQL 8.0+ allows multiple triggers per event/timing combination on the same table. Use `FOLLOWS` or `PRECEDES` to control execution order.
+
+## Creating triggers
+
+```sql
+DELIMITER $$
+
+CREATE TRIGGER trg_users_before_insert
+BEFORE INSERT ON users
+FOR EACH ROW
+BEGIN
+  -- Normalize email to lowercase before inserting
+  SET NEW.email = LOWER(NEW.email);
+  -- Set created_at if not provided
+  IF NEW.created_at IS NULL THEN
+    SET NEW.created_at = NOW();
+  END IF;
+END$$
+
+DELIMITER ;
+```
+
+### NEW and OLD row references
+
+- In `INSERT` triggers: `NEW.column` contains the value being inserted
+- In `DELETE` triggers: `OLD.column` contains the value being deleted
+- In `UPDATE` triggers: `NEW.column` = new value, `OLD.column` = old value
+
+`BEFORE` triggers can modify `NEW` values (to transform data before it's written). `AFTER` triggers cannot modify `NEW` -- the row is already written.
+
+## Practical use cases
+
+### Audit logging (AFTER trigger)
+
+```sql
+CREATE TABLE orders_audit (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  changed_by VARCHAR(100),
+  old_status VARCHAR(50),
+  new_status VARCHAR(50),
+  changed_at DATETIME NOT NULL
+);
+
+DELIMITER $$
+
+CREATE TRIGGER trg_orders_after_update
+AFTER UPDATE ON orders
+FOR EACH ROW
+BEGIN
+  IF OLD.status != NEW.status THEN
+    INSERT INTO orders_audit
+      (order_id, changed_by, old_status, new_status, changed_at)
+    VALUES
+      (NEW.id, USER(), OLD.status, NEW.status, NOW());
+  END IF;
+END$$
+
+DELIMITER ;
+```
+
+The `IF OLD.status != NEW.status` check prevents logging when other columns change but status didn't.
+
+### Data validation (BEFORE trigger)
+
+```sql
+DELIMITER $$
+
+CREATE TRIGGER trg_orders_before_insert
+BEFORE INSERT ON orders
+FOR EACH ROW
+BEGIN
+  IF NEW.amount <= 0 THEN
+    SIGNAL SQLSTATE '45000'
+    SET MESSAGE_TEXT = 'Order amount must be positive';
+  END IF;
+  IF NEW.customer_id IS NULL THEN
+    SIGNAL SQLSTATE '45000'
+    SET MESSAGE_TEXT = 'Order must have a customer';
+  END IF;
+END$$
+
+DELIMITER ;
+```
+
+`SIGNAL SQLSTATE '45000'` raises a user-defined error and aborts the operation. `45000` is the conventional state for application-level errors.
+
+### Cascading denormalized updates
+
+```sql
+DELIMITER $$
+
+CREATE TRIGGER trg_order_items_after_insert
+AFTER INSERT ON order_items
+FOR EACH ROW
+BEGIN
+  -- Keep a denormalized total on the orders table
+  UPDATE orders
+  SET total_items = total_items + NEW.quantity,
+      total_amount = total_amount + (NEW.quantity * NEW.unit_price)
+  WHERE id = NEW.order_id;
+END$$
+
+DELIMITER ;
+```
+
+This approach works but creates hidden dependencies. If a developer adds items via `INSERT INTO order_items ... SELECT ...`, they may not realize the trigger is updating `orders`.
+
+### Soft-delete archiving (BEFORE DELETE)
+
+```sql
+DELIMITER $$
+
+CREATE TRIGGER trg_customers_before_delete
+BEFORE DELETE ON customers
+FOR EACH ROW
+BEGIN
+  INSERT INTO customers_archive
+  SELECT *, NOW() AS archived_at FROM customers WHERE id = OLD.id;
+END$$
+
+DELIMITER ;
+```
+
+## Managing triggers
+
+```sql
+-- List triggers in the current database:
+SHOW TRIGGERS;
+SHOW TRIGGERS LIKE 'orders%';  -- filter by table name pattern
+
+-- View trigger definition:
+SHOW CREATE TRIGGER trg_orders_after_update;
+
+-- Information schema:
+SELECT trigger_name, event_manipulation, event_object_table, action_timing
+FROM information_schema.triggers
+WHERE trigger_schema = DATABASE();
+
+-- Drop a trigger:
+DROP TRIGGER IF EXISTS trg_orders_after_update;
+```
+
+## Pitfalls
+
+### Performance overhead on every write
+
+Triggers execute for every row affected by DML. A bulk `UPDATE orders SET status = 'shipped' WHERE ...` that hits 10,000 rows fires the trigger 10,000 times. Triggers with `INSERT` statements in their body (like audit log triggers) are particularly expensive at scale. Measure before deploying triggers on high-write tables.
+
+### Hidden logic is hard to debug
+
+Triggers are invisible from the application layer. When data changes unexpectedly, triggers are often the last place developers look. Document triggers in your schema docs and naming conventions (e.g., `trg_tablename_timing_event`).
+
+### No triggers on triggers
+
+MySQL doesn't allow a trigger to directly fire another trigger. If trigger A inserts a row that would fire trigger B, trigger B does fire -- this is called a cascading trigger and can lead to infinite loops or unexpected behavior. MySQL limits trigger nesting depth to prevent infinite recursion.
+
+### REPLACE INTO fires DELETE + INSERT triggers
+
+`REPLACE INTO` on an existing row fires a `BEFORE DELETE`, `AFTER DELETE`, `BEFORE INSERT`, `AFTER INSERT` sequence. If your trigger does audit logging, you'll see a delete and insert entry, not an update.
+
+### No rollback from AFTER triggers... mostly
+
+If an `AFTER` trigger fails (raises an error), MySQL rolls back the triggering DML statement. But if the trigger's own `INSERT` or `UPDATE` fails silently (e.g., because you used `INSERT IGNORE`), the original row change is committed and the trigger failure is swallowed.
+
+## Triggers vs application logic
+
+Triggers enforce rules at the database level regardless of which application or script modifies the data. That's their main argument.
+
+Their main counterargument: they add invisible complexity, make schema changes harder (a trigger referencing a column you want to rename will break), and are difficult to test in isolation. Most modern applications prefer to handle audit logging, validation, and denormalization in application code or via event streams (CDC, message queues).
+
+If you use triggers, keep them short, name them clearly, and document their existence in your schema README.
+
+Mako's query editor executes DML and shows you the resulting state -- useful for verifying trigger behavior against real data. Try it free at [mako.ai](https://mako.ai).
