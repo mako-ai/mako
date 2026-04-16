@@ -1,0 +1,208 @@
+---
+title: "MySQL EXPLAIN and EXPLAIN ANALYZE: Reading Query Execution Plans"
+description: "How to use MySQL EXPLAIN, EXPLAIN FORMAT=JSON, and EXPLAIN ANALYZE (8.0.18+) to understand query execution plans, identify slow spots, and optimize queries."
+database: mysql
+category: sql-how-to
+tags: [mysql, explain, explain-analyze, query-optimization, execution-plan]
+date: 2026-04-16
+---
+
+# MySQL EXPLAIN and EXPLAIN ANALYZE: Reading Query Execution Plans
+
+`EXPLAIN` shows MySQL's plan for executing a query -- which tables it reads, in what order, which indexes it uses, and how many rows it estimates it will examine. It's the first tool to reach for when a query is slow.
+
+MySQL 8.0.18+ added `EXPLAIN ANALYZE`, which actually runs the query and reports real execution statistics alongside the estimates.
+
+## Basic EXPLAIN
+
+Prefix any `SELECT`, `INSERT`, `UPDATE`, `DELETE`, or `TABLE` statement with `EXPLAIN`:
+
+```sql
+EXPLAIN SELECT * FROM orders WHERE customer_id = 42 AND status = 'pending';
+```
+
+Output columns:
+
+| Column | Meaning |
+|---|---|
+| `id` | Query block identifier. Higher = executed later. |
+| `select_type` | `SIMPLE`, `PRIMARY`, `SUBQUERY`, `DERIVED`, `UNION`, etc. |
+| `table` | Which table (or derived table / union result) |
+| `partitions` | Partitions examined (NULL if table is not partitioned) |
+| `type` | Join/access type -- see below |
+| `possible_keys` | Indexes MySQL considered |
+| `key` | Index MySQL actually chose |
+| `key_len` | Bytes of the chosen index used (shorter = fewer columns used) |
+| `ref` | What was compared against the index |
+| `rows` | Estimated rows MySQL will examine |
+| `filtered` | Estimated % of rows surviving the `WHERE` filter |
+| `Extra` | Additional information |
+
+### The `type` column -- most important signal
+
+From best to worst:
+
+| Type | Meaning |
+|---|---|
+| `system` | One row in the table (constant) |
+| `const` | At most one matching row via primary key or unique index |
+| `eq_ref` | One row from the joined table per row in previous table (PK/unique join) |
+| `ref` | Multiple rows from a non-unique index |
+| `range` | Index range scan (BETWEEN, <, >, IN) |
+| `index` | Full index scan (all index entries, no data pages) |
+| `ALL` | Full table scan -- the one to avoid on large tables |
+
+Seeing `ALL` on a large table means no usable index. Add an index or rewrite the query.
+
+### The `Extra` column -- useful signals
+
+- `Using index` -- covering index (data fetched from index only, no table read)
+- `Using where` -- MySQL applies a `WHERE` filter after fetching rows
+- `Using temporary` -- MySQL created a temp table (often for `GROUP BY` or `DISTINCT`)
+- `Using filesort` -- MySQL performed a sort not served by an index
+- `Using index condition` -- Index Condition Pushdown (ICP) applied
+- `Impossible WHERE` -- the `WHERE` clause can never be true (query returns no rows)
+
+`Using temporary` and `Using filesort` together are a common sign of an expensive `GROUP BY` or `ORDER BY` that lacks a supporting index.
+
+## EXPLAIN FORMAT=JSON
+
+The tabular output omits cost details. `FORMAT=JSON` exposes the query cost model:
+
+```sql
+EXPLAIN FORMAT=JSON
+SELECT c.name, COUNT(o.id) AS order_count
+FROM customers c
+JOIN orders o ON o.customer_id = c.id
+WHERE c.country = 'DE'
+GROUP BY c.id, c.name;
+```
+
+Key fields in the JSON output:
+
+```json
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "124.50"   // total optimizer cost estimate
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "c",
+          "access_type": "ref",
+          "key": "idx_country",
+          "rows_examined_per_scan": 83,
+          "cost_info": {
+            "read_cost": "8.30",
+            "eval_cost": "8.30",
+            "prefix_cost": "16.60"
+          }
+        }
+      },
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ref",
+          "key": "idx_customer_id",
+          "rows_examined_per_scan": 3.2,
+          "cost_info": {
+            "read_cost": "53.44",
+            "eval_cost": "26.56",
+            "prefix_cost": "124.50"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+`query_cost` is a unit-less internal estimate (roughly proportional to I/O operations). Lower is better. When comparing query rewrites, compare `query_cost` values.
+
+`rows_examined_per_scan` combined with the access type tells you whether the optimizer's row estimate is reasonable. If it estimates 100 rows but your table has 1M rows and no index is used, the estimate is wrong and performance will be worse than predicted.
+
+## EXPLAIN ANALYZE (MySQL 8.0.18+)
+
+`EXPLAIN ANALYZE` runs the query and reports both estimates and actual measurements:
+
+```sql
+EXPLAIN ANALYZE
+SELECT c.name, COUNT(o.id) AS order_count
+FROM customers c
+JOIN orders o ON o.customer_id = c.id
+WHERE c.country = 'DE'
+GROUP BY c.id, c.name;
+```
+
+Output format (tree-style):
+
+```
+-> Group aggregate: count(o.id)  (actual time=0.234..45.2 rows=83 loops=1)
+    -> Nested loop inner join  (actual time=0.198..42.1 rows=267 loops=1)
+        -> Index lookup on c using idx_country (country='DE')
+           (actual time=0.112..0.843 rows=83 loops=1)
+        -> Index lookup on o using idx_customer_id (customer_id=c.id)
+           (actual time=0.421..0.491 rows=3.2 loops=83)
+```
+
+Each node shows: `actual time=first_row_ms..last_row_ms rows=actual_rows loops=count`
+
+- `first_row_ms` -- time to return first row
+- `last_row_ms` -- time to return all rows
+- `loops` -- how many times this node executed (important for nested loops)
+
+### Diagnosing row estimate mismatch
+
+When `rows` in `EXPLAIN` diverges significantly from actual rows in `EXPLAIN ANALYZE`, the optimizer is working with stale statistics. Fix with:
+
+```sql
+ANALYZE TABLE orders;
+ANALYZE TABLE customers;
+```
+
+### EXPLAIN ANALYZE with FORMAT=JSON (8.0.32+)
+
+```sql
+SET explain_json_format_version = 2;
+EXPLAIN ANALYZE FORMAT=JSON SELECT ...;
+```
+
+This adds `actual_rows`, `actual_loops`, and timing data to the JSON tree -- useful for parsing programmatically or comparing across environments.
+
+## Practical workflow
+
+1. **Start with basic EXPLAIN** -- check `type`, `key`, `rows`. If you see `ALL` on a table with >10k rows, add an index.
+2. **Add index and re-run** -- verify `type` improved to `ref` or `range`.
+3. **Use EXPLAIN ANALYZE** -- confirm actual rows match estimates. Large mismatches mean stale statistics.
+4. **Use FORMAT=JSON** -- compare `query_cost` between query variants when tuning.
+5. **Check `Extra`** -- `Using filesort` or `Using temporary` with high row counts often points to a missing composite index.
+
+## Common patterns
+
+**Missing index on JOIN column:**
+```sql
+-- Before: type=ALL on orders
+EXPLAIN SELECT * FROM customers c JOIN orders o ON o.customer_id = c.id;
+-- Fix:
+CREATE INDEX idx_orders_customer ON orders(customer_id);
+```
+
+**Non-sargable WHERE (can't use index):**
+```sql
+-- Bad: function on indexed column prevents index use
+WHERE YEAR(created_at) = 2025
+
+-- Good: range on the column directly
+WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01'
+```
+
+**Covering index to eliminate table fetch:**
+```sql
+-- If query only needs customer_id, status, created_at:
+CREATE INDEX idx_orders_covering ON orders(customer_id, status, created_at);
+-- Extra will show: Using index (no table read needed)
+```
+
+Mako's query editor displays `EXPLAIN` output inline alongside your results, making it easy to spot access type issues before a slow query hits production. Try it free at [mako.ai](https://mako.ai).

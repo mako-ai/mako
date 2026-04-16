@@ -1,0 +1,148 @@
+---
+title: "MySQL Upsert: INSERT ON DUPLICATE KEY UPDATE, REPLACE INTO, and INSERT IGNORE"
+description: "How to handle insert-or-update logic in MySQL using INSERT ON DUPLICATE KEY UPDATE, REPLACE INTO, and INSERT IGNORE -- with honest tradeoffs for each approach."
+database: mysql
+category: sql-how-to
+tags: [mysql, upsert, insert-on-duplicate-key, replace-into, insert-ignore]
+date: 2026-04-16
+---
+
+# MySQL Upsert: INSERT ON DUPLICATE KEY UPDATE, REPLACE INTO, and INSERT IGNORE
+
+MySQL doesn't have a single `UPSERT` keyword, but it provides three distinct mechanisms for "insert if not exists, update if it does." Each has different semantics, performance characteristics, and footguns.
+
+## The problem
+
+You have a row that may or may not exist. If it doesn't, insert it. If it does, update it (or do nothing). Doing this naively with a `SELECT` check followed by `INSERT` or `UPDATE` creates a race condition. MySQL's three mechanisms handle this atomically.
+
+All three rely on a **unique constraint violation** -- either a `PRIMARY KEY` or a `UNIQUE INDEX` collision -- to decide whether to insert or take the alternate action.
+
+## INSERT ON DUPLICATE KEY UPDATE
+
+The most flexible option. If the insert would cause a unique key collision, execute the `UPDATE` clause instead:
+
+```sql
+INSERT INTO page_views (page_id, view_count, last_viewed_at)
+VALUES (42, 1, NOW())
+ON DUPLICATE KEY UPDATE
+  view_count = view_count + 1,
+  last_viewed_at = NOW();
+```
+
+The `UPDATE` clause has access to `VALUES(column)` to reference the value you attempted to insert:
+
+```sql
+INSERT INTO product_prices (product_id, price, updated_at)
+VALUES (101, 29.99, NOW())
+ON DUPLICATE KEY UPDATE
+  price = VALUES(price),
+  updated_at = VALUES(updated_at);
+```
+
+Note: `VALUES()` is deprecated in MySQL 8.0.20+. The replacement uses aliases:
+
+```sql
+INSERT INTO product_prices (product_id, price, updated_at)
+VALUES (101, 29.99, NOW()) AS new_row
+ON DUPLICATE KEY UPDATE
+  price = new_row.price,
+  updated_at = new_row.updated_at;
+```
+
+### Batch upserts
+
+`ON DUPLICATE KEY UPDATE` works with multi-row inserts:
+
+```sql
+INSERT INTO inventory (product_id, warehouse_id, quantity)
+VALUES
+  (1, 'WH-A', 100),
+  (2, 'WH-A', 50),
+  (3, 'WH-A', 200)
+ON DUPLICATE KEY UPDATE
+  quantity = VALUES(quantity);
+```
+
+### AUTO_INCREMENT behavior
+
+A known side effect: when `ON DUPLICATE KEY UPDATE` fires and updates an existing row, MySQL still increments the `AUTO_INCREMENT` counter, even though no new row was created. This causes gaps in ID sequences. Not a bug, but something to be aware of in high-volume upsert scenarios.
+
+### The `affected_rows` return value
+
+- 1 = new row inserted
+- 2 = existing row updated
+- 0 = existing row found but no values changed
+
+Application code can use this to distinguish insert from update.
+
+## REPLACE INTO
+
+`REPLACE` first deletes the existing row, then inserts a new one. It looks simple:
+
+```sql
+REPLACE INTO user_preferences (user_id, theme, language)
+VALUES (7, 'dark', 'en');
+```
+
+But it has a critical consequence: **all columns not specified in the INSERT are reset to their default values or `NULL`**. This trips up developers who assume it behaves like an update.
+
+```sql
+-- Table: user_preferences(user_id PK, theme, language, created_at DEFAULT NOW())
+-- Existing row: (7, 'light', 'de', '2025-01-01')
+REPLACE INTO user_preferences (user_id, theme, language) VALUES (7, 'dark', 'en');
+-- Result: (7, 'dark', 'en', NOW())  -- created_at was reset to now
+```
+
+Because `REPLACE` deletes and re-inserts, it also fires `BEFORE DELETE` and `AFTER DELETE` triggers, followed by `BEFORE INSERT` and `AFTER INSERT` triggers. If you have foreign keys pointing to this row, the delete will fail or cascade depending on your constraint definition.
+
+**When to use `REPLACE INTO`:** When you genuinely want to replace all column values (log entries, config snapshots) and have no foreign key concerns. It's simpler to write but rarely the right choice for partial updates.
+
+**Performance note:** `REPLACE` is significantly slower than `ON DUPLICATE KEY UPDATE` on duplicate hits because it performs a delete + insert instead of an in-place update (roughly 32x slower in benchmarks with InnoDB).
+
+## INSERT IGNORE
+
+`INSERT IGNORE` silently discards rows that would cause a unique key violation:
+
+```sql
+INSERT IGNORE INTO processed_events (event_id, processed_at)
+VALUES ('evt_abc123', NOW());
+-- If event_id already exists, no error -- just skips the insert
+```
+
+This is useful for idempotent inserts where "already exists" is fine and you don't need to update anything.
+
+**The footgun:** `INSERT IGNORE` suppresses *all* errors, not just duplicate key violations. Type conversion errors, out-of-range values, and NOT NULL violations are also silently swallowed, with MySQL inserting the "closest valid value" instead. This can corrupt data silently.
+
+```sql
+-- Column 'status' is TINYINT. Inserting 999 with INSERT IGNORE stores 127.
+INSERT IGNORE INTO orders (id, status) VALUES (5, 999);
+```
+
+If you only want to suppress duplicate key errors, `ON DUPLICATE KEY UPDATE` with a no-op is safer:
+
+```sql
+INSERT INTO processed_events (event_id, processed_at)
+VALUES ('evt_abc123', NOW())
+ON DUPLICATE KEY UPDATE event_id = event_id;  -- no-op update, but errors are real
+```
+
+## Comparison
+
+| Feature | ON DUPLICATE KEY UPDATE | REPLACE INTO | INSERT IGNORE |
+|---|---|---|---|
+| On duplicate | Updates specified columns | Deletes + re-inserts | Silently skips |
+| Unspecified columns | Unchanged | Reset to default/NULL | N/A |
+| Triggers fired | INSERT + UPDATE | DELETE + INSERT | INSERT only |
+| Performance (dupe hit) | Fast (in-place update) | Slow (delete + insert) | Fast |
+| Foreign keys | Safe | Can break | Safe |
+| AUTO_INCREMENT gap | Yes | Yes | No |
+| Error handling | Real errors surface | Real errors surface | Suppresses all errors |
+
+## Choosing the right approach
+
+- Updating specific columns on conflict while preserving others: `ON DUPLICATE KEY UPDATE`
+- Tracking counters or timestamps atomically: `ON DUPLICATE KEY UPDATE`
+- Idempotent event processing where duplicates should be skipped: `INSERT IGNORE` (with caution about error suppression)
+- Complete row replacement where all columns are specified: `REPLACE INTO`
+
+Mako connects to MySQL and lets you run and test upsert logic against real data with immediate feedback. Try it free at [mako.ai](https://mako.ai).
