@@ -57,6 +57,22 @@ Standard connection string format:
 mysql://user:password@host:3306/database
 ```
 
+#### SSH Tunnel
+
+If your MySQL server is not directly accessible (e.g. it's behind a bastion host or inside a private VPC), Mako supports SSH tunneling. Enable it in the connection settings and provide:
+
+| Field | Description |
+|-------|-------------|
+| **SSH Host** | Hostname or IP of the SSH bastion/jumphost |
+| **SSH Port** | Port for SSH (default: 22) |
+| **SSH Username** | Username to authenticate with on the bastion |
+| **Auth Method** | `Password` or `Private Key` |
+| **Password / Private Key** | Credentials for SSH authentication. Private keys can be RSA/Ed25519. Optional passphrase supported. |
+| **Remote Host** | The MySQL host as seen *from* the bastion (often `127.0.0.1` or a private hostname) |
+| **Remote Port** | MySQL port on the remote side (default: 3306) |
+
+Mako opens the tunnel, forwards traffic through a local ephemeral port, and reuses the tunnel for subsequent queries (idle tunnels expire after 5 minutes).
+
 ### MongoDB
 
 When connecting via MongoDB Atlas, the connection string format differs from what Atlas shows:
