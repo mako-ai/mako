@@ -374,6 +374,35 @@ export const LlmUsage =
   (mongoose.models.LlmUsage as mongoose.Model<ILlmUsage>) ||
   mongoose.model<ILlmUsage>("LlmUsage", LlmUsageSchema);
 
+// ---------------------------------------------------------------------------
+// Model Catalog Snapshot — raw upstream API responses persisted per source
+// ---------------------------------------------------------------------------
+
+export interface IModelCatalogSnapshot extends Document {
+  _id: "gateway" | "arena" | "pricing";
+  data: any[];
+  fetchedAt: Date;
+  itemCount: number;
+}
+
+const ModelCatalogSnapshotSchema = new Schema(
+  {
+    _id: { type: String, enum: ["gateway", "arena", "pricing"] },
+    data: { type: Schema.Types.Mixed, default: [] },
+    fetchedAt: { type: Date, required: true },
+    itemCount: { type: Number, required: true, default: 0 },
+  },
+  { timestamps: false },
+);
+
+export const ModelCatalogSnapshot =
+  (mongoose.models
+    .ModelCatalogSnapshot as mongoose.Model<IModelCatalogSnapshot>) ||
+  mongoose.model<IModelCatalogSnapshot>(
+    "ModelCatalogSnapshot",
+    ModelCatalogSnapshotSchema,
+  );
+
 /**
  * Database connection helper
  */

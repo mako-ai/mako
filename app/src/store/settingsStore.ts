@@ -15,6 +15,10 @@ import type {
 } from "../lib/api-types";
 
 let modelsInFlight: Promise<void> | null = null;
+let modelsRetryCount = 0;
+const MAX_MODELS_RETRIES = 3;
+const MODELS_RETRY_DELAYS = [2_000, 5_000, 10_000];
+let modelsRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let gatewayModelsInFlight: Promise<void> | null = null;
 
 interface SettingsState {
@@ -83,14 +87,35 @@ export const useSettingsStore = create<SettingsState>()(
             set({ models });
 
             if (models.length > 0) {
+              modelsRetryCount = 0;
               const current = get().selectedModelId;
               const isAvailable = models.some(model => model.id === current);
               if (!isAvailable) {
                 set({ selectedModelId: models[0].id });
               }
+            } else if (modelsRetryCount < MAX_MODELS_RETRIES) {
+              const delay = MODELS_RETRY_DELAYS[modelsRetryCount] ?? 10_000;
+              modelsRetryCount++;
+              if (modelsRetryTimer) clearTimeout(modelsRetryTimer);
+              modelsRetryTimer = setTimeout(() => {
+                modelsRetryTimer = null;
+                modelsInFlight = null;
+                get().fetchModels();
+              }, delay);
             }
           } catch (error) {
-            set({ modelsError: "Failed to load models" });
+            if (modelsRetryCount < MAX_MODELS_RETRIES) {
+              const delay = MODELS_RETRY_DELAYS[modelsRetryCount] ?? 10_000;
+              modelsRetryCount++;
+              if (modelsRetryTimer) clearTimeout(modelsRetryTimer);
+              modelsRetryTimer = setTimeout(() => {
+                modelsRetryTimer = null;
+                modelsInFlight = null;
+                get().fetchModels();
+              }, delay);
+            } else {
+              set({ modelsError: "Failed to load models" });
+            }
           } finally {
             set({ modelsLoading: false });
             modelsInFlight = null;

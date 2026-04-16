@@ -20,6 +20,7 @@ import {
 } from "./functions/dashboard-refresh";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { usageReportingFunction } from "./functions/usage-reporting";
+import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -31,6 +32,7 @@ const baseFunctions = [
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
   usageReportingFunction,
+  modelCatalogRefreshFunction,
 ];
 
 const allWebhookFunctions = [
@@ -111,4 +113,5 @@ export {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
   usageReportingFunction,
+  modelCatalogRefreshFunction,
 };

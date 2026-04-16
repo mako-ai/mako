@@ -1273,6 +1273,7 @@ const Chat: React.FC<ChatProps> = ({
     sendMessage,
     status,
     error,
+    clearError,
     stop,
     setMessages,
     addToolOutput,
@@ -1557,6 +1558,36 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
+      // When the stream disconnects (e.g. 524 timeout), tool calls may be
+      // stuck in "input-available" state. The AI SDK blocks sendMessage until
+      // all tool calls are settled. Patch them to "error" so the chat remains
+      // usable.
+      setMessages(prev =>
+        prev.map(msg => {
+          if (msg.role !== "assistant") return msg;
+          const hasPending = msg.parts?.some(p => {
+            const pt = p.type as string;
+            if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+            const s = (p as Record<string, unknown>).state as string;
+            return s !== "output-available" && s !== "error";
+          });
+          if (!hasPending) return msg;
+          return {
+            ...msg,
+            parts: msg.parts.map(p => {
+              const pt = p.type as string;
+              if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+              const s = (p as Record<string, unknown>).state as string;
+              if (s === "output-available" || s === "error") return p;
+              return {
+                ...p,
+                state: "error" as const,
+                output: { success: false, error: "Stream disconnected" },
+              };
+            }) as any,
+          };
+        }),
+      );
     },
     onFinish: () => {
       if (!isExistingChatRef.current) {
@@ -1709,11 +1740,21 @@ const Chat: React.FC<ChatProps> = ({
                       p.type?.startsWith("tool-") ||
                       p.type === "dynamic-tool"
                     ) {
+                      const toolState = p.state as string | undefined;
+                      const isComplete =
+                        toolState === "output-available" ||
+                        toolState === "error";
                       return {
                         ...p,
-                        state: p.state || "output-available",
+                        state: isComplete ? toolState : "error",
                         input: p.input ?? {},
-                        output: p.output ?? null,
+                        output: isComplete
+                          ? (p.output ?? null)
+                          : (p.output ?? {
+                              success: false,
+                              error:
+                                "Interrupted — stream disconnected before tool completed",
+                            }),
                       };
                     }
                     // Unknown part type - pass through as-is
@@ -2088,7 +2129,18 @@ const Chat: React.FC<ChatProps> = ({
               // not JSON, fall through to generic
             }
             return (
-              <Alert severity="error" sx={{ fontSize: "0.875rem" }}>
+              <Alert
+                severity="error"
+                onClose={clearError}
+                sx={{
+                  fontSize: "0.875rem",
+                  maxHeight: 200,
+                  overflowY: "auto",
+                  "& .MuiAlert-message": {
+                    overflow: "auto",
+                  },
+                }}
+              >
                 {error.message}
               </Alert>
             );
