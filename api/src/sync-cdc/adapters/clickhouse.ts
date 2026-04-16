@@ -661,17 +661,13 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     });
 
     try {
-      await client.command({
-        query: `DROP TABLE IF EXISTS ${fullStaging}`,
-      });
-
       const liveTable = this.config.tableDestination.tableName;
       const fullLive = `${escId(db)}.${escId(liveTable)}`;
       let tableCreated = false;
 
       try {
         await client.command({
-          query: `CREATE TABLE ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
+          query: `CREATE TABLE IF NOT EXISTS ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
         });
         tableCreated = true;
       } catch {
