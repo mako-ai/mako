@@ -906,8 +906,9 @@ export const flowFunction = inngest.createFunction(
               const destConn = await DatabaseConnection.findById(
                 flow.tableDestination!.connectionId,
               );
-              if (!destConn)
+              if (!destConn) {
                 throw new Error("Destination connection not found");
+              }
 
               const extractor = resolveBulkExtractor(sourceConn.type);
               if (!extractor) throw new Error("Bulk extractor unavailable");
