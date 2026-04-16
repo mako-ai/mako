@@ -637,6 +637,54 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     };
   }
 
+  /**
+   * Load Parquet files from GCS directly into a ClickHouse table using
+   * the gcs() table function. Requires GCS HMAC keys for authentication.
+   */
+  async loadFromGcs(params: {
+    gcsUri: string;
+    targetTable: string;
+    hmacAccessKey: string;
+    hmacSecretKey: string;
+    columns?: string[];
+  }): Promise<{ loaded: number }> {
+    const dest = await this.resolveDestination();
+    const conn = dest.connection as any;
+    const config = this.buildClientConfig(conn);
+    const client = createClient(config);
+    const db = this.getDatabase();
+    const fullTable = `${escId(db)}.${escId(params.targetTable)}`;
+    const httpsUri = params.gcsUri.replace(
+      /^gs:\/\//,
+      "https://storage.googleapis.com/",
+    );
+    const colExpr = params.columns ? params.columns.map(escId).join(", ") : "*";
+
+    try {
+      const insertSql = `INSERT INTO ${fullTable}
+SELECT ${colExpr} FROM gcs(
+  '${escStr(httpsUri)}',
+  '${escStr(params.hmacAccessKey)}',
+  '${escStr(params.hmacSecretKey)}',
+  'Parquet'
+)`;
+
+      await client.command({
+        query: insertSql,
+        clickhouse_settings: { wait_end_of_query: 1 },
+      });
+
+      const countResult = await client.query({
+        query: `SELECT count() as cnt FROM ${fullTable}`,
+        format: "JSONEachRow",
+      });
+      const countRows = await countResult.json<{ cnt: string }>();
+      return { loaded: Number(countRows[0]?.cnt || 0) };
+    } finally {
+      await client.close();
+    }
+  }
+
   private parseConnectionString(connectionString: string): {
     url: string;
     username: string;

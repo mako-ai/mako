@@ -669,6 +669,9 @@ export interface IFlow extends Document {
   paginationConfig?: IPaginationConfig;
   typeCoercions?: ITypeCoercion[];
   batchSize?: number;
+  bulkExportConfig?: {
+    enabled?: boolean;
+  };
   backfillState?: {
     status?: BackfillStatus;
     runId?: string;
@@ -1846,6 +1849,9 @@ const FlowSchema = new Schema<IFlow>(
       default: 2000,
       min: 100,
       max: 50000,
+    },
+    bulkExportConfig: {
+      enabled: Boolean,
     },
     backfillState: {
       status: {
