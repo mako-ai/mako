@@ -126,8 +126,8 @@ function entityBackfillChip(e: {
   label: string;
   color: "success" | "info" | "default";
 } {
-  if (e.backlogCount > 0) return { label: "In progress", color: "info" };
   if (e.backfillDone) return { label: "Done", color: "success" };
+  if (e.backlogCount > 0) return { label: "In progress", color: "info" };
   return { label: "Not started", color: "default" };
 }
 
