@@ -874,8 +874,9 @@ export const cdcMaterializeFunction = inngest.createFunction(
     name: "CDC Materialize",
     retries: 0,
     timeouts: {
-      finish: "10m",
+      finish: "30m",
     },
+    cancelOn: [{ event: "cdc/materialize.cancel", match: "data.flowId" }],
     singleton: {
       key: "event.data.flowId + ':' + event.data.entity",
       mode: "skip",
