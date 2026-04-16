@@ -74,45 +74,50 @@ agentRoutes.use("*", unifiedAuthMiddleware);
  * Falls back to the legacy `enabledModelIds` field, then to the full catalog.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
-  const workspaceId =
-    c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
+  try {
+    const workspaceId =
+      c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
 
-  if (workspaceId) {
-    const ws = await Workspace.findById(workspaceId)
-      .select({ "settings.enabledModels": 1, "settings.enabledModelIds": 1 })
-      .lean();
+    if (workspaceId) {
+      const ws = await Workspace.findById(workspaceId)
+        .select({ "settings.enabledModels": 1, "settings.enabledModelIds": 1 })
+        .lean();
 
-    if (ws?.settings?.enabledModels?.length) {
-      const catalogModels = await getAvailableModels();
-      const catalogMap = new Map(catalogModels.map(m => [m.id, m]));
-      const models = ws.settings.enabledModels.map(
-        (em: {
-          id: string;
-          name: string;
-          provider: string;
-          description?: string;
-        }) => {
-          const catalogModel = catalogMap.get(em.id);
-          if (catalogModel) return catalogModel;
-          return {
-            id: em.id,
-            provider: em.provider,
-            name: em.name,
-            description: em.description || "",
-          };
-        },
-      );
-      return c.json({ models });
+      if (ws?.settings?.enabledModels?.length) {
+        const catalogModels = await getAvailableModels();
+        const catalogMap = new Map(catalogModels.map(m => [m.id, m]));
+        const models = ws.settings.enabledModels.map(
+          (em: {
+            id: string;
+            name: string;
+            provider: string;
+            description?: string;
+          }) => {
+            const catalogModel = catalogMap.get(em.id);
+            if (catalogModel) return catalogModel;
+            return {
+              id: em.id,
+              provider: em.provider,
+              name: em.name,
+              description: em.description || "",
+            };
+          },
+        );
+        return c.json({ models });
+      }
+
+      if (ws?.settings?.enabledModelIds?.length) {
+        const models = await getAvailableModels(ws.settings.enabledModelIds);
+        return c.json({ models });
+      }
     }
 
-    if (ws?.settings?.enabledModelIds?.length) {
-      const models = await getAvailableModels(ws.settings.enabledModelIds);
-      return c.json({ models });
-    }
+    const models = await getAvailableModels();
+    return c.json({ models });
+  } catch (err) {
+    logger.error("Failed to load models", { error: err });
+    return c.json({ models: [] }, 200);
   }
-
-  const models = await getAvailableModels();
-  return c.json({ models });
 });
 
 /**
