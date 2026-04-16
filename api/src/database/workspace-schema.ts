@@ -2336,7 +2336,7 @@ MaterializationRunSchema.index({ workspaceId: 1, requestedAt: -1 });
 MaterializationRunSchema.index({ status: 1, lastHeartbeat: 1 });
 MaterializationRunSchema.index(
   { requestedAt: 1 },
-  { expireAfterSeconds: 2592000 },
+  { expireAfterSeconds: 7 * 24 * 60 * 60 },
 );
 
 /**
