@@ -510,6 +510,23 @@ interface FlowStore extends FlowStoreState {
       { type: string; nullable?: boolean; required?: boolean }
     >;
   } | null>;
+  fetchEntitySchemaHealth: (
+    workspaceId: string,
+    flowId: string,
+    entity?: string,
+  ) => Promise<{
+    entities: Array<{
+      entity: string;
+      columns: Array<{
+        column: string;
+        liveType: string;
+        expectedType: string;
+        status: "match" | "drift";
+      }>;
+      hasDrift: boolean;
+    }>;
+    hasDrift: boolean;
+  } | null>;
   fetchFlowHistory: (
     workspaceId: string,
     flowId: string,
@@ -1261,6 +1278,33 @@ export const useFlowStore = create<FlowStore>()(
             };
           }>(
             `/workspaces/${workspaceId}/flows/${flowId}/schema?entity=${encodeURIComponent(entity)}`,
+          );
+          return response.success ? response.data : null;
+        } catch {
+          return null;
+        }
+      },
+
+      fetchEntitySchemaHealth: async (workspaceId, flowId, entity) => {
+        try {
+          const query = entity ? `?entity=${encodeURIComponent(entity)}` : "";
+          const response = await apiClient.get<{
+            success: boolean;
+            data: {
+              entities: Array<{
+                entity: string;
+                columns: Array<{
+                  column: string;
+                  liveType: string;
+                  expectedType: string;
+                  status: "match" | "drift";
+                }>;
+                hasDrift: boolean;
+              }>;
+              hasDrift: boolean;
+            };
+          }>(
+            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/schema-health${query}`,
           );
           return response.success ? response.data : null;
         } catch {

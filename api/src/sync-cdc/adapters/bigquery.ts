@@ -64,7 +64,9 @@ async function retryOnQuota<T>(
 // INSERT SELECT casts VARCHAR staging → typed live columns.
 // ---------------------------------------------------------------------------
 
-function mapLogicalTypeToBigQuery(logicalType: ConnectorLogicalType): string {
+export function mapLogicalTypeToBigQuery(
+  logicalType: ConnectorLogicalType,
+): string {
   switch (logicalType) {
     case "string":
       return "STRING";
@@ -96,24 +98,10 @@ function resolveTargetBqType(
   entitySchema: ConnectorEntitySchema | undefined,
   liveType: string | undefined,
 ): string {
-  // When the live table already existed, its types win so INSERT ... SELECT
-  // matches BigQuery (e.g. legacy STRING vs schema TIMESTAMP — avoids cast errors).
-  // When the table was just CREATE/ALTER'd from our schema, liveType comes from
-  // INFORMATION_SCHEMA after create (see mergeStagingToLive refresh) and matches schema.
+  // After evolveSchemaIfNeeded(), liveType already reflects the corrected type.
   if (liveType) return liveType;
   const schemaField = entitySchema?.fields[column];
-  if (schemaField) {
-    const schemaType = mapLogicalTypeToBigQuery(schemaField.type);
-    if (liveType && liveType.toUpperCase() !== schemaType.toUpperCase()) {
-      log.warn(
-        "Live table column type differs from connector schema; using live type to avoid INSERT failure. " +
-          "Recreate the destination table to adopt the correct schema type.",
-        { column, schemaType, liveType },
-      );
-      return liveType;
-    }
-    return schemaType;
-  }
+  if (schemaField) return mapLogicalTypeToBigQuery(schemaField.type);
   if (SYSTEM_COLUMN_TYPES[column]) return SYSTEM_COLUMN_TYPES[column];
   return "STRING";
 }
@@ -131,6 +119,7 @@ function buildCastExpression(colRef: string, targetType: string): string {
     case "FLOAT64":
       return `SAFE_CAST(${colRef} AS FLOAT64)`;
     case "STRING":
+      return `SAFE_CAST(${colRef} AS STRING)`;
     default:
       return colRef;
   }
@@ -457,9 +446,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         Array.from(stagingCols),
         entitySchema,
       );
-      // Re-read live columns from BigQuery so types match the created table (connector
-      // schema). Do not infer types only in JS — reset-entity + fresh CREATE must use
-      // TIMESTAMP etc. as actually defined in BQ, same as ongoing merges use live types.
       const refreshResult = await databaseConnectionService.executeQuery(
         destination,
         infoSchemaQuery,
@@ -485,6 +471,17 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         columnCount: liveCols.size,
       });
     }
+
+    // --- Schema evolution: correct drifted column types before merge ---
+    await this.evolveSchemaIfNeeded({
+      fullLive,
+      liveTable,
+      liveCols,
+      liveTypes,
+      entitySchema,
+      destination,
+      datasetLocation,
+    });
 
     const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
     const skippedLiveAdds: string[] = [];
@@ -703,6 +700,167 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       options?.stagingSuffix,
     );
     await this.dropStagingTable(stagingTable).catch(() => undefined);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Schema evolution — correct drifted live-table column types before merge.
+  //
+  // Follows Airbyte's BigqueryDirectLoadNativeTableOperations pattern:
+  //   1. ADD a temp column with the correct type
+  //   2. UPDATE to SAFE_CAST existing data into the temp column
+  //   3. Atomically RENAME the old column to a backup and the temp to the real name
+  //   4. DROP the backup column
+  //
+  // If any step fails for a column, that column is skipped and the merge
+  // proceeds using the existing (drifted) live type for that column only.
+  // ---------------------------------------------------------------------------
+
+  private async evolveSchemaIfNeeded(params: {
+    fullLive: string;
+    liveTable: string;
+    liveCols: Set<string>;
+    liveTypes: Map<string, string>;
+    entitySchema: ConnectorEntitySchema | undefined;
+    destination: IDatabaseConnection;
+    datasetLocation: string | undefined;
+  }): Promise<void> {
+    const {
+      fullLive,
+      liveTable,
+      liveCols,
+      liveTypes,
+      entitySchema,
+      destination,
+      datasetLocation,
+    } = params;
+    if (!entitySchema) return;
+
+    const drifted: Array<{
+      column: string;
+      actualType: string;
+      expectedType: string;
+    }> = [];
+
+    for (const col of liveCols) {
+      const schemaField = entitySchema.fields[col];
+      if (!schemaField) continue;
+      const expectedType = mapLogicalTypeToBigQuery(schemaField.type);
+      const actualType = liveTypes.get(col);
+      if (!actualType) continue;
+      if (actualType.toUpperCase() === expectedType.toUpperCase()) continue;
+      drifted.push({ column: col, actualType, expectedType });
+    }
+
+    if (drifted.length === 0) return;
+
+    log.info("Schema drift detected, attempting live-table evolution", {
+      liveTable,
+      drifted: drifted.map(
+        d => `${d.column}: ${d.actualType} -> ${d.expectedType}`,
+      ),
+    });
+
+    const evolved: string[] = [];
+    const skipped: string[] = [];
+
+    for (const { column, actualType, expectedType } of drifted) {
+      const tmpCol = `${column}_mako_tmp`;
+      const bakCol = `${column}_mako_bak`;
+
+      try {
+        await retryOnQuota(
+          async () => {
+            const r = await databaseConnectionService.executeQuery(
+              destination,
+              `ALTER TABLE ${fullLive} ADD COLUMN IF NOT EXISTS ${escId(tmpCol)} ${expectedType}`,
+              { location: datasetLocation },
+            );
+            if (!r.success) throw new Error(r.error || "ADD COLUMN failed");
+          },
+          { label: `evolveSchema:ADD(${column})` },
+        );
+
+        await retryOnQuota(
+          async () => {
+            const castExpr = buildCastExpression(escId(column), expectedType);
+            const r = await databaseConnectionService.executeQuery(
+              destination,
+              `UPDATE ${fullLive} SET ${escId(tmpCol)} = ${castExpr} WHERE 1=1`,
+              { location: datasetLocation },
+            );
+            if (!r.success) throw new Error(r.error || "UPDATE cast failed");
+          },
+          { label: `evolveSchema:UPDATE(${column})` },
+        );
+
+        await retryOnQuota(
+          async () => {
+            const r = await databaseConnectionService.executeQuery(
+              destination,
+              `ALTER TABLE ${fullLive} RENAME COLUMN ${escId(column)} TO ${escId(bakCol)}, RENAME COLUMN ${escId(tmpCol)} TO ${escId(column)}`,
+              { location: datasetLocation },
+            );
+            if (!r.success) throw new Error(r.error || "RENAME COLUMN failed");
+          },
+          { label: `evolveSchema:RENAME(${column})` },
+        );
+
+        await retryOnQuota(
+          async () => {
+            const r = await databaseConnectionService.executeQuery(
+              destination,
+              `ALTER TABLE ${fullLive} DROP COLUMN IF EXISTS ${escId(bakCol)}`,
+              { location: datasetLocation },
+            );
+            if (!r.success) throw new Error(r.error || "DROP COLUMN failed");
+          },
+          { label: `evolveSchema:DROP(${column})` },
+        );
+
+        liveTypes.set(column, expectedType);
+        evolved.push(column);
+        log.info("Schema evolution applied", {
+          liveTable,
+          column,
+          from: actualType,
+          to: expectedType,
+        });
+      } catch (err) {
+        skipped.push(column);
+        log.warn(
+          "Schema evolution failed for column; merge will use existing live type",
+          {
+            liveTable,
+            column,
+            from: actualType,
+            to: expectedType,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+
+        // Best-effort cleanup of leftover temp/backup columns
+        for (const leftover of [tmpCol, bakCol]) {
+          try {
+            await databaseConnectionService.executeQuery(
+              destination,
+              `ALTER TABLE ${fullLive} DROP COLUMN IF EXISTS ${escId(leftover)}`,
+              { location: datasetLocation },
+            );
+          } catch {
+            // ignore cleanup failures
+          }
+        }
+      }
+    }
+
+    if (evolved.length > 0 || skipped.length > 0) {
+      log.info("Schema evolution summary", {
+        liveTable,
+        evolved,
+        skipped,
+        total: drifted.length,
+      });
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -31,6 +31,8 @@ import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
+import { databaseConnectionService } from "../services/database-connection.service";
+import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
 
 const logger = loggers.inngest("flow");
 
@@ -2630,6 +2632,189 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
           reason: t.reason,
         })),
       },
+    });
+  } catch (error) {
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      400,
+    );
+  }
+});
+
+// GET /api/workspaces/:workspaceId/flows/:flowId/sync-cdc/schema-health
+// Compare live destination column types against the connector schema to surface drift.
+flowRoutes.get("/:flowId/sync-cdc/schema-health", async c => {
+  try {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const flowId = c.req.param("flowId") as string;
+    const entityFilter = c.req.query("entity");
+
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).lean();
+    if (!flow) {
+      return c.json({ success: false, error: "Flow not found" }, 404);
+    }
+    if (flow.syncEngine !== "cdc") {
+      return c.json(
+        { success: false, error: "Schema health requires syncEngine=cdc" },
+        400,
+      );
+    }
+    if (
+      !flow.tableDestination?.connectionId ||
+      !flow.tableDestination?.schema
+    ) {
+      return c.json(
+        {
+          success: false,
+          error: "Flow has no destination table configuration",
+        },
+        400,
+      );
+    }
+
+    const destination = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    );
+    if (!destination) {
+      return c.json(
+        { success: false, error: "Destination connection not found" },
+        404,
+      );
+    }
+
+    if (destination.type !== "bigquery") {
+      return c.json(
+        {
+          success: false,
+          error:
+            "Schema health is currently only supported for BigQuery destinations",
+        },
+        400,
+      );
+    }
+
+    const { entities: configuredEntities } = resolveConfiguredEntities(
+      flow as any,
+    );
+    const targetEntities = entityFilter
+      ? configuredEntities.filter(e => e === entityFilter)
+      : configuredEntities;
+
+    if (targetEntities.length === 0) {
+      return c.json({
+        success: true,
+        data: { entities: [], hasDrift: false },
+      });
+    }
+
+    const connectorSchema: Map<
+      string,
+      Record<string, { type: string }>
+    > = new Map();
+    if (flow.dataSourceId) {
+      try {
+        const ds = await databaseDataSourceManager.getDataSource(
+          String(flow.dataSourceId),
+        );
+        if (ds) {
+          const connector = await syncConnectorRegistry.getConnector(ds);
+          if (connector?.resolveSchema) {
+            for (const entity of targetEntities) {
+              try {
+                const schema = await connector.resolveSchema(entity);
+                if (schema?.fields) {
+                  connectorSchema.set(entity, schema.fields as any);
+                }
+              } catch {
+                // skip entities where schema resolution fails
+              }
+            }
+          }
+        }
+      } catch {
+        // connector resolution failed — return empty schema health
+      }
+    }
+
+    const schema = flow.tableDestination.schema;
+    const conn = (destination as any).connection || {};
+    const connLocation: string | undefined = conn.location;
+    const results: Array<{
+      entity: string;
+      columns: Array<{
+        column: string;
+        liveType: string;
+        expectedType: string;
+        status: "match" | "drift";
+      }>;
+      hasDrift: boolean;
+    }> = [];
+    let globalHasDrift = false;
+
+    for (const entity of targetEntities) {
+      const fields = connectorSchema.get(entity);
+      if (!fields) {
+        results.push({ entity, columns: [], hasDrift: false });
+        continue;
+      }
+
+      const liveTable = cdcLiveTableName(
+        flow.tableDestination.tableName,
+        entity,
+        flowId,
+      );
+
+      const infoQuery = `SELECT column_name, data_type FROM \`${schema}\`.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`;
+
+      const infoResult = await databaseConnectionService.executeQuery(
+        destination,
+        infoQuery,
+        { location: connLocation },
+      );
+
+      if (!infoResult.success || !Array.isArray(infoResult.data)) {
+        results.push({ entity, columns: [], hasDrift: false });
+        continue;
+      }
+
+      const liveTypes = new Map<string, string>();
+      for (const row of infoResult.data as any[]) {
+        liveTypes.set(row.column_name, row.data_type);
+      }
+
+      const columns: Array<{
+        column: string;
+        liveType: string;
+        expectedType: string;
+        status: "match" | "drift";
+      }> = [];
+      let entityHasDrift = false;
+
+      for (const [col, fieldDef] of Object.entries(fields)) {
+        const liveType = liveTypes.get(col);
+        if (!liveType) continue;
+        const expectedType = mapLogicalTypeToBigQuery((fieldDef as any).type);
+        const status =
+          liveType.toUpperCase() === expectedType.toUpperCase()
+            ? ("match" as const)
+            : ("drift" as const);
+        if (status === "drift") entityHasDrift = true;
+        columns.push({ column: col, liveType, expectedType, status });
+      }
+
+      if (entityHasDrift) globalHasDrift = true;
+      results.push({ entity, columns, hasDrift: entityHasDrift });
+    }
+
+    return c.json({
+      success: true,
+      data: { entities: results, hasDrift: globalHasDrift },
     });
   } catch (error) {
     return c.json(

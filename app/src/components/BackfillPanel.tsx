@@ -38,6 +38,7 @@ import {
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   Replay as RetryIcon,
+  WarningAmber as WarningAmberIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
 
@@ -263,6 +264,7 @@ export function BackfillPanel({
     fetchFlowHistory,
     fetchWebhookEvents,
     fetchEntitySchema,
+    fetchEntitySchemaHealth,
     startCdcStream,
     pauseCdcStream,
     pauseCdcFlow,
@@ -321,6 +323,13 @@ export function BackfillPanel({
     },
     [expandedEntity, entitySchemaCache, fetchEntitySchema, workspaceId, flowId],
   );
+
+  const [entityDrift, setEntityDrift] = useState<
+    Record<
+      string,
+      Array<{ column: string; liveType: string; expectedType: string }>
+    >
+  >({});
 
   const [cdc, setCdc] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);
@@ -520,6 +529,26 @@ export function BackfillPanel({
       if (cdcPollRef.current) clearInterval(cdcPollRef.current);
     };
   }, [pollCdc, isActive]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchEntitySchemaHealth(workspaceId, flowId).then(result => {
+      if (cancelled || !result) return;
+      const driftMap: Record<
+        string,
+        Array<{ column: string; liveType: string; expectedType: string }>
+      > = {};
+      for (const ent of result.entities) {
+        if (ent.hasDrift) {
+          driftMap[ent.entity] = ent.columns.filter(c => c.status === "drift");
+        }
+      }
+      setEntityDrift(driftMap);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchEntitySchemaHealth, workspaceId, flowId]);
 
   useEffect(() => {
     if (!isActive) return;
@@ -1300,6 +1329,27 @@ export function BackfillPanel({
                                   />
                                 )}
                                 {entityLabel(e.entity)}
+                                {entityDrift[e.entity]?.length > 0 && (
+                                  <Tooltip
+                                    title={
+                                      entityDrift[e.entity]
+                                        .map(
+                                          d =>
+                                            `${d.column}: ${d.liveType} → ${d.expectedType}`,
+                                        )
+                                        .join("\n") +
+                                      "\nWill be auto-corrected on next sync."
+                                    }
+                                  >
+                                    <WarningAmberIcon
+                                      sx={{
+                                        fontSize: 15,
+                                        color: "warning.main",
+                                        ml: 0.5,
+                                      }}
+                                    />
+                                  </Tooltip>
+                                )}
                               </Box>
                             </TableCell>
                             <TableCell>
