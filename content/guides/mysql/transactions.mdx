@@ -1,0 +1,213 @@
+---
+title: "MySQL Transactions: START TRANSACTION, SAVEPOINT, Isolation Levels, and InnoDB"
+description: "A complete guide to MySQL transactions -- ACID properties, START TRANSACTION vs autocommit, SAVEPOINT, all four isolation levels, and how InnoDB implements locking."
+database: mysql
+category: sql-how-to
+tags: [mysql, transactions, innodb, isolation-levels, savepoint, acid]
+date: 2026-04-16
+---
+
+# MySQL Transactions: START TRANSACTION, SAVEPOINT, Isolation Levels, and InnoDB
+
+A transaction groups multiple SQL statements into a single unit of work. Either all statements succeed and are committed, or all are rolled back. This is the foundation of data integrity in relational databases.
+
+MySQL transactions work with InnoDB tables. MyISAM doesn't support transactions -- if you're still using MyISAM, migrate to InnoDB.
+
+## ACID properties
+
+- **Atomicity** -- all statements in the transaction commit or all roll back. No partial writes.
+- **Consistency** -- the database moves from one valid state to another. Constraints aren't violated.
+- **Isolation** -- concurrent transactions don't see each other's incomplete work (depending on isolation level).
+- **Durability** -- committed transactions survive crashes. InnoDB writes to the redo log before acknowledging the commit.
+
+## Basic transaction syntax
+
+MySQL defaults to autocommit mode: every statement is its own transaction, committed immediately.
+
+```sql
+-- Check autocommit status
+SELECT @@autocommit;  -- 1 = on (default)
+```
+
+To group statements into a transaction:
+
+```sql
+START TRANSACTION;  -- or BEGIN;
+
+UPDATE accounts SET balance = balance - 500 WHERE id = 1;
+UPDATE accounts SET balance = balance + 500 WHERE id = 2;
+
+COMMIT;  -- makes both updates permanent
+```
+
+If something goes wrong:
+
+```sql
+START TRANSACTION;
+
+UPDATE accounts SET balance = balance - 500 WHERE id = 1;
+-- Oops, wrong target
+ROLLBACK;  -- both updates are undone
+```
+
+`BEGIN` and `START TRANSACTION` are equivalent. `START TRANSACTION` is the SQL standard; `BEGIN` is a shorthand. Both disable autocommit for the duration of the transaction.
+
+### Autocommit and DDL
+
+DDL statements (`CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`) implicitly commit the current transaction in MySQL. You cannot roll back a `DROP TABLE`. This is a common surprise -- wrapping DDL in a transaction does not protect you.
+
+## SAVEPOINT
+
+Savepoints let you roll back part of a transaction without abandoning the whole thing:
+
+```sql
+START TRANSACTION;
+
+INSERT INTO orders (customer_id, amount) VALUES (42, 199.00);
+SAVEPOINT after_order;
+
+INSERT INTO order_items (order_id, product_id, qty) VALUES (LAST_INSERT_ID(), 7, 2);
+-- Error found in product_id, roll back just this insert
+ROLLBACK TO SAVEPOINT after_order;
+
+-- Retry with the correct product_id
+INSERT INTO order_items (order_id, product_id, qty) VALUES (LAST_INSERT_ID(), 9, 2);
+
+COMMIT;  -- commits the order and the corrected item
+```
+
+`RELEASE SAVEPOINT name` removes a savepoint without rolling back to it. All savepoints are released automatically on `COMMIT` or full `ROLLBACK`.
+
+## Isolation levels
+
+MySQL InnoDB supports all four SQL standard isolation levels. The default is `REPEATABLE READ`.
+
+### READ UNCOMMITTED
+
+```sql
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+```
+
+A transaction can read rows that another transaction has modified but not yet committed. These are called **dirty reads**. Almost never appropriate for production -- the data you read may be rolled back seconds later.
+
+### READ COMMITTED
+
+```sql
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+```
+
+Reads only committed data. If another transaction commits a change while yours is running, a subsequent read in your transaction will see the new data. This is called a **non-repeatable read**.
+
+Common choice for OLTP applications where you want fresh data and can accept slight inconsistency within a transaction.
+
+### REPEATABLE READ (default)
+
+```sql
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+```
+
+Within a transaction, every read of the same rows returns the same data, regardless of commits by other transactions. InnoDB achieves this with MVCC (Multi-Version Concurrency Control) -- reads are served from a snapshot taken at the start of the transaction.
+
+Prevents dirty reads and non-repeatable reads. Allows **phantom reads** (new rows inserted by other transactions can appear in range queries) in standard SQL -- but InnoDB's gap locks prevent most phantom read scenarios in practice.
+
+### SERIALIZABLE
+
+```sql
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+```
+
+The strictest level. All reads are treated as `SELECT ... FOR SHARE`, meaning they acquire shared locks. Transactions execute as if they were serial. Prevents all anomalies but significantly reduces concurrency.
+
+### Setting isolation level scope
+
+```sql
+-- For the next transaction only:
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+
+-- For the current session:
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+
+-- Global default (requires SYSTEM_VARIABLES_ADMIN privilege):
+SET GLOBAL TRANSACTION ISOLATION LEVEL READ COMMITTED;
+```
+
+### Isolation level comparison
+
+| Level | Dirty read | Non-repeatable read | Phantom read |
+|---|---|---|---|
+| READ UNCOMMITTED | Yes | Yes | Yes |
+| READ COMMITTED | No | Yes | Yes |
+| REPEATABLE READ | No | No | Mostly no (InnoDB gap locks) |
+| SERIALIZABLE | No | No | No |
+
+## Locking: shared and exclusive
+
+InnoDB uses row-level locking rather than table-level locking, which is one of the main reasons to prefer it over MyISAM.
+
+```sql
+-- Acquire a shared lock (other transactions can read, not write):
+SELECT * FROM accounts WHERE id = 1 FOR SHARE;
+
+-- Acquire an exclusive lock (blocks reads and writes by others):
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+```
+
+`FOR UPDATE` is the right choice before modifying a row -- it prevents another transaction from acquiring a conflicting lock between your read and your write.
+
+## Detecting and handling deadlocks
+
+InnoDB automatically detects deadlocks and rolls back the transaction with the least undo. The application should catch the error and retry:
+
+```sql
+-- Error 1213: Deadlock found when trying to get lock; try restarting transaction
+```
+
+To reduce deadlock frequency:
+- Always acquire locks in the same order across transactions
+- Keep transactions short
+- Avoid user interaction in the middle of a transaction
+- Use lower isolation levels if you can afford it
+
+```sql
+-- View the last deadlock information:
+SHOW ENGINE INNODB STATUS;
+-- Look for the LATEST DETECTED DEADLOCK section
+```
+
+## Transaction patterns
+
+### Check-then-act
+
+Always use `FOR UPDATE` when checking a value you plan to act on:
+
+```sql
+START TRANSACTION;
+
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;
+-- Check the balance in application code
+-- If sufficient, proceed:
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+
+COMMIT;
+```
+
+Without `FOR UPDATE`, another transaction could decrease the balance between your read and your update.
+
+### Idempotent transactions
+
+For operations triggered by events (queues, webhooks), design transactions to be safe to retry:
+
+```sql
+START TRANSACTION;
+
+-- Use INSERT IGNORE or ON DUPLICATE KEY to prevent duplicates:
+INSERT IGNORE INTO processed_events (event_id, processed_at)
+VALUES ('evt_abc123', NOW());
+
+-- Only proceed if insert succeeded (1 row affected)
+UPDATE orders SET status = 'fulfilled' WHERE id = 456;
+
+COMMIT;
+```
+
+Mako's query editor runs your SQL with full transaction support -- useful for testing multi-statement transaction logic against live data. Try it free at [mako.ai](https://mako.ai).

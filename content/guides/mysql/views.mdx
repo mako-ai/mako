@@ -1,0 +1,213 @@
+---
+title: "Views in MySQL: CREATE VIEW, Updatable Views, and Materialized View Patterns"
+description: "How to create and manage MySQL views, when views are updatable, how WITH CHECK OPTION works, and how to simulate materialized views using tables and events."
+database: mysql
+category: sql-how-to
+tags: [mysql, views, materialized-view, with-check-option, create-view]
+date: 2026-04-16
+---
+
+# Views in MySQL: CREATE VIEW, Updatable Views, and Materialized View Patterns
+
+A view is a named query stored in the database. When you select from a view, MySQL runs the underlying query. Views don't store data (with one exception covered below) -- they're a lens over your tables.
+
+## Creating a view
+
+```sql
+CREATE VIEW active_customers AS
+SELECT id, name, email, country
+FROM customers
+WHERE status = 'active';
+```
+
+Query it like a table:
+
+```sql
+SELECT * FROM active_customers WHERE country = 'DE';
+```
+
+MySQL appends the view's `WHERE` condition to your query. The result is equivalent to:
+
+```sql
+SELECT id, name, email, country
+FROM customers
+WHERE status = 'active' AND country = 'DE';
+```
+
+## Replacing and altering views
+
+To redefine an existing view without dropping it first:
+
+```sql
+CREATE OR REPLACE VIEW active_customers AS
+SELECT id, name, email, country, created_at
+FROM customers
+WHERE status = 'active';
+```
+
+`ALTER VIEW` also works:
+
+```sql
+ALTER VIEW active_customers AS
+SELECT id, name, email, country, created_at
+FROM customers
+WHERE status = 'active';
+```
+
+## Inspecting views
+
+```sql
+-- List all views in the current database
+SHOW FULL TABLES WHERE Table_type = 'VIEW';
+
+-- See the definition of a view
+SHOW CREATE VIEW active_customers;
+
+-- View metadata
+SELECT table_name, view_definition, is_updatable
+FROM information_schema.views
+WHERE table_schema = DATABASE();
+```
+
+## Updatable views
+
+MySQL allows `INSERT`, `UPDATE`, and `DELETE` through a view if the view meets these conditions:
+
+- References exactly one base table
+- Contains no `DISTINCT`, `GROUP BY`, `HAVING`, aggregate functions, `UNION`, or subqueries in `SELECT`
+- Does not use `LIMIT` (in most cases)
+- Does not include computed columns that can't be mapped back to a base column
+
+Example of an updatable view:
+
+```sql
+CREATE VIEW german_customers AS
+SELECT id, name, email, status, country
+FROM customers
+WHERE country = 'DE';
+
+-- This UPDATE goes through to the base table:
+UPDATE german_customers SET status = 'inactive' WHERE id = 42;
+```
+
+When a view is not updatable, MySQL will tell you clearly: `ERROR 1288 (HY000): The target table ... is not updatable`.
+
+### WITH CHECK OPTION
+
+Without `WITH CHECK OPTION`, you can insert a row through a view that immediately disappears from the view:
+
+```sql
+-- Without CHECK OPTION:
+INSERT INTO german_customers (name, email, status, country)
+VALUES ('Test', 'test@test.com', 'active', 'FR');
+-- Row inserted into customers, but now invisible through german_customers
+```
+
+Add `WITH CHECK OPTION` to prevent this:
+
+```sql
+CREATE OR REPLACE VIEW german_customers AS
+SELECT id, name, email, status, country
+FROM customers
+WHERE country = 'DE'
+WITH CHECK OPTION;
+
+-- Now this fails:
+INSERT INTO german_customers (name, email, status, country)
+VALUES ('Test', 'test@test.com', 'active', 'FR');
+-- ERROR 1369 (HY000): CHECK OPTION failed 'mydb.german_customers'
+```
+
+### LOCAL vs CASCADED check option
+
+When a view is built on top of another view, `WITH LOCAL CHECK OPTION` only enforces the current view's `WHERE` clause. `WITH CASCADED CHECK OPTION` (the default) enforces all views in the chain:
+
+```sql
+CREATE VIEW eu_customers AS
+SELECT * FROM customers WHERE country IN ('DE', 'FR', 'ES');
+
+-- CASCADED: must satisfy both eu_customers and german_active WHERE clauses
+CREATE VIEW german_active AS
+SELECT * FROM eu_customers WHERE status = 'active'
+WITH CASCADED CHECK OPTION;
+```
+
+## Views and performance
+
+MySQL doesn't cache view results. Each query against a view re-runs the underlying SQL. Complex views with joins, aggregations, or subqueries can be slow -- exactly as slow as running the underlying query directly.
+
+MySQL's optimizer sometimes merges a view into the outer query (the `MERGED` algorithm), which allows index use. Other times it materializes the view as a temporary table first (`TEMPTABLE`). You can inspect this:
+
+```sql
+SELECT table_name, algorithm
+FROM information_schema.views
+WHERE table_schema = DATABASE();
+```
+
+Views using `DISTINCT`, `GROUP BY`, or `UNION` are always `TEMPTABLE` -- the optimizer can't merge them. For frequently-queried aggregations, materialized view patterns are more practical.
+
+## Materialized view patterns in MySQL
+
+MySQL has no native materialized view. The standard workaround is a summary table refreshed by an event or trigger.
+
+### Summary table + scheduled event
+
+```sql
+-- Create the summary table
+CREATE TABLE mv_customer_order_summary (
+  customer_id INT NOT NULL PRIMARY KEY,
+  order_count INT NOT NULL DEFAULT 0,
+  total_revenue DECIMAL(12,2) NOT NULL DEFAULT 0,
+  last_order_date DATE,
+  refreshed_at DATETIME
+);
+
+-- Enable the event scheduler (requires SUPER or EVENT privilege)
+SET GLOBAL event_scheduler = ON;
+
+-- Refresh every hour
+DELIMITER $$
+CREATE EVENT evt_refresh_customer_summary
+ON SCHEDULE EVERY 1 HOUR
+STARTS CURRENT_TIMESTAMP
+DO BEGIN
+  INSERT INTO mv_customer_order_summary
+    (customer_id, order_count, total_revenue, last_order_date, refreshed_at)
+  SELECT
+    customer_id,
+    COUNT(*) AS order_count,
+    SUM(amount) AS total_revenue,
+    MAX(created_at) AS last_order_date,
+    NOW()
+  FROM orders
+  GROUP BY customer_id
+  ON DUPLICATE KEY UPDATE
+    order_count = VALUES(order_count),
+    total_revenue = VALUES(total_revenue),
+    last_order_date = VALUES(last_order_date),
+    refreshed_at = VALUES(refreshed_at);
+END$$
+DELIMITER ;
+```
+
+This pattern works well for dashboards and reports that tolerate data up to an hour old. For near-real-time, you can trigger refresh via application code on write, or use an `AFTER INSERT/UPDATE` trigger (with care -- triggers on large tables add latency to every write).
+
+### Tradeoffs
+
+| Approach | Data freshness | Complexity | Write overhead |
+|---|---|---|---|
+| Regular view | Real-time | Low | None |
+| Summary table + event | Lag = event interval | Medium | Low |
+| Summary table + trigger | Near real-time | Medium-high | High |
+| External CDC (Debezium, etc.) | Near real-time | High | Very low |
+
+For most OLTP use cases, a scheduled event with a 5--15 minute interval covers 90% of reporting needs without trigger overhead.
+
+## Dropping views
+
+```sql
+DROP VIEW IF EXISTS german_customers;
+DROP VIEW IF EXISTS german_customers, active_customers;  -- drop multiple at once
+```
+
+Mako connects to MySQL databases and lets you explore views alongside base tables in the same query editor. Try it free at [mako.ai](https://mako.ai).
