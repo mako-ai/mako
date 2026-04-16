@@ -1,0 +1,246 @@
+---
+title: "MySQL Stored Procedures: CREATE PROCEDURE, Parameters, Cursors, and Error Handling"
+description: "How to write MySQL stored procedures -- IN/OUT/INOUT parameters, local variables, cursors for row-by-row processing, and DECLARE HANDLER for error handling."
+database: mysql
+category: sql-how-to
+tags: [mysql, stored-procedures, cursors, declare-handler, delimiter]
+date: 2026-04-16
+---
+
+# MySQL Stored Procedures: CREATE PROCEDURE, Parameters, Cursors, and Error Handling
+
+A stored procedure is a named block of SQL and procedural logic stored in the database. You call it by name, optionally passing parameters. MySQL stored procedures support variables, conditionals, loops, cursors, and error handlers.
+
+They're useful for encapsulating complex logic that would be awkward to express in a single SQL statement, batch operations that need to run on the server, and operations that need to run atomically without round-trips to the application.
+
+## Creating a basic procedure
+
+MySQL requires changing the delimiter to define a procedure, because `;` inside the procedure body would confuse the client:
+
+```sql
+DELIMITER $$
+
+CREATE PROCEDURE GetCustomerOrders(IN customer_id INT)
+BEGIN
+  SELECT id, amount, status, created_at
+  FROM orders
+  WHERE orders.customer_id = customer_id
+  ORDER BY created_at DESC;
+END$$
+
+DELIMITER ;
+```
+
+Call it:
+
+```sql
+CALL GetCustomerOrders(42);
+```
+
+## Parameter types
+
+MySQL procedures support three parameter modes:
+
+- `IN` -- input only. The caller passes a value; the procedure cannot modify the caller's variable.
+- `OUT` -- output only. The procedure sets a value; the caller reads it after the call.
+- `INOUT` -- both. The caller passes a value, the procedure can modify it, and the caller reads the result.
+
+```sql
+DELIMITER $$
+
+CREATE PROCEDURE GetOrderSummary(
+  IN p_customer_id INT,
+  OUT p_order_count INT,
+  OUT p_total_spent DECIMAL(12,2)
+)
+BEGIN
+  SELECT COUNT(*), COALESCE(SUM(amount), 0)
+  INTO p_order_count, p_total_spent
+  FROM orders
+  WHERE customer_id = p_customer_id;
+END$$
+
+DELIMITER ;
+
+-- Call with OUT parameters:
+CALL GetOrderSummary(42, @count, @total);
+SELECT @count AS order_count, @total AS total_spent;
+```
+
+## Local variables
+
+Declare variables at the top of the `BEGIN...END` block, before any other statements:
+
+```sql
+DELIMITER $$
+
+CREATE PROCEDURE UpdateLoyaltyTier()
+BEGIN
+  DECLARE v_customer_id INT;
+  DECLARE v_total_spent DECIMAL(12,2);
+  DECLARE v_tier VARCHAR(20);
+
+  -- Use SELECT INTO to assign values:
+  SELECT id, total_spent INTO v_customer_id, v_total_spent
+  FROM customers
+  WHERE id = 1;
+
+  IF v_total_spent >= 10000 THEN
+    SET v_tier = 'platinum';
+  ELSEIF v_total_spent >= 1000 THEN
+    SET v_tier = 'gold';
+  ELSE
+    SET v_tier = 'standard';
+  END IF;
+
+  UPDATE customers SET loyalty_tier = v_tier WHERE id = v_customer_id;
+END$$
+
+DELIMITER ;
+```
+
+## Loops
+
+MySQL procedures support `WHILE`, `REPEAT`, and `LOOP`:
+
+```sql
+DELIMITER $$
+
+CREATE PROCEDURE GenerateMonthlyDates(IN p_year INT)
+BEGIN
+  DECLARE v_month INT DEFAULT 1;
+
+  WHILE v_month <= 12 DO
+    INSERT INTO reporting_periods (period_date)
+    VALUES (MAKEDATE(p_year, 1) + INTERVAL (v_month - 1) MONTH)
+    ON DUPLICATE KEY UPDATE period_date = VALUES(period_date);
+    SET v_month = v_month + 1;
+  END WHILE;
+END$$
+
+DELIMITER ;
+```
+
+## Cursors
+
+A cursor lets you iterate over a result set row by row. Use cursors when set-based SQL can't express the logic you need.
+
+The cursor lifecycle: `DECLARE` - `OPEN` - `FETCH` loop - `CLOSE`.
+
+```sql
+DELIMITER $$
+
+CREATE PROCEDURE ProcessPendingOrders()
+BEGIN
+  DECLARE v_done INT DEFAULT FALSE;
+  DECLARE v_order_id INT;
+  DECLARE v_customer_id INT;
+  DECLARE v_amount DECIMAL(10,2);
+
+  -- 1. Declare the cursor
+  DECLARE order_cursor CURSOR FOR
+    SELECT id, customer_id, amount FROM orders WHERE status = 'pending';
+
+  -- 2. Declare the NOT FOUND handler (fires when FETCH runs out of rows)
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = TRUE;
+
+  -- 3. Open the cursor
+  OPEN order_cursor;
+
+  process_loop: LOOP
+    -- 4. Fetch one row
+    FETCH order_cursor INTO v_order_id, v_customer_id, v_amount;
+
+    IF v_done THEN
+      LEAVE process_loop;
+    END IF;
+
+    -- Process the row
+    UPDATE orders SET status = 'processing' WHERE id = v_order_id;
+    INSERT INTO order_log (order_id, event, logged_at)
+    VALUES (v_order_id, 'processing_started', NOW());
+
+  END LOOP;
+
+  -- 5. Close the cursor
+  CLOSE order_cursor;
+END$$
+
+DELIMITER ;
+```
+
+**Important:** `DECLARE` statements must appear in a specific order: variables first, then cursors, then handlers. Putting a `DECLARE HANDLER` before a `DECLARE CURSOR` causes a syntax error.
+
+**Multiple cursors:** You can declare multiple cursors in one procedure, but each needs its own `NOT FOUND` handler variable (or you must track which cursor triggered the handler).
+
+**Performance:** Row-by-row cursor processing is much slower than set-based SQL. A single `UPDATE` with a `WHERE` clause processes thousands of rows in the time a cursor processes a handful. Only use cursors when a set-based approach genuinely can't express the logic.
+
+## Error handling with DECLARE HANDLER
+
+`DECLARE HANDLER` defines what to do when a specific error condition occurs:
+
+```sql
+DELIMITER $$
+
+CREATE PROCEDURE SafeInsertOrder(
+  IN p_customer_id INT,
+  IN p_amount DECIMAL(10,2),
+  OUT p_success TINYINT
+)
+BEGIN
+  DECLARE EXIT HANDLER FOR SQLEXCEPTION
+  BEGIN
+    SET p_success = 0;
+    ROLLBACK;
+  END;
+
+  SET p_success = 1;
+  START TRANSACTION;
+
+  INSERT INTO orders (customer_id, amount, status, created_at)
+  VALUES (p_customer_id, p_amount, 'pending', NOW());
+
+  UPDATE customers SET order_count = order_count + 1
+  WHERE id = p_customer_id;
+
+  COMMIT;
+END$$
+
+DELIMITER ;
+```
+
+Handler types:
+- `CONTINUE HANDLER` -- handles the condition and resumes execution at the next statement
+- `EXIT HANDLER` -- handles the condition and exits the `BEGIN...END` block
+- `UNDO HANDLER` -- not supported in MySQL (syntax accepted but treated as EXIT)
+
+Common condition values:
+- `SQLEXCEPTION` -- any error
+- `SQLWARNING` -- any warning
+- `NOT FOUND` -- no rows found (usually from SELECT INTO or FETCH)
+- `SQLSTATE '23000'` -- specific error state (23000 = integrity constraint violation)
+- `1062` -- specific MySQL error code (1062 = duplicate entry)
+
+## Listing and dropping procedures
+
+```sql
+-- List procedures in current database:
+SHOW PROCEDURE STATUS WHERE Db = DATABASE();
+
+-- View procedure definition:
+SHOW CREATE PROCEDURE GetCustomerOrders;
+
+-- Drop a procedure:
+DROP PROCEDURE IF EXISTS GetCustomerOrders;
+```
+
+## Stored procedures vs application-side logic
+
+Stored procedures move logic into the database. This has tradeoffs:
+
+- **Pros:** Less network round-trips for complex operations, logic runs close to data, consistent behavior across different application stacks
+- **Cons:** Harder to version control, no standard debugging tools (compared to application code), harder to test in isolation, logic is harder to find and maintain for developers not familiar with MySQL procedural SQL
+
+Most modern applications keep business logic in application code and use stored procedures only for performance-critical batch operations or data migrations.
+
+Mako connects to MySQL and lets you call stored procedures and inspect their results directly in the query editor. Try it free at [mako.ai](https://mako.ai).

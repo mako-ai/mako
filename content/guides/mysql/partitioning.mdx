@@ -1,0 +1,211 @@
+---
+title: "MySQL Table Partitioning: RANGE, LIST, HASH, KEY, and Partition Pruning"
+description: "How MySQL table partitioning works -- RANGE, LIST, HASH, and KEY partition types, partition pruning, and honest limitations before you commit to partitioning."
+database: mysql
+category: sql-how-to
+tags: [mysql, partitioning, range-partition, hash-partition, partition-pruning]
+date: 2026-04-16
+---
+
+# MySQL Table Partitioning: RANGE, LIST, HASH, KEY, and Partition Pruning
+
+MySQL table partitioning splits a logical table into physical segments (partitions) based on column values. Done right, it can improve performance on very large tables by allowing MySQL to skip entire partitions. Done wrong, it adds complexity with minimal benefit.
+
+This guide covers what each partition type does, when pruning works, and the limitations that matter before you commit to partitioning a table.
+
+## Who partitioning is for
+
+Partitioning helps when:
+- You have very large tables (hundreds of millions of rows)
+- Queries consistently filter on the partition key
+- You want to drop old data quickly (drop a partition instead of DELETE)
+
+It doesn't help when:
+- Queries don't filter on the partition key
+- The table is medium-sized (<50M rows) and well-indexed
+- You have foreign keys pointing to the table
+
+## Partitioning constraint: primary key must include partition column
+
+Every `PRIMARY KEY` and `UNIQUE INDEX` must include all columns used in the partition expression. This is enforced by MySQL and cannot be bypassed.
+
+```sql
+-- This fails:
+CREATE TABLE orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  created_at DATE NOT NULL
+) PARTITION BY RANGE (YEAR(created_at)) (...);
+-- ERROR 1503: A PRIMARY KEY must include all columns in the table's partitioning function
+
+-- This works:
+CREATE TABLE orders (
+  id INT NOT NULL,
+  created_at DATE NOT NULL,
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (YEAR(created_at)) (...);
+```
+
+This constraint has a practical consequence: auto-increment primary keys alone don't work with most partition expressions. You must either include the partition column in the PK or remove the UNIQUE constraint.
+
+## RANGE partitioning
+
+Rows are assigned to partitions based on whether the partition column falls within a range:
+
+```sql
+CREATE TABLE orders (
+  id INT NOT NULL,
+  customer_id INT NOT NULL,
+  amount DECIMAL(10,2),
+  created_at DATE NOT NULL,
+  PRIMARY KEY (id, created_at)
+)
+PARTITION BY RANGE (YEAR(created_at)) (
+  PARTITION p2022 VALUES LESS THAN (2023),
+  PARTITION p2023 VALUES LESS THAN (2024),
+  PARTITION p2024 VALUES LESS THAN (2025),
+  PARTITION p2025 VALUES LESS THAN (2026),
+  PARTITION p_future VALUES LESS THAN MAXVALUE
+);
+```
+
+`PARTITION BY RANGE COLUMNS` supports date columns directly (avoids the `YEAR()` function):
+
+```sql
+PARTITION BY RANGE COLUMNS (created_at) (
+  PARTITION p2022 VALUES LESS THAN ('2023-01-01'),
+  PARTITION p2023 VALUES LESS THAN ('2024-01-01'),
+  PARTITION p2024 VALUES LESS THAN ('2025-01-01'),
+  PARTITION pmax VALUES LESS THAN (MAXVALUE)
+);
+```
+
+### Dropping old partitions
+
+This is the killer feature of RANGE partitioning. Dropping a partition is nearly instant -- it's a metadata operation, not a row-by-row delete:
+
+```sql
+ALTER TABLE orders DROP PARTITION p2022;
+-- Instantly removes all 2022 rows
+```
+
+Compare to `DELETE FROM orders WHERE YEAR(created_at) = 2022`, which scans and deletes row-by-row and generates redo log for each row.
+
+### Adding partitions
+
+```sql
+ALTER TABLE orders REORGANIZE PARTITION p_future INTO (
+  PARTITION p2026 VALUES LESS THAN (2027),
+  PARTITION p_future VALUES LESS THAN MAXVALUE
+);
+```
+
+## LIST partitioning
+
+Assigns rows to partitions based on column values from an explicit list:
+
+```sql
+CREATE TABLE customers (
+  id INT NOT NULL,
+  region VARCHAR(20) NOT NULL,
+  name VARCHAR(100),
+  PRIMARY KEY (id, region)
+)
+PARTITION BY LIST COLUMNS (region) (
+  PARTITION p_europe VALUES IN ('DE', 'FR', 'ES', 'IT', 'NL'),
+  PARTITION p_americas VALUES IN ('US', 'CA', 'BR', 'MX'),
+  PARTITION p_apac VALUES IN ('JP', 'AU', 'SG', 'IN')
+);
+```
+
+If you try to insert a row with a value not covered by any partition, MySQL returns an error. Always add a catch-all or validate values before insert.
+
+## HASH partitioning
+
+Distributes rows evenly across N partitions using MySQL's internal hash of the partition expression:
+
+```sql
+CREATE TABLE user_activity (
+  user_id INT NOT NULL,
+  event_type VARCHAR(50),
+  created_at DATETIME,
+  PRIMARY KEY (user_id, created_at)
+)
+PARTITION BY HASH (user_id)
+PARTITIONS 8;
+```
+
+HASH partitioning is designed for even distribution. It doesn't help with partition pruning on range queries -- `WHERE created_at > '2025-01-01'` on a HASH-partitioned table must scan all partitions.
+
+It helps when:
+- You want to spread I/O across multiple disks
+- Queries filter by exact value of the hash key (`WHERE user_id = 42` can prune to one partition)
+
+`LINEAR HASH` uses a power-of-two algorithm for faster partition management (adding/removing partitions) at the cost of potentially uneven distribution.
+
+## KEY partitioning
+
+Similar to HASH, but MySQL uses its own internal hash function on the primary key (or specified columns). Requires the partitioned columns to be part of the PK:
+
+```sql
+PARTITION BY KEY()        -- uses the primary key
+PARTITIONS 4;
+
+PARTITION BY KEY(user_id)  -- explicit column
+PARTITIONS 4;
+```
+
+KEY partitioning supports string columns, which HASH doesn't (HASH requires an integer expression).
+
+## Partition pruning
+
+Partition pruning is the mechanism by which MySQL skips partitions that can't contain rows matching the `WHERE` clause. It only works when the partition column appears in the `WHERE` clause with a compatible operator.
+
+```sql
+-- RANGE partition on YEAR(created_at):
+-- This prunes -- MySQL knows to check only p2025:
+SELECT * FROM orders WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01';
+
+-- This does NOT prune -- function wraps the column:
+SELECT * FROM orders WHERE YEAR(created_at) = 2025;
+-- MySQL can't determine which partition to use from the function result at parse time
+```
+
+To verify pruning, use `EXPLAIN PARTITIONS`:
+
+```sql
+EXPLAIN SELECT * FROM orders WHERE created_at >= '2025-01-01' AND created_at < '2026-01-01';
+-- partitions column shows: p2025 (only one partition scanned)
+```
+
+If `partitions` shows all partitions, pruning isn't working -- check your `WHERE` clause matches the partition expression.
+
+## Managing partitions
+
+```sql
+-- List current partitions and row counts:
+SELECT partition_name, table_rows, data_length
+FROM information_schema.partitions
+WHERE table_name = 'orders' AND table_schema = DATABASE();
+
+-- Rebuild a partition (reclaims space, removes fragmentation):
+ALTER TABLE orders REBUILD PARTITION p2024;
+
+-- Check/analyze a partition:
+ALTER TABLE orders ANALYZE PARTITION p2025;
+
+-- Exchange a partition with a regular table (useful for bulk loads):
+ALTER TABLE orders EXCHANGE PARTITION p2025 WITH TABLE orders_2025_staging;
+```
+
+## Limitations (read before you partition)
+
+- **No foreign keys.** InnoDB tables with foreign keys cannot be partitioned. If other tables reference your table's primary key, partitioning is off the table.
+- **Every PK/unique index must include partition columns.** This often forces awkward composite primary keys.
+- **Maximum 8192 partitions** per table (including subpartitions).
+- **HASH/KEY partitions don't prune on ranges.** Only equality on the hash column prunes.
+- **Full-text indexes not supported** on partitioned tables.
+- **Some functions can't be used** in partition expressions (only deterministic, pure functions).
+
+For most tables under 100M rows with good indexes, partitioning adds complexity without meaningful benefit. Benchmark with and without before committing.
+
+Mako connects to MySQL and lets you inspect partition metadata and query individual partitions for analysis. Try it free at [mako.ai](https://mako.ai).
