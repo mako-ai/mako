@@ -1,4 +1,5 @@
 import { promises as fs, createReadStream } from "fs";
+import { Readable } from "node:stream";
 import { createClient } from "@clickhouse/client";
 import {
   DatabaseConnection,
@@ -679,12 +680,10 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     };
   }
 
-  // 50k was chosen to keep peak batch memory well under 200 MiB for typical
-  // schemas (~20 columns, ~50 bytes/col). 1M rows OOM'd the default Cloud Run
-  // 1 GiB instance. A true streaming Readable pipeline would be O(1) memory
-  // and is a worthwhile follow-up, but smaller batches is the cheaper unblock
-  // and ClickHouse has no trouble ingesting many small JSONEachRow batches.
-  private static readonly STREAM_FLUSH_THRESHOLD = 50_000;
+  // Progress is reported every N rows. Real batching is delegated to the
+  // ClickHouse HTTP client (which chunks rows from the Readable before
+  // sending), so this only affects log granularity.
+  private static readonly PROGRESS_INTERVAL = 50_000;
 
   async loadStagingFromStream(params: {
     rows: AsyncIterable<Record<string, unknown>>;
@@ -729,58 +728,96 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
         );
       } catch {
         log.info(
-          "Live table not found, will create staging from first batch columns",
+          "Live table not found, will create staging from first row columns",
           { stagingTable, liveTable },
         );
         params.onLog?.(
           "info",
-          "Live table not found — staging schema will be bootstrapped from first batch",
+          "Live table not found — staging schema will be bootstrapped from first row",
           { stagingTable, liveTable },
         );
       }
 
-      let loaded = 0;
-      let buffer: Record<string, string | null>[] = [];
-
-      const flushBuffer = async () => {
-        if (buffer.length === 0) return;
-
-        if (!tableCreated) {
-          const columns = Object.keys(buffer[0]);
-          const colDefs = columns
-            .map(c => `${escId(c)} Nullable(String)`)
-            .join(", ");
-          await client.command({
-            query: `CREATE TABLE IF NOT EXISTS ${fullStaging} (${colDefs}) ENGINE = MergeTree() ORDER BY tuple()`,
-          });
-          tableCreated = true;
-          params.onLog?.(
-            "info",
-            `Staging table created with ${columns.length} columns (all Nullable(String))`,
-            { stagingTable, columnCount: columns.length },
-          );
-        }
-
-        await client.insert({
-          table: `${db}.${stagingTable}`,
-          values: buffer,
-          format: "JSONEachRow",
-        });
-        loaded += buffer.length;
-        buffer = [];
-        params.onProgress?.(loaded);
-      };
-
-      for await (const row of params.rows) {
-        buffer.push(coerceRowToStrings(row));
-        if (
-          buffer.length >= ClickHouseDestinationAdapter.STREAM_FLUSH_THRESHOLD
-        ) {
-          await flushBuffer();
-        }
+      // Peek the first row so we can bootstrap the staging schema (if the
+      // live table doesn't exist yet) BEFORE opening the HTTP insert stream.
+      // An empty result short-circuits cleanly without side effects.
+      const iterator = params.rows[Symbol.asyncIterator]();
+      let first: IteratorResult<Record<string, unknown>>;
+      try {
+        first = await iterator.next();
+      } catch (err) {
+        await iterator.return?.().catch(() => undefined);
+        throw err;
       }
 
-      await flushBuffer();
+      if (first.done) {
+        await iterator.return?.().catch(() => undefined);
+        params.onLog?.(
+          "info",
+          "Source stream yielded zero rows — nothing to load",
+          {
+            stagingTable,
+          },
+        );
+        return { loaded: 0 };
+      }
+
+      if (!tableCreated) {
+        const columns = Object.keys(first.value);
+        const colDefs = columns
+          .map(c => `${escId(c)} Nullable(String)`)
+          .join(", ");
+        await client.command({
+          query: `CREATE TABLE IF NOT EXISTS ${fullStaging} (${colDefs}) ENGINE = MergeTree() ORDER BY tuple()`,
+        });
+        tableCreated = true;
+        params.onLog?.(
+          "info",
+          `Staging table created with ${columns.length} columns (all Nullable(String))`,
+          { stagingTable, columnCount: columns.length },
+        );
+      }
+
+      let loaded = 0;
+      const progressInterval = ClickHouseDestinationAdapter.PROGRESS_INTERVAL;
+
+      // Stream rows straight into ClickHouse. The client pulls one row at a
+      // time from the Readable (highWaterMark=1024) and serializes it as
+      // JSONEachRow on the fly — so memory stays O(highWaterMark), not
+      // O(total rows). This is the critical difference vs. the old
+      // 50k-row array buffer which OOM'd on 1 GiB Cloud Run instances.
+      const rowStream = async function* (): AsyncGenerator<
+        Record<string, string | null>
+      > {
+        try {
+          yield coerceRowToStrings(first.value);
+          loaded = 1;
+          while (true) {
+            const next = await iterator.next();
+            if (next.done) break;
+            loaded++;
+            if (loaded % progressInterval === 0) {
+              params.onProgress?.(loaded);
+            }
+            yield coerceRowToStrings(next.value);
+          }
+        } finally {
+          await iterator.return?.().catch(() => undefined);
+        }
+      };
+
+      const readable = Readable.from(rowStream(), {
+        objectMode: true,
+        highWaterMark: 1024,
+      });
+
+      await client.insert({
+        table: `${db}.${stagingTable}`,
+        values: readable,
+        format: "JSONEachRow",
+      });
+
+      params.onProgress?.(loaded);
 
       log.info("Loaded stream to ClickHouse staging", {
         stagingTable,
