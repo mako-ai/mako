@@ -181,6 +181,7 @@ const flowSchema = z.object({
   bulkConfig: z
     .object({
       mode: z.enum(["auto", "on", "off"]).optional(),
+      slicing: z.enum(["auto", "off"]).optional(),
     })
     .optional(),
 });

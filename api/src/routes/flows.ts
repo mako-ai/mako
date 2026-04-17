@@ -721,6 +721,9 @@ flowRoutes.post("/", async c => {
           mode: ["auto", "on", "off"].includes(body.bulkConfig.mode)
             ? body.bulkConfig.mode
             : "off",
+          slicing: ["auto", "off"].includes(body.bulkConfig.slicing)
+            ? body.bulkConfig.slicing
+            : "auto",
         };
       }
     } else {
@@ -1028,6 +1031,9 @@ flowRoutes.put("/:flowId", async c => {
               mode: ["auto", "on", "off"].includes(body.bulkConfig.mode)
                 ? body.bulkConfig.mode
                 : "off",
+              slicing: ["auto", "off"].includes(body.bulkConfig.slicing)
+                ? body.bulkConfig.slicing
+                : "auto",
             }
           : undefined;
       }

@@ -899,6 +899,7 @@ export const flowFunction = inngest.createFunction(
               syncMode: flow.syncMode,
               incrementalConfig: flow.incrementalConfig,
               trackingColumn: flow.incrementalConfig?.trackingColumn,
+              slicing: flow.bulkConfig?.slicing ?? "auto",
               onLog: forwardLog,
             });
 

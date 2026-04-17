@@ -547,9 +547,20 @@ export class BigQueryBulkExtractor implements BulkExtractor {
     syncMode: "full" | "incremental";
     incrementalConfig?: IIncrementalConfig;
     trackingColumn?: string;
+    slicing?: "auto" | "off";
     onLog?: BulkLogFn;
   }): Promise<BulkSlice[]> {
     const singleSlice: BulkSlice[] = [{ id: "all", label: "whole dataset" }];
+
+    // Escape hatch: flow-level flag forces single-slice mode. Lets us roll
+    // slicing back per-flow without a redeploy if it misbehaves.
+    if (params.slicing === "off") {
+      params.onLog?.(
+        "info",
+        "Slicing disabled for this flow — extracting whole dataset in one slice",
+      );
+      return singleSlice;
+    }
 
     // Only partition on full backfills with a tracking column. Incremental
     // syncs already carry a high-water mark, so a single slice is simpler

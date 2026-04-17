@@ -59,6 +59,11 @@ export interface BulkExtractor {
     syncMode: "full" | "incremental";
     incrementalConfig?: IIncrementalConfig;
     trackingColumn?: string;
+    /**
+     * "auto" (default): partition when it makes sense.
+     * "off": escape hatch — always return a single whole-dataset slice.
+     */
+    slicing?: "auto" | "off";
     onLog?: BulkLogFn;
   }): Promise<BulkSlice[]>;
 

@@ -671,6 +671,14 @@ export interface IFlow extends Document {
   batchSize?: number;
   bulkConfig?: {
     mode?: "auto" | "on" | "off";
+    /**
+     * Controls slice-based partitioning of bulk backfills.
+     *   - "auto" (default): extractor may partition the work (e.g. weekly
+     *     slices on a date-like tracking column) for resumability + memory.
+     *   - "off": extractor always returns a single whole-dataset slice.
+     *     Use as an escape hatch if slicing misbehaves for a specific flow.
+     */
+    slicing?: "auto" | "off";
   };
   backfillState?: {
     status?: BackfillStatus;
@@ -1855,6 +1863,11 @@ const FlowSchema = new Schema<IFlow>(
         type: String,
         enum: ["auto", "on", "off"],
         default: "off",
+      },
+      slicing: {
+        type: String,
+        enum: ["auto", "off"],
+        default: "auto",
       },
     },
     backfillState: {
