@@ -144,10 +144,10 @@ const log = loggers.sync("cdc.adapter.bigquery");
 const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
 
 // ---------------------------------------------------------------------------
-// Pure MERGE statement builder — exported for unit testing.
+// Pure MERGE statement builder.
 // ---------------------------------------------------------------------------
 
-export interface BuildMergeStatementParams {
+interface BuildMergeStatementParams {
   fullLive: string;
   fullStaging: string;
   /** All columns on the live table. */
@@ -160,7 +160,7 @@ export interface BuildMergeStatementParams {
   entitySchema?: ConnectorEntitySchema;
 }
 
-export function buildMergeStatement(p: BuildMergeStatementParams): string {
+function buildMergeStatement(p: BuildMergeStatementParams): string {
   const {
     fullLive,
     fullStaging,
