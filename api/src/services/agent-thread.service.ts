@@ -636,10 +636,29 @@ export const saveChat = async (
   usage?: ChatUsageData,
 ): Promise<typeof Chat.prototype | null> => {
   const now = new Date();
-  const storedMessages = messages.map(convertUIMessageToStoredFormat);
+
+  // Drop assistant messages that arrived with no parts. This happens when a
+  // stream is aborted before any delta is emitted: `toUIMessageStreamResponse`
+  // has already minted an assistant message id, so `onFinish` hands us a
+  // zero-parts message. Persisting it would poison the chat — on the next
+  // turn `convertToModelMessages` would reject the history with
+  // "Invalid prompt: The messages do not match the ModelMessage[] schema."
+  const persistableMessages = messages.filter(
+    m => m.role !== "assistant" || (m.parts && m.parts.length > 0),
+  );
+  if (persistableMessages.length !== messages.length) {
+    logger.warn("Dropping empty assistant messages before persistence", {
+      chatId,
+      dropped: messages.length - persistableMessages.length,
+    });
+  }
+
+  const storedMessages = persistableMessages.map(
+    convertUIMessageToStoredFormat,
+  );
 
   // Count assistant messages to determine the message index for usage history
-  const assistantMessageCount = messages.filter(
+  const assistantMessageCount = persistableMessages.filter(
     m => m.role === "assistant",
   ).length;
 

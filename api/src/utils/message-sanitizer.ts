@@ -24,9 +24,15 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
       return msg;
     }
 
-    // If no parts, nothing to sanitize
+    // Empty assistant messages (e.g. from interrupted streams persisted with
+    // no content) must not be forwarded to `convertToModelMessages`, which
+    // throws "The messages do not match the ModelMessage[] schema." Replace
+    // with the same placeholder we use for tool-only messages below.
     if (!msg.parts || msg.parts.length === 0) {
-      return msg;
+      return {
+        ...msg,
+        parts: [{ type: "text" as const, text: "[Response interrupted]" }],
+      };
     }
 
     const sanitizedParts = msg.parts.filter(part => {
