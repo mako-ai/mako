@@ -26,7 +26,12 @@ import {
   syncMachineService,
 } from "../../sync-cdc/sync-state";
 import { resolveConfiguredEntities } from "../../sync-cdc/entity-selection";
-import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
+import {
+  hasCdcDestinationAdapter,
+  resolveCdcDestinationAdapter,
+  hasStreamStagingSupport,
+  buildCdcEntityLayout,
+} from "../../sync-cdc/adapters/registry";
 import {
   cdcBackfillService,
   forceDrainCdcFlow,
@@ -34,6 +39,7 @@ import {
   purgeSoftDeletesAfterBackfill,
 } from "../../sync-cdc/backfill";
 import { syncBackfillEntityFunction } from "./sync-entity";
+import { resolveBulkExtractor } from "../../sync-cdc/extractors/registry";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -719,20 +725,15 @@ export const flowFunction = inngest.createFunction(
       const entityStatsMap: Record<string, number> = {};
 
       // ============ DATABASE SOURCE EXECUTION ============
-      // For database-to-database flows, use chunked execution for resumability
       if (flow.sourceType === "database") {
-        logger.info(
-          "Starting database-to-database sync with chunked execution",
-          {
-            flowId,
-            syncMode: flow.syncMode,
-            sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
-            sourceDatabase: flow.databaseSource?.database,
-          },
-        );
+        logger.info("Starting database-to-database sync", {
+          flowId,
+          syncMode: flow.syncMode,
+          sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
+          sourceDatabase: flow.databaseSource?.database,
+        });
 
-        // Validate database source configuration
-        const _validation = await step.run("validate-db-source", async () => {
+        await step.run("validate-db-source", async () => {
           if (
             !flow.databaseSource?.connectionId ||
             !flow.databaseSource?.query
@@ -748,45 +749,383 @@ export const flowFunction = inngest.createFunction(
               `Source database connection not found: ${flow.databaseSource.connectionId}`,
             );
           }
-
-          return {
-            sourceConnectionId: sourceConnection._id.toString(),
-            sourceName: sourceConnection.name,
-          };
         });
 
-        // Initialize destination writer once
-        const _writerConfig = await step.run(
-          "init-destination-writer",
+        // ============ BULK PIPELINE (capability-based) ============
+        const bulkCheckResult = await step.run(
+          "check-bulk-pipeline",
           async () => {
-            const sourceConnection = await DatabaseConnection.findById(
-              flow.databaseSource!.connectionId,
-            );
-
-            const destinationWriter = await createDestinationWriter(
-              {
-                destinationDatabaseId: flow.destinationDatabaseId,
-                destinationDatabaseName: flow.destinationDatabaseName,
-                tableDestination: flow.tableDestination,
-                dataSourceId: flow.databaseSource!.connectionId,
-              },
-              sourceConnection?.name,
-            );
-
-            // Set collection name if writing to MongoDB
-            if (!flow.tableDestination?.tableName && sourceConnection) {
-              (destinationWriter as any).config.collectionName =
-                `${sourceConnection.name}_sync`;
+            const bulkMode = flow.bulkConfig?.mode || "off";
+            if (bulkMode === "off") {
+              return { useBulk: false as const, reason: "bulk mode is off" };
             }
 
+            const sourceConn = await DatabaseConnection.findById(
+              flow.databaseSource!.connectionId,
+            );
+            if (!sourceConn) {
+              return {
+                useBulk: false as const,
+                reason: "source connection not found",
+              };
+            }
+
+            const extractor = resolveBulkExtractor(sourceConn.type);
+            if (!extractor) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  `Bulk mode 'on' but no bulk extractor for source type '${sourceConn.type}'`,
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: `no bulk extractor for source type '${sourceConn.type}'`,
+              };
+            }
+
+            if (!flow.tableDestination?.connectionId) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  "Bulk mode 'on' but no table destination configured",
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: "no table destination configured",
+              };
+            }
+
+            const destConn = await DatabaseConnection.findById(
+              flow.tableDestination.connectionId,
+            );
+            if (!destConn) {
+              return {
+                useBulk: false as const,
+                reason: "destination connection not found",
+              };
+            }
+
+            const adapter = resolveCdcDestinationAdapter({
+              destinationType: destConn.type,
+              destinationDatabaseId: flow.destinationDatabaseId.toString(),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              tableDestination: {
+                connectionId: flow.tableDestination.connectionId.toString(),
+                schema: flow.tableDestination.schema || "default",
+                tableName: flow.tableDestination.tableName,
+              },
+            });
+
+            if (!hasStreamStagingSupport(adapter)) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  `Bulk mode 'on' but destination type '${destConn.type}' does not support stream staging`,
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: `destination '${destConn.type}' lacks stream staging support`,
+              };
+            }
+
+            const keyColumns = flow.conflictConfig?.keyColumns;
+            if (!keyColumns || keyColumns.length === 0) {
+              if (bulkMode === "on") {
+                throw new Error(
+                  "Bulk mode 'on' but no key columns configured (required for staging merge)",
+                );
+              }
+              return {
+                useBulk: false as const,
+                reason: "no key columns configured",
+              };
+            }
+
+            void appendExecutionLog(
+              "info",
+              `Using bulk pipeline (${sourceConn.type} → ${destConn.type})`,
+            );
             return {
-              collectionName: (destinationWriter as any).config?.collectionName,
-              isTableDestination: destinationWriter.isTableDestination(),
+              useBulk: true as const,
+              sourceType: sourceConn.type,
+              destType: destConn.type,
             };
           },
         );
 
-        // Chunked execution loop
+        if (bulkCheckResult.useBulk) {
+          // ============ SLICE-BASED BULK PIPELINE ============
+          //
+          // Structure mirrors Airbyte's `stream_slices()` model:
+          //   1. plan — source decides how to partition the work
+          //   2. prepare — destination drops/prepares staging (once)
+          //   3. for each slice: extract → load (append) → checkpoint
+          //   4. merge — staging into live (once)
+          //   5. cleanup — drop staging
+          //
+          // Each slice is its own Inngest step, which means:
+          //   - Inngest memoizes per-slice progress across crashes/retries.
+          //   - A Cloud Run instance kill mid-run re-runs only the dead slice.
+          //   - Memory footprint stays O(slice size), not O(total dataset).
+
+          const forwardLog = (
+            level: "info" | "debug" | "warn",
+            message: string,
+            data?: Record<string, unknown>,
+          ) => {
+            void appendExecutionLog(level, message, data);
+          };
+
+          const layout = buildCdcEntityLayout({
+            entity: "database_query",
+            tableName: flow.tableDestination!.tableName,
+            keyColumns: flow.conflictConfig?.keyColumns,
+            deleteMode: flow.deleteMode,
+          });
+
+          // Local closure resolving all bulk-pipeline deps. Mongoose docs
+          // can't cross Inngest step boundaries (not JSON-serializable), so
+          // every step re-fetches — but we factor the ~20 lines of lookup +
+          // validation into one place rather than duplicating across 5 steps.
+          const resolveBulkDeps = async () => {
+            const [sourceConn, destConn] = await Promise.all([
+              DatabaseConnection.findById(flow.databaseSource!.connectionId),
+              DatabaseConnection.findById(flow.tableDestination!.connectionId),
+            ]);
+            if (!sourceConn) throw new Error("Source connection not found");
+            if (!destConn) throw new Error("Destination connection not found");
+
+            const extractor = resolveBulkExtractor(sourceConn.type);
+            if (!extractor) {
+              throw new Error(
+                `Bulk extractor unavailable for source type '${sourceConn.type}'`,
+              );
+            }
+
+            const adapter = resolveCdcDestinationAdapter({
+              destinationType: destConn.type,
+              destinationDatabaseId: flow.destinationDatabaseId.toString(),
+              destinationDatabaseName: flow.destinationDatabaseName,
+              tableDestination: {
+                connectionId: flow.tableDestination!.connectionId.toString(),
+                schema: flow.tableDestination!.schema || "default",
+                tableName: flow.tableDestination!.tableName,
+              },
+            });
+            if (!hasStreamStagingSupport(adapter)) {
+              throw new Error(
+                `Destination '${destConn.type}' lacks stream staging support`,
+              );
+            }
+
+            return { sourceConn, destConn, extractor, adapter };
+          };
+
+          // ---- Stage 1: plan ----
+          // User-facing logs live INSIDE step.run closures so Inngest
+          // doesn't re-fire them on every replay (each step boundary
+          // causes the function body to re-execute from the top).
+          const slices = await step.run("bulk-plan", async () => {
+            const { sourceConn, extractor } = await resolveBulkDeps();
+            const planned = await extractor.plan({
+              connection: sourceConn,
+              query: flow.databaseSource!.query,
+              syncMode: flow.syncMode,
+              incrementalConfig: flow.incrementalConfig,
+              trackingColumn: flow.incrementalConfig?.trackingColumn,
+              slicing: flow.bulkConfig?.slicing ?? "auto",
+              onLog: forwardLog,
+            });
+            forwardLog(
+              "info",
+              `Bulk pipeline planned: ${planned.length} slice(s)`,
+              { sliceCount: planned.length },
+            );
+            return planned;
+          });
+
+          // ---- Stage 2: prepare staging ----
+          await step.run("bulk-prepare-staging", async () => {
+            const { adapter } = await resolveBulkDeps();
+            await adapter.prepareStaging(layout, flowId);
+            forwardLog("info", "Staging table prepared", {
+              table: flow.tableDestination!.tableName,
+            });
+          });
+
+          // ---- Stage 3: extract + load each slice ----
+          let totalRows = 0;
+
+          for (let i = 0; i < slices.length; i++) {
+            const slice = slices[i];
+            const sliceTag = `[slice ${i + 1}/${slices.length}]`;
+
+            await throwIfExecutionCancelled("bulk-before-slice", {
+              sliceId: slice.id,
+              sliceIndex: i,
+              sliceCount: slices.length,
+            });
+
+            const sliceResult = await step.run(
+              `bulk-load-${slice.id}`,
+              async () => {
+                const { sourceConn, extractor, adapter } =
+                  await resolveBulkDeps();
+
+                forwardLog("info", `${sliceTag} ${slice.label}`, {
+                  sliceId: slice.id,
+                  sliceIndex: i,
+                  sliceCount: slices.length,
+                  estimatedRows: slice.estimatedRows,
+                });
+
+                const extraction = await extractor.extract({
+                  connection: sourceConn,
+                  query: flow.databaseSource!.query,
+                  syncMode: flow.syncMode,
+                  incrementalConfig: flow.incrementalConfig,
+                  trackingColumn: flow.incrementalConfig?.trackingColumn,
+                  slice,
+                  onLog: forwardLog,
+                });
+
+                try {
+                  const { loaded } = await adapter.loadStagingFromStream({
+                    rows: extraction.rows,
+                    layout,
+                    flowId,
+                    append: true,
+                    onLog: forwardLog,
+                    onProgress: rowsLoaded =>
+                      forwardLog(
+                        "info",
+                        `${sliceTag} ${rowsLoaded.toLocaleString()} rows loaded`,
+                        { sliceId: slice.id, totalProcessed: rowsLoaded },
+                      ),
+                  });
+
+                  forwardLog(
+                    "info",
+                    `${sliceTag} complete (${loaded.toLocaleString()} rows)`,
+                    { sliceId: slice.id, sliceLoaded: loaded },
+                  );
+
+                  return {
+                    loaded,
+                    maxTrackingValue: extraction.maxTrackingValue ?? null,
+                  };
+                } finally {
+                  await extraction.cleanup();
+                }
+              },
+            );
+
+            totalRows += sliceResult.loaded;
+
+            // Per-slice checkpoint for incremental syncs — a crash late in
+            // the run shouldn't waste already-absorbed progress. This is
+            // also the single source of truth for `incrementalConfig.lastValue`;
+            // the last slice's checkpoint is the last write, so no final
+            // persist step is needed.
+            if (
+              flow.syncMode === "incremental" &&
+              flow.incrementalConfig?.trackingColumn &&
+              sliceResult.maxTrackingValue
+            ) {
+              await step.run(`bulk-checkpoint-${slice.id}`, async () => {
+                await Flow.findByIdAndUpdate(flowId, {
+                  $set: {
+                    "incrementalConfig.lastValue": sliceResult.maxTrackingValue,
+                  },
+                });
+                forwardLog(
+                  "info",
+                  `Checkpoint: ${flow.incrementalConfig!.trackingColumn} = ${sliceResult.maxTrackingValue}`,
+                  { sliceId: slice.id },
+                );
+              });
+            }
+          }
+
+          // ---- Stage 4: merge staging into live ----
+          await step.run("bulk-merge", async () => {
+            const { adapter } = await resolveBulkDeps();
+            forwardLog(
+              "info",
+              `Merging ${totalRows.toLocaleString()} staged rows into live table...`,
+              { totalProcessed: totalRows },
+            );
+            await adapter.mergeFromStaging(layout, flow, flowId);
+            forwardLog(
+              "info",
+              `Merge complete (${totalRows.toLocaleString()} rows)`,
+              { totalProcessed: totalRows },
+            );
+          });
+
+          // ---- Stage 5: cleanup staging ----
+          // Surfaces failures loudly (prior silent `if (!destConn) return`
+          // left staging tables orphaned and nobody noticed). If the
+          // destination connection was deleted mid-run, the user should
+          // fix their config — next run's prepareStaging drops orphans
+          // anyway, so a surfaced error here is strictly informative.
+          await step.run("bulk-cleanup", async () => {
+            const { adapter } = await resolveBulkDeps();
+            if (adapter.cleanupStaging) {
+              await adapter.cleanupStaging(layout, flowId);
+            }
+          });
+
+          // No final `bulk-save-tracking` step — the per-slice checkpoint
+          // above is the single source of truth for
+          // `incrementalConfig.lastValue` (the last slice's checkpoint is the
+          // last write). If slices yield no tracking values, there's nothing
+          // to persist.
+
+          await step.run("bulk-complete-execution", async () => {
+            const completedAt = new Date();
+
+            if (executionId) {
+              const db = Flow.db;
+              const collection = db.collection("flow_executions");
+              await collection.updateOne(
+                { _id: new Types.ObjectId(executionId) },
+                {
+                  $set: {
+                    completedAt,
+                    lastHeartbeat: completedAt,
+                    status: "completed",
+                    success: true,
+                    stats: {
+                      recordsProcessed: totalRows,
+                      syncedEntities: ["database_query"],
+                      mode: "bulk-pipeline",
+                    },
+                  },
+                },
+              );
+            }
+
+            await Flow.findByIdAndUpdate(flowId, {
+              lastSuccessAt: completedAt,
+              lastError: null,
+            });
+          });
+
+          return {
+            success: true,
+            message: "Bulk pipeline sync completed",
+            totalRows,
+            mode: "bulk-pipeline",
+          };
+        }
+
+        void appendExecutionLog(
+          "debug",
+          `Bulk pipeline skipped: ${bulkCheckResult.reason}`,
+        );
+
+        // ============ CHUNKED EXECUTION (fallback) ============
         let chunkState: DbSyncChunkState | undefined;
         let chunkIndex = 0;
         let completed = false;

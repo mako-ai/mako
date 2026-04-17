@@ -69,6 +69,25 @@ export interface CdcDestinationAdapter {
     flowId: string,
     options?: { stagingSuffix?: string },
   ): Promise<void>;
+
+  loadStagingFromStream?(params: {
+    rows: AsyncIterable<Record<string, unknown>>;
+    layout: CdcEntityLayout;
+    flowId: string;
+    onProgress?: (rowsLoaded: number) => void;
+    onLog?: (
+      level: "info" | "debug" | "warn",
+      message: string,
+      data?: Record<string, unknown>,
+    ) => void;
+    /**
+     * If true, skip the CREATE TABLE bootstrap and INSERT into the existing
+     * staging table. Callers MUST have run `prepareStaging` beforehand. Used
+     * by the slice-based pipeline so multiple slices append into a single
+     * staging table before a final merge.
+     */
+    append?: boolean;
+  }): Promise<{ loaded: number }>;
 }
 
 export function resolveCdcDestinationAdapter(params: {
@@ -143,6 +162,24 @@ export function hasStagingSupport(
 } {
   return Boolean(
     adapter?.loadStagingFromParquet &&
+      adapter?.mergeFromStaging &&
+      adapter?.cleanupStaging &&
+      adapter?.prepareStaging,
+  );
+}
+
+export function hasStreamStagingSupport(
+  adapter?: CdcDestinationAdapter,
+): adapter is CdcDestinationAdapter & {
+  loadStagingFromStream: NonNullable<
+    CdcDestinationAdapter["loadStagingFromStream"]
+  >;
+  mergeFromStaging: NonNullable<CdcDestinationAdapter["mergeFromStaging"]>;
+  cleanupStaging: NonNullable<CdcDestinationAdapter["cleanupStaging"]>;
+  prepareStaging: NonNullable<CdcDestinationAdapter["prepareStaging"]>;
+} {
+  return Boolean(
+    adapter?.loadStagingFromStream &&
       adapter?.mergeFromStaging &&
       adapter?.cleanupStaging &&
       adapter?.prepareStaging,

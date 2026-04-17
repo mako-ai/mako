@@ -1,4 +1,5 @@
 import { promises as fs, createReadStream } from "fs";
+import { Readable } from "node:stream";
 import { createClient } from "@clickhouse/client";
 import {
   DatabaseConnection,
@@ -64,6 +65,48 @@ const log = loggers.sync("cdc.adapter.clickhouse");
 const escId = (id: string) => `\`${id.replace(/`/g, "``")}\``;
 
 const escStr = (val: string) => val.replace(/'/g, "''");
+
+/**
+ * Coerce arbitrary row values into JSON-stringifiable strings (or null) so
+ * they round-trip cleanly through ClickHouse's JSONEachRow parser for
+ * Nullable(String) columns.
+ *
+ * Required because our bulk staging path bootstraps all columns as
+ * Nullable(String), and ClickHouse rejects unquoted JSON numbers/booleans
+ * for that type with "expected opening quote". Also handles Buffers (BQ
+ * BYTES columns) and nested structures.
+ */
+function coerceRowToStrings(
+  row: Record<string, unknown>,
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const key of Object.keys(row)) {
+    out[key] = coerceValueToString(row[key]);
+  }
+  return out;
+}
+
+function coerceValueToString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString("base64");
+  }
+  // Arrays, plain objects, Avro records: stringify.
+  try {
+    return JSON.stringify(value, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+  } catch {
+    return String(value);
+  }
+}
 
 interface ClickHouseAdapterConfig {
   destinationDatabaseId: string;
@@ -159,8 +202,26 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    const ddl = `CREATE TABLE IF NOT EXISTS ${fullLive} (${colDefs}) ENGINE = ReplacingMergeTree(_mako_source_ts) ${partitionClause} ORDER BY (${keyColumns})`;
-    await this.executeQuery(ddl);
+    // ReplacingMergeTree needs `_mako_source_ts` to exist as a column. CDC
+    // ingest always supplies it; the bulk pipeline does NOT (staging is
+    // bootstrapped from the source row set). Fall back to plain MergeTree
+    // when the versioning column is absent — the merge step already handles
+    // dedup at INSERT time via ROW_NUMBER + DELETE-before-INSERT, so no
+    // engine-level versioning is required for correctness.
+    const hasSourceTs = stagingColumnNames.includes("_mako_source_ts");
+    const engineExpr = hasSourceTs
+      ? `ReplacingMergeTree(${escId("_mako_source_ts")})`
+      : "MergeTree()";
+
+    // Bulk staging bootstraps every column as Nullable(String). ClickHouse
+    // rejects Nullable columns in ORDER BY by default, so opt in.
+    const ddl = `CREATE TABLE IF NOT EXISTS ${fullLive} (${colDefs}) ENGINE = ${engineExpr} ${partitionClause} ORDER BY (${keyColumns}) SETTINGS allow_nullable_key = 1`;
+    const createResult = await this.executeQuery(ddl);
+    if (createResult && createResult.success === false) {
+      throw new Error(
+        `Failed to create live table ${layout.tableName}: ${createResult.error}`,
+      );
+    }
   }
 
   async applyEvents(params: {
@@ -510,7 +571,12 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    await this.executeQuery(insertStmt);
+    const insertResult = await this.executeQuery(insertStmt);
+    if (insertResult && insertResult.success === false) {
+      throw new Error(
+        `ClickHouse merge INSERT into ${layout.tableName} failed: ${insertResult.error}`,
+      );
+    }
 
     log.info("ClickHouse merge complete", {
       live: layout.tableName,
@@ -635,6 +701,231 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       database: conn.database || this.getDatabase(),
       ...baseConfig,
     };
+  }
+
+  // Progress is reported every N rows. Real batching is delegated to the
+  // ClickHouse HTTP client (which chunks rows from the Readable before
+  // sending), so this only affects log granularity.
+  private static readonly PROGRESS_INTERVAL = 50_000;
+
+  async loadStagingFromStream(params: {
+    rows: AsyncIterable<Record<string, unknown>>;
+    layout: CdcEntityLayout;
+    flowId: string;
+    onProgress?: (rowsLoaded: number) => void;
+    onLog?: (
+      level: "info" | "debug" | "warn",
+      message: string,
+      data?: Record<string, unknown>,
+    ) => void;
+    /**
+     * When true, the caller is running a multi-slice pipeline: subsequent
+     * slices should INSERT into the existing staging without re-running
+     * schema DDL. The first slice still bootstraps the schema, so this flag
+     * is a no-op on an empty staging and an optimization on a populated one.
+     */
+    append?: boolean;
+  }): Promise<{ loaded: number }> {
+    const destination = await this.resolveDestination();
+    const conn = destination.connection as any;
+    const db = this.getDatabase();
+    const stagingTable = this.getStagingTableName(
+      params.layout.tableName,
+      params.flowId,
+    );
+    const fullStaging = `${escId(db)}.${escId(stagingTable)}`;
+
+    const config = this.buildClientConfig(conn);
+    const client = createClient({
+      ...config,
+      request_timeout: 600_000,
+    });
+
+    try {
+      const liveTable = this.config.tableDestination.tableName;
+      const fullLive = `${escId(db)}.${escId(liveTable)}`;
+      let tableCreated = false;
+
+      // In append mode, skip DDL entirely when the staging already exists.
+      // Every slice otherwise re-issues `CREATE TABLE IF NOT EXISTS AS live`
+      // which is benign but noisy in logs and wastes an RT on ClickHouse.
+      if (params.append) {
+        const existsResult = await client.query({
+          query: `SELECT 1 FROM system.tables WHERE database = {db:String} AND name = {tbl:String}`,
+          query_params: { db, tbl: stagingTable },
+          format: "JSONEachRow",
+        });
+        const existsRows = (await existsResult.json()) as unknown[];
+        if (existsRows.length > 0) {
+          tableCreated = true;
+          params.onLog?.("debug", `Appending to existing staging table`, {
+            stagingTable,
+          });
+        }
+      }
+
+      if (!tableCreated) {
+        try {
+          await client.command({
+            query: `CREATE TABLE IF NOT EXISTS ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
+          });
+          tableCreated = true;
+          params.onLog?.(
+            "info",
+            `Staging table ready (cloned from ${liveTable})`,
+            { stagingTable, liveTable },
+          );
+        } catch {
+          log.info(
+            "Live table not found, will create staging from first row columns",
+            { stagingTable, liveTable },
+          );
+          params.onLog?.(
+            "info",
+            "Live table not found — staging schema will be bootstrapped from first row",
+            { stagingTable, liveTable },
+          );
+        }
+      }
+
+      // Peek the first row so we can bootstrap the staging schema (if the
+      // live table doesn't exist yet) BEFORE opening the HTTP insert stream.
+      // An empty result short-circuits cleanly without side effects.
+      const iterator = params.rows[Symbol.asyncIterator]();
+      let first: IteratorResult<Record<string, unknown>>;
+      try {
+        first = await iterator.next();
+      } catch (err) {
+        await iterator.return?.().catch(() => undefined);
+        throw err;
+      }
+
+      if (first.done) {
+        await iterator.return?.().catch(() => undefined);
+        params.onLog?.(
+          "info",
+          "Source stream yielded zero rows — nothing to load",
+          {
+            stagingTable,
+          },
+        );
+        return { loaded: 0 };
+      }
+
+      if (!tableCreated) {
+        const columns = Object.keys(first.value);
+        const colDefs = columns
+          .map(c => `${escId(c)} Nullable(String)`)
+          .join(", ");
+        await client.command({
+          query: `CREATE TABLE IF NOT EXISTS ${fullStaging} (${colDefs}) ENGINE = MergeTree() ORDER BY tuple()`,
+        });
+        tableCreated = true;
+        params.onLog?.(
+          "info",
+          `Staging table created with ${columns.length} columns (all Nullable(String))`,
+          { stagingTable, columnCount: columns.length },
+        );
+      }
+
+      let loaded = 0;
+      const progressInterval = ClickHouseDestinationAdapter.PROGRESS_INTERVAL;
+
+      // Stream rows straight into ClickHouse. The client pulls one row at a
+      // time from the Readable (highWaterMark=1024) and serializes it as
+      // JSONEachRow on the fly — so memory stays O(highWaterMark), not
+      // O(total rows). This is the critical difference vs. the old
+      // 50k-row array buffer which OOM'd on 1 GiB Cloud Run instances.
+      const rowStream = async function* (): AsyncGenerator<
+        Record<string, string | null>
+      > {
+        try {
+          yield coerceRowToStrings(first.value);
+          loaded = 1;
+          while (true) {
+            const next = await iterator.next();
+            if (next.done) break;
+            loaded++;
+            if (loaded % progressInterval === 0) {
+              params.onProgress?.(loaded);
+            }
+            yield coerceRowToStrings(next.value);
+          }
+        } finally {
+          await iterator.return?.().catch(() => undefined);
+        }
+      };
+
+      const readable = Readable.from(rowStream(), {
+        objectMode: true,
+        highWaterMark: 1024,
+      });
+
+      await client.insert({
+        table: `${db}.${stagingTable}`,
+        values: readable,
+        format: "JSONEachRow",
+      });
+
+      params.onProgress?.(loaded);
+
+      log.info("Loaded stream to ClickHouse staging", {
+        stagingTable,
+        loaded,
+      });
+
+      return { loaded };
+    } finally {
+      await client.close();
+    }
+  }
+
+  /**
+   * Load Parquet files from GCS directly into a ClickHouse table using
+   * the gcs() table function. Requires GCS HMAC keys for authentication.
+   */
+  async loadFromGcs(params: {
+    gcsUri: string;
+    targetTable: string;
+    hmacAccessKey: string;
+    hmacSecretKey: string;
+    columns?: string[];
+  }): Promise<{ loaded: number }> {
+    const dest = await this.resolveDestination();
+    const conn = dest.connection as any;
+    const config = this.buildClientConfig(conn);
+    const client = createClient(config);
+    const db = this.getDatabase();
+    const fullTable = `${escId(db)}.${escId(params.targetTable)}`;
+    const httpsUri = params.gcsUri.replace(
+      /^gs:\/\//,
+      "https://storage.googleapis.com/",
+    );
+    const colExpr = params.columns ? params.columns.map(escId).join(", ") : "*";
+
+    try {
+      const insertSql = `INSERT INTO ${fullTable}
+SELECT ${colExpr} FROM gcs(
+  '${escStr(httpsUri)}',
+  '${escStr(params.hmacAccessKey)}',
+  '${escStr(params.hmacSecretKey)}',
+  'Parquet'
+)`;
+
+      await client.command({
+        query: insertSql,
+        clickhouse_settings: { wait_end_of_query: 1 },
+      });
+
+      const countResult = await client.query({
+        query: `SELECT count() as cnt FROM ${fullTable}`,
+        format: "JSONEachRow",
+      });
+      const countRows = await countResult.json<{ cnt: string }>();
+      return { loaded: Number(countRows[0]?.cnt || 0) };
+    } finally {
+      await client.close();
+    }
   }
 
   private parseConnectionString(connectionString: string): {

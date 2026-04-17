@@ -35,11 +35,14 @@ const baseFunctions = [
   modelCatalogRefreshFunction,
 ];
 
-const allWebhookFunctions = [
+const webhookEventHandlers = [
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,
-  webhookRetryFunction,
   cdcMaterializeFunction,
+];
+
+const webhookCronFunctions = [
+  webhookRetryFunction,
   cdcMaterializeSchedulerFunction,
 ];
 
@@ -51,23 +54,23 @@ let _functions: typeof baseFunctions | null = null;
 export function getFunctions() {
   if (_functions) return _functions;
 
-  const isDevelopment =
+  const disableScheduled =
     process.env.NODE_ENV !== "production" ||
     process.env.DISABLE_SCHEDULED_SYNC === "true";
 
   const disableWebhookProcessing =
     process.env.DISABLE_WEBHOOK_PROCESSING === "true";
 
-  const webhookFunctions = disableWebhookProcessing ? [] : allWebhookFunctions;
-
-  _functions = isDevelopment
-    ? [...baseFunctions, ...webhookFunctions]
+  const webhookFns = disableWebhookProcessing ? [] : webhookEventHandlers;
+  const cronFns = disableScheduled
+    ? []
     : [
-        ...baseFunctions,
-        ...webhookFunctions,
+        ...webhookCronFunctions,
         flowSchedulerFunction,
         dashboardSchedulerFunction,
       ];
+
+  _functions = [...baseFunctions, ...webhookFns, ...cronFns];
 
   return _functions;
 }

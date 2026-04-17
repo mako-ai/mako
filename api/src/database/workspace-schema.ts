@@ -669,6 +669,17 @@ export interface IFlow extends Document {
   paginationConfig?: IPaginationConfig;
   typeCoercions?: ITypeCoercion[];
   batchSize?: number;
+  bulkConfig?: {
+    mode?: "auto" | "on" | "off";
+    /**
+     * Controls slice-based partitioning of bulk backfills.
+     *   - "auto" (default): extractor may partition the work (e.g. weekly
+     *     slices on a date-like tracking column) for resumability + memory.
+     *   - "off": extractor always returns a single whole-dataset slice.
+     *     Use as an escape hatch if slicing misbehaves for a specific flow.
+     */
+    slicing?: "auto" | "off";
+  };
   backfillState?: {
     status?: BackfillStatus;
     runId?: string;
@@ -1846,6 +1857,18 @@ const FlowSchema = new Schema<IFlow>(
       default: 2000,
       min: 100,
       max: 50000,
+    },
+    bulkConfig: {
+      mode: {
+        type: String,
+        enum: ["auto", "on", "off"],
+        default: "off",
+      },
+      slicing: {
+        type: String,
+        enum: ["auto", "off"],
+        default: "auto",
+      },
     },
     backfillState: {
       status: {
