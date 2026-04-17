@@ -1078,11 +1078,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     // (timestamp/number/bool/json). Without this, every column defaults to
     // VARCHAR and Date values get JSON.stringify'd with extra quotes, which
     // then SAFE_CAST to NULL on the live side — wiping timestamps on update.
+    //
+    // Also prune schema fields down to columns that are actually populated in
+    // this batch. Otherwise sparse webhook payloads (e.g. Close `lead.updated`
+    // with only `status_id` changed) would inflate staging with 100%-NULL
+    // columns like `html_url`, `contacts`, `primary_email`, which the MERGE
+    // would then clobber over the live row. This keeps `stagingCols` tight and
+    // lets the conditional `UPDATE SET` preserve untouched live values.
+    // Keep fields that appear in at least one record, regardless of value.
+    // A `null` here is a legitimate cleared value (e.g. Close `changed_fields`
+    // reporting `description` was nulled) — we want the MERGE to write that.
+    // A field that is never touched simply won't appear in Object.keys at all.
+    const presentKeys = new Set<string>();
+    for (const r of params.records) {
+      for (const k of Object.keys(r)) presentKeys.add(k);
+    }
+
     const schemaFields: FieldMeta[] | undefined = params.entitySchema
-      ? Object.entries(params.entitySchema.fields).map(([name, f]) => ({
-          name,
-          type: f.type,
-        }))
+      ? Object.entries(params.entitySchema.fields)
+          .filter(([name]) => presentKeys.has(name))
+          .map(([name, f]) => ({ name, type: f.type }))
       : undefined;
 
     const parquet = await buildParquetFromBatches({
