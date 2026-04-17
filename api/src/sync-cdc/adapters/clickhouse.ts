@@ -202,8 +202,26 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    const ddl = `CREATE TABLE IF NOT EXISTS ${fullLive} (${colDefs}) ENGINE = ReplacingMergeTree(_mako_source_ts) ${partitionClause} ORDER BY (${keyColumns})`;
-    await this.executeQuery(ddl);
+    // ReplacingMergeTree needs `_mako_source_ts` to exist as a column. CDC
+    // ingest always supplies it; the bulk pipeline does NOT (staging is
+    // bootstrapped from the source row set). Fall back to plain MergeTree
+    // when the versioning column is absent — the merge step already handles
+    // dedup at INSERT time via ROW_NUMBER + DELETE-before-INSERT, so no
+    // engine-level versioning is required for correctness.
+    const hasSourceTs = stagingColumnNames.includes("_mako_source_ts");
+    const engineExpr = hasSourceTs
+      ? `ReplacingMergeTree(${escId("_mako_source_ts")})`
+      : "MergeTree()";
+
+    // Bulk staging bootstraps every column as Nullable(String). ClickHouse
+    // rejects Nullable columns in ORDER BY by default, so opt in.
+    const ddl = `CREATE TABLE IF NOT EXISTS ${fullLive} (${colDefs}) ENGINE = ${engineExpr} ${partitionClause} ORDER BY (${keyColumns}) SETTINGS allow_nullable_key = 1`;
+    const createResult = await this.executeQuery(ddl);
+    if (createResult && createResult.success === false) {
+      throw new Error(
+        `Failed to create live table ${layout.tableName}: ${createResult.error}`,
+      );
+    }
   }
 
   async applyEvents(params: {
@@ -553,7 +571,12 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    await this.executeQuery(insertStmt);
+    const insertResult = await this.executeQuery(insertStmt);
+    if (insertResult && insertResult.success === false) {
+      throw new Error(
+        `ClickHouse merge INSERT into ${layout.tableName} failed: ${insertResult.error}`,
+      );
+    }
 
     log.info("ClickHouse merge complete", {
       live: layout.tableName,
