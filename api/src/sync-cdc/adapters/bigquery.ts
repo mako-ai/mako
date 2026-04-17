@@ -171,18 +171,25 @@ function buildMergeStatement(p: BuildMergeStatementParams): string {
     entitySchema,
   } = p;
 
+  // Only consider staging cols that also exist on live (an ALTER TABLE add may
+  // have been skipped earlier). Referencing a non-live col in UPDATE SET would
+  // make the MERGE fail with "unrecognized name".
+  const liveColsSet = new Set(columns);
+  const effectiveStagingCols = [...stagingCols].filter(c => liveColsSet.has(c));
+  const effectiveStagingSet = new Set(effectiveStagingCols);
+
   const dedupKey = keyColumns.map(escId).join(", ");
-  const hasStagingSourceTs = stagingCols.has("_mako_source_ts");
-  const hasStagingIngestSeq = stagingCols.has("_mako_ingest_seq");
+  const hasStagingSourceTs = effectiveStagingSet.has("_mako_source_ts");
+  const hasStagingIngestSeq = effectiveStagingSet.has("_mako_ingest_seq");
   const orderExpr = hasStagingSourceTs
     ? `${escId("_mako_source_ts")} DESC`
     : hasStagingIngestSeq
       ? `${escId("_mako_ingest_seq")} DESC`
       : "1";
 
-  // USING subquery: SELECT all staging columns (cast to live types) with
-  // dedup by key keeping the newest record per ordering expression.
-  const stagingSelectCols = [...stagingCols]
+  // USING subquery: SELECT staging columns (cast to live types) with dedup by
+  // key keeping the newest record per ordering expression.
+  const stagingSelectCols = effectiveStagingCols
     .map(c => buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)))
     .join(", ");
 
@@ -195,7 +202,9 @@ function buildMergeStatement(p: BuildMergeStatementParams): string {
 
   // WHEN MATCHED — only UPDATE columns present in staging (excluding keys).
   // Columns that exist on live but not in staging are left untouched.
-  const updateColumns = [...stagingCols].filter(c => !keyColumns.includes(c));
+  const updateColumns = effectiveStagingCols.filter(
+    c => !keyColumns.includes(c),
+  );
 
   // Ordering guard: don't let stale events overwrite newer live data.
   const hasSourceOrdering =
@@ -218,7 +227,7 @@ function buildMergeStatement(p: BuildMergeStatementParams): string {
   const insertColList = columns.map(escId).join(", ");
   const insertValues = columns
     .map(c => {
-      if (!stagingCols.has(c)) {
+      if (!effectiveStagingSet.has(c)) {
         const targetType = resolveTargetBqType(
           c,
           entitySchema,
