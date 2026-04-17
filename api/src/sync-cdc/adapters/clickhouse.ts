@@ -649,6 +649,11 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flowId: string;
     onProgress?: (rowsLoaded: number) => void;
+    onLog?: (
+      level: "info" | "debug" | "warn",
+      message: string,
+      data?: Record<string, unknown>,
+    ) => void;
   }): Promise<{ loaded: number }> {
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
@@ -675,9 +680,19 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
           query: `CREATE TABLE IF NOT EXISTS ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
         });
         tableCreated = true;
+        params.onLog?.(
+          "info",
+          `Staging table ready (cloned from ${liveTable})`,
+          { stagingTable, liveTable },
+        );
       } catch {
         log.info(
           "Live table not found, will create staging from first batch columns",
+          { stagingTable, liveTable },
+        );
+        params.onLog?.(
+          "info",
+          "Live table not found — staging schema will be bootstrapped from first batch",
           { stagingTable, liveTable },
         );
       }
@@ -697,6 +712,11 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
             query: `CREATE TABLE IF NOT EXISTS ${fullStaging} (${colDefs}) ENGINE = MergeTree() ORDER BY tuple()`,
           });
           tableCreated = true;
+          params.onLog?.(
+            "info",
+            `Staging table created with ${columns.length} columns (all Nullable(String))`,
+            { stagingTable, columnCount: columns.length },
+          );
         }
 
         await client.insert({

@@ -4,6 +4,14 @@ import type {
 } from "../../database/workspace-schema";
 import { BigQueryBulkExtractor } from "./bigquery";
 
+export type BulkLogLevel = "info" | "debug" | "warn";
+
+export type BulkLogFn = (
+  level: BulkLogLevel,
+  message: string,
+  data?: Record<string, unknown>,
+) => void;
+
 export interface BulkExtraction {
   rows: AsyncIterable<Record<string, unknown>>;
   totalRows?: number;
@@ -18,6 +26,7 @@ export interface BulkExtractor {
     syncMode: "full" | "incremental";
     incrementalConfig?: IIncrementalConfig;
     trackingColumn?: string;
+    onLog?: BulkLogFn;
   }): Promise<BulkExtraction>;
 }
 

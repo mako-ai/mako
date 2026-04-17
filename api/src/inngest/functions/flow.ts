@@ -894,10 +894,13 @@ export const flowFunction = inngest.createFunction(
                 deleteMode: flow.deleteMode,
               });
 
-              void appendExecutionLog(
-                "info",
-                "Materializing query and streaming via bulk extractor...",
-              );
+              const forwardLog = (
+                level: "info" | "debug" | "warn",
+                message: string,
+                data?: Record<string, unknown>,
+              ) => {
+                void appendExecutionLog(level, message, data);
+              };
 
               const extraction = await extractor.extract({
                 connection: sourceConn,
@@ -905,6 +908,7 @@ export const flowFunction = inngest.createFunction(
                 syncMode: flow.syncMode,
                 incrementalConfig: flow.incrementalConfig,
                 trackingColumn: flow.incrementalConfig?.trackingColumn,
+                onLog: forwardLog,
               });
 
               try {
@@ -914,6 +918,7 @@ export const flowFunction = inngest.createFunction(
                   rows: extraction.rows,
                   layout,
                   flowId,
+                  onLog: forwardLog,
                   onProgress: rowsLoaded => {
                     void appendExecutionLog(
                       "info",

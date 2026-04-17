@@ -75,6 +75,11 @@ export interface CdcDestinationAdapter {
     layout: CdcEntityLayout;
     flowId: string;
     onProgress?: (rowsLoaded: number) => void;
+    onLog?: (
+      level: "info" | "debug" | "warn",
+      message: string,
+      data?: Record<string, unknown>,
+    ) => void;
   }): Promise<{ loaded: number }>;
 }
 

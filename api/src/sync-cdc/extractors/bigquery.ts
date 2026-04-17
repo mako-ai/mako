@@ -9,7 +9,7 @@ import type {
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { substituteTemplates } from "../../utils/template-substitution";
 import { loggers } from "../../logging";
-import type { BulkExtraction, BulkExtractor } from "./registry";
+import type { BulkExtraction, BulkExtractor, BulkLogFn } from "./registry";
 
 const log = loggers.sync("bulk-extractor.bigquery");
 
@@ -72,6 +72,7 @@ interface AnonTableRef {
 async function runQueryAndGetDestination(
   sourceConnection: IDatabaseConnection,
   query: string,
+  onLog?: BulkLogFn,
 ): Promise<AnonTableRef> {
   const conn = sourceConnection.connection as any;
   const projectId: string = conn.project_id;
@@ -81,7 +82,12 @@ async function runQueryAndGetDestination(
   const bq = new BigQuery({ projectId, credentials, location });
 
   log.info("Submitting BigQuery query job", { projectId, location });
+  onLog?.("info", "Submitting BigQuery query job (materializing results)...", {
+    projectId,
+    location,
+  });
 
+  const startedAt = Date.now();
   const [job] = await bq.createQueryJob({
     query,
     useLegacySql: false,
@@ -103,12 +109,23 @@ async function runQueryAndGetDestination(
   const jobLocation: string =
     metadata?.jobReference?.location || location || "US";
 
+  const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+  const stats = metadata?.statistics?.query;
+  const bytesProcessed = stats?.totalBytesProcessed;
+  const slotMs = stats?.totalSlotMs;
+
   log.info("Query materialized to anonymous table", {
     projectId: destTable.projectId,
     dataset: destTable.datasetId,
     table: destTable.tableId,
     location: jobLocation,
+    elapsedSec,
   });
+  onLog?.(
+    "info",
+    `Query materialized in ${elapsedSec}s${bytesProcessed ? ` (${formatBytes(Number(bytesProcessed))} processed)` : ""}`,
+    { elapsedSec, bytesProcessed, slotMs },
+  );
 
   return {
     projectId: destTable.projectId,
@@ -116,6 +133,16 @@ async function runQueryAndGetDestination(
     tableId: destTable.tableId,
     location: jobLocation,
   };
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
 async function queryMaxTrackingValue(
@@ -143,6 +170,7 @@ async function queryMaxTrackingValue(
 async function* streamFromStorageApi(
   serviceAccountJson: string | object,
   tableRef: AnonTableRef,
+  onLog?: BulkLogFn,
 ): AsyncGenerator<Record<string, unknown>> {
   const credentials = parseServiceAccountJson(serviceAccountJson);
 
@@ -157,6 +185,7 @@ async function* streamFromStorageApi(
   const parent = `projects/${tableRef.projectId}`;
 
   log.info("Creating BigQuery Storage Read session", { table });
+  onLog?.("info", "Opening BigQuery Storage Read session...");
 
   const [session] = await readClient.createReadSession({
     parent,
@@ -169,9 +198,15 @@ async function* streamFromStorageApi(
 
   if (!session.streams || session.streams.length === 0) {
     log.info("No streams returned — table is empty");
+    onLog?.("info", "Result table is empty — nothing to stream");
     await readClient.close();
     return;
   }
+
+  onLog?.(
+    "info",
+    `Streaming rows via ${session.streams.length} Avro stream(s)`,
+  );
 
   const rawSchema = session.avroSchema?.schema;
   if (!rawSchema) {
@@ -219,6 +254,7 @@ export class BigQueryBulkExtractor implements BulkExtractor {
     syncMode: "full" | "incremental";
     incrementalConfig?: IIncrementalConfig;
     trackingColumn?: string;
+    onLog?: BulkLogFn;
   }): Promise<BulkExtraction> {
     const conn = params.connection.connection as any;
     if (!conn.project_id || !conn.service_account_json) {
@@ -237,8 +273,18 @@ export class BigQueryBulkExtractor implements BulkExtractor {
       syncMode: params.syncMode,
       hasIncremental: !!params.incrementalConfig?.lastValue,
     });
+    params.onLog?.(
+      "info",
+      params.syncMode === "incremental" && params.incrementalConfig?.lastValue
+        ? `Starting incremental extraction (from ${params.incrementalConfig.trackingColumn} > ${params.incrementalConfig.lastValue})`
+        : "Starting full extraction",
+    );
 
-    const tableRef = await runQueryAndGetDestination(params.connection, query);
+    const tableRef = await runQueryAndGetDestination(
+      params.connection,
+      query,
+      params.onLog,
+    );
 
     let maxTrackingValue: string | null = null;
     if (params.syncMode === "incremental" && params.trackingColumn) {
@@ -251,9 +297,18 @@ export class BigQueryBulkExtractor implements BulkExtractor {
         trackingColumn: params.trackingColumn,
         maxTrackingValue,
       });
+      params.onLog?.(
+        "info",
+        `Next checkpoint: ${params.trackingColumn} = ${maxTrackingValue ?? "(none — result empty)"}`,
+        { trackingColumn: params.trackingColumn, maxTrackingValue },
+      );
     }
 
-    const rows = streamFromStorageApi(conn.service_account_json, tableRef);
+    const rows = streamFromStorageApi(
+      conn.service_account_json,
+      tableRef,
+      params.onLog,
+    );
 
     return {
       rows,
