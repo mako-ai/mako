@@ -797,6 +797,15 @@ export const flowFunction = inngest.createFunction(
           "check-bulk-pipeline",
           async () => {
             const bulkMode = flow.bulkConfig?.mode || "off";
+            flowLogger.info("Bulk pipeline check", {
+              flowId: flow._id.toString(),
+              bulkConfig: flow.bulkConfig,
+              resolvedMode: bulkMode,
+            });
+            void appendExecutionLog(
+              "info",
+              `Bulk mode: ${bulkMode} (raw config: ${JSON.stringify(flow.bulkConfig) || "undefined"})`,
+            );
             if (bulkMode === "off") {
               return { useBulk: false as const, reason: "bulk mode is off" };
             }
