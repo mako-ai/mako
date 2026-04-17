@@ -80,6 +80,13 @@ export interface CdcDestinationAdapter {
       message: string,
       data?: Record<string, unknown>,
     ) => void;
+    /**
+     * If true, skip the CREATE TABLE bootstrap and INSERT into the existing
+     * staging table. Callers MUST have run `prepareStaging` beforehand. Used
+     * by the slice-based pipeline so multiple slices append into a single
+     * staging table before a final merge.
+     */
+    append?: boolean;
   }): Promise<{ loaded: number }>;
 }
 

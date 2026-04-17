@@ -695,6 +695,13 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       message: string,
       data?: Record<string, unknown>,
     ) => void;
+    /**
+     * When true, the caller is running a multi-slice pipeline: subsequent
+     * slices should INSERT into the existing staging without re-running
+     * schema DDL. The first slice still bootstraps the schema, so this flag
+     * is a no-op on an empty staging and an optimization on a populated one.
+     */
+    append?: boolean;
   }): Promise<{ loaded: number }> {
     const destination = await this.resolveDestination();
     const conn = destination.connection as any;
@@ -716,26 +723,46 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       const fullLive = `${escId(db)}.${escId(liveTable)}`;
       let tableCreated = false;
 
-      try {
-        await client.command({
-          query: `CREATE TABLE IF NOT EXISTS ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
+      // In append mode, skip DDL entirely when the staging already exists.
+      // Every slice otherwise re-issues `CREATE TABLE IF NOT EXISTS AS live`
+      // which is benign but noisy in logs and wastes an RT on ClickHouse.
+      if (params.append) {
+        const existsResult = await client.query({
+          query: `SELECT 1 FROM system.tables WHERE database = {db:String} AND name = {tbl:String}`,
+          query_params: { db, tbl: stagingTable },
+          format: "JSONEachRow",
         });
-        tableCreated = true;
-        params.onLog?.(
-          "info",
-          `Staging table ready (cloned from ${liveTable})`,
-          { stagingTable, liveTable },
-        );
-      } catch {
-        log.info(
-          "Live table not found, will create staging from first row columns",
-          { stagingTable, liveTable },
-        );
-        params.onLog?.(
-          "info",
-          "Live table not found — staging schema will be bootstrapped from first row",
-          { stagingTable, liveTable },
-        );
+        const existsRows = (await existsResult.json()) as unknown[];
+        if (existsRows.length > 0) {
+          tableCreated = true;
+          params.onLog?.("debug", `Appending to existing staging table`, {
+            stagingTable,
+          });
+        }
+      }
+
+      if (!tableCreated) {
+        try {
+          await client.command({
+            query: `CREATE TABLE IF NOT EXISTS ${fullStaging} AS ${fullLive} ENGINE = MergeTree() ORDER BY tuple()`,
+          });
+          tableCreated = true;
+          params.onLog?.(
+            "info",
+            `Staging table ready (cloned from ${liveTable})`,
+            { stagingTable, liveTable },
+          );
+        } catch {
+          log.info(
+            "Live table not found, will create staging from first row columns",
+            { stagingTable, liveTable },
+          );
+          params.onLog?.(
+            "info",
+            "Live table not found — staging schema will be bootstrapped from first row",
+            { stagingTable, liveTable },
+          );
+        }
       }
 
       // Peek the first row so we can bootstrap the staging schema (if the
