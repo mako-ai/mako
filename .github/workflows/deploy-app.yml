@@ -166,7 +166,10 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
+      # Branch env event key (falls back to vars.INNGEST_EVENT_KEY for backward compat,
+      # but that routes events to Production env - set secrets.INNGEST_BRANCH_EVENT_KEY
+      # in repo settings to correctly route events to pr-<N> branch envs).
+      INNGEST_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY || vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
