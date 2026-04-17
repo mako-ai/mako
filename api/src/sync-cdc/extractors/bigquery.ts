@@ -13,6 +13,87 @@ import type { BulkExtraction, BulkExtractor, BulkLogFn } from "./registry";
 
 const log = loggers.sync("bulk-extractor.bigquery");
 
+/**
+ * Avro logical-type handlers for BigQuery Storage Read decoding.
+ *
+ * Without these, avsc returns raw underlying primitives (int days for DATE,
+ * long micros for TIMESTAMP, etc.) which ClickHouse's JSONEachRow parser then
+ * rejects when the staging column is Nullable(String) because the numbers
+ * serialize without JSON quotes. Decoding to ISO strings here makes the row
+ * stream uniformly string-friendly and preserves semantic meaning.
+ *
+ * Reference:
+ *   https://cloud.google.com/bigquery/docs/reference/storage#avro_schema_details
+ *   https://avro.apache.org/docs/1.11.1/specification/#logical-types
+ */
+class DateLogicalType extends (avro as any).types.LogicalType {
+  _fromValue(daysSinceEpoch: number): string {
+    return new Date(daysSinceEpoch * 86_400_000).toISOString().slice(0, 10);
+  }
+  _toValue(iso: string): number {
+    return Math.floor(new Date(iso).getTime() / 86_400_000);
+  }
+}
+
+class TimestampMillisLogicalType extends (avro as any).types.LogicalType {
+  _fromValue(ms: number): string {
+    return new Date(ms).toISOString();
+  }
+  _toValue(iso: string): number {
+    return new Date(iso).getTime();
+  }
+}
+
+class TimestampMicrosLogicalType extends (avro as any).types.LogicalType {
+  _fromValue(micros: number | bigint): string {
+    const ms =
+      typeof micros === "bigint"
+        ? Number(micros / 1000n)
+        : Math.trunc(micros / 1000);
+    return new Date(ms).toISOString();
+  }
+  _toValue(iso: string): number {
+    return new Date(iso).getTime() * 1000;
+  }
+}
+
+class TimeMillisLogicalType extends (avro as any).types.LogicalType {
+  _fromValue(ms: number): string {
+    return new Date(ms).toISOString().slice(11, 23);
+  }
+  _toValue(iso: string): number {
+    const [h, m, s] = iso.split(":").map(Number);
+    return ((h * 3600 + m * 60 + s) * 1000) | 0;
+  }
+}
+
+class TimeMicrosLogicalType extends (avro as any).types.LogicalType {
+  _fromValue(micros: number | bigint): string {
+    const ms =
+      typeof micros === "bigint"
+        ? Number(micros / 1000n)
+        : Math.trunc(micros / 1000);
+    return new Date(ms).toISOString().slice(11, 23);
+  }
+  _toValue(iso: string): number {
+    const [h, m, s] = iso.split(":").map(Number);
+    return (h * 3600 + m * 60 + s) * 1_000_000;
+  }
+}
+
+class DecimalLogicalType extends (avro as any).types.LogicalType {
+  _fromValue(buf: Buffer): string {
+    // BigQuery encodes NUMERIC/BIGNUMERIC as two's-complement bytes with a
+    // schema-provided scale. We don't have the scale here without threading
+    // it in, so fall back to hex — callers needing exact decimal precision
+    // should expose the column as STRING in their query.
+    return buf.length === 0 ? "0" : `0x${buf.toString("hex")}`;
+  }
+  _toValue(): Buffer {
+    throw new Error("DecimalLogicalType._toValue is read-only");
+  }
+}
+
 const LIMIT_OFFSET_TAIL =
   /\s+LIMIT\s+\{\{\s*limit\s*\}\}(\s+OFFSET\s+\{\{\s*offset\s*\}\})?\s*$/i;
 
@@ -214,7 +295,18 @@ async function* streamFromStorageApi(
     throw new Error("BigQuery Storage Read session missing Avro schema");
   }
   const avroSchema = JSON.parse(rawSchema);
-  const avroType = avro.Type.forSchema(avroSchema);
+  const avroType = avro.Type.forSchema(avroSchema, {
+    logicalTypes: {
+      date: DateLogicalType,
+      "timestamp-millis": TimestampMillisLogicalType,
+      "timestamp-micros": TimestampMicrosLogicalType,
+      "local-timestamp-millis": TimestampMillisLogicalType,
+      "local-timestamp-micros": TimestampMicrosLogicalType,
+      "time-millis": TimeMillisLogicalType,
+      "time-micros": TimeMicrosLogicalType,
+      decimal: DecimalLogicalType,
+    } as any,
+  });
 
   try {
     for (const stream of session.streams) {

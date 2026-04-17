@@ -65,6 +65,48 @@ const escId = (id: string) => `\`${id.replace(/`/g, "``")}\``;
 
 const escStr = (val: string) => val.replace(/'/g, "''");
 
+/**
+ * Coerce arbitrary row values into JSON-stringifiable strings (or null) so
+ * they round-trip cleanly through ClickHouse's JSONEachRow parser for
+ * Nullable(String) columns.
+ *
+ * Required because our bulk staging path bootstraps all columns as
+ * Nullable(String), and ClickHouse rejects unquoted JSON numbers/booleans
+ * for that type with "expected opening quote". Also handles Buffers (BQ
+ * BYTES columns) and nested structures.
+ */
+function coerceRowToStrings(
+  row: Record<string, unknown>,
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const key of Object.keys(row)) {
+    out[key] = coerceValueToString(row[key]);
+  }
+  return out;
+}
+
+function coerceValueToString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Date) return value.toISOString();
+  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString("base64");
+  }
+  // Arrays, plain objects, Avro records: stringify.
+  try {
+    return JSON.stringify(value, (_k, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+  } catch {
+    return String(value);
+  }
+}
+
 interface ClickHouseAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -698,7 +740,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       }
 
       let loaded = 0;
-      let buffer: Record<string, unknown>[] = [];
+      let buffer: Record<string, string | null>[] = [];
 
       const flushBuffer = async () => {
         if (buffer.length === 0) return;
@@ -730,7 +772,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
       };
 
       for await (const row of params.rows) {
-        buffer.push(row);
+        buffer.push(coerceRowToStrings(row));
         if (
           buffer.length >= ClickHouseDestinationAdapter.STREAM_FLUSH_THRESHOLD
         ) {
