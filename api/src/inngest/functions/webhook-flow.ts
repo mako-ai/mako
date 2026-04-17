@@ -182,12 +182,7 @@ async function runWebhookEventProcess({
 
         // Flatten keys with dots (e.g. Close custom fields "custom.cf_xxx")
         // BigQuery interprets dots as struct field access which breaks queries
-        const documentData = {
-          ...normalizePayloadKeys(data),
-          _dataSourceId: dataSource.id,
-          _dataSourceName: dataSource.name,
-          _syncedAt: new Date(),
-        };
+        const flatData = normalizePayloadKeys(data);
 
         const destinationType = database.type;
         const isCdcEnabled =
@@ -201,6 +196,26 @@ async function runWebhookEventProcess({
         if (mapping.entity === "activities" && data._type) {
           resolvedEntity = `activities:${data._type}`;
         }
+
+        // Apply connector-specific record normalization so the webhook payload
+        // matches the backfill shape (e.g. lead allowlist + custom field flattening).
+        let normalizedPayload = flatData;
+        if (isCdcEnabled && connector.normalizeBackfillRecord) {
+          const cdcRecord = connector.normalizeBackfillRecord(
+            resolvedEntity,
+            flatData,
+          );
+          if (cdcRecord?.payload) {
+            normalizedPayload = cdcRecord.payload as Record<string, unknown>;
+          }
+        }
+
+        const documentData = {
+          ...normalizedPayload,
+          _dataSourceId: dataSource.id,
+          _dataSourceName: dataSource.name,
+          _syncedAt: new Date(),
+        };
 
         const entityLayout = (flow.entityLayouts || []).find(
           (l: any) =>
@@ -1152,17 +1167,30 @@ async function ingestPendingWebhookEvents(logger: {
       }
 
       const { id, data } = extractedData;
-      const documentData = {
-        ...normalizePayloadKeys(data),
-        _dataSourceId: dataSource.id,
-        _dataSourceName: dataSource.name,
-        _syncedAt: new Date(),
-      };
+      const flatData = normalizePayloadKeys(data);
 
       let resolvedEntity = mapping.entity;
       if (mapping.entity === "activities" && data._type) {
         resolvedEntity = `activities:${data._type}`;
       }
+
+      let normalizedPayload = flatData;
+      if (connector.normalizeBackfillRecord) {
+        const cdcRecord = connector.normalizeBackfillRecord(
+          resolvedEntity,
+          flatData,
+        );
+        if (cdcRecord?.payload) {
+          normalizedPayload = cdcRecord.payload as Record<string, unknown>;
+        }
+      }
+
+      const documentData = {
+        ...normalizedPayload,
+        _dataSourceId: dataSource.id,
+        _dataSourceName: dataSource.name,
+        _syncedAt: new Date(),
+      };
 
       if (!isEntityEnabledForFlow(flow, resolvedEntity, mapping.entity)) {
         flowDropped++;
