@@ -1,3 +1,4 @@
+import { BigQuery } from "@google-cloud/bigquery";
 import { BigQueryReadClient } from "@google-cloud/bigquery-storage";
 import { GoogleAuth } from "google-auth-library";
 import avro from "avsc";
@@ -50,61 +51,79 @@ function parseServiceAccountJson(
   return raw as Record<string, unknown>;
 }
 
-interface TempTableRef {
+interface AnonTableRef {
   projectId: string;
   datasetId: string;
   tableId: string;
   location: string;
 }
 
-async function materializeToTempTable(
+/**
+ * Runs the query as a standard BigQuery job and returns a reference to the
+ * anonymous destination table BigQuery auto-creates for every query result.
+ *
+ * We deliberately don't manage a named `_mako_temp` dataset: that path needed
+ * IAM to create a dataset in every customer project, and was flaky across
+ * regions (CREATE SCHEMA DDL location semantics). Anonymous result tables are:
+ *   - free, invisible to the customer, and auto-expire in ~24h
+ *   - always created in the job's processing location
+ *   - readable via the Storage Read API with the caller's existing credentials
+ */
+async function runQueryAndGetDestination(
   sourceConnection: IDatabaseConnection,
   query: string,
-): Promise<TempTableRef> {
+): Promise<AnonTableRef> {
   const conn = sourceConnection.connection as any;
   const projectId: string = conn.project_id;
-  const location: string = conn.location || "US";
+  const location: string | undefined = conn.location;
+  const credentials = parseServiceAccountJson(conn.service_account_json);
 
-  const tempDataset = "_mako_temp";
-  const tempTable = `bulk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const bq = new BigQuery({ projectId, credentials, location });
 
-  const ensureDatasetSql = `CREATE SCHEMA IF NOT EXISTS \`${projectId}.${tempDataset}\` OPTIONS(location="${location}")`;
-  await databaseConnectionService.executeQuery(
-    sourceConnection,
-    ensureDatasetSql,
-    { bigQueryJobMaxWaitMs: 60_000, location },
-  );
+  log.info("Submitting BigQuery query job", { projectId, location });
 
-  const createTableSql = `CREATE OR REPLACE TABLE \`${projectId}.${tempDataset}.${tempTable}\`
-OPTIONS(expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR))
-AS
-${query}`;
-
-  log.info("Materializing query to temp table", {
-    projectId,
-    dataset: tempDataset,
-    table: tempTable,
+  const [job] = await bq.createQueryJob({
+    query,
+    useLegacySql: false,
+    location,
+    jobTimeoutMs: 30 * 60 * 1000,
   });
 
-  const result = await databaseConnectionService.executeQuery(
-    sourceConnection,
-    createTableSql,
-    { bigQueryJobMaxWaitMs: 30 * 60 * 1000, location },
-  );
+  await job.promise();
 
-  if (!result.success) {
-    throw new Error(`Failed to materialize temp table: ${result.error}`);
+  const [metadata] = await job.getMetadata();
+
+  const destTable = metadata?.configuration?.query?.destinationTable;
+  if (!destTable?.projectId || !destTable?.datasetId || !destTable?.tableId) {
+    throw new Error(
+      "BigQuery did not return a destination table for the query job",
+    );
   }
 
-  return { projectId, datasetId: tempDataset, tableId: tempTable, location };
+  const jobLocation: string =
+    metadata?.jobReference?.location || location || "US";
+
+  log.info("Query materialized to anonymous table", {
+    projectId: destTable.projectId,
+    dataset: destTable.datasetId,
+    table: destTable.tableId,
+    location: jobLocation,
+  });
+
+  return {
+    projectId: destTable.projectId,
+    datasetId: destTable.datasetId,
+    tableId: destTable.tableId,
+    location: jobLocation,
+  };
 }
 
 async function queryMaxTrackingValue(
   sourceConnection: IDatabaseConnection,
-  tempRef: TempTableRef,
+  tableRef: AnonTableRef,
   trackingColumn: string,
 ): Promise<string | null> {
-  const fullTable = `\`${tempRef.projectId}.${tempRef.datasetId}.${tempRef.tableId}\``;
+  const fullTable = `\`${tableRef.projectId}.${tableRef.datasetId}.${tableRef.tableId}\``;
   const sql = `SELECT CAST(MAX(\`${trackingColumn}\`) AS STRING) AS max_val FROM ${fullTable}`;
 
   const result = await databaseConnectionService.executeQuery(
@@ -112,7 +131,7 @@ async function queryMaxTrackingValue(
     sql,
     {
       bigQueryJobMaxWaitMs: 60_000,
-      location: tempRef.location,
+      location: tableRef.location,
     },
   );
 
@@ -121,31 +140,9 @@ async function queryMaxTrackingValue(
   return maxVal && maxVal !== "null" ? String(maxVal) : null;
 }
 
-async function dropTempTable(
-  sourceConnection: IDatabaseConnection,
-  tempRef: TempTableRef,
-): Promise<void> {
-  try {
-    await databaseConnectionService.executeQuery(
-      sourceConnection,
-      `DROP TABLE IF EXISTS \`${tempRef.projectId}.${tempRef.datasetId}.${tempRef.tableId}\``,
-      {
-        bigQueryJobMaxWaitMs: 30_000,
-        location: tempRef.location,
-      },
-    );
-    log.info("Dropped temp table", { ...tempRef });
-  } catch (err) {
-    log.warn("Failed to drop temp table (will auto-expire in 24h)", {
-      ...tempRef,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
 async function* streamFromStorageApi(
   serviceAccountJson: string | object,
-  tempRef: TempTableRef,
+  tableRef: AnonTableRef,
 ): AsyncGenerator<Record<string, unknown>> {
   const credentials = parseServiceAccountJson(serviceAccountJson);
 
@@ -156,8 +153,8 @@ async function* streamFromStorageApi(
 
   const readClient = new BigQueryReadClient({ auth: auth as any });
 
-  const table = `projects/${tempRef.projectId}/datasets/${tempRef.datasetId}/tables/${tempRef.tableId}`;
-  const parent = `projects/${tempRef.projectId}`;
+  const table = `projects/${tableRef.projectId}/datasets/${tableRef.datasetId}/tables/${tableRef.tableId}`;
+  const parent = `projects/${tableRef.projectId}`;
 
   log.info("Creating BigQuery Storage Read session", { table });
 
@@ -241,27 +238,28 @@ export class BigQueryBulkExtractor implements BulkExtractor {
       hasIncremental: !!params.incrementalConfig?.lastValue,
     });
 
-    const tempRef = await materializeToTempTable(params.connection, query);
+    const tableRef = await runQueryAndGetDestination(params.connection, query);
 
     let maxTrackingValue: string | null = null;
     if (params.syncMode === "incremental" && params.trackingColumn) {
       maxTrackingValue = await queryMaxTrackingValue(
         params.connection,
-        tempRef,
+        tableRef,
         params.trackingColumn,
       );
-      log.info("Max tracking value from temp table", {
+      log.info("Max tracking value from result table", {
         trackingColumn: params.trackingColumn,
         maxTrackingValue,
       });
     }
 
-    const rows = streamFromStorageApi(conn.service_account_json, tempRef);
+    const rows = streamFromStorageApi(conn.service_account_json, tableRef);
 
     return {
       rows,
       maxTrackingValue,
-      cleanup: () => dropTempTable(params.connection, tempRef),
+      // Anonymous result tables auto-expire (~24h), so no cleanup is required.
+      cleanup: async () => {},
     };
   }
 }
