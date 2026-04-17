@@ -7,7 +7,10 @@ import {
 } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
-import { buildParquetFromBatches } from "../../utils/streaming-parquet-builder";
+import {
+  buildParquetFromBatches,
+  type FieldMeta,
+} from "../../utils/streaming-parquet-builder";
 import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
@@ -139,6 +142,104 @@ function buildColumnSelectExpr(
 const log = loggers.sync("cdc.adapter.bigquery");
 
 const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
+
+// ---------------------------------------------------------------------------
+// Pure MERGE statement builder — exported for unit testing.
+// ---------------------------------------------------------------------------
+
+export interface BuildMergeStatementParams {
+  fullLive: string;
+  fullStaging: string;
+  /** All columns on the live table. */
+  columns: string[];
+  keyColumns: string[];
+  /** Columns physically present in the staging table. */
+  stagingCols: Set<string>;
+  /** Live-table column types from INFORMATION_SCHEMA. */
+  liveTypes: Map<string, string>;
+  entitySchema?: ConnectorEntitySchema;
+}
+
+export function buildMergeStatement(p: BuildMergeStatementParams): string {
+  const {
+    fullLive,
+    fullStaging,
+    columns,
+    keyColumns,
+    stagingCols,
+    liveTypes,
+    entitySchema,
+  } = p;
+
+  const dedupKey = keyColumns.map(escId).join(", ");
+  const hasStagingSourceTs = stagingCols.has("_mako_source_ts");
+  const hasStagingIngestSeq = stagingCols.has("_mako_ingest_seq");
+  const orderExpr = hasStagingSourceTs
+    ? `${escId("_mako_source_ts")} DESC`
+    : hasStagingIngestSeq
+      ? `${escId("_mako_ingest_seq")} DESC`
+      : "1";
+
+  // USING subquery: SELECT all staging columns (cast to live types) with
+  // dedup by key keeping the newest record per ordering expression.
+  const stagingSelectCols = [...stagingCols]
+    .map(c => buildColumnSelectExpr(c, escId, entitySchema, liveTypes.get(c)))
+    .join(", ");
+
+  const usingSubquery = `(SELECT ${stagingSelectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1)`;
+
+  // ON clause
+  const keyJoin = keyColumns
+    .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
+    .join(" AND ");
+
+  // WHEN MATCHED — only UPDATE columns present in staging (excluding keys).
+  // Columns that exist on live but not in staging are left untouched.
+  const updateColumns = [...stagingCols].filter(c => !keyColumns.includes(c));
+
+  // Ordering guard: don't let stale events overwrite newer live data.
+  const hasSourceOrdering =
+    hasStagingSourceTs && !keyColumns.includes("_mako_source_ts");
+  const hasIngestOrdering =
+    hasStagingIngestSeq && !keyColumns.includes("_mako_ingest_seq");
+  const matchedGuard = hasSourceOrdering
+    ? ` AND COALESCE(__stg.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC')) >= COALESCE(__live.${escId("_mako_source_ts")}, TIMESTAMP('1970-01-01 00:00:00 UTC'))`
+    : hasIngestOrdering
+      ? ` AND COALESCE(__stg.${escId("_mako_ingest_seq")}, -1) >= COALESCE(__live.${escId("_mako_ingest_seq")}, -1)`
+      : "";
+
+  const matchedClause =
+    updateColumns.length > 0
+      ? `WHEN MATCHED${matchedGuard} THEN UPDATE SET ${updateColumns.map(c => `${escId(c)} = __stg.${escId(c)}`).join(", ")}`
+      : "";
+
+  // WHEN NOT MATCHED — INSERT all live columns; columns missing from staging
+  // get CAST(NULL AS T) (nothing to preserve for brand-new rows).
+  const insertColList = columns.map(escId).join(", ");
+  const insertValues = columns
+    .map(c => {
+      if (!stagingCols.has(c)) {
+        const targetType = resolveTargetBqType(
+          c,
+          entitySchema,
+          liveTypes.get(c),
+        );
+        return `CAST(NULL AS ${targetType})`;
+      }
+      return `__stg.${escId(c)}`;
+    })
+    .join(", ");
+
+  return [
+    `MERGE INTO ${fullLive} __live`,
+    `USING ${usingSubquery} __stg`,
+    `ON ${keyJoin}`,
+    matchedClause,
+    `WHEN NOT MATCHED THEN INSERT (${insertColList}) VALUES (${insertValues})`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
@@ -527,42 +628,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       );
     }
 
-    const dedupKey = keyColumns.map(escId).join(", ");
-    const buildMergeStatements = (columns: string[]): string[] => {
-      const hasSourceTs = columns.includes("_mako_source_ts");
-      const orderExpr = hasSourceTs ? `\`_mako_source_ts\` DESC` : "1";
-
-      const selectCols = columns
-        .map(c => {
-          if (!stagingCols.has(c)) {
-            const targetType = resolveTargetBqType(
-              c,
-              entitySchema,
-              liveTypes.get(c),
-            );
-            return `CAST(NULL AS ${targetType}) AS ${escId(c)}`;
-          }
-          return buildColumnSelectExpr(
-            c,
-            escId,
-            entitySchema,
-            liveTypes.get(c),
-          );
-        })
-        .join(", ");
-
-      const colList = columns.map(escId).join(", ");
-
-      const keyJoin = keyColumns
-        .map(k => `__live.${escId(k)} = __stg.${escId(k)}`)
-        .join(" AND ");
-
-      const deleteStmt = `DELETE FROM ${fullLive} __live WHERE EXISTS (SELECT 1 FROM ${fullStaging} __stg WHERE ${keyJoin})`;
-
-      const insertStmt = `INSERT INTO ${fullLive} (${colList}) SELECT ${selectCols} FROM ${fullStaging} QUALIFY ROW_NUMBER() OVER (PARTITION BY ${dedupKey} ORDER BY ${orderExpr}) = 1`;
-
-      return [deleteStmt, insertStmt];
-    };
+    const mergeStmt = buildMergeStatement({
+      fullLive,
+      fullStaging,
+      columns: allColumns,
+      keyColumns,
+      stagingCols,
+      liveTypes,
+      entitySchema,
+    });
 
     const mergeMaxWaitEnv = Number.parseInt(
       process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
@@ -572,8 +646,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       Number.isFinite(mergeMaxWaitEnv) && mergeMaxWaitEnv >= 10_000
         ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
         : 50 * 60 * 1000;
-
-    const [deleteStmt, insertStmt] = buildMergeStatements(allColumns);
 
     let stagingRowCount = 0;
     try {
@@ -593,7 +665,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       log.warn("Could not count staging rows before merge", { stagingTable });
     }
 
-    log.info("Starting staging-to-live merge", {
+    log.info("Starting staging-to-live MERGE", {
       liveTable,
       stagingTable,
       dataset,
@@ -603,46 +675,22 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     await retryOnQuota(
       async () => {
-        const deleteResult = await databaseConnectionService.executeQuery(
+        const mergeResult = await databaseConnectionService.executeQuery(
           destination,
-          deleteStmt,
+          mergeStmt,
           { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
         );
-        if (!deleteResult.success) {
-          const notFound =
-            deleteResult.error &&
-            /not found|does not exist/i.test(deleteResult.error);
-          if (!notFound) {
-            log.error("BigQuery DELETE before INSERT failed", {
-              liveTable,
-              stagingTable,
-              error: deleteResult.error,
-            });
-            throw new Error(deleteResult.error || "BigQuery DELETE failed");
-          }
-        }
-      },
-      { label: `mergeStagingToLive:DELETE(${liveTable})` },
-    );
-
-    await retryOnQuota(
-      async () => {
-        const insertResult = await databaseConnectionService.executeQuery(
-          destination,
-          insertStmt,
-          { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
-        );
-        if (!insertResult.success) {
-          log.error("BigQuery INSERT from staging failed", {
+        if (!mergeResult.success) {
+          log.error("BigQuery MERGE failed", {
             liveTable,
             stagingTable,
-            error: insertResult.error,
-            insertPreview: insertStmt.slice(0, 900),
+            error: mergeResult.error,
+            mergePreview: mergeStmt.slice(0, 900),
           });
-          throw new Error(insertResult.error || "BigQuery INSERT failed");
+          throw new Error(mergeResult.error || "BigQuery MERGE failed");
         }
       },
-      { label: `mergeStagingToLive:INSERT(${liveTable})` },
+      { label: `mergeStagingToLive:MERGE(${liveTable})` },
     );
 
     let liveRowCount = 0;
@@ -663,7 +711,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       log.warn("Could not count live rows after merge", { liveTable });
     }
 
-    log.info("Merged staging to live table via DELETE+INSERT", {
+    log.info("Merged staging to live via MERGE", {
       liveTable,
       stagingTable,
       dataset,
@@ -1017,8 +1065,20 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     await this.ensureDataset();
 
+    // Pass schema fields so the Parquet builder types columns correctly
+    // (timestamp/number/bool/json). Without this, every column defaults to
+    // VARCHAR and Date values get JSON.stringify'd with extra quotes, which
+    // then SAFE_CAST to NULL on the live side — wiping timestamps on update.
+    const schemaFields: FieldMeta[] | undefined = params.entitySchema
+      ? Object.entries(params.entitySchema.fields).map(([name, f]) => ({
+          name,
+          type: f.type,
+        }))
+      : undefined;
+
     const parquet = await buildParquetFromBatches({
       filenameBase: `cdc-${params.layout.entity}`,
+      fields: schemaFields,
       streamBatches: async insertBatch => {
         await insertBatch(params.records);
       },
