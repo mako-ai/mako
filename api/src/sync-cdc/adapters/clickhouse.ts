@@ -637,7 +637,12 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     };
   }
 
-  private static readonly STREAM_FLUSH_THRESHOLD = 1_000_000;
+  // 50k was chosen to keep peak batch memory well under 200 MiB for typical
+  // schemas (~20 columns, ~50 bytes/col). 1M rows OOM'd the default Cloud Run
+  // 1 GiB instance. A true streaming Readable pipeline would be O(1) memory
+  // and is a worthwhile follow-up, but smaller batches is the cheaper unblock
+  // and ClickHouse has no trouble ingesting many small JSONEachRow batches.
+  private static readonly STREAM_FLUSH_THRESHOLD = 50_000;
 
   async loadStagingFromStream(params: {
     rows: AsyncIterable<Record<string, unknown>>;
