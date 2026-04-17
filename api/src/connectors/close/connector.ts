@@ -2344,26 +2344,61 @@ export class CloseConnector extends BaseConnector {
   }
 
   /**
-   * Extract entity data from webhook event
+   * Extract entity data from webhook event.
+   *
+   * For `updated` actions we project the payload down to only the fields
+   * Close reports as changed (`event.changed_fields`, falling back to
+   * `Object.keys(event.previous_data)`). This prevents untouched live
+   * columns (e.g. `html_url`, `custom.*`, `contacts`, `primary_email`,
+   * nested collections) from being NULL-clobbered on incremental update —
+   * the downstream CDC MERGE only touches columns physically present in
+   * staging.
+   *
+   * `created` and `deleted` actions keep the full payload (new row) or
+   * just the id (tombstone).
    */
   extractWebhookData(event: any): { id: string; data: any } | null {
     // Close webhook payload: {subscription_id, event: {object_type, action, data: {...}}}
-    // Prefer object_id from wrapper, then fall back to nested payload ids.
     const innerEvent = event?.event;
+    const action: string | undefined = innerEvent?.action || event?.action;
     const data = innerEvent?.data || event?.data;
     const objectId =
       innerEvent?.object_id || event?.object_id || data?.id || event?.id;
 
-    if (data && objectId) {
-      return { id: String(objectId), data: { ...data, id: String(objectId) } };
+    if (!objectId) {
+      return null;
     }
 
-    // Delete/merge events can come without data payload.
-    if (objectId) {
+    if (!data) {
       return { id: String(objectId), data: { id: String(objectId) } };
     }
 
-    return null;
+    if (action === "updated") {
+      const changedFieldsRaw: unknown =
+        innerEvent?.changed_fields ?? event?.changed_fields;
+      const previousData: Record<string, unknown> | undefined =
+        innerEvent?.previous_data ?? event?.previous_data;
+      const changedFields: string[] = Array.isArray(changedFieldsRaw)
+        ? (changedFieldsRaw as string[])
+        : previousData && typeof previousData === "object"
+          ? Object.keys(previousData)
+          : [];
+
+      if (changedFields.length > 0) {
+        const projected: Record<string, unknown> = { id: String(objectId) };
+        for (const field of changedFields) {
+          if (field in data) {
+            projected[field] = data[field];
+          }
+        }
+        if (data.date_updated !== undefined && !("date_updated" in projected)) {
+          projected.date_updated = data.date_updated;
+        }
+        return { id: String(objectId), data: projected };
+      }
+    }
+
+    return { id: String(objectId), data: { ...data, id: String(objectId) } };
   }
 
   extractWebhookCdcRecords(
