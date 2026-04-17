@@ -725,20 +725,15 @@ export const flowFunction = inngest.createFunction(
       const entityStatsMap: Record<string, number> = {};
 
       // ============ DATABASE SOURCE EXECUTION ============
-      // For database-to-database flows, use chunked execution for resumability
       if (flow.sourceType === "database") {
-        logger.info(
-          "Starting database-to-database sync with chunked execution",
-          {
-            flowId,
-            syncMode: flow.syncMode,
-            sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
-            sourceDatabase: flow.databaseSource?.database,
-          },
-        );
+        logger.info("Starting database-to-database sync", {
+          flowId,
+          syncMode: flow.syncMode,
+          sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
+          sourceDatabase: flow.databaseSource?.database,
+        });
 
-        // Validate database source configuration
-        const _validation = await step.run("validate-db-source", async () => {
+        await step.run("validate-db-source", async () => {
           if (
             !flow.databaseSource?.connectionId ||
             !flow.databaseSource?.query
@@ -754,58 +749,13 @@ export const flowFunction = inngest.createFunction(
               `Source database connection not found: ${flow.databaseSource.connectionId}`,
             );
           }
-
-          return {
-            sourceConnectionId: sourceConnection._id.toString(),
-            sourceName: sourceConnection.name,
-          };
         });
-
-        // Initialize destination writer once
-        const _writerConfig = await step.run(
-          "init-destination-writer",
-          async () => {
-            const sourceConnection = await DatabaseConnection.findById(
-              flow.databaseSource!.connectionId,
-            );
-
-            const destinationWriter = await createDestinationWriter(
-              {
-                destinationDatabaseId: flow.destinationDatabaseId,
-                destinationDatabaseName: flow.destinationDatabaseName,
-                tableDestination: flow.tableDestination,
-                dataSourceId: flow.databaseSource!.connectionId,
-              },
-              sourceConnection?.name,
-            );
-
-            // Set collection name if writing to MongoDB
-            if (!flow.tableDestination?.tableName && sourceConnection) {
-              (destinationWriter as any).config.collectionName =
-                `${sourceConnection.name}_sync`;
-            }
-
-            return {
-              collectionName: (destinationWriter as any).config?.collectionName,
-              isTableDestination: destinationWriter.isTableDestination(),
-            };
-          },
-        );
 
         // ============ BULK PIPELINE (capability-based) ============
         const bulkCheckResult = await step.run(
           "check-bulk-pipeline",
           async () => {
             const bulkMode = flow.bulkConfig?.mode || "off";
-            flowLogger.info("Bulk pipeline check", {
-              flowId: flow._id.toString(),
-              bulkConfig: flow.bulkConfig,
-              resolvedMode: bulkMode,
-            });
-            void appendExecutionLog(
-              "info",
-              `Bulk mode: ${bulkMode} (raw config: ${JSON.stringify(flow.bulkConfig) || "undefined"})`,
-            );
             if (bulkMode === "off") {
               return { useBulk: false as const, reason: "bulk mode is off" };
             }
@@ -1056,12 +1006,10 @@ export const flowFunction = inngest.createFunction(
           };
         }
 
-        if (!bulkCheckResult.useBulk) {
-          void appendExecutionLog(
-            "debug",
-            `Bulk pipeline skipped: ${bulkCheckResult.reason}`,
-          );
-        }
+        void appendExecutionLog(
+          "debug",
+          `Bulk pipeline skipped: ${bulkCheckResult.reason}`,
+        );
 
         // ============ CHUNKED EXECUTION (fallback) ============
         let chunkState: DbSyncChunkState | undefined;
