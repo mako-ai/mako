@@ -63,10 +63,36 @@ See [Console](/console/) for full API documentation with examples.
 
 ## Flows
 
-| Method | Endpoint                         | Description           |
-| ------ | -------------------------------- | --------------------- |
-| `POST` | `/api/workspaces/:wid/flows`     | Create/trigger a flow |
-| `GET`  | `/api/workspaces/:wid/flows/:id` | Get flow status       |
+| Method | Endpoint                                                           | Description                                                  |
+| ------ | ------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `POST` | `/api/workspaces/:wid/flows`                                       | Create/trigger a flow                                        |
+| `GET`  | `/api/workspaces/:wid/flows/:id`                                   | Get flow status                                              |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/status`                   | Get CDC stream status                                        |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/schema-health`            | Compare live destination column types to the connector schema (BigQuery; detects drift) |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`       | Row counts per entity in the destination                     |
+
+### Schema Health Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "hasDrift": true,
+    "entities": [
+      {
+        "entity": "customers",
+        "hasDrift": true,
+        "columns": [
+          { "column": "created_at", "liveType": "STRING", "expectedType": "TIMESTAMP", "status": "drift" },
+          { "column": "id",         "liveType": "STRING", "expectedType": "STRING",    "status": "match" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Accepts an optional `?entity=<name>` query parameter to scope the check to a single entity. Drift is auto-corrected on the next CDC merge — see [Schema Evolution](/data-sync/#schema-evolution-bigquery).
 
 ## Chat API (AI Agent)
 

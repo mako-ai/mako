@@ -31,6 +31,22 @@ In addition to scheduled batch syncing, Mako supports experimental Change Data C
 - **Backfills** — historical data backfills run robustly within 1Gi Cloud Run memory limits, safely handling bulk flushes by cycling DuckDB instances
 - **BigQuery Staging** — streams events into region-aligned BigQuery staging tables (safely preserved during recovery)
 
+### Schema Evolution (BigQuery)
+
+When a connector's expected column types drift from the live BigQuery table (for example, a column created as `STRING` in a legacy run that should now be `TIMESTAMP`), Mako auto-corrects the drift before merging CDC events. This prevents merge failures from type mismatches.
+
+For each drifted column, Mako runs a safe four-step swap:
+
+1. `ADD COLUMN` a temporary column with the expected type
+2. `UPDATE` the temp column with `SAFE_CAST` of the existing values
+3. `RENAME` the original column to a `_bak_*` backup and the temp into its place (atomic)
+4. `DROP` the backup column
+
+Drift detection and correction is best-effort: if any step fails for a column, the merge falls back to a `SAFE_CAST` guard using the existing live type so the sync still completes.
+
+The console surfaces drift in the **Backfill Panel** with an auto-correction notice per affected entity. Under the hood this calls the `sync-cdc/schema-health` endpoint (see [API Reference](/api-reference/#flows)) which compares each live column's `data_type` from `INFORMATION_SCHEMA.COLUMNS` against the connector schema.
+
+
 ## Job Queue
 
 Flows run on [Inngest](https://www.inngest.com/), a job queue that handles:
