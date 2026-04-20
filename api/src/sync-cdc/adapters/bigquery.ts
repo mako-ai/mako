@@ -158,6 +158,8 @@ interface BuildMergeStatementParams {
   /** Live-table column types from INFORMATION_SCHEMA. */
   liveTypes: Map<string, string>;
   entitySchema?: ConnectorEntitySchema;
+  /** Optional partition range filter appended to the ON clause for pruning. */
+  partitionFilter?: string;
 }
 
 function buildMergeStatement(p: BuildMergeStatementParams): string {
@@ -242,7 +244,7 @@ function buildMergeStatement(p: BuildMergeStatementParams): string {
   return [
     `MERGE INTO ${fullLive} __live`,
     `USING ${usingSubquery} __stg`,
-    `ON ${keyJoin}`,
+    `ON ${keyJoin}${p.partitionFilter || ""}`,
     matchedClause,
     `WHEN NOT MATCHED THEN INSERT (${insertColList}) VALUES (${insertValues})`,
   ]
@@ -637,6 +639,52 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       );
     }
 
+    const mergeMaxWaitEnv = Number.parseInt(
+      process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
+      10,
+    );
+    const mergeMaxWaitMs =
+      Number.isFinite(mergeMaxWaitEnv) && mergeMaxWaitEnv >= 10_000
+        ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
+        : 15 * 60 * 1000;
+
+    // Collect staging stats (row count + optional partition range for pruning)
+    let stagingRowCount = 0;
+    let partitionFilter = "";
+    const partField = layout.partitioning?.field;
+    const hasPartCol = Boolean(
+      partField && stagingCols.has(partField) && liveCols.has(partField),
+    );
+    try {
+      const statsQuery = hasPartCol
+        ? `SELECT COUNT(*) AS cnt, CAST(MIN(${escId(partField!)}) AS STRING) AS min_ts, CAST(MAX(${escId(partField!)}) AS STRING) AS max_ts FROM ${fullStaging}`
+        : `SELECT COUNT(*) AS cnt FROM ${fullStaging}`;
+      const countResult = await databaseConnectionService.executeQuery(
+        destination,
+        statsQuery,
+        { location: datasetLocation },
+      );
+      if (
+        countResult.success &&
+        Array.isArray(countResult.data) &&
+        countResult.data[0]
+      ) {
+        const row = countResult.data[0] as any;
+        stagingRowCount = Number(row.cnt || 0);
+        if (hasPartCol) {
+          const minTs: string | null = row.min_ts || null;
+          const maxTs: string | null = row.max_ts || null;
+          if (minTs && maxTs) {
+            const safeMin = minTs.replace(/'/g, "''");
+            const safeMax = maxTs.replace(/'/g, "''");
+            partitionFilter = ` AND __live.${escId(partField!)} BETWEEN TIMESTAMP('${safeMin}') AND TIMESTAMP('${safeMax}')`;
+          }
+        }
+      }
+    } catch {
+      log.warn("Could not count staging rows before merge", { stagingTable });
+    }
+
     const mergeStmt = buildMergeStatement({
       fullLive,
       fullStaging,
@@ -645,34 +693,8 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       stagingCols,
       liveTypes,
       entitySchema,
+      partitionFilter: partitionFilter || undefined,
     });
-
-    const mergeMaxWaitEnv = Number.parseInt(
-      process.env.BIGQUERY_MERGE_MAX_WAIT_MS || "",
-      10,
-    );
-    const mergeMaxWaitMs =
-      Number.isFinite(mergeMaxWaitEnv) && mergeMaxWaitEnv >= 10_000
-        ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
-        : 50 * 60 * 1000;
-
-    let stagingRowCount = 0;
-    try {
-      const countResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT COUNT(*) AS cnt FROM ${fullStaging}`,
-        { location: datasetLocation },
-      );
-      if (
-        countResult.success &&
-        Array.isArray(countResult.data) &&
-        countResult.data[0]
-      ) {
-        stagingRowCount = Number((countResult.data[0] as any).cnt || 0);
-      }
-    } catch {
-      log.warn("Could not count staging rows before merge", { stagingTable });
-    }
 
     log.info("Starting staging-to-live MERGE", {
       liveTable,

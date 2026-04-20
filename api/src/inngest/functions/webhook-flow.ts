@@ -31,6 +31,11 @@ const CDC_MATERIALIZE_CONCURRENCY = Math.max(
   1,
 );
 
+const CDC_MATERIALIZE_CONCURRENCY_PER_FLOW = Math.max(
+  parseInt(process.env.CDC_MATERIALIZE_CONCURRENCY_PER_FLOW || "3", 10) || 3,
+  1,
+);
+
 async function runWebhookEventProcess({
   event,
   step,
@@ -904,8 +909,8 @@ export const cdcMaterializeFunction = inngest.createFunction(
       },
       {
         scope: "fn",
-        key: "event.data.flowId + ':' + event.data.entity",
-        limit: 1,
+        key: "event.data.flowId",
+        limit: CDC_MATERIALIZE_CONCURRENCY_PER_FLOW,
       },
     ],
     singleton: {
@@ -1349,10 +1354,14 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
 
     let totalTriggered = 0;
     if (staleEntities.length > 0) {
-      await step.sendEvent(
-        "trigger-materializations",
-        buildMaterializeEvents(staleEntities),
-      );
+      const DISPATCH_BATCH = 20;
+      for (let i = 0; i < staleEntities.length; i += DISPATCH_BATCH) {
+        const batch = staleEntities.slice(i, i + DISPATCH_BATCH);
+        await step.sendEvent(
+          `trigger-materializations-${i}`,
+          buildMaterializeEvents(batch),
+        );
+      }
       totalTriggered = staleEntities.length;
     }
 
