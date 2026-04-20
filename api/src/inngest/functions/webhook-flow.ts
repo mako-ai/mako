@@ -26,6 +26,11 @@ const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
   1,
 );
 
+const CDC_MATERIALIZE_CONCURRENCY = Math.max(
+  parseInt(process.env.CDC_MATERIALIZE_CONCURRENCY || "8", 10) || 8,
+  1,
+);
+
 async function runWebhookEventProcess({
   event,
   step,
@@ -892,6 +897,17 @@ export const cdcMaterializeFunction = inngest.createFunction(
       finish: "30m",
     },
     cancelOn: [{ event: "cdc/materialize.cancel", match: "data.flowId" }],
+    concurrency: [
+      {
+        scope: "fn",
+        limit: CDC_MATERIALIZE_CONCURRENCY,
+      },
+      {
+        scope: "fn",
+        key: "event.data.flowId + ':' + event.data.entity",
+        limit: 1,
+      },
+    ],
     singleton: {
       key: "event.data.flowId + ':' + event.data.entity",
       mode: "skip",
