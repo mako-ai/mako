@@ -119,6 +119,23 @@ This means entities with unusually large payloads (long meeting notes, embedded
 documents) will self-heal without operator intervention, while normal entities
 continue at full batch throughput.
 
+## Webhook flow concurrency caps
+
+The webhook-driven ingestion pipeline exposes two Inngest function-level
+concurrency caps to protect shared infrastructure (most importantly the
+BigQuery slot reservation) from being starved when the scheduler fans out many
+entities at once. Both are tuned via environment variables and default to
+conservative values.
+
+| Variable | Default | Applies to | Description |
+|---|---|---|---|
+| `WEBHOOK_SQL_PROCESS_CONCURRENCY` | `5` | Non-CDC webhook SQL processors | Max in-flight `webhookSqlProcess` runs per flow. Higher values speed up catch-up after a backlog; lower values reduce pressure on the destination warehouse. |
+| `CDC_MATERIALIZE_CONCURRENCY` | `8` | `cdcMaterializeFunction` (global) | Max CDC materializations running in parallel across all flows/entities. Each run fires ~6-10 BigQuery jobs (INFORMATION_SCHEMA, ALTERs, COUNTs, MERGE, DROP, Parquet load), so the global cap exists to prevent slot saturation in the `europe-west6` 100-slot reservation. The per-`(flowId, entity)` singleton is preserved independently. |
+
+Raise `CDC_MATERIALIZE_CONCURRENCY` only if you have headroom in the BigQuery
+slot reservation -- it is the first knob to lower if interactive or hasura-crm
+queries start queueing during CDC catch-up.
+
 ## Environment summary
 
 | Environment    | Artifact Store | Artifact Prefix                         | Inngest Routing           | Schedulers             |
