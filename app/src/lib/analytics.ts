@@ -22,6 +22,8 @@ type MarketingEvent =
 type ProductEvent =
   | "query_executed"
   | "console_saved"
+  | "console_saved_as_copy"
+  | "console_renamed"
   | "flow_created"
   | "ai_chat_message_sent"
   | "api_key_created"

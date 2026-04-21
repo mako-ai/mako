@@ -12,6 +12,7 @@ import {
   Button,
   Select,
   MenuItem,
+  Menu,
   FormControl,
   Tooltip,
   IconButton,
@@ -19,6 +20,8 @@ import {
   Badge,
   Alert,
   Chip,
+  ListItemIcon,
+  ListItemText,
 } from "@mui/material";
 import { PlayArrow as PlayIcon } from "@mui/icons-material";
 import {
@@ -30,6 +33,9 @@ import {
   History as HistoryIcon,
   Info as InfoOutlineIcon,
   Square as StopIcon,
+  ChevronDown as ChevronDownIcon,
+  Copy as CopyIcon,
+  FolderInput as MoveIcon,
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
@@ -72,6 +78,10 @@ interface ConsoleProps {
   ) => void;
   onCancel?: () => void;
   onSave?: (content: string, currentPath?: string) => Promise<boolean>;
+  /** Save the current buffer as a NEW console at a chosen path (original untouched). */
+  onSaveAsCopy?: (content: string) => void;
+  /** Move/rename the current console to a new path. */
+  onRenameMove?: (content: string, currentPath?: string) => void;
   isExecuting: boolean;
   isCancelling?: boolean;
   isSaving?: boolean;
@@ -115,6 +125,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onExecute,
     onCancel,
     onSave,
+    onSaveAsCopy,
+    onRenameMove,
     isExecuting,
     isCancelling,
     isSaving,
@@ -148,6 +160,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
   const [monacoInstance, setMonacoInstance] = useState<any>(null);
+  // Save split-button menu anchor
+  const [saveMenuAnchor, setSaveMenuAnchor] = useState<null | HTMLElement>(
+    null,
+  );
+  const saveMenuOpen = Boolean(saveMenuAnchor);
 
   // Compute dirty state by comparing current state hash vs saved state hash
   const hasUnsavedChanges = useMemo(() => {
@@ -224,6 +241,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   // Keep refs of the latest callbacks and props to avoid stale closures in Monaco commands
   const onExecuteRef = useRef(onExecute);
   const onSaveRef = useRef(onSave);
+  const onSaveAsCopyRef = useRef(onSaveAsCopy);
+  const onRenameMoveRef = useRef(onRenameMove);
   const connectionIdRef = useRef(connectionId);
   const databaseIdRef = useRef(databaseId);
 
@@ -235,6 +254,14 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   useEffect(() => {
     onSaveRef.current = onSave;
   }, [onSave]);
+
+  useEffect(() => {
+    onSaveAsCopyRef.current = onSaveAsCopy;
+  }, [onSaveAsCopy]);
+
+  useEffect(() => {
+    onRenameMoveRef.current = onRenameMove;
+  }, [onRenameMove]);
 
   useEffect(() => {
     connectionIdRef.current = connectionId;
@@ -449,6 +476,20 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     }
   }, [getFullEditorContent]);
 
+  const handleSaveAsCopy = useCallback(() => {
+    if (onSaveAsCopyRef.current) {
+      const content = getFullEditorContent();
+      onSaveAsCopyRef.current(content);
+    }
+  }, [getFullEditorContent]);
+
+  const handleRenameMove = useCallback(() => {
+    if (onRenameMoveRef.current) {
+      const content = getFullEditorContent();
+      onRenameMoveRef.current(content, filePathRef.current);
+    }
+  }, [getFullEditorContent]);
+
   // Calculate editor language
   const editorLanguage = useMemo(() => {
     if (filePath?.endsWith(".sql")) return "sql";
@@ -544,6 +585,19 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         });
       }
 
+      // CMD/CTRL + Shift + S → Save as Copy (fallback to first-time save when
+      // onSaveAsCopy isn't available).
+      editor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS,
+        () => {
+          if (onSaveAsCopyRef.current) {
+            handleSaveAsCopy();
+          } else if (onSaveRef.current) {
+            handleSave();
+          }
+        },
+      );
+
       // Auto-focus the editor when it mounts
       editor.focus();
 
@@ -593,6 +647,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       setEditor,
       handleExecute,
       handleSave,
+      handleSaveAsCopy,
       onSave,
       saveUserEdit,
       consoleId,
@@ -930,26 +985,102 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           )}
 
           {onSave && !isReadOnly && (
-            <Tooltip
-              title={
-                !hasUnsavedChanges
-                  ? "No changes to save"
-                  : filePathRef.current
-                    ? "Save (⌘/Ctrl+S)"
-                    : "Save As... (⌘/Ctrl+S)"
-              }
+            <Box
+              sx={{
+                ml: 1,
+                display: "inline-flex",
+                alignItems: "center",
+              }}
             >
-              <IconButton
-                size="small"
-                onClick={handleSave}
-                disabled={isSaving || isExecuting || !hasUnsavedChanges}
-                sx={{
-                  ml: 1,
-                }}
+              <Tooltip
+                title={
+                  !hasUnsavedChanges
+                    ? "No changes to save"
+                    : filePathRef.current
+                      ? "Save (⌘/Ctrl+S)"
+                      : "Save (first save) (⌘/Ctrl+S)"
+                }
               >
-                <SaveIcon strokeWidth={2} size={22} />
-              </IconButton>
-            </Tooltip>
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={handleSave}
+                    disabled={isSaving || isExecuting || !hasUnsavedChanges}
+                    sx={{
+                      borderTopRightRadius: 0,
+                      borderBottomRightRadius: 0,
+                      pr: 0.5,
+                    }}
+                  >
+                    <SaveIcon strokeWidth={2} size={22} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="More save options">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={e => setSaveMenuAnchor(e.currentTarget)}
+                    disabled={isSaving || isExecuting}
+                    sx={{
+                      borderTopLeftRadius: 0,
+                      borderBottomLeftRadius: 0,
+                      pl: 0,
+                      pr: 0.5,
+                    }}
+                    aria-haspopup="menu"
+                    aria-expanded={saveMenuOpen ? "true" : undefined}
+                  >
+                    <ChevronDownIcon strokeWidth={2} size={14} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Menu
+                anchorEl={saveMenuAnchor}
+                open={saveMenuOpen}
+                onClose={() => setSaveMenuAnchor(null)}
+                anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+                transformOrigin={{ vertical: "top", horizontal: "left" }}
+              >
+                <MenuItem
+                  disabled={isSaving || isExecuting || !onSaveAsCopy}
+                  onClick={() => {
+                    setSaveMenuAnchor(null);
+                    handleSaveAsCopy();
+                  }}
+                >
+                  <ListItemIcon>
+                    <CopyIcon size={16} strokeWidth={2} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary="Save a Copy..."
+                    secondary="⌘/Ctrl+Shift+S"
+                  />
+                </MenuItem>
+                <MenuItem
+                  disabled={
+                    isSaving ||
+                    isExecuting ||
+                    !onRenameMove ||
+                    !filePathRef.current
+                  }
+                  onClick={() => {
+                    setSaveMenuAnchor(null);
+                    handleRenameMove();
+                  }}
+                >
+                  <ListItemIcon>
+                    <MoveIcon size={16} strokeWidth={2} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary="Rename / Move..."
+                    secondary={
+                      !filePathRef.current ? "Save the file first" : undefined
+                    }
+                  />
+                </MenuItem>
+              </Menu>
+            </Box>
           )}
 
           {enableVersionControl && (

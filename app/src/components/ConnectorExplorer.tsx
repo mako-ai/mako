@@ -150,12 +150,22 @@ function ConnectorExplorer() {
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {/* Header */}
-      <Box sx={{ px: 1, py: 0.5, borderBottom: 1, borderColor: "divider" }}>
+      <Box
+        sx={{
+          px: 1,
+          py: 0.25,
+          minHeight: 37,
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
         <Box
           sx={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
+            height: "100%",
+            minHeight: 32,
           }}
         >
           <Typography

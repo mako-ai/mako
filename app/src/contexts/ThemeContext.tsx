@@ -3,6 +3,7 @@ import React, {
   useContext,
   useState,
   useEffect,
+  useLayoutEffect,
   ReactNode,
 } from "react";
 import {
@@ -84,8 +85,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
   const effectiveMode: "light" | "dark" =
     mode === "system" ? systemTheme : mode;
 
-  // Sync the 'dark' class on <html> for Tailwind/Streamdown CSS variables
-  useEffect(() => {
+  // Sync the 'dark' class on <html> for Tailwind/Streamdown CSS variables.
+  // useLayoutEffect keeps this aligned with MUI palette before paint (avoids
+  // a frame where Streamdown/Tailwind still use light tokens after a toggle).
+  useLayoutEffect(() => {
     if (effectiveMode === "dark") {
       document.documentElement.classList.add("dark");
     } else {

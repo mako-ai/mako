@@ -21,16 +21,40 @@ import { useAuth } from "../contexts/auth-context";
 export function UrlSync() {
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
-  // We need access to store methods but we don't want to trigger re-renders of this component
-  // when the store changes, so we'll use the hooks but rely on the useEffect dependencies
-  // to control when updates happen.
-  const activeTabId = useConsoleStore(state => state.activeTabId);
-  const tabs = useConsoleStore(state => state.tabs);
   const loadConsole = useConsoleStore(state => state.loadConsole);
   const openTab = useConsoleStore(state => state.openTab);
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
-  const consoleTabs = Object.values(tabs);
-  const activeConsoleId = activeTabId;
+
+  // Derive the URL path for the currently active tab as a primitive string.
+  // Returning a primitive means zustand's default Object.is comparison skips
+  // re-renders on unrelated state changes (e.g. keystrokes updating tab
+  // content), so this component only re-renders when the URL actually needs
+  // to change.
+  const activeTabPath = useConsoleStore(state => {
+    const id = state.activeTabId;
+    if (!id) return null;
+    const tab = state.tabs[id];
+    if (!tab) return null;
+    switch (tab.kind) {
+      case undefined:
+      case "console":
+        return `/c/${id}`;
+      case "connectors":
+        return typeof tab.content === "string" && tab.content
+          ? `/cx/${tab.content}`
+          : null;
+      case "flow-editor":
+        return tab.metadata?.flowId ? `/f/${tab.metadata.flowId}` : null;
+      case "dashboard":
+        return tab.metadata?.dashboardId
+          ? `/d/${tab.metadata.dashboardId}`
+          : null;
+      case "settings":
+        return "/settings";
+      default:
+        return null;
+    }
+  });
 
   const activeView = useUIStore(state => state.leftPane);
   const setLeftPane = useUIStore(state => state.setLeftPane);
@@ -73,7 +97,7 @@ export function UrlSync() {
       setLeftPane("connectors");
 
       // Check if we already have a tab for this connector
-      const existingTab = consoleTabs.find(
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
         t => t.kind === "connectors" && t.content === connectorId,
       );
 
@@ -95,7 +119,7 @@ export function UrlSync() {
       setLeftPane("flows");
 
       // Check for existing tab
-      const existingTab = consoleTabs.find(
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
         t => t.kind === "flow-editor" && t.metadata?.flowId === flowId,
       );
 
@@ -115,7 +139,7 @@ export function UrlSync() {
       const dashboardId = dashboardMatch[1];
       setLeftPane("dashboards");
 
-      const existingTab = consoleTabs.find(
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
         t => t.kind === "dashboard" && t.metadata?.dashboardId === dashboardId,
       );
 
@@ -162,62 +186,31 @@ export function UrlSync() {
   }, [currentWorkspace, user]); // Only run when workspace is ready and user is authenticated
 
   // --- Synchronization: Update URL when state changes ---
+  //
+  // The URL follows the active tab (the document open in the editor), not the
+  // left-pane view. That way switching between tabs — or opening the app with
+  // a persisted active tab while the left pane is on a different view — still
+  // produces a shareable /c/:id (or /d/:id, /f/:id, /cx/:id) URL.
+  //
+  // `activeTabPath` is a primitive string derived inside the zustand selector,
+  // so this effect only fires when the URL it would produce actually changes
+  // (not on every keystroke in the editor).
   useEffect(() => {
     // Don't sync until after hydration or if user is not authenticated
     if (!isHydrated.current || !user) return;
 
-    let newPath = "/";
+    let newPath = activeTabPath ?? "/";
 
-    // Determine path based on active view and active tab
-    if (activeView === "settings") {
+    // View-only fallback: if no active tab owns the URL but the user is on
+    // the settings view, still reflect that so /settings is shareable.
+    if (newPath === "/" && activeView === "settings") {
       newPath = "/settings";
-    } else if (activeView === "consoles") {
-      if (activeConsoleId) {
-        const tab = consoleTabs.find(t => t.id === activeConsoleId);
-        // Ensure we only link to actual consoles in the console view
-        if (tab && (tab.kind === "console" || !tab.kind)) {
-          newPath = `/c/${activeConsoleId}`;
-        }
-      }
-    } else if (activeView === "connectors") {
-      // If a specific connector tab is focused
-      if (activeConsoleId) {
-        const tab = consoleTabs.find(t => t.id === activeConsoleId);
-        if (tab && tab.kind === "connectors" && tab.content) {
-          // content holds the sourceId for connectors
-          newPath = `/cx/${tab.content}`;
-        }
-      }
-    } else if (activeView === "flows") {
-      if (activeConsoleId) {
-        const tab = consoleTabs.find(t => t.id === activeConsoleId);
-        if (tab && tab.kind === "flow-editor" && tab.metadata?.flowId) {
-          newPath = `/f/${tab.metadata.flowId}`;
-        }
-      }
-    } else if (activeView === "dashboards") {
-      if (activeConsoleId) {
-        const tab = consoleTabs.find(t => t.id === activeConsoleId);
-        if (tab && tab.kind === "dashboard" && tab.metadata?.dashboardId) {
-          newPath = `/d/${tab.metadata.dashboardId}`;
-        }
-      }
     }
 
-    // Fallback: if the consoles view is active but no console-specific path was set,
-    // still reflect the active console in the URL so the link is shareable/bookmarkable.
-    if (newPath === "/" && activeView === "consoles" && activeConsoleId) {
-      const tab = consoleTabs.find(t => t.id === activeConsoleId);
-      if (tab && (tab.kind === "console" || !tab.kind)) {
-        newPath = `/c/${activeConsoleId}`;
-      }
-    }
-
-    // Only update if changed to avoid noise (though replaceState is cheap)
     if (window.location.pathname !== newPath) {
       window.history.replaceState(null, "", newPath);
     }
-  }, [activeView, activeConsoleId, consoleTabs, user]); // Re-run when relevant state changes
+  }, [activeTabPath, activeView, user]);
 
   return null; // This component renders nothing
 }

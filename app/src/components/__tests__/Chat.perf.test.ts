@@ -28,6 +28,7 @@ function makeProps(
     isLastMessage: false,
     isStreaming: false,
     onToolClick: () => {},
+    paletteMode: "light",
     ...overrides,
   };
 }
@@ -80,6 +81,12 @@ describe("chatMessageRowArePropsEqual", () => {
   it("returns false when isStreaming changes", () => {
     const prev = makeProps({ isStreaming: false });
     const next = makeProps({ isStreaming: true });
+    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
+  });
+
+  it("returns false when paletteMode changes (theme toggle)", () => {
+    const prev = makeProps({ paletteMode: "light" });
+    const next = makeProps({ paletteMode: "dark" });
     expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
   });
 

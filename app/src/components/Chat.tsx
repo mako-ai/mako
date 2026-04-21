@@ -100,14 +100,16 @@ const CodeBlock = React.memo(
     children,
     isGenerating,
     scrollable,
+    paletteMode,
   }: {
     language: string;
     children: string;
     isGenerating: boolean;
     scrollable?: boolean;
+    /** Included so memo re-renders when the app theme toggles */
+    paletteMode: "light" | "dark";
   }) => {
-    const muiTheme = useMuiTheme();
-    const effectiveMode = muiTheme.palette.mode;
+    const effectiveMode = paletteMode;
     const syntaxTheme = effectiveMode === "dark" ? tomorrow : prism;
     const [isExpanded, setIsExpanded] = React.useState(false);
     const [isCopied, setIsCopied] = React.useState(false);
@@ -287,9 +289,11 @@ const ReasoningDisplay = React.memo(
   ({
     reasoningText,
     isStreaming,
+    paletteMode: _paletteMode,
   }: {
     reasoningText: string;
     isStreaming: boolean;
+    paletteMode: "light" | "dark";
   }) => {
     const [userToggled, setUserToggled] = React.useState(false);
     const [userOpen, setUserOpen] = React.useState(false);
@@ -438,15 +442,14 @@ const streamingIndicatorDotSx = {
 } as const;
 
 // StreamingIndicator - Shows pulsing dot while content is being streamed
-const StreamingIndicator = React.memo(() => {
+// (not memoized) so it picks up theme updates when the parent palette changes
+function StreamingIndicator() {
   return (
     <Box component="span" sx={streamingIndicatorContainerSx}>
       <Box sx={streamingIndicatorDotSx} />
     </Box>
   );
-});
-
-StreamingIndicator.displayName = "StreamingIndicator";
+}
 
 // ── Memoized message row ─────────────────────────────────────────
 // Prevents completed messages from re-rendering on every streaming chunk.
@@ -522,6 +525,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
   isLastMessage,
   isStreaming,
   onToolClick,
+  paletteMode,
 }: ChatMessageRowProps) {
   if (message.role === "user") {
     const fileParts = (message.parts || []).filter(
@@ -608,20 +612,33 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
               partType === "dynamic-tool"
                 ? (part.toolName as string)
                 : partType.split("-").slice(1).join("-");
+            const rawState = part.state as string;
+            const cardState: ToolPartState =
+              rawState === "output-error"
+                ? "error"
+                : (part.state as ToolPartState);
+            const cardOutput =
+              rawState === "output-error"
+                ? {
+                    success: false,
+                    error:
+                      (part.errorText as string | undefined) ?? "Tool failed",
+                  }
+                : part.output;
             return (
               <StreamingToolCard
                 key={partIndex}
                 toolName={toolName}
-                state={part.state as ToolPartState}
+                state={cardState}
                 input={part.input}
-                output={part.output}
+                output={cardOutput}
                 onDetailClick={() =>
                   onToolClick({
                     toolCallId: (part.toolCallId as string) || "",
                     toolName: toolName || "",
                     state: part.state as ToolInvocationInfo["state"],
                     input: part.input,
-                    output: part.output,
+                    output: cardOutput,
                   })
                 }
               />
@@ -638,6 +655,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 key={`reasoning-${partIndex}`}
                 reasoningText={group.text}
                 isStreaming={isGroupStreaming}
+                paletteMode={paletteMode}
               />
             );
           }
@@ -675,6 +693,7 @@ interface ChatInputAreaProps {
   isLoading: boolean;
   disabled: boolean;
   focusKey: string | number;
+  paletteMode: "light" | "dark";
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -687,7 +706,14 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 const ChatInputArea = React.memo(
-  ({ onSubmit, onStop, isLoading, disabled, focusKey }: ChatInputAreaProps) => {
+  ({
+    onSubmit,
+    onStop,
+    isLoading,
+    disabled,
+    focusKey,
+    paletteMode: _paletteMode,
+  }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
     const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
@@ -1077,6 +1103,7 @@ const Chat: React.FC<ChatProps> = ({
   onChartSpecChangeRef,
   resultsContextRef,
 }) => {
+  const paletteMode = useMuiTheme().palette.mode;
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
   const activeTabId = useConsoleStore(state => state.activeTabId);
@@ -1736,25 +1763,52 @@ const Chat: React.FC<ChatProps> = ({
                       };
                     }
                     // Tool parts: ensure state is set for UI rendering
+                    // AI SDK v6 uses output-error (not "error") so convertToModelMessages
+                    // emits a matching tool-result for Anthropic.
                     if (
                       p.type?.startsWith("tool-") ||
                       p.type === "dynamic-tool"
                     ) {
                       const toolState = p.state as string | undefined;
+                      const interruptedText =
+                        "Interrupted — stream disconnected before tool completed";
+                      if (toolState === "error") {
+                        const output = p.output as
+                          | { error?: unknown }
+                          | null
+                          | undefined;
+                        const errorText =
+                          typeof p.errorText === "string"
+                            ? p.errorText
+                            : typeof output?.error === "string"
+                              ? output.error
+                              : output?.error != null
+                                ? String(output.error)
+                                : "Tool failed";
+                        return {
+                          ...p,
+                          state: "output-error",
+                          input: p.input ?? {},
+                          output: undefined,
+                          errorText,
+                        };
+                      }
                       const isComplete =
                         toolState === "output-available" ||
-                        toolState === "error";
+                        toolState === "output-error" ||
+                        toolState === "output-denied";
+                      if (isComplete) {
+                        return {
+                          ...p,
+                          input: p.input ?? {},
+                        };
+                      }
                       return {
                         ...p,
-                        state: isComplete ? toolState : "error",
+                        state: "output-error",
                         input: p.input ?? {},
-                        output: isComplete
-                          ? (p.output ?? null)
-                          : (p.output ?? {
-                              success: false,
-                              error:
-                                "Interrupted — stream disconnected before tool completed",
-                            }),
+                        output: undefined,
+                        errorText: interruptedText,
                       };
                     }
                     // Unknown part type - pass through as-is
@@ -1986,12 +2040,22 @@ const Chat: React.FC<ChatProps> = ({
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Header with history and new chat */}
-      <Box sx={{ px: 1, py: 0.5, borderBottom: 1, borderColor: "divider" }}>
+      <Box
+        sx={{
+          px: 1,
+          py: 0.25,
+          minHeight: 37,
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
         <Box
           sx={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
+            height: "100%",
+            minHeight: 32,
           }}
         >
           <Box
@@ -2253,6 +2317,7 @@ const Chat: React.FC<ChatProps> = ({
                 isLastMessage={msgIdx === messages.length - 1}
                 isStreaming={status === "streaming"}
                 onToolClick={handleToolClick}
+                paletteMode={paletteMode}
               />
             ))}
           </List>
@@ -2320,6 +2385,7 @@ const Chat: React.FC<ChatProps> = ({
         isLoading={isLoading}
         disabled={!currentWorkspace}
         focusKey={`${chatId}-${messages.length}`}
+        paletteMode={paletteMode}
       />
 
       {/* Tool Debug Dialog */}
@@ -2337,7 +2403,12 @@ const Chat: React.FC<ChatProps> = ({
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
               Input
             </Typography>
-            <CodeBlock language="json" isGenerating={false} scrollable>
+            <CodeBlock
+              language="json"
+              isGenerating={false}
+              scrollable
+              paletteMode={paletteMode}
+            >
               {selectedTool && selectedTool.input !== undefined
                 ? typeof selectedTool.input === "string"
                   ? selectedTool.input
@@ -2349,7 +2420,12 @@ const Chat: React.FC<ChatProps> = ({
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
               Output
             </Typography>
-            <CodeBlock language="json" isGenerating={false} scrollable>
+            <CodeBlock
+              language="json"
+              isGenerating={false}
+              scrollable
+              paletteMode={paletteMode}
+            >
               {selectedTool && selectedTool.output !== undefined
                 ? typeof selectedTool.output === "string"
                   ? selectedTool.output

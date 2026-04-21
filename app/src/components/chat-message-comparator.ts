@@ -14,6 +14,8 @@ export interface ChatMessageRowProps {
   isLastMessage: boolean;
   isStreaming: boolean;
   onToolClick: (tool: any) => void;
+  /** Bust memo when MUI palette mode changes so row styles stay in sync */
+  paletteMode: "light" | "dark";
 }
 
 /**
@@ -30,6 +32,7 @@ export function chatMessageRowArePropsEqual(
   prev: ChatMessageRowProps,
   next: ChatMessageRowProps,
 ): boolean {
+  if (prev.paletteMode !== next.paletteMode) return false;
   if (prev.isLastMessage !== next.isLastMessage) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.message === next.message) return true;
