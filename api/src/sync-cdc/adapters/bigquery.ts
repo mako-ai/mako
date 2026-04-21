@@ -18,10 +18,66 @@ import {
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
+import { createHash } from "crypto";
 import type {
   ConnectorEntitySchema,
   ConnectorLogicalType,
 } from "../../connectors/base/BaseConnector";
+
+// ---------------------------------------------------------------------------
+// Schema cache — avoids redundant INFORMATION_SCHEMA queries across runs.
+//
+// Key: "projectId.dataset.tableName", Value: column→type map + timestamp.
+// TTL default 5 min (same as scheduler interval). Entries auto-evict on read.
+// ---------------------------------------------------------------------------
+
+const SCHEMA_CACHE_TTL_MS = 5 * 60 * 1000;
+
+interface SchemaCacheEntry {
+  columns: Map<string, string>;
+  fetchedAt: number;
+  schemaHash?: string;
+}
+
+const schemaCache = new Map<string, SchemaCacheEntry>();
+
+function getSchemaCacheKey(
+  projectId: string,
+  dataset: string,
+  table: string,
+): string {
+  return `${projectId}.${dataset}.${table}`;
+}
+
+function getCachedSchema(key: string): SchemaCacheEntry | undefined {
+  const entry = schemaCache.get(key);
+  if (!entry) return undefined;
+  if (Date.now() - entry.fetchedAt > SCHEMA_CACHE_TTL_MS) {
+    schemaCache.delete(key);
+    return undefined;
+  }
+  return entry;
+}
+
+function setCachedSchema(
+  key: string,
+  columns: Map<string, string>,
+  schemaHash?: string,
+): void {
+  schemaCache.set(key, { columns, fetchedAt: Date.now(), schemaHash });
+}
+
+function invalidateCachedSchema(key: string): void {
+  schemaCache.delete(key);
+}
+
+function hashEntitySchema(schema: ConnectorEntitySchema): string {
+  const sorted = Object.entries(schema.fields)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, f]) => `${name}:${f.type}`)
+    .join("|");
+  return createHash("md5").update(sorted).digest("hex");
+}
 
 // ---------------------------------------------------------------------------
 // Retry helper for BigQuery quota / rate-limit errors (HTTP 403 rateLimitExceeded,
@@ -480,20 +536,23 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
-    options?: { stagingSuffix?: string },
+    options?: { stagingSuffix?: string; knownStagingRowCount?: number },
   ): Promise<{ written: number }> {
     const stagingTable = this.getStagingTableName(
       layout.tableName,
       flowId,
       options?.stagingSuffix,
     );
-    return this.mergeStagingToLive(layout, stagingTable, entitySchema);
+    return this.mergeStagingToLive(layout, stagingTable, entitySchema, {
+      knownStagingRowCount: options?.knownStagingRowCount,
+    });
   }
 
   private async mergeStagingToLive(
     layout: CdcEntityLayout,
     stagingTable: string,
     entitySchema?: ConnectorEntitySchema,
+    options?: { knownStagingRowCount?: number },
   ): Promise<{ written: number }> {
     const { projectId, dataset, destination, datasetLocation } =
       await this.resolveBqClient();
@@ -502,42 +561,77 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(liveTable)}`;
     const fullStaging = `${escId(projectId)}.${escId(dataset)}.${escId(stagingTable)}`;
 
-    const infoSchemaQuery = `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`;
-    const schemaResult = await databaseConnectionService.executeQuery(
-      destination,
-      infoSchemaQuery,
-      { location: datasetLocation },
-    );
+    const liveCacheKey = getSchemaCacheKey(projectId, dataset, liveTable);
+    const cachedLive = getCachedSchema(liveCacheKey);
 
-    if (!schemaResult.success) {
-      log.error("INFORMATION_SCHEMA query failed in mergeStagingToLive", {
-        stagingTable,
-        liveTable,
-        dataset,
-        error: schemaResult.error,
-      });
-      throw new Error(`Schema discovery failed: ${schemaResult.error}`);
-    }
-
-    log.info("INFORMATION_SCHEMA result", {
-      stagingTable,
-      liveTable,
-      dataset,
-      rowCount: Array.isArray(schemaResult.data) ? schemaResult.data.length : 0,
-    });
-
+    // Always query staging schema (ephemeral table, not cacheable) but try
+    // to reuse cached live schema to avoid the INFORMATION_SCHEMA round-trip.
     const stagingCols = new Set<string>();
-    const liveCols = new Set<string>();
-    const liveTypes = new Map<string, string>();
-    for (const r of (schemaResult.data as any[]) || []) {
-      const tbl = r.table_name as string;
-      const col = r.column_name as string;
-      const dt = r.data_type as string;
-      if (tbl === liveTable) {
-        liveCols.add(col);
-        liveTypes.set(col, dt);
-      } else if (tbl === stagingTable) {
-        stagingCols.add(col);
+    let liveCols: Set<string>;
+    let liveTypes: Map<string, string>;
+    let schemaCacheHit = false;
+
+    if (cachedLive && cachedLive.columns.size > 0) {
+      schemaCacheHit = true;
+      liveCols = new Set(cachedLive.columns.keys());
+      liveTypes = new Map(cachedLive.columns);
+
+      const stagingSchemaQuery = `SELECT column_name FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${stagingTable.replace(/'/g, "''")}'`;
+      const stagingResult = await databaseConnectionService.executeQuery(
+        destination,
+        stagingSchemaQuery,
+        { location: datasetLocation },
+      );
+      if (!stagingResult.success) {
+        throw new Error(
+          `Staging schema discovery failed: ${stagingResult.error}`,
+        );
+      }
+      for (const r of (stagingResult.data as any[]) || []) {
+        stagingCols.add(r.column_name as string);
+      }
+
+      log.info("Schema cache hit for live table", {
+        liveTable,
+        stagingTable,
+        liveCols: liveCols.size,
+        stagingCols: stagingCols.size,
+      });
+    } else {
+      liveCols = new Set<string>();
+      liveTypes = new Map<string, string>();
+
+      const infoSchemaQuery = `SELECT table_name, column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name IN ('${stagingTable.replace(/'/g, "''")}', '${liveTable.replace(/'/g, "''")}')`;
+      const schemaResult = await databaseConnectionService.executeQuery(
+        destination,
+        infoSchemaQuery,
+        { location: datasetLocation },
+      );
+
+      if (!schemaResult.success) {
+        log.error("INFORMATION_SCHEMA query failed in mergeStagingToLive", {
+          stagingTable,
+          liveTable,
+          dataset,
+          error: schemaResult.error,
+        });
+        throw new Error(`Schema discovery failed: ${schemaResult.error}`);
+      }
+
+      for (const r of (schemaResult.data as any[]) || []) {
+        const tbl = r.table_name as string;
+        const col = r.column_name as string;
+        const dt = r.data_type as string;
+        if (tbl === liveTable) {
+          liveCols.add(col);
+          liveTypes.set(col, dt);
+        } else if (tbl === stagingTable) {
+          stagingCols.add(col);
+        }
+      }
+
+      if (liveCols.size > 0) {
+        setCachedSchema(liveCacheKey, new Map(liveTypes));
       }
     }
 
@@ -556,9 +650,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         Array.from(stagingCols),
         entitySchema,
       );
+
+      const refreshQuery = `SELECT column_name, data_type FROM ${escId(projectId)}.${escId(dataset)}.INFORMATION_SCHEMA.COLUMNS WHERE table_name = '${liveTable.replace(/'/g, "''")}'`;
       const refreshResult = await databaseConnectionService.executeQuery(
         destination,
-        infoSchemaQuery,
+        refreshQuery,
         { location: datasetLocation },
       );
       if (!refreshResult.success) {
@@ -568,30 +664,46 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         );
       }
       for (const r of (refreshResult.data as any[]) || []) {
-        const tbl = r.table_name as string;
         const col = r.column_name as string;
         const dt = r.data_type as string;
-        if (tbl === liveTable) {
-          liveCols.add(col);
-          liveTypes.set(col, dt);
-        }
+        liveCols.add(col);
+        liveTypes.set(col, dt);
       }
+      setCachedSchema(liveCacheKey, new Map(liveTypes));
       log.info("Live table types loaded from INFORMATION_SCHEMA after CREATE", {
         liveTable,
         columnCount: liveCols.size,
       });
     }
 
-    // --- Schema evolution: correct drifted column types before merge ---
-    await this.evolveSchemaIfNeeded({
-      fullLive,
-      liveTable,
-      liveCols,
-      liveTypes,
-      entitySchema,
-      destination,
-      datasetLocation,
-    });
+    // --- Schema evolution: skip when connector schema hash hasn't changed ---
+    const currentSchemaHash = entitySchema
+      ? hashEntitySchema(entitySchema)
+      : undefined;
+    const skipEvolution =
+      schemaCacheHit &&
+      currentSchemaHash != null &&
+      cachedLive?.schemaHash === currentSchemaHash;
+
+    if (skipEvolution) {
+      log.debug?.("Skipping schema evolution — connector schema unchanged", {
+        liveTable,
+        schemaHash: currentSchemaHash,
+      });
+    } else {
+      await this.evolveSchemaIfNeeded({
+        fullLive,
+        liveTable,
+        liveCols,
+        liveTypes,
+        entitySchema,
+        destination,
+        datasetLocation,
+      });
+      if (currentSchemaHash) {
+        setCachedSchema(liveCacheKey, new Map(liveTypes), currentSchemaHash);
+      }
+    }
 
     const missingInLive = [...stagingCols].filter(c => !liveCols.has(c));
     const skippedLiveAdds: string[] = [];
@@ -616,16 +728,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       addedToLive.push(col);
     }
     if (addedToLive.length > 0) {
+      invalidateCachedSchema(liveCacheKey);
+      setCachedSchema(liveCacheKey, new Map(liveTypes), currentSchemaHash);
       log.info("Added missing columns to live table from staging", {
         liveTable,
         addedColumns: addedToLive,
       });
     }
 
-    // Staging columns come from Parquet only — no ALTER TABLE needed.
-    // Missing columns in staging are projected as NULL in the INSERT SELECT.
-
-    // Target columns must exist on live table.
     const allColumns = Array.from(liveCols);
 
     const keyColumns = layout.keyColumns;
@@ -646,23 +756,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         ? Math.min(mergeMaxWaitEnv, 60 * 60 * 1000)
         : 15 * 60 * 1000;
 
-    let stagingRowCount = 0;
-    try {
-      const countResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT COUNT(*) AS cnt FROM ${fullStaging}`,
-        { location: datasetLocation },
-      );
-      if (
-        countResult.success &&
-        Array.isArray(countResult.data) &&
-        countResult.data[0]
-      ) {
-        stagingRowCount = Number((countResult.data[0] as any).cnt || 0);
-      }
-    } catch {
-      log.warn("Could not count staging rows before merge", { stagingTable });
-    }
+    const stagingRowCount = options?.knownStagingRowCount ?? 0;
 
     const mergeStmt = buildMergeStatement({
       fullLive,
@@ -680,6 +774,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       dataset,
       stagingRowCount,
       columnCount: allColumns.length,
+      schemaCacheHit,
     });
 
     await retryOnQuota(
@@ -690,6 +785,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           { bigQueryJobMaxWaitMs: mergeMaxWaitMs, location: datasetLocation },
         );
         if (!mergeResult.success) {
+          invalidateCachedSchema(liveCacheKey);
           log.error("BigQuery MERGE failed", {
             liveTable,
             stagingTable,
@@ -702,30 +798,11 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       { label: `mergeStagingToLive:MERGE(${liveTable})` },
     );
 
-    let liveRowCount = 0;
-    try {
-      const liveCountResult = await databaseConnectionService.executeQuery(
-        destination,
-        `SELECT COUNT(*) AS cnt FROM ${fullLive}`,
-        { location: datasetLocation },
-      );
-      if (
-        liveCountResult.success &&
-        Array.isArray(liveCountResult.data) &&
-        liveCountResult.data[0]
-      ) {
-        liveRowCount = Number((liveCountResult.data[0] as any).cnt || 0);
-      }
-    } catch {
-      log.warn("Could not count live rows after merge", { liveTable });
-    }
-
     log.info("Merged staging to live via MERGE", {
       liveTable,
       stagingTable,
       dataset,
       stagingRowCount,
-      liveRowCount,
       skippedLiveAdds,
     });
 
@@ -1102,7 +1179,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
 
     try {
-      await this.loadStagingFromParquet(
+      const loadResult = await this.loadStagingFromParquet(
         parquet.filePath,
         params.layout,
         flowId,
@@ -1113,7 +1190,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         params.flow,
         flowId,
         params.entitySchema,
-        { stagingSuffix },
+        { stagingSuffix, knownStagingRowCount: loadResult.loaded },
       );
     } finally {
       await this.cleanupStaging(params.layout, flowId, { stagingSuffix }).catch(

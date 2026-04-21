@@ -57,7 +57,7 @@ export interface CdcDestinationAdapter {
     flow: Pick<IFlow, "_id" | "deleteMode" | "dataSourceId">,
     flowId: string,
     entitySchema?: ConnectorEntitySchema,
-    options?: { stagingSuffix?: string },
+    options?: { stagingSuffix?: string; knownStagingRowCount?: number },
   ): Promise<{ written: number }>;
   cleanupStaging?(
     layout: CdcEntityLayout,
