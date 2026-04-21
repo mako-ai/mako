@@ -23,8 +23,7 @@ import {
   Button,
   Tooltip,
   Alert,
-  TextField,
-  InputAdornment,
+  InputBase,
 } from "@mui/material";
 import {
   SquareTerminal as ConsoleIcon,
@@ -112,7 +111,9 @@ function ConsoleExplorer(
 
   // Search
   const [localSearchQuery, setLocalSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
     const ids = new Set<string>();
@@ -192,6 +193,15 @@ function ConsoleExplorer(
   const handleSearchClear = () => {
     setLocalSearchQuery("");
     clearSearch();
+  };
+
+  const handleSearchClose = () => {
+    handleSearchClear();
+    setSearchOpen(false);
+  };
+
+  const handleSearchOpen = () => {
+    setSearchOpen(true);
   };
 
   const handleSearchResultClick = (result: ConsoleSearchResult) => {
@@ -469,26 +479,53 @@ function ConsoleExplorer(
       <Box
         sx={{
           px: 1,
-          py: 0.25,
-          minHeight: 37,
+          height: 37,
           borderBottom: 1,
           borderColor: "divider",
+          display: "flex",
+          alignItems: "center",
+          gap: 0.5,
         }}
       >
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            height: "100%",
-            minHeight: 32,
-          }}
-        >
+        {searchOpen ? (
+          <InputBase
+            autoFocus
+            inputRef={searchInputRef}
+            placeholder="Search consoles..."
+            value={localSearchQuery}
+            onChange={e => handleSearchChange(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Escape") handleSearchClose();
+            }}
+            startAdornment={
+              <SearchIcon
+                size={14}
+                style={{ marginLeft: 6, marginRight: 6, flexShrink: 0 }}
+              />
+            }
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              height: 28,
+              fontSize: "0.85rem",
+              bgcolor: "background.paper",
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              "&.Mui-focused": { borderColor: "primary.main" },
+              "& .MuiInputBase-input": {
+                p: 0,
+                height: "100%",
+                "&:focus": { outline: "none" },
+              },
+            }}
+          />
+        ) : (
           <Box
             sx={{
-              flexGrow: 1,
+              flex: 1,
+              minWidth: 0,
               overflow: "hidden",
-              maxWidth: "calc(100% - 80px)",
             }}
           >
             <Typography
@@ -503,45 +540,35 @@ function ConsoleExplorer(
               Consoles
             </Typography>
           </Box>
-          <Box sx={{ display: "flex", gap: 0 }}>
-            <Tooltip title="Add new folder">
-              <IconButton onClick={handleMenuOpen} size="small">
-                <AddIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Refresh">
-              <IconButton onClick={fetchConsoleEntries} size="small">
-                <RefreshIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-          </Box>
+        )}
+        <Box sx={{ display: "flex", gap: 0, flexShrink: 0 }}>
+          {!searchOpen && (
+            <>
+              <Tooltip title="Add new folder">
+                <IconButton onClick={handleMenuOpen} size="small">
+                  <AddIcon size={20} strokeWidth={2} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Refresh">
+                <IconButton onClick={fetchConsoleEntries} size="small">
+                  <RefreshIcon size={20} strokeWidth={2} />
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
+          <Tooltip title={searchOpen ? "Close search" : "Search"}>
+            <IconButton
+              onClick={searchOpen ? handleSearchClose : handleSearchOpen}
+              size="small"
+            >
+              {searchOpen ? (
+                <ClearIcon size={20} strokeWidth={2} />
+              ) : (
+                <SearchIcon size={20} strokeWidth={2} />
+              )}
+            </IconButton>
+          </Tooltip>
         </Box>
-      </Box>
-      <Box sx={{ px: 1, pb: 0.5 }}>
-        <TextField
-          size="small"
-          fullWidth
-          placeholder="Search consoles..."
-          value={localSearchQuery}
-          onChange={e => handleSearchChange(e.target.value)}
-          slotProps={{
-            input: {
-              startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon size={16} />
-                </InputAdornment>
-              ),
-              endAdornment: localSearchQuery ? (
-                <InputAdornment position="end">
-                  <IconButton size="small" onClick={handleSearchClear}>
-                    <ClearIcon size={14} />
-                  </IconButton>
-                </InputAdornment>
-              ) : null,
-            },
-          }}
-          sx={{ "& .MuiInputBase-root": { height: 32, fontSize: "0.85rem" } }}
-        />
       </Box>
       {error && (
         <Box sx={{ p: 2 }}>
@@ -551,79 +578,81 @@ function ConsoleExplorer(
         </Box>
       )}
 
-      {loading ? (
-        <List component="nav" dense>
-          {renderSkeletonItems()}
-        </List>
-      ) : (
-        <ConsoleTree
-          ref={treeRef}
-          mode="sidebar"
-          onFileOpen={handleFileOpen}
-          showFiles
-          enableDragDrop
-          enableDuplicate
-          enableInfo
-          enableDelete
-          enableRename
-          enableMove
-          onMoveRequest={handleMoveTo}
-          onInfoRequest={handleGetInfo}
-          onFolderInfoRequest={handleFolderInfo}
-          onDeleteRequest={handleDeleteRequest}
-          onSoftDelete={handleSoftDelete}
-          onDuplicate={handleDuplicate}
-          onUndo={handleUndo}
-          searchQuery={localSearchQuery}
-        />
-      )}
-
-      {localSearchQuery.length >= 2 && extraServerResults.length > 0 && (
-        <Box sx={{ px: 1, pb: 1 }}>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ px: 0.5, pb: 0.5, display: "block" }}
-          >
-            Also matched by description
-          </Typography>
-          <List dense disablePadding>
-            {extraServerResults.map(result => (
-              <ListItemButton
-                key={result.id}
-                onClick={() => handleSearchResultClick(result)}
-                sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
-              >
-                <ListItemIcon sx={{ minWidth: 28 }}>
-                  <ConsoleIcon size={16} />
-                </ListItemIcon>
-                <ListItemText
-                  primary={result.title}
-                  secondary={result.description || result.language}
-                  primaryTypographyProps={{
-                    variant: "body2",
-                    noWrap: true,
-                    fontSize: "0.8rem",
-                  }}
-                  secondaryTypographyProps={{
-                    variant: "caption",
-                    noWrap: true,
-                    fontSize: "0.7rem",
-                  }}
-                />
-              </ListItemButton>
-            ))}
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        {loading ? (
+          <List component="nav" dense>
+            {renderSkeletonItems()}
           </List>
-        </Box>
-      )}
+        ) : (
+          <ConsoleTree
+            ref={treeRef}
+            mode="sidebar"
+            onFileOpen={handleFileOpen}
+            showFiles
+            enableDragDrop
+            enableDuplicate
+            enableInfo
+            enableDelete
+            enableRename
+            enableMove
+            onMoveRequest={handleMoveTo}
+            onInfoRequest={handleGetInfo}
+            onFolderInfoRequest={handleFolderInfo}
+            onDeleteRequest={handleDeleteRequest}
+            onSoftDelete={handleSoftDelete}
+            onDuplicate={handleDuplicate}
+            onUndo={handleUndo}
+            searchQuery={localSearchQuery}
+          />
+        )}
 
-      {noMatches && (
-        <Box sx={{ px: 2, py: 1 }}>
-          <Typography variant="caption" color="text.secondary">
-            No consoles found
-          </Typography>
-        </Box>
-      )}
+        {localSearchQuery.length >= 2 && extraServerResults.length > 0 && (
+          <Box sx={{ px: 1, pb: 1 }}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ px: 0.5, pb: 0.5, display: "block" }}
+            >
+              Also matched by description
+            </Typography>
+            <List dense disablePadding>
+              {extraServerResults.map(result => (
+                <ListItemButton
+                  key={result.id}
+                  onClick={() => handleSearchResultClick(result)}
+                  sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
+                >
+                  <ListItemIcon sx={{ minWidth: 28 }}>
+                    <ConsoleIcon size={16} />
+                  </ListItemIcon>
+                  <ListItemText
+                    primary={result.title}
+                    secondary={result.description || result.language}
+                    primaryTypographyProps={{
+                      variant: "body2",
+                      noWrap: true,
+                      fontSize: "0.8rem",
+                    }}
+                    secondaryTypographyProps={{
+                      variant: "caption",
+                      noWrap: true,
+                      fontSize: "0.7rem",
+                    }}
+                  />
+                </ListItemButton>
+              ))}
+            </List>
+          </Box>
+        )}
+
+        {noMatches && (
+          <Box sx={{ px: 2, py: 1 }}>
+            <Typography variant="caption" color="text.secondary">
+              No consoles found
+            </Typography>
+          </Box>
+        )}
+      </Box>
 
       {/* Add Menu */}
       <Menu
