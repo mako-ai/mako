@@ -4,6 +4,7 @@ import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
+import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 
 const logger = loggers.agent();
 
@@ -522,6 +523,14 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
       };
     }
 
+    if (partType === "file") {
+      return {
+        type: "file",
+        url: (p.url as string) || "",
+        mediaType: (p.mediaType as string) || "",
+      };
+    }
+
     // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
     if (partType.startsWith("tool-") || partType === "dynamic-tool") {
       const toolName =
@@ -637,17 +646,14 @@ export const saveChat = async (
 ): Promise<typeof Chat.prototype | null> => {
   const now = new Date();
 
-  // Drop assistant messages that arrived with no parts. This happens when a
-  // stream is aborted before any delta is emitted: `toUIMessageStreamResponse`
-  // has already minted an assistant message id, so `onFinish` hands us a
-  // zero-parts message. Persisting it would poison the chat — on the next
-  // turn `convertToModelMessages` would reject the history with
-  // "Invalid prompt: The messages do not match the ModelMessage[] schema."
-  const persistableMessages = messages.filter(
-    m => m.role !== "assistant" || (m.parts && m.parts.length > 0),
-  );
+  // Sanitize all messages before persistence so poisoned rows can never be
+  // written to Mongo. This handles:
+  // - Empty assistant messages from aborted streams (zero parts)
+  // - Incomplete tool parts from interrupted streams
+  // - Empty user messages (no text, broken file parts)
+  const persistableMessages = sanitizeMessagesForModel(messages);
   if (persistableMessages.length !== messages.length) {
-    logger.warn("Dropping empty assistant messages before persistence", {
+    logger.warn("Dropped invalid messages before persistence", {
       chatId,
       dropped: messages.length - persistableMessages.length,
     });

@@ -1709,7 +1709,7 @@ const Chat: React.FC<ChatProps> = ({
           // Tool calls are included for UI display (shows what tools were used).
           // The backend sanitizes these before sending to the AI to avoid
           // "tool_use without tool_result" errors.
-          const convertedMessages =
+          const rawMessages =
             data.messages?.map((msg: any) => {
               // NEW: If parts are stored, use them directly (preserves chronological order)
               if (
@@ -1729,10 +1729,16 @@ const Chat: React.FC<ChatProps> = ({
                       return { type: "text", text: p.text || "" };
                     }
                     if (p.type === "reasoning") {
-                      // Handle both 'reasoning' and 'text' fields for reasoning parts
                       return {
                         type: "reasoning",
                         text: p.reasoning || p.text || "",
+                      };
+                    }
+                    if (p.type === "file") {
+                      return {
+                        type: "file",
+                        url: p.url || "",
+                        mediaType: p.mediaType || "",
                       };
                     }
                     // Tool parts: ensure state is set for UI rendering
@@ -1766,11 +1772,8 @@ const Chat: React.FC<ChatProps> = ({
               // TODO: Remove this fallback once we're OK with losing the ability to show old chats
               // that were created before the parts array migration.
               // LEGACY FALLBACK: Reconstruct parts from legacy fields (for existing chats without parts)
-              // Note: Order cannot be perfectly restored, use best-effort: tools -> reasoning -> text
               const parts: Array<Record<string, unknown>> = [];
 
-              // Add tool call parts (for UI display - shows tool history)
-              // IMPORTANT: input must always be defined (at least {}) for OpenAI API compatibility
               if (msg.toolCalls && msg.toolCalls.length > 0) {
                 for (const tc of msg.toolCalls) {
                   if (!tc.toolName) continue;
@@ -1788,7 +1791,6 @@ const Chat: React.FC<ChatProps> = ({
                 }
               }
 
-              // Add reasoning parts (if any)
               if (msg.reasoning && Array.isArray(msg.reasoning)) {
                 for (const reasoningText of msg.reasoning) {
                   parts.push({
@@ -1798,7 +1800,6 @@ const Chat: React.FC<ChatProps> = ({
                 }
               }
 
-              // Add text content part
               if (msg.content) {
                 parts.push({ type: "text", text: msg.content });
               }
@@ -1812,6 +1813,30 @@ const Chat: React.FC<ChatProps> = ({
                 parts,
               };
             }) || [];
+
+          // Normalize restored messages: drop user messages with no usable
+          // content and repair malformed assistant messages so the next
+          // sendMessage call doesn't blow up with validation errors.
+          const convertedMessages = rawMessages.filter((msg: any) => {
+            if (msg.role === "user") {
+              const hasContent = (msg.parts || []).some(
+                (p: any) =>
+                  (p.type === "text" &&
+                    typeof p.text === "string" &&
+                    p.text.trim().length > 0) ||
+                  (p.type === "file" &&
+                    typeof p.url === "string" &&
+                    p.url.length > 0),
+              );
+              return hasContent;
+            }
+            if (msg.role === "assistant") {
+              if (!msg.parts || msg.parts.length === 0) {
+                msg.parts = [{ type: "text", text: "[Response interrupted]" }];
+              }
+            }
+            return true;
+          });
           setMessages(convertedMessages);
 
           // Restore consoles that were modified by the agent in this chat

@@ -1,75 +1,121 @@
 import type { UIMessage } from "ai";
 
 /**
- * Sanitize UIMessages by removing incomplete tool parts.
+ * Check whether a user message has at least one non-empty content part
+ * (text with actual characters, or a file attachment).
+ */
+function userMessageHasContent(parts: UIMessage["parts"]): boolean {
+  if (!parts || parts.length === 0) return false;
+  return parts.some(part => {
+    if (part.type === "text") {
+      return (
+        typeof (part as { text?: string }).text === "string" &&
+        (part as { text: string }).text.trim().length > 0
+      );
+    }
+    if (part.type === "file") return true;
+    return false;
+  });
+}
+
+/**
+ * Sanitize a single user message's parts.
+ * Strips empty text parts and returns null if nothing usable remains
+ * (the caller should drop the message entirely).
+ */
+function sanitizeUserMessage(msg: UIMessage): UIMessage | null {
+  if (!msg.parts || msg.parts.length === 0) {
+    return null;
+  }
+
+  const cleaned = msg.parts.filter(part => {
+    if (part.type === "text") {
+      return (
+        typeof (part as { text?: string }).text === "string" &&
+        (part as { text: string }).text.trim().length > 0
+      );
+    }
+    if (part.type === "file") return true;
+    return false;
+  });
+
+  if (!userMessageHasContent(cleaned)) {
+    return null;
+  }
+
+  if (cleaned.length === msg.parts.length) return msg;
+  return { ...msg, parts: cleaned };
+}
+
+/**
+ * Sanitize a single assistant message's parts.
+ * Removes incomplete tool parts and repairs empty assistant messages.
+ */
+function sanitizeAssistantMessage(msg: UIMessage): UIMessage {
+  if (!msg.parts || msg.parts.length === 0) {
+    return {
+      ...msg,
+      parts: [{ type: "text" as const, text: "[Response interrupted]" }],
+    };
+  }
+
+  const sanitizedParts = msg.parts.filter(part => {
+    const partType = part.type;
+
+    // Keep all non-tool parts (text, reasoning, etc.)
+    if (
+      typeof partType !== "string" ||
+      (!partType.startsWith("tool-") && partType !== "dynamic-tool")
+    ) {
+      return true;
+    }
+
+    // For tool parts, only keep those with complete states
+    const state = (part as Record<string, unknown>).state as string | undefined;
+    return state === "output-available" || state === "error";
+  });
+
+  if (sanitizedParts.length === 0) {
+    return {
+      ...msg,
+      parts: [{ type: "text" as const, text: "[Response interrupted]" }],
+    };
+  }
+
+  if (sanitizedParts.length === msg.parts.length) return msg;
+  return { ...msg, parts: sanitizedParts };
+}
+
+/**
+ * Sanitize UIMessages for safe round-trip through the AI model.
  *
- * When a chat stream is interrupted (user closes browser, network failure, etc.),
- * tool parts may be saved to the database in an incomplete state (e.g., "input-available",
- * "input-streaming") without a corresponding result. When the user resumes the chat,
- * these malformed messages would cause Anthropic API errors:
+ * Handles both user and assistant messages:
  *
- *   "tool_use ids were found without tool_result blocks immediately after"
+ * **User messages**: drops messages that have no usable content (empty text
+ * parts, missing file parts, etc.) so they never reach `convertToModelMessages`
+ * which rejects them with "user messages must have non-empty content".
  *
- * This function filters out incomplete tool parts before sending to the model.
- * Tool parts are considered complete only if their state is:
- * - "output-available" (successful completion)
- * - "error" (failed with error result)
- *
- * All other states indicate incomplete tool calls that should be removed.
+ * **Assistant messages**: removes incomplete tool parts from interrupted
+ * streams and replaces empty assistant messages with a placeholder to prevent
+ * Anthropic/OpenAI validation errors.
  */
 export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
-  return messages.map(msg => {
-    // Only assistant messages can have tool parts
-    if (msg.role !== "assistant") {
-      return msg;
+  const result: UIMessage[] = [];
+
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      const cleaned = sanitizeUserMessage(msg);
+      if (cleaned) result.push(cleaned);
+      continue;
     }
 
-    // Empty assistant messages (e.g. from interrupted streams persisted with
-    // no content) must not be forwarded to `convertToModelMessages`, which
-    // throws "The messages do not match the ModelMessage[] schema." Replace
-    // with the same placeholder we use for tool-only messages below.
-    if (!msg.parts || msg.parts.length === 0) {
-      return {
-        ...msg,
-        parts: [{ type: "text" as const, text: "[Response interrupted]" }],
-      };
+    if (msg.role === "assistant") {
+      result.push(sanitizeAssistantMessage(msg));
+      continue;
     }
 
-    const sanitizedParts = msg.parts.filter(part => {
-      const partType = part.type;
+    result.push(msg);
+  }
 
-      // Keep all non-tool parts (text, reasoning, etc.)
-      if (
-        typeof partType !== "string" ||
-        (!partType.startsWith("tool-") && partType !== "dynamic-tool")
-      ) {
-        return true;
-      }
-
-      // For tool parts, only keep those with complete states
-      const state = (part as Record<string, unknown>).state as
-        | string
-        | undefined;
-
-      // Complete states: output-available (success) or error (failed but has result)
-      // Incomplete states: input-streaming, input-available, output-streaming, undefined
-      return state === "output-available" || state === "error";
-    });
-
-    // If all parts were filtered out, return a minimal message to preserve structure
-    // This prevents empty assistant messages which could confuse the model
-    if (sanitizedParts.length === 0) {
-      return {
-        ...msg,
-        parts: [{ type: "text" as const, text: "[Response interrupted]" }],
-      };
-    }
-
-    // If nothing changed, return original to preserve object identity
-    if (sanitizedParts.length === msg.parts.length) {
-      return msg;
-    }
-
-    return { ...msg, parts: sanitizedParts };
-  });
+  return result;
 }
