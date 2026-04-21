@@ -1600,22 +1600,20 @@ function Editor({
             </IconButton>
           </Box>
 
-          {/* Breadcrumb path (Cursor-style) — only when the active tab has a filePath */}
+          {/* Breadcrumb path (Cursor-style) — only for console tabs */}
           {(() => {
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
-            const filePath = activeTab?.filePath;
-            if (!filePath) return null;
-            const rootSegment =
-              activeTab?.kind === "console"
-                ? activeTab.access === "workspace"
-                  ? "Workspace"
-                  : "My Consoles"
-                : null;
-            const segments = [
-              ...(rootSegment ? [rootSegment] : []),
-              ...filePath.split("/").filter(Boolean),
-            ];
-            if (segments.length === 0) return null;
+            if (activeTab?.kind !== "console") return null;
+            const filePath = activeTab.filePath;
+            const isUnsaved = !filePath;
+            const segments = isUnsaved
+              ? ["Unsaved console"]
+              : [
+                  activeTab.access === "workspace"
+                    ? "Workspace"
+                    : "My Consoles",
+                  ...filePath.split("/").filter(Boolean),
+                ];
             return (
               <Box
                 sx={{
@@ -1656,6 +1654,7 @@ function Editor({
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
+                        fontStyle: isUnsaved ? "italic" : "normal",
                       }}
                     >
                       {segment}
