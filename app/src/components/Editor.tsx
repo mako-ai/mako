@@ -1605,7 +1605,16 @@ function Editor({
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
             const filePath = activeTab?.filePath;
             if (!filePath) return null;
-            const segments = filePath.split("/").filter(Boolean);
+            const rootSegment =
+              activeTab?.kind === "console"
+                ? activeTab.access === "workspace"
+                  ? "Workspace"
+                  : "My Consoles"
+                : null;
+            const segments = [
+              ...(rootSegment ? [rootSegment] : []),
+              ...filePath.split("/").filter(Boolean),
+            ];
             if (segments.length === 0) return null;
             return (
               <Box
