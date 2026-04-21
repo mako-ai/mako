@@ -1,4 +1,24 @@
-import React, { useRef, useEffect, useState, useCallback } from "react";
+import React, {
+  useRef,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from "react";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  horizontalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { restrictToHorizontalAxis } from "@dnd-kit/modifiers";
 import {
   Box,
   Tabs,
@@ -23,6 +43,7 @@ import {
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
   ChartPie as DashboardIcon,
+  ChevronRight as BreadcrumbChevronIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -38,7 +59,8 @@ import ConflictResolutionDialog, {
   ConflictData,
 } from "./ConflictResolutionDialog";
 import FileExplorerDialog from "./FileExplorerDialog";
-import { useConsoleStore } from "../store/consoleStore";
+import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
+import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
@@ -47,6 +69,7 @@ import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
+import { generateObjectId } from "../utils/objectId";
 import {
   computeConsoleStateHash,
   computeDashboardStateHash,
@@ -157,6 +180,76 @@ function LockConflictDialog() {
   );
 }
 
+/**
+ * MUI <Tabs> clones its direct children to inject props (selected, onChange,
+ * textColor, indicator, ...). This wrapper accepts all Tab props (plus MUI's
+ * clone-injected extras), wires up dnd-kit's useSortable for drag-to-reorder,
+ * and forwards everything to an underlying <Tab>.
+ *
+ * UX:
+ * - Dragged tab stays in place (only dimmed); no translation or layout shift.
+ * - A thin vertical bar (drop indicator) is rendered on the leading or
+ *   trailing edge of the tab currently under the pointer, showing where the
+ *   dragged tab will land on drop.
+ *
+ * Implementation notes:
+ * - We intentionally do NOT spread dnd-kit's `attributes` onto the Tab — they
+ *   include role="button"/tabIndex which would clobber MUI Tab's own
+ *   role="tab"/tabIndex logic and break tab selection + cause a feedback
+ *   loop with MUI Tabs' indicator ResizeObserver.
+ * - We use inline `style` (not `sx`) for the drag opacity so emotion doesn't
+ *   churn className hashes on every pointer move during a drag.
+ */
+function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
+  const id = props.value as string;
+  const { listeners, setNodeRef, isDragging, isOver, activeIndex, overIndex } =
+    useSortable({ id });
+
+  // Show a drop indicator on the hovered tab, but not on the dragged tab
+  // itself and not when dropping would be a no-op (same index).
+  const showIndicator =
+    isOver && !isDragging && activeIndex !== -1 && activeIndex !== overIndex;
+  // Leading edge when moving the tab to the left, trailing edge when moving
+  // it to the right.
+  const indicatorSide: "left" | "right" =
+    activeIndex > overIndex ? "left" : "right";
+
+  const dragStyle: React.CSSProperties = {
+    opacity: isDragging ? 0.4 : 1,
+    touchAction: "none",
+  };
+
+  const indicatorSx = showIndicator
+    ? {
+        "&::after": {
+          content: '""',
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          [indicatorSide]: -3,
+          width: "6px",
+          backgroundColor: "divider",
+          pointerEvents: "none",
+          zIndex: 2,
+        },
+      }
+    : undefined;
+
+  const mergedSx = indicatorSx
+    ? ([props.sx, indicatorSx] as React.ComponentProps<typeof Tab>["sx"])
+    : props.sx;
+
+  return (
+    <Tab
+      {...props}
+      {...listeners}
+      ref={setNodeRef as unknown as React.Ref<HTMLDivElement>}
+      sx={mergedSx}
+      style={{ ...(props.style || {}), ...dragStyle }}
+    />
+  );
+}
+
 function Editor({
   dbFlowFormRef,
   onChartSpecChangeRef,
@@ -225,6 +318,20 @@ function Editor({
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [saveDialogTabId, setSaveDialogTabId] = useState<string | null>(null);
   const [saveDialogContent, setSaveDialogContent] = useState("");
+  // Which flow opened the dialog:
+  //   "new"           — first-time save of a draft tab (POST with the tab's own id)
+  //   "save-as-copy"  — create a brand-new console record (POST with a fresh id),
+  //                     leaving the current tab untouched.
+  //   "rename-move"   — relocate an already-saved console (PUT via saveConsole)
+  //                     to a new path; current tab updates to the new path.
+  const [saveDialogMode, setSaveDialogMode] = useState<
+    "new" | "save-as-copy" | "rename-move"
+  >("new");
+  // Id that will be sent to the API. Same as saveDialogTabId for "new" and
+  // "rename-move"; a freshly-generated id for "save-as-copy".
+  const [saveDialogTargetId, setSaveDialogTargetId] = useState<string | null>(
+    null,
+  );
 
   // Conflict resolution state
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
@@ -269,7 +376,11 @@ function Editor({
   const saveConsole = useConsoleStore(state => state.saveConsole);
   const deleteConsole = useConsoleStore(state => state.deleteConsole);
   const openTab = useConsoleStore(state => state.openTab);
-  const consoleTabs = Object.values(tabs);
+  const reorderTabs = useConsoleStore(state => state.reorderTabs);
+  // useShallow prevents infinite re-renders: selectConsoleTabs returns a new
+  // array on every call; without shallow comparison useSyncExternalStore would
+  // detect a change every render and trigger a re-render loop.
+  const consoleTabs = useConsoleStore(useShallow(selectConsoleTabs));
   const activeConsoleId = activeTabId;
 
   const setChartSpecForTab = useCallback(
@@ -567,6 +678,26 @@ function Editor({
   const handleTabChange = (_: React.SyntheticEvent, newValue: string) => {
     setActiveTab(newValue);
   };
+
+  // Drag-to-reorder tabs
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, {
+      // Keep click-to-select working: only start a drag after 4px of movement.
+      activationConstraint: { distance: 4 },
+    }),
+  );
+  const sortableTabIds = useMemo(
+    () => consoleTabs.map(t => t.id),
+    [consoleTabs],
+  );
+  const handleTabDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      reorderTabs(String(active.id), String(over.id));
+    },
+    [reorderTabs],
+  );
 
   const cleanupTab = (tabId: string) => {
     closeTab(tabId);
@@ -882,7 +1013,9 @@ function Editor({
       const savePath = currentPath;
       if (!savePath) {
         // Open the folder navigator save dialog instead of prompt()
+        setSaveDialogMode("new");
         setSaveDialogTabId(tabId);
+        setSaveDialogTargetId(tabId);
         setSaveDialogContent(contentToSave);
         setSaveDialogOpen(true);
         setIsSaving(false);
@@ -1091,15 +1224,81 @@ function Editor({
 
     // Build the path: if folderId is provided the API will handle folder association via the path or directly
     const savePath = name.endsWith(".js") ? name.slice(0, -3) : name;
+    const targetId = saveDialogTargetId ?? saveDialogTabId;
+    const mode = saveDialogMode;
 
     setIsSaving(true);
     try {
-      const currentTab = tabs[saveDialogTabId];
-      const connectionId = currentTab?.connectionId;
-      const databaseId = currentTab?.databaseId;
-      const databaseName = currentTab?.databaseName;
+      // Source tab (for connection/chart/view-mode). Even in "save-as-copy",
+      // the new record inherits these from the source tab.
+      const sourceTab = tabs[saveDialogTabId];
+      const connectionId = sourceTab?.connectionId;
+      const databaseId = sourceTab?.databaseId;
+      const databaseName = sourceTab?.databaseName;
 
-      // Use POST to create with explicit folderId
+      if (mode === "rename-move") {
+        // PUT /consoles/:id — updates the existing console's path.
+        const result = await saveConsole(
+          currentWorkspace.id,
+          targetId,
+          saveDialogContent,
+          savePath,
+          connectionId,
+          databaseName,
+          databaseId,
+          tabChartSpecs[saveDialogTabId] ?? undefined,
+          tabViewModes[saveDialogTabId],
+        );
+
+        if (result.error === "conflict" && result.conflict) {
+          setPendingSaveData({
+            tabId: targetId,
+            content: saveDialogContent,
+            path: savePath,
+            connectionId,
+            databaseId,
+            databaseName,
+          });
+          setConflictData(result.conflict);
+          setConflictDialogOpen(true);
+          setIsSaving(false);
+          return;
+        }
+
+        if (result.success) {
+          updateFilePath(targetId, savePath);
+          updateTitle(targetId, savePath);
+          updateDirty(targetId, true);
+
+          const newHash = computeConsoleStateHash(
+            saveDialogContent,
+            connectionId,
+            databaseId,
+            databaseName,
+          );
+          updateSavedState(targetId, true, newHash);
+
+          trackEvent("console_renamed", {
+            console_id: targetId,
+            new_path: savePath,
+          });
+
+          setSnackbarMessage(`Renamed to '${savePath}.js'`);
+          setSnackbarOpen(true);
+
+          const { useConsoleTreeStore } = await import(
+            "../store/consoleTreeStore"
+          );
+          useConsoleTreeStore.getState().refresh(currentWorkspace.id);
+        } else {
+          setErrorMessage(JSON.stringify(result.error, null, 2));
+          setErrorModalOpen(true);
+        }
+
+        return;
+      }
+
+      // Both "new" and "save-as-copy" use POST to create a new record.
       const response = await fetch(
         `/api/workspaces/${currentWorkspace.id}/consoles`,
         {
@@ -1107,7 +1306,7 @@ function Editor({
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            id: saveDialogTabId,
+            id: targetId,
             path: savePath,
             content: saveDialogContent,
             connectionId,
@@ -1124,7 +1323,7 @@ function Editor({
 
       if (response.status === 409 && result.error === "conflict") {
         setPendingSaveData({
-          tabId: saveDialogTabId,
+          tabId: targetId,
           content: saveDialogContent,
           path: savePath,
           connectionId,
@@ -1138,26 +1337,38 @@ function Editor({
       }
 
       if (result.success) {
-        const tabId = saveDialogTabId;
-        updateFilePath(tabId, savePath);
-        updateTitle(tabId, savePath);
-        updateDirty(tabId, true);
+        if (mode === "save-as-copy") {
+          // Do NOT mutate the source tab. Just refresh the tree so the copy
+          // shows up. Optionally we could also open the new console as a tab,
+          // but keep the UX conservative: user stays focused on their work.
+          trackEvent("console_saved_as_copy", {
+            source_console_id: saveDialogTabId,
+            new_console_id: targetId,
+          });
+          setSnackbarMessage(`Saved a copy as '${savePath}.js'`);
+          setSnackbarOpen(true);
+        } else {
+          // "new" — first-time save of a draft; update the originating tab.
+          updateFilePath(targetId, savePath);
+          updateTitle(targetId, savePath);
+          updateDirty(targetId, true);
 
-        const newHash = computeConsoleStateHash(
-          saveDialogContent,
-          connectionId,
-          databaseId,
-          databaseName,
-        );
-        updateSavedState(tabId, true, newHash);
+          const newHash = computeConsoleStateHash(
+            saveDialogContent,
+            connectionId,
+            databaseId,
+            databaseName,
+          );
+          updateSavedState(targetId, true, newHash);
 
-        trackEvent("console_saved", {
-          console_id: tabId,
-          is_new: true,
-        });
+          trackEvent("console_saved", {
+            console_id: targetId,
+            is_new: true,
+          });
 
-        setSnackbarMessage(`Console saved as '${savePath}'`);
-        setSnackbarOpen(true);
+          setSnackbarMessage(`Console saved as '${savePath}'`);
+          setSnackbarOpen(true);
+        }
 
         const { useConsoleTreeStore } = await import(
           "../store/consoleTreeStore"
@@ -1173,8 +1384,53 @@ function Editor({
     } finally {
       setIsSaving(false);
       setSaveDialogTabId(null);
+      setSaveDialogTargetId(null);
+      setSaveDialogMode("new");
       setSaveDialogContent("");
     }
+  };
+
+  // "Save a Copy..." — POST a brand-new console record with a fresh id; the
+  // currently open tab keeps pointing at the original file.
+  const handleSaveAsCopy = (tabId: string, contentToSave: string) => {
+    if (!currentWorkspace) {
+      setErrorMessage("No workspace selected");
+      setErrorModalOpen(true);
+      return;
+    }
+    const newId = generateObjectId();
+    setSaveDialogMode("save-as-copy");
+    setSaveDialogTabId(tabId);
+    setSaveDialogTargetId(newId);
+    setSaveDialogContent(contentToSave);
+    setSaveDialogOpen(true);
+  };
+
+  // "Rename / Move..." — relocate the existing console (same id) to a new path.
+  const handleRenameMove = (
+    tabId: string,
+    contentToSave: string,
+    currentPath?: string,
+  ) => {
+    if (!currentWorkspace) {
+      setErrorMessage("No workspace selected");
+      setErrorModalOpen(true);
+      return;
+    }
+    if (!currentPath) {
+      // Nothing to rename yet — fall back to first-time save flow.
+      setSaveDialogMode("new");
+      setSaveDialogTabId(tabId);
+      setSaveDialogTargetId(tabId);
+      setSaveDialogContent(contentToSave);
+      setSaveDialogOpen(true);
+      return;
+    }
+    setSaveDialogMode("rename-move");
+    setSaveDialogTabId(tabId);
+    setSaveDialogTargetId(tabId);
+    setSaveDialogContent(contentToSave);
+    setSaveDialogOpen(true);
   };
 
   const handleConflictSaveAsNew = () => {
@@ -1182,8 +1438,10 @@ function Editor({
     setConflictData(null);
 
     if (pendingSaveData) {
-      // Open save dialog with a suggested copy name
+      // Re-open the dialog to let the user pick a new name.
+      setSaveDialogMode("new");
       setSaveDialogTabId(pendingSaveData.tabId);
+      setSaveDialogTargetId(pendingSaveData.tabId);
       setSaveDialogContent(pendingSaveData.content);
       setSaveDialogOpen(true);
     }
@@ -1222,94 +1480,182 @@ function Editor({
             sx={{
               display: "flex",
               alignItems: "center",
+              minHeight: 36,
               borderBottom: 1,
               borderColor: "divider",
             }}
           >
-            <Tabs
-              value={activeConsoleId}
-              onChange={handleTabChange}
-              variant="scrollable"
-              scrollButtons="auto"
+            <DndContext
+              sensors={dndSensors}
+              collisionDetection={closestCenter}
+              modifiers={[restrictToHorizontalAxis]}
+              onDragEnd={handleTabDragEnd}
             >
-              {consoleTabs.map(tab => (
-                <Tab
-                  key={tab.id}
-                  value={tab.id}
-                  label={
-                    <Box
+              <SortableContext
+                items={sortableTabIds}
+                strategy={horizontalListSortingStrategy}
+              >
+                <Tabs
+                  value={activeConsoleId}
+                  onChange={handleTabChange}
+                  variant="scrollable"
+                  scrollButtons="auto"
+                  sx={{
+                    minHeight: 36,
+                    "& .MuiTabs-indicator": { height: 2 },
+                  }}
+                >
+                  {consoleTabs.map(tab => (
+                    <SortableConsoleTab
+                      key={tab.id}
+                      value={tab.id}
                       sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.75,
-                        minWidth: 0,
-                        maxWidth: "100%",
+                        minHeight: 36,
+                        py: 0.25,
+                        px: 1.25,
+                        textTransform: "none",
                       }}
-                    >
-                      {tab.icon ? (
+                      label={
                         <Box
-                          component="img"
-                          src={tab.icon}
-                          alt="tab icon"
-                          sx={{ width: 20, height: 20 }}
-                        />
-                      ) : tab.kind === "settings" ? (
-                        <SettingsIcon size={20} strokeWidth={1.5} />
-                      ) : tab.kind === "connectors" ? (
-                        <DataSourceIcon size={20} strokeWidth={1.5} />
-                      ) : tab.kind === "flow-editor" ? (
-                        tab.metadata?.flowType === "webhook" ? (
-                          <WebhookIcon size={20} strokeWidth={1.5} />
-                        ) : tab.metadata?.enabled === false ? (
-                          <PauseIcon size={20} strokeWidth={1.5} />
-                        ) : (
-                          <ScheduleIcon size={20} strokeWidth={1.5} />
-                        )
-                      ) : tab.kind === "dashboard" ? (
-                        <DashboardIcon size={20} strokeWidth={1.5} />
-                      ) : (
-                        <ConsoleIcon size={20} strokeWidth={1.5} />
-                      )}
-                      <span
-                        style={{
-                          fontStyle: tab.isDirty ? "normal" : "italic",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          display: "inline-block",
-                          maxWidth: "150px",
-                        }}
-                        onDoubleClick={e => {
-                          e.stopPropagation();
-                          updateDirty(tab.id, true);
-                        }}
-                      >
-                        {tab.title}
-                      </span>
-                      <IconButton
-                        component="span"
-                        size="small"
-                        onClick={e => {
-                          e.stopPropagation();
-                          closeConsole(tab.id);
-                        }}
-                      >
-                        <CloseIcon fontSize="small" />
-                      </IconButton>
-                    </Box>
-                  }
-                />
-              ))}
-            </Tabs>
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 0.5,
+                            minWidth: 0,
+                            maxWidth: "100%",
+                          }}
+                        >
+                          {tab.icon ? (
+                            <Box
+                              component="img"
+                              src={tab.icon}
+                              alt="tab icon"
+                              sx={{ width: 18, height: 18 }}
+                            />
+                          ) : tab.kind === "settings" ? (
+                            <SettingsIcon size={18} strokeWidth={1.5} />
+                          ) : tab.kind === "connectors" ? (
+                            <DataSourceIcon size={18} strokeWidth={1.5} />
+                          ) : tab.kind === "flow-editor" ? (
+                            tab.metadata?.flowType === "webhook" ? (
+                              <WebhookIcon size={18} strokeWidth={1.5} />
+                            ) : tab.metadata?.enabled === false ? (
+                              <PauseIcon size={18} strokeWidth={1.5} />
+                            ) : (
+                              <ScheduleIcon size={18} strokeWidth={1.5} />
+                            )
+                          ) : tab.kind === "dashboard" ? (
+                            <DashboardIcon size={18} strokeWidth={1.5} />
+                          ) : (
+                            <ConsoleIcon size={18} strokeWidth={1.5} />
+                          )}
+                          <span
+                            style={{
+                              fontStyle: tab.isDirty ? "normal" : "italic",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              display: "inline-block",
+                              maxWidth: "150px",
+                            }}
+                            onDoubleClick={e => {
+                              e.stopPropagation();
+                              updateDirty(tab.id, true);
+                            }}
+                            title={tab.title}
+                          >
+                            {tab.title?.split("/").filter(Boolean).pop() ||
+                              tab.title}
+                          </span>
+                          <IconButton
+                            component="span"
+                            size="small"
+                            onClick={e => {
+                              e.stopPropagation();
+                              closeConsole(tab.id);
+                            }}
+                            onPointerDown={e => {
+                              // Prevent the Tab's drag listener from starting
+                              // a drag when the user clicks the close button.
+                              e.stopPropagation();
+                            }}
+                            sx={{ p: 0.25, ml: 0.25 }}
+                          >
+                            <CloseIcon fontSize="inherit" />
+                          </IconButton>
+                        </Box>
+                      }
+                    />
+                  ))}
+                </Tabs>
+              </SortableContext>
+            </DndContext>
             <IconButton
               onClick={handleAddTab}
               size="small"
-              sx={{ ml: 1, mr: 1 }}
+              sx={{ ml: 0.5, mr: 0.5, p: 0.5 }}
               title="Add new console tab"
             >
-              <AddIcon />
+              <AddIcon fontSize="small" />
             </IconButton>
           </Box>
+
+          {/* Breadcrumb path (Cursor-style) — only when the active tab has a filePath */}
+          {(() => {
+            const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
+            const filePath = activeTab?.filePath;
+            if (!filePath) return null;
+            const segments = filePath.split("/").filter(Boolean);
+            if (segments.length === 0) return null;
+            return (
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  minHeight: 22,
+                  px: 1.5,
+                  py: 0.25,
+                  backgroundColor: "background.paper",
+                  color: "text.secondary",
+                  fontSize: "0.75rem",
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                  gap: 0.25,
+                }}
+              >
+                {segments.map((segment, index) => (
+                  <Box
+                    key={`${index}-${segment}`}
+                    component="span"
+                    sx={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 0.25,
+                      minWidth: 0,
+                    }}
+                  >
+                    {index > 0 && (
+                      <BreadcrumbChevronIcon
+                        size={12}
+                        strokeWidth={2}
+                        style={{ flexShrink: 0, opacity: 0.6 }}
+                      />
+                    )}
+                    <Box
+                      component="span"
+                      sx={{
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {segment}
+                    </Box>
+                  </Box>
+                ))}
+              </Box>
+            );
+          })()}
 
           {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
           <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
@@ -1391,6 +1737,12 @@ function Editor({
                         onCancel={() => handleConsoleCancel(tab.id)}
                         onSave={(content, currentPath) =>
                           handleConsoleSave(tab.id, content, currentPath)
+                        }
+                        onSaveAsCopy={content =>
+                          handleSaveAsCopy(tab.id, content)
+                        }
+                        onRenameMove={(content, currentPath) =>
+                          handleRenameMove(tab.id, content, currentPath)
                         }
                         isExecuting={executingTabs[tab.id] || false}
                         isCancelling={cancellingTabs[tab.id] || false}
@@ -1548,11 +1900,25 @@ function Editor({
         onClose={() => {
           setSaveDialogOpen(false);
           setSaveDialogTabId(null);
+          setSaveDialogTargetId(null);
+          setSaveDialogMode("new");
           setSaveDialogContent("");
         }}
         mode="save"
         onSave={handleSaveDialogConfirm}
-        defaultName={saveDialogTabId ? tabs[saveDialogTabId]?.title || "" : ""}
+        defaultName={(() => {
+          if (!saveDialogTabId) return "";
+          const tab = tabs[saveDialogTabId];
+          if (!tab) return "";
+          if (saveDialogMode === "save-as-copy") {
+            const base = tab.filePath || tab.title || "";
+            return base ? `${base} (copy)` : "";
+          }
+          if (saveDialogMode === "rename-move") {
+            return tab.filePath || tab.title || "";
+          }
+          return tab.title || "";
+        })()}
         isSaving={isSaving}
       />
 

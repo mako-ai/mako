@@ -16,6 +16,8 @@ import type {
 
 interface ConsoleState {
   tabs: Record<string, ConsoleTab>;
+  /** Order in which tabs are displayed in the tab bar. Source of truth for the UI. */
+  tabOrder: string[];
   activeTabId: string | null;
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
@@ -32,6 +34,8 @@ interface ConsoleActions {
   closeTab: (id: string) => void;
   setActiveTab: (id: string | null) => void;
   clearAllConsoles: () => void;
+  /** Reorder the tab bar by moving `fromId` to the position of `toId`. */
+  reorderTabs: (fromId: string, toId: string) => void;
 
   // Tab updates
   updateContent: (id: string, content: string) => void;
@@ -113,6 +117,7 @@ type ConsoleStore = ConsoleState & ConsoleActions;
 
 const initialState: ConsoleState = {
   tabs: {},
+  tabOrder: [],
   activeTabId: null,
   loading: {},
   error: {},
@@ -172,7 +177,9 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           if (pristineTabId && pristineTabId !== id) {
             delete state.tabs[pristineTabId];
+            state.tabOrder = state.tabOrder.filter(t => t !== pristineTabId);
           }
+          const isExisting = !!state.tabs[id];
           state.tabs[id] = {
             ...tab,
             id,
@@ -182,6 +189,9 @@ export const useConsoleStore = create<ConsoleStore>()(
             kind: tab.kind || "console",
             isDirty: tab.isDirty ?? false,
           };
+          if (!isExisting && !state.tabOrder.includes(id)) {
+            state.tabOrder.push(id);
+          }
           state.activeTabId = id;
         });
 
@@ -199,8 +209,19 @@ export const useConsoleStore = create<ConsoleStore>()(
 
         set(state => {
           delete state.tabs[id];
+          const prevIndex = state.tabOrder.indexOf(id);
+          state.tabOrder = state.tabOrder.filter(t => t !== id);
           if (state.activeTabId === id) {
-            state.activeTabId = Object.keys(state.tabs)[0] || null;
+            if (state.tabOrder.length === 0) {
+              state.activeTabId = null;
+            } else {
+              // Prefer the tab that took this one's slot, else the previous one.
+              const nextIndex = Math.min(
+                Math.max(prevIndex, 0),
+                state.tabOrder.length - 1,
+              );
+              state.activeTabId = state.tabOrder[nextIndex] ?? null;
+            }
           }
         });
       },
@@ -212,6 +233,17 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       clearAllConsoles: () => {
         Object.keys(get().tabs).forEach(tabId => get().closeTab(tabId));
+      },
+
+      reorderTabs: (fromId, toId) => {
+        if (fromId === toId) return;
+        set(state => {
+          const fromIndex = state.tabOrder.indexOf(fromId);
+          const toIndex = state.tabOrder.indexOf(toId);
+          if (fromIndex < 0 || toIndex < 0) return;
+          const [moved] = state.tabOrder.splice(fromIndex, 1);
+          state.tabOrder.splice(toIndex, 0, moved);
+        });
       },
 
       // Tab updates
@@ -571,6 +603,7 @@ export const useConsoleStore = create<ConsoleStore>()(
       name: "console-store",
       partialize: state => ({
         tabs: state.tabs,
+        tabOrder: state.tabOrder,
         activeTabId: state.activeTabId,
       }),
       storage: {
@@ -579,6 +612,19 @@ export const useConsoleStore = create<ConsoleStore>()(
           if (str) {
             const data = JSON.parse(str);
             if (data.state?.tabs) {
+              // Rebuild or reconcile tabOrder with the current tabs map so
+              // upgrading users don't end up with an empty tab strip.
+              const tabIds = Object.keys(data.state.tabs);
+              const persistedOrder: string[] = Array.isArray(
+                data.state.tabOrder,
+              )
+                ? data.state.tabOrder.filter((id: string) =>
+                    Object.prototype.hasOwnProperty.call(data.state.tabs, id),
+                  )
+                : [];
+              const missing = tabIds.filter(id => !persistedOrder.includes(id));
+              data.state.tabOrder = [...persistedOrder, ...missing];
+
               Object.values(data.state.tabs).forEach((tab: any) => {
                 if (
                   tab.databaseId === undefined &&
@@ -633,8 +679,22 @@ export const useConsoleStore = create<ConsoleStore>()(
 );
 
 // Selectors
-export const selectConsoleTabs = (state: ConsoleStore): ConsoleTab[] =>
-  Object.values(state.tabs);
+export const selectConsoleTabs = (state: ConsoleStore): ConsoleTab[] => {
+  // Return tabs in tabOrder, falling back to insertion order for any orphans.
+  const ordered: ConsoleTab[] = [];
+  const seen = new Set<string>();
+  for (const id of state.tabOrder) {
+    const tab = state.tabs[id];
+    if (tab) {
+      ordered.push(tab);
+      seen.add(id);
+    }
+  }
+  for (const [id, tab] of Object.entries(state.tabs)) {
+    if (!seen.has(id)) ordered.push(tab);
+  }
+  return ordered;
+};
 export const selectActiveConsoleId = (state: ConsoleStore) => state.activeTabId;
 export const selectConsoleById =
   (id: string) =>

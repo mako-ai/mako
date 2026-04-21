@@ -10,12 +10,13 @@ import type { UIMessage } from "ai";
  *
  *   "tool_use ids were found without tool_result blocks immediately after"
  *
- * This function filters out incomplete tool parts before sending to the model.
- * Tool parts are considered complete only if their state is:
- * - "output-available" (successful completion)
- * - "error" (failed with error result)
+ * AI SDK `convertToModelMessages` (v6) emits a tool-result only for tool UI states
+ * `output-available`, `output-error`, and `output-denied`. A legacy `state: "error"`
+ * (used by older client normalization) still produces a tool-call but no tool-result,
+ * which triggers the Anthropic error above. We map `error` → `output-error` first.
  *
- * All other states indicate incomplete tool calls that should be removed.
+ * This function filters out incomplete tool parts before sending to the model.
+ * Complete tool states: output-available, output-error, output-denied.
  */
 export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
   return messages.map(msg => {
@@ -35,7 +36,41 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
       };
     }
 
-    const sanitizedParts = msg.parts.filter(part => {
+    const partsNormalized = msg.parts.map(part => {
+      const partType = part.type;
+      if (
+        typeof partType !== "string" ||
+        (!partType.startsWith("tool-") && partType !== "dynamic-tool")
+      ) {
+        return part;
+      }
+
+      const p = part as Record<string, unknown>;
+      if (p.state === "error") {
+        const output = p.output as Record<string, unknown> | null | undefined;
+        const errorText =
+          typeof p.errorText === "string"
+            ? p.errorText
+            : output != null &&
+                typeof output === "object" &&
+                typeof output.error === "string"
+              ? output.error
+              : output != null &&
+                  typeof output === "object" &&
+                  output.error != null
+                ? String(output.error)
+                : "Tool failed";
+        return {
+          ...part,
+          state: "output-error",
+          output: undefined,
+          errorText,
+        } as typeof part;
+      }
+      return part;
+    });
+
+    const sanitizedParts = partsNormalized.filter(part => {
       const partType = part.type;
 
       // Keep all non-tool parts (text, reasoning, etc.)
@@ -51,9 +86,12 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
         | string
         | undefined;
 
-      // Complete states: output-available (success) or error (failed but has result)
-      // Incomplete states: input-streaming, input-available, output-streaming, undefined
-      return state === "output-available" || state === "error";
+      // Match AI SDK UIToolInvocation terminal states (see convert-to-model-messages.ts)
+      return (
+        state === "output-available" ||
+        state === "output-error" ||
+        state === "output-denied"
+      );
     });
 
     // If all parts were filtered out, return a minimal message to preserve structure
@@ -63,11 +101,6 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
         ...msg,
         parts: [{ type: "text" as const, text: "[Response interrupted]" }],
       };
-    }
-
-    // If nothing changed, return original to preserve object identity
-    if (sanitizedParts.length === msg.parts.length) {
-      return msg;
     }
 
     return { ...msg, parts: sanitizedParts };
