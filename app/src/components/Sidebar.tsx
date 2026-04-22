@@ -19,7 +19,7 @@ import {
   CircleUserRound as UserIcon,
   MessageCircleMore as ChatIcon,
 } from "lucide-react";
-import { useUIStore } from "../store/uiStore";
+import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
 import { startTransition, useState } from "react";
@@ -77,7 +77,12 @@ const bottomNavigationItems: {
 }[] = [{ view: "settings", icon: SettingsIcon, label: "Settings" }];
 
 function Sidebar() {
-  const activeView = useUIStore(state => state.leftPane);
+  // `activeExplorer` is the explorer that's actually visible on the left
+  // (null when the pane is collapsed). Use this — not `leftPane`, which is
+  // the last-selected view retained across collapse — to decide which icon
+  // is highlighted, so collapsing the pane clears the highlight.
+  const activeExplorer = useUIStore(selectActiveExplorer);
+  const leftPane = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPane = useUIStore(state => state.setLeftPane);
@@ -211,7 +216,7 @@ function Sidebar() {
         >
           {topNavigationItems.map(item => {
             const Icon = item.icon;
-            const isActive = activeView === item.view;
+            const isActive = activeExplorer === item.view;
 
             return (
               <Tooltip key={item.view} title={item.label} placement="right">
@@ -268,7 +273,10 @@ function Sidebar() {
           {/* Settings */}
           {bottomNavigationItems.map(item => {
             const Icon = item.icon;
-            const isActive = activeView === item.view;
+            // Settings opens as an editor tab, not a left-pane explorer, so
+            // it tracks `leftPane` (set to "settings" from the /settings URL)
+            // rather than `activeExplorer`.
+            const isActive = leftPane === item.view;
 
             return (
               <Tooltip key={item.view} title={item.label} placement="right">

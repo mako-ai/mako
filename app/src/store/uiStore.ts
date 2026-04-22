@@ -191,3 +191,35 @@ export const selectCurrentWorkspaceId = (state: UIStore) =>
   state.currentWorkspaceId;
 export const selectActiveEditorContent = (state: UIStore) =>
   state.activeEditorContent;
+
+/**
+ * The "active explorer" — the explorer panel currently visible on the left,
+ * or `null` when no explorer is open (pane collapsed). Unlike `leftPane`,
+ * which is the last-selected view and is retained across collapse/expand
+ * so it can be restored, `activeExplorer` reflects what is *actually* on
+ * screen. Consumers (sidebar highlight, AI context, etc.) should prefer
+ * this over `leftPane` when they want to know what the user is looking at.
+ *
+ * `"settings"` is excluded because it opens as an editor tab, not a left
+ * explorer panel.
+ */
+export type ActiveExplorer =
+  | "databases"
+  | "consoles"
+  | "connectors"
+  | "flows"
+  | "dashboards"
+  | null;
+
+const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
+  "databases",
+  "consoles",
+  "connectors",
+  "flows",
+  "dashboards",
+]);
+
+export const selectActiveExplorer = (state: UIStore): ActiveExplorer =>
+  state.leftPaneOpen && EXPLORER_VIEWS.has(state.leftPane)
+    ? (state.leftPane as Exclude<ActiveExplorer, null>)
+    : null;

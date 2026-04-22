@@ -17,7 +17,6 @@ import {
   Tooltip,
   IconButton,
   Divider,
-  Badge,
   Alert,
   Chip,
   ListItemIcon,
@@ -99,6 +98,12 @@ interface ConsoleProps {
   ) => void;
   filePath?: string;
   onHistoryClick?: () => void;
+  /**
+   * When false, the history button is rendered but disabled (e.g. for
+   * unsaved drafts that have no versions yet). Defaults to true so existing
+   * callers that already gate via `onHistoryClick` keep working.
+   */
+  historyAvailable?: boolean;
   enableVersionControl?: boolean;
 }
 
@@ -140,6 +145,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onDatabaseNameChange,
     filePath,
     onHistoryClick,
+    historyAvailable = true,
     enableVersionControl = false,
   } = props;
 
@@ -222,7 +228,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     redo,
     canUndo,
     canRedo,
-    getHistory,
     saveUserEdit,
     isApplyingModification,
   } = useMonacoConsole({
@@ -1134,20 +1139,22 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               </Tooltip>
 
               {onHistoryClick && (
-                <Tooltip title="Version History">
-                  <IconButton
-                    size="small"
-                    onClick={onHistoryClick}
-                    disabled={isDiffMode}
-                  >
-                    <Badge
-                      badgeContent={getHistory().length}
-                      color="primary"
-                      max={99}
+                <Tooltip
+                  title={
+                    historyAvailable
+                      ? "Version History"
+                      : "Save this console to start tracking version history"
+                  }
+                >
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={onHistoryClick}
+                      disabled={isDiffMode || !historyAvailable}
                     >
                       <HistoryIcon strokeWidth={2} size={22} />
-                    </Badge>
-                  </IconButton>
+                    </IconButton>
+                  </span>
                 </Tooltip>
               )}
             </>

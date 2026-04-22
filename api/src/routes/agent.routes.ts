@@ -222,6 +222,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     // Agent mode selection (new)
     agentId,
     activeView,
+    activeExplorer,
     tabKind,
     flowType,
     flowFormState,
@@ -238,6 +239,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
     activeView?: "console" | "dashboard" | "flow-editor" | "empty";
+    activeExplorer?:
+      | "databases"
+      | "consoles"
+      | "connectors"
+      | "flows"
+      | "dashboards"
+      | null;
     tabKind?: string;
     flowType?: string;
     flowFormState?: Record<string, unknown>;
@@ -523,6 +531,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const agentContext: AgentContext = {
     workspaceId,
     activeView,
+    activeExplorer,
     userId: actorId,
     consoles: enrichedConsoles,
     consoleId,

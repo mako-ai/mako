@@ -1824,15 +1824,12 @@ function Editor({
                         }
                         filePath={tab.filePath}
                         enableVersionControl={true}
-                        onHistoryClick={
-                          tab.isSaved
-                            ? () => {
-                                setVersionHistoryTabId(tab.id);
-                                setVersionHistoryEntityType("console");
-                                setVersionHistoryOpen(true);
-                              }
-                            : undefined
-                        }
+                        onHistoryClick={() => {
+                          setVersionHistoryTabId(tab.id);
+                          setVersionHistoryEntityType("console");
+                          setVersionHistoryOpen(true);
+                        }}
+                        historyAvailable={tab.isSaved}
                       />
                     </Panel>
 

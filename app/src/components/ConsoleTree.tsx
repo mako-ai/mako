@@ -1,18 +1,18 @@
 import {
   forwardRef,
   useCallback,
+  useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  Eye as EyeIcon,
-  Globe as GlobeIcon,
-  SquareTerminal as ConsoleIcon,
-} from "lucide-react";
+import { Eye as EyeIcon, SquareTerminal as ConsoleIcon } from "lucide-react";
 import { Box, Tooltip } from "@mui/material";
 import { useExplorerStore } from "../store/explorerStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { useSchemaStore } from "../store/schemaStore";
+import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import {
@@ -97,6 +97,37 @@ function ConsoleTreeInner(
 ) {
   const { currentWorkspace, members } = useWorkspace();
   const { user } = useAuth();
+
+  // Pull the workspace's connections and the catalog of database types so we
+  // can render a database-specific icon per console (mysql / postgres /
+  // bigquery…) instead of a generic terminal glyph.
+  const connectionsMap = useSchemaStore(state => state.connections);
+  const connections = useMemo(
+    () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, connectionsMap],
+  );
+
+  const dbTypes = useDatabaseCatalogStore(state => state.types);
+  const fetchDbTypes = useDatabaseCatalogStore(state => state.fetchTypes);
+
+  useEffect(() => {
+    // `fetchTypes` is deduped + persisted internally, so this is cheap when
+    // another component has already loaded the catalog.
+    void fetchDbTypes();
+  }, [fetchDbTypes]);
+
+  const typeIconUrlByConnectionId = useMemo(() => {
+    const iconByType = new Map<string, string>();
+    for (const t of dbTypes ?? []) {
+      if (t.iconUrl) iconByType.set(t.type, t.iconUrl);
+    }
+    const byConnection = new Map<string, string>();
+    for (const conn of connections) {
+      const url = iconByType.get(conn.type);
+      if (url) byConnection.set(conn.id, url);
+    }
+    return byConnection;
+  }, [connections, dbTypes]);
 
   const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
@@ -191,9 +222,34 @@ function ConsoleTreeInner(
 
   const getItemIcon = useCallback(
     (node: ConsoleEntry) => {
+      const iconUrl = node.connectionId
+        ? typeIconUrlByConnectionId.get(node.connectionId)
+        : undefined;
+
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-          <ConsoleIcon size={16} strokeWidth={1.5} />
+          {iconUrl ? (
+            <Box
+              component="img"
+              src={iconUrl}
+              alt=""
+              sx={{
+                width: 16,
+                height: 16,
+                display: "block",
+                flexShrink: 0,
+                // Images render via the page — avoid dragging the asset when
+                // the row is part of a DnD gesture.
+                pointerEvents: "none",
+                userSelect: "none",
+              }}
+              draggable={false}
+            />
+          ) : (
+            // Fallback when a console has no connection yet, or the catalog
+            // hasn't loaded / doesn't know this type.
+            <ConsoleIcon size={16} strokeWidth={1.5} />
+          )}
           {!node.isDirectory &&
             !isOwner(node) &&
             (node.access || "private") === "workspace" && (
@@ -208,7 +264,7 @@ function ConsoleTreeInner(
         </Box>
       );
     },
-    [isOwner],
+    [isOwner, typeIconUrlByConnectionId],
   );
 
   const handleLocationChange = useCallback(
@@ -298,7 +354,6 @@ function ConsoleTreeInner(
     {
       key: "my",
       label: "My Consoles",
-      icon: <ConsoleIcon size={18} strokeWidth={1.5} />,
       nodes: myConsoles as ResourceTreeNode[],
       droppableId: enableDragDrop ? "__section_my" : undefined,
       defaultAccess: "private" as const,
@@ -306,7 +361,6 @@ function ConsoleTreeInner(
     {
       key: "workspace",
       label: "Workspace",
-      icon: <GlobeIcon size={18} strokeWidth={1.5} />,
       nodes: sharedWithWorkspace as ResourceTreeNode[],
       droppableId: enableDragDrop ? "__section_workspace" : undefined,
       defaultAccess: "workspace" as const,
@@ -334,6 +388,7 @@ function ConsoleTreeInner(
       searchQuery={searchQuery}
       getItemIcon={node => getItemIcon(node as ConsoleEntry)}
       showFiles={showFiles}
+      hideFolderIcon
       enableDragDrop={enableDragDrop}
       enableRename={enableRename}
       enableDuplicate={enableDuplicate}

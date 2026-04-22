@@ -76,6 +76,7 @@ describe("buildChatRequestBody", () => {
         databaseName: "analytics",
       } as any,
       activeView: "console",
+      activeExplorer: "consoles",
       activeConsoleId: "console_1",
       activeConsoleResults: {
         viewMode: "table",
@@ -123,6 +124,7 @@ describe("buildChatRequestBody", () => {
         metadata: { dashboardId: baseDashboard._id },
       } as any,
       activeView: "dashboard",
+      activeExplorer: "dashboards",
       workspaceConnections: [
         { id: "conn_1", type: "postgresql", sqlDialect: "postgresql" },
       ] as any,
