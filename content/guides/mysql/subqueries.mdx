@@ -1,0 +1,194 @@
+---
+title: "Subqueries in MySQL: Correlated, IN, EXISTS, and Derived Tables"
+description: "A practical guide to MySQL subqueries -- correlated vs non-correlated, IN vs EXISTS, derived tables, and when to rewrite as a JOIN for better performance."
+database: mysql
+category: sql-how-to
+tags: [mysql, subquery, correlated, exists, derived-table, performance]
+date: 2026-04-16
+---
+
+# Subqueries in MySQL: Correlated, IN, EXISTS, and Derived Tables
+
+A subquery is a `SELECT` statement nested inside another query. MySQL supports subqueries in `WHERE`, `FROM`, `SELECT`, and `HAVING` clauses. The variation that matters most for performance is whether the subquery is *correlated* or *non-correlated*.
+
+## Non-correlated vs correlated subqueries
+
+A **non-correlated** subquery executes once and returns a result that the outer query uses:
+
+```sql
+-- Returns all customers in countries that have at least one supplier
+SELECT name, country
+FROM customers
+WHERE country IN (
+  SELECT country FROM suppliers
+);
+```
+
+A **correlated** subquery references columns from the outer query, so it re-executes for every row the outer query processes:
+
+```sql
+-- Returns employees earning more than their department's average
+SELECT name, salary, department_id
+FROM employees e
+WHERE salary > (
+  SELECT AVG(salary)
+  FROM employees
+  WHERE department_id = e.department_id
+);
+```
+
+The correlated version is logically clear but can be slow on large tables -- MySQL runs the inner `SELECT` once per outer row. For a 100k-row table that's 100k subquery executions. Always `EXPLAIN` correlated queries before deploying.
+
+## IN vs EXISTS
+
+Both test for membership, but they differ in how MySQL evaluates them.
+
+### IN with a subquery
+
+```sql
+-- Orders placed by active customers
+SELECT id, amount
+FROM orders
+WHERE customer_id IN (
+  SELECT id FROM customers WHERE status = 'active'
+);
+```
+
+`IN` materializes the subquery result into a temporary set, then checks each outer row against it. Performs well when the inner result set is small. Performance degrades when the inner set is large.
+
+One important trap: `IN` returns `NULL` unpredictably when the subquery contains `NULL` values.
+
+```sql
+-- This returns no rows if the subquery contains any NULLs
+SELECT * FROM orders WHERE customer_id NOT IN (
+  SELECT customer_id FROM returns  -- contains NULLs for anonymous returns
+);
+```
+
+Use `NOT IN` only when you're certain the subquery column has no `NULL` values, or filter them explicitly:
+
+```sql
+SELECT * FROM orders WHERE customer_id NOT IN (
+  SELECT customer_id FROM returns WHERE customer_id IS NOT NULL
+);
+```
+
+### EXISTS
+
+`EXISTS` short-circuits on the first matching row -- it stops as soon as it finds a match:
+
+```sql
+SELECT id, amount
+FROM orders o
+WHERE EXISTS (
+  SELECT 1 FROM customers c
+  WHERE c.id = o.customer_id AND c.status = 'active'
+);
+```
+
+`EXISTS` is generally faster when:
+- The inner table is large (short-circuit saves work)
+- You're checking for the presence of a relationship, not retrieving values
+
+`EXISTS` handles `NULL` safely. It evaluates to true or false, never to unknown.
+
+### Anti-join with NOT EXISTS
+
+The safest way to find rows with no match:
+
+```sql
+-- Orders with no corresponding shipment
+SELECT o.id, o.amount
+FROM orders o
+WHERE NOT EXISTS (
+  SELECT 1 FROM shipments s WHERE s.order_id = o.id
+);
+```
+
+## Derived tables (subquery in FROM)
+
+A derived table is a subquery used as a table in the `FROM` clause. MySQL materializes it into a temporary table:
+
+```sql
+-- Top-spending customer per country
+SELECT country, name, total_spend
+FROM (
+  SELECT
+    c.country,
+    c.name,
+    SUM(o.amount) AS total_spend,
+    RANK() OVER (PARTITION BY c.country ORDER BY SUM(o.amount) DESC) AS rnk
+  FROM customers c
+  JOIN orders o ON o.customer_id = c.id
+  GROUP BY c.country, c.id, c.name
+) ranked
+WHERE rnk = 1;
+```
+
+Derived tables must have an alias. In MySQL 8.0+, CTEs (`WITH`) are often more readable for the same pattern.
+
+## Scalar subqueries in SELECT
+
+A subquery in the `SELECT` list must return exactly one row and one column:
+
+```sql
+SELECT
+  id,
+  name,
+  (SELECT COUNT(*) FROM orders WHERE customer_id = c.id) AS order_count
+FROM customers c;
+```
+
+This is a correlated scalar subquery -- it executes once per customer row. For more than a few thousand customers, rewrite as a `LEFT JOIN` with `GROUP BY`:
+
+```sql
+SELECT c.id, c.name, COUNT(o.id) AS order_count
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.id
+GROUP BY c.id, c.name;
+```
+
+## When to rewrite subqueries as JOINs
+
+MySQL's optimizer can sometimes convert subqueries to joins automatically, but it doesn't always succeed. These patterns consistently benefit from manual rewriting:
+
+**Correlated EXISTS → semi-join:**
+```sql
+-- Instead of:
+SELECT * FROM customers WHERE EXISTS (SELECT 1 FROM orders WHERE customer_id = customers.id);
+-- Write:
+SELECT DISTINCT c.* FROM customers c JOIN orders o ON o.customer_id = c.id;
+```
+
+**Correlated scalar in SELECT → LEFT JOIN:**
+```sql
+-- Instead of scalar subquery per row, join once:
+SELECT c.id, c.name, COALESCE(o.order_count, 0) AS order_count
+FROM customers c
+LEFT JOIN (
+  SELECT customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id
+) o ON o.customer_id = c.id;
+```
+
+## EXPLAIN output for subqueries
+
+`EXPLAIN` shows how MySQL handles subqueries. Key `select_type` values:
+
+| Value | Meaning |
+|---|---|
+| `SUBQUERY` | Non-correlated subquery, executes once |
+| `DEPENDENT SUBQUERY` | Correlated subquery, executes per outer row |
+| `DERIVED` | Subquery in `FROM` clause (derived table) |
+| `MATERIALIZED` | Subquery materialized into a temporary table |
+
+`DEPENDENT SUBQUERY` in `EXPLAIN` output is a warning sign. Check whether a JOIN rewrite is possible.
+
+## Common mistakes
+
+**Forgetting that `NOT IN` breaks on NULLs.** The safest approach is `NOT EXISTS` with a correlated condition.
+
+**Using a correlated subquery where a JOIN would work.** If the inner query doesn't need to reference the outer row for logic, it's not correlated -- but MySQL may still execute it per-row if the optimizer doesn't rewrite it.
+
+**Derived tables without indexes.** MySQL materializes derived tables as temporary tables with no indexes. If you then filter or join on that result, performance can suffer. In MySQL 8.0+, consider whether a CTE with an index hint helps, or restructure the query.
+
+Mako's AI autocomplete helps you explore subquery rewrites interactively -- type the correlated version and ask it to suggest a join equivalent. Try it free at [mako.ai](https://mako.ai).

@@ -1,0 +1,218 @@
+---
+title: "Converting String Data to JSON in MySQL: JSON_OBJECT, JSON_ARRAY, and Migration Patterns"
+description: "How to use MySQL's JSON_OBJECT and JSON_ARRAY functions to build JSON from relational data, convert legacy string-serialized columns to native JSON, and query the results."
+database: mysql
+category: sql-how-to
+tags: [mysql, json, json-object, json-array, data-migration, json-column]
+date: 2026-04-16
+---
+
+# Converting String Data to JSON in MySQL: JSON_OBJECT, JSON_ARRAY, and Migration Patterns
+
+MySQL 5.7 introduced a native `JSON` column type with functions for creating, reading, and modifying JSON data. Many older schemas store JSON as `VARCHAR` or `TEXT` strings. This guide covers how to build JSON from relational data using `JSON_OBJECT` and `JSON_ARRAY`, and how to migrate legacy serialized string columns to native JSON.
+
+## Building JSON from column values
+
+### JSON_OBJECT
+
+Creates a JSON object from key-value pairs:
+
+```sql
+SELECT JSON_OBJECT(
+  'id', id,
+  'name', name,
+  'email', email,
+  'country', country
+) AS customer_json
+FROM customers
+WHERE id = 42;
+```
+
+Result:
+```json
+{"id": 42, "name": "Maria Santos", "email": "maria@example.com", "country": "ES"}
+```
+
+Key observations:
+- Keys must be strings (or expressions that evaluate to strings)
+- Values can be any MySQL expression -- numbers, strings, booleans, or even nested `JSON_OBJECT` calls
+- `NULL` values are included as JSON `null`
+- Duplicate keys: the last value for a given key wins
+
+### JSON_ARRAY
+
+Creates a JSON array from a list of values:
+
+```sql
+SELECT JSON_ARRAY(1, 'two', NULL, TRUE, NOW());
+-- Result: [1, "two", null, true, "2026-04-16 09:00:00"]
+```
+
+Combining `JSON_OBJECT` and `JSON_ARRAY`:
+
+```sql
+SELECT JSON_OBJECT(
+  'customer_id', c.id,
+  'name', c.name,
+  'top_products', JSON_ARRAY(
+    (SELECT product_id FROM order_items oi JOIN orders o ON o.id = oi.order_id
+     WHERE o.customer_id = c.id ORDER BY quantity DESC LIMIT 1),
+    (SELECT product_id FROM order_items oi JOIN orders o ON o.id = oi.order_id
+     WHERE o.customer_id = c.id ORDER BY quantity DESC LIMIT 1 OFFSET 1)
+  )
+) AS summary
+FROM customers c
+WHERE c.id = 42;
+```
+
+## Aggregating rows into JSON
+
+### JSON_ARRAYAGG
+
+Aggregates multiple rows into a JSON array:
+
+```sql
+SELECT
+  c.id,
+  c.name,
+  JSON_ARRAYAGG(
+    JSON_OBJECT('order_id', o.id, 'amount', o.amount, 'status', o.status)
+  ) AS orders
+FROM customers c
+JOIN orders o ON o.customer_id = c.id
+GROUP BY c.id, c.name;
+```
+
+Result per customer:
+```json
+[
+  {"order_id": 101, "amount": 49.99, "status": "shipped"},
+  {"order_id": 102, "amount": 199.00, "status": "pending"}
+]
+```
+
+`JSON_ARRAYAGG` preserves all rows, including duplicates. For unique values only, use `JSON_ARRAYAGG(DISTINCT column)`.
+
+### JSON_OBJECTAGG
+
+Aggregates key-value pairs into a JSON object:
+
+```sql
+-- Build a JSON object mapping product_id -> total quantity sold
+SELECT JSON_OBJECTAGG(product_id, total_qty) AS sales_map
+FROM (
+  SELECT product_id, SUM(quantity) AS total_qty
+  FROM order_items
+  GROUP BY product_id
+) t;
+```
+
+Result:
+```json
+{"1": 450, "2": 230, "7": 89}
+```
+
+## Migrating legacy serialized strings to native JSON
+
+Many older MySQL schemas store serialized data as `TEXT` -- PHP's `serialize()` format, CSV-in-a-column, or manually constructed JSON strings. Migrating to a native `JSON` column enables proper indexing and querying.
+
+### Step 1: Add a new JSON column
+
+```sql
+ALTER TABLE user_settings
+ADD COLUMN preferences_json JSON AFTER preferences_text;
+```
+
+### Step 2: Migrate existing data
+
+If the existing column already contains valid JSON strings:
+
+```sql
+UPDATE user_settings
+SET preferences_json = CAST(preferences_text AS JSON)
+WHERE preferences_text IS NOT NULL
+  AND JSON_VALID(preferences_text) = 1;
+```
+
+Check for invalid JSON before migrating:
+
+```sql
+SELECT id, preferences_text
+FROM user_settings
+WHERE preferences_text IS NOT NULL
+  AND JSON_VALID(preferences_text) = 0
+LIMIT 20;
+```
+
+Fix or discard invalid rows before proceeding.
+
+### Step 3: Validate the migration
+
+```sql
+-- Count rows where the migration succeeded:
+SELECT
+  COUNT(*) AS total,
+  SUM(preferences_json IS NOT NULL) AS migrated,
+  SUM(preferences_text IS NOT NULL AND preferences_json IS NULL) AS failed
+FROM user_settings;
+```
+
+### Step 4: Update application to write JSON column
+
+Deploy application changes to write to `preferences_json`. Run both columns in parallel until confident.
+
+### Step 5: Drop the old column
+
+```sql
+ALTER TABLE user_settings DROP COLUMN preferences_text;
+```
+
+## Converting comma-separated strings to JSON arrays
+
+A common legacy pattern: tags or categories stored as comma-separated `VARCHAR` (`"mysql,performance,indexes"`).
+
+There's no built-in function to split a string into a JSON array in MySQL 5.7. In MySQL 8.0+, you can use a stored procedure or a creative `JSON_ARRAYAGG` + derived table approach:
+
+```sql
+-- MySQL 8.0+: split comma-separated string into JSON array
+-- Using a numbers table (or recursive CTE):
+WITH RECURSIVE nums AS (
+  SELECT 1 AS n
+  UNION ALL
+  SELECT n + 1 FROM nums WHERE n < 100
+)
+SELECT
+  id,
+  tags AS tags_raw,
+  JSON_ARRAYAGG(
+    TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(tags, ',', n), ',', -1))
+  ) AS tags_json
+FROM articles
+JOIN nums ON n <= 1 + LENGTH(tags) - LENGTH(REPLACE(tags, ',', ''))
+WHERE tags IS NOT NULL
+GROUP BY id, tags;
+```
+
+In practice, for large-scale migrations, it's often cleaner to do this transformation in application code (Python, Node) where string manipulation is straightforward.
+
+## Querying the resulting JSON
+
+Once data is in a native `JSON` column, use `->` and `->>` for extraction:
+
+```sql
+-- Extract a field:
+SELECT preferences_json->>'$.theme' AS theme FROM user_settings;
+
+-- Filter on a JSON field:
+SELECT * FROM user_settings WHERE preferences_json->>'$.language' = 'de';
+
+-- Generate an index on a commonly-queried field using a generated column:
+ALTER TABLE user_settings
+ADD COLUMN pref_language VARCHAR(10) GENERATED ALWAYS AS
+  (preferences_json->>'$.language') VIRTUAL,
+ADD INDEX idx_pref_language (pref_language);
+```
+
+See the [MySQL JSON queries guide](/guides/mysql/json-queries) for a full reference on JSON extraction and modification functions.
+
+Mako connects to MySQL databases and lets you query JSON columns interactively, with results displayed inline. Try it free at [mako.ai](https://mako.ai).
