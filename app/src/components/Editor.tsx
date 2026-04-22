@@ -66,6 +66,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
@@ -230,7 +231,10 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
           bottom: 0,
           [indicatorSide]: -3,
           width: "6px",
-          backgroundColor: "divider",
+          backgroundColor: (theme: import("@mui/material").Theme) =>
+            theme.palette.mode === "dark"
+              ? theme.palette.common.white
+              : theme.palette.common.black,
           pointerEvents: "none",
           zIndex: 2,
         },
@@ -315,6 +319,25 @@ function Editor({
     () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
     [currentWorkspace, connectionsMap],
   );
+
+  // Database type → iconUrl map for rendering per-connection icons in console tabs.
+  const dbTypes = useDatabaseCatalogStore(state => state.types);
+  const fetchDbTypes = useDatabaseCatalogStore(state => state.fetchTypes);
+  useEffect(() => {
+    fetchDbTypes().catch(() => undefined);
+  }, [fetchDbTypes]);
+  const connectionIconById = React.useMemo(() => {
+    const typeToIcon = new Map<string, string>();
+    for (const t of dbTypes || []) {
+      if (t.iconUrl) typeToIcon.set(t.type, t.iconUrl);
+    }
+    const map = new Map<string, string>();
+    for (const c of availableDatabases) {
+      const icon = typeToIcon.get(c.type);
+      if (icon) map.set(c.id, icon);
+    }
+    return map;
+  }, [dbTypes, availableDatabases]);
 
   // Save dialog state (folder navigator)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -1544,8 +1567,20 @@ function Editor({
                     "& .MuiTabs-indicator": { height: 2 },
                   }}
                 >
-                  {consoleTabs.map(tab => {
+                  {consoleTabs.map((tab, index) => {
                     const isActiveTab = activeConsoleId === tab.id;
+                    const connectionIconUrl = tab.connectionId
+                      ? connectionIconById.get(tab.connectionId)
+                      : undefined;
+                    const nextTab = consoleTabs[index + 1];
+                    const isLastTab = index === consoleTabs.length - 1;
+                    // Cursor-style separator: thin vertical rule on the trailing
+                    // edge of every tab, hidden when this tab or the next one is
+                    // active, and hidden on the very last tab.
+                    const showSeparator =
+                      !isActiveTab &&
+                      !isLastTab &&
+                      nextTab?.id !== activeConsoleId;
                     return (
                       <SortableConsoleTab
                         key={tab.id}
@@ -1555,12 +1590,25 @@ function Editor({
                           py: 0.25,
                           px: 1.25,
                           textTransform: "none",
+                          position: "relative",
                           "& .tab-close-btn": {
                             visibility: isActiveTab ? "visible" : "hidden",
                           },
                           "&:hover .tab-close-btn": {
                             visibility: "visible",
                           },
+                          "&::after": showSeparator
+                            ? {
+                                content: '""',
+                                position: "absolute",
+                                right: 0,
+                                top: 0,
+                                bottom: 0,
+                                width: "1px",
+                                backgroundColor: "divider",
+                                pointerEvents: "none",
+                              }
+                            : {},
                         }}
                         label={
                           <Box
@@ -1593,6 +1641,17 @@ function Editor({
                               )
                             ) : tab.kind === "dashboard" ? (
                               <DashboardIcon size={18} strokeWidth={1.5} />
+                            ) : connectionIconUrl ? (
+                              <Box
+                                component="img"
+                                src={connectionIconUrl}
+                                alt="db icon"
+                                sx={{
+                                  width: 18,
+                                  height: 18,
+                                  objectFit: "contain",
+                                }}
+                              />
                             ) : (
                               <ConsoleIcon size={18} strokeWidth={1.5} />
                             )}
