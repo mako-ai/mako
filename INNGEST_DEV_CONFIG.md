@@ -131,10 +131,13 @@ conservative values.
 |---|---|---|---|
 | `WEBHOOK_SQL_PROCESS_CONCURRENCY` | `5` | Non-CDC webhook SQL processors | Max in-flight `webhookSqlProcess` runs per flow. Higher values speed up catch-up after a backlog; lower values reduce pressure on the destination warehouse. |
 | `CDC_MATERIALIZE_CONCURRENCY` | `8` | `cdcMaterializeFunction` (global) | Max CDC materializations running in parallel across all flows/entities. Each run fires ~6-10 BigQuery jobs (INFORMATION_SCHEMA, ALTERs, COUNTs, MERGE, DROP, Parquet load), so the global cap exists to prevent slot saturation in the `europe-west6` 100-slot reservation. The per-`(flowId, entity)` singleton is preserved independently. |
+| `CDC_MATERIALIZE_CONCURRENCY_PER_FLOW` | `3` | `cdcMaterializeFunction` (per flow) | Max CDC materializations running in parallel **within a single flow**. Prevents one large flow (e.g. a full Close backfill) from monopolizing all global materialize slots while smaller flows queue. Stacks with the global `CDC_MATERIALIZE_CONCURRENCY` cap. |
+| `BIGQUERY_MERGE_MAX_WAIT_MS` | `900000` (15min) | `cdcMaterializeFunction` BigQuery MERGE job wait | Max wall time Mako waits for a single MERGE job before giving up and failing the step. Lowered from the previous 50min default so stuck MERGEs surface faster; raise only if you see spurious timeouts on legitimately slow large-partition merges. |
 
 Raise `CDC_MATERIALIZE_CONCURRENCY` only if you have headroom in the BigQuery
 slot reservation -- it is the first knob to lower if interactive or hasura-crm
-queries start queueing during CDC catch-up.
+queries start queueing during CDC catch-up. If a single flow is starving others,
+lower `CDC_MATERIALIZE_CONCURRENCY_PER_FLOW` instead of the global cap.
 
 ## Environment summary
 
