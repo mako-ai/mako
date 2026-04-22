@@ -2264,7 +2264,8 @@ consoleRoutes.post("/:id/versions/:version/restore", async (c: Context) => {
 
     const snap = oldVersion.snapshot as Record<string, any>;
 
-    // Apply the snapshot to the console document
+    // Apply the snapshot to the console document. Includes every field
+    // captured in buildConsoleSnapshot so restore is a true revert.
     const restoreFields: Record<string, any> = {
       code: snap.code,
       name: snap.name,
@@ -2278,6 +2279,8 @@ consoleRoutes.post("/:id/versions/:version/restore", async (c: Context) => {
         : undefined,
       databaseName: snap.databaseName,
       databaseId: snap.databaseId,
+      folderId: snap.folderId ? new Types.ObjectId(snap.folderId) : null,
+      access: snap.access,
     };
 
     const restored = await SavedConsole.findOneAndUpdate(
