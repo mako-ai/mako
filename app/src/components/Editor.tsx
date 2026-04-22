@@ -1627,7 +1627,7 @@ function Editor({
                                 // a drag when the user clicks the close button.
                                 e.stopPropagation();
                               }}
-                              sx={{ py: 0.25, px: 0, ml: 0 }}
+                              sx={{ p: 0.25, ml: 0 }}
                             >
                               <CloseIcon fontSize="inherit" />
                             </IconButton>
