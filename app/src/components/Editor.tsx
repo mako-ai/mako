@@ -34,7 +34,7 @@ import {
   Alert,
   Snackbar,
 } from "@mui/material";
-import { Close as CloseIcon, Add as AddIcon } from "@mui/icons-material";
+import { Close as CloseIcon } from "@mui/icons-material";
 import {
   SquareTerminal as ConsoleIcon,
   Settings as SettingsIcon,
@@ -790,13 +790,6 @@ function Editor({
     setPendingDashboardCloseTabId(null);
   };
 
-  const handleAddTab = () => {
-    openTab({
-      title: "New Console",
-      content: "",
-    });
-  };
-
   const handleConsoleExecute = async (
     tabId: string,
     contentToExecute: string,
@@ -1545,105 +1538,107 @@ function Editor({
                   value={activeConsoleId}
                   onChange={handleTabChange}
                   variant="scrollable"
-                  scrollButtons="auto"
+                  scrollButtons={false}
                   sx={{
                     minHeight: 36,
                     "& .MuiTabs-indicator": { height: 2 },
                   }}
                 >
-                  {consoleTabs.map(tab => (
-                    <SortableConsoleTab
-                      key={tab.id}
-                      value={tab.id}
-                      sx={{
-                        minHeight: 36,
-                        py: 0.25,
-                        px: 1.25,
-                        textTransform: "none",
-                      }}
-                      label={
-                        <Box
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 0.5,
-                            minWidth: 0,
-                            maxWidth: "100%",
-                          }}
-                        >
-                          {tab.icon ? (
-                            <Box
-                              component="img"
-                              src={tab.icon}
-                              alt="tab icon"
-                              sx={{ width: 18, height: 18 }}
-                            />
-                          ) : tab.kind === "settings" ? (
-                            <SettingsIcon size={18} strokeWidth={1.5} />
-                          ) : tab.kind === "connectors" ? (
-                            <DataSourceIcon size={18} strokeWidth={1.5} />
-                          ) : tab.kind === "flow-editor" ? (
-                            tab.metadata?.flowType === "webhook" ? (
-                              <WebhookIcon size={18} strokeWidth={1.5} />
-                            ) : tab.metadata?.enabled === false ? (
-                              <PauseIcon size={18} strokeWidth={1.5} />
+                  {consoleTabs.map(tab => {
+                    const isActiveTab = activeConsoleId === tab.id;
+                    return (
+                      <SortableConsoleTab
+                        key={tab.id}
+                        value={tab.id}
+                        sx={{
+                          minHeight: 36,
+                          py: 0.25,
+                          px: 1.25,
+                          textTransform: "none",
+                          "& .tab-close-btn": {
+                            visibility: isActiveTab ? "visible" : "hidden",
+                          },
+                          "&:hover .tab-close-btn": {
+                            visibility: "visible",
+                          },
+                        }}
+                        label={
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 0.5,
+                              minWidth: 0,
+                              maxWidth: "100%",
+                            }}
+                          >
+                            {tab.icon ? (
+                              <Box
+                                component="img"
+                                src={tab.icon}
+                                alt="tab icon"
+                                sx={{ width: 18, height: 18 }}
+                              />
+                            ) : tab.kind === "settings" ? (
+                              <SettingsIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "connectors" ? (
+                              <DataSourceIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "flow-editor" ? (
+                              tab.metadata?.flowType === "webhook" ? (
+                                <WebhookIcon size={18} strokeWidth={1.5} />
+                              ) : tab.metadata?.enabled === false ? (
+                                <PauseIcon size={18} strokeWidth={1.5} />
+                              ) : (
+                                <ScheduleIcon size={18} strokeWidth={1.5} />
+                              )
+                            ) : tab.kind === "dashboard" ? (
+                              <DashboardIcon size={18} strokeWidth={1.5} />
                             ) : (
-                              <ScheduleIcon size={18} strokeWidth={1.5} />
-                            )
-                          ) : tab.kind === "dashboard" ? (
-                            <DashboardIcon size={18} strokeWidth={1.5} />
-                          ) : (
-                            <ConsoleIcon size={18} strokeWidth={1.5} />
-                          )}
-                          <span
-                            style={{
-                              fontStyle: tab.isDirty ? "normal" : "italic",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              display: "inline-block",
-                              maxWidth: "150px",
-                            }}
-                            onDoubleClick={e => {
-                              e.stopPropagation();
-                              updateDirty(tab.id, true);
-                            }}
-                            title={tab.title}
-                          >
-                            {tab.title?.split("/").filter(Boolean).pop() ||
-                              tab.title}
-                          </span>
-                          <IconButton
-                            component="span"
-                            size="small"
-                            onClick={e => {
-                              e.stopPropagation();
-                              closeConsole(tab.id);
-                            }}
-                            onPointerDown={e => {
-                              // Prevent the Tab's drag listener from starting
-                              // a drag when the user clicks the close button.
-                              e.stopPropagation();
-                            }}
-                            sx={{ p: 0.25, ml: 0.25 }}
-                          >
-                            <CloseIcon fontSize="inherit" />
-                          </IconButton>
-                        </Box>
-                      }
-                    />
-                  ))}
+                              <ConsoleIcon size={18} strokeWidth={1.5} />
+                            )}
+                            <span
+                              style={{
+                                fontStyle: tab.isDirty ? "normal" : "italic",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "150px",
+                              }}
+                              onDoubleClick={e => {
+                                e.stopPropagation();
+                                updateDirty(tab.id, true);
+                              }}
+                              title={tab.title}
+                            >
+                              {tab.title?.split("/").filter(Boolean).pop() ||
+                                tab.title}
+                            </span>
+                            <IconButton
+                              component="span"
+                              size="small"
+                              className="tab-close-btn"
+                              onClick={e => {
+                                e.stopPropagation();
+                                closeConsole(tab.id);
+                              }}
+                              onPointerDown={e => {
+                                // Prevent the Tab's drag listener from starting
+                                // a drag when the user clicks the close button.
+                                e.stopPropagation();
+                              }}
+                              sx={{ py: 0.25, px: 0, ml: 0 }}
+                            >
+                              <CloseIcon fontSize="inherit" />
+                            </IconButton>
+                          </Box>
+                        }
+                      />
+                    );
+                  })}
                 </Tabs>
               </SortableContext>
             </DndContext>
-            <IconButton
-              onClick={handleAddTab}
-              size="small"
-              sx={{ ml: 0.5, mr: 0.5, p: 0.5 }}
-              title="Add new console tab"
-            >
-              <AddIcon fontSize="small" />
-            </IconButton>
           </Box>
 
           {/* Breadcrumb path (Cursor-style) — only for console tabs */}
