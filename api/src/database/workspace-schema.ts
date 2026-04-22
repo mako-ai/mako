@@ -395,6 +395,7 @@ export interface ISavedConsole extends Document {
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
   access: ConsoleAccessLevel;
   owner_id: string;
+  version: number;
   is_deleted?: boolean;
   deletedAt?: Date;
   createdAt: Date;
@@ -1381,6 +1382,10 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     executionCount: {
       type: Number,
       default: 0,
+    },
+    version: {
+      type: Number,
+      default: 1,
     },
     is_deleted: {
       type: Boolean,
@@ -2867,6 +2872,88 @@ export const Connector = mongoose.model<IConnector>(
   "Connector",
   ConnectorSchema,
 );
+/**
+ * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
+ * Every explicit save creates a new version record; history is never rewritten.
+ */
+export type VersionableEntityType = "console" | "dashboard";
+
+export interface IEntityVersion extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  entityType: VersionableEntityType;
+  entityId: Types.ObjectId;
+  version: number;
+  snapshot: Record<string, unknown>;
+  savedBy: string;
+  savedByName: string;
+  comment: string;
+  restoredFrom?: number;
+  createdAt: Date;
+}
+
+const EntityVersionSchema = new Schema<IEntityVersion>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    entityType: {
+      type: String,
+      enum: ["console", "dashboard"],
+      required: true,
+    },
+    entityId: {
+      type: Schema.Types.ObjectId,
+      required: true,
+    },
+    version: {
+      type: Number,
+      required: true,
+    },
+    snapshot: {
+      type: Schema.Types.Mixed,
+      required: true,
+    },
+    savedBy: {
+      type: String,
+      required: true,
+    },
+    savedByName: {
+      type: String,
+      required: true,
+    },
+    comment: {
+      type: String,
+      default: "",
+    },
+    restoredFrom: {
+      type: Number,
+    },
+  },
+  {
+    collection: "entity_versions",
+    timestamps: { createdAt: true, updatedAt: false },
+  },
+);
+
+EntityVersionSchema.index({ entityId: 1, version: -1 });
+EntityVersionSchema.index(
+  { entityId: 1, entityType: 1, version: 1 },
+  { unique: true },
+);
+EntityVersionSchema.index({
+  workspaceId: 1,
+  entityType: 1,
+  createdAt: -1,
+});
+
+export const EntityVersion = mongoose.model<IEntityVersion>(
+  "EntityVersion",
+  EntityVersionSchema,
+);
+
 export const ConsoleFolder = mongoose.model<IConsoleFolder>(
   "ConsoleFolder",
   ConsoleFolderSchema,

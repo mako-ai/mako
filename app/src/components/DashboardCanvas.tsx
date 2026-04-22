@@ -29,6 +29,7 @@ import {
   Code2,
   Pencil,
   Eye,
+  History,
 } from "lucide-react";
 import {
   useDashboardStore,
@@ -53,6 +54,8 @@ import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
 import WidgetInspector from "./dashboard/WidgetInspector";
+import { SaveCommentDialog } from "./SaveCommentDialog";
+import { VersionHistoryPanel } from "./VersionHistoryPanel";
 
 type ViewMode = "canvas" | "code";
 
@@ -132,6 +135,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
 
   const queryGeneration = runtimeSession?.queryGeneration ?? 0;
 
@@ -425,29 +430,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                   disabled={
                     !hasUnsavedChanges || (viewMode === "code" && hasCodeError)
                   }
-                  onClick={async () => {
-                    if (!workspaceId || !dashboardId) return;
-                    try {
-                      const result = await saveDashboardAction(
-                        workspaceId,
-                        dashboardId,
-                      );
-                      if (!result.ok) {
-                        if (result.error) setSaveError(result.error);
-                        return;
-                      }
-                      void materializeDashboardInBackgroundCommand({
-                        workspaceId,
-                        dashboardId,
-                      }).catch(() => undefined);
-                    } catch (err) {
-                      setSaveError(
-                        err instanceof Error
-                          ? err.message
-                          : "Failed to save dashboard",
-                      );
-                    }
-                  }}
+                  onClick={() => setCommentDialogOpen(true)}
                 >
                   <Save size={16} />
                 </IconButton>
@@ -458,15 +441,33 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
                 <Settings size={16} />
               </IconButton>
             </Tooltip>
+            <Tooltip title="Version History">
+              <IconButton
+                size="small"
+                onClick={() => setVersionHistoryOpen(true)}
+              >
+                <History size={16} />
+              </IconButton>
+            </Tooltip>
           </>
         )}
 
         {!isEditMode && (
-          <Tooltip title="Dashboard settings">
-            <IconButton size="small" onClick={() => setSettingsOpen(true)}>
-              <Settings size={16} />
-            </IconButton>
-          </Tooltip>
+          <>
+            <Tooltip title="Dashboard settings">
+              <IconButton size="small" onClick={() => setSettingsOpen(true)}>
+                <Settings size={16} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Version History">
+              <IconButton
+                size="small"
+                onClick={() => setVersionHistoryOpen(true)}
+              >
+                <History size={16} />
+              </IconButton>
+            </Tooltip>
+          </>
         )}
 
         <Tooltip title="Toggle dashboard event log">
@@ -602,6 +603,51 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </Button>
         </DialogActions>
       </Dialog>
+
+      {dashboardId && (
+        <VersionHistoryPanel
+          open={versionHistoryOpen}
+          onClose={() => setVersionHistoryOpen(false)}
+          entityType="dashboard"
+          entityId={dashboardId}
+          onRestore={() => {
+            if (workspaceId && dashboardId) {
+              useDashboardStore
+                .getState()
+                .reloadDashboard(workspaceId, dashboardId);
+            }
+          }}
+        />
+      )}
+
+      <SaveCommentDialog
+        open={commentDialogOpen}
+        onCancel={() => setCommentDialogOpen(false)}
+        onSave={async comment => {
+          setCommentDialogOpen(false);
+          if (!workspaceId || !dashboardId) return;
+          try {
+            const result = await saveDashboardAction(
+              workspaceId,
+              dashboardId,
+              comment,
+            );
+            if (!result.ok) {
+              if (result.error) setSaveError(result.error);
+              return;
+            }
+            void materializeDashboardInBackgroundCommand({
+              workspaceId,
+              dashboardId,
+            }).catch(() => undefined);
+          } catch (err) {
+            setSaveError(
+              err instanceof Error ? err.message : "Failed to save dashboard",
+            );
+          }
+        }}
+        title="Save Dashboard"
+      />
 
       <Snackbar
         open={!!saveError}

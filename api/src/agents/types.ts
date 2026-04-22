@@ -46,8 +46,21 @@ export interface AgentMeta {
 export interface AgentContext {
   /** Current workspace ID */
   workspaceId: string;
-  /** What the user is currently looking at */
+  /** What the user is currently looking at (the active editor tab's kind) */
   activeView?: "console" | "dashboard" | "flow-editor" | "empty";
+  /**
+   * Which left-pane explorer is currently open and visible, or `null` if the
+   * left pane is collapsed. Use this when guiding the user to a specific
+   * explorer panel (e.g. "open the Databases panel on the left"), instead of
+   * assuming a panel is always visible.
+   */
+  activeExplorer?:
+    | "databases"
+    | "consoles"
+    | "connectors"
+    | "flows"
+    | "dashboards"
+    | null;
   /** Current user ID (if session auth) */
   userId?: string;
   /** Open console tabs (for console agent) */

@@ -64,6 +64,7 @@ import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleModificationPayload } from "../hooks/useMonacoConsole";
@@ -1276,6 +1277,7 @@ const Chat: React.FC<ChatProps> = ({
                 activeTabId: store.activeTabId,
                 activeTab,
                 activeView: computedActiveView,
+                activeExplorer: selectActiveExplorer(useUIStore.getState()),
                 activeConsoleId: activeConsoleIdRef.current,
                 activeConsoleResults,
                 flowFormState,

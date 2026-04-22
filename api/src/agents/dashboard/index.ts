@@ -15,6 +15,7 @@ import { clientDashboardTools } from "../../agent-lib/tools/dashboard-tools-clie
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
+import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 
 /**
  * Dashboard agent metadata for UI and routing
@@ -44,6 +45,7 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
     workspaceId,
     context.toolExecutionContext,
   );
+  const versionHistoryTools = createVersionHistoryTools(workspaceId);
 
   const runtimeContext = buildDashboardRuntimeContext(context);
 
@@ -66,6 +68,7 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
       ...selfDirectiveTools,
       ...consoleSearchTools,
       ...dashboardSearchTools,
+      ...versionHistoryTools,
     } as Record<string, unknown>,
   };
 }

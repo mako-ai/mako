@@ -46,7 +46,7 @@ interface WorkspaceContextState {
     data: Partial<CreateWorkspaceData>,
   ) => Promise<void>;
   deleteWorkspace: (id: string) => Promise<void>;
-  switchWorkspace: (id: string) => Promise<void>;
+  switchWorkspace: (id: string, workspaceOverride?: Workspace) => Promise<void>;
 
   // Member management
   loadMembers: () => Promise<void>;
@@ -220,8 +220,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         setError(null);
         const workspace = await workspaceClient.createWorkspace(data);
         setWorkspaces(prev => [...prev, workspace]);
-        // Automatically switch to new workspace
-        await switchWorkspace(workspace.id);
+        // Automatically switch to the new workspace. We do NOT delegate to
+        // `switchWorkspace` here because its closure captures a stale
+        // `workspaces` list (without the workspace we just created), which
+        // would make the workspace lookup fail and skip the state reset.
+        await switchWorkspace(workspace.id, workspace);
         return workspace;
       } catch (err: any) {
         setError(err.message || "Failed to create workspace");
@@ -304,36 +307,35 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   );
 
   const switchWorkspace = useCallback(
-    async (id: string) => {
+    async (id: string, workspaceOverride?: Workspace) => {
       try {
         setError(null);
         await workspaceClient.switchWorkspace(id);
-        const workspace = workspaces.find(ws => ws.id === id);
+
+        const workspace =
+          workspaceOverride ?? workspaces.find(ws => ws.id === id);
         if (workspace) {
           setCurrentWorkspace(workspace);
-
-          // Clear local storage to reset app state for new workspace
-          // But preserve the activeWorkspaceId by setting it AFTER clear
-          localStorage.clear();
-          localStorage.setItem("activeWorkspaceId", id);
-          setCurrentWorkspaceId(id);
-
-          // Also reset in-memory store state to prevent leaks if reload is delayed
-          useUIStore.getState().reset();
-          useExplorerStore.getState().reset();
-          useChatStore.getState().reset();
-          useConsoleStore.getState().clearAllConsoles();
-          useFlowStore.getState().reset();
-
-          // Reload the page to refresh all data with new workspace context
-          window.location.reload();
-        } else {
-          // Workspace not in current list - this can happen during invite acceptance
-          // Just set the ID and let the reload fetch the workspace
-          localStorage.setItem("activeWorkspaceId", id);
-          setCurrentWorkspaceId(id);
-          window.location.reload();
         }
+
+        // Clear local storage to reset app state for the new workspace.
+        // This is critical: persisted stores (console-store, flow-store-v2,
+        // explorer-store, chat-store, ui-store, …) must not leak tabs/state
+        // from the previous workspace into the new one. Preserve the
+        // activeWorkspaceId by setting it AFTER clear.
+        localStorage.clear();
+        localStorage.setItem("activeWorkspaceId", id);
+        setCurrentWorkspaceId(id);
+
+        // Also reset in-memory store state to prevent leaks if reload is delayed
+        useUIStore.getState().reset();
+        useExplorerStore.getState().reset();
+        useChatStore.getState().reset();
+        useConsoleStore.getState().clearAllConsoles();
+        useFlowStore.getState().reset();
+
+        // Reload the page to refresh all data with new workspace context
+        window.location.reload();
       } catch (err: any) {
         setError(err.message || "Failed to switch workspace");
         throw err;

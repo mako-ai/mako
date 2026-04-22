@@ -1,5 +1,6 @@
 import type { ConsoleTab } from "../store/lib/types";
 import type { Connection } from "../store/schemaStore";
+import type { ActiveExplorer } from "../store/uiStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
 import { useDashboardStore } from "../store/dashboardStore";
 
@@ -30,6 +31,7 @@ interface BuildChatRequestBodyOptions {
   activeTabId?: string | null;
   activeTab?: ConsoleTab;
   activeView: ChatActiveView;
+  activeExplorer: ActiveExplorer;
   activeConsoleId?: string | null;
   activeConsoleResults?: ActiveConsoleResultsContext;
   flowFormState?: Record<string, unknown>;
@@ -179,6 +181,7 @@ export function buildChatRequestBody({
   activeTabId,
   activeTab,
   activeView,
+  activeExplorer,
   activeConsoleId,
   activeConsoleResults,
   flowFormState,
@@ -196,6 +199,7 @@ export function buildChatRequestBody({
     activeConsoleResults,
     agentId: "unified",
     activeView,
+    activeExplorer,
     tabKind: activeTab?.kind,
     flowType: activeTab?.metadata?.flowType,
     flowFormState,

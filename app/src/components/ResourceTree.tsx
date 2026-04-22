@@ -10,7 +10,6 @@ import React, {
 } from "react";
 import {
   Box,
-  Chip,
   Divider,
   List,
   ListItemButton,
@@ -45,12 +44,24 @@ import {
   type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { countItems, filterTree } from "../store/lib/tree-helpers";
+import { filterTree } from "../store/lib/tree-helpers";
 import {
+  DraggableFolderScope,
   DraggableTreeItem,
   DroppableFolderContent,
-  DroppableSectionHeader,
+  SectionScope,
 } from "./resource-tree/dnd";
+
+// Pixel height of a single tree row. Used to stack sticky folder/section
+// headers so each ancestor pins one row below its parent as the user scrolls.
+// Keep this in sync with the `minHeight` / vertical padding set in
+// `buildRowSx` and on section headers.
+const ROW_HEIGHT = 24;
+
+// Width of the leading chevron / icon column. Used for both the folder
+// chevron and (when `hideFolderIcon` is on) the file icon so they line up
+// vertically across sibling rows.
+const ICON_COL_WIDTH = 20;
 import {
   findNodeInSections,
   getFolderDropTargetId,
@@ -71,7 +82,7 @@ export interface ResourceTreeNode {
 export interface ResourceTreeSection {
   key: string;
   label: string;
-  icon: ReactNode;
+  icon?: ReactNode;
   nodes: ResourceTreeNode[];
   droppableId?: string;
   defaultAccess?: "private" | "workspace";
@@ -94,6 +105,12 @@ export interface ResourceTreeProps {
 
   getItemIcon?: (node: ResourceTreeNode) => ReactNode;
   showFiles?: boolean;
+  /**
+   * When true, folder rows render only a chevron + name (no folder icon), and
+   * file rows drop the hidden chevron placeholder so their icon sits in the
+   * chevron column. Produces a Cursor-style compact tree.
+   */
+  hideFolderIcon?: boolean;
 
   enableDragDrop?: boolean;
   enableRename?: boolean;
@@ -155,6 +172,7 @@ function ResourceTreeInner(
     searchQuery = "",
     getItemIcon,
     showFiles = true,
+    hideFolderIcon = false,
     enableDragDrop = true,
     enableRename = true,
     enableDuplicate = false,
@@ -775,29 +793,27 @@ function ResourceTreeInner(
   const buildRowSx = ({
     depth,
     isDropTarget,
-    isFocused,
     isSelected,
   }: {
     depth: number;
     isDropTarget?: boolean;
-    isFocused?: boolean;
     isSelected?: boolean;
   }) => ({
     pl: 0.5 + depth * 1.5,
     minWidth: 0,
-    py: 0.25,
-    minHeight: 28,
+    py: 0,
+    minHeight: ROW_HEIGHT,
     bgcolor: isDropTarget
       ? "action.hover"
       : isSelected
         ? "action.selected"
         : undefined,
-    outline: isDropTarget ? "2px dashed" : isFocused ? "1px solid" : undefined,
-    outlineColor: isDropTarget
-      ? "primary.main"
-      : isFocused
-        ? "divider"
-        : undefined,
+    outline: isDropTarget ? "2px dashed" : undefined,
+    outlineColor: isDropTarget ? "primary.main" : undefined,
+    // Draw the drop-target outline inside the row's own box so it isn't
+    // clipped by adjacent opaque rows or sticky ancestors (CSS outlines
+    // don't reserve layout space, so they get painted over otherwise).
+    outlineOffset: isDropTarget ? "-2px" : undefined,
     borderRadius: 0,
   });
 
@@ -813,7 +829,6 @@ function ResourceTreeInner(
 
       const canManage = resolveCanManage(node);
       const isExpanded = node.isDirectory && isNodeExpanded(node);
-      const isFocused = focusedNodeId === node.id;
       const isSelectedLocation =
         mode === "picker" && currentSelectedLocation === node.id;
       const isActive = mode === "sidebar" && activeItemId === node.id;
@@ -843,14 +858,41 @@ function ResourceTreeInner(
                 startInlineRename(node);
               }
             }}
-            sx={buildRowSx({
-              depth,
-              isDropTarget,
-              isFocused,
-              isSelected: isSelectedLocation,
-            })}
+            sx={{
+              ...buildRowSx({
+                depth,
+                isDropTarget,
+                isSelected: isSelectedLocation,
+              }),
+              position: "sticky",
+              // Stack ancestor headers: depth=1 sits just below the section
+              // header (which is sticky at top: 0), depth=2 one row below
+              // that, and so on.
+              top: depth * ROW_HEIGHT,
+              // Deeper folders get a lower z-index so outer ancestors always
+              // paint on top when sticky rows collide during scroll.
+              zIndex: 20 - depth,
+              // Non-transparent fill so content scrolling underneath doesn't
+              // bleed through while stuck. Uses `background.default` to match
+              // the ambient sidebar canvas (sidebar has no explicit bg, so it
+              // inherits the default theme background) — this makes the row
+              // visually invisible against the surrounding tree at rest.
+              // Selected / drop-target states from buildRowSx still win.
+              backgroundColor:
+                isDropTarget || isSelectedLocation
+                  ? undefined
+                  : "background.default",
+            }}
           >
-            <ListItemIcon sx={{ minWidth: 22, mr: 0 }}>
+            <ListItemIcon
+              sx={{
+                minWidth: ICON_COL_WIDTH,
+                mr: 0,
+                // MUI's ListItemIcon defaults to `action.active` which looks
+                // dimmed; the chevron should match the folder name's color.
+                color: "text.primary",
+              }}
+            >
               <Box
                 component="span"
                 onClick={event => {
@@ -872,13 +914,15 @@ function ResourceTreeInner(
                 )}
               </Box>
             </ListItemIcon>
-            <ListItemIcon sx={{ minWidth: 22 }}>
-              {isExpanded ? (
-                <FolderOpen size={16} strokeWidth={1.5} />
-              ) : (
-                <Folder size={16} strokeWidth={1.5} />
-              )}
-            </ListItemIcon>
+            {!hideFolderIcon && (
+              <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH }}>
+                {isExpanded ? (
+                  <FolderOpen size={16} strokeWidth={1.5} />
+                ) : (
+                  <Folder size={16} strokeWidth={1.5} />
+                )}
+              </ListItemIcon>
+            )}
             <MuiListItemText
               primary={
                 isRenaming ? renderInlineRenameInput(node.id) : node.name
@@ -896,62 +940,62 @@ function ResourceTreeInner(
           </ListItemButton>
         );
 
-        const wrappedFolderRow = enableDragDrop ? (
-          <DraggableTreeItem
-            key={`drag-folder-${node.id}`}
+        const childrenContent = isExpanded
+          ? (() => {
+              const childItems = renderTree(
+                node.children ?? [],
+                depth + 1,
+                sectionKey,
+              );
+              const childList = (
+                <List component="div" disablePadding dense>
+                  {childItems.length === 0 ? (
+                    <Typography
+                      variant="caption"
+                      color="text.disabled"
+                      sx={{
+                        pl: 0.5 + (depth + 1) * 1.5 + 2.75,
+                        py: 0.5,
+                        display: "block",
+                      }}
+                    >
+                      Empty
+                    </Typography>
+                  ) : (
+                    childItems
+                  )}
+                </List>
+              );
+
+              return enableDragDrop ? (
+                <DroppableFolderContent folderId={node.id}>
+                  {childList}
+                </DroppableFolderContent>
+              ) : (
+                childList
+              );
+            })()
+          : null;
+
+        // Wrap (header + children) in a single block so the sticky header has
+        // a containing block that spans the entire folder scope.
+        const folderScope = enableDragDrop ? (
+          <DraggableFolderScope
+            key={`folder-scope-${node.id}`}
             id={node.id}
-            isFolder
             disabled={!canManage}
+            header={folderRow}
           >
-            {folderRow}
-          </DraggableTreeItem>
+            {childrenContent}
+          </DraggableFolderScope>
         ) : (
-          folderRow
+          <Box key={`folder-scope-${node.id}`}>
+            {folderRow}
+            {childrenContent}
+          </Box>
         );
 
-        items.push(wrappedFolderRow);
-
-        if (isExpanded) {
-          const childItems = renderTree(
-            node.children ?? [],
-            depth + 1,
-            sectionKey,
-          );
-          const childList = (
-            <List component="div" disablePadding dense>
-              {childItems.length === 0 ? (
-                <Typography
-                  variant="caption"
-                  color="text.disabled"
-                  sx={{
-                    pl: 0.5 + (depth + 1) * 1.5 + 2.75,
-                    py: 0.5,
-                    display: "block",
-                  }}
-                >
-                  Empty
-                </Typography>
-              ) : (
-                childItems
-              )}
-            </List>
-          );
-
-          items.push(
-            enableDragDrop ? (
-              <DroppableFolderContent
-                key={`folder-drop-${node.id}`}
-                folderId={node.id}
-              >
-                {childList}
-              </DroppableFolderContent>
-            ) : (
-              <React.Fragment key={`folder-children-${node.id}`}>
-                {childList}
-              </React.Fragment>
-            ),
-          );
-        }
+        items.push(folderScope);
 
         continue;
       }
@@ -978,12 +1022,15 @@ function ResourceTreeInner(
           }}
           sx={buildRowSx({
             depth,
-            isFocused,
             isSelected: isActive,
           })}
         >
-          <ListItemIcon sx={{ minWidth: 22, visibility: "hidden", mr: 0 }} />
-          <ListItemIcon sx={{ minWidth: 22 }}>
+          {!hideFolderIcon && (
+            <ListItemIcon
+              sx={{ minWidth: ICON_COL_WIDTH, visibility: "hidden", mr: 0 }}
+            />
+          )}
+          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH }}>
             {getItemIcon ? getItemIcon(node) : null}
           </ListItemIcon>
           <MuiListItemText
@@ -1040,9 +1087,10 @@ function ResourceTreeInner(
         }}
         onContextMenu={event => handleSectionContextMenu(event, section.key)}
         sx={{
-          py: 0.25,
+          py: 0,
           pl: 0.5,
           minWidth: 0,
+          minHeight: ROW_HEIGHT,
           bgcolor: isDropTarget
             ? "action.hover"
             : headerSelected
@@ -1050,14 +1098,25 @@ function ResourceTreeInner(
               : undefined,
           outline: isDropTarget ? "2px dashed" : undefined,
           outlineColor: isDropTarget ? "primary.main" : undefined,
+          outlineOffset: isDropTarget ? "-2px" : undefined,
           borderRadius: 0,
           "& .MuiListItemText-root": {
             minWidth: 0,
             flex: "1 1 auto",
           },
+          // Pin the section label at the top of the scroll container as the
+          // user scrolls through the section's tree. Folder headers inside
+          // stack below this (see ROW_HEIGHT * depth in renderTree).
+          position: "sticky",
+          top: 0,
+          zIndex: 30,
+          backgroundColor:
+            isDropTarget || headerSelected ? undefined : "background.default",
         }}
       >
-        <ListItemIcon sx={{ minWidth: 22 }}>
+        <ListItemIcon
+          sx={{ minWidth: ICON_COL_WIDTH, mr: 0, color: "text.primary" }}
+        >
           <Box
             component="span"
             onClick={event => {
@@ -1082,7 +1141,11 @@ function ResourceTreeInner(
             )}
           </Box>
         </ListItemIcon>
-        <ListItemIcon sx={{ minWidth: 22 }}>{section.icon}</ListItemIcon>
+        {section.icon ? (
+          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH }}>
+            {section.icon}
+          </ListItemIcon>
+        ) : null}
         <MuiListItemText
           primary={section.label}
           primaryTypographyProps={{
@@ -1095,37 +1158,18 @@ function ResourceTreeInner(
             },
           }}
         />
-        <Chip
-          label={countItems(section.nodes)}
-          size="small"
-          sx={{ height: 18, fontSize: "0.7rem", flexShrink: 0, maxWidth: 56 }}
-        />
       </ListItemButton>
     );
 
-    if (enableDragDrop && section.droppableId) {
-      return (
-        <DroppableSectionHeader
-          key={`section-${section.key}`}
-          id={section.droppableId}
-        >
-          {header}
-        </DroppableSectionHeader>
-      );
-    }
-
-    return (
-      <React.Fragment key={`section-${section.key}`}>{header}</React.Fragment>
-    );
+    return header;
   };
 
   const treeContent = (
-    <List component="nav" dense>
-      {filteredSections.map(section => (
-        <React.Fragment key={section.key}>
-          {renderSectionHeader(section)}
-          {sectionExpanded[section.key] !== false &&
-            (section.nodes.length > 0 ? (
+    <List component="nav" dense disablePadding>
+      {filteredSections.map(section => {
+        const sectionBody =
+          sectionExpanded[section.key] !== false ? (
+            section.nodes.length > 0 ? (
               renderTree(section.nodes, 1, section.key)
             ) : (
               <Typography
@@ -1140,9 +1184,31 @@ function ResourceTreeInner(
               >
                 Nothing here yet
               </Typography>
-            ))}
-        </React.Fragment>
-      ))}
+            )
+          ) : null;
+
+        // Wrap the section header + its body in a single block so the sticky
+        // section header has a containing block spanning the whole section.
+        // When a droppableId is provided, the scope also acts as the section-
+        // level drop target (replaces the old DroppableSectionHeader wrapper
+        // around just the header).
+        return (
+          <SectionScope
+            key={`section-${section.key}`}
+            droppableId={
+              enableDragDrop && section.droppableId
+                ? section.droppableId
+                : undefined
+            }
+          >
+            {renderSectionHeader(section)}
+            {sectionBody}
+          </SectionScope>
+        );
+      })}
+      {/* Trailing spacer so the last row doesn't feel flush to the bottom
+          of the scroll container and hint there's more content below. */}
+      <Box sx={{ height: 24 }} aria-hidden />
     </List>
   );
 

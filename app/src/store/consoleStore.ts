@@ -65,6 +65,7 @@ interface ConsoleActions {
 
   // API operations
   loadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
+  reloadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
   fetchConsoleContent: (
     workspaceId: string,
     consoleId: string,
@@ -80,6 +81,7 @@ interface ConsoleActions {
     databaseId?: string,
     chartSpec?: Record<string, unknown>,
     resultsViewMode?: string,
+    comment?: string,
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -387,6 +389,37 @@ export const useConsoleStore = create<ConsoleStore>()(
         }
       },
 
+      reloadConsole: async (workspaceId, consoleId) => {
+        try {
+          const res = await apiClient.get<ConsoleContentResponse>(
+            `/workspaces/${workspaceId}/consoles/content`,
+            { id: consoleId },
+          );
+
+          if (res.success) {
+            const content = res.content || "";
+            const filePath = res.path || res.name;
+
+            get().openTab({
+              id: res.id,
+              title: res.name || res.path || "Console",
+              content,
+              isSaved: res.isSaved ?? !!filePath,
+              connectionId: res.connectionId,
+              databaseId: res.databaseId,
+              databaseName: res.databaseName,
+              filePath,
+              kind: "console",
+              chartSpec: res.chartSpec,
+              resultsViewMode: res.resultsViewMode,
+            });
+            get().setActiveTab(res.id);
+          }
+        } catch {
+          // silent
+        }
+      },
+
       fetchConsoleContent: async (workspaceId, consoleId, options) => {
         try {
           const res = await apiClient.get<ConsoleContentResponse>(
@@ -442,6 +475,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         databaseId,
         chartSpec,
         resultsViewMode,
+        comment,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
@@ -460,6 +494,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 isSaved: true,
                 chartSpec: chartSpec ?? null,
                 resultsViewMode,
+                comment: comment ?? "",
               }),
             },
           );

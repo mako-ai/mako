@@ -177,6 +177,7 @@ interface DashboardStoreState {
   saveDashboard: (
     workspaceId: string,
     dashboardId: string,
+    comment?: string,
   ) => Promise<{ ok: boolean; error?: string }>;
   resolveConflict: (
     resolution: "discard" | "overwrite",
@@ -502,7 +503,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
         void disposeDashboardRuntime(dashboardId);
       },
 
-      saveDashboard: async (workspaceId: string, dashboardId: string) => {
+      saveDashboard: async (
+        workspaceId: string,
+        dashboardId: string,
+        comment?: string,
+      ) => {
         const dashboard = get().openDashboards[dashboardId];
         if (!dashboard) return { ok: false, error: "Dashboard not loaded" };
         try {
@@ -511,6 +516,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const payload = {
             ...editableDefinition,
             version: dashboard.version,
+            comment: comment ?? "",
           };
           const response = await apiClient.patch<{
             success: boolean;
