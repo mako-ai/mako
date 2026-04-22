@@ -26,6 +26,7 @@ import {
   isDescriptionGenAvailable,
   generateDescriptionAndEmbedding,
 } from "../services/console-description.service";
+import { generateVersionComment } from "../services/version-comment.service";
 import {
   applySqlRowLimit,
   checkPreviewQuerySafety,
@@ -1491,6 +1492,74 @@ consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
             ? error.message
             : "Unknown error moving folder",
       },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/:id/version-comment - Generate AI version comment
+consoleRoutes.post("/:id/version-comment", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const body = await c.req.json();
+
+    const { previousContent, newContent, language, source, aiPrompt, title } =
+      body;
+
+    if (typeof previousContent !== "string" || typeof newContent !== "string") {
+      return c.json(
+        {
+          success: false,
+          error: "previousContent and newContent must be strings",
+        },
+        400,
+      );
+    }
+
+    if (typeof language !== "string") {
+      return c.json({ success: false, error: "language is required" }, 400);
+    }
+
+    if (source !== "user" && source !== "ai") {
+      return c.json(
+        { success: false, error: "source must be 'user' or 'ai'" },
+        400,
+      );
+    }
+
+    if (previousContent.length > 50_000 || newContent.length > 50_000) {
+      return c.json(
+        { success: false, error: "Content too large for comment generation" },
+        400,
+      );
+    }
+
+    const comment = await generateVersionComment(
+      {
+        previousContent,
+        newContent,
+        language,
+        source,
+        aiPrompt: typeof aiPrompt === "string" ? aiPrompt : undefined,
+        title: typeof title === "string" ? title : undefined,
+      },
+      { workspaceId, userId: user.id },
+    );
+
+    return c.json({ success: true, comment });
+  } catch (error) {
+    logger.error("Error generating version comment", { error });
+    return c.json(
+      { success: false, error: "Failed to generate version comment" },
       500,
     );
   }

@@ -20,7 +20,8 @@ export interface TrackUsageParams {
     | "chat"
     | "title_generation"
     | "description_generation"
-    | "embedding";
+    | "embedding"
+    | "version_comment";
   modelId: string;
   inputTokens: number;
   outputTokens: number;

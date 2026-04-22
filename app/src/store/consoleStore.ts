@@ -113,6 +113,19 @@ interface ConsoleActions {
     databaseId?: string,
     databaseName?: string,
   ) => void;
+  generateVersionComment: (
+    workspaceId: string,
+    consoleId: string,
+    versionId: string,
+    payload: {
+      previousContent: string;
+      newContent: string;
+      language: string;
+      source: "user" | "ai";
+      aiPrompt?: string;
+      title?: string;
+    },
+  ) => void;
 }
 
 type ConsoleStore = ConsoleState & ConsoleActions;
@@ -127,6 +140,11 @@ const initialState: ConsoleState = {
 
 // Store version managers for each console tab
 const versionManagers = new Map<string, ConsoleVersionManager>();
+
+// Abort controllers for in-flight version comment generation (per console ID)
+const versionCommentControllers = new Map<string, AbortController>();
+// Debounce timers for version comment generation (per console ID)
+const versionCommentTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Debounce timers for draft console saves (per console ID)
 const draftSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -580,6 +598,63 @@ export const useConsoleStore = create<ConsoleStore>()(
             success: false,
             error: e instanceof Error ? e.message : "Cancel failed",
           };
+        }
+      },
+
+      generateVersionComment: (workspaceId, consoleId, versionId, payload) => {
+        const DEBOUNCE_MS = 800;
+
+        const existingTimer = versionCommentTimers.get(consoleId);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+
+        const vm = versionManagers.get(consoleId);
+        if (vm) {
+          vm.updateVersion(versionId, { aiCommentStatus: "pending" });
+        }
+
+        const fire = async () => {
+          versionCommentTimers.delete(consoleId);
+
+          const prev = versionCommentControllers.get(consoleId);
+          if (prev) prev.abort();
+
+          const controller = new AbortController();
+          versionCommentControllers.set(consoleId, controller);
+
+          try {
+            const res = await apiClient.post<{
+              success: boolean;
+              comment: string | null;
+            }>(
+              `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
+              payload,
+              { signal: controller.signal },
+            );
+
+            if (res.success && res.comment && vm) {
+              vm.updateVersion(versionId, {
+                aiComment: res.comment,
+                aiCommentStatus: "done",
+              });
+            } else if (vm) {
+              vm.updateVersion(versionId, { aiCommentStatus: "failed" });
+            }
+          } catch (_e) {
+            if (vm) {
+              vm.updateVersion(versionId, { aiCommentStatus: "failed" });
+            }
+          } finally {
+            versionCommentControllers.delete(consoleId);
+          }
+        };
+
+        if (payload.source === "ai") {
+          void fire();
+        } else {
+          const timer = setTimeout(() => void fire(), DEBOUNCE_MS);
+          versionCommentTimers.set(consoleId, timer);
         }
       },
 

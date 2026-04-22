@@ -307,7 +307,8 @@ export interface ILlmUsage extends Document {
     | "chat"
     | "title_generation"
     | "description_generation"
-    | "embedding";
+    | "embedding"
+    | "version_comment";
   modelId: string;
   inputTokens: number;
   outputTokens: number;
@@ -347,7 +348,13 @@ const LlmUsageSchema = new Schema<ILlmUsage>(
     invocationType: {
       type: String,
       required: true,
-      enum: ["chat", "title_generation", "description_generation", "embedding"],
+      enum: [
+        "chat",
+        "title_generation",
+        "description_generation",
+        "embedding",
+        "version_comment",
+      ],
     },
     modelId: { type: String, required: true },
     inputTokens: { type: Number, required: true, default: 0 },
