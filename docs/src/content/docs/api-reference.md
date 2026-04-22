@@ -183,3 +183,36 @@ The response is a **Server-Sent Events (SSE)** stream:
 | Method | Endpoint       | Description                        |
 | ------ | -------------- | ---------------------------------- |
 | `POST` | `/api/inngest` | Inngest webhook handler (internal) |
+
+## Billing
+
+Subscription management endpoints. All require workspace membership. When `BILLING_ENABLED` is `false` (self-hosted default), all endpoints return `{ "billingEnabled": false }`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/workspaces/:wid/billing/status` | Get plan, usage quota, and subscription status |
+| `POST` | `/api/workspaces/:wid/billing/checkout` | Create a Stripe Checkout session (returns `{ url }`) |
+| `POST` | `/api/workspaces/:wid/billing/portal` | Create a Stripe Customer Portal session (returns `{ url }`) |
+
+### Billing Status Response
+
+```json
+{
+  "billingEnabled": true,
+  "plan": "free",
+  "subscriptionStatus": null,
+  "usageQuotaUsd": 5,
+  "hardLimitUsd": 5,
+  "currentUsageUsd": 1.23,
+  "modelTier": "free",
+  "maxDatabases": 3,
+  "maxMembers": 3
+}
+```
+
+### Error Codes
+
+| Status | Description |
+|--------|-------------|
+| 403 | Not a workspace owner or admin |
+| 409 | Active subscription already exists (on checkout) |

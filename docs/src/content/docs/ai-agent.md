@@ -98,11 +98,30 @@ The agent handles edit-mode locking, so concurrent users cannot conflict.
 
 ## AI Models
 
-Mako supports multiple providers. Configure API keys in `.env` and users select their preferred model in the UI:
+Mako routes all AI requests through the **Vercel AI Gateway**, which provides access to 180+ models across Anthropic, OpenAI, Google, DeepSeek, and others. Only `AI_GATEWAY_API_KEY` is required — no individual provider API keys needed.
 
-- **Anthropic** — Claude Sonnet 4, Claude Opus 4 (with extended thinking)
-- **OpenAI** — GPT-4o, GPT-5.2, GPT-5.2 Codex
-- **Google** — Gemini 2.5 Pro, Gemini 2.5 Flash
+Models are discovered dynamically at runtime by merging the Gateway model catalog with [arena.ai](https://arena.ai) code leaderboard ELO scores. The catalog refreshes hourly.
+
+### Free vs Pro Models
+
+When billing is enabled, models are split into two tiers:
+
+| Tier | Criteria | Examples |
+|------|----------|---------|
+| **Free** | Blended cost ≤ $3 / 1M tokens | GPT-4o Mini, Gemini 2.5 Flash, DeepSeek Chat |
+| **Pro** | All other models | Claude Sonnet 4, GPT-4o, Gemini 2.5 Pro |
+
+The top 3 free-tier models are auto-selected by ELO ranking. Free users are gated to free-tier models. Pro users can access all models.
+
+When billing is disabled (self-hosted default), all models are available to all users.
+
+### Thinking / Reasoning Models
+
+Models tagged with `reasoning` in the Gateway catalog automatically enable extended thinking. Budget tokens are set to 10,000 by default.
+
+### Model Selection
+
+Users pick their preferred model in the chat UI. The model is persisted per-user in workspace settings. If a user's saved model becomes unavailable (e.g. billing downgrade), Mako falls back to the best available model for their plan.
 
 ## Safety
 

@@ -69,6 +69,11 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
 | `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
 | `SENDGRID_API_KEY`             | Optional    | Email invitations                        |
+| `BILLING_ENABLED`              | Optional    | Set `true` to enable Stripe billing (default: `false`) |
+| `STRIPE_SECRET_KEY`            | Optional    | Stripe secret key (required if billing enabled) |
+| `STRIPE_WEBHOOK_SECRET`        | Optional    | Stripe webhook signing secret |
+| `STRIPE_PRO_PRICE_ID`          | Optional    | Stripe Price ID for the Pro monthly subscription |
+| `STRIPE_METER_EVENT_NAME`      | Optional    | Stripe meter event name for usage reporting (default: `llm_usage_usd`) |
 
 ### Dashboard Artifact Storage
 
@@ -164,6 +169,35 @@ artifacts, delete stale artifacts, and generate signed read URLs.
 - Preview environments should use a unique prefix such as
   `dashboard-artifacts/pr-123` so all previews can safely share the same
   bucket.
+
+## Billing (Optional)
+
+Mako includes an optional Stripe-based subscription billing system. It is **disabled by default** — self-hosted and open-source deployments have unlimited access to all models and features.
+
+To enable billing for a hosted/SaaS deployment, set `BILLING_ENABLED=true` and configure the Stripe env vars above.
+
+### Plans
+
+| Plan | Free Quota | Hard Limit | Model Access | Max Databases | Max Members |
+|------|-----------|------------|-------------|--------------|------------|
+| **Free** | $5 / month | $5 | Free-tier models only (≤$3/M) | 3 | 3 |
+| **Pro** | $80 / month | None (overage billed) | All models | 50 | 25 |
+
+### Billing API Endpoints
+
+All endpoints are mounted at `/api/workspaces/:workspaceId/billing`:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/workspaces/:wid/billing/status` | Get current plan, usage, and subscription status |
+| `POST` | `/api/workspaces/:wid/billing/checkout` | Create a Stripe Checkout session (upgrade to Pro) |
+| `POST` | `/api/workspaces/:wid/billing/portal` | Create a Stripe Customer Portal session (manage subscription) |
+
+Stripe webhooks are handled at `/api/stripe-webhook` with signature verification.
+
+### Promotion Codes
+
+Stripe promotion codes/coupons can be applied at checkout. The Stripe Checkout UI includes a promo code input field.
 
 ## Cloudflare Workers
 
