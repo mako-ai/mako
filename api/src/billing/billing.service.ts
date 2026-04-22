@@ -37,7 +37,17 @@ function getStripe(): Stripe {
 
 /**
  * Get or create a Stripe Customer for the workspace.
- * Stores the customer ID on the workspace billing subdocument.
+ *
+ * Dedup strategy (prevents orphan/duplicate customers):
+ *   1. Local fast path: reuse `workspace.billing.stripeCustomerId` if set.
+ *   2. Stripe-side search by `metadata.workspaceId` — recovers from a prior
+ *      `customers.create` that succeeded in Stripe but failed to persist locally.
+ *   3. Cold path: `customers.create`, then atomic local upsert (`findOneAndUpdate`
+ *      gated on `stripeCustomerId: null`) so concurrent callers converge on a
+ *      single id rather than both writing their own.
+ *
+ * Only `createCheckoutSession` should call this. The portal path must never
+ * create a customer.
  */
 export async function getOrCreateStripeCustomer(
   workspace: IWorkspace,
@@ -48,25 +58,61 @@ export async function getOrCreateStripeCustomer(
   }
 
   const stripe = getStripe();
-  const customer = await stripe.customers.create({
-    email: userEmail,
-    metadata: {
-      workspaceId: workspace._id.toString(),
-      workspaceName: workspace.name,
-    },
+  const workspaceId = workspace._id.toString();
+
+  const existing = await stripe.customers.search({
+    query: `metadata['workspaceId']:'${workspaceId}'`,
+    limit: 1,
   });
 
-  await Workspace.updateOne(
-    { _id: workspace._id },
-    { $set: { "billing.stripeCustomerId": customer.id } },
+  let customerId: string;
+  if (existing.data[0]) {
+    customerId = existing.data[0].id;
+    logger.info("Recovered existing Stripe customer from metadata search", {
+      workspaceId,
+      customerId,
+    });
+  } else {
+    const customer = await stripe.customers.create({
+      email: userEmail,
+      name: workspace.name,
+      metadata: {
+        workspaceId,
+        workspaceName: workspace.name,
+      },
+    });
+    customerId = customer.id;
+    logger.info("Created Stripe customer", { workspaceId, customerId });
+  }
+
+  const updated = await Workspace.findOneAndUpdate(
+    {
+      _id: workspace._id,
+      $or: [
+        { "billing.stripeCustomerId": null },
+        { "billing.stripeCustomerId": { $exists: false } },
+      ],
+    },
+    { $set: { "billing.stripeCustomerId": customerId } },
+    { new: true },
   );
 
-  logger.info("Created Stripe customer", {
-    workspaceId: workspace._id.toString(),
-    customerId: customer.id,
-  });
+  if (!updated) {
+    const current = await Workspace.findById(workspace._id).select(
+      "billing.stripeCustomerId",
+    );
+    const winnerId = current?.billing?.stripeCustomerId;
+    if (winnerId && winnerId !== customerId) {
+      logger.warn("Concurrent getOrCreateStripeCustomer race lost", {
+        workspaceId,
+        winnerCustomerId: winnerId,
+        loserCustomerId: customerId,
+      });
+      return winnerId;
+    }
+  }
 
-  return customer.id;
+  return customerId;
 }
 
 /**
@@ -115,17 +161,32 @@ export async function createCheckoutSession(
 }
 
 /**
- * Create a Stripe Customer Portal session.
- * Returns the portal URL for redirect.
+ * Thrown when a portal session is requested for a workspace that has no
+ * Stripe customer yet. Callers (the HTTP route) should translate this to a
+ * 400 response. The portal must never create a customer — that's the
+ * checkout path's job.
+ */
+export class PortalUnavailableError extends Error {
+  constructor(message = "Workspace has no billing customer yet") {
+    super(message);
+    this.name = "PortalUnavailableError";
+  }
+}
+
+/**
+ * Create a Stripe Customer Portal session. Requires an existing customer on
+ * the workspace — throws `PortalUnavailableError` otherwise.
  */
 export async function createPortalSession(
   workspace: IWorkspace,
-  userEmail: string,
   returnUrl: string,
 ): Promise<string> {
-  const stripe = getStripe();
-  const customerId = await getOrCreateStripeCustomer(workspace, userEmail);
+  const customerId = workspace.billing?.stripeCustomerId;
+  if (!customerId) {
+    throw new PortalUnavailableError();
+  }
 
+  const stripe = getStripe();
   const session = await stripe.billingPortal.sessions.create({
     customer: customerId,
     return_url: returnUrl,
