@@ -13,6 +13,7 @@ interface SaveCommentDialogProps {
   onSave: (comment: string) => void;
   onCancel: () => void;
   title?: string;
+  defaultComment?: string;
 }
 
 export function SaveCommentDialog({
@@ -20,12 +21,13 @@ export function SaveCommentDialog({
   onSave,
   onCancel,
   title = "Save",
+  defaultComment,
 }: SaveCommentDialogProps) {
   const [comment, setComment] = useState("");
 
   useEffect(() => {
-    if (open) setComment("");
-  }, [open]);
+    if (open) setComment(defaultComment ?? "");
+  }, [open, defaultComment]);
 
   const handleSave = useCallback(() => {
     onSave(comment);

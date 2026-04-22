@@ -337,6 +337,9 @@ function Editor({
 
   // Save comment dialog state (version commit message)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [suggestedComment, setSuggestedComment] = useState<string | undefined>(
+    undefined,
+  );
   const [pendingCommentSave, setPendingCommentSave] = useState<{
     tabId: string;
     content: string;
@@ -392,6 +395,7 @@ function Editor({
     state => state.updateResultsViewMode,
   );
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
+  const getVersionManager = useConsoleStore(state => state.getVersionManager);
   const executeQuery = useConsoleStore(state => state.executeQuery);
   const cancelQuery = useConsoleStore(state => state.cancelQuery);
   const saveConsole = useConsoleStore(state => state.saveConsole);
@@ -1114,6 +1118,12 @@ function Editor({
       setSaveDialogOpen(true);
       return false;
     }
+
+    const vm = getVersionManager(tabId);
+    const aiComments = vm?.getRecentAiComments() ?? [];
+    setSuggestedComment(
+      aiComments.length > 0 ? aiComments.join("; ") : undefined,
+    );
 
     return new Promise<boolean>(resolve => {
       setPendingCommentSave({
@@ -1988,6 +1998,7 @@ function Editor({
         onSave={handleCommentSaveConfirm}
         onCancel={handleCommentSaveCancel}
         title="Save Console"
+        defaultComment={suggestedComment}
       />
 
       {/* Version history panel */}

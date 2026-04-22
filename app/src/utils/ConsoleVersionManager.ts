@@ -79,6 +79,17 @@ export class ConsoleVersionManager {
     return this.versions[index - 1].content;
   }
 
+  getRecentAiComments(): string[] {
+    const comments: string[] = [];
+    for (let i = this.versions.length - 1; i >= 0; i--) {
+      const v = this.versions[i];
+      if (v.aiComment && v.aiCommentStatus === "done") {
+        comments.unshift(v.aiComment);
+      }
+    }
+    return comments;
+  }
+
   undo(): string | null {
     if (!this.canUndo()) return null;
 
