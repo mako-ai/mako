@@ -18,6 +18,7 @@ import {
   createCheckoutSession,
   createPortalSession,
   getBillingStatus,
+  PortalUnavailableError,
 } from "../billing/billing.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 
@@ -237,13 +238,17 @@ billingRoutes.post("/portal", async (c: AuthenticatedContext) => {
       return c.json({ error: "Workspace not found" }, 404);
     }
 
-    const userDoc = await User.findById(user.id);
-    const email = userDoc?.email || "";
+    if (!workspace.billing?.stripeCustomerId) {
+      return c.json({ error: "No billing account to manage" }, 400);
+    }
 
-    const url = await createPortalSession(workspace, email, returnUrl);
+    const url = await createPortalSession(workspace, returnUrl);
 
     return c.json({ url });
   } catch (err) {
+    if (err instanceof PortalUnavailableError) {
+      return c.json({ error: "No billing account to manage" }, 400);
+    }
     logger.error("Error creating portal session", { error: err });
     return c.json({ error: "Failed to create portal session" }, 500);
   }
