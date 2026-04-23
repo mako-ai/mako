@@ -9,14 +9,24 @@ import { extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.app();
 
-const VERSION_COMMENT_SYSTEM_PROMPT = `You write short commit-message style summaries of changes to a database query.
+const VERSION_COMMENT_SYSTEM_PROMPT = `You are to act as an author of a version comment for a saved database query (SQL, MongoDB, etc).
+Your mission is to create a clean and comprehensive commit message that explains WHAT changed and WHY.
+I'll send you a diff of the query changes, and you convert it into a commit message.
 
 Rules:
-- 1 sentence, under 120 chars, imperative mood ("Add filter on status")
-- Focus on WHAT changed semantically, not line numbers
-- If source is "ai" and an aiPrompt is provided, reflect the user's intent
-- No quotes, no trailing period
-- Return only the summary, nothing else`;
+- Use present tense, imperative mood (e.g. "Add filter", "Refactor subquery", "Fix join condition")
+- Be specific: mention table names, column names, filters, joins, aggregations — not line numbers
+- Maximum 72 characters
+- Do NOT wrap the message in quotes or backticks
+- Do NOT add a trailing period
+- Do NOT add any prefix like "feat:" or "fix:"
+- Do NOT add explanations or descriptions beyond the single commit line
+- Your entire response will be used directly as the version comment
+- Respond with ONLY the commit message text, nothing else
+
+Example:
+Given a diff that changes \`WHERE status = 'active'\` to \`WHERE status = 'active' AND created_at > '2024-01-01'\`, you respond:
+Add created_at filter to restrict to records after 2024-01-01`;
 
 export interface VersionCommentContext {
   previousContent: string;
@@ -76,28 +86,20 @@ export async function generateVersionComment(
 
   if (!diff || isWhitespaceOnly(diff)) return null;
 
-  const truncatedDiff = diff.substring(0, 2000);
+  const truncatedDiff = diff.substring(0, 3000);
 
   const parts: string[] = [];
 
-  if (context.title) {
-    parts.push(`Console: ${context.title}`);
-  }
-
-  parts.push(`Language: ${context.language}`);
-  parts.push(`Change source: ${context.source}`);
-
   if (context.source === "ai" && context.aiPrompt) {
-    parts.push(`User's AI prompt: ${context.aiPrompt.substring(0, 500)}`);
+    parts.push(
+      `The user asked the AI assistant to: ${context.aiPrompt.substring(0, 500)}`,
+    );
+    parts.push("");
   }
 
-  parts.push("");
-  parts.push("Diff:");
+  parts.push(`\`\`\`diff`);
   parts.push(truncatedDiff);
-
-  parts.push("");
-  parts.push("New query:");
-  parts.push(context.newContent.substring(0, 2000));
+  parts.push(`\`\`\``);
 
   const prompt = parts.join("\n");
 
@@ -156,7 +158,7 @@ export async function generateVersionComment(
     let comment = text.trim();
     comment = comment.replace(/^["']|["']$/g, "");
     comment = comment.replace(/\.+$/, "");
-    comment = comment.substring(0, 120);
+    comment = comment.substring(0, 72);
 
     if (comment.length < 3) return null;
     return comment;
