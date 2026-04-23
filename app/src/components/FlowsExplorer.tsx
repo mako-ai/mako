@@ -192,7 +192,6 @@ export function FlowsExplorer() {
         })),
       },
     ];
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flows]);
 
   const getItemIcon = (node: ResourceTreeNode) => {
