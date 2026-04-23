@@ -408,6 +408,42 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Updating memory",
     icon: "brain",
   },
+  save_skill: {
+    domain: "memory",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Saving skill "${name}"` : "Saving skill";
+    },
+    icon: "brain",
+  },
+  delete_skill: {
+    domain: "memory",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Deleting skill "${name}"` : "Deleting skill";
+    },
+    icon: "trash",
+  },
+  load_skill: {
+    domain: "memory",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Loading skill "${name}"` : "Loading skill";
+    },
+    icon: "brain",
+  },
+  search_skills: {
+    domain: "memory",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching skills: "${query}"` : "Searching skills";
+    },
+    icon: "search",
+  },
   get_form_state: {
     domain: "flow",
     execution: "client",

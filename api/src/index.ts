@@ -11,6 +11,7 @@ import { executeRoutes } from "./routes/execute";
 import { databaseRoutes } from "./routes/database";
 import { dataSourceRoutes } from "./routes/sources";
 import { customPromptRoutes } from "./routes/custom-prompt";
+import { skillsRoutes } from "./routes/skills";
 import { chatsRoutes } from "./routes/chats";
 import { agentRoutes } from "./routes/agent.routes";
 import { adminRoutes } from "./routes/admin.routes";
@@ -114,6 +115,7 @@ app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
 app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
 app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
+app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
