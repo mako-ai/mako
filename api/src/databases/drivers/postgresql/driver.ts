@@ -449,7 +449,8 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
         if (value === null || value === undefined) {
           columnNullable.set(key, true);
         } else {
-          columnTypes.get(key)!.add(inferPostgresType(value));
+          const existing = columnTypes.get(key);
+          if (existing) existing.add(inferPostgresType(value));
         }
       }
     }

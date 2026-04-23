@@ -1031,6 +1031,10 @@ async function flushBulkBuffer(
   const initialCount = await tempCollection.countDocuments();
   if (initialCount === 0) return { flushed: 0 };
 
+  const loadStagingFromParquet =
+    cdcAdapter.loadStagingFromParquet?.bind(cdcAdapter);
+  if (!loadStagingFromParquet) return { flushed: 0 };
+
   let currentBatchSize = FLUSH_BATCH_SIZE;
   let totalFlushed = 0;
   let batchNum = 0;
@@ -1178,16 +1182,11 @@ async function flushBulkBuffer(
     try {
       for (let attempt = 1; attempt <= LOAD_MAX_RETRIES; attempt++) {
         try {
-          await cdcAdapter.loadStagingFromParquet!(
-            parquet.filePath,
-            cdcLayout,
-            flowId,
-            {
-              stagingSuffix: "backfill_staging",
-              skipDrop: true,
-              skipParquetCleanup: true,
-            },
-          );
+          await loadStagingFromParquet(parquet.filePath, cdcLayout, flowId, {
+            stagingSuffix: "backfill_staging",
+            skipDrop: true,
+            skipParquetCleanup: true,
+          });
           break;
         } catch (err) {
           if (attempt === LOAD_MAX_RETRIES) throw err;
@@ -1297,12 +1296,18 @@ async function flushBulkBuffer(
 
 async function resolveAdapterContext(options: SyncChunkOptions) {
   const entity = options.entity;
+  const tableDestination = options.tableDestination;
+  if (!tableDestination) {
+    throw new Error(
+      "resolveAdapterContext requires options.tableDestination to be set",
+    );
+  }
   const entityTableName = getEntityTableName(
-    options.tableDestination!.tableName,
+    tableDestination.tableName,
     entity,
   );
   const destinationConn = await DatabaseConnection.findById(
-    options.tableDestination!.connectionId,
+    tableDestination.connectionId,
   )
     .select({ type: 1 })
     .lean();
@@ -1312,8 +1317,8 @@ async function resolveAdapterContext(options: SyncChunkOptions) {
     destinationDatabaseId: options.destinationId,
     destinationDatabaseName: options.destinationDatabaseName,
     tableDestination: {
-      connectionId: String(options.tableDestination!.connectionId),
-      schema: options.tableDestination!.schema || "public",
+      connectionId: String(tableDestination.connectionId),
+      schema: tableDestination.schema || "public",
       tableName: entityTableName,
     },
   });
@@ -1328,6 +1333,7 @@ export async function performBulkFlush(
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { flushed: 0 };
   }
+  const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
     await resolveAdapterContext(options);
 
@@ -1356,7 +1362,7 @@ export async function performBulkFlush(
 
   orchestratorLogger.info("performBulkFlush: flushing buffer to staging", {
     entity,
-    flowId: options.flowId,
+    flowId,
     hasSchema: !!entitySchema,
   });
   return flushBulkBuffer(
@@ -1364,7 +1370,7 @@ export async function performBulkFlush(
     cdcAdapter,
     cdcLayout,
     entity,
-    options.flowId!,
+    flowId,
     options.logger,
     schemaFields,
     onBatchFlushed,
@@ -1375,6 +1381,7 @@ export async function performPrepareStaging(
   options: SyncChunkOptions,
 ): Promise<void> {
   if (!options.tableDestination?.connectionId || !options.flowId) return;
+  const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
     await resolveAdapterContext(options);
 
@@ -1387,9 +1394,9 @@ export async function performPrepareStaging(
 
   orchestratorLogger.info(
     "performPrepareStaging: dropping staging table for fresh load",
-    { entity, flowId: options.flowId },
+    { entity, flowId },
   );
-  await cdcAdapter.prepareStaging(cdcLayout, options.flowId!, {
+  await cdcAdapter.prepareStaging(cdcLayout, flowId, {
     stagingSuffix: "backfill_staging",
   });
 }
@@ -1409,6 +1416,7 @@ export async function performStagingMerge(
   if (!options.tableDestination?.connectionId || !options.flowId) {
     return { written: 0 };
   }
+  const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
     await resolveAdapterContext(options);
 
@@ -1432,12 +1440,12 @@ export async function performStagingMerge(
 
   orchestratorLogger.info("performStagingMerge: merging staging to live", {
     entity,
-    flowId: options.flowId,
+    flowId,
   });
   return cdcAdapter.mergeFromStaging(
     cdcLayout,
     {
-      _id: new Types.ObjectId(options.flowId),
+      _id: new Types.ObjectId(flowId),
       deleteMode: options.deleteMode,
       dataSourceId:
         dataSource &&
@@ -1446,7 +1454,7 @@ export async function performStagingMerge(
           ? new Types.ObjectId(dataSource.id)
           : undefined,
     } as any,
-    options.flowId!,
+    flowId,
     entitySchema ?? undefined,
     { stagingSuffix: "backfill_staging" },
   );
@@ -1456,6 +1464,7 @@ export async function performStagingCleanup(
   options: SyncChunkOptions,
 ): Promise<void> {
   if (!options.tableDestination?.connectionId || !options.flowId) return;
+  const flowId = options.flowId;
   const { entity, entityTableName, cdcAdapter } =
     await resolveAdapterContext(options);
 
@@ -1467,14 +1476,14 @@ export async function performStagingCleanup(
   });
   orchestratorLogger.info(
     "performStagingCleanup: dropping staging table and temp collection",
-    { entity, flowId: options.flowId },
+    { entity, flowId },
   );
-  await cdcAdapter.cleanupStaging(cdcLayout, options.flowId!, {
+  await cdcAdapter.cleanupStaging(cdcLayout, flowId, {
     stagingSuffix: "backfill_staging",
   });
 
   const db = Flow.db;
-  const collName = `backfill_tmp_${options.flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
+  const collName = `backfill_tmp_${flowId}_${entity.replace(/[^a-zA-Z0-9]/g, "_")}`;
   await db
     .collection(collName)
     .drop()

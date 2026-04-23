@@ -157,54 +157,87 @@ export function createSelfDirectiveTools(workspaceId: string) {
           const current = ws.selfDirective || "";
           let newValue: string;
 
+          // Runtime-guarded narrowing for fields that Zod's superRefine
+          // already validates per-operation but TS can't track.
+          const requireField = <T>(
+            value: T | undefined,
+            field: string,
+          ): T | { success: false; error: string } => {
+            if (value === undefined) {
+              return {
+                success: false,
+                error: `'${field}' is required for '${operation}' operation`,
+              };
+            }
+            return value;
+          };
+
           switch (operation) {
-            case "set":
-              newValue = content!;
+            case "set": {
+              const c = requireField(content, "content");
+              if (typeof c !== "string") return c;
+              newValue = c;
               break;
+            }
 
-            case "append":
-              newValue = current ? current + "\n" + content! : content!;
+            case "append": {
+              const c = requireField(content, "content");
+              if (typeof c !== "string") return c;
+              newValue = current ? current + "\n" + c : c;
               break;
+            }
 
-            case "prepend":
-              newValue = current ? content! + "\n" + current : content!;
+            case "prepend": {
+              const c = requireField(content, "content");
+              if (typeof c !== "string") return c;
+              newValue = current ? c + "\n" + current : c;
               break;
+            }
 
-            case "find_and_replace":
-              if (!current.includes(find!)) {
+            case "find_and_replace": {
+              const f = requireField(find, "find");
+              if (typeof f !== "string") return f;
+              const r = requireField(replace, "replace");
+              if (typeof r !== "string") return r;
+              if (!current.includes(f)) {
                 return {
                   success: false,
-                  error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
+                  error: `Text not found in self-directive: "${f.slice(0, 80)}"`,
                 };
               }
-              newValue = literalReplace(current, find!, replace!);
+              newValue = literalReplace(current, f, r);
               break;
+            }
 
-            case "insert_after":
-              if (!current.includes(after!)) {
+            case "insert_after": {
+              const a = requireField(after, "after");
+              if (typeof a !== "string") return a;
+              const c = requireField(content, "content");
+              if (typeof c !== "string") return c;
+              if (!current.includes(a)) {
                 return {
                   success: false,
-                  error: `Anchor text not found in self-directive: "${after!.slice(0, 80)}"`,
+                  error: `Anchor text not found in self-directive: "${a.slice(0, 80)}"`,
                 };
               }
-              newValue = literalReplace(
-                current,
-                after!,
-                after! + "\n" + content!,
-              );
+              newValue = literalReplace(current, a, a + "\n" + c);
               break;
+            }
 
-            case "delete_section":
-              if (!current.includes(find!)) {
+            case "delete_section": {
+              const f = requireField(find, "find");
+              if (typeof f !== "string") return f;
+              if (!current.includes(f)) {
                 return {
                   success: false,
-                  error: `Text not found in self-directive: "${find!.slice(0, 80)}"`,
+                  error: `Text not found in self-directive: "${f.slice(0, 80)}"`,
                 };
               }
-              newValue = literalReplace(current, find!, "")
+              newValue = literalReplace(current, f, "")
                 .replace(/\n{3,}/g, "\n\n")
                 .trim();
               break;
+            }
 
             default:
               return {

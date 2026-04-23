@@ -407,10 +407,10 @@ export const useConsoleTreeStore = create<TreeState>()(
           access: resolvedAccess,
         });
         if (res.success && res.data) {
-          // Replace temp ID with real ID
+          const newId = res.data.id;
           set(state => {
             const node = findInAnySectionMut(state, workspaceId, tempId);
-            if (node) node.id = res.data!.id;
+            if (node) node.id = newId;
           });
           return { id: res.data.id, name: res.data.name };
         }
@@ -503,14 +503,14 @@ export const useConsoleTreeStore = create<TreeState>()(
           data?: { id: string; name: string; folderId?: string };
         }>(`/workspaces/${workspaceId}/consoles/${consoleId}/duplicate`);
         if (res.success && res.data) {
-          // Insert copy next to original optimistically
+          const newConsole = res.data;
           set(state => {
             const original = findInAnySectionMut(state, workspaceId, consoleId);
             if (!original) return;
             const copy: ConsoleEntry = {
               ...original,
-              id: res.data!.id,
-              name: res.data!.name,
+              id: newConsole.id,
+              name: newConsole.name,
               isDirectory: false,
             };
             // Find which section/folder the original is in

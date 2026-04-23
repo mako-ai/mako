@@ -470,9 +470,10 @@ function Editor({
         });
       }
       if (tab.resultsViewMode) {
+        const viewMode = tab.resultsViewMode;
         setTabViewModes(prev => {
           if (prev[tab.id]) return prev;
-          return { ...prev, [tab.id]: tab.resultsViewMode! };
+          return { ...prev, [tab.id]: viewMode };
         });
       }
     }

@@ -17,6 +17,7 @@ import {
   ListItemText as MuiListItemText,
   Menu,
   MenuItem,
+  Skeleton,
   Typography,
 } from "@mui/material";
 import {
@@ -86,6 +87,12 @@ export interface ResourceTreeSection {
   nodes: ResourceTreeNode[];
   droppableId?: string;
   defaultAccess?: "private" | "workspace";
+  /**
+   * When true, skip rendering the section header row entirely. Useful for
+   * explorers that have only one implicit section (e.g. Databases, Flows,
+   * Connectors) and don't want a visible group label.
+   */
+  hideSectionHeader?: boolean;
 }
 
 export interface CreatedFolderResult {
@@ -103,7 +110,37 @@ export interface ResourceTreeProps {
   activeItemId?: string | null;
   searchQuery?: string;
 
-  getItemIcon?: (node: ResourceTreeNode) => ReactNode;
+  getItemIcon?: (
+    node: ResourceTreeNode,
+    ctx?: { isExpanded: boolean },
+  ) => ReactNode;
+  /**
+   * Optional trailing adornment rendered at the right edge of a row. Used for
+   * status letters, badges, or secondary glyphs (e.g. Flows status, Consoles
+   * read-only eye).
+   */
+  getRightAdornment?: (node: ResourceTreeNode) => ReactNode;
+  /**
+   * When a folder is expanded and its `children` array is `undefined`, this
+   * fires so the caller can lazily fetch children. Not called again while
+   * children are being loaded (`isLoadingChildren` returning true).
+   */
+  onLoadChildren?: (node: ResourceTreeNode) => void;
+  /**
+   * When true for an expanded folder, the tree renders a compact skeleton row
+   * in place of its children.
+   */
+  isLoadingChildren?: (node: ResourceTreeNode) => boolean;
+  /**
+   * When provided and returns a non-null array, replaces the default
+   * rename/duplicate/delete/info/move context menu entries for that node.
+   * Items should be `<MenuItem>` elements (or `null`). Call `helpers.closeMenu`
+   * from within each MenuItem's onClick to dismiss the menu after an action.
+   */
+  getContextMenuItems?: (
+    node: ResourceTreeNode,
+    helpers: { closeMenu: () => void },
+  ) => ReactNode[] | null;
   showFiles?: boolean;
   /**
    * When true, folder rows render only a chevron + name (no folder icon), and
@@ -171,6 +208,10 @@ function ResourceTreeInner(
     activeItemId,
     searchQuery = "",
     getItemIcon,
+    getRightAdornment,
+    onLoadChildren,
+    isLoadingChildren,
+    getContextMenuItems,
     showFiles = true,
     hideFolderIcon = false,
     enableDragDrop = true,
@@ -326,6 +367,43 @@ function ResourceTreeInner(
       })),
     [sections, searchQuery],
   );
+
+  const loadChildrenRequestedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!onLoadChildren) return;
+
+    const requested = loadChildrenRequestedRef.current;
+    const visit = (nodes: ResourceTreeNode[]) => {
+      for (const node of nodes) {
+        if (!node.isDirectory) continue;
+        const expansionKey = getExpansionKey(node);
+        if (
+          isFolderExpanded(expansionKey) &&
+          node.children === undefined &&
+          !isLoadingChildren?.(node) &&
+          !requested.has(expansionKey)
+        ) {
+          requested.add(expansionKey);
+          onLoadChildren(node);
+        } else if (node.children !== undefined) {
+          // Clear the guard so subsequent collapses/re-expansions can re-trigger
+          // a fetch if the caller dropped the children again.
+          requested.delete(expansionKey);
+          visit(node.children);
+        }
+      }
+    };
+
+    for (const section of sections) {
+      visit(section.nodes);
+    }
+  }, [
+    getExpansionKey,
+    isFolderExpanded,
+    isLoadingChildren,
+    onLoadChildren,
+    sections,
+  ]);
 
   const flatNodeIds = useMemo(() => {
     const ids: string[] = [];
@@ -531,6 +609,15 @@ function ResourceTreeInner(
     (event: React.MouseEvent, item: ResourceTreeNode) => {
       event.preventDefault();
       event.stopPropagation();
+      // Peek at custom items up front: if the caller returned an empty array
+      // for this node, skip opening the menu entirely (rather than flashing an
+      // empty popover).
+      if (getContextMenuItems) {
+        const peek = getContextMenuItems(item, { closeMenu: () => {} });
+        if (Array.isArray(peek) && peek.length === 0) {
+          return;
+        }
+      }
       const readOnly = !resolveCanManage(item);
       setContextMenu({
         anchorPosition: { top: event.clientY + 2, left: event.clientX + 2 },
@@ -539,7 +626,7 @@ function ResourceTreeInner(
       });
       setFocusedNodeId(item.id);
     },
-    [resolveCanManage],
+    [getContextMenuItems, resolveCanManage],
   );
 
   const handleSectionContextMenu = useCallback(
@@ -700,6 +787,9 @@ function ResourceTreeInner(
         event.preventDefault();
         if (!isNodeExpanded(focusItem)) {
           onExpandFolder(getExpansionKey(focusItem));
+          if (focusItem.children === undefined && onLoadChildren) {
+            onLoadChildren(focusItem);
+          }
         }
         return;
       }
@@ -751,6 +841,7 @@ function ResourceTreeInner(
     onPickerFileClick,
     onToggleFolder,
     onExpandFolder,
+    onLoadChildren,
     onUndo,
     resolveCanManage,
     startInlineRename,
@@ -799,7 +890,7 @@ function ResourceTreeInner(
     isDropTarget?: boolean;
     isSelected?: boolean;
   }) => ({
-    pl: 0.5 + depth * 1.5,
+    pl: 1.5 + depth * 1.5,
     minWidth: 0,
     py: 0,
     minHeight: ROW_HEIGHT,
@@ -816,6 +907,15 @@ function ResourceTreeInner(
     outlineOffset: isDropTarget ? "-2px" : undefined,
     borderRadius: 0,
   });
+
+  const maybeLoadChildren = useCallback(
+    (node: ResourceTreeNode) => {
+      if (node.children === undefined && onLoadChildren) {
+        onLoadChildren(node);
+      }
+    },
+    [onLoadChildren],
+  );
 
   const renderTree = (
     nodes: ResourceTreeNode[],
@@ -836,6 +936,7 @@ function ResourceTreeInner(
       const isDropTarget =
         dropTargetId === node.id ||
         dropTargetId === getFolderDropTargetId(node.id);
+      const rightAdornment = getRightAdornment?.(node);
 
       if (node.isDirectory) {
         const folderRow = (
@@ -848,7 +949,9 @@ function ResourceTreeInner(
               if (mode === "picker") {
                 updateLocationSelection(node.id, sectionKey);
               } else {
+                const willExpand = !isExpanded;
                 onToggleFolder(getExpansionKey(node));
+                if (willExpand) maybeLoadChildren(node);
               }
             }}
             onContextMenu={event => handleContextMenu(event, node)}
@@ -897,7 +1000,9 @@ function ResourceTreeInner(
                 component="span"
                 onClick={event => {
                   event.stopPropagation();
+                  const willExpand = !isExpanded;
                   onToggleFolder(getExpansionKey(node));
+                  if (willExpand) maybeLoadChildren(node);
                 }}
                 sx={{
                   display: "inline-flex",
@@ -915,8 +1020,10 @@ function ResourceTreeInner(
               </Box>
             </ListItemIcon>
             {!hideFolderIcon && (
-              <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH }}>
-                {isExpanded ? (
+              <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+                {getItemIcon ? (
+                  getItemIcon(node, { isExpanded })
+                ) : isExpanded ? (
                   <FolderOpen size={16} strokeWidth={1.5} />
                 ) : (
                   <Folder size={16} strokeWidth={1.5} />
@@ -937,26 +1044,64 @@ function ResourceTreeInner(
                 },
               }}
             />
+            {rightAdornment ? (
+              <Box
+                sx={{
+                  ml: "auto",
+                  pl: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  flexShrink: 0,
+                }}
+              >
+                {rightAdornment}
+              </Box>
+            ) : null}
           </ListItemButton>
         );
 
+        const childrenLoading = isExpanded
+          ? !!isLoadingChildren?.(node)
+          : false;
+        const childrenNotYetLoaded = isExpanded && node.children === undefined;
+
         const childrenContent = isExpanded
           ? (() => {
-              const childItems = renderTree(
-                node.children ?? [],
-                depth + 1,
-                sectionKey,
-              );
+              const showSkeleton = childrenLoading || childrenNotYetLoaded;
+              const childItems = showSkeleton
+                ? []
+                : renderTree(node.children ?? [], depth + 1, sectionKey);
               const childList = (
                 <List component="div" disablePadding dense>
-                  {childItems.length === 0 ? (
+                  {showSkeleton ? (
+                    Array.from({ length: 3 }).map((_, idx) => (
+                      <Box
+                        key={`child-skel-${idx}`}
+                        sx={{
+                          pl: 1.5 + (depth + 1) * 1.5 + 2.75,
+                          py: 0.5,
+                          display: "flex",
+                          alignItems: "center",
+                        }}
+                      >
+                        <Skeleton
+                          variant="text"
+                          width={`${50 + Math.random() * 30}%`}
+                          height={16}
+                        />
+                      </Box>
+                    ))
+                  ) : childItems.length === 0 ? (
                     <Typography
                       variant="caption"
                       color="text.disabled"
                       sx={{
-                        pl: 0.5 + (depth + 1) * 1.5 + 2.75,
-                        py: 0.5,
-                        display: "block",
+                        pl: 1.5 + (depth + 1) * 1.5 + 2.75,
+                        py: 0,
+                        minHeight: ROW_HEIGHT,
+                        lineHeight: `${ROW_HEIGHT}px`,
+                        display: "flex",
+                        alignItems: "center",
                       }}
                     >
                       Empty
@@ -1030,7 +1175,7 @@ function ResourceTreeInner(
               sx={{ minWidth: ICON_COL_WIDTH, visibility: "hidden", mr: 0 }}
             />
           )}
-          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH }}>
+          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
             {getItemIcon ? getItemIcon(node) : null}
           </ListItemIcon>
           <MuiListItemText
@@ -1044,6 +1189,19 @@ function ResourceTreeInner(
               },
             }}
           />
+          {rightAdornment ? (
+            <Box
+              sx={{
+                ml: "auto",
+                pl: 1,
+                display: "flex",
+                alignItems: "center",
+                flexShrink: 0,
+              }}
+            >
+              {rightAdornment}
+            </Box>
+          ) : null}
         </ListItemButton>
       );
 
@@ -1088,7 +1246,7 @@ function ResourceTreeInner(
         onContextMenu={event => handleSectionContextMenu(event, section.key)}
         sx={{
           py: 0,
-          pl: 0.5,
+          pl: 1.5,
           minWidth: 0,
           minHeight: ROW_HEIGHT,
           bgcolor: isDropTarget
@@ -1142,7 +1300,7 @@ function ResourceTreeInner(
           </Box>
         </ListItemIcon>
         {section.icon ? (
-          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH }}>
+          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
             {section.icon}
           </ListItemIcon>
         ) : null}
@@ -1167,25 +1325,30 @@ function ResourceTreeInner(
   const treeContent = (
     <List component="nav" dense disablePadding>
       {filteredSections.map(section => {
-        const sectionBody =
-          sectionExpanded[section.key] !== false ? (
-            section.nodes.length > 0 ? (
-              renderTree(section.nodes, 1, section.key)
-            ) : (
-              <Typography
-                sx={{
-                  pl: 3,
-                  py: 0.5,
-                  color: "text.disabled",
-                  fontSize: "0.8rem",
-                  fontStyle: "italic",
-                }}
-                variant="body2"
-              >
-                Nothing here yet
-              </Typography>
+        const sectionVisible =
+          section.hideSectionHeader || sectionExpanded[section.key] !== false;
+        const sectionBody = sectionVisible ? (
+          section.nodes.length > 0 ? (
+            renderTree(
+              section.nodes,
+              section.hideSectionHeader ? 0 : 1,
+              section.key,
             )
-          ) : null;
+          ) : (
+            <Typography
+              sx={{
+                pl: section.hideSectionHeader ? 2.5 : 4,
+                py: 0.5,
+                color: "text.disabled",
+                fontSize: "0.8rem",
+                fontStyle: "italic",
+              }}
+              variant="body2"
+            >
+              Nothing here yet
+            </Typography>
+          )
+        ) : null;
 
         // Wrap the section header + its body in a single block so the sticky
         // section header has a containing block spanning the whole section.
@@ -1201,7 +1364,7 @@ function ResourceTreeInner(
                 : undefined
             }
           >
-            {renderSectionHeader(section)}
+            {section.hideSectionHeader ? null : renderSectionHeader(section)}
             {sectionBody}
           </SectionScope>
         );
@@ -1264,6 +1427,13 @@ function ResourceTreeInner(
           (() => {
             const { item, readOnly } = contextMenu;
             const canManage = !readOnly;
+
+            const customItems = getContextMenuItems?.(item, {
+              closeMenu: () => setContextMenu(null),
+            });
+            if (customItems !== undefined && customItems !== null) {
+              return customItems;
+            }
 
             return [
               enableRename && canManage && (

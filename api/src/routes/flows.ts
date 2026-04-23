@@ -2473,9 +2473,9 @@ flowRoutes.get("/:flowId/sync-cdc/status", async c => {
 
     const pendingCountMap = new Map(pendingByEntity.map(r => [r._id, r.count]));
     const pendingOldestTsMap = new Map(
-      pendingByEntity
-        .filter(r => r.oldestIngestTs)
-        .map(r => [r._id, new Date(r.oldestIngestTs!)] as const),
+      pendingByEntity.flatMap(r =>
+        r.oldestIngestTs ? [[r._id, new Date(r.oldestIngestTs)] as const] : [],
+      ),
     );
 
     const entities = uniqueEntities.map(entity => {

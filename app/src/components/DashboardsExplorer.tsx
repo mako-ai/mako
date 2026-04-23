@@ -6,7 +6,6 @@ import {
   Stack,
   Typography,
   Tooltip,
-  Alert,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -31,6 +30,7 @@ import { focusDashboardTab } from "../dashboard-runtime/shell";
 import type { Dashboard } from "../dashboard-runtime/types";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
+import ExplorerShell from "./ExplorerShell";
 
 const EMPTY_TREE: ResourceTreeNode[] = [];
 const NEW_DASHBOARD_TEMPLATE = {
@@ -292,86 +292,50 @@ export function DashboardsExplorer() {
     return null;
   })();
 
+  const actions = (
+    <>
+      <Tooltip title="New Dashboard">
+        <IconButton size="small" onClick={handleCreate}>
+          <AddIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Refresh">
+        <IconButton size="small" onClick={handleRefresh} disabled={loading}>
+          <RefreshIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+    </>
+  );
+
+  const isInitialLoading =
+    loading && myDashboards.length === 0 && workspaceDashboards.length === 0;
+
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Header */}
-      <Box
-        sx={{
-          px: 1,
-          py: 0.25,
-          minHeight: 37,
-          borderBottom: 1,
-          borderColor: "divider",
+    <>
+      <ExplorerShell
+        title="Dashboards"
+        actions={actions}
+        searchPlaceholder="Search dashboards..."
+        error={error}
+        onErrorClose={() => {
+          if (workspaceId) {
+            useDashboardTreeStore.setState(state => {
+              state.error[workspaceId] = null;
+            });
+          }
         }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            height: "100%",
-            minHeight: 32,
-          }}
-        >
-          <Typography
-            variant="h6"
-            sx={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              textTransform: "uppercase",
-            }}
-          >
-            Dashboards
-          </Typography>
-          <Box sx={{ display: "flex", gap: 0 }}>
-            <Tooltip title="New Dashboard">
-              <IconButton size="small" onClick={handleCreate}>
-                <AddIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Refresh">
-              <IconButton
-                size="small"
-                onClick={handleRefresh}
-                disabled={loading}
-              >
-                <RefreshIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        </Box>
-      </Box>
-
-      {/* Error Alert */}
-      {error && (
-        <Alert
-          severity="error"
-          onClose={() => {
-            if (workspaceId) {
-              useDashboardTreeStore.setState(state => {
-                state.error[workspaceId] = null;
-              });
-            }
-          }}
-          sx={{ mx: 2, mt: 2 }}
-        >
-          {error}
-        </Alert>
-      )}
-
-      {/* Tree */}
-      <Box sx={{ flexGrow: 1, overflow: "auto" }}>
-        {loading &&
-        myDashboards.length === 0 &&
-        workspaceDashboards.length === 0 ? (
+        loading={isInitialLoading}
+        skeleton={
           <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
             <Typography variant="body2">Loading...</Typography>
           </Box>
-        ) : (
+        }
+      >
+        {({ searchQuery }) => (
           <ResourceTree
             sections={sectionsDef}
             mode="sidebar"
+            searchQuery={searchQuery}
             activeItemId={activeDashboardTabId}
             getItemIcon={getItemIcon}
             enableDragDrop
@@ -399,7 +363,7 @@ export function DashboardsExplorer() {
             canManageItem={canManageItem}
           />
         )}
-      </Box>
+      </ExplorerShell>
 
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
@@ -408,7 +372,7 @@ export function DashboardsExplorer() {
         </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Are you sure you want to delete "{deleteTarget?.name}"?
+            Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
             {deleteTarget?.isDirectory
               ? " All dashboards inside will be moved to the root level."
               : " This action cannot be undone."}
@@ -466,7 +430,7 @@ export function DashboardsExplorer() {
         onClose={() => setInfoTarget(null)}
         members={members}
       />
-    </Box>
+    </>
   );
 }
 

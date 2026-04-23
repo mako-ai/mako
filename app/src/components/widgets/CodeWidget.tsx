@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Box, CircularProgress, Typography } from "@mui/material";
 import { useDashboardQuery } from "../../dashboard-runtime/useDashboardQuery";
 import type { DashboardQueryExecutor } from "../../dashboard-runtime/types";
@@ -26,7 +26,7 @@ const CodeWidget: React.FC<CodeWidgetProps> = ({
     queryExecutor,
     enabled: Boolean(localSql.trim()),
   });
-  const data = result?.rows || [];
+  const data = useMemo(() => result?.rows ?? [], [result?.rows]);
 
   useEffect(() => {
     if (error) {

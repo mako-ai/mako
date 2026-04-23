@@ -77,7 +77,8 @@ function parseDateRange(
  * Query params: ?from=ISO&to=ISO
  */
 usageRoutes.get("/summary", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId")!;
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
   const parsed = parseDateRange(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const dateFilter = parsed.match;
@@ -129,7 +130,8 @@ usageRoutes.get("/summary", async (c: AuthenticatedContext) => {
  * Query params: ?from=ISO&to=ISO
  */
 usageRoutes.get("/by-user", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId")!;
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
   const parsed = parseDateRange(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const dateFilter = parsed.match;
@@ -183,10 +185,10 @@ usageRoutes.get("/by-user", async (c: AuthenticatedContext) => {
  * GET /by-chat/:chatId -- per-chat detail
  */
 usageRoutes.get("/by-chat/:chatId", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId")!;
-  const chatId = c.req.param("chatId")!;
-
-  if (!ObjectId.isValid(chatId)) {
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
+  const chatId = c.req.param("chatId");
+  if (!chatId || !ObjectId.isValid(chatId)) {
     return c.json({ error: "Invalid chatId" }, 400);
   }
 
@@ -236,7 +238,8 @@ usageRoutes.get("/by-chat/:chatId", async (c: AuthenticatedContext) => {
  * Query params: ?from=ISO&to=ISO
  */
 usageRoutes.get("/by-model", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId")!;
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId) return c.json({ error: "Missing workspaceId" }, 400);
   const parsed = parseDateRange(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const dateFilter = parsed.match;

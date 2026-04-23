@@ -1115,7 +1115,7 @@ export async function validateQuery(
 
     if (result.data && result.data.length > 0) {
       sampleRow = result.data[0] as Record<string, unknown>;
-      columns = Object.keys(sampleRow!).map(name => ({
+      columns = Object.keys(sampleRow).map(name => ({
         name,
         type: "", // Empty - types should be set by AI agent or user
       }));

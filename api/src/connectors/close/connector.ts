@@ -1238,8 +1238,19 @@ export class CloseConnector extends BaseConnector {
       ).toISOString();
     }
 
+    // Invariant: windowStart and windowEnd are both set by this point.
+    // Either we returned early in the oldestResp handler, or both have been
+    // assigned above. Narrow for TypeScript to avoid non-null assertions below.
+    if (windowStart === null || windowEnd === null) {
+      return {
+        totalProcessed: recordCount,
+        hasMore: false,
+        iterationsInChunk: 0,
+      };
+    }
+
     while (iterations < maxIterations) {
-      if (new Date(windowStart!).getTime() >= new Date(upperBound).getTime()) {
+      if (new Date(windowStart).getTime() >= new Date(upperBound).getTime()) {
         return {
           totalProcessed: recordCount,
           hasMore: false,
@@ -1423,11 +1434,16 @@ export class CloseConnector extends BaseConnector {
               "Close cursor limit reached, halving date window",
               { entity, recordsFetched: recordCount, windowStart, windowEnd },
             );
+            // Snapshot current window bounds: both are guaranteed non-null
+            // by the invariant guard above the loop, but TS loses track
+            // across reassignments inside the loop.
+            const currentStart: string = windowStart ?? "";
+            const currentEnd: string = windowEnd ?? "";
             const currentSpan =
-              new Date(windowEnd!).getTime() - new Date(windowStart!).getTime();
+              new Date(currentEnd).getTime() - new Date(currentStart).getTime();
             const halfSpan = Math.max(currentSpan / 2, 24 * 60 * 60 * 1000);
             windowEnd = new Date(
-              new Date(windowStart!).getTime() + halfSpan,
+              new Date(currentStart).getTime() + halfSpan,
             ).toISOString();
           }
           pageCursor = null;

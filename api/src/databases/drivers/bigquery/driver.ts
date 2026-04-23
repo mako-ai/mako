@@ -483,7 +483,8 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
         if (value === null || value === undefined) {
           columnNullable.set(key, true);
         } else {
-          columnTypes.get(key)!.add(inferBigQueryType(value));
+          const existing = columnTypes.get(key);
+          if (existing) existing.add(inferBigQueryType(value));
         }
       }
     }

@@ -68,12 +68,6 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  if (!activeDashboard) return null;
-
-  const allSourcesReady = activeDashboard.dataSources.every(
-    ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
-  );
-
   const errorSummary = useMemo(() => {
     if (!activeDashboard) return null;
     const failingSources = activeDashboard.dataSources.filter(
@@ -88,6 +82,12 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
         "Failed to load one or more data sources",
     };
   }, [activeDashboard, runtimeSession]);
+
+  if (!activeDashboard) return null;
+
+  const allSourcesReady = activeDashboard.dataSources.every(
+    ds => runtimeSession?.dataSources[ds.id]?.status === "ready",
+  );
 
   const allGridLayouts = (() => {
     const breakpoints = ["lg", "md", "sm", "xs"] as const;

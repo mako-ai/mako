@@ -4,6 +4,7 @@ import {
   useImperativeHandle,
   useRef,
   useEffect,
+  useCallback,
 } from "react";
 import {
   Box,
@@ -23,14 +24,11 @@ import {
   Button,
   Tooltip,
   Alert,
-  InputBase,
 } from "@mui/material";
 import {
   SquareTerminal as ConsoleIcon,
   RotateCw as RefreshIcon,
   Plus as AddIcon,
-  Search as SearchIcon,
-  X as ClearIcon,
   FolderPlus as CreateFolderIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -45,6 +43,7 @@ import FileExplorerDialog from "./FileExplorerDialog";
 import ConsoleInfoModal from "./ConsoleInfoModal";
 import FolderInfoModal from "./FolderInfoModal";
 import ConsoleTree from "./ConsoleTree";
+import ExplorerShell from "./ExplorerShell";
 
 interface ConsoleExplorerProps {
   onConsoleSelect: (
@@ -92,7 +91,6 @@ function ConsoleExplorer(
   const loading = currentWorkspace ? !!loadingMap[currentWorkspace.id] : false;
   const error = currentWorkspace ? _errorFor(currentWorkspace.id) : null;
 
-  // Dialogs & menus
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [explorerDialogOpen, setExplorerDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -104,16 +102,9 @@ function ConsoleExplorer(
     null,
   );
 
-  // Undo stack
   const [undoStack, setUndoStack] = useState<
     Array<{ type: "delete"; id: string; isDirectory: boolean }>
   >([]);
-
-  // Search
-  const [localSearchQuery, setLocalSearchQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const collectIds = (nodes: ConsoleEntry[]): Set<string> => {
     const ids = new Set<string>();
@@ -125,33 +116,6 @@ function ConsoleExplorer(
     }
     return ids;
   };
-
-  const filteredMyConsoles =
-    localSearchQuery.length >= 2
-      ? filterTree(myConsoles, localSearchQuery)
-      : myConsoles;
-  const filteredWorkspaceConsoles =
-    localSearchQuery.length >= 2
-      ? filterTree(sharedWithWorkspace, localSearchQuery)
-      : sharedWithWorkspace;
-
-  const treeIds =
-    localSearchQuery.length >= 2
-      ? new Set([
-          ...collectIds(filteredMyConsoles),
-          ...collectIds(filteredWorkspaceConsoles),
-        ])
-      : new Set<string>();
-  const extraServerResults = searchResults.filter(r => !treeIds.has(r.id));
-
-  const noMatches =
-    localSearchQuery.length >= 2 &&
-    filteredMyConsoles.length === 0 &&
-    filteredWorkspaceConsoles.length === 0 &&
-    extraServerResults.length === 0 &&
-    !searchLoading;
-
-  // ── Handlers ──
 
   function _errorFor(wid: string) {
     const map = useConsoleTreeStore.getState().error;
@@ -169,40 +133,22 @@ function ConsoleExplorer(
     },
   }));
 
-  // Ensure initial load happens
   useEffect(() => {
-    // Tree store handles its own initial load; this is just for the ref
+    // Tree store handles its own initial load
   }, [currentWorkspace]);
 
-  const handleSearchChange = (value: string) => {
-    setLocalSearchQuery(value);
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-
-    if (value.length < 2) {
-      clearSearch();
-      return;
-    }
-
-    searchTimerRef.current = setTimeout(() => {
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      if (value.length < 2) {
+        clearSearch();
+        return;
+      }
       if (currentWorkspace) {
         searchConsoles(currentWorkspace.id, value);
       }
-    }, 400);
-  };
-
-  const handleSearchClear = () => {
-    setLocalSearchQuery("");
-    clearSearch();
-  };
-
-  const handleSearchClose = () => {
-    handleSearchClear();
-    setSearchOpen(false);
-  };
-
-  const handleSearchOpen = () => {
-    setSearchOpen(true);
-  };
+    },
+    [clearSearch, currentWorkspace, searchConsoles],
+  );
 
   const handleSearchResultClick = (result: ConsoleSearchResult) => {
     onConsoleSelect(
@@ -416,15 +362,16 @@ function ConsoleExplorer(
 
   const handleSoftDelete = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id) return;
+    const itemId = item.id;
     const success = await deleteItem(
       currentWorkspace.id,
-      item.id,
+      itemId,
       item.isDirectory,
     );
     if (success) {
       setUndoStack(prev => [
         ...prev,
-        { type: "delete", id: item.id!, isDirectory: item.isDirectory },
+        { type: "delete", id: itemId, isDirectory: item.isDirectory },
       ]);
     }
   };
@@ -454,207 +401,156 @@ function ConsoleExplorer(
 
   const treeRef = useRef<import("./ConsoleTree").ConsoleTreeRef | null>(null);
 
-  const renderSkeletonItems = () => {
-    return Array.from({ length: 3 }).map((_, index) => (
-      <ListItemButton key={`skeleton-${index}`} sx={{ py: 0.25, pl: 0.5 }}>
-        <ListItemIcon sx={{ minWidth: 22, visibility: "hidden", mr: 0 }} />
-        <ListItemIcon sx={{ minWidth: 24 }}>
-          <Skeleton variant="circular" width={18} height={18} />
-        </ListItemIcon>
-        <ListItemText
-          primary={
-            <Skeleton
-              variant="text"
-              width={`${60 + Math.random() * 40}%`}
-              height={20}
-            />
-          }
-        />
-      </ListItemButton>
-    ));
-  };
-
-  return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <Box
-        sx={{
-          px: 1,
-          height: 37,
-          borderBottom: 1,
-          borderColor: "divider",
-          display: "flex",
-          alignItems: "center",
-          gap: 0.5,
-        }}
-      >
-        {searchOpen ? (
-          <InputBase
-            autoFocus
-            inputRef={searchInputRef}
-            placeholder="Search consoles..."
-            value={localSearchQuery}
-            onChange={e => handleSearchChange(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Escape") handleSearchClose();
-            }}
-            startAdornment={
-              <SearchIcon
-                size={14}
-                style={{ marginLeft: 6, marginRight: 6, flexShrink: 0 }}
+  const renderSkeletonItems = () => (
+    <List component="nav" dense>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <ListItemButton key={`skeleton-${index}`} sx={{ py: 0.25, pl: 0.5 }}>
+          <ListItemIcon sx={{ minWidth: 22, visibility: "hidden", mr: 0 }} />
+          <ListItemIcon sx={{ minWidth: 24 }}>
+            <Skeleton variant="circular" width={18} height={18} />
+          </ListItemIcon>
+          <ListItemText
+            primary={
+              <Skeleton
+                variant="text"
+                width={`${60 + Math.random() * 40}%`}
+                height={20}
               />
             }
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              height: 28,
-              fontSize: "0.85rem",
-              bgcolor: "background.paper",
-              border: 1,
-              borderColor: "divider",
-              borderRadius: 1,
-              "&.Mui-focused": { borderColor: "primary.main" },
-              "& .MuiInputBase-input": {
-                p: 0,
-                height: "100%",
-                "&:focus": { outline: "none" },
-              },
-            }}
           />
-        ) : (
-          <Box
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              overflow: "hidden",
-            }}
-          >
-            <Typography
-              variant="h6"
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                textTransform: "uppercase",
-              }}
-            >
-              Consoles
-            </Typography>
-          </Box>
-        )}
-        <Box sx={{ display: "flex", gap: 0, flexShrink: 0 }}>
-          {!searchOpen && (
+        </ListItemButton>
+      ))}
+    </List>
+  );
+
+  const actions = (
+    <>
+      <Tooltip title="Add new folder">
+        <IconButton onClick={handleMenuOpen} size="small">
+          <AddIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Refresh">
+        <IconButton onClick={fetchConsoleEntries} size="small">
+          <RefreshIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+    </>
+  );
+
+  return (
+    <>
+      <ExplorerShell
+        title="Consoles"
+        actions={actions}
+        searchPlaceholder="Search consoles..."
+        onSearchChange={handleSearchChange}
+        error={error}
+        loading={loading}
+        skeleton={renderSkeletonItems()}
+      >
+        {({ searchQuery }) => {
+          const filteredMyConsoles =
+            searchQuery.length >= 2
+              ? filterTree(myConsoles, searchQuery)
+              : myConsoles;
+          const filteredWorkspaceConsoles =
+            searchQuery.length >= 2
+              ? filterTree(sharedWithWorkspace, searchQuery)
+              : sharedWithWorkspace;
+
+          const treeIds =
+            searchQuery.length >= 2
+              ? new Set([
+                  ...collectIds(filteredMyConsoles),
+                  ...collectIds(filteredWorkspaceConsoles),
+                ])
+              : new Set<string>();
+          const extraServerResults = searchResults.filter(
+            r => !treeIds.has(r.id),
+          );
+
+          const noMatches =
+            searchQuery.length >= 2 &&
+            filteredMyConsoles.length === 0 &&
+            filteredWorkspaceConsoles.length === 0 &&
+            extraServerResults.length === 0 &&
+            !searchLoading;
+
+          return (
             <>
-              <Tooltip title="Add new folder">
-                <IconButton onClick={handleMenuOpen} size="small">
-                  <AddIcon size={20} strokeWidth={2} />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Refresh">
-                <IconButton onClick={fetchConsoleEntries} size="small">
-                  <RefreshIcon size={20} strokeWidth={2} />
-                </IconButton>
-              </Tooltip>
-            </>
-          )}
-          <Tooltip title={searchOpen ? "Close search" : "Search"}>
-            <IconButton
-              onClick={searchOpen ? handleSearchClose : handleSearchOpen}
-              size="small"
-            >
-              {searchOpen ? (
-                <ClearIcon size={20} strokeWidth={2} />
-              ) : (
-                <SearchIcon size={20} strokeWidth={2} />
+              <ConsoleTree
+                ref={treeRef}
+                mode="sidebar"
+                onFileOpen={handleFileOpen}
+                showFiles
+                enableDragDrop
+                enableDuplicate
+                enableInfo
+                enableDelete
+                enableRename
+                enableMove
+                onMoveRequest={handleMoveTo}
+                onInfoRequest={handleGetInfo}
+                onFolderInfoRequest={handleFolderInfo}
+                onDeleteRequest={handleDeleteRequest}
+                onSoftDelete={handleSoftDelete}
+                onDuplicate={handleDuplicate}
+                onUndo={handleUndo}
+                searchQuery={searchQuery}
+              />
+
+              {searchQuery.length >= 2 && extraServerResults.length > 0 && (
+                <Box sx={{ px: 1, pb: 1 }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ px: 0.5, pb: 0.5, display: "block" }}
+                  >
+                    Also matched by description
+                  </Typography>
+                  <List dense disablePadding>
+                    {extraServerResults.map(result => (
+                      <ListItemButton
+                        key={result.id}
+                        onClick={() => handleSearchResultClick(result)}
+                        sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 28 }}>
+                          <ConsoleIcon size={16} />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={result.title}
+                          secondary={result.description || result.language}
+                          primaryTypographyProps={{
+                            variant: "body2",
+                            noWrap: true,
+                            fontSize: "0.8rem",
+                          }}
+                          secondaryTypographyProps={{
+                            variant: "caption",
+                            noWrap: true,
+                            fontSize: "0.7rem",
+                          }}
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                </Box>
               )}
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
-      {error && (
-        <Box sx={{ p: 2 }}>
-          <Typography color="error" variant="body2">
-            {error}
-          </Typography>
-        </Box>
-      )}
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-        {loading ? (
-          <List component="nav" dense>
-            {renderSkeletonItems()}
-          </List>
-        ) : (
-          <ConsoleTree
-            ref={treeRef}
-            mode="sidebar"
-            onFileOpen={handleFileOpen}
-            showFiles
-            enableDragDrop
-            enableDuplicate
-            enableInfo
-            enableDelete
-            enableRename
-            enableMove
-            onMoveRequest={handleMoveTo}
-            onInfoRequest={handleGetInfo}
-            onFolderInfoRequest={handleFolderInfo}
-            onDeleteRequest={handleDeleteRequest}
-            onSoftDelete={handleSoftDelete}
-            onDuplicate={handleDuplicate}
-            onUndo={handleUndo}
-            searchQuery={localSearchQuery}
-          />
-        )}
+              {noMatches && (
+                <Box sx={{ px: 2, py: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    No consoles found
+                  </Typography>
+                </Box>
+              )}
+            </>
+          );
+        }}
+      </ExplorerShell>
 
-        {localSearchQuery.length >= 2 && extraServerResults.length > 0 && (
-          <Box sx={{ px: 1, pb: 1 }}>
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ px: 0.5, pb: 0.5, display: "block" }}
-            >
-              Also matched by description
-            </Typography>
-            <List dense disablePadding>
-              {extraServerResults.map(result => (
-                <ListItemButton
-                  key={result.id}
-                  onClick={() => handleSearchResultClick(result)}
-                  sx={{ borderRadius: 1, py: 0.25, minHeight: 36 }}
-                >
-                  <ListItemIcon sx={{ minWidth: 28 }}>
-                    <ConsoleIcon size={16} />
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={result.title}
-                    secondary={result.description || result.language}
-                    primaryTypographyProps={{
-                      variant: "body2",
-                      noWrap: true,
-                      fontSize: "0.8rem",
-                    }}
-                    secondaryTypographyProps={{
-                      variant: "caption",
-                      noWrap: true,
-                      fontSize: "0.7rem",
-                    }}
-                  />
-                </ListItemButton>
-              ))}
-            </List>
-          </Box>
-        )}
-
-        {noMatches && (
-          <Box sx={{ px: 2, py: 1 }}>
-            <Typography variant="caption" color="text.secondary">
-              No consoles found
-            </Typography>
-          </Box>
-        )}
-      </Box>
-
-      {/* Add Menu */}
       <Menu
         anchorEl={menuAnchor}
         open={Boolean(menuAnchor)}
@@ -678,7 +574,6 @@ function ConsoleExplorer(
         </MenuItem>
       </Menu>
 
-      {/* Delete Confirmation Dialog */}
       <Dialog
         open={deleteDialogOpen}
         onClose={() => setDeleteDialogOpen(false)}
@@ -710,7 +605,6 @@ function ConsoleExplorer(
         </DialogActions>
       </Dialog>
 
-      {/* Console Info Modal */}
       <ConsoleInfoModal
         open={infoModalOpen}
         onClose={() => setInfoModalOpen(false)}
@@ -718,14 +612,12 @@ function ConsoleExplorer(
         workspaceId={currentWorkspace?.id}
       />
 
-      {/* Folder Info Modal */}
       <FolderInfoModal
         open={folderInfoOpen}
         onClose={() => setFolderInfoOpen(false)}
         folder={folderInfoItem}
       />
 
-      {/* File Explorer Dialog for Move */}
       <FileExplorerDialog
         open={explorerDialogOpen}
         onClose={() => {
@@ -740,7 +632,7 @@ function ConsoleExplorer(
           selectedItem ? getParentFolderIdForItem(selectedItem) : null
         }
       />
-    </Box>
+    </>
   );
 }
 

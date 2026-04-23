@@ -1,22 +1,15 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Box,
   Typography,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
   Alert,
   IconButton,
   Skeleton,
-  Menu,
   MenuItem,
+  ListItemIcon,
   Tooltip,
 } from "@mui/material";
 import {
-  ChevronRight as ChevronRightIcon,
-  ChevronDown as ChevronDownIcon,
   Database as DatabaseIcon,
   Table as CollectionIcon,
   Eye as ViewIcon,
@@ -34,8 +27,12 @@ import CreateDatabaseDialog from "./CreateDatabaseDialog";
 import { useSchemaStore, Connection, TreeNode } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useConsoleStore } from "../store/consoleStore";
+import ResourceTree, {
+  type ResourceTreeNode,
+  type ResourceTreeSection,
+} from "./ResourceTree";
+import ExplorerShell from "./ExplorerShell";
 
-// For backward compatibility with existing props
 export interface CollectionInfo {
   name: string;
   type: string;
@@ -64,7 +61,7 @@ const DatabaseTypeIcon = React.memo(
   }) => {
     const iconUrl = typeToIconUrl(type);
     if (iconUrl) return <IconImg src={iconUrl} alt={type} />;
-    return <DatabaseIcon size={24} strokeWidth={1.5} />;
+    return <DatabaseIcon size={20} strokeWidth={1.5} />;
   },
 );
 DatabaseTypeIcon.displayName = "DatabaseTypeIcon";
@@ -78,11 +75,25 @@ interface DatabaseExplorerProps {
   onCollectionClick?: (databaseId: string, collection: CollectionInfo) => void;
 }
 
+// Lookup info stashed alongside each ResourceTreeNode so the lazy-load /
+// context-menu callbacks can recover the original TreeNode + connection.
+type DbNodeInfo =
+  | {
+      type: "connection";
+      connectionId: string;
+      displayName: string;
+      dbType: string;
+    }
+  | {
+      type: "node";
+      connectionId: string;
+      node: TreeNode;
+    };
+
 function DatabaseExplorer({
   onCollectionSelect,
   onCollectionClick,
 }: DatabaseExplorerProps) {
-  // Use the unified schema store
   const connections = useSchemaStore(s => s.connections);
   const treeNodes = useSchemaStore(s => s.treeNodes);
   const loading = useSchemaStore(s => s.loading);
@@ -95,9 +106,10 @@ function DatabaseExplorer({
 
   const { currentWorkspace } = useWorkspace();
 
-  const databases: Connection[] = currentWorkspace
-    ? connections[currentWorkspace.id] || []
-    : [];
+  const databases: Connection[] = useMemo(
+    () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
+    [currentWorkspace, connections],
+  );
 
   const isLoadingConnections = currentWorkspace
     ? !!loading[`connections:${currentWorkspace.id}`]
@@ -121,22 +133,14 @@ function DatabaseExplorer({
     [dbTypes],
   );
 
-  const [loadingData, setLoadingData] = useState<Set<string>>(new Set());
-
-  const {
-    expandedDatabases,
-    toggleDatabase,
-    isDatabaseExpanded,
-    expandedNodes,
-    toggleNode,
-  } = useDatabaseExplorerStore();
+  const { toggleDatabase, isDatabaseExpanded, expandedNodes, toggleNode } =
+    useDatabaseExplorerStore();
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [editingDatabaseId, setEditingDatabaseId] = useState<
     string | undefined
   >(undefined);
 
-  // Initialize connections on mount
   useEffect(() => {
     if (currentWorkspace) {
       ensureConnections(currentWorkspace.id);
@@ -144,87 +148,25 @@ function DatabaseExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace?.id, ensureConnections]);
 
-  // Fetch tree roots for all databases
-  const fetchDatabaseDataLocal = useCallback(
-    async (connectionId: string) => {
-      if (!currentWorkspace) return;
-      setLoadingData(prev => new Set(prev).add(connectionId));
-      await ensureTreeRoot(currentWorkspace.id, connectionId);
-      setLoadingData(prev => {
-        const next = new Set(prev);
-        next.delete(connectionId);
-        return next;
-      });
-    },
-    [currentWorkspace, ensureTreeRoot],
-  );
-
   useEffect(() => {
     if (!currentWorkspace) return;
     databases.forEach(db => {
       const hasNodes = treeNodes[db.id] && treeNodes[db.id]["root"];
       if (!hasNodes) {
-        fetchDatabaseDataLocal(db.id);
+        ensureTreeRoot(currentWorkspace.id, db.id);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [databases, currentWorkspace?.id, treeNodes, fetchDatabaseDataLocal]);
+  }, [databases, currentWorkspace?.id, treeNodes, ensureTreeRoot]);
 
-  // Re-fetch children for expanded nodes that lost their data (e.g., after refresh)
-  useEffect(() => {
+  const handleRefresh = useCallback(async () => {
     if (!currentWorkspace) return;
+    await refreshConnections(currentWorkspace.id);
+  }, [currentWorkspace, refreshConnections]);
 
-    databases.forEach(db => {
-      if (!isDatabaseExpanded(db.id)) return;
-
-      const dbTree = treeNodes[db.id];
-      if (!dbTree) return;
-
-      const rootNodes = dbTree["root"] || [];
-
-      const checkAndFetchMissingChildren = (node: TreeNode) => {
-        const nodeKey = `${db.id}:${node.kind}:${node.id}`;
-        if (!node.hasChildren || !expandedNodes[nodeKey]) return;
-
-        const childKey = `${node.kind}:${node.id}`;
-        const children = dbTree[childKey];
-
-        if (!children) {
-          // Expanded node with missing children - fetch them
-          ensureTreeChildren(currentWorkspace.id, db.id, {
-            id: node.id,
-            kind: node.kind,
-            metadata: node.metadata,
-          });
-        } else {
-          // Recurse into existing children
-          children.forEach(checkAndFetchMissingChildren);
-        }
-      };
-
-      rootNodes.forEach(checkAndFetchMissingChildren);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    currentWorkspace?.id,
-    databases,
-    treeNodes,
-    expandedNodes,
-    isDatabaseExpanded,
-    ensureTreeChildren,
-  ]);
-
-  const handleDatabaseToggle = useCallback(
-    (connectionId: string) => {
-      toggleDatabase(connectionId);
-      const hasNodes =
-        treeNodes[connectionId] && treeNodes[connectionId]["root"];
-      if (!isDatabaseExpanded(connectionId) && !hasNodes) {
-        fetchDatabaseDataLocal(connectionId);
-      }
-    },
-    [toggleDatabase, treeNodes, isDatabaseExpanded, fetchDatabaseDataLocal],
-  );
+  const handleDatabaseCreated = useCallback(() => {
+    handleRefresh();
+  }, [handleRefresh]);
 
   const handleCollectionClick = useCallback(
     (connectionId: string, collection: CollectionInfo) => {
@@ -234,160 +176,334 @@ function DatabaseExplorer({
     [onCollectionSelect, onCollectionClick],
   );
 
-  const handleRefresh = useCallback(async () => {
-    if (!currentWorkspace) return;
-    setLoadingData(new Set());
-    await refreshConnections(currentWorkspace.id);
-  }, [currentWorkspace, refreshConnections]);
+  // ---------- Tree adapter ----------
 
-  const handleDatabaseCreated = useCallback(() => {
-    handleRefresh();
-  }, [handleRefresh]);
+  // Build a lookup map and the section tree in one pass so callbacks can
+  // recover original TreeNode data from ResourceTreeNode.id.
+  const { sections, nodeInfoById } = useMemo(() => {
+    const info = new Map<string, DbNodeInfo>();
 
-  const renderSkeletonItems = () => {
-    return Array.from({ length: 3 }).map((_, index) => (
-      <ListItem key={`skeleton-${index}`} disablePadding>
-        <ListItemButton sx={{ py: 0.5, pl: 1 }}>
-          <ListItemIcon sx={{ minWidth: 32 }}>
-            <Skeleton variant="circular" width={20} height={20} />
-          </ListItemIcon>
-          <ListItemIcon sx={{ minWidth: 32 }}>
-            <Skeleton variant="circular" width={24} height={24} />
-          </ListItemIcon>
-          <ListItemText
-            primary={
-              <Skeleton
-                variant="text"
-                width={`${60 + Math.random() * 40}%`}
-                height={20}
-              />
-            }
-          />
-        </ListItemButton>
-      </ListItem>
-    ));
-  };
+    const makeConnectionNodeId = (dbId: string) => dbId;
+    const makeTreeNodeId = (dbId: string, node: TreeNode) =>
+      `${dbId}:${node.kind}:${node.id}`;
 
-  const renderCollectionSkeletonItems = () => {
-    return Array.from({ length: 3 }).map((_, index) => (
-      <ListItem key={`collection-skeleton-${index}`} disablePadding>
-        <ListItemButton sx={{ py: 0.25, pl: 4 }}>
-          <ListItemIcon sx={{ minWidth: 24 }}>
-            <Skeleton variant="circular" width={16} height={16} />
-          </ListItemIcon>
-          <ListItemText
-            primary={
-              <Skeleton
-                variant="text"
-                width={`${50 + Math.random() * 30}%`}
-                height={16}
-              />
-            }
-          />
-        </ListItemButton>
-      </ListItem>
-    ));
-  };
+    const buildTreeNode = (
+      connectionId: string,
+      node: TreeNode,
+    ): ResourceTreeNode => {
+      const rtId = makeTreeNodeId(connectionId, node);
+      info.set(rtId, { type: "node", connectionId, node });
 
-  const renderNodeSkeleton = (level: number) => {
-    const pl = 1 + (level + 1) * 1.5 + 2.75;
-    return Array.from({ length: 3 }).map((_, index) => (
-      <ListItem key={`node-skeleton-${index}`} disablePadding>
-        <ListItemButton sx={{ py: 0.25, pl }}>
-          <ListItemIcon sx={{ minWidth: 28 }}>
-            <Skeleton variant="circular" width={16} height={16} />
-          </ListItemIcon>
-          <ListItemText
-            primary={
-              <Skeleton
-                variant="text"
-                width={`${50 + Math.random() * 30}%`}
-                height={16}
-              />
-            }
-          />
-        </ListItemButton>
-      </ListItem>
-    ));
-  };
+      const childKey = `${node.kind}:${node.id}`;
+      const rawChildren = treeNodes[connectionId]?.[childKey];
 
-  // ---------------- Context menu for databases ----------------
-  const [contextFocusKey, setContextFocusKey] = useState<string | null>(null);
+      const isDir = node.hasChildren === true;
+      let children: ResourceTreeNode[] | undefined;
+      if (isDir) {
+        if (rawChildren === undefined) {
+          children = undefined;
+        } else {
+          children = rawChildren.map(child =>
+            buildTreeNode(connectionId, child),
+          );
+        }
+      } else {
+        children = undefined;
+      }
 
-  const [databaseContextMenu, setDatabaseContextMenu] = useState<{
-    mouseX: number;
-    mouseY: number;
-    item: { databaseId: string; databaseName: string };
-  } | null>(null);
+      return {
+        id: rtId,
+        name: node.label,
+        path: node.label,
+        isDirectory: isDir,
+        children,
+      };
+    };
 
-  // ---------------- Context menu for collections ----------------
-  const [contextMenu, setContextMenu] = useState<{
-    mouseX: number;
-    mouseY: number;
-    item: { databaseId: string; collectionName: string };
-  } | null>(null);
-
-  const handleDatabaseContextMenu = useCallback(
-    (event: React.MouseEvent, databaseId: string, databaseName: string) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setDatabaseContextMenu({
-        mouseX: event.clientX + 2,
-        mouseY: event.clientY - 6,
-        item: { databaseId, databaseName },
+    const connectionNodes: ResourceTreeNode[] = databases.map(db => {
+      const rtId = makeConnectionNodeId(db.id);
+      info.set(rtId, {
+        type: "connection",
+        connectionId: db.id,
+        displayName: db.displayName,
+        dbType: db.type,
       });
-      setContextFocusKey(databaseId);
+
+      const rawRoots = treeNodes[db.id]?.["root"];
+      let children: ResourceTreeNode[] | undefined;
+      if (rawRoots === undefined) {
+        children = undefined;
+      } else {
+        children = rawRoots.map(n => buildTreeNode(db.id, n));
+      }
+
+      return {
+        id: rtId,
+        name: db.displayName,
+        path: db.displayName,
+        isDirectory: true,
+        children,
+      };
+    });
+
+    const sectionsList: ResourceTreeSection[] = [
+      {
+        key: "databases",
+        label: "",
+        hideSectionHeader: true,
+        nodes: connectionNodes,
+      },
+    ];
+
+    return { sections: sectionsList, nodeInfoById: info };
+  }, [databases, treeNodes]);
+
+  const isFolderExpanded = useCallback(
+    (key: string) => {
+      const info = nodeInfoById.get(key);
+      if (!info) return false;
+      if (info.type === "connection") {
+        return isDatabaseExpanded(info.connectionId);
+      }
+      // For non-connection nodes, expansion is tracked in expandedNodes under
+      // the `${connectionId}:${kind}:${id}` key (which is the same as the
+      // ResourceTreeNode id we've chosen).
+      return !!expandedNodes[key];
     },
-    [],
+    [nodeInfoById, isDatabaseExpanded, expandedNodes],
   );
 
-  const handleEditDatabase = useCallback(() => {
-    if (!databaseContextMenu) return;
-    const { databaseId } = databaseContextMenu.item;
-    setEditingDatabaseId(databaseId);
-    setCreateDialogOpen(true);
-    setDatabaseContextMenu(null);
-  }, [databaseContextMenu]);
-
-  const handleDropDatabase = useCallback(async () => {
-    if (!databaseContextMenu) return;
-    const { databaseId, databaseName } = databaseContextMenu.item;
-
-    if (
-      !window.confirm(
-        `Are you sure you want to delete database "${databaseName}"? This action cannot be undone.`,
-      )
-    ) {
-      setDatabaseContextMenu(null);
-      return;
-    }
-
-    try {
-      if (currentWorkspace) {
-        await deleteConnection(currentWorkspace.id, databaseId);
+  const onToggleFolder = useCallback(
+    (key: string) => {
+      const info = nodeInfoById.get(key);
+      if (!info) return;
+      if (info.type === "connection") {
+        toggleDatabase(info.connectionId);
+      } else {
+        toggleNode(key);
       }
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Failed to delete database";
-      alert(message);
-    } finally {
-      setDatabaseContextMenu(null);
-    }
-  }, [databaseContextMenu, currentWorkspace, deleteConnection]);
+    },
+    [nodeInfoById, toggleDatabase, toggleNode],
+  );
 
-  const handleDropCollection = useCallback(() => {
-    if (!contextMenu) return;
-    const { databaseId, collectionName } = contextMenu.item;
-    const command = `db.getCollection("${collectionName}").drop()`;
-    const { openTab, setActiveTab } = useConsoleStore.getState();
-    const tabId = openTab({
-      title: `Drop ${collectionName}`,
-      content: command,
-      databaseId,
-    });
-    setActiveTab(tabId);
-    setContextMenu(null);
-  }, [contextMenu]);
+  const onExpandFolder = useCallback(
+    (key: string) => {
+      const info = nodeInfoById.get(key);
+      if (!info) return;
+      if (info.type === "connection") {
+        if (!isDatabaseExpanded(info.connectionId)) {
+          toggleDatabase(info.connectionId);
+        }
+      } else if (!expandedNodes[key]) {
+        toggleNode(key);
+      }
+    },
+    [
+      nodeInfoById,
+      isDatabaseExpanded,
+      toggleDatabase,
+      expandedNodes,
+      toggleNode,
+    ],
+  );
+
+  const onLoadChildren = useCallback(
+    (node: ResourceTreeNode) => {
+      if (!currentWorkspace) return;
+      const info = nodeInfoById.get(node.id);
+      if (!info) return;
+      if (info.type === "connection") {
+        ensureTreeRoot(currentWorkspace.id, info.connectionId);
+      } else {
+        ensureTreeChildren(currentWorkspace.id, info.connectionId, {
+          id: info.node.id,
+          kind: info.node.kind,
+          metadata: info.node.metadata,
+        });
+      }
+    },
+    [currentWorkspace, nodeInfoById, ensureTreeRoot, ensureTreeChildren],
+  );
+
+  const isLoadingChildren = useCallback(
+    (node: ResourceTreeNode) => {
+      const info = nodeInfoById.get(node.id);
+      if (!info) return false;
+      if (info.type === "connection") {
+        return !!loading[`tree:${info.connectionId}:root`];
+      }
+      return !!loading[
+        `tree:${info.connectionId}:${info.node.kind}:${info.node.id}`
+      ];
+    },
+    [nodeInfoById, loading],
+  );
+
+  const getItemIcon = useCallback(
+    (node: ResourceTreeNode, ctx?: { isExpanded: boolean }) => {
+      const info = nodeInfoById.get(node.id);
+      if (!info) return null;
+      const iconEl = (() => {
+        if (info.type === "connection") {
+          return (
+            <DatabaseTypeIcon
+              type={info.dbType}
+              typeToIconUrl={typeToIconUrl}
+            />
+          );
+        }
+        switch (info.node.kind) {
+          case "dataset":
+          case "group":
+          case "schema":
+            return ctx?.isExpanded ? (
+              <FolderOpenIcon size={18} strokeWidth={1.5} />
+            ) : (
+              <FolderIcon size={18} strokeWidth={1.5} />
+            );
+          case "database":
+            return <LayersIcon size={18} strokeWidth={1.5} />;
+          case "table":
+          case "collection":
+            return <CollectionIcon size={18} strokeWidth={1.5} />;
+          case "view":
+            return <ViewIcon size={18} strokeWidth={1.5} />;
+          default:
+            return null;
+        }
+      })();
+      return iconEl;
+    },
+    [nodeInfoById, typeToIconUrl],
+  );
+
+  const getContextMenuItems = useCallback(
+    (
+      node: ResourceTreeNode,
+      helpers: { closeMenu: () => void },
+    ): React.ReactNode[] | null => {
+      const info = nodeInfoById.get(node.id);
+      if (!info) return null;
+
+      if (info.type === "connection") {
+        return [
+          <MenuItem
+            key="edit-connection"
+            onClick={() => {
+              helpers.closeMenu();
+              setEditingDatabaseId(info.connectionId);
+              setCreateDialogOpen(true);
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 26 }}>
+              <SettingsIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Edit connection
+          </MenuItem>,
+          <MenuItem
+            key="delete-database"
+            onClick={async () => {
+              helpers.closeMenu();
+              if (
+                !window.confirm(
+                  `Are you sure you want to delete database "${info.displayName}"? This action cannot be undone.`,
+                )
+              ) {
+                return;
+              }
+              try {
+                if (currentWorkspace) {
+                  await deleteConnection(
+                    currentWorkspace.id,
+                    info.connectionId,
+                  );
+                }
+              } catch (err: unknown) {
+                const message =
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to delete database";
+                alert(message);
+              }
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 26 }}>
+              <DeleteIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Delete database
+          </MenuItem>,
+        ];
+      }
+
+      // For node (table / collection / view / folder / etc.)
+      const { node: treeNode, connectionId } = info;
+      const isLeafCollection =
+        !treeNode.hasChildren &&
+        (treeNode.kind === "collection" || treeNode.kind === "table");
+      if (!isLeafCollection) {
+        return []; // no menu
+      }
+      return [
+        <MenuItem
+          key="drop-collection"
+          onClick={() => {
+            helpers.closeMenu();
+            const command = `db.getCollection("${treeNode.label}").drop()`;
+            const { openTab, setActiveTab } = useConsoleStore.getState();
+            const tabId = openTab({
+              title: `Drop ${treeNode.label}`,
+              content: command,
+              databaseId: connectionId,
+            });
+            setActiveTab(tabId);
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: 26 }}>
+            <DeleteIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Delete collection
+        </MenuItem>,
+      ];
+    },
+    [nodeInfoById, currentWorkspace, deleteConnection],
+  );
+
+  const handleItemClick = useCallback(
+    (node: ResourceTreeNode) => {
+      const info = nodeInfoById.get(node.id);
+      if (!info) return;
+      if (info.type === "node") {
+        const { node: treeNode, connectionId } = info;
+        if (!treeNode.hasChildren) {
+          handleCollectionClick(connectionId, {
+            name: treeNode.label,
+            type: treeNode.kind,
+            options: treeNode.metadata,
+          });
+        }
+      }
+    },
+    [nodeInfoById, handleCollectionClick],
+  );
+
+  const renderSkeletonItems = () => (
+    <Box sx={{ p: 1 }}>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <Box
+          key={`skeleton-${index}`}
+          sx={{ display: "flex", alignItems: "center", gap: 1, py: 0.5 }}
+        >
+          <Skeleton variant="circular" width={20} height={20} />
+          <Skeleton variant="circular" width={24} height={24} />
+          <Skeleton
+            variant="text"
+            width={`${60 + Math.random() * 40}%`}
+            height={20}
+          />
+        </Box>
+      ))}
+    </Box>
+  );
 
   if (connectionError) {
     return (
@@ -404,297 +520,55 @@ function DatabaseExplorer({
     );
   }
 
-  const renderNode = (
-    connectionId: string,
-    node: TreeNode,
-    level: number,
-  ): React.ReactNode => {
-    const nodeKey = `${connectionId}:${node.kind}:${node.id}`;
-    const isExpanded = !!expandedNodes[nodeKey];
-    const childKey = `${node.kind}:${node.id}`;
-    const children = treeNodes[connectionId]?.[childKey];
-    const isLoading = loading[`tree:${connectionId}:${childKey}`];
-
-    const getIcon = () => {
-      switch (node.kind) {
-        case "dataset":
-        case "group":
-        case "schema":
-          return isExpanded ? (
-            <FolderOpenIcon size={18} strokeWidth={1.5} />
-          ) : (
-            <FolderIcon size={18} strokeWidth={1.5} />
-          );
-        case "database":
-          return <LayersIcon size={18} strokeWidth={1.5} />;
-        case "table":
-        case "collection":
-          return <CollectionIcon size={18} strokeWidth={1.5} />;
-        case "view":
-          return <ViewIcon size={18} strokeWidth={1.5} />;
-        default:
-          return null;
-      }
-    };
-
-    return (
-      <React.Fragment key={nodeKey}>
-        <ListItem disablePadding>
-          <ListItemButton
-            onClick={() => {
-              if (node.hasChildren) {
-                toggleNode(nodeKey);
-                if (!children && !isExpanded) {
-                  if (currentWorkspace) {
-                    ensureTreeChildren(currentWorkspace.id, connectionId, {
-                      id: node.id,
-                      kind: node.kind,
-                      metadata: node.metadata,
-                    });
-                  }
-                }
-              } else {
-                handleCollectionClick(connectionId, {
-                  name: node.label,
-                  type: node.kind,
-                  options: node.metadata,
-                });
-              }
-            }}
-            onContextMenu={event => {
-              if (
-                !node.hasChildren &&
-                (node.kind === "collection" || node.kind === "table")
-              ) {
-                event.preventDefault();
-                event.stopPropagation();
-                setContextMenu({
-                  mouseX: event.clientX + 2,
-                  mouseY: event.clientY - 6,
-                  item: {
-                    databaseId: connectionId,
-                    collectionName: node.label,
-                  },
-                });
-                setContextFocusKey(nodeKey);
-              }
-            }}
-            sx={{
-              py: 0.25,
-              pl: 1 + level * 1.5,
-              outline: contextFocusKey === nodeKey ? "1px solid" : undefined,
-              outlineColor: contextFocusKey === nodeKey ? "divider" : undefined,
-            }}
-          >
-            <ListItemIcon sx={{ minWidth: 22 }}>
-              {node.hasChildren ? (
-                isExpanded ? (
-                  <ChevronDownIcon strokeWidth={1.5} size={20} />
-                ) : (
-                  <ChevronRightIcon strokeWidth={1.5} size={20} />
-                )
-              ) : null}
-            </ListItemIcon>
-            <ListItemIcon sx={{ minWidth: 24 }}>{getIcon()}</ListItemIcon>
-            <ListItemText
-              primary={
-                <Typography
-                  variant="body2"
-                  sx={{
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {node.label}
-                </Typography>
-              }
-            />
-          </ListItemButton>
-        </ListItem>
-        {node.hasChildren && isExpanded && (
-          <List dense disablePadding>
-            {isLoading || (!children && isExpanded) ? (
-              renderNodeSkeleton(level)
-            ) : children && children.length === 0 ? (
-              <ListItem disablePadding sx={{ pl: 4 + (level + 1) * 2 }}>
-                <ListItemText
-                  secondary={
-                    <Typography variant="caption" color="text.secondary">
-                      Empty
-                    </Typography>
-                  }
-                />
-              </ListItem>
-            ) : (
-              children?.map(child => renderNode(connectionId, child, level + 1))
-            )}
-          </List>
-        )}
-      </React.Fragment>
-    );
-  };
+  const actions = (
+    <>
+      <Tooltip title="Add new database">
+        <IconButton size="small" onClick={() => setCreateDialogOpen(true)}>
+          <AddIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Refresh">
+        <IconButton size="small" onClick={handleRefresh}>
+          <RefreshIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+    </>
+  );
 
   return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      <Box
-        sx={{
-          px: 1,
-          py: 0.25,
-          minHeight: 37,
-          borderBottom: 1,
-          borderColor: "divider",
-        }}
+    <>
+      <ExplorerShell
+        title="Databases"
+        actions={actions}
+        searchPlaceholder="Search databases..."
+        loading={isLoadingConnections && databases.length === 0}
+        skeleton={renderSkeletonItems()}
       >
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            height: "100%",
-            minHeight: 32,
-          }}
-        >
-          <Box
-            sx={{
-              flexGrow: 1,
-              overflow: "hidden",
-              maxWidth: "calc(100% - 80px)",
-            }}
-          >
-            <Typography
-              variant="h6"
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                textTransform: "uppercase",
-              }}
-            >
-              Databases
-            </Typography>
-          </Box>
-          <Box sx={{ display: "flex", gap: 0 }}>
-            <Tooltip title="Add new database">
-              <IconButton
-                size="small"
-                onClick={() => setCreateDialogOpen(true)}
-              >
-                <AddIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Refresh">
-              <IconButton size="small" onClick={handleRefresh}>
-                <RefreshIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        </Box>
-      </Box>
-
-      <Box sx={{ flexGrow: 1, overflow: "auto" }}>
-        <List dense>
-          {isLoadingConnections ? (
-            renderSkeletonItems()
-          ) : databases.length === 0 ? (
-            <Box
-              sx={{
-                p: 3,
-                textAlign: "center",
-                color: "text.secondary",
-              }}
-            >
+        {({ searchQuery }) =>
+          databases.length === 0 ? (
+            <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
               <Typography variant="body2">
                 No databases found in configuration
               </Typography>
             </Box>
           ) : (
-            databases.map(database => {
-              const isDatabaseExpandedLocal = !!expandedDatabases[database.id];
-              const isLoadingData = loadingData.has(database.id);
-              const dbRootNodes: TreeNode[] =
-                treeNodes[database.id]?.["root"] || [];
-
-              return (
-                <React.Fragment key={database.id}>
-                  {/* Database Level */}
-                  <ListItem disablePadding>
-                    <ListItemButton
-                      onClick={() => handleDatabaseToggle(database.id)}
-                      onContextMenu={e =>
-                        handleDatabaseContextMenu(
-                          e,
-                          database.id,
-                          database.displayName,
-                        )
-                      }
-                      sx={{
-                        py: 0.5,
-                        pl: 1,
-                        outline:
-                          contextFocusKey === database.id
-                            ? "1px solid"
-                            : undefined,
-                        outlineColor:
-                          contextFocusKey === database.id
-                            ? "divider"
-                            : undefined,
-                      }}
-                    >
-                      <ListItemIcon sx={{ minWidth: 22 }}>
-                        {isDatabaseExpandedLocal ? (
-                          <ChevronDownIcon strokeWidth={1.5} size={20} />
-                        ) : (
-                          <ChevronRightIcon strokeWidth={1.5} size={20} />
-                        )}
-                      </ListItemIcon>
-                      <ListItemIcon sx={{ minWidth: 24 }}>
-                        <DatabaseTypeIcon
-                          type={database.type}
-                          typeToIconUrl={typeToIconUrl}
-                        />
-                      </ListItemIcon>
-                      <ListItemText
-                        primary={
-                          <Box
-                            sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 1,
-                              overflow: "hidden",
-                            }}
-                          >
-                            <Typography
-                              variant="body2"
-                              sx={{
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {database.displayName}
-                            </Typography>
-                          </Box>
-                        }
-                      />
-                    </ListItemButton>
-                  </ListItem>
-
-                  {isDatabaseExpandedLocal && (
-                    <List dense disablePadding>
-                      {isLoadingData
-                        ? renderCollectionSkeletonItems()
-                        : dbRootNodes.map(node =>
-                            renderNode(database.id, node, 1),
-                          )}
-                    </List>
-                  )}
-                </React.Fragment>
-              );
-            })
-          )}
-        </List>
-      </Box>
+            <ResourceTree
+              sections={sections}
+              mode="sidebar"
+              searchQuery={searchQuery}
+              getItemIcon={getItemIcon}
+              isFolderExpanded={isFolderExpanded}
+              onToggleFolder={onToggleFolder}
+              onExpandFolder={onExpandFolder}
+              getFolderExpansionKey={node => node.id}
+              onLoadChildren={onLoadChildren}
+              isLoadingChildren={isLoadingChildren}
+              getContextMenuItems={getContextMenuItems}
+              onItemClick={handleItemClick}
+            />
+          )
+        }
+      </ExplorerShell>
 
       <CreateDatabaseDialog
         open={createDialogOpen}
@@ -705,101 +579,7 @@ function DatabaseExplorer({
         onSuccess={handleDatabaseCreated}
         databaseId={editingDatabaseId}
       />
-
-      {/* Context Menu for collection */}
-      <Menu
-        open={contextMenu !== null}
-        onClose={() => {
-          setContextMenu(null);
-          setContextFocusKey(null);
-        }}
-        anchorReference="anchorPosition"
-        anchorPosition={
-          contextMenu !== null
-            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
-            : undefined
-        }
-        PaperProps={{
-          elevation: 2,
-          sx: {
-            boxShadow: "0px 2px 4px rgba(0,0,0,0.12)",
-            minWidth: 180,
-          },
-        }}
-      >
-        <MenuItem
-          onClick={handleDropCollection}
-          sx={{
-            pl: 1,
-            pr: 1,
-            "& .MuiListItemIcon-root": {
-              minWidth: 26,
-            },
-          }}
-        >
-          <ListItemIcon>
-            <DeleteIcon size={18} strokeWidth={1.5} />
-          </ListItemIcon>
-          Delete collection
-        </MenuItem>
-      </Menu>
-
-      {/* Context Menu for database */}
-      <Menu
-        open={databaseContextMenu !== null}
-        onClose={() => {
-          setDatabaseContextMenu(null);
-          setContextFocusKey(null);
-        }}
-        anchorReference="anchorPosition"
-        anchorPosition={
-          databaseContextMenu !== null
-            ? {
-                top: databaseContextMenu.mouseY,
-                left: databaseContextMenu.mouseX,
-              }
-            : undefined
-        }
-        PaperProps={{
-          elevation: 2,
-          sx: {
-            boxShadow: "0px 2px 4px rgba(0,0,0,0.12)",
-            minWidth: 180,
-          },
-        }}
-      >
-        <MenuItem
-          onClick={handleEditDatabase}
-          sx={{
-            pl: 1,
-            pr: 1,
-            "& .MuiListItemIcon-root": {
-              minWidth: 26,
-            },
-          }}
-        >
-          <ListItemIcon>
-            <SettingsIcon size={18} strokeWidth={1.5} />
-          </ListItemIcon>
-          Edit connection
-        </MenuItem>
-        <MenuItem
-          onClick={handleDropDatabase}
-          sx={{
-            pl: 1,
-            pr: 1,
-            "& .MuiListItemIcon-root": {
-              minWidth: 26,
-            },
-          }}
-        >
-          <ListItemIcon>
-            <DeleteIcon size={18} strokeWidth={1.5} />
-          </ListItemIcon>
-          Delete database
-        </MenuItem>
-      </Menu>
-    </Box>
+    </>
   );
 }
 
