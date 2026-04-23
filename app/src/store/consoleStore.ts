@@ -62,7 +62,6 @@ interface ConsoleActions {
 
   // Versioning
   getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
-  getLastSavedContent: (consoleId: string) => string | null;
 
   // API operations
   loadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
@@ -131,11 +130,8 @@ interface ConsoleActions {
     workspaceId: string,
     consoleId: string,
     payload: {
-      previousContent: string;
       newContent: string;
-      language: string;
       source: "user" | "ai";
-      title?: string;
     },
     signal?: AbortSignal,
   ) => Promise<string | null>;
@@ -153,8 +149,6 @@ const initialState: ConsoleState = {
 
 // Store version managers for each console tab
 const versionManagers = new Map<string, ConsoleVersionManager>();
-const lastSavedContent = new Map<string, string>();
-
 const versionCommentControllers = new Map<string, AbortController>();
 const versionCommentTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -363,16 +357,6 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       // Versioning
       getVersionManager: consoleId => versionManagers.get(consoleId) || null,
-      getLastSavedContent: consoleId => {
-        const cached = lastSavedContent.get(consoleId);
-        if (cached !== undefined) return cached;
-        const tab = get().tabs[consoleId];
-        if (tab?.isSaved && tab.content) {
-          lastSavedContent.set(consoleId, tab.content);
-          return tab.content;
-        }
-        return null;
-      },
 
       // API operations
       loadConsole: async (workspaceId, consoleId) => {
@@ -396,7 +380,6 @@ export const useConsoleStore = create<ConsoleStore>()(
           if (res.success) {
             const content = res.content || "";
             const filePath = res.path || res.name;
-            lastSavedContent.set(res.id, content);
 
             get().openTab({
               id: res.id,
@@ -440,7 +423,6 @@ export const useConsoleStore = create<ConsoleStore>()(
           if (res.success) {
             const content = res.content || "";
             const filePath = res.path || res.name;
-            lastSavedContent.set(res.id, content);
 
             get().openTab({
               id: res.id,
@@ -472,7 +454,6 @@ export const useConsoleStore = create<ConsoleStore>()(
 
           if (res.success) {
             const filePath = res.path || res.name;
-            lastSavedContent.set(consoleId, res.content || "");
             set(state => {
               const tab = state.tabs[consoleId];
               if (tab) {
@@ -557,7 +538,6 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
 
           if (res.success) {
-            lastSavedContent.set(tabId, content);
             return { success: true, path: cleanPath };
           }
           return { success: false, error: res.error || "Save failed" };

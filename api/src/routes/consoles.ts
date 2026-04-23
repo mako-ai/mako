@@ -9,6 +9,7 @@ import {
   SavedConsole,
   ConsoleFolder,
   IDatabaseConnection,
+  EntityVersion,
   type ISavedConsole,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
@@ -1501,6 +1502,7 @@ consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
 consoleRoutes.post("/:id/version-comment", async (c: Context) => {
   try {
     const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
     const user = c.get("user");
 
     if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
@@ -1511,46 +1513,46 @@ consoleRoutes.post("/:id/version-comment", async (c: Context) => {
     }
 
     const body = await c.req.json();
+    const { newContent, source, aiPrompt } = body;
 
-    const { previousContent, newContent, language, source, aiPrompt, title } =
-      body;
-
-    if (typeof previousContent !== "string" || typeof newContent !== "string") {
+    if (typeof newContent !== "string") {
       return c.json(
-        {
-          success: false,
-          error: "previousContent and newContent must be strings",
-        },
+        { success: false, error: "newContent must be a string" },
         400,
       );
     }
 
-    if (typeof language !== "string") {
-      return c.json({ success: false, error: "language is required" }, 400);
-    }
-
-    if (source !== "user" && source !== "ai") {
-      return c.json(
-        { success: false, error: "source must be 'user' or 'ai'" },
-        400,
-      );
-    }
-
-    if (previousContent.length > 50_000 || newContent.length > 50_000) {
+    if (newContent.length > 50_000) {
       return c.json(
         { success: false, error: "Content too large for comment generation" },
         400,
       );
     }
 
+    let previousContent = "";
+    if (Types.ObjectId.isValid(consoleId)) {
+      const latestSnapshot = await EntityVersion.findOne(
+        {
+          entityId: new Types.ObjectId(consoleId),
+          entityType: "console",
+        },
+        { "snapshot.code": 1 },
+      )
+        .sort({ version: -1 })
+        .lean();
+
+      if (latestSnapshot?.snapshot?.code) {
+        previousContent = latestSnapshot.snapshot.code as string;
+      }
+    }
+
     const comment = await generateVersionComment(
       {
         previousContent,
         newContent,
-        language,
-        source,
+        language: "sql",
+        source: source === "ai" ? "ai" : "user",
         aiPrompt: typeof aiPrompt === "string" ? aiPrompt : undefined,
-        title: typeof title === "string" ? title : undefined,
       },
       { workspaceId, userId: user.id },
     );

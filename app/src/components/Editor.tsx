@@ -398,9 +398,6 @@ function Editor({
   );
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
   const getVersionManager = useConsoleStore(state => state.getVersionManager);
-  const getLastSavedContent = useConsoleStore(
-    state => state.getLastSavedContent,
-  );
   const generateSaveComment = useConsoleStore(
     state => state.generateSaveComment,
   );
@@ -1134,30 +1131,21 @@ function Editor({
     setSuggestedComment(existingComment);
 
     if (!existingComment && currentWorkspace?.id) {
-      const previousContent = getLastSavedContent(tabId) ?? "";
-      if (previousContent !== contentToSave) {
-        saveCommentAbortRef.current?.abort();
-        const controller = new AbortController();
-        saveCommentAbortRef.current = controller;
-        setSuggestedCommentLoading(true);
-        generateSaveComment(
-          currentWorkspace.id,
-          tabId,
-          {
-            previousContent,
-            newContent: contentToSave,
-            language: "sql",
-            source: "user",
-            title: tabs[tabId]?.title,
-          },
-          controller.signal,
-        ).then(comment => {
-          if (!controller.signal.aborted) {
-            setSuggestedComment(comment ?? undefined);
-            setSuggestedCommentLoading(false);
-          }
-        });
-      }
+      saveCommentAbortRef.current?.abort();
+      const controller = new AbortController();
+      saveCommentAbortRef.current = controller;
+      setSuggestedCommentLoading(true);
+      generateSaveComment(
+        currentWorkspace.id,
+        tabId,
+        { newContent: contentToSave, source: "user" },
+        controller.signal,
+      ).then(comment => {
+        if (!controller.signal.aborted) {
+          setSuggestedComment(comment ?? undefined);
+          setSuggestedCommentLoading(false);
+        }
+      });
     }
 
     return new Promise<boolean>(resolve => {
