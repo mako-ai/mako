@@ -147,10 +147,7 @@ export function ApiKeyManager() {
 
   return (
     <Box>
-      <Box sx={{ display: "flex", justifyContent: "space-between", mb: 3 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-          API Keys
-        </Typography>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 3 }}>
         <Button
           variant="contained"
           size="small"

@@ -1,12 +1,10 @@
 import type { SettingsSection } from "../store/lib/types";
-import SettingsOpenAI from "./settings/SettingsOpenAI";
 import SettingsPrompt from "./settings/SettingsPrompt";
 import SettingsModels from "./settings/SettingsModels";
 import SettingsBilling from "./settings/SettingsBilling";
 import SettingsMembers from "./settings/SettingsMembers";
 import SettingsApiKeys from "./settings/SettingsApiKeys";
 import SettingsAppearance from "./settings/SettingsAppearance";
-import SettingsQuery from "./settings/SettingsQuery";
 import SettingsAdmin from "./settings/SettingsAdmin";
 
 interface Props {
@@ -23,8 +21,6 @@ interface Props {
  */
 function Settings({ section = "prompt" }: Props) {
   switch (section) {
-    case "openai":
-      return <SettingsOpenAI />;
     case "prompt":
       return <SettingsPrompt />;
     case "models":
@@ -37,8 +33,6 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsApiKeys />;
     case "appearance":
       return <SettingsAppearance />;
-    case "query":
-      return <SettingsQuery />;
     case "admin":
       return <SettingsAdmin />;
     default:

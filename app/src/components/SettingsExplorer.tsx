@@ -1,13 +1,11 @@
 import { Box, Typography } from "@mui/material";
 import {
   Sparkles as ModelsIcon,
-  KeyRound as OpenAIIcon,
   MessageSquareText as PromptIcon,
   Wallet as BillingIcon,
   Users as MembersIcon,
   KeySquare as ApiKeyIcon,
   Palette as AppearanceIcon,
-  TerminalSquare as QueryIcon,
   ShieldCheck as AdminIcon,
 } from "lucide-react";
 import ExplorerShell from "./ExplorerShell";
@@ -23,14 +21,12 @@ const SECTION_ICONS: Record<
   SettingsSection,
   (props: { size?: number; strokeWidth?: number }) => JSX.Element
 > = {
-  openai: props => <OpenAIIcon {...props} />,
   prompt: props => <PromptIcon {...props} />,
   models: props => <ModelsIcon {...props} />,
   billing: props => <BillingIcon {...props} />,
   members: props => <MembersIcon {...props} />,
   "api-keys": props => <ApiKeyIcon {...props} />,
   appearance: props => <AppearanceIcon {...props} />,
-  query: props => <QueryIcon {...props} />,
   admin: props => <AdminIcon {...props} />,
 };
 

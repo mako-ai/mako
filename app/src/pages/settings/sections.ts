@@ -7,14 +7,12 @@ import type { SettingsSection } from "../../store/lib/types";
  * SettingsExplorer renders the items in the order declared here.
  */
 export const SECTION_LABELS: Record<SettingsSection, string> = {
-  openai: "OpenAI",
   prompt: "Custom Prompt",
   models: "AI Models",
   billing: "Billing",
   members: "Members",
   "api-keys": "API Keys",
   appearance: "Appearance",
-  query: "Query Execution",
   admin: "Super Admin",
 };
 
@@ -23,14 +21,12 @@ export const SECTION_LABELS: Record<SettingsSection, string> = {
  * landing tab).
  */
 export const SECTION_ORDER: SettingsSection[] = [
-  "openai",
   "prompt",
   "models",
   "billing",
   "members",
   "api-keys",
   "appearance",
-  "query",
   "admin",
 ];
 

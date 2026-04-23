@@ -21,14 +21,12 @@ export type TabKind =
  * own tab, opened from the settings explorer in the left rail.
  */
 export type SettingsSection =
-  | "openai"
   | "prompt"
   | "models"
   | "billing"
   | "members"
   | "api-keys"
   | "appearance"
-  | "query"
   | "admin";
 
 /**

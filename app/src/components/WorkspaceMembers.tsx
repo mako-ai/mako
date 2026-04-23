@@ -184,18 +184,15 @@ export function WorkspaceMembers() {
 
   return (
     <Box>
-      <Box
-        sx={{
-          mb: 2,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-          Workspace Members
-        </Typography>
-        {canManageMembers && (
+      {canManageMembers && (
+        <Box
+          sx={{
+            mb: 2,
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+          }}
+        >
           <Button
             variant="contained"
             size="small"
@@ -204,8 +201,8 @@ export function WorkspaceMembers() {
           >
             Invite Member
           </Button>
-        )}
-      </Box>
+        </Box>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>

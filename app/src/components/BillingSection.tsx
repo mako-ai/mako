@@ -39,13 +39,6 @@ export function BillingSection() {
   if (isLoading && !status) {
     return (
       <Box>
-        <Typography
-          variant="subtitle1"
-          gutterBottom
-          sx={{ fontWeight: 600, mb: 2 }}
-        >
-          Billing
-        </Typography>
         <Skeleton variant="rectangular" height={120} />
       </Box>
     );
@@ -57,13 +50,6 @@ export function BillingSection() {
   if (!status.billingEnabled) {
     return (
       <Box>
-        <Typography
-          variant="subtitle1"
-          gutterBottom
-          sx={{ fontWeight: 600, mb: 2 }}
-        >
-          Billing
-        </Typography>
         <Alert severity="info" sx={{ mb: 2 }}>
           Billing is not enabled. All features are available without
           restrictions.
@@ -101,14 +87,6 @@ export function BillingSection() {
 
   return (
     <Box>
-      <Typography
-        variant="subtitle1"
-        gutterBottom
-        sx={{ fontWeight: 600, mb: 2 }}
-      >
-        Billing
-      </Typography>
-
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
@@ -127,7 +105,8 @@ export function BillingSection() {
         <CreditCard size={20} />
         <Typography variant="body1">Current Plan:</Typography>
         <Chip label={planLabel} color={planColor as any} size="small" />
-        {status.subscriptionStatus &&
+        {status.plan !== "free" &&
+          status.subscriptionStatus &&
           status.subscriptionStatus !== "active" && (
             <Chip
               label={status.subscriptionStatus}
