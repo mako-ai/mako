@@ -72,21 +72,33 @@ function isWhitespaceOnly(diff: string): boolean {
   });
 }
 
-export async function generateVersionComment(
-  context: VersionCommentContext,
-  trackingCtx?: VersionCommentTrackingContext,
-): Promise<string | null> {
-  if (context.previousContent === context.newContent) return null;
-  if (context.previousContent.trim() === context.newContent.trim()) return null;
+export function computeDiff(
+  previousContent: string,
+  newContent: string,
+): string | null {
+  if (previousContent === newContent) return null;
+  if (previousContent.trim() === newContent.trim()) return null;
 
   const diff = computeSimpleLineDiff(
-    context.previousContent.substring(0, 3000),
-    context.newContent.substring(0, 3000),
+    previousContent.substring(0, 3000),
+    newContent.substring(0, 3000),
   );
 
   if (!diff || isWhitespaceOnly(diff)) return null;
+  return diff.substring(0, 3000);
+}
 
-  const truncatedDiff = diff.substring(0, 3000);
+export interface VersionCommentResult {
+  comment: string | null;
+  diff: string | null;
+}
+
+export async function generateVersionComment(
+  context: VersionCommentContext,
+  trackingCtx?: VersionCommentTrackingContext,
+): Promise<VersionCommentResult> {
+  const diff = computeDiff(context.previousContent, context.newContent);
+  if (!diff) return { comment: null, diff: null };
 
   const parts: string[] = [];
 
@@ -98,14 +110,14 @@ export async function generateVersionComment(
   }
 
   parts.push(`\`\`\`diff`);
-  parts.push(truncatedDiff);
+  parts.push(diff);
   parts.push(`\`\`\``);
 
   const prompt = parts.join("\n");
 
   try {
     const utilityModel = await getUtilityModelId();
-    if (!utilityModel) return null;
+    if (!utilityModel) return { comment: null, diff };
 
     const failoverModels = await getUtilityModelIds(3);
 
@@ -160,10 +172,10 @@ export async function generateVersionComment(
     comment = comment.replace(/\.+$/, "");
     comment = comment.substring(0, 72);
 
-    if (comment.length < 3) return null;
-    return comment;
+    if (comment.length < 3) return { comment: null, diff };
+    return { comment, diff };
   } catch (err) {
     logger.error("Version comment generation failed", { error: err });
-    return null;
+    return { comment: null, diff };
   }
 }

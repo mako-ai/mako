@@ -134,7 +134,7 @@ interface ConsoleActions {
       source: "user" | "ai";
     },
     signal?: AbortSignal,
-  ) => Promise<string | null>;
+  ) => Promise<{ comment: string | null; diff: string | null }>;
 }
 
 type ConsoleStore = ConsoleState & ConsoleActions;
@@ -670,14 +670,17 @@ export const useConsoleStore = create<ConsoleStore>()(
           const res = await apiClient.post<{
             success: boolean;
             comment: string | null;
+            diff: string | null;
           }>(
             `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
             payload,
             { signal },
           );
-          return res.success ? (res.comment ?? null) : null;
+          return res.success
+            ? { comment: res.comment ?? null, diff: res.diff ?? null }
+            : { comment: null, diff: null };
         } catch {
-          return null;
+          return { comment: null, diff: null };
         }
       },
 

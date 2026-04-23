@@ -1546,7 +1546,7 @@ consoleRoutes.post("/:id/version-comment", async (c: Context) => {
       }
     }
 
-    const comment = await generateVersionComment(
+    const result = await generateVersionComment(
       {
         previousContent,
         newContent,
@@ -1557,7 +1557,11 @@ consoleRoutes.post("/:id/version-comment", async (c: Context) => {
       { workspaceId, userId: user.id },
     );
 
-    return c.json({ success: true, comment });
+    return c.json({
+      success: true,
+      comment: result.comment,
+      diff: result.diff,
+    });
   } catch (error) {
     logger.error("Error generating version comment", { error });
     return c.json(

@@ -341,6 +341,7 @@ function Editor({
     undefined,
   );
   const [suggestedCommentLoading, setSuggestedCommentLoading] = useState(false);
+  const [saveCommentDiff, setSaveCommentDiff] = useState<string | null>(null);
   const saveCommentAbortRef = useRef<AbortController | null>(null);
   const [pendingCommentSave, setPendingCommentSave] = useState<{
     tabId: string;
@@ -1140,9 +1141,10 @@ function Editor({
         tabId,
         { newContent: contentToSave, source: "user" },
         controller.signal,
-      ).then(comment => {
+      ).then(result => {
         if (!controller.signal.aborted) {
-          setSuggestedComment(comment ?? undefined);
+          setSuggestedComment(result.comment ?? undefined);
+          setSaveCommentDiff(result.diff);
           setSuggestedCommentLoading(false);
         }
       });
@@ -1163,6 +1165,7 @@ function Editor({
     setCommentDialogOpen(false);
     saveCommentAbortRef.current?.abort();
     setSuggestedCommentLoading(false);
+    setSaveCommentDiff(null);
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     if (!pending) return;
@@ -1179,6 +1182,7 @@ function Editor({
     setCommentDialogOpen(false);
     saveCommentAbortRef.current?.abort();
     setSuggestedCommentLoading(false);
+    setSaveCommentDiff(null);
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     pending?.resolve(false);
@@ -2027,6 +2031,7 @@ function Editor({
         title="Save Console"
         defaultComment={suggestedComment}
         loading={suggestedCommentLoading}
+        diff={saveCommentDiff}
       />
 
       {/* Version history panel */}
