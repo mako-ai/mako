@@ -45,7 +45,6 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
-  // Get version manager and comment generator from store
   const { getVersionManager, generateVersionComment } = useConsoleStore();
 
   // Get the version manager for this console

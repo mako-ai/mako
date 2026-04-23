@@ -398,6 +398,9 @@ function Editor({
   );
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
   const getVersionManager = useConsoleStore(state => state.getVersionManager);
+  const getLastSavedContent = useConsoleStore(
+    state => state.getLastSavedContent,
+  );
   const generateSaveComment = useConsoleStore(
     state => state.generateSaveComment,
   );
@@ -1131,7 +1134,7 @@ function Editor({
     setSuggestedComment(existingComment);
 
     if (!existingComment && currentWorkspace?.id) {
-      const previousContent = vm?.getFirstContent() ?? "";
+      const previousContent = getLastSavedContent(tabId) ?? "";
       if (previousContent !== contentToSave) {
         saveCommentAbortRef.current?.abort();
         const controller = new AbortController();
