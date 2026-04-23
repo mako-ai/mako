@@ -21,6 +21,11 @@ interface User {
     email?: string;
     linkedAt: string;
   }>;
+  /**
+   * True if the user's email appears in `SUPER_ADMIN_EMAILS` on the server.
+   * Cosmetic only — actual admin routes are server-enforced.
+   */
+  isSuperAdmin?: boolean;
 }
 
 interface AuthResponse {

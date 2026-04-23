@@ -38,6 +38,7 @@ import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
 import { FlowsExplorer } from "./components/FlowsExplorer";
+import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
@@ -452,6 +453,8 @@ function MainApp() {
         return <FlowsExplorer />;
       case "dashboards":
         return <DashboardsExplorer />;
+      case "settings":
+        return <SettingsExplorer />;
       default:
         return null;
     }

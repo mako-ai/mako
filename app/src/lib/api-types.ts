@@ -281,7 +281,6 @@ export interface AIModel {
   tier?: "free" | "pro";
   supportsThinking?: boolean;
   blendedCostPerM?: number;
-  arenaScore?: number;
   contextLength?: number;
   supportsTools?: boolean;
 }
@@ -298,15 +297,24 @@ export interface GatewayModelInfo {
 export interface ModelListResponse {
   success: boolean;
   models: AIModel[];
+  /**
+   * Server-side recommended default for this workspace. The client should
+   * reset its persisted `selectedModelId` to this value when the current
+   * selection is no longer available (e.g. super-admin hid the model).
+   *
+   * Mirrors the fallback logic in POST /agent/chat so the selector shows
+   * the model the server will actually run.
+   */
+  recommendedModelId?: string | null;
 }
 
 export interface GatewayModelsResponse {
   models: GatewayModelInfo[];
 }
 
-export interface EnabledModelsResponse {
+export interface DisabledModelsResponse {
   success: boolean;
-  enabledModelIds: string[];
+  disabledModelIds: string[];
 }
 
 // ==================== Generic Response Types ====================

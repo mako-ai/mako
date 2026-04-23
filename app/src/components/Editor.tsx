@@ -1778,7 +1778,7 @@ function Editor({
                 }}
               >
                 {tab.kind === "settings" ? (
-                  <Settings />
+                  <Settings section={tab.settingsSection} />
                 ) : tab.kind === "members" ? (
                   <WorkspaceMembers />
                 ) : tab.kind === "connectors" ? (

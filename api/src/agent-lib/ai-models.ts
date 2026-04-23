@@ -41,17 +41,20 @@ function catalogToAIModel(cm: CatalogModel): AIModel {
 }
 
 /**
- * Models available to the current deployment. When `enabledModelIds` is
- * provided (from workspace settings), the result is filtered to only those.
+ * Models available to the current deployment. When `disabledModelIds` is
+ * provided (from workspace settings), those models are filtered out of the
+ * super-admin-curated catalog. An empty or missing blocklist means every
+ * curated model is available — the desired default so that new models the
+ * super admin makes visible propagate to every workspace automatically.
  */
 export async function getAvailableModels(
-  enabledModelIds?: string[],
+  disabledModelIds?: string[],
 ): Promise<AIModel[]> {
   let models = (await getCatalogModels()).map(catalogToAIModel);
 
-  if (enabledModelIds && enabledModelIds.length > 0) {
-    const allowed = new Set(enabledModelIds);
-    models = models.filter(m => allowed.has(m.id));
+  if (disabledModelIds && disabledModelIds.length > 0) {
+    const blocked = new Set(disabledModelIds);
+    models = models.filter(m => !blocked.has(m.id));
   }
 
   return models;

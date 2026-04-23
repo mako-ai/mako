@@ -24,6 +24,7 @@ import {
   getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
 import { getGatewayModels } from "../services/gateway-models.service";
+import { getCatalogModels } from "../services/model-catalog.service";
 import {
   Workspace,
   DatabaseConnection,
@@ -66,66 +67,84 @@ export const agentRoutes = new Hono();
 agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
- * GET /models - List available AI models, filtered by workspace settings.
+ * GET /models - List available AI models for the current workspace.
  *
- * When the workspace has `enabledModels` (full objects saved by the settings
- * UI), those are merged with catalog data for metadata like `supportsThinking`.
+ * Returns the super-admin-curated catalog minus any model IDs the workspace
+ * has explicitly disabled via `settings.disabledModelIds`. When no workspace
+ * is in scope (no header / no active workspace) we return the full curated
+ * catalog.
  *
- * Falls back to the legacy `enabledModelIds` field, then to the full catalog.
+ * Also returns `recommendedModelId`: the plan-aware default the chat endpoint
+ * would fall back to if the client sent an unknown/hidden model. The client
+ * uses this to reset the model picker when its persisted selection is no
+ * longer available (e.g. super-admin hid the previously-selected model), so
+ * the UI matches what the server will actually run.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   try {
     const workspaceId =
       c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
 
+    let models: Awaited<ReturnType<typeof getAvailableModels>> = [];
+    let effectivePlan: ReturnType<typeof getEffectiveBillingPlan> = "free";
+
     if (workspaceId) {
       const ws = await Workspace.findById(workspaceId)
-        .select({ "settings.enabledModels": 1, "settings.enabledModelIds": 1 })
+        .select({
+          "settings.disabledModelIds": 1,
+          "billing.plan": 1,
+          "billing.subscriptionStatus": 1,
+        })
         .lean();
 
-      if (ws?.settings?.enabledModels?.length) {
-        const catalogModels = await getAvailableModels();
-        const catalogMap = new Map(catalogModels.map(m => [m.id, m]));
-        const models = ws.settings.enabledModels.map(
-          (em: {
-            id: string;
-            name: string;
-            provider: string;
-            description?: string;
-          }) => {
-            const catalogModel = catalogMap.get(em.id);
-            if (catalogModel) return catalogModel;
-            return {
-              id: em.id,
-              provider: em.provider,
-              name: em.name,
-              description: em.description || "",
-            };
-          },
-        );
-        return c.json({ models });
-      }
-
-      if (ws?.settings?.enabledModelIds?.length) {
-        const models = await getAvailableModels(ws.settings.enabledModelIds);
-        return c.json({ models });
-      }
+      effectivePlan = getEffectiveBillingPlan(ws?.billing);
+      models = await getAvailableModels(ws?.settings?.disabledModelIds);
+    } else {
+      models = await getAvailableModels();
     }
 
-    const models = await getAvailableModels();
-    return c.json({ models });
+    const platformDefault =
+      effectivePlan === "free"
+        ? await getDefaultFreeModelId()
+        : await getDefaultModelId();
+
+    // Only surface the platform default if it's actually in the returned
+    // list — otherwise the client would set an id the selector can't render.
+    // Fall back to the first available model, matching legacy behaviour.
+    const recommendedModelId = models.some(m => m.id === platformDefault)
+      ? platformDefault
+      : (models[0]?.id ?? null);
+
+    return c.json({ models, recommendedModelId });
   } catch (err) {
     logger.error("Failed to load models", { error: err });
-    return c.json({ models: [] }, 200);
+    return c.json({ models: [], recommendedModelId: null }, 200);
   }
 });
 
 /**
- * GET /gateway-models - Full model catalog from Vercel AI Gateway
- * Used by the settings UI to show all models that can be enabled.
+ * GET /gateway-models - Model catalog available to workspaces.
+ *
+ * Returns the Vercel AI Gateway catalog intersected with the super-admin
+ * curation: only models with `visible: true` in the curation document are
+ * exposed. This is the list the workspace "AI Models" settings UI picks
+ * from, so workspace admins can never enable a model that the platform
+ * super-admin has hidden.
+ *
+ * If curation is empty (e.g. fresh install before the seed migration), we
+ * fall back to the unfiltered gateway list to avoid a hard "no models"
+ * state — super-admins will still see everything in `/api/admin/catalog`.
  */
 agentRoutes.get("/gateway-models", async (c: AuthenticatedContext) => {
-  const models = await getGatewayModels();
+  const [gateway, catalog] = await Promise.all([
+    getGatewayModels(),
+    getCatalogModels(),
+  ]);
+  if (catalog.length === 0) {
+    return c.json({ models: gateway });
+  }
+  const visible = new Set(catalog.map(m => m.id));
+  const models = gateway.filter(m => visible.has(m.id));
   return c.json({ models });
 });
 
@@ -306,20 +325,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
 
-  // Load billing plan + enabled model IDs for plan-appropriate defaults and allowlists.
+  // Load billing plan + disabled model IDs for plan-appropriate defaults and blocklist.
   const wsForModels = await Workspace.findById(workspaceId).select(
-    "billing.plan billing.subscriptionStatus settings.enabledModelIds",
+    "billing.plan billing.subscriptionStatus settings.disabledModelIds",
   );
   const effectivePlan = getEffectiveBillingPlan(wsForModels?.billing);
-  const wsEnabledModelIdsEarly = wsForModels?.settings?.enabledModelIds?.length
-    ? wsForModels.settings.enabledModelIds
-    : undefined;
+  const wsDisabledModelIds = wsForModels?.settings?.disabledModelIds ?? [];
 
   // Resolve model early so billing checks run against the actual model used.
-  const available = await getAvailableModels(wsEnabledModelIdsEarly);
-  const isModelAllowed = wsEnabledModelIdsEarly?.length
-    ? wsEnabledModelIdsEarly.includes(modelId || "")
-    : available.some(m => m.id === modelId);
+  const available = await getAvailableModels(wsDisabledModelIds);
+  const isModelAllowed = available.some(m => m.id === modelId);
   const resolvedModelId =
     modelId && isModelAllowed
       ? (modelId as string)

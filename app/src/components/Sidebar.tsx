@@ -20,7 +20,7 @@ import {
   MessageCircleMore as ChatIcon,
 } from "lucide-react";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
-import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
+import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
 import { startTransition, useState } from "react";
 import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
@@ -82,7 +82,6 @@ function Sidebar() {
   // the last-selected view retained across collapse — to decide which icon
   // is highlighted, so collapsing the pane clears the highlight.
   const activeExplorer = useUIStore(selectActiveExplorer);
-  const leftPane = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const setLeftPane = useUIStore(state => state.setLeftPane);
@@ -137,13 +136,16 @@ function Sidebar() {
   };
 
   const handleNavigation = (view: NavigationView) => {
-    // Update the left pane only for views that the store recognises.
+    // Settings now behaves like any other explorer: clicking the cog opens
+    // the SettingsExplorer panel in the left rail. A tab is only opened once
+    // the user picks a specific sub-section from that panel.
     if (
       view === "databases" ||
       view === "consoles" ||
       view === "connectors" ||
       view === "flows" ||
-      view === "dashboards"
+      view === "dashboards" ||
+      view === "settings"
     ) {
       startTransition(() => {
         setLeftPane(
@@ -152,33 +154,14 @@ function Sidebar() {
             | "consoles"
             | "connectors"
             | "flows"
-            | "dashboards",
+            | "dashboards"
+            | "settings",
         );
 
         if (!leftPaneOpen) {
           openLeftPane();
         }
       });
-    }
-
-    // Only certain views should automatically open (or focus) a tab in the editor.
-    // Currently we want settings to open a tab, but data sources should just switch the left pane.
-    if (view === "settings") {
-      const { openTab, setActiveTab } = useConsoleStore.getState();
-
-      const existing = selectTabByKind(
-        view === "settings" ? "settings" : "connectors",
-      )(useConsoleStore.getState());
-      if (existing) {
-        setActiveTab(existing.id);
-      } else {
-        const id = openTab({
-          title: view === "settings" ? "Settings" : "Connectors",
-          content: "", // Will be replaced with actual forms later
-          kind: view === "settings" ? "settings" : "connectors",
-        });
-        setActiveTab(id);
-      }
     }
   };
 
@@ -273,10 +256,9 @@ function Sidebar() {
           {/* Settings */}
           {bottomNavigationItems.map(item => {
             const Icon = item.icon;
-            // Settings opens as an editor tab, not a left-pane explorer, so
-            // it tracks `leftPane` (set to "settings" from the /settings URL)
-            // rather than `activeExplorer`.
-            const isActive = leftPane === item.view;
+            // Settings is now a real explorer — track `activeExplorer` like
+            // every other rail so collapsing the pane clears the highlight.
+            const isActive = activeExplorer === item.view;
 
             return (
               <Tooltip key={item.view} title={item.label} placement="right">

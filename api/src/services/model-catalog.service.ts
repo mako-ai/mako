@@ -2,10 +2,14 @@
  * Model Catalog Service
  *
  * Single source of truth for all AI model metadata. Persists raw upstream
- * snapshots (Vercel AI Gateway + arena.ai) in MongoDB, then merges on read.
+ * snapshots (Vercel AI Gateway) in MongoDB alongside a super-admin-curated
+ * `curation` doc that decides, per model, whether it is visible to workspaces
+ * and which tier (free / pro) it belongs to. Defaults for chat models are
+ * chosen explicitly in the curation doc — no heuristics, no arena ELO.
  *
- * Write path (Inngest cron / startup):
- *   fetch upstream → Zod validate → upsert DB snapshot
+ * Write path (Inngest cron / startup / admin refresh):
+ *   fetch gateway → Zod validate → upsert DB snapshot
+ *   admin UI       → upsert `curation` doc
  *
  * Read path (every request):
  *   in-memory cache (5 min TTL) → MongoDB → mergeCatalog()
@@ -31,8 +35,42 @@ export interface CatalogModel {
   supportsThinking: boolean;
   thinkingBudgetTokens: number;
   blendedCostPerM: number | null;
-  arenaScore: number | null;
   tier: "free" | "pro";
+}
+
+export interface CuratedModelEntry {
+  modelId: string;
+  visible: boolean;
+  tier: "free" | "pro";
+}
+
+export interface CurationDoc {
+  models: CuratedModelEntry[];
+  defaultChatModelId: string | null;
+  defaultFreeChatModelId: string | null;
+  lastRefreshError: string | null;
+}
+
+/** Shape returned to the Super Admin UI (gateway × curation join). */
+export interface AdminCatalogModel {
+  id: string;
+  provider: string;
+  name: string;
+  description: string;
+  contextWindow: number | null;
+  tags: string[];
+  blendedCostPerM: number | null;
+  visible: boolean;
+  tier: "free" | "pro";
+}
+
+export interface AdminCatalogView {
+  models: AdminCatalogModel[];
+  defaultChatModelId: string | null;
+  defaultFreeChatModelId: string | null;
+  lastRefreshError: string | null;
+  gatewayFetchedAt: string | null;
+  curationUpdatedAt: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,29 +104,11 @@ const GatewayResponseSchema = z.object({
   data: z.array(GatewayModelRawSchema).min(10),
 });
 
-const ArenaModelSchema = z.object({
-  model: z.string(),
-  score: z.number(),
-  rank: z.number().optional(),
-  vendor: z.string().optional(),
-  license: z.string().optional(),
-  ci: z.number().optional(),
-  votes: z.number().optional(),
-});
-
-const ArenaResponseSchema = z.object({
-  meta: z.object({ model_count: z.number() }),
-  models: z.array(ArenaModelSchema).min(5),
-});
-
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const GATEWAY_API_URL = "https://ai-gateway.vercel.sh/v1/models";
-const ARENA_API_URL =
-  "https://api.wulong.dev/arena-ai-leaderboards/v1/leaderboard?name=code";
-const FREE_TIER_MAX_COST_PER_M = 3.0;
 const MEM_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const FALLBACK_FREE: readonly string[] = [
@@ -97,19 +117,16 @@ const FALLBACK_FREE: readonly string[] = [
   "deepseek/deepseek-chat",
 ];
 
-const DEFAULT_PREFERRED_PROVIDERS = new Set([
-  "openai",
-  "anthropic",
-  "google",
-  "deepseek",
-]);
-
 // ---------------------------------------------------------------------------
 // In-memory cache (thin layer over MongoDB)
 // ---------------------------------------------------------------------------
 
 let cachedCatalog: CatalogModel[] | null = null;
 let cachedFreeTierIds: Set<string> | null = null;
+let cachedDefaults: {
+  defaultChatModelId: string | null;
+  defaultFreeChatModelId: string | null;
+} = { defaultChatModelId: null, defaultFreeChatModelId: null };
 let cacheTimestamp = 0;
 
 // ---------------------------------------------------------------------------
@@ -131,107 +148,12 @@ interface PricingEntry {
   output: number;
 }
 
-interface ArenaEntry {
-  model: string;
-  score: number;
-  rank?: number;
-}
-
-// ---------------------------------------------------------------------------
-// Arena name normalization (for fuzzy matching gateway ↔ arena IDs)
-// ---------------------------------------------------------------------------
-
-function normalizeArenaName(name: string): string[] {
-  const base = name
-    .replace(/\s*\(.*?\)\s*/g, "")
-    .trim()
-    .toLowerCase();
-
-  const keys: string[] = [];
-  keys.push(base.replace(/\./g, "-"));
-  keys.push(base.replace(/(\d)-(?=\d)/g, "$1."));
-  keys.push(base);
-  const noDate = base.replace(/-\d{8}$/, "");
-  if (noDate !== base) {
-    keys.push(noDate.replace(/\./g, "-"));
-    keys.push(noDate);
-  }
-
-  return [...new Set(keys)];
-}
-
-const GATEWAY_TO_ARENA_ALIASES: Record<string, string> = {
-  "claude-3.5-haiku": "claude-haiku-4-5",
-  "claude-3-5-haiku": "claude-haiku-4-5",
-  "claude-3.5-sonnet": "claude-sonnet-4-6",
-  "claude-3-5-sonnet": "claude-sonnet-4-6",
-};
-
-function modelTokens(name: string): Set<string> {
-  const tokens = new Set<string>();
-  const parts = name.replace(/\./g, "-").split("-");
-  for (const p of parts) {
-    if (p.length > 0) tokens.add(p);
-  }
-  return tokens;
-}
-
-function lookupArenaScore(
-  gatewayId: string,
-  arenaScores: Map<string, number>,
-): number | null {
-  const slashIdx = gatewayId.indexOf("/");
-  const modelPart = slashIdx >= 0 ? gatewayId.slice(slashIdx + 1) : gatewayId;
-  const lower = modelPart.toLowerCase();
-
-  const alias = GATEWAY_TO_ARENA_ALIASES[lower];
-  if (alias) {
-    const score = arenaScores.get(alias);
-    if (score !== undefined) return score;
-  }
-
-  const variants = [
-    lower,
-    lower.replace(/\./g, "-"),
-    lower.replace(/(\d)-(?=\d)/g, "$1."),
-  ];
-  for (const v of variants) {
-    const score = arenaScores.get(v);
-    if (score !== undefined) return score;
-  }
-
-  for (const [key, score] of arenaScores) {
-    if (key.startsWith(lower) || lower.startsWith(key)) return score;
-  }
-
-  const gwTokens = modelTokens(lower);
-  if (gwTokens.size >= 2) {
-    let bestScore: number | null = null;
-    let bestOverlap = 0;
-    for (const [key, score] of arenaScores) {
-      const arenaTokens = modelTokens(key);
-      let overlap = 0;
-      for (const t of gwTokens) {
-        if (arenaTokens.has(t)) overlap++;
-      }
-      const ratio = overlap / Math.max(gwTokens.size, arenaTokens.size);
-      if (ratio > 0.7 && overlap > bestOverlap) {
-        bestOverlap = overlap;
-        bestScore = score;
-      }
-    }
-    if (bestScore !== null) return bestScore;
-  }
-
-  return null;
-}
-
 // ---------------------------------------------------------------------------
 // Snapshot refresh: Gateway (models + pricing)
 // ---------------------------------------------------------------------------
 
 export async function refreshGatewaySnapshot(): Promise<
-  { models: number } | { skipped: true; reason: string }
+  { models: number; pricedModels: number } | { skipped: true; reason: string }
 > {
   const res = await fetch(GATEWAY_API_URL, {
     headers: { Accept: "application/json" },
@@ -261,7 +183,6 @@ export async function refreshGatewaySnapshot(): Promise<
     return { skipped: true, reason };
   }
 
-  // Normalize gateway models
   const gatewayDocs: GatewayModelNormalized[] = languageModels.map(raw => ({
     id: raw.id,
     name: raw.name || raw.id,
@@ -271,7 +192,6 @@ export async function refreshGatewaySnapshot(): Promise<
     tags: raw.tags ?? [],
   }));
 
-  // Extract pricing
   const pricingDocs: PricingEntry[] = [];
   for (const raw of languageModels) {
     if (raw.pricing?.input && raw.pricing?.output) {
@@ -303,112 +223,178 @@ export async function refreshGatewaySnapshot(): Promise<
     pricedModels: pricingDocs.length,
   });
 
-  return { models: gatewayDocs.length };
+  return { models: gatewayDocs.length, pricedModels: pricingDocs.length };
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot refresh: Arena
+// Curation doc read / write
 // ---------------------------------------------------------------------------
 
-export async function refreshArenaSnapshot(): Promise<
-  { scores: number } | { skipped: true; reason: string }
-> {
-  const res = await fetch(ARENA_API_URL, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(8_000),
-  });
+const EMPTY_CURATION: CurationDoc = {
+  models: [],
+  defaultChatModelId: null,
+  defaultFreeChatModelId: null,
+  lastRefreshError: null,
+};
 
-  if (!res.ok) {
-    throw new Error(`Arena fetch failed: ${res.status} ${res.statusText}`);
-  }
+async function loadCuration(): Promise<CurationDoc> {
+  const doc = await ModelCatalogSnapshot.findOne({ _id: "curation" }).lean();
+  if (!doc || !doc.data) return { ...EMPTY_CURATION };
+  const data = doc.data as Partial<CurationDoc>;
+  return {
+    models: Array.isArray(data.models) ? data.models : [],
+    defaultChatModelId: data.defaultChatModelId ?? null,
+    defaultFreeChatModelId: data.defaultFreeChatModelId ?? null,
+    lastRefreshError: data.lastRefreshError ?? null,
+  };
+}
 
-  const body = await res.json();
-  const parsed = ArenaResponseSchema.safeParse(body);
-  if (!parsed.success) {
-    const reason = parsed.error.issues
-      .map(i => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
-    logger.warn("Arena response failed Zod validation, skipping upsert", {
-      reason,
-    });
-    return { skipped: true, reason };
-  }
-
-  const arenaDocs: ArenaEntry[] = parsed.data.models.map(m => ({
-    model: m.model,
-    score: m.score,
-    rank: m.rank,
-  }));
-
+async function saveCuration(curation: CurationDoc): Promise<void> {
   await ModelCatalogSnapshot.findOneAndUpdate(
-    { _id: "arena" },
-    { data: arenaDocs, fetchedAt: new Date(), itemCount: arenaDocs.length },
+    { _id: "curation" },
+    {
+      data: curation,
+      fetchedAt: new Date(),
+      itemCount: curation.models.length,
+    },
     { upsert: true },
   );
+  invalidateCatalog();
+}
 
-  logger.info("Persisted arena snapshot", { scores: arenaDocs.length });
-  return { scores: arenaDocs.length };
+/**
+ * Upsert a single model's curation entry (visibility + tier).
+ * Unknown modelIds are appended.
+ */
+export async function setCuratedModel(
+  modelId: string,
+  update: { visible?: boolean; tier?: "free" | "pro" },
+): Promise<CurationDoc> {
+  const curation = await loadCuration();
+  const idx = curation.models.findIndex(m => m.modelId === modelId);
+  if (idx >= 0) {
+    const next = { ...curation.models[idx] };
+    if (update.visible !== undefined) next.visible = update.visible;
+    if (update.tier !== undefined) next.tier = update.tier;
+    curation.models[idx] = next;
+  } else {
+    curation.models.push({
+      modelId,
+      visible: update.visible ?? true,
+      tier: update.tier ?? "pro",
+    });
+  }
+
+  // Clear defaults that were pointing at a now-hidden model
+  if (update.visible === false) {
+    if (curation.defaultChatModelId === modelId) {
+      curation.defaultChatModelId = null;
+    }
+    if (curation.defaultFreeChatModelId === modelId) {
+      curation.defaultFreeChatModelId = null;
+    }
+  }
+  // If tier flipped away from free, drop the free-default pointer
+  if (update.tier === "pro" && curation.defaultFreeChatModelId === modelId) {
+    curation.defaultFreeChatModelId = null;
+  }
+
+  await saveCuration(curation);
+  return curation;
+}
+
+export async function setCuratedDefaults(update: {
+  defaultChatModelId?: string | null;
+  defaultFreeChatModelId?: string | null;
+}): Promise<CurationDoc> {
+  const curation = await loadCuration();
+  if (update.defaultChatModelId !== undefined) {
+    curation.defaultChatModelId = update.defaultChatModelId;
+  }
+  if (update.defaultFreeChatModelId !== undefined) {
+    curation.defaultFreeChatModelId = update.defaultFreeChatModelId;
+  }
+  await saveCuration(curation);
+  return curation;
+}
+
+async function setCurationRefreshError(error: string | null): Promise<void> {
+  const curation = await loadCuration();
+  if (curation.lastRefreshError === error) return;
+  curation.lastRefreshError = error;
+  await saveCuration(curation);
 }
 
 // ---------------------------------------------------------------------------
-// Refresh all snapshots (parallel, best-effort per source)
+// Admin refresh wrapper — persists any error on the curation doc
 // ---------------------------------------------------------------------------
 
-export async function refreshAllSnapshots(): Promise<{
-  gateway: { models: number } | { skipped: true; reason: string };
-  arena: { scores: number } | { skipped: true; reason: string };
-}> {
-  const [gateway, arena] = await Promise.all([
-    refreshGatewaySnapshot().catch(err => {
-      logger.error("Gateway snapshot refresh failed", {
-        error: String(err),
-      });
-      return { skipped: true as const, reason: String(err) };
-    }),
-    refreshArenaSnapshot().catch(err => {
-      logger.warn("Arena snapshot refresh failed", { error: String(err) });
-      return { skipped: true as const, reason: String(err) };
-    }),
-  ]);
-
-  return { gateway, arena };
+export async function adminRefreshCatalog(): Promise<
+  | { ok: true; models: number; pricedModels: number }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await refreshGatewaySnapshot();
+    if ("skipped" in result) {
+      await setCurationRefreshError(`Skipped: ${result.reason}`);
+      return { ok: false, error: result.reason };
+    }
+    await setCurationRefreshError(null);
+    await warmCatalog();
+    return {
+      ok: true,
+      models: result.models,
+      pricedModels: result.pricedModels,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error("Admin catalog refresh failed", { error: msg });
+    await setCurationRefreshError(msg);
+    return { ok: false, error: msg };
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Pure merge: gateway + arena + pricing → CatalogModel[]
+// Pure merge: gateway + pricing + curation → CatalogModel[]
 // ---------------------------------------------------------------------------
 
 function mergeCatalog(
   gateway: GatewayModelNormalized[],
-  arena: ArenaEntry[],
   pricing: PricingEntry[],
-): { models: CatalogModel[]; freeTierIds: Set<string> } {
-  // Build arena score lookup
-  const arenaScores = new Map<string, number>();
-  for (const a of arena) {
-    for (const key of normalizeArenaName(a.model)) {
-      arenaScores.set(key, a.score);
-    }
-  }
-
-  // Build pricing lookup
+  curation: CurationDoc,
+): {
+  models: CatalogModel[];
+  freeTierIds: Set<string>;
+  defaults: {
+    defaultChatModelId: string | null;
+    defaultFreeChatModelId: string | null;
+  };
+} {
   const pricingMap = new Map<string, { input: number; output: number }>();
   for (const p of pricing) {
     pricingMap.set(p.modelId, { input: p.input, output: p.output });
   }
 
+  const curationMap = new Map<string, CuratedModelEntry>();
+  for (const c of curation.models) {
+    curationMap.set(c.modelId, c);
+  }
+
   const freeTierIds = new Set<string>();
-  const models: CatalogModel[] = gateway.map(gm => {
+  const models: CatalogModel[] = [];
+
+  for (const gm of gateway) {
+    const cur = curationMap.get(gm.id);
+    // Fail-closed: models without a curation entry are hidden by default
+    if (!cur || cur.visible === false) continue;
+
     const supportsThinking = gm.tags.includes("reasoning");
     const p = pricingMap.get(gm.id);
     const blendedCostPerM = p ? (p.input + p.output) / 2 : null;
-    const arenaScore = lookupArenaScore(gm.id, arenaScores);
+    const tier = cur.tier;
+    if (tier === "free") freeTierIds.add(gm.id);
 
-    const isFree =
-      blendedCostPerM !== null && blendedCostPerM <= FREE_TIER_MAX_COST_PER_M;
-    if (isFree) freeTierIds.add(gm.id);
-
-    return {
+    models.push({
       id: gm.id,
       provider: gm.provider,
       name: gm.name,
@@ -418,12 +404,18 @@ function mergeCatalog(
       supportsThinking,
       thinkingBudgetTokens: supportsThinking ? 10_000 : 0,
       blendedCostPerM,
-      arenaScore,
-      tier: isFree ? ("free" as const) : ("pro" as const),
-    };
-  });
+      tier,
+    });
+  }
 
-  return { models, freeTierIds };
+  return {
+    models,
+    freeTierIds,
+    defaults: {
+      defaultChatModelId: curation.defaultChatModelId,
+      defaultFreeChatModelId: curation.defaultFreeChatModelId,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,23 +425,40 @@ function mergeCatalog(
 async function loadFromDb(): Promise<{
   models: CatalogModel[];
   freeTierIds: Set<string>;
+  defaults: {
+    defaultChatModelId: string | null;
+    defaultFreeChatModelId: string | null;
+  };
 } | null> {
-  const docs = await ModelCatalogSnapshot.find({}).lean();
+  const docs = await ModelCatalogSnapshot.find({
+    _id: { $in: ["gateway", "pricing", "curation"] },
+  }).lean();
   if (docs.length === 0) return null;
 
   const gatewayDoc = docs.find(d => d._id === "gateway");
-  const arenaDoc = docs.find(d => d._id === "arena");
   const pricingDoc = docs.find(d => d._id === "pricing");
+  const curationDoc = docs.find(d => d._id === "curation");
 
   if (!gatewayDoc || !gatewayDoc.data || gatewayDoc.data.length === 0) {
     return null;
   }
 
   const gateway = gatewayDoc.data as unknown as GatewayModelNormalized[];
-  const arena = (arenaDoc?.data ?? []) as unknown as ArenaEntry[];
   const pricing = (pricingDoc?.data ?? []) as unknown as PricingEntry[];
+  const curation: CurationDoc = curationDoc?.data
+    ? {
+        models: Array.isArray((curationDoc.data as any).models)
+          ? (curationDoc.data as any).models
+          : [],
+        defaultChatModelId:
+          (curationDoc.data as any).defaultChatModelId ?? null,
+        defaultFreeChatModelId:
+          (curationDoc.data as any).defaultFreeChatModelId ?? null,
+        lastRefreshError: (curationDoc.data as any).lastRefreshError ?? null,
+      }
+    : { ...EMPTY_CURATION };
 
-  return mergeCatalog(gateway, arena, pricing);
+  return mergeCatalog(gateway, pricing, curation);
 }
 
 async function ensureCatalog(): Promise<void> {
@@ -466,6 +475,7 @@ async function ensureCatalog(): Promise<void> {
     if (result && result.models.length > 0) {
       cachedCatalog = result.models;
       cachedFreeTierIds = result.freeTierIds;
+      cachedDefaults = result.defaults;
       cacheTimestamp = Date.now();
       return;
     }
@@ -473,33 +483,37 @@ async function ensureCatalog(): Promise<void> {
     logger.warn("Failed to load catalog from DB", { error: String(err) });
   }
 
-  // DB empty or unavailable — serve stale in-memory data if we have any
   if (cachedCatalog && cachedCatalog.length > 0) return;
 
-  // No data anywhere
   logger.warn(
     "Model catalog empty — waiting for Inngest cron or startup to populate",
   );
   cachedCatalog = [];
   cachedFreeTierIds = new Set(FALLBACK_FREE);
-  cacheTimestamp = 0; // don't cache the empty result for long
+  cachedDefaults = { defaultChatModelId: null, defaultFreeChatModelId: null };
+  cacheTimestamp = 0;
 }
 
 // ---------------------------------------------------------------------------
-// Startup warm
+// Startup warm + manual invalidation
 // ---------------------------------------------------------------------------
 
-export async function warmCatalog(): Promise<void> {
+export function invalidateCatalog(): void {
   cachedCatalog = null;
   cachedFreeTierIds = null;
+  cachedDefaults = { defaultChatModelId: null, defaultFreeChatModelId: null };
   cacheTimestamp = 0;
+}
 
-  // Try loading from DB first (fast, no external API calls)
+export async function warmCatalog(): Promise<void> {
+  invalidateCatalog();
+
   try {
     const result = await loadFromDb();
     if (result && result.models.length > 0) {
       cachedCatalog = result.models;
       cachedFreeTierIds = result.freeTierIds;
+      cachedDefaults = result.defaults;
       cacheTimestamp = Date.now();
       logger.info("Loaded model catalog from DB", {
         models: result.models.length,
@@ -513,15 +527,20 @@ export async function warmCatalog(): Promise<void> {
     });
   }
 
-  // DB empty (first deploy) — fetch from upstream and persist
-  logger.info("DB catalog empty, fetching from upstream APIs");
-  const { gateway } = await refreshAllSnapshots();
+  logger.info("DB catalog empty, fetching from upstream AI Gateway");
+  const gw = await refreshGatewaySnapshot().catch(err => {
+    logger.error("Gateway snapshot refresh failed on startup", {
+      error: String(err),
+    });
+    return { skipped: true as const, reason: String(err) };
+  });
 
-  if ("models" in gateway) {
+  if ("models" in gw) {
     const result = await loadFromDb();
     if (result && result.models.length > 0) {
       cachedCatalog = result.models;
       cachedFreeTierIds = result.freeTierIds;
+      cachedDefaults = result.defaults;
       cacheTimestamp = Date.now();
       logger.info("Populated model catalog from upstream", {
         models: result.models.length,
@@ -530,9 +549,9 @@ export async function warmCatalog(): Promise<void> {
     }
   }
 
-  // Fallback: empty catalog
   cachedCatalog = [];
   cachedFreeTierIds = new Set(FALLBACK_FREE);
+  cachedDefaults = { defaultChatModelId: null, defaultFreeChatModelId: null };
   cacheTimestamp = 0;
 }
 
@@ -562,34 +581,30 @@ export async function isFreeTierModel(id: string): Promise<boolean> {
   return cachedFreeTierIds?.has(id) ?? FALLBACK_FREE.includes(id);
 }
 
-function pickBestByElo(
-  models: CatalogModel[],
-  preferProviders = true,
-): string | null {
-  const sorted = [...models].sort(
-    (a, b) => (b.arenaScore ?? 0) - (a.arenaScore ?? 0),
-  );
-
-  if (preferProviders) {
-    const preferred = sorted.find(
-      m => DEFAULT_PREFERRED_PROVIDERS.has(m.provider) && m.arenaScore !== null,
-    );
-    if (preferred) return preferred.id;
-  }
-
-  return sorted[0]?.id ?? null;
-}
-
 export async function getDefaultChatModelId(): Promise<string> {
   await ensureCatalog();
   const all = cachedCatalog ?? [];
-  return pickBestByElo(all) ?? FALLBACK_FREE[0];
+  const explicit = cachedDefaults.defaultChatModelId;
+  if (explicit && all.some(m => m.id === explicit)) return explicit;
+
+  // Safe fallback: first visible pro, then first visible free, then FALLBACK_FREE
+  const pro = all.find(m => m.tier === "pro");
+  if (pro) return pro.id;
+  const free = all.find(m => m.tier === "free");
+  if (free) return free.id;
+  return FALLBACK_FREE[0];
 }
 
 export async function getDefaultFreeChatModelId(): Promise<string> {
   await ensureCatalog();
-  const freeModels = (cachedCatalog ?? []).filter(m => m.tier === "free");
-  return pickBestByElo(freeModels) ?? FALLBACK_FREE[0];
+  const all = cachedCatalog ?? [];
+  const explicit = cachedDefaults.defaultFreeChatModelId;
+  if (explicit && all.some(m => m.id === explicit && m.tier === "free")) {
+    return explicit;
+  }
+  const free = all.find(m => m.tier === "free");
+  if (free) return free.id;
+  return FALLBACK_FREE[0];
 }
 
 export async function getUtilityChatModelId(): Promise<string> {
@@ -612,4 +627,70 @@ export async function getUtilityModelIds(count = 3): Promise<string[]> {
     (a, b) => (a.blendedCostPerM ?? Infinity) - (b.blendedCostPerM ?? Infinity),
   );
   return candidates.slice(0, count).map(m => m.id);
+}
+
+// ---------------------------------------------------------------------------
+// Admin-facing catalog view (join gateway × curation, includes hidden models)
+// ---------------------------------------------------------------------------
+
+export async function getAdminCatalogView(): Promise<AdminCatalogView> {
+  const [docs, curation] = await Promise.all([
+    ModelCatalogSnapshot.find({
+      _id: { $in: ["gateway", "pricing", "curation"] },
+    }).lean(),
+    loadCuration(),
+  ]);
+
+  const gatewayDoc = docs.find(d => d._id === "gateway");
+  const pricingDoc = docs.find(d => d._id === "pricing");
+  const curationDoc = docs.find(d => d._id === "curation");
+
+  const gateway = (gatewayDoc?.data ??
+    []) as unknown as GatewayModelNormalized[];
+  const pricing = (pricingDoc?.data ?? []) as unknown as PricingEntry[];
+
+  const pricingMap = new Map<string, { input: number; output: number }>();
+  for (const p of pricing) {
+    pricingMap.set(p.modelId, { input: p.input, output: p.output });
+  }
+  const curationMap = new Map<string, CuratedModelEntry>();
+  for (const c of curation.models) {
+    curationMap.set(c.modelId, c);
+  }
+
+  const models: AdminCatalogModel[] = gateway.map(gm => {
+    const p = pricingMap.get(gm.id);
+    const blendedCostPerM = p ? (p.input + p.output) / 2 : null;
+    const cur = curationMap.get(gm.id);
+    return {
+      id: gm.id,
+      provider: gm.provider,
+      name: gm.name,
+      description: gm.description,
+      contextWindow: gm.contextWindow,
+      tags: gm.tags,
+      blendedCostPerM,
+      // Fail-closed: missing curation entry = hidden pro
+      visible: cur?.visible ?? false,
+      tier: cur?.tier ?? "pro",
+    };
+  });
+
+  models.sort((a, b) => {
+    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+    return a.name.localeCompare(b.name);
+  });
+
+  return {
+    models,
+    defaultChatModelId: curation.defaultChatModelId,
+    defaultFreeChatModelId: curation.defaultFreeChatModelId,
+    lastRefreshError: curation.lastRefreshError,
+    gatewayFetchedAt: gatewayDoc?.fetchedAt
+      ? new Date(gatewayDoc.fetchedAt).toISOString()
+      : null,
+    curationUpdatedAt: curationDoc?.fetchedAt
+      ? new Date(curationDoc.fetchedAt).toISOString()
+      : null,
+  };
 }

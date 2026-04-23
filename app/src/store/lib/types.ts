@@ -17,6 +17,19 @@ export type TabKind =
   | "dashboard";
 
 /**
+ * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
+ * own tab, opened from the settings explorer in the left rail.
+ */
+export type SettingsSection =
+  | "prompt"
+  | "models"
+  | "billing"
+  | "members"
+  | "api-keys"
+  | "appearance"
+  | "admin";
+
+/**
  * Console access level (visibility scope)
  */
 export type ConsoleAccessLevel = "private" | "workspace";
@@ -45,6 +58,8 @@ export interface ConsoleTab {
   filePath?: string;
   /** Tab type */
   kind?: TabKind;
+  /** For `kind === "settings"`, which sub-section is displayed in this tab */
+  settingsSection?: SettingsSection;
   /** false/undefined = pristine (replaceable), true = dirty (persistent) */
   isDirty?: boolean;
   /** URL or path to icon, e.g., "/api/connectors/stripe/icon.svg" */

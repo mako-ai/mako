@@ -1,9 +1,13 @@
 import { useEffect, useRef } from "react";
 import { useUIStore } from "../store/uiStore";
-import { selectTabByKind, useConsoleStore } from "../store/consoleStore";
+import {
+  selectTabBySettingsSection,
+  useConsoleStore,
+} from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
+import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
 
 /**
  * UrlSync component
@@ -50,7 +54,9 @@ export function UrlSync() {
           ? `/d/${tab.metadata.dashboardId}`
           : null;
       case "settings":
-        return "/settings";
+        return tab.settingsSection
+          ? `/settings/${tab.settingsSection}`
+          : "/settings";
       default:
         return null;
     }
@@ -81,7 +87,8 @@ export function UrlSync() {
     const connectorMatch = path.match(/^\/cx\/([a-zA-Z0-9-]+)/);
     const flowMatch = path.match(/^\/f\/([a-zA-Z0-9-]+)/);
     const dashboardMatch = path.match(/^\/d\/([a-zA-Z0-9-]+)/);
-    const settingsMatch = path.match(/^\/settings/);
+    const settingsSectionMatch = path.match(/^\/settings\/([a-z-]+)$/);
+    const settingsMatch = path.match(/^\/settings\/?$/);
 
     if (consoleMatch) {
       // /c/:consoleId
@@ -161,24 +168,31 @@ export function UrlSync() {
             setActiveTab(id);
           });
       }
-    } else if (settingsMatch) {
-      // /settings
+    } else if (settingsSectionMatch) {
+      // /settings/:section — open the explorer *and* focus the section's tab.
+      const section = settingsSectionMatch[1];
       setLeftPane("settings");
 
-      // Open settings tab if not open
-      const existingTab = selectTabByKind("settings")(
-        useConsoleStore.getState(),
-      );
-      if (existingTab) {
-        setActiveTab(existingTab.id);
-      } else {
-        const id = openTab({
-          title: "Settings",
-          content: "",
-          kind: "settings",
-        });
-        setActiveTab(id);
+      if (isSettingsSection(section)) {
+        const existingTab = selectTabBySettingsSection(section)(
+          useConsoleStore.getState(),
+        );
+        if (existingTab) {
+          setActiveTab(existingTab.id);
+        } else {
+          const id = openTab({
+            title: SECTION_LABELS[section],
+            content: "",
+            kind: "settings",
+            settingsSection: section,
+          });
+          setActiveTab(id);
+        }
       }
+    } else if (settingsMatch) {
+      // /settings — just show the explorer panel. No tab is forced open;
+      // the user picks a section from the panel.
+      setLeftPane("settings");
     }
 
     isHydrated.current = true;

@@ -479,8 +479,13 @@ workspaceRoutes.put(
   },
 );
 
-// Update enabled AI models for the workspace.
-// Accepts full model objects so GET /agent/models never needs the gateway.
+// Update the workspace's AI model blocklist.
+//
+// The workspace settings UI is enable-centric ("uncheck to hide from this
+// workspace"), but the source of truth is the inverse: `disabledModelIds` is
+// the list of super-admin-curated models the workspace has explicitly opted
+// out of. An empty blocklist means every curated model is available, so
+// models the platform adds later automatically appear in the chat dropdown.
 workspaceRoutes.put(
   "/:id/settings/models",
   unifiedAuthMiddleware,
@@ -496,74 +501,45 @@ workspaceRoutes.put(
       }
 
       const body = await c.req.json();
-      const { models } = body as {
-        models?: Array<{
-          id: string;
-          name: string;
-          provider: string;
-          description?: string;
-        }>;
+      const { disabledModelIds } = body as {
+        disabledModelIds?: unknown;
       };
 
-      if (!Array.isArray(models)) {
+      if (
+        !Array.isArray(disabledModelIds) ||
+        !disabledModelIds.every(id => typeof id === "string")
+      ) {
         return c.json(
-          { success: false, error: "models must be an array" },
+          {
+            success: false,
+            error: "disabledModelIds must be an array of strings",
+          },
           400,
         );
       }
 
-      if (models.length === 0) {
-        return c.json(
-          { success: false, error: "At least one model must be enabled" },
-          400,
-        );
-      }
-
-      // Validate each entry has required fields
-      for (const m of models) {
-        if (!m.id || !m.name || !m.provider) {
-          return c.json(
-            {
-              success: false,
-              error: "Each model must have id, name, and provider",
-            },
-            400,
-          );
-        }
-      }
-
-      // Deduplicate by id
-      const seen = new Set<string>();
-      const deduped = models.filter(m => {
-        if (seen.has(m.id)) return false;
-        seen.add(m.id);
-        return true;
-      });
-
-      const enabledModelIds = deduped.map(m => m.id);
+      // Deduplicate
+      const deduped = Array.from(new Set(disabledModelIds as string[]));
 
       await Workspace.findByIdAndUpdate(workspaceId, {
-        $set: {
-          "settings.enabledModels": deduped,
-          "settings.enabledModelIds": enabledModelIds,
-        },
+        $set: { "settings.disabledModelIds": deduped },
       });
 
-      logger.info("Updated enabled models for workspace", {
+      logger.info("Updated workspace model blocklist", {
         workspaceId,
-        modelCount: deduped.length,
+        disabledCount: deduped.length,
       });
 
-      return c.json({ success: true, enabledModelIds });
+      return c.json({ success: true, disabledModelIds: deduped });
     } catch (error) {
-      logger.error("Error updating enabled models", { error });
+      logger.error("Error updating workspace model blocklist", { error });
       return c.json(
         {
           success: false,
           error:
             error instanceof Error
               ? error.message
-              : "Failed to update enabled models",
+              : "Failed to update disabled models",
         },
         500,
       );
@@ -571,7 +547,7 @@ workspaceRoutes.put(
   },
 );
 
-// Get enabled AI model IDs for the workspace
+// Get the workspace's AI model blocklist.
 workspaceRoutes.get(
   "/:id/settings/models",
   unifiedAuthMiddleware,
@@ -579,12 +555,12 @@ workspaceRoutes.get(
   async (c: AuthenticatedContext) => {
     try {
       const workspace = c.get("workspace");
-      const enabledModelIds = workspace.settings?.enabledModelIds ?? [];
-      return c.json({ success: true, enabledModelIds });
+      const disabledModelIds = workspace.settings?.disabledModelIds ?? [];
+      return c.json({ success: true, disabledModelIds });
     } catch (error) {
-      logger.error("Error fetching enabled models", { error });
+      logger.error("Error fetching workspace model blocklist", { error });
       return c.json(
-        { success: false, error: "Failed to fetch enabled models" },
+        { success: false, error: "Failed to fetch disabled models" },
         500,
       );
     }

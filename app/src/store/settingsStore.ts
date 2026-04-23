@@ -11,7 +11,7 @@ import type {
   ModelListResponse,
   GatewayModelInfo,
   GatewayModelsResponse,
-  EnabledModelsResponse,
+  DisabledModelsResponse,
 } from "../lib/api-types";
 
 let modelsInFlight: Promise<void> | null = null;
@@ -38,19 +38,15 @@ interface SettingsState {
   gatewayModelsError: string | null;
   fetchGatewayModels: () => Promise<void>;
 
-  // Workspace enabled model IDs
-  enabledModelIds: string[];
-  enabledModelsLoading: boolean;
-  enabledModelsError: string | null;
-  fetchEnabledModels: (workspaceId: string) => Promise<void>;
-  saveEnabledModels: (
+  // Workspace-level model blocklist. Empty means "every curated model is
+  // available" — new models the super admin makes visible auto-appear.
+  disabledModelIds: string[];
+  disabledModelsLoading: boolean;
+  disabledModelsError: string | null;
+  fetchDisabledModels: (workspaceId: string) => Promise<void>;
+  saveDisabledModels: (
     workspaceId: string,
-    models: Array<{
-      id: string;
-      name: string;
-      provider: string;
-      description?: string;
-    }>,
+    disabledIds: string[],
   ) => Promise<boolean>;
 
   // General settings
@@ -76,13 +72,16 @@ export const useSettingsStore = create<SettingsState>()(
           set({ modelsLoading: true, modelsError: null });
           try {
             const response = await apiClient.get<
-              ModelListResponse | { models: AIModel[] }
+              | ModelListResponse
+              | { models: AIModel[]; recommendedModelId?: string | null }
             >("/agent/models");
 
             const models =
               "success" in response
                 ? response.models || []
                 : response.models || [];
+
+            const recommended = response.recommendedModelId ?? null;
 
             set({ models });
 
@@ -91,7 +90,15 @@ export const useSettingsStore = create<SettingsState>()(
               const current = get().selectedModelId;
               const isAvailable = models.some(model => model.id === current);
               if (!isAvailable) {
-                set({ selectedModelId: models[0].id });
+                // Prefer the platform default surfaced by the server over
+                // the alphabetically-first model. This keeps free-plan users
+                // on a free model and paid users on the curated paid default
+                // when their previous selection gets hidden.
+                const fallback =
+                  recommended && models.some(m => m.id === recommended)
+                    ? recommended
+                    : models[0].id;
+                set({ selectedModelId: fallback });
               }
             } else if (modelsRetryCount < MAX_MODELS_RETRIES) {
               const delay = MODELS_RETRY_DELAYS[modelsRetryCount] ?? 10_000;
@@ -152,37 +159,32 @@ export const useSettingsStore = create<SettingsState>()(
         return gatewayModelsInFlight;
       },
 
-      // Workspace enabled models
-      enabledModelIds: [],
-      enabledModelsLoading: false,
-      enabledModelsError: null,
-      fetchEnabledModels: async (workspaceId: string) => {
-        set({ enabledModelsLoading: true, enabledModelsError: null });
+      // Workspace model blocklist
+      disabledModelIds: [],
+      disabledModelsLoading: false,
+      disabledModelsError: null,
+      fetchDisabledModels: async (workspaceId: string) => {
+        set({ disabledModelsLoading: true, disabledModelsError: null });
         try {
-          const response = await apiClient.get<EnabledModelsResponse>(
+          const response = await apiClient.get<DisabledModelsResponse>(
             `/workspaces/${workspaceId}/settings/models`,
           );
-          set({ enabledModelIds: response.enabledModelIds || [] });
+          set({ disabledModelIds: response.disabledModelIds || [] });
         } catch (error) {
-          set({ enabledModelsError: "Failed to load enabled models" });
+          set({ disabledModelsError: "Failed to load disabled models" });
         } finally {
-          set({ enabledModelsLoading: false });
+          set({ disabledModelsLoading: false });
         }
       },
-      saveEnabledModels: async (
+      saveDisabledModels: async (
         workspaceId: string,
-        models: Array<{
-          id: string;
-          name: string;
-          provider: string;
-          description?: string;
-        }>,
+        disabledIds: string[],
       ): Promise<boolean> => {
         try {
           await apiClient.put(`/workspaces/${workspaceId}/settings/models`, {
-            models,
+            disabledModelIds: disabledIds,
           });
-          set({ enabledModelIds: models.map(m => m.id) });
+          set({ disabledModelIds: [...disabledIds] });
           return true;
         } catch (error) {
           return false;
