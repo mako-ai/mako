@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   IconButton,
@@ -9,7 +9,6 @@ import {
   ListItemText,
   Typography,
   Tooltip,
-  Alert,
   Skeleton,
   Menu,
   MenuItem,
@@ -24,6 +23,11 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useConsoleStore } from "../store/consoleStore";
+import ResourceTree, {
+  type ResourceTreeNode,
+  type ResourceTreeSection,
+} from "./ResourceTree";
+import ExplorerShell from "./ExplorerShell";
 
 export function FlowsExplorer() {
   const { currentWorkspace } = useWorkspace();
@@ -39,7 +43,10 @@ export function FlowsExplorer() {
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const open = Boolean(anchorEl);
 
-  const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
+  const flows = useMemo(
+    () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
+    [currentWorkspace, flowsMap],
+  );
   const isLoading = currentWorkspace
     ? !!loadingMap[currentWorkspace.id]
     : false;
@@ -120,14 +127,11 @@ export function FlowsExplorer() {
     }
   };
 
-  // Helper to get a display title for a flow
   const getFlowTitle = (flow: any): string => {
     if (flow.sourceType === "database") {
-      // Database-to-database flow
       const destName = flow.tableDestination?.tableName || "Table";
       return `Query → ${destName}`;
     }
-    // Connector flow
     const sourceName = flow.dataSourceId?.name || "Source";
     const destName = flow.destinationDatabaseId?.name || "Destination";
     return `${sourceName} → ${destName}`;
@@ -162,247 +166,209 @@ export function FlowsExplorer() {
     return {
       label: "Pending",
       color: "warning" as const,
-      letter: "A", // Abandoned/Awaiting
+      letter: "A",
     };
   };
 
-  const renderSkeletonItems = () => {
-    return Array.from({ length: 3 }).map((_, index) => (
-      <ListItem key={`skeleton-${index}`} disablePadding>
-        <ListItemButton disabled>
-          <ListItemText
-            primary={
-              <Skeleton
-                variant="text"
-                width={`${60 + Math.random() * 40}%`}
-                height={20}
-              />
-            }
-            secondary={
-              <Box
-                component="span"
-                sx={{
-                  display: "inline-flex",
-                  gap: 0.5,
-                  alignItems: "center",
-                }}
-              >
-                <Skeleton variant="text" width={120} height={16} />
-                <Skeleton
-                  variant="rectangular"
-                  width={50}
-                  height={16}
-                  sx={{ borderRadius: 1 }}
-                />
-              </Box>
-            }
-          />
-        </ListItemButton>
-      </ListItem>
-    ));
+  const flowById = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const flow of flows) {
+      map.set(flow._id, flow);
+    }
+    return map;
+  }, [flows]);
+
+  const sections = useMemo<ResourceTreeSection[]>(() => {
+    return [
+      {
+        key: "flows",
+        label: "",
+        hideSectionHeader: true,
+        nodes: flows.map(flow => ({
+          id: flow._id,
+          name: getFlowTitle(flow),
+          path: getFlowTitle(flow),
+          isDirectory: false,
+        })),
+      },
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flows]);
+
+  const getItemIcon = (node: ResourceTreeNode) => {
+    const flow = flowById.get(node.id);
+    if (!flow) return null;
+    if (flow.type === "webhook") {
+      return (
+        <WebhookIcon
+          size={20}
+          strokeWidth={1.5}
+          style={{
+            color:
+              flow.webhookConfig?.enabled !== false
+                ? undefined
+                : "var(--mui-palette-text-disabled)",
+          }}
+        />
+      );
+    }
+    if (flow.schedule?.enabled === true) {
+      return <ScheduleIcon size={20} strokeWidth={1.5} />;
+    }
+    return (
+      <PauseIcon
+        size={20}
+        strokeWidth={1.5}
+        style={{ color: "var(--mui-palette-text-disabled)" }}
+      />
+    );
   };
 
-  return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Header */}
-      <Box
-        sx={{
-          px: 1,
-          py: 0.25,
-          minHeight: 37,
-          borderBottom: 1,
-          borderColor: "divider",
-        }}
-      >
-        <Box
-          sx={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            height: "100%",
-            minHeight: 32,
-          }}
+  const getRightAdornment = (node: ResourceTreeNode) => {
+    const flow = flowById.get(node.id);
+    if (!flow) return null;
+    const status = getFlowStatus(flow);
+    return (
+      <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+        <Tooltip
+          title={
+            flow.syncMode === "incremental" ? "Incremental Sync" : "Full Sync"
+          }
         >
           <Typography
-            variant="h6"
+            variant="caption"
             sx={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              textTransform: "uppercase",
+              fontWeight: "bold",
+              color: "text.secondary",
+              cursor: "help",
             }}
           >
-            Flows
+            {flow.syncMode === "incremental" ? "I" : "F"}
           </Typography>
-          <Box sx={{ display: "flex", gap: 0 }}>
-            <Tooltip title="Add Flow">
-              <IconButton size="small" onClick={handleMenuOpen}>
-                <AddIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Refresh">
-              <IconButton
-                size="small"
-                onClick={handleRefresh}
-                disabled={isLoading}
-              >
-                <RefreshIcon size={20} strokeWidth={2} />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        </Box>
+        </Tooltip>
+        <Tooltip title={status.label}>
+          <Typography
+            variant="caption"
+            sx={{
+              fontWeight: "bold",
+              color:
+                status.letter === "S"
+                  ? "success.main"
+                  : status.letter === "F"
+                    ? "error.main"
+                    : status.letter === "A"
+                      ? "warning.main"
+                      : "text.disabled",
+              cursor: "help",
+            }}
+          >
+            {status.letter}
+          </Typography>
+        </Tooltip>
       </Box>
+    );
+  };
 
-      {/* Error Alert */}
-      {error && (
-        <Alert
-          severity="error"
-          onClose={() =>
-            currentWorkspace?.id && clearError(currentWorkspace.id)
-          }
-          sx={{ mx: 2, mt: 2 }}
-        >
-          {error}
-        </Alert>
-      )}
+  const activeFlowTabId = useMemo(() => {
+    const tab = consoleTabs.find(
+      (t: any) =>
+        t.id === activeConsoleId &&
+        t.kind === "flow-editor" &&
+        t.metadata?.flowId,
+    );
+    return (tab as any)?.metadata?.flowId ?? null;
+  }, [consoleTabs, activeConsoleId]);
 
-      {/* Flows List */}
-      <Box sx={{ flexGrow: 1, overflow: "auto" }}>
-        {isLoading && flows.length === 0 ? (
-          <List dense>{renderSkeletonItems()}</List>
-        ) : flows.length === 0 ? (
-          <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-            <Typography variant="body2">No flows configured.</Typography>
-          </Box>
-        ) : (
-          <List dense>
-            {flows.map(flow => {
-              const status = getFlowStatus(flow);
-              const isActive = !!(
-                activeConsoleId &&
-                consoleTabs.find(
-                  (t: any) =>
-                    t.id === activeConsoleId &&
-                    t.kind === "flow-editor" &&
-                    t.metadata?.flowId === flow._id,
-                )
-              );
-              return (
-                <ListItem key={flow._id} disablePadding>
-                  <ListItemButton
-                    selected={isActive}
-                    onClick={() => handleEditFlow(flow._id)}
-                    sx={{
-                      px: 1,
-                      py: 0.2,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                    }}
-                  >
-                    <ListItemIcon sx={{ minWidth: 28 }}>
-                      {flow.type === "webhook" ? (
-                        <WebhookIcon
-                          size={20}
-                          strokeWidth={1.5}
-                          style={{
-                            fontSize: 24,
-                            color:
-                              flow.webhookConfig?.enabled !== false
-                                ? "text.primary"
-                                : "text.disabled",
-                          }}
-                        />
-                      ) : flow.schedule?.enabled === true ? (
-                        <ScheduleIcon
-                          size={20}
-                          strokeWidth={1.5}
-                          style={{
-                            fontSize: 24,
-                            color: "text.primary",
-                          }}
-                        />
-                      ) : (
-                        <PauseIcon
-                          size={20}
-                          color="currentColor"
-                          strokeWidth={1.5}
-                          style={{
-                            color: "var(--mui-palette-text-disabled)",
-                          }}
-                        />
-                      )}
-                    </ListItemIcon>
-                    <ListItemText
-                      primary={getFlowTitle(flow)}
-                      secondary={null}
-                      sx={{
-                        pr: 6,
-                        "& .MuiListItemText-primary": {
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        },
-                      }}
-                    />
-                    <Box
-                      sx={{
-                        position: "absolute",
-                        right: 16,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        display: "flex",
-                        gap: 1,
-                        alignItems: "center",
-                      }}
-                    >
-                      <Tooltip
-                        title={
-                          flow.syncMode === "incremental"
-                            ? "Incremental Sync"
-                            : "Full Sync"
-                        }
-                      >
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            fontWeight: "bold",
-                            color: "text.secondary",
-                            cursor: "help",
-                          }}
-                        >
-                          {flow.syncMode === "incremental" ? "I" : "F"}
-                        </Typography>
-                      </Tooltip>
-                      <Tooltip title={status.label}>
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            fontWeight: "bold",
-                            color:
-                              status.letter === "S"
-                                ? "success.main"
-                                : status.letter === "F"
-                                  ? "error.main"
-                                  : status.letter === "A"
-                                    ? "warning.main"
-                                    : "text.disabled",
-                            cursor: "help",
-                          }}
-                        >
-                          {status.letter}
-                        </Typography>
-                      </Tooltip>
-                    </Box>
-                  </ListItemButton>
-                </ListItem>
-              );
-            })}
-          </List>
-        )}
-      </Box>
+  const renderSkeletonItems = () => (
+    <List dense>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <ListItem key={`skeleton-${index}`} disablePadding>
+          <ListItemButton disabled>
+            <ListItemText
+              primary={
+                <Skeleton
+                  variant="text"
+                  width={`${60 + Math.random() * 40}%`}
+                  height={20}
+                />
+              }
+              secondary={
+                <Box
+                  component="span"
+                  sx={{
+                    display: "inline-flex",
+                    gap: 0.5,
+                    alignItems: "center",
+                  }}
+                >
+                  <Skeleton variant="text" width={120} height={16} />
+                  <Skeleton
+                    variant="rectangular"
+                    width={50}
+                    height={16}
+                    sx={{ borderRadius: 1 }}
+                  />
+                </Box>
+              }
+            />
+          </ListItemButton>
+        </ListItem>
+      ))}
+    </List>
+  );
 
-      {/* Add New Flow Menu */}
+  const actions = (
+    <>
+      <Tooltip title="Add Flow">
+        <IconButton size="small" onClick={handleMenuOpen}>
+          <AddIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+      <Tooltip title="Refresh">
+        <IconButton size="small" onClick={handleRefresh} disabled={isLoading}>
+          <RefreshIcon size={20} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+    </>
+  );
+
+  return (
+    <>
+      <ExplorerShell
+        title="Flows"
+        actions={actions}
+        searchPlaceholder="Search flows..."
+        error={error}
+        onErrorClose={() => {
+          if (currentWorkspace?.id) clearError(currentWorkspace.id);
+        }}
+        loading={isLoading && flows.length === 0}
+        skeleton={renderSkeletonItems()}
+      >
+        {({ searchQuery }) =>
+          flows.length === 0 ? (
+            <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
+              <Typography variant="body2">No flows configured.</Typography>
+            </Box>
+          ) : (
+            <ResourceTree
+              sections={sections}
+              mode="sidebar"
+              searchQuery={searchQuery}
+              activeItemId={activeFlowTabId || undefined}
+              getItemIcon={getItemIcon}
+              getRightAdornment={getRightAdornment}
+              hideFolderIcon
+              isFolderExpanded={() => true}
+              onToggleFolder={() => {}}
+              onExpandFolder={() => {}}
+              getFolderExpansionKey={node => node.id}
+              onItemClick={node => handleEditFlow(node.id)}
+            />
+          )
+        }
+      </ExplorerShell>
+
       <Menu
         anchorEl={anchorEl}
         open={open}
@@ -435,6 +401,6 @@ export function FlowsExplorer() {
           <ListItemText>Webhook Sync</ListItemText>
         </MenuItem>
       </Menu>
-    </Box>
+    </>
   );
 }
