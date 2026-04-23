@@ -24,6 +24,7 @@ import {
   getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
 import { getGatewayModels } from "../services/gateway-models.service";
+import { getCatalogModels } from "../services/model-catalog.service";
 import {
   Workspace,
   DatabaseConnection,
@@ -72,21 +73,37 @@ agentRoutes.use("*", unifiedAuthMiddleware);
  * UI), those are merged with catalog data for metadata like `supportsThinking`.
  *
  * Falls back to the legacy `enabledModelIds` field, then to the full catalog.
+ *
+ * Also returns `recommendedModelId`: the plan-aware default the chat endpoint
+ * would fall back to if the client sent an unknown/hidden model. The client
+ * uses this to reset the model picker when its persisted selection is no
+ * longer available (e.g. super-admin hid the previously-selected model), so
+ * the UI matches what the server will actually run.
  */
 agentRoutes.get("/models", async (c: AuthenticatedContext) => {
   try {
     const workspaceId =
       c.req.header("x-workspace-id") || c.get("session")?.activeWorkspaceId;
 
+    let models: Awaited<ReturnType<typeof getAvailableModels>> = [];
+    let effectivePlan: ReturnType<typeof getEffectiveBillingPlan> = "free";
+
     if (workspaceId) {
       const ws = await Workspace.findById(workspaceId)
-        .select({ "settings.enabledModels": 1, "settings.enabledModelIds": 1 })
+        .select({
+          "settings.enabledModels": 1,
+          "settings.enabledModelIds": 1,
+          "billing.plan": 1,
+          "billing.subscriptionStatus": 1,
+        })
         .lean();
+
+      effectivePlan = getEffectiveBillingPlan(ws?.billing);
 
       if (ws?.settings?.enabledModels?.length) {
         const catalogModels = await getAvailableModels();
         const catalogMap = new Map(catalogModels.map(m => [m.id, m]));
-        const models = ws.settings.enabledModels.map(
+        models = ws.settings.enabledModels.map(
           (em: {
             id: string;
             name: string;
@@ -103,29 +120,57 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
             };
           },
         );
-        return c.json({ models });
+      } else if (ws?.settings?.enabledModelIds?.length) {
+        models = await getAvailableModels(ws.settings.enabledModelIds);
+      } else {
+        models = await getAvailableModels();
       }
-
-      if (ws?.settings?.enabledModelIds?.length) {
-        const models = await getAvailableModels(ws.settings.enabledModelIds);
-        return c.json({ models });
-      }
+    } else {
+      models = await getAvailableModels();
     }
 
-    const models = await getAvailableModels();
-    return c.json({ models });
+    const platformDefault =
+      effectivePlan === "free"
+        ? await getDefaultFreeModelId()
+        : await getDefaultModelId();
+
+    // Only surface the platform default if it's actually in the returned
+    // list — otherwise the client would set an id the selector can't render.
+    // Fall back to the first available model, matching legacy behaviour.
+    const recommendedModelId = models.some(m => m.id === platformDefault)
+      ? platformDefault
+      : (models[0]?.id ?? null);
+
+    return c.json({ models, recommendedModelId });
   } catch (err) {
     logger.error("Failed to load models", { error: err });
-    return c.json({ models: [] }, 200);
+    return c.json({ models: [], recommendedModelId: null }, 200);
   }
 });
 
 /**
- * GET /gateway-models - Full model catalog from Vercel AI Gateway
- * Used by the settings UI to show all models that can be enabled.
+ * GET /gateway-models - Model catalog available to workspaces.
+ *
+ * Returns the Vercel AI Gateway catalog intersected with the super-admin
+ * curation: only models with `visible: true` in the curation document are
+ * exposed. This is the list the workspace "AI Models" settings UI picks
+ * from, so workspace admins can never enable a model that the platform
+ * super-admin has hidden.
+ *
+ * If curation is empty (e.g. fresh install before the seed migration), we
+ * fall back to the unfiltered gateway list to avoid a hard "no models"
+ * state — super-admins will still see everything in `/api/admin/catalog`.
  */
 agentRoutes.get("/gateway-models", async (c: AuthenticatedContext) => {
-  const models = await getGatewayModels();
+  const [gateway, catalog] = await Promise.all([
+    getGatewayModels(),
+    getCatalogModels(),
+  ]);
+  if (catalog.length === 0) {
+    return c.json({ models: gateway });
+  }
+  const visible = new Set(catalog.map(m => m.id));
+  const models = gateway.filter(m => visible.has(m.id));
   return c.json({ models });
 });
 

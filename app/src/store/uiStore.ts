@@ -199,9 +199,6 @@ export const selectActiveEditorContent = (state: UIStore) =>
  * so it can be restored, `activeExplorer` reflects what is *actually* on
  * screen. Consumers (sidebar highlight, AI context, etc.) should prefer
  * this over `leftPane` when they want to know what the user is looking at.
- *
- * `"settings"` is excluded because it opens as an editor tab, not a left
- * explorer panel.
  */
 export type ActiveExplorer =
   | "databases"
@@ -209,6 +206,7 @@ export type ActiveExplorer =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "settings"
   | null;
 
 const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
@@ -217,6 +215,7 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "connectors",
   "flows",
   "dashboards",
+  "settings",
 ]);
 
 export const selectActiveExplorer = (state: UIStore): ActiveExplorer =>

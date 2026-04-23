@@ -191,6 +191,7 @@ jobs:
       STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_TEST_OVERAGE_PRICE_ID }}
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
+      SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
     steps:
       - name: Set PR-specific variables
         id: pr-vars
@@ -567,6 +568,7 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 
           # Get the Cloud Run URL
@@ -782,6 +784,7 @@ jobs:
       STRIPE_OVERAGE_PRICE_ID: ${{ secrets.STRIPE_OVERAGE_PRICE_ID }}
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
+      SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -927,6 +930,7 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 
       - name: Sync Inngest app

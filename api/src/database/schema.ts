@@ -379,15 +379,26 @@ export const LlmUsage =
 // ---------------------------------------------------------------------------
 
 export interface IModelCatalogSnapshot extends Document {
-  _id: "gateway" | "arena" | "pricing";
-  data: any[];
+  _id: "gateway" | "arena" | "pricing" | "curation";
+  /**
+   * Free-form payload keyed by snapshot id:
+   *  - gateway / pricing → array of normalized upstream records
+   *  - curation          → `{ models, defaultChatModelId, defaultFreeChatModelId, lastRefreshError }`
+   *  - arena             → legacy, removed by the 2026-04-23 migration
+   */
+  data: any;
   fetchedAt: Date;
   itemCount: number;
 }
 
 const ModelCatalogSnapshotSchema = new Schema(
   {
-    _id: { type: String, enum: ["gateway", "arena", "pricing"] },
+    // Note: we keep `arena` in the enum so legacy documents validate until
+    // the seed migration deletes them.
+    _id: {
+      type: String,
+      enum: ["gateway", "arena", "pricing", "curation"],
+    },
     data: { type: Schema.Types.Mixed, default: [] },
     fetchedAt: { type: Date, required: true },
     itemCount: { type: Number, required: true, default: 0 },

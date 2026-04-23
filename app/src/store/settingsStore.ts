@@ -76,13 +76,16 @@ export const useSettingsStore = create<SettingsState>()(
           set({ modelsLoading: true, modelsError: null });
           try {
             const response = await apiClient.get<
-              ModelListResponse | { models: AIModel[] }
+              | ModelListResponse
+              | { models: AIModel[]; recommendedModelId?: string | null }
             >("/agent/models");
 
             const models =
               "success" in response
                 ? response.models || []
                 : response.models || [];
+
+            const recommended = response.recommendedModelId ?? null;
 
             set({ models });
 
@@ -91,7 +94,15 @@ export const useSettingsStore = create<SettingsState>()(
               const current = get().selectedModelId;
               const isAvailable = models.some(model => model.id === current);
               if (!isAvailable) {
-                set({ selectedModelId: models[0].id });
+                // Prefer the platform default surfaced by the server over
+                // the alphabetically-first model. This keeps free-plan users
+                // on a free model and paid users on the curated paid default
+                // when their previous selection gets hidden.
+                const fallback =
+                  recommended && models.some(m => m.id === recommended)
+                    ? recommended
+                    : models[0].id;
+                set({ selectedModelId: fallback });
               }
             } else if (modelsRetryCount < MAX_MODELS_RETRIES) {
               const delay = MODELS_RETRY_DELAYS[modelsRetryCount] ?? 10_000;

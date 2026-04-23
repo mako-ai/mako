@@ -5,6 +5,7 @@ import { sessionManager } from "./session";
 import { getGoogle, getGitHub, isOAuthDisabled } from "./arctic";
 import { AuthService } from "./auth.service";
 import { authMiddleware, rateLimitMiddleware } from "./auth.middleware";
+import { isSuperAdminEmail } from "./super-admin";
 import {
   getRequestOrigin,
   getProductionUrl,
@@ -182,6 +183,7 @@ authRoutes.get("/me", authMiddleware, async c => {
         id: user.id,
         email: user.email,
         linkedAccounts,
+        isSuperAdmin: isSuperAdminEmail(user.email),
       },
     });
   } catch (error: any) {

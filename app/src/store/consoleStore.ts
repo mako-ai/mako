@@ -5,7 +5,7 @@ import { apiClient } from "../lib/api-client";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
-import type { ConsoleTab, TabKind } from "./lib/types";
+import type { ConsoleTab, SettingsSection, TabKind } from "./lib/types";
 import type {
   ConsoleContentResponse,
   ConsoleDeleteResponse,
@@ -739,3 +739,9 @@ export const selectTabByKind =
   (kind: TabKind) =>
   (state: ConsoleStore): ConsoleTab | undefined =>
     Object.values(state.tabs).find(tab => tab.kind === kind);
+export const selectTabBySettingsSection =
+  (section: SettingsSection) =>
+  (state: ConsoleStore): ConsoleTab | undefined =>
+    Object.values(state.tabs).find(
+      tab => tab.kind === "settings" && tab.settingsSection === section,
+    );
