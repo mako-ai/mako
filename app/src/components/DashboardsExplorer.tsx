@@ -372,7 +372,7 @@ export function DashboardsExplorer() {
         </DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Are you sure you want to delete "{deleteTarget?.name}"?
+            Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
             {deleteTarget?.isDirectory
               ? " All dashboards inside will be moved to the root level."
               : " This action cannot be undone."}

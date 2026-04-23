@@ -61,6 +61,16 @@ const EmbeddableDashboard: React.FC = () => {
   const { width: gridWidth, containerRef: gridContainerRef } =
     useContainerWidth();
 
+  const queryExecutor = useMemo(
+    () =>
+      db
+        ? createDuckDBQueryExecutor(db)
+        : async () => {
+            throw new Error("Embedded DuckDB session is not ready");
+          },
+    [db],
+  );
+
   useEffect(() => {
     const token = window.location.pathname.split("/embed/")[1];
     if (!token) {
@@ -176,15 +186,6 @@ const EmbeddableDashboard: React.FC = () => {
     }
     return result;
   })();
-  const queryExecutor = useMemo(
-    () =>
-      db
-        ? createDuckDBQueryExecutor(db)
-        : async () => {
-            throw new Error("Embedded DuckDB session is not ready");
-          },
-    [db],
-  );
 
   return (
     <ThemeProvider theme={theme}>

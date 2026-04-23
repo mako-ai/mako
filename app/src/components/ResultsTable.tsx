@@ -91,7 +91,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     if (executedAt) {
       setViewMode("table");
     }
-  }, [executedAt]); // Use executedAt as dependency to detect new query executions
+  }, [executedAt, setViewMode]);
 
   // Helper function to normalize any data into an array format
   const normalizeToArray = (data: any): any[] => {

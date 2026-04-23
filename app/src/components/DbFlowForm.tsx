@@ -1803,8 +1803,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                             Review and adjust the destination column types. The
                             AI agent can help inspect your source table and
                             suggest optimal types. You can also manually adjust
-                            any column's destination type using the dropdowns
-                            below.
+                            any column&apos;s destination type using the
+                            dropdowns below.
                           </Typography>
 
                           <SchemaMappingTable
@@ -2029,7 +2029,8 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                                             borderRadius: 4,
                                           }}
                                         >
-                                          {trackingCol} &gt; '{lastValue}'
+                                          {trackingCol} &gt; &apos;{lastValue}
+                                          &apos;
                                         </code>
                                       </Typography>
                                     </Alert>

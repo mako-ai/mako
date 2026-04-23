@@ -39,9 +39,10 @@ const DataTableWidgetComponent: React.FC<DataTableWidgetProps> = ({
   }, [error, onError]);
 
   let visibleFields = result?.fields || [];
-  if (tableConfig?.columns && tableConfig.columns.length > 0) {
+  const configuredColumns = tableConfig?.columns;
+  if (configuredColumns && configuredColumns.length > 0) {
     visibleFields = visibleFields.filter(f =>
-      tableConfig.columns!.includes(f.name),
+      configuredColumns.includes(f.name),
     );
   }
 

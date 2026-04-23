@@ -362,15 +362,16 @@ function ConsoleExplorer(
 
   const handleSoftDelete = async (item: ConsoleEntry) => {
     if (!currentWorkspace || !item.id) return;
+    const itemId = item.id;
     const success = await deleteItem(
       currentWorkspace.id,
-      item.id,
+      itemId,
       item.isDirectory,
     );
     if (success) {
       setUndoStack(prev => [
         ...prev,
-        { type: "delete", id: item.id!, isDirectory: item.isDirectory },
+        { type: "delete", id: itemId, isDirectory: item.isDirectory },
       ]);
     }
   };
