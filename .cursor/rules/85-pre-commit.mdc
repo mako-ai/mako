@@ -1,0 +1,32 @@
+---
+description: Pre-commit / pre-PR checklist. The pre-commit hook is weaker than CI — always run the full package lint and typecheck before opening a PR.
+alwaysApply: true
+---
+
+# Pre-commit / pre-PR checklist
+
+CI is stricter than the `husky` pre-commit hook. Always run the package's full lint **and** typecheck for every package you touched before committing or opening a PR — not just the staged-files hook.
+
+## Minimum gate per package
+
+| You edited files under... | Run before committing |
+| --- | --- |
+| `app/` | `pnpm --filter app run typecheck && pnpm --filter app run lint` |
+| `api/` | `pnpm --filter api run lint` (typecheck runs inside `api:build`) |
+| `website/` | `pnpm --filter website run lint` |
+
+For cross-package changes, `pnpm run lint:all` covers `app` + `api` + connector-agnosticism.
+
+## Why the pre-commit hook is not enough
+
+- `lint-staged` only runs on staged files, not the full package.
+- Even with `--report-unused-disable-directives` in `lint-staged`, a stale `// eslint-disable-next-line ...` comment in an **unstaged** file (or one you touched but didn't restage) will still reach CI.
+- CI's `eslint . --report-unused-disable-directives` treats unused disable directives as **errors** and fails the build. A clean pre-commit hook does not guarantee a green CI.
+
+## Common gotchas that only CI catches
+
+- **Unused `eslint-disable` directives.** When you fix a deps array or tighten a type, the surrounding `// eslint-disable-next-line` comment often becomes unused. Delete the comment in the same edit.
+- **Pre-existing warnings you introduced one more of.** CI doesn't fail on warnings, but don't rely on that — remove warnings you can fix.
+- **`@typescript-eslint/no-non-null-assertion`** from `!` on store lookups. Use an `if (!x) return;` guard or `?.` instead.
+- **`react/no-unescaped-entities`** from quotes/apostrophes inside JSX text. Use `&quot;` / `&apos;` or wrap in a string literal: `{"I'm"}`.
+- **`react-hooks/rules-of-hooks`** from calling a hook after an early `return`. Move the hook above every early return.

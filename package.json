@@ -77,11 +77,11 @@
   },
   "lint-staged": {
     "app/**/*.{ts,tsx}": [
-      "eslint --fix",
+      "eslint --fix --report-unused-disable-directives",
       "prettier --write"
     ],
     "api/**/*.ts": [
-      "eslint --fix",
+      "eslint --fix --report-unused-disable-directives",
       "prettier --write"
     ],
     "website/**/*.{ts,tsx}": [
