@@ -18,6 +18,10 @@
 import { z } from "zod";
 import { loggers } from "../logging";
 import { ModelCatalogSnapshot } from "../database/schema";
+import {
+  resolveAnthropicThinkingMode,
+  type AnthropicThinkingMode,
+} from "../agent-lib/anthropic-thinking";
 
 const logger = loggers.app();
 
@@ -33,6 +37,7 @@ export interface CatalogModel {
   contextWindow: number | null;
   tags: string[];
   supportsThinking: boolean;
+  thinkingMode: AnthropicThinkingMode;
   thinkingBudgetTokens: number;
   blendedCostPerM: number | null;
   tier: "free" | "pro";
@@ -389,6 +394,7 @@ function mergeCatalog(
     if (!cur || cur.visible === false) continue;
 
     const supportsThinking = gm.tags.includes("reasoning");
+    const thinkingMode = resolveAnthropicThinkingMode(gm.id, supportsThinking);
     const p = pricingMap.get(gm.id);
     const blendedCostPerM = p ? (p.input + p.output) / 2 : null;
     const tier = cur.tier;
@@ -402,6 +408,7 @@ function mergeCatalog(
       contextWindow: gm.contextWindow,
       tags: gm.tags,
       supportsThinking,
+      thinkingMode,
       thinkingBudgetTokens: supportsThinking ? 10_000 : 0,
       blendedCostPerM,
       tier,
