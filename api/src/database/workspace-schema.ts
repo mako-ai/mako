@@ -158,13 +158,7 @@ export interface IWorkspace extends Document {
     maxMembers: number;
     billingTier: "free" | "pro" | "enterprise";
     customPrompt?: string;
-    enabledModelIds?: string[];
-    enabledModels?: Array<{
-      id: string;
-      name: string;
-      provider: string;
-      description?: string;
-    }>;
+    disabledModelIds?: string[];
   };
   billing: IWorkspaceBilling;
   selfDirective?: string;
@@ -923,16 +917,7 @@ Add any specific instructions for how the AI should interpret your data or respo
 
 *This prompt is combined with the system prompt to provide context-aware responses. You can edit this through the Settings page.*`,
       },
-      enabledModelIds: [{ type: String }],
-      enabledModels: [
-        {
-          _id: false,
-          id: { type: String, required: true },
-          name: { type: String, required: true },
-          provider: { type: String, required: true },
-          description: { type: String, default: "" },
-        },
-      ],
+      disabledModelIds: [{ type: String }],
     },
     billing: {
       stripeCustomerId: { type: String, default: null },

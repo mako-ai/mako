@@ -11,7 +11,7 @@ import type {
   ModelListResponse,
   GatewayModelInfo,
   GatewayModelsResponse,
-  EnabledModelsResponse,
+  DisabledModelsResponse,
 } from "../lib/api-types";
 
 let modelsInFlight: Promise<void> | null = null;
@@ -38,19 +38,15 @@ interface SettingsState {
   gatewayModelsError: string | null;
   fetchGatewayModels: () => Promise<void>;
 
-  // Workspace enabled model IDs
-  enabledModelIds: string[];
-  enabledModelsLoading: boolean;
-  enabledModelsError: string | null;
-  fetchEnabledModels: (workspaceId: string) => Promise<void>;
-  saveEnabledModels: (
+  // Workspace-level model blocklist. Empty means "every curated model is
+  // available" — new models the super admin makes visible auto-appear.
+  disabledModelIds: string[];
+  disabledModelsLoading: boolean;
+  disabledModelsError: string | null;
+  fetchDisabledModels: (workspaceId: string) => Promise<void>;
+  saveDisabledModels: (
     workspaceId: string,
-    models: Array<{
-      id: string;
-      name: string;
-      provider: string;
-      description?: string;
-    }>,
+    disabledIds: string[],
   ) => Promise<boolean>;
 
   // General settings
@@ -163,37 +159,32 @@ export const useSettingsStore = create<SettingsState>()(
         return gatewayModelsInFlight;
       },
 
-      // Workspace enabled models
-      enabledModelIds: [],
-      enabledModelsLoading: false,
-      enabledModelsError: null,
-      fetchEnabledModels: async (workspaceId: string) => {
-        set({ enabledModelsLoading: true, enabledModelsError: null });
+      // Workspace model blocklist
+      disabledModelIds: [],
+      disabledModelsLoading: false,
+      disabledModelsError: null,
+      fetchDisabledModels: async (workspaceId: string) => {
+        set({ disabledModelsLoading: true, disabledModelsError: null });
         try {
-          const response = await apiClient.get<EnabledModelsResponse>(
+          const response = await apiClient.get<DisabledModelsResponse>(
             `/workspaces/${workspaceId}/settings/models`,
           );
-          set({ enabledModelIds: response.enabledModelIds || [] });
+          set({ disabledModelIds: response.disabledModelIds || [] });
         } catch (error) {
-          set({ enabledModelsError: "Failed to load enabled models" });
+          set({ disabledModelsError: "Failed to load disabled models" });
         } finally {
-          set({ enabledModelsLoading: false });
+          set({ disabledModelsLoading: false });
         }
       },
-      saveEnabledModels: async (
+      saveDisabledModels: async (
         workspaceId: string,
-        models: Array<{
-          id: string;
-          name: string;
-          provider: string;
-          description?: string;
-        }>,
+        disabledIds: string[],
       ): Promise<boolean> => {
         try {
           await apiClient.put(`/workspaces/${workspaceId}/settings/models`, {
-            models,
+            disabledModelIds: disabledIds,
           });
-          set({ enabledModelIds: models.map(m => m.id) });
+          set({ disabledModelIds: [...disabledIds] });
           return true;
         } catch (error) {
           return false;

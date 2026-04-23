@@ -312,9 +312,9 @@ export interface GatewayModelsResponse {
   models: GatewayModelInfo[];
 }
 
-export interface EnabledModelsResponse {
+export interface DisabledModelsResponse {
   success: boolean;
-  enabledModelIds: string[];
+  disabledModelIds: string[];
 }
 
 // ==================== Generic Response Types ====================

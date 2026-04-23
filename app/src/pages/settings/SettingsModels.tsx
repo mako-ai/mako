@@ -51,13 +51,16 @@ export default function SettingsModels() {
   const gatewayModelsLoading = useSettingsStore(s => s.gatewayModelsLoading);
   const gatewayModelsError = useSettingsStore(s => s.gatewayModelsError);
   const fetchGatewayModels = useSettingsStore(s => s.fetchGatewayModels);
-  const enabledModelIds = useSettingsStore(s => s.enabledModelIds);
-  const enabledModelsLoading = useSettingsStore(s => s.enabledModelsLoading);
-  const fetchEnabledModels = useSettingsStore(s => s.fetchEnabledModels);
-  const saveEnabledModels = useSettingsStore(s => s.saveEnabledModels);
+  const disabledModelIds = useSettingsStore(s => s.disabledModelIds);
+  const disabledModelsLoading = useSettingsStore(s => s.disabledModelsLoading);
+  const fetchDisabledModels = useSettingsStore(s => s.fetchDisabledModels);
+  const saveDisabledModels = useSettingsStore(s => s.saveDisabledModels);
   const fetchModels = useSettingsStore(s => s.fetchModels);
 
-  const [localEnabled, setLocalEnabled] = useState<Set<string>>(new Set());
+  // The UI is enable-centric (users think "check to enable"), but the source
+  // of truth on the server is the blocklist. We track the blocklist locally
+  // and invert it only at render time.
+  const [localDisabled, setLocalDisabled] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -71,12 +74,12 @@ export default function SettingsModels() {
   }, [fetchGatewayModels]);
 
   useEffect(() => {
-    if (workspaceId) fetchEnabledModels(workspaceId);
-  }, [workspaceId, fetchEnabledModels]);
+    if (workspaceId) fetchDisabledModels(workspaceId);
+  }, [workspaceId, fetchDisabledModels]);
 
   useEffect(() => {
-    setLocalEnabled(new Set(enabledModelIds));
-  }, [enabledModelIds]);
+    setLocalDisabled(new Set(disabledModelIds));
+  }, [disabledModelIds]);
 
   const providers = useMemo(() => {
     const p = new Set<string>();
@@ -112,7 +115,7 @@ export default function SettingsModels() {
   }, [filtered]);
 
   const toggleModel = useCallback((id: string) => {
-    setLocalEnabled(prev => {
+    setLocalDisabled(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -122,11 +125,16 @@ export default function SettingsModels() {
 
   const toggleProvider = useCallback(
     (_provider: string, models: GatewayModelInfo[]) => {
-      setLocalEnabled(prev => {
+      setLocalDisabled(prev => {
         const next = new Set(prev);
-        const allEnabled = models.every(m => next.has(m.id));
-        if (allEnabled) models.forEach(m => next.delete(m.id));
-        else models.forEach(m => next.add(m.id));
+        const allEnabled = models.every(m => !next.has(m.id));
+        if (allEnabled) {
+          // Everything was enabled → disable all
+          models.forEach(m => next.add(m.id));
+        } else {
+          // At least one was disabled → enable all
+          models.forEach(m => next.delete(m.id));
+        }
         return next;
       });
     },
@@ -143,26 +151,14 @@ export default function SettingsModels() {
   }, []);
 
   const hasChanges = useMemo(() => {
-    if (localEnabled.size !== enabledModelIds.length) return true;
-    return enabledModelIds.some(id => !localEnabled.has(id));
-  }, [localEnabled, enabledModelIds]);
+    if (localDisabled.size !== disabledModelIds.length) return true;
+    return disabledModelIds.some(id => !localDisabled.has(id));
+  }, [localDisabled, disabledModelIds]);
 
   const handleSave = async () => {
     if (!workspaceId) return;
-    if (localEnabled.size === 0) {
-      setSnackbar("At least one model must be enabled");
-      return;
-    }
     setSaving(true);
-    const modelsToSave = gatewayModels
-      .filter(m => localEnabled.has(m.id))
-      .map(m => ({
-        id: m.id,
-        name: m.name,
-        provider: m.provider,
-        description: m.description,
-      }));
-    const ok = await saveEnabledModels(workspaceId, modelsToSave);
+    const ok = await saveDisabledModels(workspaceId, Array.from(localDisabled));
     setSaving(false);
     if (ok) {
       setSnackbar("AI models updated successfully!");
@@ -173,7 +169,7 @@ export default function SettingsModels() {
   };
 
   const renderBody = () => {
-    if (gatewayModelsLoading || enabledModelsLoading) {
+    if (gatewayModelsLoading || disabledModelsLoading) {
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <CircularProgress size={20} />
@@ -244,8 +240,8 @@ export default function SettingsModels() {
         >
           {Array.from(groupedByProvider.entries()).map(
             ([provider, providerModels]) => {
-              const enabledCount = providerModels.filter(m =>
-                localEnabled.has(m.id),
+              const enabledCount = providerModels.filter(
+                m => !localDisabled.has(m.id),
               ).length;
               const allEnabled = enabledCount === providerModels.length;
               const someEnabled = enabledCount > 0 && !allEnabled;
@@ -321,7 +317,7 @@ export default function SettingsModels() {
                       >
                         <Checkbox
                           size="small"
-                          checked={localEnabled.has(model.id)}
+                          checked={!localDisabled.has(model.id)}
                           sx={{ p: 0.5, mr: 1, mt: -0.25 }}
                           onClick={e => e.stopPropagation()}
                           onChange={() => toggleModel(model.id)}
@@ -360,14 +356,15 @@ export default function SettingsModels() {
           }}
         >
           <Typography variant="caption" color="text.secondary">
-            {localEnabled.size} of {gatewayModels.length} models enabled
+            {gatewayModels.length - localDisabled.size} of{" "}
+            {gatewayModels.length} models enabled
           </Typography>
           <Button
             variant="contained"
             size="small"
             startIcon={saving ? <CircularProgress size={14} /> : <SaveIcon />}
             onClick={handleSave}
-            disabled={!hasChanges || saving || localEnabled.size === 0}
+            disabled={!hasChanges || saving}
             disableElevation
           >
             Save Model Settings
@@ -380,7 +377,7 @@ export default function SettingsModels() {
   return (
     <SettingsLayout
       title="AI Models"
-      description="Choose which AI models are available to workspace members. Only enabled models will appear in the chat model selector."
+      description="Uncheck a model to hide it from this workspace. New models added by the platform appear automatically."
     >
       {renderBody()}
       <Snackbar

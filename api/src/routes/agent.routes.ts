@@ -67,12 +67,12 @@ export const agentRoutes = new Hono();
 agentRoutes.use("*", unifiedAuthMiddleware);
 
 /**
- * GET /models - List available AI models, filtered by workspace settings.
+ * GET /models - List available AI models for the current workspace.
  *
- * When the workspace has `enabledModels` (full objects saved by the settings
- * UI), those are merged with catalog data for metadata like `supportsThinking`.
- *
- * Falls back to the legacy `enabledModelIds` field, then to the full catalog.
+ * Returns the super-admin-curated catalog minus any model IDs the workspace
+ * has explicitly disabled via `settings.disabledModelIds`. When no workspace
+ * is in scope (no header / no active workspace) we return the full curated
+ * catalog.
  *
  * Also returns `recommendedModelId`: the plan-aware default the chat endpoint
  * would fall back to if the client sent an unknown/hidden model. The client
@@ -91,40 +91,14 @@ agentRoutes.get("/models", async (c: AuthenticatedContext) => {
     if (workspaceId) {
       const ws = await Workspace.findById(workspaceId)
         .select({
-          "settings.enabledModels": 1,
-          "settings.enabledModelIds": 1,
+          "settings.disabledModelIds": 1,
           "billing.plan": 1,
           "billing.subscriptionStatus": 1,
         })
         .lean();
 
       effectivePlan = getEffectiveBillingPlan(ws?.billing);
-
-      if (ws?.settings?.enabledModels?.length) {
-        const catalogModels = await getAvailableModels();
-        const catalogMap = new Map(catalogModels.map(m => [m.id, m]));
-        models = ws.settings.enabledModels.map(
-          (em: {
-            id: string;
-            name: string;
-            provider: string;
-            description?: string;
-          }) => {
-            const catalogModel = catalogMap.get(em.id);
-            if (catalogModel) return catalogModel;
-            return {
-              id: em.id,
-              provider: em.provider,
-              name: em.name,
-              description: em.description || "",
-            };
-          },
-        );
-      } else if (ws?.settings?.enabledModelIds?.length) {
-        models = await getAvailableModels(ws.settings.enabledModelIds);
-      } else {
-        models = await getAvailableModels();
-      }
+      models = await getAvailableModels(ws?.settings?.disabledModelIds);
     } else {
       models = await getAvailableModels();
     }
@@ -351,20 +325,16 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
 
-  // Load billing plan + enabled model IDs for plan-appropriate defaults and allowlists.
+  // Load billing plan + disabled model IDs for plan-appropriate defaults and blocklist.
   const wsForModels = await Workspace.findById(workspaceId).select(
-    "billing.plan billing.subscriptionStatus settings.enabledModelIds",
+    "billing.plan billing.subscriptionStatus settings.disabledModelIds",
   );
   const effectivePlan = getEffectiveBillingPlan(wsForModels?.billing);
-  const wsEnabledModelIdsEarly = wsForModels?.settings?.enabledModelIds?.length
-    ? wsForModels.settings.enabledModelIds
-    : undefined;
+  const wsDisabledModelIds = wsForModels?.settings?.disabledModelIds ?? [];
 
   // Resolve model early so billing checks run against the actual model used.
-  const available = await getAvailableModels(wsEnabledModelIdsEarly);
-  const isModelAllowed = wsEnabledModelIdsEarly?.length
-    ? wsEnabledModelIdsEarly.includes(modelId || "")
-    : available.some(m => m.id === modelId);
+  const available = await getAvailableModels(wsDisabledModelIds);
+  const isModelAllowed = available.some(m => m.id === modelId);
   const resolvedModelId =
     modelId && isModelAllowed
       ? (modelId as string)
