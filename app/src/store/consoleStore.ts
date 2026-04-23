@@ -363,7 +363,16 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       // Versioning
       getVersionManager: consoleId => versionManagers.get(consoleId) || null,
-      getLastSavedContent: consoleId => lastSavedContent.get(consoleId) ?? null,
+      getLastSavedContent: consoleId => {
+        const cached = lastSavedContent.get(consoleId);
+        if (cached !== undefined) return cached;
+        const tab = get().tabs[consoleId];
+        if (tab?.isSaved && tab.content) {
+          lastSavedContent.set(consoleId, tab.content);
+          return tab.content;
+        }
+        return null;
+      },
 
       // API operations
       loadConsole: async (workspaceId, consoleId) => {
