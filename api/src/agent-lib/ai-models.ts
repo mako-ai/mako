@@ -13,6 +13,7 @@ import {
   getUtilityChatModelId,
   type CatalogModel,
 } from "../services/model-catalog.service";
+import type { AnthropicThinkingMode } from "./anthropic-thinking";
 
 export type AIProvider = string;
 
@@ -25,6 +26,7 @@ export interface AIModel {
   description?: string;
   tier?: ModelTier;
   supportsThinking?: boolean;
+  thinkingMode?: AnthropicThinkingMode;
   thinkingBudgetTokens?: number;
 }
 
@@ -36,6 +38,7 @@ function catalogToAIModel(cm: CatalogModel): AIModel {
     description: cm.description,
     tier: cm.tier,
     supportsThinking: cm.supportsThinking,
+    thinkingMode: cm.thinkingMode,
     thinkingBudgetTokens: cm.thinkingBudgetTokens,
   };
 }

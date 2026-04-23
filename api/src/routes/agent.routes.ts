@@ -13,6 +13,7 @@ import {
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -64,40 +65,6 @@ import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.agent();
-
-/**
- * Build the Anthropic `thinking` provider option for a given model.
- *
- * Claude Opus 4.7 (and future Claude models) rejects the legacy
- * `{ type: "enabled", budget_tokens: N }` shape with a 400 error and requires
- * `{ type: "adaptive" }` — see
- * https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.
- * For older models (Opus 4.6, Sonnet 4.6, 4.5, 3.x) we keep the manual
- * `enabled` shape so the configured `thinkingBudgetTokens` is still honored.
- */
-function buildAnthropicThinkingConfig(
-  modelId: string,
-  budgetTokens: number,
-): Record<string, unknown> {
-  if (modelRequiresAdaptiveThinking(modelId)) {
-    return { type: "adaptive", display: "summarized" };
-  }
-  return { type: "enabled", budgetTokens };
-}
-
-function modelRequiresAdaptiveThinking(modelId: string): boolean {
-  const lower = modelId.toLowerCase();
-  if (lower.includes("mythos")) return true;
-  // Match e.g. "anthropic/claude-opus-4-7", "anthropic/claude-sonnet-5-0"
-  const match = lower.match(/claude-(?:opus|sonnet|haiku)-(\d+)-(\d+)/);
-  if (!match) return false;
-  const major = Number.parseInt(match[1], 10);
-  const minor = Number.parseInt(match[2], 10);
-  if (Number.isNaN(major) || Number.isNaN(minor)) return false;
-  if (major > 4) return true;
-  if (major === 4 && minor >= 7) return true;
-  return false;
-}
 
 export const agentRoutes = new Hono();
 
@@ -635,8 +602,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const MAX_STEPS = 256;
   let stepsCompleted = 0;
 
-  const enableThinking = modelDef?.supportsThinking === true;
+  const thinkingMode = modelDef?.thinkingMode ?? "none";
   const thinkingBudget = modelDef?.thinkingBudgetTokens ?? 10000;
+  const thinkingPayload = buildAnthropicThinkingConfig(
+    thinkingMode,
+    thinkingBudget,
+  );
 
   const providerOptions = {
     ...buildProviderOptions({
@@ -645,16 +616,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       agentId: resolvedAgentId,
       invocationType: "chat",
     }),
-    ...(enableThinking
-      ? {
-          anthropic: {
-            thinking: buildAnthropicThinkingConfig(
-              resolvedModelId,
-              thinkingBudget,
-            ),
-          },
-        }
-      : {}),
+    ...(thinkingPayload ? { anthropic: { thinking: thinkingPayload } } : {}),
   };
 
   const startTime = Date.now();
