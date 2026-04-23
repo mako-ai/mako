@@ -39,6 +39,18 @@ export interface CatalogModel {
 // Zod validation schemas — gate what gets persisted to DB
 // ---------------------------------------------------------------------------
 
+// Pricing: we only care about `input` and `output` (per-token strings).
+// The upstream gateway has started returning additional non-string fields for
+// some models (e.g. `input_tiers`/`output_tiers` as arrays, `video_duration_pricing`
+// as a list/object). Accept any extra keys via passthrough so validation doesn't
+// reject the whole snapshot over fields we don't use.
+const GatewayPricingSchema = z
+  .object({
+    input: z.string().optional(),
+    output: z.string().optional(),
+  })
+  .passthrough();
+
 const GatewayModelRawSchema = z.object({
   id: z.string(),
   name: z.string().optional(),
@@ -47,7 +59,7 @@ const GatewayModelRawSchema = z.object({
   type: z.string().optional(),
   context_window: z.number().optional(),
   tags: z.array(z.string()).optional(),
-  pricing: z.record(z.string(), z.string()).optional(),
+  pricing: GatewayPricingSchema.optional(),
 });
 
 const GatewayResponseSchema = z.object({
