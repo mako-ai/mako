@@ -233,6 +233,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   } = useMonacoConsole({
     consoleId,
     onContentChange: enableVersionControl ? onContentChange : undefined,
+    workspaceId: currentWorkspace?.id,
+    title,
   });
 
   // Track if we've saved the initial version

@@ -360,6 +360,12 @@ function Editor({
 
   // Save comment dialog state (version commit message)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
+  const [suggestedComment, setSuggestedComment] = useState<string | undefined>(
+    undefined,
+  );
+  const [suggestedCommentLoading, setSuggestedCommentLoading] = useState(false);
+  const [saveCommentDiff, setSaveCommentDiff] = useState<string | null>(null);
+  const saveCommentAbortRef = useRef<AbortController | null>(null);
   const [pendingCommentSave, setPendingCommentSave] = useState<{
     tabId: string;
     content: string;
@@ -415,6 +421,10 @@ function Editor({
     state => state.updateResultsViewMode,
   );
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
+  const getVersionManager = useConsoleStore(state => state.getVersionManager);
+  const generateSaveComment = useConsoleStore(
+    state => state.generateSaveComment,
+  );
   const executeQuery = useConsoleStore(state => state.executeQuery);
   const cancelQuery = useConsoleStore(state => state.cancelQuery);
   const saveConsole = useConsoleStore(state => state.saveConsole);
@@ -1132,6 +1142,31 @@ function Editor({
       return false;
     }
 
+    const vm = getVersionManager(tabId);
+    const aiComments = vm?.getRecentAiComments() ?? [];
+    const existingComment =
+      aiComments.length > 0 ? aiComments.join("; ") : undefined;
+    setSuggestedComment(existingComment);
+
+    if (!existingComment && currentWorkspace?.id) {
+      saveCommentAbortRef.current?.abort();
+      const controller = new AbortController();
+      saveCommentAbortRef.current = controller;
+      setSuggestedCommentLoading(true);
+      generateSaveComment(
+        currentWorkspace.id,
+        tabId,
+        { newContent: contentToSave, source: "user" },
+        controller.signal,
+      ).then(result => {
+        if (!controller.signal.aborted) {
+          setSuggestedComment(result.comment ?? undefined);
+          setSaveCommentDiff(result.diff);
+          setSuggestedCommentLoading(false);
+        }
+      });
+    }
+
     return new Promise<boolean>(resolve => {
       setPendingCommentSave({
         tabId,
@@ -1145,6 +1180,9 @@ function Editor({
 
   const handleCommentSaveConfirm = async (comment: string) => {
     setCommentDialogOpen(false);
+    saveCommentAbortRef.current?.abort();
+    setSuggestedCommentLoading(false);
+    setSaveCommentDiff(null);
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     if (!pending) return;
@@ -1159,6 +1197,9 @@ function Editor({
 
   const handleCommentSaveCancel = () => {
     setCommentDialogOpen(false);
+    saveCommentAbortRef.current?.abort();
+    setSuggestedCommentLoading(false);
+    setSaveCommentDiff(null);
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     pending?.resolve(false);
@@ -2043,6 +2084,9 @@ function Editor({
         onSave={handleCommentSaveConfirm}
         onCancel={handleCommentSaveCancel}
         title="Save Console"
+        defaultComment={suggestedComment}
+        loading={suggestedCommentLoading}
+        diff={saveCommentDiff}
       />
 
       {/* Version history panel */}

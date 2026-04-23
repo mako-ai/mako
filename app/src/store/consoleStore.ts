@@ -113,6 +113,28 @@ interface ConsoleActions {
     databaseId?: string,
     databaseName?: string,
   ) => void;
+  generateVersionComment: (
+    workspaceId: string,
+    consoleId: string,
+    versionId: string,
+    payload: {
+      previousContent: string;
+      newContent: string;
+      language: string;
+      source: "user" | "ai";
+      aiPrompt?: string;
+      title?: string;
+    },
+  ) => void;
+  generateSaveComment: (
+    workspaceId: string,
+    consoleId: string,
+    payload: {
+      newContent: string;
+      source: "user" | "ai";
+    },
+    signal?: AbortSignal,
+  ) => Promise<{ comment: string | null; diff: string | null }>;
 }
 
 type ConsoleStore = ConsoleState & ConsoleActions;
@@ -127,6 +149,8 @@ const initialState: ConsoleState = {
 
 // Store version managers for each console tab
 const versionManagers = new Map<string, ConsoleVersionManager>();
+const versionCommentControllers = new Map<string, AbortController>();
+const versionCommentTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Debounce timers for draft console saves (per console ID)
 const draftSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -513,9 +537,10 @@ export const useConsoleStore = create<ConsoleStore>()(
             return { success: false, error: res.error || "Save failed" };
           }
 
-          return res.success
-            ? { success: true, path: cleanPath }
-            : { success: false, error: res.error || "Save failed" };
+          if (res.success) {
+            return { success: true, path: cleanPath };
+          }
+          return { success: false, error: res.error || "Save failed" };
         } catch (e) {
           return {
             success: false,
@@ -580,6 +605,82 @@ export const useConsoleStore = create<ConsoleStore>()(
             success: false,
             error: e instanceof Error ? e.message : "Cancel failed",
           };
+        }
+      },
+
+      generateVersionComment: (workspaceId, consoleId, versionId, payload) => {
+        const DEBOUNCE_MS = 800;
+
+        const existingTimer = versionCommentTimers.get(consoleId);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+
+        const vm = versionManagers.get(consoleId);
+        if (vm) {
+          vm.updateVersion(versionId, { aiCommentStatus: "pending" });
+        }
+
+        const fire = async () => {
+          versionCommentTimers.delete(consoleId);
+
+          const prev = versionCommentControllers.get(consoleId);
+          if (prev) prev.abort();
+
+          const controller = new AbortController();
+          versionCommentControllers.set(consoleId, controller);
+
+          try {
+            const res = await apiClient.post<{
+              success: boolean;
+              comment: string | null;
+            }>(
+              `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
+              payload,
+              { signal: controller.signal },
+            );
+
+            if (res.success && res.comment && vm) {
+              vm.updateVersion(versionId, {
+                aiComment: res.comment,
+                aiCommentStatus: "done",
+              });
+            } else if (vm) {
+              vm.updateVersion(versionId, { aiCommentStatus: "failed" });
+            }
+          } catch (_e) {
+            if (vm) {
+              vm.updateVersion(versionId, { aiCommentStatus: "failed" });
+            }
+          } finally {
+            versionCommentControllers.delete(consoleId);
+          }
+        };
+
+        if (payload.source === "ai") {
+          void fire();
+        } else {
+          const timer = setTimeout(() => void fire(), DEBOUNCE_MS);
+          versionCommentTimers.set(consoleId, timer);
+        }
+      },
+
+      generateSaveComment: async (workspaceId, consoleId, payload, signal) => {
+        try {
+          const res = await apiClient.post<{
+            success: boolean;
+            comment: string | null;
+            diff: string | null;
+          }>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
+            payload,
+            { signal },
+          );
+          return res.success
+            ? { comment: res.comment ?? null, diff: res.diff ?? null }
+            : { comment: null, diff: null };
+        } catch {
+          return { comment: null, diff: null };
         }
       },
 

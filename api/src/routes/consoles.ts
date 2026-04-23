@@ -9,6 +9,7 @@ import {
   SavedConsole,
   ConsoleFolder,
   IDatabaseConnection,
+  EntityVersion,
   type ISavedConsole,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
@@ -26,6 +27,7 @@ import {
   isDescriptionGenAvailable,
   generateDescriptionAndEmbedding,
 } from "../services/console-description.service";
+import { generateVersionComment } from "../services/version-comment.service";
 import {
   applySqlRowLimit,
   checkPreviewQuerySafety,
@@ -1491,6 +1493,98 @@ consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
             ? error.message
             : "Unknown error moving folder",
       },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/:id/version-comment - Generate AI version comment
+consoleRoutes.post("/:id/version-comment", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const body = await c.req.json();
+    const { newContent, source, aiPrompt } = body;
+
+    if (typeof newContent !== "string") {
+      return c.json(
+        { success: false, error: "newContent must be a string" },
+        400,
+      );
+    }
+
+    if (newContent.length > 50_000) {
+      return c.json(
+        { success: false, error: "Content too large for comment generation" },
+        400,
+      );
+    }
+
+    let previousContent = "";
+    let versionFound = false;
+    if (Types.ObjectId.isValid(consoleId)) {
+      const latestSnapshot = await EntityVersion.findOne(
+        {
+          entityId: new Types.ObjectId(consoleId),
+          entityType: "console",
+        },
+        { snapshot: 1, version: 1 },
+      )
+        .sort({ version: -1 })
+        .lean();
+
+      if (latestSnapshot?.snapshot?.code) {
+        previousContent = latestSnapshot.snapshot.code as string;
+        versionFound = true;
+      }
+
+      logger.debug("Version comment baseline lookup", {
+        consoleId,
+        versionFound,
+        latestVersion: latestSnapshot?.version ?? null,
+        snapshotKeys: latestSnapshot?.snapshot
+          ? Object.keys(latestSnapshot.snapshot)
+          : null,
+        previousContentLength: previousContent.length,
+        newContentLength: newContent.length,
+      });
+    }
+
+    const result = await generateVersionComment(
+      {
+        previousContent,
+        newContent,
+        language: "sql",
+        source: source === "ai" ? "ai" : "user",
+        aiPrompt: typeof aiPrompt === "string" ? aiPrompt : undefined,
+      },
+      { workspaceId, userId: user.id },
+    );
+
+    return c.json({
+      success: true,
+      comment: result.comment,
+      diff: result.diff,
+      debug: {
+        consoleId,
+        versionFound,
+        previousContentLength: previousContent.length,
+        newContentLength: newContent.length,
+      },
+    });
+  } catch (error) {
+    logger.error("Error generating version comment", { error });
+    return c.json(
+      { success: false, error: "Failed to generate version comment" },
       500,
     );
   }

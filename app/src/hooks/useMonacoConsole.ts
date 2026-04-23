@@ -26,17 +26,26 @@ interface UseMonacoConsoleOptions {
   consoleId: string;
   onContentChange?: (content: string) => void;
   onVersionChange?: (canUndo: boolean, canRedo: boolean) => void;
+  workspaceId?: string;
+  language?: string;
+  title?: string;
 }
 
 export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
-  const { consoleId, onContentChange, onVersionChange } = options;
+  const {
+    consoleId,
+    onContentChange,
+    onVersionChange,
+    workspaceId,
+    language,
+    title,
+  } = options;
   const editorRef = useRef<any>(null);
   const isApplyingModificationRef = useRef(false);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
-  // Get version manager from store
-  const { getVersionManager } = useConsoleStore();
+  const { getVersionManager, generateVersionComment } = useConsoleStore();
 
   // Get the version manager for this console
   const getVersionManagerForConsole = useCallback(() => {
@@ -58,6 +67,30 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
       onVersionChange(newCanUndo, newCanRedo);
     }
   }, [getVersionManagerForConsole, onVersionChange]);
+
+  const requestVersionComment = useCallback(
+    (
+      versionId: string,
+      previousContent: string,
+      newContent: string,
+      source: "user" | "ai",
+      aiPrompt?: string,
+    ) => {
+      if (!workspaceId) return;
+      if (previousContent === newContent) return;
+      if (previousContent.trim() === newContent.trim()) return;
+
+      generateVersionComment(workspaceId, consoleId, versionId, {
+        previousContent,
+        newContent,
+        language: language || "sql",
+        source,
+        aiPrompt,
+        title,
+      });
+    },
+    [workspaceId, consoleId, language, title, generateVersionComment],
+  );
 
   // Set the editor reference
   const setEditor = useCallback((editor: any) => {
@@ -193,11 +226,13 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
 
         // Save the new state after modification
         const newContent = model.getValue();
-        versionManager.saveVersion(
+        const aiVersionId = versionManager.saveVersion(
           newContent,
           "ai",
           `AI ${modification.action}`,
         );
+
+        requestVersionComment(aiVersionId, currentContent, newContent, "ai");
 
         // Flash the editor to indicate change
         flashEditor(editor);
@@ -216,7 +251,12 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
       // Focus the editor
       editor.focus();
     },
-    [getVersionManagerForConsole, onContentChange, updateVersionState],
+    [
+      getVersionManagerForConsole,
+      onContentChange,
+      updateVersionState,
+      requestVersionComment,
+    ],
   );
 
   // Undo functionality
@@ -311,11 +351,25 @@ export const useMonacoConsole = (options: UseMonacoConsoleOptions) => {
         const versionManager = getVersionManagerForConsole();
         if (!versionManager) return;
 
-        versionManager.saveVersion(content, "user", description);
+        const versionId = versionManager.saveVersion(
+          content,
+          "user",
+          description,
+        );
         updateVersionState();
+
+        if (
+          description !== "Initial content" &&
+          description !== "Before AI modification"
+        ) {
+          const previousContent = versionManager.getPreviousContent(versionId);
+          if (previousContent !== null) {
+            requestVersionComment(versionId, previousContent, content, "user");
+          }
+        }
       }
     },
-    [getVersionManagerForConsole, updateVersionState],
+    [getVersionManagerForConsole, updateVersionState, requestVersionComment],
   );
 
   // Clear version history

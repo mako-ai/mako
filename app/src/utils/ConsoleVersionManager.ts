@@ -5,6 +5,8 @@ export interface ConsoleVersion {
   source: "user" | "ai";
   description?: string;
   aiPrompt?: string;
+  aiComment?: string;
+  aiCommentStatus?: "pending" | "done" | "failed";
 }
 
 export interface VersionHistory {
@@ -13,6 +15,8 @@ export interface VersionHistory {
   timestamp: Date;
   source: "user" | "ai";
   description?: string;
+  aiComment?: string;
+  aiCommentStatus?: "pending" | "done" | "failed";
   isCurrent: boolean;
 }
 
@@ -34,7 +38,7 @@ export class ConsoleVersionManager {
     source: "user" | "ai",
     description?: string,
     aiPrompt?: string,
-  ): void {
+  ): string {
     // Remove any versions after the current index (for redo functionality)
     if (this.currentIndex < this.versions.length - 1) {
       this.versions = this.versions.slice(0, this.currentIndex + 1);
@@ -58,6 +62,36 @@ export class ConsoleVersionManager {
 
     this.currentIndex = this.versions.length - 1;
     this.persistToStorage();
+    return newVersion.id;
+  }
+
+  updateVersion(id: string, patch: Partial<ConsoleVersion>): boolean {
+    const version = this.versions.find(v => v.id === id);
+    if (!version) return false;
+    Object.assign(version, patch);
+    this.persistToStorage();
+    return true;
+  }
+
+  getPreviousContent(id: string): string | null {
+    const index = this.versions.findIndex(v => v.id === id);
+    if (index <= 0) return null;
+    return this.versions[index - 1].content;
+  }
+
+  getRecentAiComments(): string[] {
+    const comments: string[] = [];
+    for (let i = this.versions.length - 1; i >= 0; i--) {
+      const v = this.versions[i];
+      if (v.aiComment && v.aiCommentStatus === "done") {
+        comments.unshift(v.aiComment);
+      }
+    }
+    return comments;
+  }
+
+  getFirstContent(): string | null {
+    return this.versions.length > 0 ? this.versions[0].content : null;
   }
 
   undo(): string | null {
