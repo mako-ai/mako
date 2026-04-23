@@ -1530,20 +1530,33 @@ consoleRoutes.post("/:id/version-comment", async (c: Context) => {
     }
 
     let previousContent = "";
+    let versionFound = false;
     if (Types.ObjectId.isValid(consoleId)) {
       const latestSnapshot = await EntityVersion.findOne(
         {
           entityId: new Types.ObjectId(consoleId),
           entityType: "console",
         },
-        { "snapshot.code": 1 },
+        { snapshot: 1, version: 1 },
       )
         .sort({ version: -1 })
         .lean();
 
       if (latestSnapshot?.snapshot?.code) {
         previousContent = latestSnapshot.snapshot.code as string;
+        versionFound = true;
       }
+
+      logger.debug("Version comment baseline lookup", {
+        consoleId,
+        versionFound,
+        latestVersion: latestSnapshot?.version ?? null,
+        snapshotKeys: latestSnapshot?.snapshot
+          ? Object.keys(latestSnapshot.snapshot)
+          : null,
+        previousContentLength: previousContent.length,
+        newContentLength: newContent.length,
+      });
     }
 
     const result = await generateVersionComment(
@@ -1561,6 +1574,12 @@ consoleRoutes.post("/:id/version-comment", async (c: Context) => {
       success: true,
       comment: result.comment,
       diff: result.diff,
+      debug: {
+        consoleId,
+        versionFound,
+        previousContentLength: previousContent.length,
+        newContentLength: newContent.length,
+      },
     });
   } catch (error) {
     logger.error("Error generating version comment", { error });
