@@ -6,6 +6,7 @@ import type { GatewayLanguageModelOptions } from "@ai-sdk/gateway";
 import { trackUsage } from "./llm-usage.service";
 import { loggers } from "../logging";
 import { extractTokenCounts } from "../utils/safe-num";
+import { createTwoFilesPatch } from "diff";
 
 const logger = loggers.app();
 
@@ -42,34 +43,27 @@ export interface VersionCommentTrackingContext {
   userId: string;
 }
 
-function computeSimpleLineDiff(a: string, b: string): string {
-  const aLines = a.split("\n");
-  const bLines = b.split("\n");
-  const result: string[] = [];
-
-  const maxLen = Math.max(aLines.length, bLines.length);
-  for (let i = 0; i < maxLen; i++) {
-    const aLine = i < aLines.length ? aLines[i] : undefined;
-    const bLine = i < bLines.length ? bLines[i] : undefined;
-
-    if (aLine === bLine) continue;
-    if (aLine !== undefined && (bLine === undefined || aLine !== bLine)) {
-      result.push(`- ${aLine}`);
-    }
-    if (bLine !== undefined && (aLine === undefined || aLine !== bLine)) {
-      result.push(`+ ${bLine}`);
-    }
-  }
-
-  return result.join("\n");
+function computeUnifiedDiff(a: string, b: string): string {
+  const patch = createTwoFilesPatch("previous", "current", a, b, "", "", {
+    context: 3,
+  });
+  const lines = patch.split("\n");
+  const headerEnd = lines.findIndex(l => l.startsWith("@@"));
+  if (headerEnd === -1) return "";
+  return lines.slice(headerEnd).join("\n");
 }
 
-function isWhitespaceOnly(diff: string): boolean {
-  return diff.split("\n").every(line => {
-    if (!line.startsWith("+ ") && !line.startsWith("- ")) return true;
-    const content = line.slice(2);
-    return content.trim() === "";
-  });
+function hasRealChanges(unifiedDiff: string): boolean {
+  return unifiedDiff
+    .split("\n")
+    .some(
+      l =>
+        (l.startsWith("+") || l.startsWith("-")) &&
+        !l.startsWith("+++") &&
+        !l.startsWith("---") &&
+        !l.startsWith("@@") &&
+        l.slice(1).trim() !== "",
+    );
 }
 
 export function computeDiff(
@@ -79,13 +73,9 @@ export function computeDiff(
   if (previousContent === newContent) return null;
   if (previousContent.trim() === newContent.trim()) return null;
 
-  const diff = computeSimpleLineDiff(
-    previousContent.substring(0, 3000),
-    newContent.substring(0, 3000),
-  );
-
-  if (!diff || isWhitespaceOnly(diff)) return null;
-  return diff.substring(0, 3000);
+  const diff = computeUnifiedDiff(previousContent, newContent);
+  if (!diff || !hasRealChanges(diff)) return null;
+  return diff.substring(0, 4000);
 }
 
 export interface VersionCommentResult {
@@ -109,9 +99,7 @@ export async function generateVersionComment(
     parts.push("");
   }
 
-  parts.push(`\`\`\`diff`);
   parts.push(diff);
-  parts.push(`\`\`\``);
 
   const prompt = parts.join("\n");
 
