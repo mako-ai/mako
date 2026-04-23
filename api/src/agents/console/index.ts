@@ -14,6 +14,7 @@ import type {
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
+import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
@@ -161,6 +162,7 @@ export const consoleAgentFactory: AgentFactory = (
     workspaceCustomPrompt = "",
     selfDirective = "",
     consoleHints = "",
+    skillsBlock = "",
     activeConsoleResults,
   } = context;
 
@@ -208,6 +210,7 @@ export const consoleAgentFactory: AgentFactory = (
     context.toolExecutionContext,
   );
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const skillTools = createSkillTools(workspaceId, context.userId);
   const consoleSearchTools = createConsoleSearchTools(
     workspaceId,
     context.toolExecutionContext,
@@ -225,12 +228,14 @@ export const consoleAgentFactory: AgentFactory = (
       },
       {
         role: "system" as const,
-        content: selfDirectiveContext + consoleHints + runtimeContext,
+        content:
+          selfDirectiveContext + skillsBlock + consoleHints + runtimeContext,
       },
     ],
     tools: {
       ...tools,
       ...selfDirectiveTools,
+      ...skillTools,
       ...consoleSearchTools,
       ...versionHistoryTools,
     } as Record<string, any>,

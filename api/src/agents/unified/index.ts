@@ -2,6 +2,7 @@ import type { AgentConfig, AgentContext, AgentMeta } from "../types";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import { clientDashboardTools } from "../../agent-lib/tools/dashboard-tools-client";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
+import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
@@ -28,6 +29,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
+  const skillTools = createSkillTools(workspaceId, userId);
   const consoleSearchTools = createConsoleSearchTools(
     workspaceId,
     context.toolExecutionContext,
@@ -65,6 +67,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...clientDashboardTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
+      ...skillTools,
       ...consoleSearchTools,
       ...dashboardSearchTools,
       ...versionHistoryTools,

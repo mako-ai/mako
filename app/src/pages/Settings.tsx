@@ -1,5 +1,6 @@
 import type { SettingsSection } from "../store/lib/types";
 import SettingsPrompt from "./settings/SettingsPrompt";
+import SettingsSkills from "./settings/SettingsSkills";
 import SettingsModels from "./settings/SettingsModels";
 import SettingsBilling from "./settings/SettingsBilling";
 import SettingsMembers from "./settings/SettingsMembers";
@@ -23,6 +24,8 @@ function Settings({ section = "prompt" }: Props) {
   switch (section) {
     case "prompt":
       return <SettingsPrompt />;
+    case "skills":
+      return <SettingsSkills />;
     case "models":
       return <SettingsModels />;
     case "billing":

@@ -45,6 +45,10 @@ import {
   isVectorSearchAvailable,
 } from "../services/embedding.service";
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
+import {
+  retrieveRelevantSkills,
+  renderSkillsPromptBlock,
+} from "../services/skills.service";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
@@ -494,6 +498,14 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     isAborted: () => requestSignal.aborted,
   };
 
+  // Extract last user text once — used by both console hints and skills retrieval.
+  const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+  const lastUserText =
+    lastUserMsg?.parts
+      ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map(p => p.text)
+      .join("") ?? "";
+
   // Auto-discover relevant consoles via embedding search (parallel with other setup)
   let consoleHints = "";
   if (
@@ -502,18 +514,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     messages.length > 0
   ) {
     try {
-      const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
-      const userText = lastUserMsg?.parts
-        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
-        .map(p => p.text)
-        .join("");
-
-      if (
-        userText &&
-        userText.length >= 5 &&
-        (await isVectorSearchAvailable())
-      ) {
-        const hints = await searchConsoles(userText, workspaceId, 3);
+      if (lastUserText.length >= 5 && (await isVectorSearchAvailable())) {
+        const hints = await searchConsoles(lastUserText, workspaceId, 3);
         if (hints.length > 0) {
           consoleHints =
             "\n\n---\n\n### Relevant Saved Consoles (auto-discovered)\n" +
@@ -528,6 +530,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       }
     } catch (err) {
       logger.debug("Console hint injection skipped", { error: err });
+    }
+  }
+
+  // Skills retrieval — runs for console + unified agents (parity with
+  // self-directive). Index is always included when any skills exist;
+  // bodies are only pulled in when score clears threshold.
+  let skillsBlock = "";
+  if (resolvedAgentId === "console" || resolvedAgentId === "unified") {
+    try {
+      const retrieval = await retrieveRelevantSkills(workspaceId, lastUserText);
+      skillsBlock = renderSkillsPromptBlock(retrieval);
+    } catch (err) {
+      logger.debug("Skills block injection skipped", { error: err });
     }
   }
 
@@ -562,6 +577,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     workspaceCustomPrompt,
     selfDirective,
     consoleHints,
+    skillsBlock,
     activeConsoleResults,
     activeDashboardContext: dashboardContext.activeDashboardContext,
     toolExecutionContext,

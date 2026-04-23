@@ -2988,3 +2988,84 @@ export const Dashboard = mongoose.model<IDashboard>(
   "Dashboard",
   DashboardSchema,
 );
+
+/**
+ * Skill — workspace-scoped knowledge + procedure primitive.
+ *
+ * See GitHub issue #365. A skill is a named, conditional playbook with:
+ *   - loadWhen: short trigger description (what query/task it applies to)
+ *   - body:     schema facts + procedural hints (SQL shapes, gotchas, etc.)
+ *   - entities: tokens used for retrieval (authored + extracted)
+ *
+ * Retrieval combines entity overlap with semantic similarity on `loadWhen`.
+ * The full index (name + loadWhen) is injected into the agent's system prompt
+ * every turn; bodies are injected only for top-k matches above a threshold
+ * or when the agent explicitly calls `load_skill`.
+ */
+export type SkillScopeType = "workspace" | "user" | "connection";
+
+export interface ISkill extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  loadWhen: string;
+  body: string;
+  entities: string[];
+  /** Embedding over `loadWhen` only. Bodies are too long to embed usefully. */
+  loadWhenEmbedding?: number[];
+  embeddingModel?: string;
+  /** Reserved for future scoping. MVP: all skills are scope_type="workspace". */
+  scopeType: SkillScopeType;
+  scopeRefId?: Types.ObjectId | string;
+  /** "agent" for model-authored skills, otherwise a user id. */
+  createdBy: string;
+  /** Soft-disable without deletion — lets admins A/B whether a skill helps. */
+  suppressed: boolean;
+  useCount: number;
+  lastUsedAt?: Date;
+  /** Single-slot undo for wrong overwrites. */
+  previousBody?: string;
+  previousUpdatedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const SkillSchema = new Schema<ISkill>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true },
+    loadWhen: { type: String, required: true, trim: true, maxlength: 500 },
+    body: { type: String, required: true, maxlength: 20000 },
+    entities: { type: [String], default: [] },
+    loadWhenEmbedding: { type: [Number], select: false },
+    embeddingModel: { type: String },
+    scopeType: {
+      type: String,
+      enum: ["workspace", "user", "connection"],
+      default: "workspace",
+      required: true,
+    },
+    scopeRefId: { type: Schema.Types.Mixed },
+    createdBy: { type: String, required: true },
+    suppressed: { type: Boolean, default: false },
+    useCount: { type: Number, default: 0 },
+    lastUsedAt: { type: Date },
+    previousBody: { type: String },
+    previousUpdatedAt: { type: Date },
+  },
+  { collection: "skills", timestamps: true },
+);
+
+SkillSchema.index({ workspaceId: 1, name: 1 }, { unique: true });
+SkillSchema.index({ workspaceId: 1, suppressed: 1 });
+SkillSchema.index({ workspaceId: 1, entities: 1 });
+SkillSchema.index(
+  { name: "text", loadWhen: "text", body: "text" },
+  { name: "skill_text_search" },
+);
+
+export const Skill = mongoose.model<ISkill>("Skill", SkillSchema);

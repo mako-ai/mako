@@ -99,6 +99,13 @@ export interface AgentContext {
   selfDirective?: string;
   /** Auto-discovered relevant consoles (injected via embedding search) */
   consoleHints?: string;
+  /**
+   * Pre-rendered skills block: the workspace-scoped skills index + any
+   * auto-loaded skill bodies for this turn. Populated by `agent.routes.ts`
+   * via `retrieveRelevantSkills` + `renderSkillsPromptBlock`. Empty string
+   * if the workspace has no skills.
+   */
+  skillsBlock?: string;
   /** Active console's query results and chart state */
   activeConsoleResults?: {
     viewMode: "table" | "json" | "chart";

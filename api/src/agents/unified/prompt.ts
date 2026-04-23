@@ -397,6 +397,12 @@ export function buildCurrentScreenContext(context: AgentContext): string {
     sections.push(context.selfDirective.trim());
   }
 
+  if (context.skillsBlock?.trim()) {
+    // skillsBlock is pre-rendered with its own header/separator by
+    // renderSkillsPromptBlock — don't double-wrap it here.
+    sections.push(context.skillsBlock);
+  }
+
   if (context.consoleHints?.trim()) {
     sections.push("");
     sections.push("### Relevant Saved Consoles");

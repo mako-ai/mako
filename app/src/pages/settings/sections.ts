@@ -8,6 +8,7 @@ import type { SettingsSection } from "../../store/lib/types";
  */
 export const SECTION_LABELS: Record<SettingsSection, string> = {
   prompt: "Custom Prompt",
+  skills: "Skills",
   models: "AI Models",
   billing: "Billing",
   members: "Members",
@@ -22,6 +23,7 @@ export const SECTION_LABELS: Record<SettingsSection, string> = {
  */
 export const SECTION_ORDER: SettingsSection[] = [
   "prompt",
+  "skills",
   "models",
   "billing",
   "members",

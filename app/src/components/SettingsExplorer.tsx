@@ -2,6 +2,7 @@ import { Box, Typography } from "@mui/material";
 import {
   Sparkles as ModelsIcon,
   MessageSquareText as PromptIcon,
+  BookOpen as SkillsIcon,
   Wallet as BillingIcon,
   Users as MembersIcon,
   KeySquare as ApiKeyIcon,
@@ -22,6 +23,7 @@ const SECTION_ICONS: Record<
   (props: { size?: number; strokeWidth?: number }) => JSX.Element
 > = {
   prompt: props => <PromptIcon {...props} />,
+  skills: props => <SkillsIcon {...props} />,
   models: props => <ModelsIcon {...props} />,
   billing: props => <BillingIcon {...props} />,
   members: props => <MembersIcon {...props} />,
