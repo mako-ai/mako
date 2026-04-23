@@ -6,7 +6,11 @@ import {
   DialogActions,
   TextField,
   Button,
+  Box,
+  LinearProgress,
+  Typography,
 } from "@mui/material";
+import { Sparkles } from "lucide-react";
 
 interface SaveCommentDialogProps {
   open: boolean;
@@ -65,11 +69,7 @@ export function SaveCommentDialog({
           multiline
           minRows={2}
           maxRows={4}
-          placeholder={
-            loading
-              ? "Generating comment..."
-              : "Describe your changes (optional)"
-          }
+          placeholder="Describe your changes (optional)"
           value={comment}
           onChange={e => {
             setComment(e.target.value);
@@ -80,6 +80,29 @@ export function SaveCommentDialog({
           size="small"
           sx={{ mt: 1 }}
         />
+        {loading && (
+          <Box sx={{ mt: 1.5 }}>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.75,
+                mb: 0.5,
+              }}
+            >
+              <Sparkles size={14} />
+              <Typography variant="caption" color="text.secondary">
+                Generating comment with AI...
+              </Typography>
+            </Box>
+            <LinearProgress
+              sx={{
+                borderRadius: 1,
+                height: 3,
+              }}
+            />
+          </Box>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onCancel} size="small">
