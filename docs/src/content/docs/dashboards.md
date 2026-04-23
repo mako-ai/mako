@@ -131,6 +131,10 @@ Dashboards use an edit lock to prevent concurrent editing conflicts:
 
 If another user holds the lock, a confirmation dialog offers to take over.
 
+## Version History
+
+Every save of a dashboard creates an immutable version snapshot (widgets, data sources, layout). Authors, timestamps, and commit comments are preserved. Restoring a past version creates a new version record referencing the one it came from — the timeline is append-only. See [Version History](/version-history/) for the API and agent tools.
+
 ## Scheduled Refresh
 
 Data sources can be refreshed on a schedule using cron expressions:

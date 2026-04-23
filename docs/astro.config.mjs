@@ -30,6 +30,7 @@ export default defineConfig({
             { label: "AI-Powered SQL Client", slug: "ai-agent" },
             { label: "Console", slug: "console" },
             { label: "Dashboards", slug: "dashboards" },
+            { label: "Version History", slug: "version-history" },
             { label: "Query Runner", slug: "query-runner" },
             { label: "Self-Directive", slug: "self-directive" },
           ],

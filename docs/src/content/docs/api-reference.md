@@ -55,11 +55,14 @@ Authorization: Bearer revops_YOUR_API_KEY
 
 | Method | Endpoint                                    | Description                |
 | ------ | ------------------------------------------- | -------------------------- |
-| `GET`  | `/api/workspaces/:wid/consoles/list`        | List all consoles          |
-| `GET`  | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
-| `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a saved console    |
+| `GET`  | `/api/workspaces/:wid/consoles/list`                         | List all consoles                        |
+| `GET`  | `/api/workspaces/:wid/consoles/:id/details`                  | Get console details + code               |
+| `POST` | `/api/workspaces/:wid/consoles/:id/execute`                  | Execute a saved console                  |
+| `GET`  | `/api/workspaces/:wid/consoles/:id/versions`                 | List version history (paginated)         |
+| `GET`  | `/api/workspaces/:wid/consoles/:id/versions/:version`        | Get a specific version snapshot          |
+| `POST` | `/api/workspaces/:wid/consoles/:id/versions/:version/restore` | Restore console to a past version        |
 
-See [Console](/console/) for full API documentation with examples.
+See [Console](/console/) for full API documentation with examples. Version history is covered under [Version History](/version-history/).
 
 ## Flows
 
@@ -159,6 +162,9 @@ The response is a **Server-Sent Events (SSE)** stream:
 | `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
 | `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
 | `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions`                  | List dashboard version history       |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions/:version`         | Get a specific dashboard version     |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/versions/:version/restore` | Restore dashboard to a past version  |
 
 ### Dashboard Folders
 
