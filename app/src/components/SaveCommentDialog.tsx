@@ -14,6 +14,7 @@ interface SaveCommentDialogProps {
   onCancel: () => void;
   title?: string;
   defaultComment?: string;
+  loading?: boolean;
 }
 
 export function SaveCommentDialog({
@@ -22,12 +23,23 @@ export function SaveCommentDialog({
   onCancel,
   title = "Save",
   defaultComment,
+  loading,
 }: SaveCommentDialogProps) {
   const [comment, setComment] = useState("");
+  const [userEdited, setUserEdited] = useState(false);
 
   useEffect(() => {
-    if (open) setComment(defaultComment ?? "");
-  }, [open, defaultComment]);
+    if (open) {
+      setComment(defaultComment ?? "");
+      setUserEdited(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (defaultComment && !userEdited) {
+      setComment(defaultComment);
+    }
+  }, [defaultComment, userEdited]);
 
   const handleSave = useCallback(() => {
     onSave(comment);
@@ -53,9 +65,16 @@ export function SaveCommentDialog({
           multiline
           minRows={2}
           maxRows={4}
-          placeholder="Describe your changes (optional)"
+          placeholder={
+            loading
+              ? "Generating comment..."
+              : "Describe your changes (optional)"
+          }
           value={comment}
-          onChange={e => setComment(e.target.value)}
+          onChange={e => {
+            setComment(e.target.value);
+            setUserEdited(true);
+          }}
           onKeyDown={handleKeyDown}
           variant="outlined"
           size="small"

@@ -90,6 +90,10 @@ export class ConsoleVersionManager {
     return comments;
   }
 
+  getFirstContent(): string | null {
+    return this.versions.length > 0 ? this.versions[0].content : null;
+  }
+
   undo(): string | null {
     if (!this.canUndo()) return null;
 

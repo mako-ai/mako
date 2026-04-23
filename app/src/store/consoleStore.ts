@@ -126,6 +126,18 @@ interface ConsoleActions {
       title?: string;
     },
   ) => void;
+  generateSaveComment: (
+    workspaceId: string,
+    consoleId: string,
+    payload: {
+      previousContent: string;
+      newContent: string;
+      language: string;
+      source: "user" | "ai";
+      title?: string;
+    },
+    signal?: AbortSignal,
+  ) => Promise<string | null>;
 }
 
 type ConsoleStore = ConsoleState & ConsoleActions;
@@ -655,6 +667,22 @@ export const useConsoleStore = create<ConsoleStore>()(
         } else {
           const timer = setTimeout(() => void fire(), DEBOUNCE_MS);
           versionCommentTimers.set(consoleId, timer);
+        }
+      },
+
+      generateSaveComment: async (workspaceId, consoleId, payload, signal) => {
+        try {
+          const res = await apiClient.post<{
+            success: boolean;
+            comment: string | null;
+          }>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
+            payload,
+            { signal },
+          );
+          return res.success ? (res.comment ?? null) : null;
+        } catch {
+          return null;
         }
       },
 
