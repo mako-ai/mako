@@ -34,7 +34,7 @@ import {
   Alert,
   Snackbar,
 } from "@mui/material";
-import { Close as CloseIcon, Add as AddIcon } from "@mui/icons-material";
+import { Close as CloseIcon } from "@mui/icons-material";
 import {
   SquareTerminal as ConsoleIcon,
   Settings as SettingsIcon,
@@ -66,6 +66,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
+import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
@@ -230,7 +231,10 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
           bottom: 0,
           [indicatorSide]: -3,
           width: "6px",
-          backgroundColor: "divider",
+          backgroundColor: (theme: import("@mui/material").Theme) =>
+            theme.palette.mode === "dark"
+              ? theme.palette.common.white
+              : theme.palette.common.black,
           pointerEvents: "none",
           zIndex: 2,
         },
@@ -315,6 +319,25 @@ function Editor({
     () => (currentWorkspace ? connectionsMap[currentWorkspace.id] || [] : []),
     [currentWorkspace, connectionsMap],
   );
+
+  // Database type → iconUrl map for rendering per-connection icons in console tabs.
+  const dbTypes = useDatabaseCatalogStore(state => state.types);
+  const fetchDbTypes = useDatabaseCatalogStore(state => state.fetchTypes);
+  useEffect(() => {
+    fetchDbTypes().catch(() => undefined);
+  }, [fetchDbTypes]);
+  const connectionIconById = React.useMemo(() => {
+    const typeToIcon = new Map<string, string>();
+    for (const t of dbTypes || []) {
+      if (t.iconUrl) typeToIcon.set(t.type, t.iconUrl);
+    }
+    const map = new Map<string, string>();
+    for (const c of availableDatabases) {
+      const icon = typeToIcon.get(c.type);
+      if (icon) map.set(c.id, icon);
+    }
+    return map;
+  }, [dbTypes, availableDatabases]);
 
   // Save dialog state (folder navigator)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -788,13 +811,6 @@ function Editor({
 
   const handleDashboardCloseCancel = () => {
     setPendingDashboardCloseTabId(null);
-  };
-
-  const handleAddTab = () => {
-    openTab({
-      title: "New Console",
-      content: "",
-    });
   };
 
   const handleConsoleExecute = async (
@@ -1545,105 +1561,143 @@ function Editor({
                   value={activeConsoleId}
                   onChange={handleTabChange}
                   variant="scrollable"
-                  scrollButtons="auto"
+                  scrollButtons={false}
                   sx={{
                     minHeight: 36,
                     "& .MuiTabs-indicator": { height: 2 },
                   }}
                 >
-                  {consoleTabs.map(tab => (
-                    <SortableConsoleTab
-                      key={tab.id}
-                      value={tab.id}
-                      sx={{
-                        minHeight: 36,
-                        py: 0.25,
-                        px: 1.25,
-                        textTransform: "none",
-                      }}
-                      label={
-                        <Box
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 0.5,
-                            minWidth: 0,
-                            maxWidth: "100%",
-                          }}
-                        >
-                          {tab.icon ? (
-                            <Box
-                              component="img"
-                              src={tab.icon}
-                              alt="tab icon"
-                              sx={{ width: 18, height: 18 }}
-                            />
-                          ) : tab.kind === "settings" ? (
-                            <SettingsIcon size={18} strokeWidth={1.5} />
-                          ) : tab.kind === "connectors" ? (
-                            <DataSourceIcon size={18} strokeWidth={1.5} />
-                          ) : tab.kind === "flow-editor" ? (
-                            tab.metadata?.flowType === "webhook" ? (
-                              <WebhookIcon size={18} strokeWidth={1.5} />
-                            ) : tab.metadata?.enabled === false ? (
-                              <PauseIcon size={18} strokeWidth={1.5} />
+                  {consoleTabs.map((tab, index) => {
+                    const isActiveTab = activeConsoleId === tab.id;
+                    const connectionIconUrl = tab.connectionId
+                      ? connectionIconById.get(tab.connectionId)
+                      : undefined;
+                    const nextTab = consoleTabs[index + 1];
+                    const isLastTab = index === consoleTabs.length - 1;
+                    // Cursor-style separator: thin vertical rule on the trailing
+                    // edge of every tab, hidden when this tab or the next one is
+                    // active, and hidden on the very last tab.
+                    const showSeparator =
+                      !isActiveTab &&
+                      !isLastTab &&
+                      nextTab?.id !== activeConsoleId;
+                    return (
+                      <SortableConsoleTab
+                        key={tab.id}
+                        value={tab.id}
+                        sx={{
+                          minHeight: 36,
+                          py: 0.25,
+                          px: 1.25,
+                          textTransform: "none",
+                          position: "relative",
+                          "& .tab-close-btn": {
+                            visibility: isActiveTab ? "visible" : "hidden",
+                          },
+                          "&:hover .tab-close-btn": {
+                            visibility: "visible",
+                          },
+                          "&::after": showSeparator
+                            ? {
+                                content: '""',
+                                position: "absolute",
+                                right: 0,
+                                top: 0,
+                                bottom: 0,
+                                width: "1px",
+                                backgroundColor: "divider",
+                                pointerEvents: "none",
+                              }
+                            : {},
+                        }}
+                        label={
+                          <Box
+                            sx={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 0.5,
+                              minWidth: 0,
+                              maxWidth: "100%",
+                            }}
+                          >
+                            {tab.icon ? (
+                              <Box
+                                component="img"
+                                src={tab.icon}
+                                alt="tab icon"
+                                sx={{ width: 18, height: 18 }}
+                              />
+                            ) : tab.kind === "settings" ? (
+                              <SettingsIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "connectors" ? (
+                              <DataSourceIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "flow-editor" ? (
+                              tab.metadata?.flowType === "webhook" ? (
+                                <WebhookIcon size={18} strokeWidth={1.5} />
+                              ) : tab.metadata?.enabled === false ? (
+                                <PauseIcon size={18} strokeWidth={1.5} />
+                              ) : (
+                                <ScheduleIcon size={18} strokeWidth={1.5} />
+                              )
+                            ) : tab.kind === "dashboard" ? (
+                              <DashboardIcon size={18} strokeWidth={1.5} />
+                            ) : connectionIconUrl ? (
+                              <Box
+                                component="img"
+                                src={connectionIconUrl}
+                                alt="db icon"
+                                sx={{
+                                  width: 18,
+                                  height: 18,
+                                  objectFit: "contain",
+                                }}
+                              />
                             ) : (
-                              <ScheduleIcon size={18} strokeWidth={1.5} />
-                            )
-                          ) : tab.kind === "dashboard" ? (
-                            <DashboardIcon size={18} strokeWidth={1.5} />
-                          ) : (
-                            <ConsoleIcon size={18} strokeWidth={1.5} />
-                          )}
-                          <span
-                            style={{
-                              fontStyle: tab.isDirty ? "normal" : "italic",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                              display: "inline-block",
-                              maxWidth: "150px",
-                            }}
-                            onDoubleClick={e => {
-                              e.stopPropagation();
-                              updateDirty(tab.id, true);
-                            }}
-                            title={tab.title}
-                          >
-                            {tab.title?.split("/").filter(Boolean).pop() ||
-                              tab.title}
-                          </span>
-                          <IconButton
-                            component="span"
-                            size="small"
-                            onClick={e => {
-                              e.stopPropagation();
-                              closeConsole(tab.id);
-                            }}
-                            onPointerDown={e => {
-                              // Prevent the Tab's drag listener from starting
-                              // a drag when the user clicks the close button.
-                              e.stopPropagation();
-                            }}
-                            sx={{ p: 0.25, ml: 0.25 }}
-                          >
-                            <CloseIcon fontSize="inherit" />
-                          </IconButton>
-                        </Box>
-                      }
-                    />
-                  ))}
+                              <ConsoleIcon size={18} strokeWidth={1.5} />
+                            )}
+                            <span
+                              style={{
+                                fontStyle: tab.isDirty ? "normal" : "italic",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                                display: "inline-block",
+                                maxWidth: "150px",
+                              }}
+                              onDoubleClick={e => {
+                                e.stopPropagation();
+                                updateDirty(tab.id, true);
+                              }}
+                              title={tab.title}
+                            >
+                              {tab.title?.split("/").filter(Boolean).pop() ||
+                                tab.title}
+                            </span>
+                            <IconButton
+                              component="span"
+                              size="small"
+                              className="tab-close-btn"
+                              onClick={e => {
+                                e.stopPropagation();
+                                closeConsole(tab.id);
+                              }}
+                              onPointerDown={e => {
+                                // Prevent the Tab's drag listener from starting
+                                // a drag when the user clicks the close button.
+                                e.stopPropagation();
+                              }}
+                              sx={{ p: 0.25, ml: 0 }}
+                            >
+                              <CloseIcon fontSize="inherit" />
+                            </IconButton>
+                          </Box>
+                        }
+                      />
+                    );
+                  })}
                 </Tabs>
               </SortableContext>
             </DndContext>
-            <IconButton
-              onClick={handleAddTab}
-              size="small"
-              sx={{ ml: 0.5, mr: 0.5, p: 0.5 }}
-              title="Add new console tab"
-            >
-              <AddIcon fontSize="small" />
-            </IconButton>
           </Box>
 
           {/* Breadcrumb path (Cursor-style) — only for console tabs */}
