@@ -65,6 +65,40 @@ import { toNum, extractTokenCounts } from "../utils/safe-num";
 
 const logger = loggers.agent();
 
+/**
+ * Build the Anthropic `thinking` provider option for a given model.
+ *
+ * Claude Opus 4.7 (and future Claude models) rejects the legacy
+ * `{ type: "enabled", budget_tokens: N }` shape with a 400 error and requires
+ * `{ type: "adaptive" }` — see
+ * https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking.
+ * For older models (Opus 4.6, Sonnet 4.6, 4.5, 3.x) we keep the manual
+ * `enabled` shape so the configured `thinkingBudgetTokens` is still honored.
+ */
+function buildAnthropicThinkingConfig(
+  modelId: string,
+  budgetTokens: number,
+): Record<string, unknown> {
+  if (modelRequiresAdaptiveThinking(modelId)) {
+    return { type: "adaptive", display: "summarized" };
+  }
+  return { type: "enabled", budgetTokens };
+}
+
+function modelRequiresAdaptiveThinking(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  if (lower.includes("mythos")) return true;
+  // Match e.g. "anthropic/claude-opus-4-7", "anthropic/claude-sonnet-5-0"
+  const match = lower.match(/claude-(?:opus|sonnet|haiku)-(\d+)-(\d+)/);
+  if (!match) return false;
+  const major = Number.parseInt(match[1], 10);
+  const minor = Number.parseInt(match[2], 10);
+  if (Number.isNaN(major) || Number.isNaN(minor)) return false;
+  if (major > 4) return true;
+  if (major === 4 && minor >= 7) return true;
+  return false;
+}
+
 export const agentRoutes = new Hono();
 
 // Apply unified auth middleware to all routes
@@ -614,10 +648,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     ...(enableThinking
       ? {
           anthropic: {
-            thinking: {
-              type: "enabled" as const,
-              budgetTokens: thinkingBudget,
-            },
+            thinking: buildAnthropicThinkingConfig(
+              resolvedModelId,
+              thinkingBudget,
+            ),
           },
         }
       : {}),
