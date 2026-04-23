@@ -143,14 +143,19 @@ export function SaveCommentDialog({
                   lineHeight: 1.4,
                   "& .diff-add": { color: "success.main" },
                   "& .diff-del": { color: "error.main" },
+                  "& .diff-hunk": { color: "info.main", opacity: 0.7 },
                 }}
               >
                 {diff.split("\n").map((line, i) => {
-                  const cls = line.startsWith("+ ")
-                    ? "diff-add"
-                    : line.startsWith("- ")
-                      ? "diff-del"
-                      : undefined;
+                  const isHunk = line.startsWith("@@");
+                  const cls =
+                    line.startsWith("+") && !line.startsWith("+++")
+                      ? "diff-add"
+                      : line.startsWith("-") && !line.startsWith("---")
+                        ? "diff-del"
+                        : isHunk
+                          ? "diff-hunk"
+                          : undefined;
                   return (
                     <Box
                       component="span"
