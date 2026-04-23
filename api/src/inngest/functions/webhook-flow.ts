@@ -1016,8 +1016,12 @@ async function ingestPendingWebhookEvents(logger: {
   const byFlow = new Map<string, typeof pendingEvents>();
   for (const evt of pendingEvents) {
     const fid = evt.flowId.toString();
-    if (!byFlow.has(fid)) byFlow.set(fid, []);
-    byFlow.get(fid)!.push(evt);
+    const bucket = byFlow.get(fid);
+    if (bucket) {
+      bucket.push(evt);
+    } else {
+      byFlow.set(fid, [evt]);
+    }
   }
 
   let totalIngested = 0;

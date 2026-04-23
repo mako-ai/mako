@@ -94,10 +94,11 @@ class SshTunnelManager {
         reject(err);
       });
       if (config.sshPassword) {
+        const sshPassword = config.sshPassword;
         client.on(
           "keyboard-interactive",
           (_name, _instructions, _lang, prompts, finish) => {
-            finish(prompts.map(() => config.sshPassword!));
+            finish(prompts.map(() => sshPassword));
           },
         );
       }

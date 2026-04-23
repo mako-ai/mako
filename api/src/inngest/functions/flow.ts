@@ -721,31 +721,30 @@ export const flowFunction = inngest.createFunction(
       // ============ DATABASE SOURCE EXECUTION ============
       // For database-to-database flows, use chunked execution for resumability
       if (flow.sourceType === "database") {
+        // Validate database source configuration up-front so TypeScript can
+        // narrow `flow.databaseSource` for the remainder of this branch.
+        if (!flow.databaseSource?.connectionId || !flow.databaseSource?.query) {
+          throw new Error("Database source requires connectionId and query");
+        }
+        const dbSource = flow.databaseSource;
+
         logger.info(
           "Starting database-to-database sync with chunked execution",
           {
             flowId,
             syncMode: flow.syncMode,
-            sourceConnectionId: flow.databaseSource?.connectionId?.toString(),
-            sourceDatabase: flow.databaseSource?.database,
+            sourceConnectionId: dbSource.connectionId.toString(),
+            sourceDatabase: dbSource.database,
           },
         );
 
-        // Validate database source configuration
         const _validation = await step.run("validate-db-source", async () => {
-          if (
-            !flow.databaseSource?.connectionId ||
-            !flow.databaseSource?.query
-          ) {
-            throw new Error("Database source requires connectionId and query");
-          }
-
           const sourceConnection = await DatabaseConnection.findById(
-            flow.databaseSource.connectionId,
+            dbSource.connectionId,
           );
           if (!sourceConnection) {
             throw new Error(
-              `Source database connection not found: ${flow.databaseSource.connectionId}`,
+              `Source database connection not found: ${dbSource.connectionId}`,
             );
           }
 
@@ -760,7 +759,7 @@ export const flowFunction = inngest.createFunction(
           "init-destination-writer",
           async () => {
             const sourceConnection = await DatabaseConnection.findById(
-              flow.databaseSource!.connectionId,
+              dbSource.connectionId,
             );
 
             const destinationWriter = await createDestinationWriter(
@@ -768,7 +767,7 @@ export const flowFunction = inngest.createFunction(
                 destinationDatabaseId: flow.destinationDatabaseId,
                 destinationDatabaseName: flow.destinationDatabaseName,
                 tableDestination: flow.tableDestination,
-                dataSourceId: flow.databaseSource!.connectionId,
+                dataSourceId: dbSource.connectionId,
               },
               sourceConnection?.name,
             );
@@ -809,7 +808,7 @@ export const flowFunction = inngest.createFunction(
 
               // Re-create destination writer for this chunk
               const sourceConnection = await DatabaseConnection.findById(
-                flow.databaseSource!.connectionId,
+                dbSource.connectionId,
               );
               if (!sourceConnection) {
                 throw new Error("Source connection not found");
@@ -820,7 +819,7 @@ export const flowFunction = inngest.createFunction(
                   destinationDatabaseId: flow.destinationDatabaseId,
                   destinationDatabaseName: flow.destinationDatabaseName,
                   tableDestination: flow.tableDestination,
-                  dataSourceId: flow.databaseSource!.connectionId,
+                  dataSourceId: dbSource.connectionId,
                 },
                 sourceConnection.name,
               );
@@ -833,8 +832,8 @@ export const flowFunction = inngest.createFunction(
               // Execute chunk with pagination and type coercions
               const result = await executeDbSyncChunk({
                 sourceConnection,
-                sourceQuery: flow.databaseSource!.query,
-                sourceDatabase: flow.databaseSource!.database,
+                sourceQuery: dbSource.query,
+                sourceDatabase: dbSource.database,
                 destinationWriter,
                 batchSize: flow.batchSize || 2000,
                 syncMode: flow.syncMode,
@@ -941,7 +940,7 @@ export const flowFunction = inngest.createFunction(
             });
 
             const sourceConnection = await DatabaseConnection.findById(
-              flow.databaseSource!.connectionId,
+              dbSource.connectionId,
             );
 
             const destinationWriter = await createDestinationWriter(
@@ -949,7 +948,7 @@ export const flowFunction = inngest.createFunction(
                 destinationDatabaseId: flow.destinationDatabaseId,
                 destinationDatabaseName: flow.destinationDatabaseName,
                 tableDestination: flow.tableDestination,
-                dataSourceId: flow.databaseSource!.connectionId,
+                dataSourceId: dbSource.connectionId,
               },
               sourceConnection?.name,
             );
@@ -973,6 +972,7 @@ export const flowFunction = inngest.createFunction(
           flow.incrementalConfig?.trackingColumn &&
           totalRowsProcessed > 0
         ) {
+          const trackingColumn = flow.incrementalConfig.trackingColumn;
           await step.run("update-incremental-tracking", async () => {
             logger.info("Updating incremental tracking value", { flowId });
 
@@ -986,7 +986,7 @@ export const flowFunction = inngest.createFunction(
                 const maxValueResult = await getMaxTrackingValue(
                   destConnection,
                   flow.tableDestination.tableName,
-                  flow.incrementalConfig!.trackingColumn,
+                  trackingColumn,
                   flow.tableDestination.schema,
                   flow.tableDestination.database,
                 );
@@ -998,7 +998,7 @@ export const flowFunction = inngest.createFunction(
 
                   logger.info("Incremental tracking updated", {
                     flowId,
-                    trackingColumn: flow.incrementalConfig!.trackingColumn,
+                    trackingColumn,
                     newLastValue: maxValueResult.maxValue,
                   });
                 }
@@ -1012,7 +1012,7 @@ export const flowFunction = inngest.createFunction(
 
               logger.info("Incremental tracking updated (from chunk state)", {
                 flowId,
-                trackingColumn: flow.incrementalConfig!.trackingColumn,
+                trackingColumn,
                 newLastValue: chunkState.lastTrackingValue,
               });
             }
@@ -1158,14 +1158,15 @@ export const flowFunction = inngest.createFunction(
           isCdcEnabled &&
           Boolean(cdcBackfillRunId);
         let checkpointCompletedEntities = new Set<string>();
-        if (checkpointEnabled) {
+        if (checkpointEnabled && cdcBackfillRunId) {
+          const runId = cdcBackfillRunId;
           const completedEntities = (await step.run(
             "load-cdc-backfill-completed-entities",
             async () => {
               return cdcBackfillCheckpointService.listCompletedEntities({
                 workspaceId: String(flow.workspaceId),
                 flowId: String(flow._id),
-                runId: cdcBackfillRunId!,
+                runId,
               });
             },
           )) as string[];
@@ -1877,14 +1878,19 @@ export const flowFunction = inngest.createFunction(
       // an orphaned staging table. The cleanup logic below handles the case
       // where no staging table exists (via try/catch), so it's safe to
       // always attempt cleanup for database full syncs.
-      if (flowRef?.sourceType === "database" && flowRef?.syncMode === "full") {
+      if (
+        flowRef?.sourceType === "database" &&
+        flowRef?.syncMode === "full" &&
+        flowRef.databaseSource?.connectionId
+      ) {
         const cleanupFlow = flowRef; // Capture for closure
+        const cleanupDbSource = flowRef.databaseSource;
         await step.run("cleanup-staging-on-failure", async () => {
           try {
             logger.info("Cleaning up staging table after failure", { flowId });
 
             const sourceConnection = await DatabaseConnection.findById(
-              cleanupFlow.databaseSource!.connectionId,
+              cleanupDbSource.connectionId,
             );
 
             const destinationWriter = await createDestinationWriter(
@@ -1892,7 +1898,7 @@ export const flowFunction = inngest.createFunction(
                 destinationDatabaseId: cleanupFlow.destinationDatabaseId,
                 destinationDatabaseName: cleanupFlow.destinationDatabaseName,
                 tableDestination: cleanupFlow.tableDestination,
-                dataSourceId: cleanupFlow.databaseSource!.connectionId,
+                dataSourceId: cleanupDbSource.connectionId,
               },
               sourceConnection?.name,
             );

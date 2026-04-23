@@ -158,6 +158,19 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     const safeEntityStepId = entity.replace(/[^a-zA-Z0-9_-]/g, "_");
     let stepsUsed = 0;
 
+    // When checkpointEnabled is true, cdcBackfillRunId is guaranteed
+    // by the caller. Narrow to a non-optional string so downstream
+    // step closures don't need non-null assertions.
+    let checkpointRunId = "";
+    if (checkpointEnabled) {
+      if (!cdcBackfillRunId) {
+        throw new Error(
+          "cdcBackfillRunId is required when checkpointEnabled is true",
+        );
+      }
+      checkpointRunId = cdcBackfillRunId;
+    }
+
     const logExec = (
       level: "debug" | "info" | "warn" | "error",
       message: string,
@@ -204,7 +217,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           return cdcBackfillCheckpointService.loadEntityCheckpoint({
             workspaceId,
             flowId,
-            runId: cdcBackfillRunId!,
+            runId: checkpointRunId,
             entity,
           });
         },
@@ -319,15 +332,16 @@ export const syncBackfillEntityFunction = inngest.createFunction(
     while (!completed) {
       if (stepsUsed >= STEP_BUDGET) {
         if (checkpointEnabled && state) {
+          const checkpointState = state;
           await step.run(
             `save-checkpoint-before-yield-${safeEntityStepId}`,
             async () => {
               await cdcBackfillCheckpointService.saveEntityCheckpoint({
                 workspaceId,
                 flowId,
-                runId: cdcBackfillRunId!,
+                runId: checkpointRunId,
                 entity,
-                fetchState: state!,
+                fetchState: checkpointState,
               });
             },
           );
@@ -494,7 +508,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             await cdcBackfillCheckpointService.saveEntityCheckpoint({
               workspaceId,
               flowId,
-              runId: cdcBackfillRunId!,
+              runId: checkpointRunId,
               entity,
               fetchState: chunkResult.state,
             });
@@ -640,7 +654,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
           await cdcBackfillCheckpointService.markEntityCompleted({
             workspaceId,
             flowId,
-            runId: cdcBackfillRunId!,
+            runId: checkpointRunId,
             entity,
             fetchState: state,
           });
