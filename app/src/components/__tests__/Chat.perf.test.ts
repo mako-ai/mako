@@ -3,7 +3,7 @@
  *
  * These tests verify the memoization contracts that keep the Chat panel
  * responsive during AI streaming. If any of these fail, the Chat component
- * will re-render excessively and the UI will become unresponsive.
+ * will re-render excessively AND/OR fail to re-render at all during streaming.
  *
  * See: .cursor/rules/75-chat-performance.mdc
  */
@@ -37,7 +37,6 @@ function makeProps(
 
 describe("React.memo wrappers", () => {
   it("StreamingMarkdown is wrapped in React.memo", () => {
-    // React.memo sets $$typeof to Symbol.for('react.memo')
     expect((StreamingMarkdown as any).$$typeof).toBe(Symbol.for("react.memo"));
   });
 
@@ -47,14 +46,31 @@ describe("React.memo wrappers", () => {
 });
 
 // ── ChatMessageRow comparator ───────────────────────────────
+//
+// Contract: reference equality on `message` (NOT deep content comparison).
+//
+// Why: the AI SDK's first chunk uses `pushMessage`, which stores the RAW
+// mutable message reference in `messages[last]`. Later chunks call
+// `replaceMessage` (structuredClone). React.memo's stored "prev" gets
+// seeded with the RAW reference on the first render, and that reference
+// keeps being mutated in place (`part.text += delta`). A content-based
+// comparator would then see prev and next as identical (both reflect the
+// latest state) and permanently skip rendering until `isStreaming` flips.
+//
+// Reference equality sidesteps the mutation problem: every `replaceMessage`
+// produces a new reference, so the comparator correctly returns false.
+// `experimental_throttle: 50` in useChat batches these updates to ~20/sec.
 
 describe("chatMessageRowArePropsEqual", () => {
-  it("returns true for identical props (reference equal message)", () => {
+  it("returns true when all references are identical", () => {
     const props = makeProps();
     expect(chatMessageRowArePropsEqual(props, props)).toBe(true);
   });
 
-  it("returns true when message parts haven't changed (same content, different reference)", () => {
+  it("returns false when the message reference changes (streaming tick)", () => {
+    // This is THE streaming re-render trigger. On every chunk, useChat
+    // produces a new message reference via structuredClone; without this
+    // re-render, streamed text would never appear until completion.
     const prev = makeProps({
       message: {
         id: "msg-1",
@@ -66,10 +82,10 @@ describe("chatMessageRowArePropsEqual", () => {
       message: {
         id: "msg-1",
         role: "assistant",
-        parts: [{ type: "text", text: "Hello" }],
+        parts: [{ type: "text", text: "Hello" }], // same content, new ref
       },
     });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(true);
+    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
   });
 
   it("returns false when isLastMessage changes", () => {
@@ -90,237 +106,168 @@ describe("chatMessageRowArePropsEqual", () => {
     expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
   });
 
-  it("returns false when text length changes (streaming token arrives)", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "text", text: "Hel" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "text", text: "Hello" }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
-
-  it("returns false when part count changes (new part added)", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "text", text: "Hello" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [
-          { type: "text", text: "Hello" },
-          { type: "tool-run_console", state: "input-streaming" },
-        ],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
-
-  it("returns false when a tool part is input-streaming", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "tool-run_console", state: "input-streaming" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "tool-run_console", state: "input-streaming" }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
-
-  it("returns false when a tool part is output-streaming", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "tool-run_console", state: "output-streaming" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "tool-run_console", state: "output-streaming" }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
-
-  it("returns true when a tool part state is output-available (settled)", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [
-          {
-            type: "tool-run_console",
-            state: "output-available",
-            input: { query: "SELECT 1" },
-            output: { success: true },
-          },
-        ],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [
-          {
-            type: "tool-run_console",
-            state: "output-available",
-            input: { query: "SELECT 1" },
-            output: { success: true },
-          },
-        ],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(true);
-  });
-
-  it("returns false when tool part state transitions", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "tool-run_console", state: "input-available" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "tool-run_console", state: "output-available" }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
-
-  it("returns true when reasoning text length is unchanged", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "reasoning", text: "Let me think..." }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "reasoning", text: "Let me think..." }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(true);
-  });
-
-  it("returns false when reasoning text grows (streaming)", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "reasoning", text: "Let me" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "reasoning", text: "Let me think about this..." }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
-
-  it("skips re-render for completed messages when another message streams", () => {
-    // This is the key regression scenario: a completed user message should NOT
-    // re-render when the assistant message below it is streaming.
-    const prev = makeProps({
-      message: {
-        id: "user-1",
-        role: "user",
-        parts: [{ type: "text", text: "What tables exist?" }],
-      },
-      isLastMessage: false,
-      isStreaming: true,
-    });
-    const next = makeProps({
-      message: {
-        id: "user-1",
-        role: "user",
-        parts: [{ type: "text", text: "What tables exist?" }],
-      },
-      isLastMessage: false,
-      isStreaming: true,
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(true);
-  });
-
-  it("returns true when onToolClick reference changes (not compared)", () => {
+  it("returns false when onToolClick reference changes", () => {
     const prev = makeProps({ onToolClick: () => {} });
     const next = makeProps({ onToolClick: () => {} });
+    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
+  });
+
+  it("skips re-render when a completed user message keeps its ref across streaming ticks", () => {
+    // The AI SDK's replaceMessage only clones messages[last]; earlier
+    // messages retain their references across ticks. So completed messages
+    // (e.g. the user prompt) correctly skip re-rendering while the assistant
+    // streams below them.
+    //
+    // Chat.tsx uses `useCallback` to keep `onToolClick` stable across renders,
+    // which is what makes this skip safe — all other prop references match too.
+    const sharedUserMessage = {
+      id: "user-1",
+      role: "user",
+      parts: [{ type: "text", text: "What tables exist?" }],
+    };
+    const stableOnToolClick = () => {};
+    const prev = makeProps({
+      message: sharedUserMessage,
+      onToolClick: stableOnToolClick,
+      isLastMessage: false,
+      isStreaming: true,
+    });
+    const next = makeProps({
+      message: sharedUserMessage,
+      onToolClick: stableOnToolClick,
+      isLastMessage: false,
+      isStreaming: true,
+    });
     expect(chatMessageRowArePropsEqual(prev, next)).toBe(true);
   });
 
-  it("returns false when text content changes but length stays the same", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "text", text: "AAAA" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "text", text: "BBBB" }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
-  });
+  it("REGRESSION: returns false even when mutated-in-place content appears equal", () => {
+    // Simulates the AI SDK bug surface: the raw message object is mutated
+    // in-place between chunks (text grows), and the "clone" of that raw
+    // message is compared against it. A content-based comparator would
+    // incorrectly see them as identical because both reflect the latest
+    // mutated state. Reference inequality must trigger re-render regardless.
+    const rawMessage = {
+      id: "msg-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "Hel" }],
+    };
 
-  it("returns false when reasoning content changes but length stays the same", () => {
-    const prev = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "reasoning", text: "Plan A" }],
-      },
-    });
-    const next = makeProps({
-      message: {
-        id: "msg-1",
-        role: "assistant",
-        parts: [{ type: "reasoning", text: "Plan B" }],
-      },
-    });
-    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
+    const prevProps = makeProps({ message: rawMessage });
+
+    // First render happened with rawMessage. Now AI SDK mutates it in place:
+    rawMessage.parts[0].text = "Hello world, streaming in progress...";
+
+    // Next render uses a clone of the now-mutated state:
+    const cloneMessage = {
+      id: rawMessage.id,
+      role: rawMessage.role,
+      parts: rawMessage.parts.map(p => ({ ...p })),
+    };
+    const nextProps = makeProps({ message: cloneMessage });
+
+    // Content is identical. Reference is different. Must re-render.
+    expect(chatMessageRowArePropsEqual(prevProps, nextProps)).toBe(false);
   });
 });
 
 // ── Structural regression guards ─────────────────────────────
 // These tests read the Chat.tsx source and verify critical patterns
 // are present, catching regressions that slip past runtime tests.
+
+// ── StreamingToolCard comparator ────────────────────────────
+//
+// Contract: value-based comparison so completed (terminal-state) tool
+// cards skip re-render when useChat's `replaceMessage` hands us fresh
+// `structuredClone`d `input` / `output` references every tick while text
+// streams below them. A previous reference-equality comparator caused
+// completed tool cards to feel unresponsive (~20 re-renders/sec during a
+// streaming text reply).
+
+describe("StreamingToolCard memo comparator", () => {
+  // React.memo stores the custom comparator on `.compare`.
+  const compare = (StreamingToolCard as any).compare as (
+    prev: Record<string, unknown>,
+    next: Record<string, unknown>,
+  ) => boolean;
+
+  function baseProps(over: Record<string, unknown> = {}) {
+    return {
+      toolCallId: "tool-1",
+      toolName: "run_console",
+      state: "output-available",
+      input: { query: "SELECT 1" },
+      output: { success: true, rowCount: 1 },
+      onDetailClick: () => {},
+      ...over,
+    };
+  }
+
+  it("exposes a custom comparator (React.memo with areEqual)", () => {
+    expect(typeof compare).toBe("function");
+  });
+
+  it("skips re-render when a completed tool card's input/output refs churn", () => {
+    // useChat clones the message every tick → input / output get new refs
+    // even though their contents are immutable for terminal states.
+    const prev = baseProps();
+    const next = baseProps({
+      input: { query: "SELECT 1" }, // same content, new ref
+      output: { success: true, rowCount: 1 }, // same content, new ref
+    });
+    expect(compare(prev, next)).toBe(true);
+  });
+
+  it("re-renders when an active input-streaming tool's streamed field grows", () => {
+    const prev = baseProps({
+      state: "input-streaming",
+      input: { query: "SELECT" },
+      output: undefined,
+    });
+    const next = baseProps({
+      state: "input-streaming",
+      input: { query: "SELECT 1" },
+      output: undefined,
+    });
+    expect(compare(prev, next)).toBe(false);
+  });
+
+  it("re-renders when state transitions (e.g. input-streaming → output-available)", () => {
+    const prev = baseProps({
+      state: "input-streaming",
+      input: { query: "SELECT 1" },
+      output: undefined,
+    });
+    const next = baseProps({
+      state: "output-available",
+      input: { query: "SELECT 1" },
+      output: { success: true, rowCount: 1 },
+    });
+    expect(compare(prev, next)).toBe(false);
+  });
+
+  it("re-renders when toolCallId changes (defensive — keys normally catch this)", () => {
+    const prev = baseProps({ toolCallId: "tool-1" });
+    const next = baseProps({ toolCallId: "tool-2" });
+    expect(compare(prev, next)).toBe(false);
+  });
+
+  it("skips re-render when input and output references are identical", () => {
+    const sharedInput = { query: "SELECT 1" };
+    const sharedOutput = { success: true, rowCount: 1 };
+    const prev = baseProps({
+      state: "input-available",
+      input: sharedInput,
+      output: sharedOutput,
+    });
+    const next = baseProps({
+      state: "input-available",
+      input: sharedInput,
+      output: sharedOutput,
+    });
+    expect(compare(prev, next)).toBe(true);
+  });
+});
 
 describe("Chat.tsx structural guards", () => {
   const chatSource = fs.readFileSync(
@@ -329,6 +276,8 @@ describe("Chat.tsx structural guards", () => {
   );
 
   it("useChat has experimental_throttle configured", () => {
+    // Without a throttle, reference-equality re-renders would fire on every
+    // SSE chunk (~30/s) and make the UI unresponsive.
     expect(chatSource).toMatch(/experimental_throttle\s*:\s*\d+/);
   });
 
@@ -337,7 +286,6 @@ describe("Chat.tsx structural guards", () => {
   });
 
   it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
-    // The old pattern: useEffect depending on messages that calls scrollIntoView
     const diyScrollPattern =
       /useEffect\(\s*\(\)\s*=>\s*\{[^}]*scrollIntoView[^}]*\}\s*,\s*\[messages\]\)/s;
     expect(chatSource).not.toMatch(diyScrollPattern);
@@ -349,5 +297,36 @@ describe("Chat.tsx structural guards", () => {
 
   it("does NOT have rafIdRef (old DIY scroll coalescing)", () => {
     expect(chatSource).not.toContain("rafIdRef");
+  });
+
+  it("keys tool parts by toolCallId so completed cards don't remount", () => {
+    // Remounting a finished tool card on every parts-array mutation drops
+    // its internal expand/scroll state and causes a flicker. Keying by
+    // toolCallId keeps identity stable across reorders/inserts.
+    expect(chatSource).toMatch(/key=\{\s*key\s*\}/);
+    expect(chatSource).toMatch(/`tool-\$\{toolCallId\}`/);
+  });
+});
+
+describe("StreamingMarkdown structural guards", () => {
+  const sdSource = fs.readFileSync(
+    path.resolve(__dirname, "../StreamingMarkdown.tsx"),
+    "utf-8",
+  );
+
+  it('does NOT force mode="static" on Streamdown', () => {
+    // Streamdown's default mode is "streaming", which already splits content
+    // into memoized blocks so only the last (growing) block re-renders per
+    // chunk. Forcing static duplicates that work and defeats per-block memo.
+    expect(sdSource).not.toMatch(/mode\s*=\s*["']static["']/);
+  });
+
+  it("does NOT import remend directly (Streamdown handles it internally)", () => {
+    expect(sdSource).not.toMatch(/from\s+["']remend["']/);
+  });
+
+  it("forwards isAnimating to Streamdown", () => {
+    // Lets Streamdown treat the trailing block as incomplete while streaming.
+    expect(sdSource).toMatch(/isAnimating=\{isStreaming\}/);
   });
 });

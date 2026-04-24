@@ -593,9 +593,12 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
 
   const reasoningGroups = computeReasoningGroups(parts);
 
+  const lastPartIndex = parts.length - 1;
   const lastPart = parts.at(-1);
   const isLastPartReasoning =
     isLastMessage && isStreamingNow && lastPart?.type === "reasoning";
+  const isLastPartText =
+    isLastMessage && isStreamingNow && lastPart?.type === "text";
 
   let lastGroupStart = -1;
   for (const [start] of reasoningGroups) {
@@ -626,16 +629,24 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                       (part.errorText as string | undefined) ?? "Tool failed",
                   }
                 : part.output;
+            const toolCallId = (part.toolCallId as string) || "";
+            // Key by toolCallId when available so reordering/insertion in the
+            // parts array doesn't remount completed tool cards. Falls back to
+            // a type+index tag for the (rare) case where toolCallId is missing.
+            const key = toolCallId
+              ? `tool-${toolCallId}`
+              : `tool-idx-${partIndex}`;
             return (
               <StreamingToolCard
-                key={partIndex}
+                key={key}
+                toolCallId={toolCallId}
                 toolName={toolName}
                 state={cardState}
                 input={part.input}
                 output={cardOutput}
                 onDetailClick={() =>
                   onToolClick({
-                    toolCallId: (part.toolCallId as string) || "",
+                    toolCallId,
                     toolName: toolName || "",
                     state: part.state as ToolInvocationInfo["state"],
                     input: part.input,
@@ -662,8 +673,17 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
           }
 
           if (partType === "text" && (part as { text?: string }).text) {
+            // Only the trailing text block of the actively streaming
+            // message is still growing — flag it so Streamdown knows to
+            // treat its last markdown block as incomplete. All earlier
+            // text blocks are static and can skip animation entirely.
+            const isTrailingStreamingText =
+              isLastPartText && partIndex === lastPartIndex;
             return (
-              <StreamingMarkdown key={partIndex}>
+              <StreamingMarkdown
+                key={`text-${partIndex}`}
+                isStreaming={isTrailingStreamingText}
+              >
                 {(part as { text: string }).text}
               </StreamingMarkdown>
             );

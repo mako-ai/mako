@@ -56,6 +56,14 @@ interface StreamingToolCardProps {
   input?: unknown;
   output?: unknown;
   onDetailClick?: () => void;
+  /**
+   * Optional — used as a defensive check in the memo comparator so that
+   * React re-renders if the underlying tool call identity actually changed.
+   * In practice parents also use this as the React key, so unmount/remount
+   * handles identity changes, but comparing here keeps memoization safe if
+   * the key strategy ever regresses.
+   */
+  toolCallId?: string;
 }
 
 const ICON_SIZE = 13;
@@ -211,6 +219,32 @@ const pulseKf = keyframes`
 `;
 
 // ── Component ────────────────────────────────────────────────
+
+// Terminal states: once the tool call reaches one of these, `input` and
+// `output` are immutable. useChat's `experimental_throttle` still hands us
+// fresh cloned `input` / `output` object references on every tick while the
+// active assistant message streams below, but the contents never change —
+// so a reference-equality memo comparator (like we had before) would
+// needlessly re-render every already-completed card ~20×/sec and make them
+// feel unresponsive (scroll jitters, expand toggle lags). Checking state is
+// enough to bail out here because the parent also uses `toolCallId` as the
+// React key, so a truly different tool call would remount and reset memo.
+const TERMINAL_TOOL_STATES = new Set<ToolPartState>([
+  "output-available",
+  "error",
+]);
+
+function toolInputSignature(input: unknown): string {
+  // Only called while the tool is still active (non-terminal state), so the
+  // payload is small (just the fields being streamed into). JSON.stringify
+  // is plenty fast here and gives us stable value equality across clones.
+  try {
+    return JSON.stringify(input ?? null);
+  } catch {
+    // Circular / non-serializable → conservatively force a re-render.
+    return `__unserializable_${Math.random()}`;
+  }
+}
 
 export const StreamingToolCard = React.memo(
   function StreamingToolCard({
@@ -500,9 +534,29 @@ export const StreamingToolCard = React.memo(
       </Box>
     );
   },
-  (prev, next) =>
-    prev.toolName === next.toolName &&
-    prev.state === next.state &&
-    prev.input === next.input &&
-    prev.output === next.output,
+  (prev, next) => {
+    // Defensive: if the logical tool call changed, always re-render. In the
+    // normal case the parent keys by toolCallId so this branch is dead, but
+    // it protects us if the key strategy ever regresses.
+    if (prev.toolCallId !== next.toolCallId) return false;
+    if (prev.toolName !== next.toolName) return false;
+    if (prev.state !== next.state) return false;
+
+    // Terminal states are immutable. Even if useChat handed us new cloned
+    // references for `input` / `output` this tick, the contents are the
+    // same — skip the render.
+    if (TERMINAL_TOOL_STATES.has(next.state)) return true;
+
+    // Non-terminal (input-streaming / input-available / output-streaming):
+    // reference-equality first for the fast path, then fall back to value
+    // equality so growing streamed input fields still trigger re-renders.
+    if (prev.input === next.input && prev.output === next.output) return true;
+    if (toolInputSignature(prev.input) !== toolInputSignature(next.input)) {
+      return false;
+    }
+    if (toolInputSignature(prev.output) !== toolInputSignature(next.output)) {
+      return false;
+    }
+    return true;
+  },
 );
