@@ -56,8 +56,9 @@ export const scheduledQuerySchedulerFunction = inngest.createFunction(
     );
 
     for (const consoleDoc of dueConsoles) {
-      if (!consoleDoc.schedule?.cron || !consoleDoc.schedule?.timezone)
+      if (!consoleDoc.schedule?.cron || !consoleDoc.schedule?.timezone) {
         continue;
+      }
 
       const nextAt = getNextScheduledConsoleRunAt(consoleDoc.schedule, now);
       const updateResult = await step.run(
