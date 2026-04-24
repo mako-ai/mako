@@ -389,6 +389,21 @@ export interface ISavedConsole extends Document {
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
   access: ConsoleAccessLevel;
   owner_id: string;
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  scheduledRun?: {
+    nextAt?: Date;
+    lastAt?: Date;
+    lastStatus?: "success" | "error";
+    lastError?: string;
+    lastDurationMs?: number;
+    lastRowsAffected?: number;
+    lastRowCount?: number;
+    runCount: number;
+    consecutiveFailures: number;
+  };
   version: number;
   is_deleted?: boolean;
   deletedAt?: Date;
@@ -396,6 +411,26 @@ export interface ISavedConsole extends Document {
   updatedAt: Date;
   lastExecutedAt?: Date;
   executionCount: number;
+}
+
+export interface IScheduledQueryRun extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  consoleId: Types.ObjectId;
+  triggeredAt: Date;
+  startedAt?: Date;
+  completedAt?: Date;
+  status: "queued" | "running" | "success" | "error";
+  triggerType: "schedule" | "manual";
+  triggeredBy?: string;
+  durationMs?: number;
+  rowsAffected?: number;
+  rowCount?: number;
+  error?: {
+    message: string;
+    code?: string;
+  };
+  inngestRunId?: string;
 }
 
 /**
@@ -845,7 +880,7 @@ export interface IQueryExecution extends Document {
   consoleId?: Types.ObjectId; // If executed from a saved console
 
   // Execution context
-  source: "console_ui" | "api" | "agent" | "flow";
+  source: "console_ui" | "api" | "agent" | "flow" | "scheduled_query";
   databaseType: string; // postgresql, mongodb, bigquery, etc.
   queryLanguage: "sql" | "mongodb" | "javascript";
 
@@ -1361,6 +1396,48 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: String,
       ref: "User",
     },
+    schedule: {
+      cron: {
+        type: String,
+        trim: true,
+      },
+      timezone: {
+        type: String,
+        trim: true,
+      },
+    },
+    scheduledRun: {
+      nextAt: {
+        type: Date,
+      },
+      lastAt: {
+        type: Date,
+      },
+      lastStatus: {
+        type: String,
+        enum: ["success", "error"],
+      },
+      lastError: {
+        type: String,
+      },
+      lastDurationMs: {
+        type: Number,
+      },
+      lastRowsAffected: {
+        type: Number,
+      },
+      lastRowCount: {
+        type: Number,
+      },
+      runCount: {
+        type: Number,
+        default: 0,
+      },
+      consecutiveFailures: {
+        type: Number,
+        default: 0,
+      },
+    },
     lastExecutedAt: {
       type: Date,
     },
@@ -1391,6 +1468,10 @@ SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
 SavedConsoleSchema.index({ workspaceId: 1, access: 1, owner_id: 1 }); // Console access model queries
+SavedConsoleSchema.index(
+  { workspaceId: 1, "scheduledRun.nextAt": 1 },
+  { sparse: true },
+);
 SavedConsoleSchema.index(
   { name: "text", description: "text" },
   { name: "console_text_search" },
@@ -2199,7 +2280,7 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
     // Execution context
     source: {
       type: String,
-      enum: ["console_ui", "api", "agent", "flow"],
+      enum: ["console_ui", "api", "agent", "flow", "scheduled_query"],
       required: true,
     },
     databaseType: { type: String, required: true },
@@ -2234,6 +2315,80 @@ QueryExecutionSchema.index({ userId: 1, executedAt: -1 }); // Per-user analytics
 QueryExecutionSchema.index({ apiKeyId: 1, executedAt: -1 }, { sparse: true }); // API key usage
 QueryExecutionSchema.index({ workspaceId: 1, status: 1 }); // Error rate monitoring
 QueryExecutionSchema.index({ executedAt: 1 }, { expireAfterSeconds: 7776000 }); // TTL: 90 days
+
+const ScheduledQueryRunSchema = new Schema<IScheduledQueryRun>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    consoleId: {
+      type: Schema.Types.ObjectId,
+      ref: "SavedConsole",
+      required: true,
+    },
+    triggeredAt: {
+      type: Date,
+      required: true,
+      default: Date.now,
+    },
+    startedAt: {
+      type: Date,
+    },
+    completedAt: {
+      type: Date,
+    },
+    status: {
+      type: String,
+      enum: ["queued", "running", "success", "error"],
+      required: true,
+    },
+    triggerType: {
+      type: String,
+      enum: ["schedule", "manual"],
+      required: true,
+    },
+    triggeredBy: {
+      type: String,
+      ref: "User",
+    },
+    durationMs: {
+      type: Number,
+    },
+    rowsAffected: {
+      type: Number,
+    },
+    rowCount: {
+      type: Number,
+    },
+    error: {
+      message: {
+        type: String,
+      },
+      code: {
+        type: String,
+      },
+    },
+    inngestRunId: {
+      type: String,
+    },
+  },
+  {
+    collection: "scheduled_query_runs",
+    timestamps: false,
+  },
+);
+
+ScheduledQueryRunSchema.index({
+  workspaceId: 1,
+  consoleId: 1,
+  triggeredAt: -1,
+});
+ScheduledQueryRunSchema.index(
+  { completedAt: 1 },
+  { sparse: true, expireAfterSeconds: 7776000 },
+);
 
 export interface IMaterializationRun extends Document {
   workspaceId: Types.ObjectId;
@@ -2975,6 +3130,10 @@ export const BigQueryCdcState = CdcEntityState;
 export const QueryExecution = mongoose.model<IQueryExecution>(
   "QueryExecution",
   QueryExecutionSchema,
+);
+export const ScheduledQueryRun = mongoose.model<IScheduledQueryRun>(
+  "ScheduledQueryRun",
+  ScheduledQueryRunSchema,
 );
 export const MaterializationRun = mongoose.model<IMaterializationRun>(
   "MaterializationRun",

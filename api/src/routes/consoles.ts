@@ -11,6 +11,7 @@ import {
   IDatabaseConnection,
   EntityVersion,
   type ISavedConsole,
+  ScheduledQueryRun,
 } from "../database/workspace-schema";
 import { User } from "../database/schema";
 import { workspaceService } from "../services/workspace.service";
@@ -39,6 +40,12 @@ import {
   getVersion,
   getUserDisplayName,
 } from "../services/entity-version.service";
+import { inngest } from "../inngest";
+import { requireWorkspaceAdmin } from "../middleware/workspace-admin.middleware";
+import {
+  getNextScheduledConsoleRunAt,
+  validateScheduledConsoleSchedule,
+} from "../services/scheduled-query-schedule.service";
 
 /**
  * Map console language to query language for tracking
@@ -149,6 +156,9 @@ async function verifyWorkspaceAccess(
 
   return null;
 }
+
+consoleRoutes.use("/:id/schedule", requireWorkspaceAdmin);
+consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
 consoleRoutes.get("/", async (c: Context) => {
@@ -274,6 +284,8 @@ consoleRoutes.get("/content", async (c: Context) => {
       owner_id: ownerId,
       ownerDisplayName,
       readOnly,
+      schedule: fullConsole?.schedule,
+      scheduledRun: fullConsole?.scheduledRun,
     });
   } catch (error) {
     logger.error("Error fetching console content", {
@@ -286,6 +298,213 @@ consoleRoutes.get("/content", async (c: Context) => {
         error: error instanceof Error ? error.message : "Console not found",
       },
       404,
+    );
+  }
+});
+
+consoleRoutes.put("/:id/schedule", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const body = await c.req.json();
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    const savedConsole = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+      $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
+    });
+
+    if (!savedConsole) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    const schedule = validateScheduledConsoleSchedule({
+      cron: body?.cron,
+      timezone: body?.timezone,
+    });
+    const nextAt = getNextScheduledConsoleRunAt(schedule);
+
+    if (typeof body?.name === "string" && body.name.trim()) {
+      savedConsole.name = body.name.trim();
+    }
+
+    savedConsole.schedule = schedule;
+    savedConsole.scheduledRun = {
+      nextAt,
+      lastAt: savedConsole.scheduledRun?.lastAt,
+      lastStatus: savedConsole.scheduledRun?.lastStatus,
+      lastError: savedConsole.scheduledRun?.lastError,
+      lastDurationMs: savedConsole.scheduledRun?.lastDurationMs,
+      lastRowsAffected: savedConsole.scheduledRun?.lastRowsAffected,
+      lastRowCount: savedConsole.scheduledRun?.lastRowCount,
+      runCount: savedConsole.scheduledRun?.runCount ?? 0,
+      consecutiveFailures: savedConsole.scheduledRun?.consecutiveFailures ?? 0,
+    };
+    savedConsole.isSaved = true;
+    await savedConsole.save();
+
+    return c.json({
+      success: true,
+      schedule: savedConsole.schedule,
+      scheduledRun: savedConsole.scheduledRun,
+      console: {
+        id: savedConsole._id.toString(),
+        name: savedConsole.name,
+      },
+    });
+  } catch (error) {
+    logger.error("Error updating console schedule", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to update console schedule",
+      },
+      500,
+    );
+  }
+});
+
+consoleRoutes.delete("/:id/schedule", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    const savedConsole = await SavedConsole.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      },
+      {
+        $unset: {
+          schedule: 1,
+          "scheduledRun.nextAt": 1,
+        },
+      },
+      { new: true },
+    );
+
+    if (!savedConsole) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error removing console schedule", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to remove console schedule",
+      },
+      500,
+    );
+  }
+});
+
+consoleRoutes.post("/:id/schedule/run", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const user = c.get("user");
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    const savedConsole = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    }).select("_id");
+
+    if (!savedConsole) {
+      return c.json({ success: false, error: "Console not found" }, 404);
+    }
+
+    const eventId = await inngest.send({
+      name: "scheduled_query/execute",
+      data: {
+        workspaceId,
+        consoleId,
+        triggerType: "manual",
+        triggeredBy: user?.id,
+      },
+    });
+
+    return c.json({ success: true, eventId });
+  } catch (error) {
+    logger.error("Error triggering scheduled console run", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to trigger scheduled query run",
+      },
+      500,
+    );
+  }
+});
+
+consoleRoutes.get("/:id/schedule/runs", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const consoleId = c.req.param("id");
+    const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
+
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return c.json({ success: false, error: "Invalid console ID" }, 400);
+    }
+
+    const runs = await ScheduledQueryRun.find({
+      workspaceId: new Types.ObjectId(workspaceId),
+      consoleId: new Types.ObjectId(consoleId),
+    })
+      .sort({ triggeredAt: -1 })
+      .limit(limit)
+      .lean();
+
+    return c.json({
+      success: true,
+      runs: runs.map(run => ({
+        id: run._id.toString(),
+        triggeredAt: run.triggeredAt,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        status: run.status,
+        triggerType: run.triggerType,
+        triggeredBy: run.triggeredBy,
+        durationMs: run.durationMs,
+        rowsAffected: run.rowsAffected,
+        rowCount: run.rowCount,
+        error: run.error,
+        inngestRunId: run.inngestRunId,
+      })),
+    });
+  } catch (error) {
+    logger.error("Error listing scheduled console runs", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to list scheduled query runs",
+      },
+      500,
     );
   }
 });

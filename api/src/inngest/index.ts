@@ -21,6 +21,10 @@ import {
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { usageReportingFunction } from "./functions/usage-reporting";
 import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
+import {
+  scheduledQueryExecutorFunction,
+  scheduledQuerySchedulerFunction,
+} from "./functions/scheduled-query";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -33,6 +37,7 @@ const baseFunctions = [
   cleanupAbandonedMaterializationRunsFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
+  scheduledQueryExecutorFunction,
 ];
 
 const allWebhookFunctions = [
@@ -67,6 +72,7 @@ export function getFunctions() {
         ...webhookFunctions,
         flowSchedulerFunction,
         dashboardSchedulerFunction,
+        scheduledQuerySchedulerFunction,
       ];
 
   return _functions;
@@ -114,4 +120,6 @@ export {
   cleanupAbandonedMaterializationRunsFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
+  scheduledQueryExecutorFunction,
+  scheduledQuerySchedulerFunction,
 };

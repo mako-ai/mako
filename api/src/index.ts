@@ -41,6 +41,7 @@ import { billingRoutes } from "./routes/billing";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
+import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -119,6 +120,10 @@ app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
+app.route(
+  "/api/workspaces/:workspaceId/scheduled-queries",
+  scheduledQueryRoutes,
+);
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);

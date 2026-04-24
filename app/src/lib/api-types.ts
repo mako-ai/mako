@@ -23,6 +23,21 @@ export interface ConsoleContentResponse {
   access?: "private" | "workspace";
   owner_id?: string;
   readOnly?: boolean;
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  scheduledRun?: {
+    nextAt?: string;
+    lastAt?: string;
+    lastStatus?: "success" | "error";
+    lastError?: string;
+    lastDurationMs?: number;
+    lastRowsAffected?: number;
+    lastRowCount?: number;
+    runCount: number;
+    consecutiveFailures: number;
+  };
 }
 
 export interface ConsoleSaveResponse {
@@ -58,6 +73,66 @@ export interface ConsoleListResponse {
 export interface ConsoleDeleteResponse {
   success: boolean;
   error?: string;
+}
+
+export interface ScheduledQueryRunItem {
+  id: string;
+  triggeredAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  status: "queued" | "running" | "success" | "error";
+  triggerType: "schedule" | "manual";
+  triggeredBy?: string;
+  durationMs?: number;
+  rowsAffected?: number;
+  rowCount?: number;
+  error?: {
+    message: string;
+    code?: string;
+  };
+  inngestRunId?: string;
+}
+
+export interface ScheduledQueryRunsResponse {
+  success: boolean;
+  runs: ScheduledQueryRunItem[];
+  error?: string;
+}
+
+export interface ScheduledQueryScheduleResponse {
+  success: boolean;
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  scheduledRun?: ConsoleContentResponse["scheduledRun"];
+  console?: {
+    id: string;
+    name: string;
+  };
+  eventId?: string;
+  error?: string;
+}
+
+export interface ScheduledQueryListItem {
+  id: string;
+  name: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  scheduledRun?: ConsoleContentResponse["scheduledRun"];
+  access?: "private" | "workspace";
+  owner_id?: string;
+  updatedAt?: string;
+}
+
+export interface ScheduledQueryListResponse {
+  success: boolean;
+  scheduledQueries: ScheduledQueryListItem[];
 }
 
 // ==================== Query Execution Endpoints ====================
