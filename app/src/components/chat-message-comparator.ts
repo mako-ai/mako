@@ -21,12 +21,27 @@ export interface ChatMessageRowProps {
 /**
  * Determines whether a ChatMessageRow can skip re-rendering.
  *
- * Returns `true` (skip render) only when:
- * - `isLastMessage` and `isStreaming` are unchanged, AND
- * - the message reference is identical, OR every part matches by
- *   type, state, and — for text/reasoning parts — exact string content.
+ * Returns `true` (skip render) only when every prop reference is identical.
  *
- * Streaming parts (`input-streaming`, `output-streaming`) always re-render.
+ * ⚠️  Why reference equality and NOT deep content comparison:
+ *
+ * The AI SDK's first streaming chunk uses `pushMessage`, which stores the
+ * RAW mutable message reference in `messages[last]`. Later chunks call
+ * `replaceMessage`, which does `structuredClone(message)` — producing a
+ * fresh clone each time. But React.memo's "prev props" are seeded on the
+ * FIRST render (with the RAW reference). Subsequent deltas keep mutating
+ * that raw object in place (`part.text += chunk.delta`).
+ *
+ * A content-based comparator would see `prev.message` (RAW, mutated to
+ * the current state) and `next.message` (latest clone, also current state)
+ * as equal and permanently skip rendering — so text only "appears" when
+ * isStreaming flips to false at the end.
+ * See `node_modules/@ai-sdk/react/dist/index.mjs` — `ReactChatState.pushMessage`.
+ *
+ * Reference equality sidesteps this entirely: `structuredClone` produces a
+ * new reference on every chunk, so the comparator correctly schedules a
+ * re-render. We rely on `experimental_throttle` in `useChat` to batch these
+ * into ~20 renders/sec, keeping scroll and hover responsive.
  */
 export function chatMessageRowArePropsEqual(
   prev: ChatMessageRowProps,
@@ -35,26 +50,6 @@ export function chatMessageRowArePropsEqual(
   if (prev.paletteMode !== next.paletteMode) return false;
   if (prev.isLastMessage !== next.isLastMessage) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
-  if (prev.message === next.message) return true;
-
-  const prevParts = prev.message.parts || [];
-  const nextParts = next.message.parts || [];
-  if (prevParts.length !== nextParts.length) return false;
-
-  for (let i = 0; i < nextParts.length; i++) {
-    const pp = prevParts[i];
-    const np = nextParts[i];
-    if (pp.type !== np.type) return false;
-    if (pp.state !== np.state) return false;
-    if (np.state === "input-streaming" || np.state === "output-streaming") {
-      return false;
-    }
-    if (pp.type === "text" || pp.type === "reasoning") {
-      if ((pp as { text?: string }).text !== (np as { text?: string }).text) {
-        return false;
-      }
-    }
-  }
-
-  return true;
+  if (prev.onToolClick !== next.onToolClick) return false;
+  return prev.message === next.message;
 }
