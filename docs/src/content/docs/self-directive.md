@@ -41,3 +41,8 @@ Typical self-directive content:
 4. Next conversation, agent reads self-directive → already knows the quirk → skips re-discovery
 
 This means the agent gets faster and more accurate over time for recurring work in the same workspace.
+
+## Related: Skills
+
+The self-directive is always loaded. For playbooks that should only fire under specific conditions, use [Skills](/skills/) — named, workspace-scoped procedures that Mako retrieves on demand based on a trigger phrase and entity/semantic match.
+
