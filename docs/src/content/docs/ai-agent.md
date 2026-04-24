@@ -70,6 +70,20 @@ Mako learns your database over time. When it discovers that your `created_at` co
 
 This persists across all conversations. The more you use Mako, the less explaining you need to do.
 
+
+## Targeted Playbooks (Skills)
+
+Beyond the always-on self-directive, Mako supports **skills** — named, workspace-scoped playbooks that load only when their trigger fires. Good for per-country queries, multi-step procedures, or rare schema gotchas that shouldn't clutter the always-on memory.
+
+| Tool            | What It Does                                                |
+| --------------- | ----------------------------------------------------------- |
+| `save_skill`    | Create or overwrite a named playbook                        |
+| `delete_skill`  | Retract a skill that turned out to be wrong                 |
+| `load_skill`    | Explicitly load a skill mid-turn when the index hints at it |
+| `search_skills` | Free-text fallback when the auto-injected index misses      |
+
+Every turn, Mako injects a compact index of every skill plus the top-3 auto-retrieved bodies (entity overlap 0.6 + semantic similarity 0.4). See [Skills](/skills/) for the full model, admin UI, and REST API.
+
 ## Multi-Agent Architecture
 
 Different contexts activate different specialized agents:
