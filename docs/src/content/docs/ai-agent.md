@@ -110,6 +110,15 @@ Key capabilities:
 
 The agent handles edit-mode locking, so concurrent users cannot conflict.
 
+## Version-Aware Tools
+
+All agents have access to two shared tools for inspecting the history of saved consoles and dashboards:
+
+- `browse_version_history` — list past versions of a console or dashboard with author, timestamp, and comment.
+- `get_version_snapshot` — fetch the full snapshot of a specific version.
+
+Both are workspace-scoped. See [Version History](/version-history/).
+
 ## AI Models
 
 Mako routes all AI requests through the **Vercel AI Gateway**, which provides access to 180+ models across Anthropic, OpenAI, Google, DeepSeek, and others. Only `AI_GATEWAY_API_KEY` is required — no individual provider API keys needed.

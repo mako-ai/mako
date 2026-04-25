@@ -36,6 +36,10 @@ Open the chat panel and describe what you want. The agent will:
 
 Consoles can be organized into folders. Use the sidebar tree to drag and arrange.
 
+### Version History
+
+Every save of a console creates an immutable version record. Open the history panel from the editor to browse past versions, preview them, and restore with one click. Full details: [Version History](/version-history/).
+
 ## Console API
 
 Saved consoles can be executed programmatically. This is useful for building dashboards, automations, or integrations on top of your queries.
