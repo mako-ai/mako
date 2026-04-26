@@ -181,7 +181,7 @@ function GuideNav() {
               Documentation
             </Link>
             <Link
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-zinc-900 dark:hover:text-white transition-colors"
             >
               GitHub

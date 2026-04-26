@@ -287,7 +287,7 @@ export default function RevOpsLandingPage() {
               <ul className="space-y-2">
                 <li>
                   <a
-                    href="https://github.com/mako-ai/mono"
+                    href="https://github.com/mako-ai/mako"
                     className="text-slate-400 hover:text-white transition-colors"
                   >
                     GitHub

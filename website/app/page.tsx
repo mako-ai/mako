@@ -92,7 +92,7 @@ export default function Home() {
                 Documentation
               </Link>
               <Link
-                href="https://github.com/mako-ai/mono"
+                href="https://github.com/mako-ai/mako"
                 className="hover:text-zinc-900 dark:hover:text-white transition-colors"
               >
                 GitHub
@@ -163,7 +163,7 @@ export default function Home() {
               </svg>
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-8 py-4 border border-zinc-300 dark:border-white/20 font-semibold rounded-lg hover:bg-zinc-100 dark:hover:bg-white/5 transition-colors flex items-center justify-center gap-2"
             >
               <GitHubIcon className="w-5 h-5" />
@@ -241,7 +241,7 @@ export default function Home() {
               <div className="mt-6 flex items-center gap-2">
                 <GitHubIcon className="w-5 h-5 text-zinc-400 dark:text-zinc-500" />
                 <span className="text-sm text-zinc-400 dark:text-zinc-500">
-                  github.com/mako-ai/mono
+                  github.com/mako-ai/mako
                 </span>
               </div>
             </div>
@@ -693,7 +693,7 @@ export default function Home() {
               </svg>
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-10 py-5 border border-zinc-300 dark:border-zinc-700 font-bold text-lg rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
             >
               <GitHubIcon className="w-5 h-5" />
@@ -749,7 +749,7 @@ export default function Home() {
 
           <div className="flex items-center gap-6 text-sm text-zinc-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-zinc-900 dark:hover:text-white transition-colors"
             >
               GitHub

@@ -8,7 +8,7 @@ Mako is a TypeScript monorepo with three main packages: a React frontend, a Hono
 ## Repository Structure
 
 ```
-mono/
+mako/
 ├── app/           # React + Vite frontend
 ├── api/           # Hono API server (Node.js)
 ├── docs/          # Documentation (Astro Starlight)

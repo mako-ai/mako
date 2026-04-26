@@ -27,7 +27,7 @@ export default function V7VideoHero() {
               Features
             </Link>
             <Link
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub
@@ -58,7 +58,7 @@ export default function V7VideoHero() {
             </span>
             <span className="text-zinc-600">|</span>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
             >
               <GitHubIcon className="w-4 h-4" />
@@ -240,7 +240,7 @@ export default function V7VideoHero() {
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub

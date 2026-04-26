@@ -117,7 +117,7 @@ export default function BlogIndex() {
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-zinc-900 dark:hover:text-white transition-colors"
             >
               GitHub
@@ -170,7 +170,7 @@ function BlogNav() {
               Documentation
             </Link>
             <Link
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-zinc-900 dark:hover:text-white transition-colors"
             >
               GitHub
