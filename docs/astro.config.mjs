@@ -12,7 +12,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/mako-ai/mono",
+          href: "https://github.com/mako-ai/mako",
         },
       ],
       sidebar: [

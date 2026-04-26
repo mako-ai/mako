@@ -144,8 +144,8 @@ See the [docs](https://docs.mako.ai) for full GCS/S3 provisioning instructions.
 1. **Clone & Install**
 
    ```bash
-   git clone https://github.com/mako-ai/mono.git
-   cd mono
+   git clone https://github.com/mako-ai/mako.git
+   cd mako
    pnpm install
    ```
 
@@ -200,7 +200,7 @@ This IP is used by Mako's cloud service for all outbound database connections.
 ## 🤝 Community & Support
 
 - **Documentation**: [docs.mako.ai](https://docs.mako.ai)
-- **GitHub**: [mako-ai/mono](https://github.com/mako-ai/mono)
+- **GitHub**: [mako-ai/mako](https://github.com/mako-ai/mako)
 - **Website**: [mako.ai](https://mako.ai)
 
 ---

@@ -14,7 +14,7 @@ export default function V8TestimonialFocus() {
           </Link>
           <div className="flex items-center gap-4">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="text-sm text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors hidden sm:block"
             >
               GitHub
@@ -58,7 +58,7 @@ export default function V8TestimonialFocus() {
               Try It Free
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-8 py-3.5 border border-slate-300 dark:border-slate-700 font-semibold rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
             >
               <GitHubIcon className="w-5 h-5" />
@@ -250,7 +250,7 @@ export default function V8TestimonialFocus() {
           </div>
           <div className="flex items-center gap-6 text-sm text-slate-500">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-slate-900 dark:hover:text-white transition-colors"
             >
               GitHub

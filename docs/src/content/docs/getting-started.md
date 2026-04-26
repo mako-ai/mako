@@ -13,8 +13,8 @@ description: Set up Mako locally in 5 minutes.
 
 ```bash
 # Clone the repository
-git clone https://github.com/mako-ai/mono.git
-cd mono
+git clone https://github.com/mako-ai/mako.git
+cd mako
 
 # Install dependencies
 pnpm install
@@ -55,7 +55,7 @@ pnpm run dev
 ## Project Structure
 
 ```
-mono/
+mako/
 ├── app/           # React frontend (Vite)
 ├── api/           # Hono API server
 │   ├── src/

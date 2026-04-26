@@ -31,7 +31,7 @@ export default function V3TerminalAesthetic() {
                 --docs
               </Link>
               <Link
-                href="https://github.com/mako-ai/mono"
+                href="https://github.com/mako-ai/mako"
                 className="hover:text-white transition-colors"
               >
                 --source
@@ -127,7 +127,7 @@ export default function V3TerminalAesthetic() {
               flag="--oss"
               title="Fully Open Source"
               description="MIT licensed. Self-host it, fork it, contribute to it. Your data, your rules."
-              code="git clone https://github.com/mako-ai/mono && pnpm dev"
+              code="git clone https://github.com/mako-ai/mako && cd mako && pnpm dev"
             />
             <FeatureBlock
               flag="--fast"
@@ -284,7 +284,7 @@ export default function V3TerminalAesthetic() {
                 mako --start
               </a>
               <a
-                href="https://github.com/mako-ai/mono"
+                href="https://github.com/mako-ai/mako"
                 className="w-full sm:w-auto px-6 py-2 border border-[#30363d] text-[#c9d1d9] rounded hover:bg-[#21262d] transition-colors"
               >
                 git clone mako
@@ -300,7 +300,7 @@ export default function V3TerminalAesthetic() {
           <div>© 2025 mako • MIT License</div>
           <div className="flex items-center gap-6">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub

@@ -26,7 +26,7 @@ export default function V1MinimalDark() {
                 Pricing
               </Link>
               <Link
-                href="https://github.com/mako-ai/mono"
+                href="https://github.com/mako-ai/mako"
                 className="hover:text-white transition-colors"
               >
                 GitHub
@@ -85,7 +85,7 @@ export default function V1MinimalDark() {
               Start for free
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-white font-medium rounded-lg hover:bg-zinc-900 transition-colors flex items-center justify-center gap-2"
             >
               <GitHubIcon className="w-5 h-5" />
@@ -445,7 +445,7 @@ export default function V1MinimalDark() {
               Start for free
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-8 py-3 border border-zinc-800 text-white font-medium rounded-lg hover:bg-zinc-900 transition-colors"
             >
               Star on GitHub
@@ -465,7 +465,7 @@ export default function V1MinimalDark() {
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub

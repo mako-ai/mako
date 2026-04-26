@@ -18,7 +18,7 @@ export default function V5BentoGrid() {
           </div>
           <div className="flex items-center gap-4">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="text-sm text-neutral-400 hover:text-white transition-colors hidden sm:block"
             >
               GitHub
@@ -68,7 +68,7 @@ export default function V5BentoGrid() {
               Get Started Free
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-8 py-3.5 border border-neutral-700 text-white font-semibold rounded-full hover:bg-neutral-800 transition-colors flex items-center justify-center gap-2"
             >
               <GitHubIcon className="w-5 h-5" />
@@ -119,7 +119,7 @@ export default function V5BentoGrid() {
               <div className="mt-6 flex items-center gap-2">
                 <GitHubIcon className="w-5 h-5 text-neutral-500" />
                 <span className="text-sm text-neutral-500">
-                  github.com/mako-ai/mono
+                  github.com/mako-ai/mako
                 </span>
               </div>
             </div>
@@ -405,7 +405,7 @@ export default function V5BentoGrid() {
           </div>
           <div className="flex items-center gap-6 text-sm text-neutral-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub
