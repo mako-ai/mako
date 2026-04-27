@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:scan": "VITE_REACT_SCAN=true VITE_RENDER_DEBUG=true vite",
     "build": "pnpm run lint && tsc --noEmit && vite build",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit",

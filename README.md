@@ -187,15 +187,28 @@ This IP is used by Mako's cloud service for all outbound database connections.
 
 ## 💻 Development Commands
 
-| Command              | Description                                 |
-| -------------------- | ------------------------------------------- |
-| `pnpm run dev`       | Start API, frontend, and Inngest dev server |
-| `pnpm run sync`      | Run the interactive sync tool               |
-| `pnpm run migrate`   | Run database migrations                     |
-| `pnpm run docker:up` | Start MongoDB and other services            |
-| `pnpm run test`      | Run test suite                              |
-| `pnpm run build`     | Build all packages                          |
-| `pnpm run docs:dev`  | Start documentation site locally            |
+| Command                 | Description                                                   |
+| ----------------------- | ------------------------------------------------------------- |
+| `pnpm run dev`          | Start API, frontend, and Inngest dev server                   |
+| `pnpm run app:dev:scan` | Start the frontend with React Scan and render debug logging   |
+| `pnpm run sync`         | Run the interactive sync tool                                 |
+| `pnpm run migrate`      | Run database migrations                                       |
+| `pnpm run docker:up`    | Start MongoDB and other services                              |
+| `pnpm run test`         | Run test suite                                                |
+| `pnpm run build`        | Build all packages                                            |
+| `pnpm run docs:dev`     | Start documentation site locally                              |
+
+## 🔎 React Performance Profiling
+
+Use React Scan when working on render churn, streaming chat responsiveness, Monaco console performance, or explorer/result table interactions:
+
+```bash
+pnpm run app:dev:scan
+```
+
+This enables the React Scan Vite plugin via `VITE_REACT_SCAN=true` and turns on Mako's render-debug logs via `VITE_RENDER_DEBUG=true`. React Scan highlights components that re-render in the browser, while render-debug logs summarize why hot components such as `Chat`, `ResourceTree`, `Console`, and `ResultsTable` changed.
+
+Keep React Scan off during normal development. The plugin and debug hooks are gated behind env flags so regular `pnpm run app:dev` runs without profiling overlays or extra debug logging.
 
 ## 🤝 Community & Support
 
