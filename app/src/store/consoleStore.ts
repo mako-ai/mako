@@ -5,6 +5,7 @@ import { apiClient } from "../lib/api-client";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
+import { logRenderDebug, renderDebugEnabled } from "../utils/renderDebug";
 import type { ConsoleTab, SettingsSection, TabKind } from "./lib/types";
 import type {
   ConsoleContentResponse,
@@ -254,6 +255,7 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       setActiveTab: id =>
         set(state => {
+          if (state.activeTabId === id) return;
           state.activeTabId = id;
         }),
 
@@ -277,6 +279,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.content === content) return;
             tab.content = content;
           }
         }),
@@ -285,6 +288,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.title === title) return;
             tab.title = title;
           }
         }),
@@ -293,6 +297,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.isDirty === isDirty) return;
             tab.isDirty = isDirty;
           }
         }),
@@ -301,6 +306,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.icon === icon) return;
             tab.icon = icon;
           }
         }),
@@ -309,6 +315,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.connectionId === connectionId) return;
             tab.connectionId = connectionId;
           }
         }),
@@ -317,6 +324,12 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (
+              tab.databaseId === databaseId &&
+              tab.databaseName === databaseName
+            ) {
+              return;
+            }
             tab.databaseId = databaseId;
             tab.databaseName = databaseName;
           }
@@ -326,6 +339,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.filePath === filePath) return;
             tab.filePath = filePath;
           }
         }),
@@ -334,6 +348,12 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (
+              tab.isSaved === isSaved &&
+              tab.savedStateHash === savedStateHash
+            ) {
+              return;
+            }
             tab.isSaved = isSaved;
             tab.savedStateHash = savedStateHash;
           }
@@ -343,6 +363,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.chartSpec === (chartSpec ?? undefined)) return;
             tab.chartSpec = chartSpec ?? undefined;
           }
         }),
@@ -351,6 +372,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         set(state => {
           const tab = state.tabs[id];
           if (tab) {
+            if (tab.resultsViewMode === mode) return;
             tab.resultsViewMode = mode;
           }
         }),
@@ -813,6 +835,66 @@ export const useConsoleStore = create<ConsoleStore>()(
     },
   ),
 );
+
+type ConsoleStoreDebugSnapshot = {
+  tabCount: number;
+  activeTabId: string | null;
+  tabOrder: string;
+  loadingKeys: string;
+  errorKeys: string;
+  activeTabContentLength: number | undefined;
+  activeTabViewMode: string | undefined;
+};
+
+const createConsoleStoreDebugSnapshot = (
+  state: ConsoleStore,
+): ConsoleStoreDebugSnapshot => {
+  const activeTab = state.activeTabId
+    ? state.tabs[state.activeTabId]
+    : undefined;
+  return {
+    tabCount: Object.keys(state.tabs).length,
+    activeTabId: state.activeTabId,
+    tabOrder: state.tabOrder.join("|"),
+    loadingKeys: Object.keys(state.loading)
+      .filter(key => state.loading[key])
+      .sort()
+      .join("|"),
+    errorKeys: Object.keys(state.error)
+      .filter(key => Boolean(state.error[key]))
+      .sort()
+      .join("|"),
+    activeTabContentLength: activeTab?.content.length,
+    activeTabViewMode: activeTab?.resultsViewMode,
+  };
+};
+
+if (renderDebugEnabled) {
+  let previousSnapshot = createConsoleStoreDebugSnapshot(
+    useConsoleStore.getState(),
+  );
+
+  useConsoleStore.subscribe(state => {
+    const nextSnapshot = createConsoleStoreDebugSnapshot(state);
+    const changedKeys = Object.keys(nextSnapshot).filter(
+      key =>
+        !Object.is(
+          previousSnapshot[key as keyof ConsoleStoreDebugSnapshot],
+          nextSnapshot[key as keyof ConsoleStoreDebugSnapshot],
+        ),
+    );
+
+    if (changedKeys.length > 0) {
+      logRenderDebug("consoleStore changed", {
+        changedKeys,
+        previous: previousSnapshot,
+        next: nextSnapshot,
+      });
+    }
+
+    previousSnapshot = nextSnapshot;
+  });
+}
 
 // Selectors
 export const selectConsoleTabs = (state: ConsoleStore): ConsoleTab[] => {

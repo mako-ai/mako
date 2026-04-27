@@ -77,6 +77,13 @@ import {
   computeConsoleStateHash,
   computeDashboardStateHash,
 } from "../utils/stateHash";
+import {
+  logRenderDebug,
+  onRenderDebug,
+  renderDebugEnabled,
+  useRenderCount,
+  useWhyChanged,
+} from "../utils/renderDebug";
 
 interface QueryPageInfo {
   pageSize: number;
@@ -437,6 +444,30 @@ function Editor({
   // detect a change every render and trigger a re-render loop.
   const consoleTabs = useConsoleStore(useShallow(selectConsoleTabs));
   const activeConsoleId = activeTabId;
+  const activeTab = activeConsoleId ? tabs[activeConsoleId] : undefined;
+  useRenderCount("Editor", {
+    activeConsoleId,
+    tabCount: consoleTabs.length,
+  });
+  useWhyChanged("Editor", {
+    currentWorkspaceId: currentWorkspace?.id,
+    tabsRef: tabs,
+    consoleTabsRef: consoleTabs,
+    tabCount: consoleTabs.length,
+    activeConsoleId,
+    activeTabKind: activeTab?.kind,
+    activeTabContentRef: activeTab?.content,
+    activeTabResultsRef: activeConsoleId ? tabResults[activeConsoleId] : null,
+    activeTabResultsExecutedAt: activeConsoleId
+      ? tabResults[activeConsoleId]?.executedAt
+      : undefined,
+    executingTabsRef: executingTabs,
+    cancellingTabsRef: cancellingTabs,
+    isSaving,
+    tabViewModesRef: tabViewModes,
+    tabChartSpecsRef: tabChartSpecs,
+    availableDatabasesRef: availableDatabases,
+  });
 
   const setChartSpecForTab = useCallback(
     (tabId: string, spec: import("../lib/chart-spec").MakoChartSpec | null) => {
@@ -453,6 +484,9 @@ function Editor({
     },
     [updateResultsViewMode],
   );
+  const handlePanelLayout = useCallback((tabId: string, layout: number[]) => {
+    logRenderDebug("Editor.panel-layout", { tabId, layout });
+  }, []);
 
   // Refs for each Console instance
   const consoleRefs = useRef<Record<string, React.RefObject<ConsoleRef>>>({});
@@ -1868,106 +1902,123 @@ function Editor({
                   />
                 ) : (
                   /* Console tab: editor + results split */
-                  <PanelGroup
-                    direction="vertical"
-                    style={{ height: "100%", width: "100%" }}
+                  <React.Profiler
+                    id={`Editor.console-panels.${tab.id}`}
+                    onRender={onRenderDebug}
                   >
-                    <Panel defaultSize={60} minSize={1}>
-                      <Console
-                        ref={consoleRefs.current[tab.id]}
-                        consoleId={tab.id}
-                        initialContent={tab.content}
-                        title={tab.title}
-                        onExecute={(content, connectionId, databaseId) =>
-                          handleConsoleExecute(tab.id, content, connectionId, {
-                            databaseId: databaseId || tab.databaseId,
-                            databaseName: tab.databaseName,
-                          })
-                        }
-                        onCancel={() => handleConsoleCancel(tab.id)}
-                        onSave={(content, currentPath) =>
-                          handleConsoleSave(tab.id, content, currentPath)
-                        }
-                        onSaveAsCopy={content =>
-                          handleSaveAsCopy(tab.id, content)
-                        }
-                        onRenameMove={(content, currentPath) =>
-                          handleRenameMove(tab.id, content, currentPath)
-                        }
-                        isExecuting={executingTabs[tab.id] || false}
-                        isCancelling={cancellingTabs[tab.id] || false}
-                        isSaving={isSaving}
-                        onContentChange={content => {
-                          updateContent(tab.id, content);
-                          if (!tab.isDirty) {
-                            updateDirty(tab.id, true);
+                    <PanelGroup
+                      direction="vertical"
+                      style={{ height: "100%", width: "100%" }}
+                      onLayout={
+                        renderDebugEnabled
+                          ? layout => handlePanelLayout(tab.id, layout)
+                          : undefined
+                      }
+                    >
+                      <Panel defaultSize={60} minSize={1}>
+                        <Console
+                          ref={consoleRefs.current[tab.id]}
+                          consoleId={tab.id}
+                          initialContent={tab.content}
+                          title={tab.title}
+                          onExecute={(content, connectionId, databaseId) =>
+                            handleConsoleExecute(
+                              tab.id,
+                              content,
+                              connectionId,
+                              {
+                                databaseId: databaseId || tab.databaseId,
+                                databaseName: tab.databaseName,
+                              },
+                            )
                           }
-                          // Also refresh activeEditorContent for Chat consumers
-                          const ref = consoleRefs.current[tab.id]?.current;
-                          if (activeConsoleId === tab.id && ref) {
-                            setActiveEditorContent(ref.getCurrentContent());
+                          onCancel={() => handleConsoleCancel(tab.id)}
+                          onSave={(content, currentPath) =>
+                            handleConsoleSave(tab.id, content, currentPath)
                           }
-                        }}
-                        connectionId={tab.connectionId}
-                        databaseId={tab.databaseId}
-                        databaseName={tab.databaseName}
-                        databases={availableDatabases}
-                        onDatabaseChange={connId =>
-                          updateConnection(tab.id, connId)
-                        }
-                        onDatabaseNameChange={(dbId, dbName) =>
-                          updateDatabase(tab.id, dbId, dbName)
-                        }
-                        filePath={tab.filePath}
-                        enableVersionControl={true}
-                        onHistoryClick={() => {
-                          setVersionHistoryTabId(tab.id);
-                          setVersionHistoryEntityType("console");
-                          setVersionHistoryOpen(true);
-                        }}
-                        historyAvailable={tab.isSaved}
-                      />
-                    </Panel>
-
-                    <StyledVerticalResizeHandle />
-
-                    <Panel defaultSize={40} minSize={1}>
-                      <Box sx={{ height: "100%", overflow: "hidden" }}>
-                        <ResultsTable
-                          results={tabResults[tab.id] || null}
-                          chartSpec={tabChartSpecs[tab.id] ?? null}
-                          onChartSpecChange={spec =>
-                            setChartSpecForTab(tab.id, spec)
+                          onSaveAsCopy={content =>
+                            handleSaveAsCopy(tab.id, content)
                           }
-                          viewMode={tabViewModes[tab.id] ?? "table"}
-                          onViewModeChange={mode =>
-                            setViewModeForTab(tab.id, mode)
+                          onRenameMove={(content, currentPath) =>
+                            handleRenameMove(tab.id, content, currentPath)
                           }
-                          onChartRenderError={error => {
-                            const cb = pendingRenderCallbackRef.current[tab.id];
-                            if (cb) {
-                              cb({ success: false, error });
-                              delete pendingRenderCallbackRef.current[tab.id];
+                          isExecuting={executingTabs[tab.id] || false}
+                          isCancelling={cancellingTabs[tab.id] || false}
+                          isSaving={isSaving}
+                          onContentChange={content => {
+                            updateContent(tab.id, content);
+                            if (!tab.isDirty) {
+                              updateDirty(tab.id, true);
+                            }
+                            // Also refresh activeEditorContent for Chat consumers
+                            const ref = consoleRefs.current[tab.id]?.current;
+                            if (activeConsoleId === tab.id && ref) {
+                              setActiveEditorContent(ref.getCurrentContent());
                             }
                           }}
-                          onChartRenderSuccess={() => {
-                            const cb = pendingRenderCallbackRef.current[tab.id];
-                            if (cb) {
-                              cb({ success: true });
-                              delete pendingRenderCallbackRef.current[tab.id];
-                            }
+                          connectionId={tab.connectionId}
+                          databaseId={tab.databaseId}
+                          databaseName={tab.databaseName}
+                          databases={availableDatabases}
+                          onDatabaseChange={connId =>
+                            updateConnection(tab.id, connId)
+                          }
+                          onDatabaseNameChange={(dbId, dbName) =>
+                            updateDatabase(tab.id, dbId, dbName)
+                          }
+                          filePath={tab.filePath}
+                          enableVersionControl={true}
+                          onHistoryClick={() => {
+                            setVersionHistoryTabId(tab.id);
+                            setVersionHistoryEntityType("console");
+                            setVersionHistoryOpen(true);
                           }}
-                          onPreviousPage={() =>
-                            handlePreviousResultsPage(tab.id)
-                          }
-                          onNextPage={() => handleNextResultsPage(tab.id)}
-                          onDownload={format =>
-                            handleDownloadResults(tab.id, format)
-                          }
+                          historyAvailable={tab.isSaved}
                         />
-                      </Box>
-                    </Panel>
-                  </PanelGroup>
+                      </Panel>
+
+                      <StyledVerticalResizeHandle />
+
+                      <Panel defaultSize={40} minSize={1}>
+                        <Box sx={{ height: "100%", overflow: "hidden" }}>
+                          <ResultsTable
+                            results={tabResults[tab.id] || null}
+                            chartSpec={tabChartSpecs[tab.id] ?? null}
+                            onChartSpecChange={spec =>
+                              setChartSpecForTab(tab.id, spec)
+                            }
+                            viewMode={tabViewModes[tab.id] ?? "table"}
+                            onViewModeChange={mode =>
+                              setViewModeForTab(tab.id, mode)
+                            }
+                            onChartRenderError={error => {
+                              const cb =
+                                pendingRenderCallbackRef.current[tab.id];
+                              if (cb) {
+                                cb({ success: false, error });
+                                delete pendingRenderCallbackRef.current[tab.id];
+                              }
+                            }}
+                            onChartRenderSuccess={() => {
+                              const cb =
+                                pendingRenderCallbackRef.current[tab.id];
+                              if (cb) {
+                                cb({ success: true });
+                                delete pendingRenderCallbackRef.current[tab.id];
+                              }
+                            }}
+                            onPreviousPage={() =>
+                              handlePreviousResultsPage(tab.id)
+                            }
+                            onNextPage={() => handleNextResultsPage(tab.id)}
+                            onDownload={format =>
+                              handleDownloadResults(tab.id, format)
+                            }
+                          />
+                        </Box>
+                      </Panel>
+                    </PanelGroup>
+                  </React.Profiler>
                 )}
               </Box>
             ))}
@@ -2083,7 +2134,7 @@ function Editor({
         open={commentDialogOpen}
         onSave={handleCommentSaveConfirm}
         onCancel={handleCommentSaveCancel}
-        title="Save Console"
+        title="Name Console Version"
         defaultComment={suggestedComment}
         loading={suggestedCommentLoading}
         diff={saveCommentDiff}

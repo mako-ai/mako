@@ -1,4 +1,4 @@
-import {
+import React, {
   useRef,
   useEffect,
   useState,
@@ -49,6 +49,11 @@ import { useConsoleStore } from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 import { ConnectionSelector } from "./ConnectionSelector";
+import {
+  onRenderDebug,
+  useRenderCount,
+  useWhyChanged,
+} from "../utils/renderDebug";
 
 interface DatabaseConnection {
   id: string;
@@ -235,6 +240,37 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     onContentChange: enableVersionControl ? onContentChange : undefined,
     workspaceId: currentWorkspace?.id,
     title,
+  });
+  useRenderCount("Console", {
+    consoleId,
+    title,
+    isDiffMode,
+    editorKey,
+  });
+  useWhyChanged("Console", {
+    consoleId,
+    initialContentRef: initialContent,
+    title,
+    tabRef: tab,
+    tabContentRef: tab?.content,
+    savedStateHash,
+    isSaved,
+    isReadOnly,
+    hasUnsavedChanges,
+    isExecuting,
+    isCancelling,
+    isSaving,
+    isDiffMode,
+    editorKey,
+    connectionId,
+    databaseId,
+    databaseName,
+    databasesRef: databases,
+    onExecute,
+    onCancel,
+    onSave,
+    onContentChange,
+    effectiveMode,
   });
 
   // Track if we've saved the initial version
@@ -1304,45 +1340,50 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       )}
 
       <Box ref={containerRef} sx={{ flexGrow: 1, height: 0 }}>
-        {!isDiffMode ? (
-          <Editor
-            key={editorKey}
-            language={editorLanguage || "javascript"}
-            defaultValue={lastInitialContentRef.current || initialContent}
-            height="100%"
-            theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
-            onMount={handleEditorDidMount}
-            onChange={handleEditorChange}
-            options={{
-              automaticLayout: true,
-              readOnly: isReadOnly,
-              minimap: { enabled: false },
-              fontSize: 12,
-              wordWrap: "on",
-              scrollBeyondLastLine: false,
-            }}
-          />
-        ) : (
-          <DiffEditor
-            height="100%"
-            theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
-            language={editorLanguage || "javascript"}
-            original={originalContent}
-            modified={modifiedContent}
-            onMount={handleDiffEditorDidMount}
-            options={{
-              automaticLayout: true,
-              readOnly: true,
-              minimap: { enabled: false },
-              fontSize: 12,
-              wordWrap: "on",
-              scrollBeyondLastLine: false,
-              renderSideBySide: false,
-              enableSplitViewResizing: false,
-              diffWordWrap: "on",
-            }}
-          />
-        )}
+        <React.Profiler
+          id={`Console.monaco.${consoleId}`}
+          onRender={onRenderDebug}
+        >
+          {!isDiffMode ? (
+            <Editor
+              key={editorKey}
+              language={editorLanguage || "javascript"}
+              defaultValue={lastInitialContentRef.current || initialContent}
+              height="100%"
+              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+              onMount={handleEditorDidMount}
+              onChange={handleEditorChange}
+              options={{
+                automaticLayout: true,
+                readOnly: isReadOnly,
+                minimap: { enabled: false },
+                fontSize: 12,
+                wordWrap: "on",
+                scrollBeyondLastLine: false,
+              }}
+            />
+          ) : (
+            <DiffEditor
+              height="100%"
+              theme={effectiveMode === "dark" ? "vs-dark" : "vs"}
+              language={editorLanguage || "javascript"}
+              original={originalContent}
+              modified={modifiedContent}
+              onMount={handleDiffEditorDidMount}
+              options={{
+                automaticLayout: true,
+                readOnly: true,
+                minimap: { enabled: false },
+                fontSize: 12,
+                wordWrap: "on",
+                scrollBeyondLastLine: false,
+                renderSideBySide: false,
+                enableSplitViewResizing: false,
+                diffWordWrap: "on",
+              }}
+            />
+          )}
+        </React.Profiler>
       </Box>
 
       {/* Info Modal */}

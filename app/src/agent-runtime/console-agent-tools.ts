@@ -5,7 +5,10 @@ import type {
 import type { ConsoleTab } from "../store/lib/types";
 import { useConsoleStore } from "../store/consoleStore";
 import { generateObjectId } from "../utils/objectId";
-import { applyModification } from "../utils/consoleModification";
+import {
+  applyModification,
+  buildModificationDiff,
+} from "../utils/consoleModification";
 import {
   CONSOLE_EXECUTOR_TOOL_NAMES,
   type AgentToolName,
@@ -218,6 +221,7 @@ export async function executeConsoleAgentTool({
       endLine,
     };
     const newContent = applyModification(currentContent, modification);
+    const diff = buildModificationDiff(currentContent, modification);
     currentStore.updateContent(consoleId, newContent);
 
     if (modifyTitle) {
@@ -227,6 +231,8 @@ export async function executeConsoleAgentTool({
     emitToolOutput(addToolOutput, toolName, toolCallId, {
       success: true,
       consoleId,
+      title: modifyTitle ?? targetConsole.title,
+      diff,
       message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
     });
     return true;

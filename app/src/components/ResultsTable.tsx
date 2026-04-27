@@ -28,6 +28,11 @@ import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
 import type { MakoChartSpec } from "../lib/chart-spec";
 import ResultsChart from "./ResultsChart";
+import {
+  onRenderDebug,
+  useRenderCount,
+  useWhyChanged,
+} from "../utils/renderDebug";
 
 interface QueryResult {
   results?: any; // Can be anything: array, object, primitive, etc.
@@ -46,6 +51,9 @@ interface QueryResult {
 }
 
 type ViewMode = "table" | "json" | "chart";
+
+const PINNED_RESULT_COLUMNS = { left: ["__rowIndex"], right: [] };
+const RESULTS_TABLE_LOCALE_TEXT = { noRowsLabel: "No rows returned" };
 
 interface ResultsTableProps {
   results?: QueryResult | null;
@@ -84,14 +92,20 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   const currentPage = results?.currentPage ?? 1;
   const canGoBack = currentPage > 1 && Boolean(onPreviousPage);
   const canGoForward = Boolean(results?.pageInfo?.hasMore && onNextPage);
+  const lastTableResetExecutedAtRef = React.useRef<string | undefined>();
 
   // Reset to table view whenever new results are received
   const executedAt = results?.executedAt;
   useEffect(() => {
-    if (executedAt) {
+    if (!executedAt || lastTableResetExecutedAtRef.current === executedAt) {
+      return;
+    }
+
+    lastTableResetExecutedAtRef.current = executedAt;
+    if (viewMode !== "table") {
       setViewMode("table");
     }
-  }, [executedAt, setViewMode]);
+  }, [executedAt, setViewMode, viewMode]);
 
   // Helper function to normalize any data into an array format
   const normalizeToArray = (data: any): any[] => {
@@ -469,6 +483,30 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   );
 
   const jsonContent = JSON.stringify(results, null, 2);
+  useRenderCount("ResultsTable", {
+    executedAt,
+    viewMode,
+    rowCount: rows.length,
+    columnCount: columns.length,
+  });
+  useWhyChanged("ResultsTable", {
+    resultsRef: results,
+    resultsPayloadRef: results?.results,
+    fieldsRef: results?.fields,
+    executedAt,
+    resultCount: results?.resultCount,
+    chartSpec,
+    viewMode,
+    onChartSpecChange,
+    onViewModeChange,
+    onNextPage,
+    onPreviousPage,
+    onDownload,
+    rowsRef: rows,
+    columnsRef: columns,
+    rowCount: rows.length,
+    columnCount: columns.length,
+  });
 
   if (!results) {
     return (
@@ -602,61 +640,63 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
         }}
       >
         {viewMode === "table" && (
-          <DataGridPremium
-            key={results.executedAt}
-            rows={rows}
-            columns={columns}
-            pinnedColumns={{ left: ["__rowIndex"], right: [] }}
-            density="compact"
-            disableRowSelectionOnClick
-            hideFooter
-            localeText={{ noRowsLabel: "No rows returned" }}
-            columnHeaderHeight={40}
-            rowHeight={40}
-            style={{
-              height: "100%",
-              width: "auto",
-            }}
-            sx={{
-              "& .MuiDataGrid-cell": {
-                fontSize: "12px",
-                fontFamily:
-                  'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                borderRight: "1px solid",
-                borderColor: "divider",
-              },
-              "& .MuiDataGrid-columnHeaders": {
-                backgroundColor: "background.default",
-                fontFamily:
-                  'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-              },
-              "& .MuiDataGrid-columnHeader": {
-                backgroundColor: "background.default",
-                fontFamily:
-                  'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
-              },
-              "& .MuiDataGrid-root": {
-                overflow: "hidden",
-              },
-              "& .MuiDataGrid-row:first-of-type .MuiDataGrid-cell": {
-                borderTop: "none",
-              },
-              "& .MuiDataGrid-main": {
-                overflow: "hidden",
-                backgroundColor: "background.default",
-              },
-              "& .MuiDataGrid-virtualScroller": {
-                overflow: "auto",
-              },
-              "& .MuiDataGrid-virtualScrollerContent": {
-                backgroundColor: "background.paper",
-              },
-              borderRadius: 0,
-              border: "none",
-            }}
-          />
+          <React.Profiler id="ResultsTable.DataGrid" onRender={onRenderDebug}>
+            <DataGridPremium
+              key={results.executedAt}
+              rows={rows}
+              columns={columns}
+              pinnedColumns={PINNED_RESULT_COLUMNS}
+              density="compact"
+              disableRowSelectionOnClick
+              hideFooter
+              localeText={RESULTS_TABLE_LOCALE_TEXT}
+              columnHeaderHeight={40}
+              rowHeight={40}
+              style={{
+                height: "100%",
+                width: "auto",
+              }}
+              sx={{
+                "& .MuiDataGrid-cell": {
+                  fontSize: "12px",
+                  fontFamily:
+                    'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  borderRight: "1px solid",
+                  borderColor: "divider",
+                },
+                "& .MuiDataGrid-columnHeaders": {
+                  backgroundColor: "background.default",
+                  fontFamily:
+                    'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
+                },
+                "& .MuiDataGrid-columnHeader": {
+                  backgroundColor: "background.default",
+                  fontFamily:
+                    'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
+                },
+                "& .MuiDataGrid-root": {
+                  overflow: "hidden",
+                },
+                "& .MuiDataGrid-row:first-of-type .MuiDataGrid-cell": {
+                  borderTop: "none",
+                },
+                "& .MuiDataGrid-main": {
+                  overflow: "hidden",
+                  backgroundColor: "background.default",
+                },
+                "& .MuiDataGrid-virtualScroller": {
+                  overflow: "auto",
+                },
+                "& .MuiDataGrid-virtualScrollerContent": {
+                  backgroundColor: "background.paper",
+                },
+                borderRadius: 0,
+                border: "none",
+              }}
+            />
+          </React.Profiler>
         )}
         {viewMode === "json" && (
           <Box

@@ -14,6 +14,8 @@ export interface ChatMessageRowProps {
   isLastMessage: boolean;
   isStreaming: boolean;
   onToolClick: (tool: any) => void;
+  onConsoleTitleClick: (consoleId: string) => void;
+  connectionIconById: ReadonlyMap<string, string>;
   /** Bust memo when MUI palette mode changes so row styles stay in sync */
   paletteMode: "light" | "dark";
 }
@@ -51,5 +53,7 @@ export function chatMessageRowArePropsEqual(
   if (prev.isLastMessage !== next.isLastMessage) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.onToolClick !== next.onToolClick) return false;
+  if (prev.onConsoleTitleClick !== next.onConsoleTitleClick) return false;
+  if (prev.connectionIconById !== next.connectionIconById) return false;
   return prev.message === next.message;
 }

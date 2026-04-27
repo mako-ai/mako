@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Dialog,
   DialogTitle,
@@ -28,7 +28,7 @@ export function SaveCommentDialog({
   open,
   onSave,
   onCancel,
-  title = "Save",
+  title = "Name Version",
   defaultComment,
   loading,
   diff,
@@ -36,20 +36,22 @@ export function SaveCommentDialog({
   const [comment, setComment] = useState("");
   const [userEdited, setUserEdited] = useState(false);
   const [diffExpanded, setDiffExpanded] = useState(false);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpenRef.current) {
       setComment(defaultComment ?? "");
       setUserEdited(false);
       setDiffExpanded(false);
     }
-  }, [open]);
+    wasOpenRef.current = open;
+  }, [defaultComment, open]);
 
   useEffect(() => {
-    if (defaultComment && !userEdited) {
+    if (open && defaultComment && !userEdited) {
       setComment(defaultComment);
     }
-  }, [defaultComment, userEdited]);
+  }, [defaultComment, open, userEdited]);
 
   const handleSave = useCallback(() => {
     onSave(comment);
@@ -73,9 +75,11 @@ export function SaveCommentDialog({
           autoFocus
           fullWidth
           multiline
-          minRows={2}
+          minRows={3}
           maxRows={4}
-          placeholder="Describe your changes (optional)"
+          label="Version name"
+          placeholder="Describe what changed in this version"
+          helperText="This labels the saved version, not the console itself."
           value={comment}
           onChange={e => {
             setComment(e.target.value);
@@ -178,7 +182,7 @@ export function SaveCommentDialog({
           Cancel
         </Button>
         <Button onClick={handleSave} variant="contained" size="small">
-          Save
+          Save version
         </Button>
       </DialogActions>
     </Dialog>

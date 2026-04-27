@@ -16,6 +16,9 @@ import { StreamingToolCard } from "../StreamingToolCard";
 
 // ── Helpers ──────────────────────────────────────────────────
 
+const stableNoop = () => {};
+const stableConnectionIconById = new Map<string, string>();
+
 function makeProps(
   overrides: Partial<Parameters<typeof chatMessageRowArePropsEqual>[0]> = {},
 ): Parameters<typeof chatMessageRowArePropsEqual>[0] {
@@ -27,7 +30,9 @@ function makeProps(
     },
     isLastMessage: false,
     isStreaming: false,
-    onToolClick: () => {},
+    onToolClick: stableNoop,
+    onConsoleTitleClick: stableNoop,
+    connectionIconById: stableConnectionIconById,
     paletteMode: "light",
     ...overrides,
   };
@@ -112,13 +117,25 @@ describe("chatMessageRowArePropsEqual", () => {
     expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
   });
 
+  it("returns false when onConsoleTitleClick reference changes", () => {
+    const prev = makeProps({ onConsoleTitleClick: () => {} });
+    const next = makeProps({ onConsoleTitleClick: () => {} });
+    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
+  });
+
+  it("returns false when connectionIconById reference changes", () => {
+    const prev = makeProps({ connectionIconById: new Map() });
+    const next = makeProps({ connectionIconById: new Map() });
+    expect(chatMessageRowArePropsEqual(prev, next)).toBe(false);
+  });
+
   it("skips re-render when a completed user message keeps its ref across streaming ticks", () => {
     // The AI SDK's replaceMessage only clones messages[last]; earlier
     // messages retain their references across ticks. So completed messages
     // (e.g. the user prompt) correctly skip re-rendering while the assistant
     // streams below them.
     //
-    // Chat.tsx uses `useCallback` to keep `onToolClick` stable across renders,
+    // Chat.tsx uses `useCallback` to keep callbacks stable across renders,
     // which is what makes this skip safe — all other prop references match too.
     const sharedUserMessage = {
       id: "user-1",
@@ -126,15 +143,21 @@ describe("chatMessageRowArePropsEqual", () => {
       parts: [{ type: "text", text: "What tables exist?" }],
     };
     const stableOnToolClick = () => {};
+    const stableOnConsoleTitleClick = () => {};
+    const stableConnectionIconById = new Map<string, string>();
     const prev = makeProps({
       message: sharedUserMessage,
       onToolClick: stableOnToolClick,
+      onConsoleTitleClick: stableOnConsoleTitleClick,
+      connectionIconById: stableConnectionIconById,
       isLastMessage: false,
       isStreaming: true,
     });
     const next = makeProps({
       message: sharedUserMessage,
       onToolClick: stableOnToolClick,
+      onConsoleTitleClick: stableOnConsoleTitleClick,
+      connectionIconById: stableConnectionIconById,
       isLastMessage: false,
       isStreaming: true,
     });

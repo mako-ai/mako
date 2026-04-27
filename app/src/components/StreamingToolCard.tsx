@@ -36,6 +36,7 @@ import {
   Wrench,
   X,
   ExternalLink,
+  SquareTerminal,
 } from "lucide-react";
 import {
   getAgentToolManifestEntry,
@@ -55,6 +56,11 @@ interface StreamingToolCardProps {
   state: ToolPartState;
   input?: unknown;
   output?: unknown;
+  labelOverride?: string;
+  leadingIconUrl?: string;
+  leadingIconAlt?: string;
+  bodyPreview?: { content: string; language: string };
+  onTitleClick?: () => void;
   onDetailClick?: () => void;
   /**
    * Optional — used as a defensive check in the memo comparator so that
@@ -218,6 +224,11 @@ const pulseKf = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
+const titleShimmerKf = keyframes`
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+`;
+
 // ── Component ────────────────────────────────────────────────
 
 // Terminal states: once the tool call reaches one of these, `input` and
@@ -252,6 +263,11 @@ export const StreamingToolCard = React.memo(
     state,
     input,
     output,
+    labelOverride,
+    leadingIconUrl,
+    leadingIconAlt,
+    bodyPreview,
+    onTitleClick,
     onDetailClick,
   }: StreamingToolCardProps) {
     const config = getToolConfig(toolName);
@@ -303,12 +319,15 @@ export const StreamingToolCard = React.memo(
     const rawContent = config.preview
       ? inputObj?.[config.preview.field]
       : undefined;
-    const code =
+    const defaultCode =
       typeof rawContent === "string"
         ? rawContent
         : rawContent && typeof rawContent === "object"
           ? JSON.stringify(rawContent, null, 2)
           : "";
+    const code = bodyPreview?.content ?? defaultCode;
+    const codeLanguage =
+      bodyPreview?.language ?? config.preview?.language ?? "text";
 
     useEffect(() => {
       if (isStreaming && !userScrolled && codeContainerRef.current) {
@@ -324,7 +343,7 @@ export const StreamingToolCard = React.memo(
       setUserScrolled(!isAtBottom);
     }, []);
 
-    const label = config.getLabel(input);
+    const label = labelOverride ?? config.getLabel(input);
 
     const outputSummary = useMemo(
       () => (isDone || isError ? getOutputSummary(output) : null),
@@ -342,6 +361,8 @@ export const StreamingToolCard = React.memo(
 
     const hasVisibleBody =
       code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
+
+    const canExpand = hasVisibleBody;
 
     const statusText = isStreaming
       ? "Generating…"
@@ -374,8 +395,9 @@ export const StreamingToolCard = React.memo(
       >
         {/* Header */}
         <Box
+          className="tool-card-header"
           onClick={() => {
-            if ((isDone || isError) && hasVisibleBody) {
+            if (canExpand) {
               setExpanded(prev => !prev);
             } else {
               onDetailClick?.();
@@ -398,23 +420,74 @@ export const StreamingToolCard = React.memo(
         >
           <Box
             sx={{
+              position: "relative",
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
+              width: ICON_SIZE + 3,
+              height: ICON_SIZE + 3,
+              flexShrink: 0,
               color: isActive ? "primary.main" : "text.secondary",
+              "& .tool-card-leading-icon, & .tool-card-chevron-icon": {
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "opacity 0.12s ease",
+              },
+              "& .tool-card-leading-icon": {
+                opacity: canExpand && expanded ? 0 : 1,
+              },
+              "& .tool-card-chevron-icon": {
+                opacity: canExpand ? (expanded ? 1 : 0) : 0,
+              },
+              ...(canExpand && {
+                ".tool-card-header:hover & .tool-card-leading-icon": {
+                  opacity: 0,
+                },
+                ".tool-card-header:hover & .tool-card-chevron-icon": {
+                  opacity: 1,
+                },
+              }),
             }}
           >
-            {(isDone || isError) && hasVisibleBody ? (
-              expanded ? (
+            <Box className="tool-card-leading-icon">
+              {leadingIconUrl ? (
+                <Box
+                  component="img"
+                  src={leadingIconUrl}
+                  alt={leadingIconAlt ?? ""}
+                  sx={{
+                    width: ICON_SIZE + 3,
+                    height: ICON_SIZE + 3,
+                    objectFit: "contain",
+                    display: "block",
+                  }}
+                  draggable={false}
+                />
+              ) : labelOverride ? (
+                <SquareTerminal size={ICON_SIZE + 2} strokeWidth={1.6} />
+              ) : (
+                renderToolIcon(config.icon)
+              )}
+            </Box>
+            <Box className="tool-card-chevron-icon">
+              {expanded ? (
                 <ChevronDown size={14} />
               ) : (
                 <ChevronRight size={14} />
-              )
-            ) : (
-              renderToolIcon(config.icon)
-            )}
+              )}
+            </Box>
           </Box>
 
           <Typography
+            component={onTitleClick ? "button" : "span"}
+            onClick={(event: React.MouseEvent<HTMLElement>) => {
+              if (!onTitleClick) return;
+              event.stopPropagation();
+              onTitleClick();
+            }}
             variant="caption"
             sx={{
               fontWeight: 500,
@@ -423,6 +496,30 @@ export const StreamingToolCard = React.memo(
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
+              fontSize: "0.75rem",
+              ...(isStreaming && {
+                background: theme =>
+                  theme.palette.mode === "dark"
+                    ? "linear-gradient(90deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.95) 45%, rgba(255,255,255,0.55) 90%)"
+                    : "linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.9) 45%, rgba(0,0,0,0.45) 90%)",
+                backgroundSize: "200% 100%",
+                backgroundClip: "text",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+                animation: `${titleShimmerKf} 1.6s linear infinite`,
+              }),
+              ...(onTitleClick && {
+                p: 0,
+                border: 0,
+                backgroundColor: "transparent",
+                textAlign: "left",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                lineHeight: "inherit",
+                "&:hover": {
+                  textDecoration: "underline",
+                },
+              }),
             }}
           >
             {label}
@@ -484,7 +581,7 @@ export const StreamingToolCard = React.memo(
             >
               <SyntaxHighlighter
                 style={syntaxTheme}
-                language={config.preview?.language ?? "text"}
+                language={codeLanguage}
                 PreTag="div"
                 customStyle={{
                   fontSize: "0.78rem",
@@ -541,6 +638,11 @@ export const StreamingToolCard = React.memo(
     if (prev.toolCallId !== next.toolCallId) return false;
     if (prev.toolName !== next.toolName) return false;
     if (prev.state !== next.state) return false;
+    if (prev.labelOverride !== next.labelOverride) return false;
+    if (prev.leadingIconUrl !== next.leadingIconUrl) return false;
+    if (prev.leadingIconAlt !== next.leadingIconAlt) return false;
+    if (prev.bodyPreview?.content !== next.bodyPreview?.content) return false;
+    if (prev.bodyPreview?.language !== next.bodyPreview?.language) return false;
 
     // Terminal states are immutable. Even if useChat handed us new cloned
     // references for `input` / `output` this tick, the contents are the

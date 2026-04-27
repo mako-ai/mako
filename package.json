@@ -20,6 +20,7 @@
     "docker:rebuild": "docker compose down && docker compose build && docker compose up -d",
     "docker:clean": "docker compose down -v",
     "app:dev": "pnpm --filter app run dev",
+    "app:dev:scan": "pnpm --filter app run dev:scan",
     "app:build": "pnpm --filter app run build",
     "app:preview": "pnpm --filter app run preview",
     "app:lint": "pnpm --filter app run lint",
