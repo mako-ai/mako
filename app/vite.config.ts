@@ -1,9 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import reactScan from "@react-scan/vite-plugin-react-scan";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    reactScan({
+      enable: process.env.VITE_REACT_SCAN === "true",
+      autoDisplayNames: true,
+    }),
+    tailwindcss(),
+  ],
   envDir: "..",
   server: {
     port: 5173,

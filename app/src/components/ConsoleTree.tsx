@@ -379,6 +379,50 @@ function ConsoleTreeInner(
     [],
   );
 
+  const handleResourceItemClick = useCallback(
+    (node: ResourceTreeNode) => onFileOpen?.(node as ConsoleEntry),
+    [onFileOpen],
+  );
+  const handlePickerFileClick = useCallback(
+    (node: ResourceTreeNode) => onFileClick?.(node as ConsoleEntry),
+    [onFileClick],
+  );
+  const handleDuplicateItem = useCallback(
+    (node: ResourceTreeNode) => onDuplicate?.(node as ConsoleEntry),
+    [onDuplicate],
+  );
+  const handleInfoRequest = useCallback(
+    (node: ResourceTreeNode) => onInfoRequest?.(node as ConsoleEntry),
+    [onInfoRequest],
+  );
+  const handleFolderInfoRequest = useCallback(
+    (node: ResourceTreeNode) => onFolderInfoRequest?.(node as ConsoleEntry),
+    [onFolderInfoRequest],
+  );
+  const handleMoveRequest = useCallback(
+    (node: ResourceTreeNode) => onMoveRequest?.(node as ConsoleEntry),
+    [onMoveRequest],
+  );
+  const handleResortItem = useCallback(
+    (id: string) => {
+      if (!currentWorkspace) return;
+      resortItem(currentWorkspace.id, id);
+    },
+    [currentWorkspace, resortItem],
+  );
+  const handleCanManageItem = useCallback(
+    (node: ResourceTreeNode) => canManage(node as ConsoleEntry),
+    [canManage],
+  );
+  const getResourceItemIcon = useCallback(
+    (node: ResourceTreeNode) => getItemIcon(node as ConsoleEntry),
+    [getItemIcon],
+  );
+  const getResourceFolderExpansionKey = useCallback(
+    (node: ResourceTreeNode) => node.id,
+    [],
+  );
+
   return (
     <ResourceTree
       ref={resourceTreeRef}
@@ -386,7 +430,7 @@ function ConsoleTreeInner(
       mode={mode}
       activeItemId={mode === "sidebar" ? activeTabId : null}
       searchQuery={searchQuery}
-      getItemIcon={node => getItemIcon(node as ConsoleEntry)}
+      getItemIcon={getResourceItemIcon}
       showFiles={showFiles}
       hideFolderIcon
       enableDragDrop={enableDragDrop}
@@ -396,8 +440,8 @@ function ConsoleTreeInner(
       enableMove={enableMove}
       enableInfo={enableInfo}
       enableNewFolder
-      onItemClick={node => onFileOpen?.(node as ConsoleEntry)}
-      onPickerFileClick={node => onFileClick?.(node as ConsoleEntry)}
+      onItemClick={handleResourceItemClick}
+      onPickerFileClick={handlePickerFileClick}
       onLocationChange={handleLocationChange}
       selectedLocationId={selectedLocationId}
       selectedSectionKey={selectedSectionKey}
@@ -407,21 +451,18 @@ function ConsoleTreeInner(
       onMoveFolder={handleMoveFolder}
       onRenameItem={handleRenameItem}
       onDeleteItem={handleDeleteItem}
-      onDuplicateItem={node => onDuplicate?.(node as ConsoleEntry)}
+      onDuplicateItem={handleDuplicateItem}
       onCreateFolder={handleCreateFolder}
-      onInfoRequest={node => onInfoRequest?.(node as ConsoleEntry)}
-      onFolderInfoRequest={node => onFolderInfoRequest?.(node as ConsoleEntry)}
-      onMoveRequest={node => onMoveRequest?.(node as ConsoleEntry)}
-      onResortItem={id => {
-        if (!currentWorkspace) return;
-        resortItem(currentWorkspace.id, id);
-      }}
+      onInfoRequest={handleInfoRequest}
+      onFolderInfoRequest={handleFolderInfoRequest}
+      onMoveRequest={handleMoveRequest}
+      onResortItem={handleResortItem}
       onUndo={onUndo}
       isFolderExpanded={isFolderExpandedLocal}
       onToggleFolder={toggleFolder}
       onExpandFolder={expandFolder}
-      getFolderExpansionKey={node => node.id}
-      canManageItem={node => canManage(node as ConsoleEntry)}
+      getFolderExpansionKey={getResourceFolderExpansionKey}
+      canManageItem={handleCanManageItem}
     />
   );
 }

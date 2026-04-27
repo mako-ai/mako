@@ -68,6 +68,11 @@ import {
   getFolderDropTargetId,
   resolveTreeDropTarget,
 } from "./resource-tree/utils";
+import {
+  onRenderDebug,
+  useRenderCount,
+  useWhyChanged,
+} from "../utils/renderDebug";
 
 export interface ResourceTreeNode {
   id: string;
@@ -288,6 +293,45 @@ function ResourceTreeInner(
     selectedSectionKey !== undefined
       ? selectedSectionKey
       : internalSelectedSectionKey;
+  const debugSectionSummary = useMemo(
+    () =>
+      sections
+        .map(section => `${section.key}:${section.nodes.length}`)
+        .join(","),
+    [sections],
+  );
+  useRenderCount("ResourceTree", {
+    mode,
+    sectionCount: sections.length,
+    activeItemId,
+  });
+  useWhyChanged("ResourceTree", {
+    sectionsRef: sections,
+    debugSectionSummary,
+    mode,
+    activeItemId,
+    searchQuery,
+    focusedNodeId,
+    contextMenuItemId: contextMenu?.item.id,
+    sectionContextMenuKey: sectionContextMenu?.sectionKey,
+    draggedNodeId: draggedNode?.id,
+    dropTargetId,
+    pendingCreatedFolderId,
+    currentSelectedLocation,
+    currentSelectedSectionKey,
+    showFiles,
+    hideFolderIcon,
+    enableDragDrop,
+    onItemClick,
+    onLoadChildren,
+    isLoadingChildren,
+    getItemIcon,
+    getRightAdornment,
+    isFolderExpanded,
+    onToggleFolder,
+    onExpandFolder,
+    getFolderExpansionKey,
+  });
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -1415,7 +1459,9 @@ function ResourceTreeInner(
 
   return (
     <>
-      {content}
+      <React.Profiler id="ResourceTree.content" onRender={onRenderDebug}>
+        {content}
+      </React.Profiler>
 
       <Menu
         open={!!contextMenu}

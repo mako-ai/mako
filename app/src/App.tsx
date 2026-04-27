@@ -33,7 +33,9 @@ import {
   type ImperativePanelHandle,
 } from "react-resizable-panels";
 import Chat from "./components/Chat";
-import DatabaseExplorer from "./components/DatabaseExplorer";
+import DatabaseExplorer, {
+  type CollectionInfo,
+} from "./components/DatabaseExplorer";
 import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
@@ -237,216 +239,228 @@ function MainApp() {
   >(null);
 
   // Handle console modification from AI
-  const handleConsoleModification = async (
-    modification: ConsoleModificationPayload,
-  ) => {
-    // handleConsoleModification called
+  const handleConsoleModification = useCallback(
+    async (modification: ConsoleModificationPayload) => {
+      // handleConsoleModification called
 
-    const { tabs, activeTabId, openTab, setActiveTab } =
-      useConsoleStore.getState();
-    const consoleTabs = Object.values(tabs);
-    const activeConsoleId = activeTabId;
+      const { tabs, activeTabId, openTab, setActiveTab } =
+        useConsoleStore.getState();
+      const consoleTabs = Object.values(tabs);
+      const activeConsoleId = activeTabId;
 
-    const realConsoleTabs = (consoleTabs || []).filter(
-      (t: any) => t?.kind === undefined || t?.kind === "console",
-    );
-    const activeRealConsoleId = realConsoleTabs.some(
-      (t: any) => t.id === activeConsoleId,
-    )
-      ? activeConsoleId
-      : null;
+      const realConsoleTabs = (consoleTabs || []).filter(
+        (t: any) => t?.kind === undefined || t?.kind === "console",
+      );
+      const activeRealConsoleId = realConsoleTabs.some(
+        (t: any) => t.id === activeConsoleId,
+      )
+        ? activeConsoleId
+        : null;
 
-    // Handle console creation
-    if (modification.action === "create" && modification.title) {
-      const newConsoleId = openTab({
-        id: modification.consoleId,
-        title: modification.title,
-        content: modification.content || "",
-        connectionId: modification.connectionId,
-        databaseId: modification.databaseId,
-        databaseName: modification.databaseName,
-        kind: "console",
-        isDirty: modification.isDirty ?? true, // Agent-created consoles are dirty by default
-      });
-      setActiveTab(newConsoleId);
-      return;
-    }
-
-    // Use the provided consoleId if available, otherwise use the active console
-    let targetConsoleId = modification.consoleId || activeRealConsoleId;
-    let isNewConsole = false;
-
-    // If a consoleId was explicitly provided by the agent, trust it - the console was just created
-    // and may not be in realConsoleTabs yet due to React state update timing.
-    // Only fall back if no explicit consoleId was provided AND the resolved ID doesn't exist.
-    if (
-      !modification.consoleId &&
-      targetConsoleId &&
-      !realConsoleTabs.some((t: any) => t.id === targetConsoleId)
-    ) {
-      targetConsoleId = activeRealConsoleId;
-    }
-
-    if (!targetConsoleId) {
-      // If no active console, try to open one
-      if (realConsoleTabs.length > 0) {
-        // Focus the first available real console
-        targetConsoleId = realConsoleTabs[0].id;
-        setActiveTab(targetConsoleId);
-      } else {
-        // Create a new console if none exist
-        isNewConsole = true;
-        const id = openTab({
-          title: "AI Query",
-          content: "",
+      // Handle console creation
+      if (modification.action === "create" && modification.title) {
+        const newConsoleId = openTab({
+          id: modification.consoleId,
+          title: modification.title,
+          content: modification.content || "",
+          connectionId: modification.connectionId,
+          databaseId: modification.databaseId,
+          databaseName: modification.databaseName,
+          kind: "console",
+          isDirty: modification.isDirty ?? true, // Agent-created consoles are dirty by default
         });
-        targetConsoleId = id;
-        setActiveTab(id);
+        setActiveTab(newConsoleId);
+        return;
       }
-    }
 
-    // If we just created a new console, wait a bit for it to mount
-    if (isNewConsole) {
-      // wait for mount
-      await new Promise(resolve => setTimeout(resolve, 200));
-    }
+      // Use the provided consoleId if available, otherwise use the active console
+      let targetConsoleId = modification.consoleId || activeRealConsoleId;
+      let isNewConsole = false;
 
-    // using console ID
+      // If a consoleId was explicitly provided by the agent, trust it - the console was just created
+      // and may not be in realConsoleTabs yet due to React state update timing.
+      // Only fall back if no explicit consoleId was provided AND the resolved ID doesn't exist.
+      if (
+        !modification.consoleId &&
+        targetConsoleId &&
+        !realConsoleTabs.some((t: any) => t.id === targetConsoleId)
+      ) {
+        targetConsoleId = activeRealConsoleId;
+      }
 
-    // Dispatch a custom event that the Editor component can listen to
-    const event = new CustomEvent("console-modification", {
-      detail: { consoleId: targetConsoleId, modification },
-    });
-    window.dispatchEvent(event);
-  };
+      if (!targetConsoleId) {
+        // If no active console, try to open one
+        if (realConsoleTabs.length > 0) {
+          // Focus the first available real console
+          targetConsoleId = realConsoleTabs[0].id;
+          setActiveTab(targetConsoleId);
+        } else {
+          // Create a new console if none exist
+          isNewConsole = true;
+          const id = openTab({
+            title: "AI Query",
+            content: "",
+          });
+          targetConsoleId = id;
+          setActiveTab(id);
+        }
+      }
 
-  const openOrFocusConsoleTab = (
-    title: string,
-    content: string,
-    connectionId?: string, // DatabaseConnection ID (renamed from databaseId)
-    filePath?: string,
-    consoleId?: string, // Add optional consoleId parameter
-    isPlaceholder?: boolean,
-    queryOptions?: Record<string, any>, // Options to pass when executing (e.g., D1 databaseId)
-    explicitDatabaseId?: string, // Explicit database ID (e.g., D1 UUID from saved console)
-    explicitDatabaseName?: string, // Explicit database name from saved console
-  ) => {
-    // For existing consoles, use the server ID as the tab ID
-    const tabId = consoleId || generateObjectId();
+      // If we just created a new console, wait a bit for it to mount
+      if (isNewConsole) {
+        // wait for mount
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
 
-    const { tabs, setActiveTab, openTab, updateContent } =
-      useConsoleStore.getState();
-    const consoleTabs = Object.values(tabs);
+      // using console ID
 
-    // Check if a tab with this ID already exists
-    const existing = consoleTabs.find(t => t.id === tabId);
+      // Dispatch a custom event that the Editor component can listen to
+      const event = new CustomEvent("console-modification", {
+        detail: { consoleId: targetConsoleId, modification },
+      });
+      window.dispatchEvent(event);
+    },
+    [],
+  );
 
-    if (existing) {
-      // Tab already exists, just focus it
-      setActiveTab(existing.id);
-      // Update the content in case it changed on the server
-      updateContent(existing.id, content);
-      return;
-    }
+  const openOrFocusConsoleTab = useCallback(
+    (
+      title: string,
+      content: string,
+      connectionId?: string, // DatabaseConnection ID (renamed from databaseId)
+      filePath?: string,
+      consoleId?: string, // Add optional consoleId parameter
+      isPlaceholder?: boolean,
+      queryOptions?: Record<string, any>, // Options to pass when executing (e.g., D1 databaseId)
+      explicitDatabaseId?: string, // Explicit database ID (e.g., D1 UUID from saved console)
+      explicitDatabaseName?: string, // Explicit database name from saved console
+    ) => {
+      // For existing consoles, use the server ID as the tab ID
+      const tabId = consoleId || generateObjectId();
 
-    // Use explicit values if provided, otherwise extract from queryOptions (tree node metadata)
-    // databaseId: used for selector value, saving to DB, and API calls (UUID for D1, name for MongoDB/PostgreSQL)
-    // databaseName: used for display in selector (human-readable name, falls back to databaseId)
-    const databaseId =
-      explicitDatabaseId ||
-      queryOptions?.databaseId ||
-      queryOptions?.databaseName;
-    const databaseName =
-      explicitDatabaseName || queryOptions?.databaseName || databaseId;
+      const { tabs, setActiveTab, openTab, updateContent } =
+        useConsoleStore.getState();
+      const consoleTabs = Object.values(tabs);
 
-    // Create a new tab with the determined ID
-    // If consoleId is provided, this is an existing saved console from the database
-    // Set isSaved=true to prevent auto-save (especially important for placeholder content)
-    const isExistingSavedConsole = !!consoleId;
-    const id = openTab({
-      id: tabId, // Pass the ID explicitly
-      title,
-      content,
-      connectionId,
-      databaseId, // D1 database UUID or other DB-specific ID
-      databaseName, // Human-readable database name
-      // If placeholder, defer setting filePath so savedStateHash isn't computed
-      filePath: isPlaceholder ? undefined : filePath,
-      // Mark as saved if this is an existing console to prevent auto-save of placeholder content
-      isSaved: isExistingSavedConsole,
-      // Store query execution options for backward compatibility
-      metadata: queryOptions ? { queryOptions } : undefined,
-    });
-    setActiveTab(id);
-  };
+      // Check if a tab with this ID already exists
+      const existing = consoleTabs.find(t => t.id === tabId);
+
+      if (existing) {
+        // Tab already exists, just focus it
+        setActiveTab(existing.id);
+        // Never replace an already-open console with placeholder content while
+        // the background fetch is in flight. The eventual fetch update is guarded
+        // by no-op store writes, so repeated explorer clicks stay cheap.
+        if (!isPlaceholder && existing.content !== content) {
+          updateContent(existing.id, content);
+        }
+        return;
+      }
+
+      // Use explicit values if provided, otherwise extract from queryOptions (tree node metadata)
+      // databaseId: used for selector value, saving to DB, and API calls (UUID for D1, name for MongoDB/PostgreSQL)
+      // databaseName: used for display in selector (human-readable name, falls back to databaseId)
+      const databaseId =
+        explicitDatabaseId ||
+        queryOptions?.databaseId ||
+        queryOptions?.databaseName;
+      const databaseName =
+        explicitDatabaseName || queryOptions?.databaseName || databaseId;
+
+      // Create a new tab with the determined ID
+      // If consoleId is provided, this is an existing saved console from the database
+      // Set isSaved=true to prevent auto-save (especially important for placeholder content)
+      const isExistingSavedConsole = !!consoleId;
+      const id = openTab({
+        id: tabId, // Pass the ID explicitly
+        title,
+        content,
+        connectionId,
+        databaseId, // D1 database UUID or other DB-specific ID
+        databaseName, // Human-readable database name
+        // If placeholder, defer setting filePath so savedStateHash isn't computed
+        filePath: isPlaceholder ? undefined : filePath,
+        // Mark as saved if this is an existing console to prevent auto-save of placeholder content
+        isSaved: isExistingSavedConsole,
+        // Store query execution options for backward compatibility
+        metadata: queryOptions ? { queryOptions } : undefined,
+      });
+      setActiveTab(id);
+    },
+    [],
+  );
+
+  const handleDatabaseCollectionClick = useCallback(
+    async (dbId: string, collection: CollectionInfo) => {
+      // Try server-provided template first
+      let prefill = `db.getCollection("${collection.name}").find({}).limit(500)`;
+      try {
+        const { useSchemaStore } = await import("./store/schemaStore");
+        const workspaceId = localStorage.getItem("activeWorkspaceId");
+        if (workspaceId) {
+          const tpl = await useSchemaStore
+            .getState()
+            .fetchConsoleTemplate(workspaceId, dbId, {
+              id: collection.name,
+              kind: collection.type || "collection",
+              metadata: collection.options as Record<string, unknown>,
+            });
+          if (tpl?.template) prefill = tpl.template;
+        }
+      } catch {
+        // If server call fails, fallback to type-based default
+        const kind = (collection.type || "").toLowerCase();
+        if (kind !== "collection" && kind !== "view") {
+          prefill = `SELECT * FROM ${collection.name} LIMIT 500;`;
+        }
+      }
+      openOrFocusConsoleTab(
+        collection.name,
+        prefill,
+        dbId, // connectionId
+        undefined, // filePath
+        undefined, // consoleId
+        undefined, // isPlaceholder
+        collection.options as Record<string, unknown> | undefined, // queryOptions - contains D1 databaseName (UUID), MongoDB dbName, etc.
+      );
+    },
+    [openOrFocusConsoleTab],
+  );
+
+  const handleConsoleSelect = useCallback(
+    (
+      path: string,
+      content: string,
+      connectionId?: string,
+      consoleId?: string,
+      isPlaceholder?: boolean,
+      databaseId?: string,
+      databaseName?: string,
+    ) => {
+      openOrFocusConsoleTab(
+        path,
+        content,
+        connectionId,
+        path,
+        consoleId,
+        isPlaceholder,
+        undefined, // queryOptions - not needed for saved consoles
+        databaseId,
+        databaseName,
+      );
+    },
+    [openOrFocusConsoleTab],
+  );
 
   // Left pane content renderer
   const renderLeftPane = () => {
     switch (activeView) {
       case "databases":
         return (
-          <DatabaseExplorer
-            onCollectionClick={async (dbId, collection) => {
-              // Try server-provided template first
-              let prefill = `db.getCollection("${collection.name}").find({}).limit(500)`;
-              try {
-                const { useSchemaStore } = await import("./store/schemaStore");
-                const workspaceId = localStorage.getItem("activeWorkspaceId");
-                if (workspaceId) {
-                  const tpl = await useSchemaStore
-                    .getState()
-                    .fetchConsoleTemplate(workspaceId, dbId, {
-                      id: collection.name,
-                      kind: collection.type || "collection",
-                      metadata: collection.options as Record<string, unknown>,
-                    });
-                  if (tpl?.template) prefill = tpl.template;
-                }
-              } catch {
-                // If server call fails, fallback to type-based default
-                const kind = (collection.type || "").toLowerCase();
-                if (kind !== "collection" && kind !== "view") {
-                  prefill = `SELECT * FROM ${collection.name} LIMIT 500;`;
-                }
-              }
-              openOrFocusConsoleTab(
-                collection.name,
-                prefill,
-                dbId, // connectionId
-                undefined, // filePath
-                undefined, // consoleId
-                undefined, // isPlaceholder
-                collection.options as Record<string, unknown> | undefined, // queryOptions - contains D1 databaseName (UUID), MongoDB dbName, etc.
-              );
-            }}
-          />
+          <DatabaseExplorer onCollectionClick={handleDatabaseCollectionClick} />
         );
       case "consoles":
-        return (
-          <ConsoleExplorer
-            onConsoleSelect={(
-              path,
-              content,
-              connectionId,
-              consoleId,
-              isPlaceholder,
-              databaseId,
-              databaseName,
-            ) => {
-              openOrFocusConsoleTab(
-                path,
-                content,
-                connectionId,
-                path,
-                consoleId,
-                isPlaceholder,
-                undefined, // queryOptions - not needed for saved consoles
-                databaseId,
-                databaseName,
-              );
-            }}
-          />
-        );
+        return <ConsoleExplorer onConsoleSelect={handleConsoleSelect} />;
       case "connectors":
         return <DataSourceExplorer />;
       case "flows":

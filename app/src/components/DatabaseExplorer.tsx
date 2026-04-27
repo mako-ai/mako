@@ -21,7 +21,7 @@ import {
   Settings as SettingsIcon,
   Layers as LayersIcon,
 } from "lucide-react";
-import { useDatabaseExplorerStore } from "../store";
+import { useExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
 import { useSchemaStore, Connection, TreeNode } from "../store/schemaStore";
@@ -133,8 +133,10 @@ function DatabaseExplorer({
     [dbTypes],
   );
 
-  const { toggleDatabase, isDatabaseExpanded, expandedNodes, toggleNode } =
-    useDatabaseExplorerStore();
+  const expandedDatabases = useExplorerStore(s => s.database.expandedDatabases);
+  const expandedNodes = useExplorerStore(s => s.database.expandedNodes);
+  const toggleDatabase = useExplorerStore(s => s.toggleDatabase);
+  const toggleNode = useExplorerStore(s => s.toggleNode);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [editingDatabaseId, setEditingDatabaseId] = useState<
@@ -263,14 +265,14 @@ function DatabaseExplorer({
       const info = nodeInfoById.get(key);
       if (!info) return false;
       if (info.type === "connection") {
-        return isDatabaseExpanded(info.connectionId);
+        return !!expandedDatabases[info.connectionId];
       }
       // For non-connection nodes, expansion is tracked in expandedNodes under
       // the `${connectionId}:${kind}:${id}` key (which is the same as the
       // ResourceTreeNode id we've chosen).
       return !!expandedNodes[key];
     },
-    [nodeInfoById, isDatabaseExpanded, expandedNodes],
+    [nodeInfoById, expandedDatabases, expandedNodes],
   );
 
   const onToggleFolder = useCallback(
@@ -291,7 +293,7 @@ function DatabaseExplorer({
       const info = nodeInfoById.get(key);
       if (!info) return;
       if (info.type === "connection") {
-        if (!isDatabaseExpanded(info.connectionId)) {
+        if (!expandedDatabases[info.connectionId]) {
           toggleDatabase(info.connectionId);
         }
       } else if (!expandedNodes[key]) {
@@ -300,7 +302,7 @@ function DatabaseExplorer({
     },
     [
       nodeInfoById,
-      isDatabaseExpanded,
+      expandedDatabases,
       toggleDatabase,
       expandedNodes,
       toggleNode,
@@ -486,6 +488,11 @@ function DatabaseExplorer({
     [nodeInfoById, handleCollectionClick],
   );
 
+  const getFolderExpansionKey = useCallback(
+    (node: ResourceTreeNode) => node.id,
+    [],
+  );
+
   const renderSkeletonItems = () => (
     <Box sx={{ p: 1 }}>
       {Array.from({ length: 3 }).map((_, index) => (
@@ -560,7 +567,7 @@ function DatabaseExplorer({
               isFolderExpanded={isFolderExpanded}
               onToggleFolder={onToggleFolder}
               onExpandFolder={onExpandFolder}
-              getFolderExpansionKey={node => node.id}
+              getFolderExpansionKey={getFolderExpansionKey}
               onLoadChildren={onLoadChildren}
               isLoadingChildren={isLoadingChildren}
               getContextMenuItems={getContextMenuItems}

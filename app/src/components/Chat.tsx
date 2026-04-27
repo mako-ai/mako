@@ -12,7 +12,6 @@ import React, {
 import {
   Box,
   Button,
-  Chip,
   IconButton,
   List,
   ListItem,
@@ -62,12 +61,16 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { executeDashboardAgentTool } from "../dashboard-runtime/agent-tools";
 import type { ConsoleTab } from "../store/lib/types";
+import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
-import { ConsoleModificationPayload } from "../hooks/useMonacoConsole";
+import type {
+  ConsoleModification,
+  ConsoleModificationPayload,
+} from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
@@ -81,11 +84,17 @@ import {
   type ActiveConsoleResultsContext,
 } from "../agent-runtime/request-context";
 import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
+import { buildModificationDiff } from "../utils/consoleModification";
 import {
   LONG_RUNNING_DASHBOARD_TOOL_NAMES,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
 import { UpgradePrompt } from "./UpgradePrompt";
+import {
+  onRenderDebug,
+  useRenderCount,
+  useWhyChanged,
+} from "../utils/renderDebug";
 
 interface ChatSessionMeta {
   _id: string;
@@ -282,6 +291,101 @@ interface ActiveClientToolCall {
   settled: boolean;
 }
 
+function asToolPayload(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function getConsoleIdFromToolPayload(
+  input: unknown,
+  output: unknown,
+): string | null {
+  const inputObj = asToolPayload(input);
+  const outputObj = asToolPayload(output);
+  const consoleId = inputObj?.consoleId ?? outputObj?.consoleId;
+  return typeof consoleId === "string" && consoleId.length > 0
+    ? consoleId
+    : null;
+}
+
+interface ConsoleToolPresentation {
+  consoleId: string;
+  title: string;
+  iconUrl?: string;
+  diff?: string;
+}
+
+function getConsoleToolPresentation(
+  toolName: string,
+  input: unknown,
+  output: unknown,
+  connectionIconById: ReadonlyMap<string, string>,
+): ConsoleToolPresentation | null {
+  if (toolName !== "modify_console") return null;
+
+  const store = useConsoleStore.getState();
+  const inputObj = asToolPayload(input);
+  const outputObj = asToolPayload(output);
+  const consoleId = getConsoleIdFromToolPayload(input, output);
+  if (!consoleId) return null;
+
+  const consoleTab = store.tabs[consoleId];
+  const inputTitle = inputObj?.title;
+  const outputTitle = outputObj?.title;
+  const title =
+    consoleTab?.title ??
+    (typeof inputTitle === "string" ? inputTitle : undefined) ??
+    (typeof outputTitle === "string" ? outputTitle : undefined) ??
+    "Untitled console";
+
+  const outputDiff = outputObj?.diff;
+  const diff =
+    typeof outputDiff === "string" && outputDiff.length > 0
+      ? outputDiff
+      : buildStreamingModificationDiff(inputObj, consoleTab);
+
+  return {
+    consoleId,
+    title,
+    iconUrl: consoleTab?.connectionId
+      ? connectionIconById.get(consoleTab.connectionId)
+      : undefined,
+    diff,
+  };
+}
+
+function buildStreamingModificationDiff(
+  input: Record<string, unknown> | undefined,
+  consoleTab: ConsoleTab | undefined,
+): string | undefined {
+  const action = input?.action;
+  const content = input?.content;
+  if (
+    !input ||
+    !consoleTab ||
+    typeof action !== "string" ||
+    typeof content !== "string" ||
+    content.length === 0
+  ) {
+    return undefined;
+  }
+
+  const position = input.position;
+  const startLine = input.startLine;
+  const endLine = input.endLine;
+  const modification: ConsoleModification = {
+    action: action as ConsoleModification["action"],
+    content,
+    position:
+      typeof position === "number" ? { line: position, column: 1 } : undefined,
+    startLine: typeof startLine === "number" ? startLine : undefined,
+    endLine: typeof endLine === "number" ? endLine : undefined,
+  };
+
+  return buildModificationDiff(consoleTab.content || "", modification);
+}
+
 // ReasoningDisplay for showing reasoning/thinking parts inline.
 // - Auto-opens while streaming, auto-collapses when done.
 // - Shows elapsed thinking time ("Thought for Xs").
@@ -415,12 +519,6 @@ const pulseAnimation = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
-// Shimmer animation for "Working on" indicator
-const shimmerAnimation = keyframes`
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-`;
-
 // Stable style objects to prevent re-renders
 const streamingIndicatorContainerSx = {
   display: "flex",
@@ -526,8 +624,27 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
   isLastMessage,
   isStreaming,
   onToolClick,
+  onConsoleTitleClick,
+  connectionIconById,
   paletteMode,
 }: ChatMessageRowProps) {
+  const parts = (message.parts || []) as Array<Record<string, unknown>>;
+  useRenderCount(`ChatMessageRow:${message.id}`, {
+    role: message.role,
+    partCount: parts.length,
+  });
+  useWhyChanged(`ChatMessageRow:${message.id}`, {
+    messageRef: message,
+    partsRef: message.parts,
+    partCount: parts.length,
+    isLastMessage,
+    isStreaming,
+    onToolClick,
+    onConsoleTitleClick,
+    connectionIconById,
+    paletteMode,
+  });
+
   if (message.role === "user") {
     const fileParts = (message.parts || []).filter(
       (p): p is { type: "file"; url: string; mediaType: string } =>
@@ -588,7 +705,6 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
     );
   }
 
-  const parts = (message.parts || []) as Array<Record<string, unknown>>;
   const isStreamingNow = isStreaming;
 
   const reasoningGroups = computeReasoningGroups(parts);
@@ -630,6 +746,12 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                   }
                 : part.output;
             const toolCallId = (part.toolCallId as string) || "";
+            const consoleToolPresentation = getConsoleToolPresentation(
+              toolName,
+              part.input,
+              cardOutput,
+              connectionIconById,
+            );
             // Key by toolCallId when available so reordering/insertion in the
             // parts array doesn't remount completed tool cards. Falls back to
             // a type+index tag for the (rare) case where toolCallId is missing.
@@ -644,6 +766,25 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 state={cardState}
                 input={part.input}
                 output={cardOutput}
+                labelOverride={consoleToolPresentation?.title}
+                leadingIconUrl={consoleToolPresentation?.iconUrl}
+                leadingIconAlt={
+                  consoleToolPresentation ? "Database" : undefined
+                }
+                bodyPreview={
+                  consoleToolPresentation?.diff
+                    ? {
+                        content: consoleToolPresentation.diff,
+                        language: "diff",
+                      }
+                    : undefined
+                }
+                onTitleClick={
+                  consoleToolPresentation
+                    ? () =>
+                        onConsoleTitleClick(consoleToolPresentation.consoleId)
+                    : undefined
+                }
                 onDetailClick={() =>
                   onToolClick({
                     toolCallId,
@@ -741,6 +882,19 @@ const ChatInputArea = React.memo(
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imagesRef = useRef<ImageAttachment[]>([]);
+    useRenderCount("ChatInputArea", {
+      isLoading,
+      disabled,
+      imageCount: images.length,
+    });
+    useWhyChanged("ChatInputArea", {
+      onSubmit,
+      onStop,
+      isLoading,
+      disabled,
+      focusKey,
+      imageCount: images.length,
+    });
     imagesRef.current = images;
 
     useEffect(() => {
@@ -1095,28 +1249,13 @@ interface ChatProps {
   >;
 }
 
-// Suggestion prompts for the demo Chinook database
-const CHINOOK_SUGGESTIONS = [
-  "Who are the top 10 best-selling artists?",
-  "What are the most popular genres by revenue?",
-  "Show me monthly revenue trends",
-  "Who are our top 5 customers by spending?",
-];
+type ChatActiveView = "dashboard" | "flow-editor" | "console" | "empty";
 
-// Generic suggestions for any database
-const GENERIC_SUGGESTIONS = [
-  "What tables are in this database?",
-  "Show me the schema structure",
-  "Help me write a query to...",
-];
-
-// Suggestions for db-flow assistant
-const DB_FLOW_SUGGESTIONS = [
-  "Help me write a query to sync all users",
-  "What template placeholders should I use?",
-  "Suggest an incremental sync configuration",
-  "Validate my query setup",
-];
+function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
+  return kind === "dashboard" || kind === "flow-editor" || kind === "console"
+    ? kind
+    : "empty";
+}
 
 const Chat: React.FC<ChatProps> = ({
   onConsoleModification,
@@ -1127,37 +1266,35 @@ const Chat: React.FC<ChatProps> = ({
   const paletteMode = useMuiTheme().palette.mode;
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
-  const activeTabId = useConsoleStore(state => state.activeTabId);
-  // Narrow selector: only re-render when the active tab's kind changes,
-  // not when unrelated tabs are mutated (e.g. query results arriving).
-  const activeTabKind = useConsoleStore(state => {
-    const tab = state.tabs[state.activeTabId || ""];
-    return tab?.kind;
-  });
-  const activeConsoleId = activeTabId;
-
-  const activeView =
-    activeTabKind === "dashboard" ||
-    activeTabKind === "flow-editor" ||
-    activeTabKind === "console"
-      ? activeTabKind
-      : "empty";
 
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
   const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
   dbFlowFormRefCurrent.current = dbFlowFormRef;
 
-  // Get connections to check if only database is the demo
+  // Connection metadata is only needed to decorate completed console tool cards.
   const connections = useSchemaStore(s => s.connections);
+  const dbTypes = useDatabaseCatalogStore(s => s.types);
+  const fetchDbTypes = useDatabaseCatalogStore(s => s.fetchTypes);
+  useEffect(() => {
+    void fetchDbTypes();
+  }, [fetchDbTypes]);
   const workspaceConnections = useMemo(
     () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
     [connections, currentWorkspace],
   );
+  const connectionIconById = useMemo(() => {
+    const iconByType = new Map<string, string>();
+    for (const dbType of dbTypes ?? []) {
+      if (dbType.iconUrl) iconByType.set(dbType.type, dbType.iconUrl);
+    }
 
-  // Show Chinook suggestions if the only database in workspace is the demo database
-  const hasOnlyDemoDatabase =
-    workspaceConnections.length === 1 &&
-    workspaceConnections[0]?.isDemo === true;
+    const iconByConnectionId = new Map<string, string>();
+    for (const connection of workspaceConnections) {
+      const iconUrl = iconByType.get(connection.type);
+      if (iconUrl) iconByConnectionId.set(connection.id, iconUrl);
+    }
+    return iconByConnectionId;
+  }, [dbTypes, workspaceConnections]);
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
@@ -1214,13 +1351,16 @@ const Chat: React.FC<ChatProps> = ({
   const [selectedTool, setSelectedTool] = useState<ToolInvocationInfo | null>(
     null,
   );
-  const [capturedConsoleTitle, setCapturedConsoleTitle] = useState<
-    string | null
-  >(null);
 
-  // Ref to get current activeConsoleId at request time (avoids stale closure)
-  const activeConsoleIdRef = useRef(activeConsoleId);
-  activeConsoleIdRef.current = activeConsoleId;
+  // Keep the active console ID fresh without subscribing the whole chat panel
+  // to every console switch. This avoids disrupting chat streaming when users
+  // browse consoles/databases in the left explorer.
+  const activeConsoleIdRef = useRef(useConsoleStore.getState().activeTabId);
+  useEffect(() => {
+    return useConsoleStore.subscribe(state => {
+      activeConsoleIdRef.current = state.activeTabId;
+    });
+  }, []);
 
   // Refs for values needed in prepareSendMessagesRequest (avoids stale closures)
   const workspaceIdRef = useRef(currentWorkspace?.id);
@@ -1241,13 +1381,6 @@ const Chat: React.FC<ChatProps> = ({
     return lastAssistantMessageIsCompleteWithToolCalls(options);
   }, []);
 
-  // Refs so the transport closure always reads fresh values without
-  // needing to be recreated (which would reset the useChat hook).
-  const activeViewRef = useRef(activeView);
-  activeViewRef.current = activeView;
-  const workspaceConnectionsRef = useRef(workspaceConnections);
-  workspaceConnectionsRef.current = workspaceConnections;
-
   // Create transport once — prepareSendMessagesRequest reads all dynamic
   // values from getState() / refs at request time, so the transport identity
   // is stable for the lifetime of the component.
@@ -1260,13 +1393,11 @@ const Chat: React.FC<ChatProps> = ({
           const store = useConsoleStore.getState();
           const tabs = Object.values(store.tabs) as ConsoleTab[];
           const activeTab = tabs.find(t => t.id === store.activeTabId);
-
-          const computedActiveView =
-            activeTab?.kind === "dashboard" ||
-            activeTab?.kind === "flow-editor" ||
-            activeTab?.kind === "console"
-              ? activeTab.kind
-              : "empty";
+          const computedActiveView = normalizeChatActiveView(activeTab?.kind);
+          const workspaceId = workspaceIdRef.current;
+          const workspaceConnectionsForRequest = workspaceId
+            ? useSchemaStore.getState().connections[workspaceId] || []
+            : [];
 
           const flowFormState = dbFlowFormRefCurrent.current?.current
             ? dbFlowFormRefCurrent.current.current.getFormState()
@@ -1290,7 +1421,7 @@ const Chat: React.FC<ChatProps> = ({
             body: toJsonSafe(
               buildChatRequestBody({
                 messages,
-                workspaceId: workspaceIdRef.current,
+                workspaceId,
                 modelId: modelIdRef.current,
                 chatId: chatIdRef.current,
                 tabs,
@@ -1301,7 +1432,7 @@ const Chat: React.FC<ChatProps> = ({
                 activeConsoleId: activeConsoleIdRef.current,
                 activeConsoleResults,
                 flowFormState,
-                workspaceConnections: workspaceConnectionsRef.current,
+                workspaceConnections: workspaceConnectionsForRequest,
                 pinnedDashboardId: capturedDashboardIdRef.current,
               }),
             ) as Record<string, unknown>,
@@ -1736,6 +1867,25 @@ const Chat: React.FC<ChatProps> = ({
   }, [addToolOutput, stop]);
 
   const isLoading = status === "streaming" || status === "submitted";
+  const lastMessage = messages.at(-1);
+  const lastMessageParts = lastMessage?.parts ?? [];
+  useRenderCount("Chat", {
+    messageCount: messages.length,
+    status,
+  });
+  useWhyChanged("Chat", {
+    chatId,
+    currentWorkspaceId: currentWorkspace?.id,
+    selectedModelId,
+    messagesRef: messages,
+    messageCount: messages.length,
+    lastMessageId: lastMessage?.id,
+    lastMessageRole: lastMessage?.role,
+    lastMessagePartCount: lastMessageParts.length,
+    status,
+    isLoading,
+    connectionIconById,
+  });
 
   // Session management - fetch available chat sessions for history menu
   useEffect(() => {
@@ -1979,6 +2129,38 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(true);
   }, []);
 
+  const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
+    const store = useConsoleStore.getState();
+    const existingTab = store.tabs[consoleId];
+    if (existingTab) {
+      store.setActiveTab(consoleId);
+      return;
+    }
+
+    const workspaceId = workspaceIdRef.current;
+    if (!workspaceId) return;
+
+    try {
+      const data = await store.fetchConsoleContent(workspaceId, consoleId);
+      if (!data) return;
+
+      const currentStore = useConsoleStore.getState();
+      currentStore.openTab({
+        id: consoleId,
+        title: data.name || data.path || "Untitled",
+        content: data.content || "",
+        connectionId: data.connectionId,
+        databaseId: data.databaseId,
+        databaseName: data.databaseName,
+        filePath: data.path,
+        isSaved: true,
+      });
+      currentStore.setActiveTab(consoleId);
+    } catch {
+      /* ignore focus failures */
+    }
+  }, []);
+
   const handleCloseToolDialog = () => {
     setToolDialogOpen(false);
     setSelectedTool(null);
@@ -1999,13 +2181,7 @@ const Chat: React.FC<ChatProps> = ({
       currentTab?.kind === "dashboard"
         ? ((currentTab.metadata?.dashboardId as string | undefined) ?? null)
         : null;
-    const currentTabs = Object.values(store.tabs);
-    const activeConsole = currentTabs.find(t => t.id === store.activeTabId);
-    setCapturedConsoleTitle(
-      activeConsole?.kind === undefined || activeConsole?.kind === "console"
-        ? activeConsole?.title || null
-        : null,
-    );
+    const activeConsole = store.tabs[store.activeTabId || ""];
     trackEvent("ai_chat_message_sent", {
       model: modelIdRef.current,
       has_context: !!activeConsole?.content,
@@ -2234,115 +2410,33 @@ const Chat: React.FC<ChatProps> = ({
         </Box>
       )}
 
-      {/* Suggestions when chat is empty */}
-      {messages.length === 0 && (
-        <Box
-          sx={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-            alignItems: "center",
-            p: 2,
-            gap: 2,
-          }}
-        >
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ textAlign: "center", mb: 1 }}
-          >
-            {activeView === "flow-editor"
-              ? "I can help you configure your flow"
-              : hasOnlyDemoDatabase
-                ? "Try asking about the Chinook music store data"
-                : "Ask a question about your data"}
-          </Typography>
-          <Box
-            sx={{
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 1,
-              justifyContent: "center",
-              maxWidth: 400,
-            }}
-          >
-            {(activeView === "flow-editor"
-              ? DB_FLOW_SUGGESTIONS
-              : hasOnlyDemoDatabase
-                ? CHINOOK_SUGGESTIONS
-                : GENERIC_SUGGESTIONS
-            ).map(suggestion => (
-              <Chip
-                key={suggestion}
-                label={suggestion}
-                variant="outlined"
-                size="small"
-                onClick={() => {
-                  manualStopRequestedRef.current = false;
-                  capturedConsoleIdRef.current = activeConsoleIdRef.current;
-                  const store = useConsoleStore.getState();
-                  const currentTab = store.tabs[store.activeTabId || ""] as
-                    | (ConsoleTab & { metadata?: Record<string, unknown> })
-                    | undefined;
-                  capturedDashboardIdRef.current =
-                    currentTab?.kind === "dashboard"
-                      ? ((currentTab.metadata?.dashboardId as
-                          | string
-                          | undefined) ?? null)
-                      : null;
-                  const currentTabs = Object.values(store.tabs);
-                  const console_ = currentTabs.find(
-                    t => t.id === store.activeTabId,
-                  );
-                  setCapturedConsoleTitle(
-                    console_?.kind === undefined || console_?.kind === "console"
-                      ? console_?.title || null
-                      : null,
-                  );
-                  trackEvent("ai_chat_message_sent", {
-                    model: modelIdRef.current,
-                    has_context: false,
-                    from_suggestion: true,
-                  });
-                  sendMessageRef.current({ text: suggestion });
-                }}
-                sx={{
-                  cursor: "pointer",
-                  "&:hover": {
-                    backgroundColor: "action.hover",
-                    borderColor: "primary.main",
-                  },
-                }}
-              />
-            ))}
-          </Box>
-        </Box>
-      )}
-
       {/* Messages */}
       <Box
         ref={scrollContainerRef}
         sx={{
-          flex: messages.length > 0 ? 1 : 0,
+          flex: 1,
           overflow: "auto",
           p: 1,
           position: "relative",
         }}
       >
         <div ref={scrollContentRef}>
-          <List dense>
-            {messages.map((message, msgIdx) => (
-              <ChatMessageRow
-                key={message.id}
-                message={message}
-                isLastMessage={msgIdx === messages.length - 1}
-                isStreaming={status === "streaming"}
-                onToolClick={handleToolClick}
-                paletteMode={paletteMode}
-              />
-            ))}
-          </List>
+          <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
+            <List dense>
+              {messages.map((message, msgIdx) => (
+                <ChatMessageRow
+                  key={message.id}
+                  message={message}
+                  isLastMessage={msgIdx === messages.length - 1}
+                  isStreaming={status === "streaming"}
+                  onToolClick={handleToolClick}
+                  onConsoleTitleClick={handleConsoleTitleClick}
+                  connectionIconById={connectionIconById}
+                  paletteMode={paletteMode}
+                />
+              ))}
+            </List>
+          </React.Profiler>
           <div ref={messagesEndRef} />
         </div>
 
@@ -2369,36 +2463,6 @@ const Chat: React.FC<ChatProps> = ({
           </IconButton>
         )}
       </Box>
-
-      {/* Working on console indicator - shows which console the agent is targeting */}
-      {isLoading && capturedConsoleTitle && (
-        <Box
-          sx={{
-            px: 1,
-            py: 0.5,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Typography
-            variant="caption"
-            sx={{
-              background: theme =>
-                theme.palette.mode === "dark"
-                  ? "linear-gradient(90deg, #666 0%, #999 50%, #666 100%)"
-                  : "linear-gradient(90deg, #999 0%, #333 50%, #999 100%)",
-              backgroundSize: "200% 100%",
-              backgroundClip: "text",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              animation: `${shimmerAnimation} 2s linear infinite`,
-            }}
-          >
-            {capturedConsoleTitle}
-          </Typography>
-        </Box>
-      )}
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea
@@ -2464,4 +2528,6 @@ const Chat: React.FC<ChatProps> = ({
   );
 };
 
-export default Chat;
+Chat.displayName = "Chat";
+
+export default React.memo(Chat);

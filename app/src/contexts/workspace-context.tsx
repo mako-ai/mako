@@ -4,6 +4,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   ReactNode,
 } from "react";
 import {
@@ -477,36 +478,61 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     [setCurrentWorkspaceId],
   );
 
-  const value: WorkspaceContextState = {
-    // State
-    workspaces,
-    currentWorkspace,
-    members,
-    invites,
-    loading,
-    initialized,
-    error,
+  const value: WorkspaceContextState = useMemo(
+    () => ({
+      // State
+      workspaces,
+      currentWorkspace,
+      members,
+      invites,
+      loading,
+      initialized,
+      error,
 
-    // Actions
-    loadWorkspaces,
-    refreshWorkspaces,
-    createWorkspace,
-    createWorkspaceForOnboarding,
-    updateWorkspace,
-    deleteWorkspace,
-    switchWorkspace,
+      // Actions
+      loadWorkspaces,
+      refreshWorkspaces,
+      createWorkspace,
+      createWorkspaceForOnboarding,
+      updateWorkspace,
+      deleteWorkspace,
+      switchWorkspace,
 
-    // Member management
-    loadMembers,
-    inviteMember,
-    updateMemberRole,
-    removeMember,
+      // Member management
+      loadMembers,
+      inviteMember,
+      updateMemberRole,
+      removeMember,
 
-    // Invitation management
-    loadInvites,
-    cancelInvite,
-    acceptInvite,
-  };
+      // Invitation management
+      loadInvites,
+      cancelInvite,
+      acceptInvite,
+    }),
+    [
+      workspaces,
+      currentWorkspace,
+      members,
+      invites,
+      loading,
+      initialized,
+      error,
+      loadWorkspaces,
+      refreshWorkspaces,
+      createWorkspace,
+      createWorkspaceForOnboarding,
+      updateWorkspace,
+      deleteWorkspace,
+      switchWorkspace,
+      loadMembers,
+      inviteMember,
+      updateMemberRole,
+      removeMember,
+      loadInvites,
+      cancelInvite,
+      acceptInvite,
+    ],
+  );
 
   return (
     <WorkspaceContext.Provider value={value}>

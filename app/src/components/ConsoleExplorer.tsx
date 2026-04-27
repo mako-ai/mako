@@ -202,68 +202,73 @@ function ConsoleExplorer(
     })();
   };
 
-  const handleFileOpen = async (node: ConsoleEntry) => {
-    if (!currentWorkspace) return;
-    if (!node.id) return;
+  const handleFileOpen = useCallback(
+    async (node: ConsoleEntry) => {
+      if (!currentWorkspace) return;
+      if (!node.id) return;
 
-    const consoleId = node.id;
-    const cached = useConsoleContentStore.getState().get(consoleId);
-    const initialContent = cached?.content ?? "loading...";
-    const connectionId = cached?.connectionId || node.connectionId;
-    const databaseId = cached?.databaseId || node.databaseId;
-    const databaseName = cached?.databaseName || node.databaseName;
-    onConsoleSelect(
-      node.path,
-      initialContent,
-      connectionId,
-      consoleId,
-      !cached,
-      databaseId,
-      databaseName,
-    );
+      const consoleId = node.id;
+      const cached = useConsoleContentStore.getState().get(consoleId);
+      const initialContent = cached?.content ?? "loading...";
+      const connectionId = cached?.connectionId || node.connectionId;
+      const databaseId = cached?.databaseId || node.databaseId;
+      const databaseName = cached?.databaseName || node.databaseName;
+      onConsoleSelect(
+        node.path,
+        initialContent,
+        connectionId,
+        consoleId,
+        !cached,
+        databaseId,
+        databaseName,
+      );
 
-    try {
-      const consoleStore = await import("../store/consoleStore");
-      const { fetchConsoleContent } = consoleStore.useConsoleStore.getState();
-      const data = await fetchConsoleContent(currentWorkspace.id, consoleId);
-      if (data) {
-        useConsoleContentStore.getState().set(consoleId, {
-          content: data.content,
-          connectionId: data.connectionId || node.connectionId,
-          databaseId: data.databaseId || node.databaseId,
-          databaseName: data.databaseName || node.databaseName,
-        });
-        const {
-          updateContent,
-          updateFilePath,
-          updateDatabase,
-          updateConnection,
-          updateSavedState,
-        } = consoleStore.useConsoleStore.getState();
-        updateContent(consoleId, data.content);
+      try {
+        const consoleStore = await import("../store/consoleStore");
+        const { fetchConsoleContent } = consoleStore.useConsoleStore.getState();
+        const data = await fetchConsoleContent(currentWorkspace.id, consoleId);
+        if (data) {
+          useConsoleContentStore.getState().set(consoleId, {
+            content: data.content,
+            connectionId: data.connectionId || node.connectionId,
+            databaseId: data.databaseId || node.databaseId,
+            databaseName: data.databaseName || node.databaseName,
+          });
+          const {
+            updateContent,
+            updateFilePath,
+            updateDatabase,
+            updateConnection,
+            updateSavedState,
+          } = consoleStore.useConsoleStore.getState();
+          updateContent(consoleId, data.content);
 
-        if (data.connectionId) {
-          updateConnection(consoleId, data.connectionId);
+          if (data.connectionId) {
+            updateConnection(consoleId, data.connectionId);
+          }
+          if (data.databaseId || data.databaseName) {
+            updateDatabase(consoleId, data.databaseId, data.databaseName);
+          }
+
+          updateFilePath(consoleId, node.path);
+
+          const { computeConsoleStateHash } = await import(
+            "../utils/stateHash"
+          );
+          const savedStateHash = computeConsoleStateHash(
+            data.content,
+            data.connectionId,
+            data.databaseId,
+            data.databaseName,
+          );
+          updateSavedState(consoleId, true, savedStateHash);
         }
-        if (data.databaseId || data.databaseName) {
-          updateDatabase(consoleId, data.databaseId, data.databaseName);
-        }
-
-        updateFilePath(consoleId, node.path);
-
-        const { computeConsoleStateHash } = await import("../utils/stateHash");
-        const savedStateHash = computeConsoleStateHash(
-          data.content,
-          data.connectionId,
-          data.databaseId,
-          data.databaseName,
-        );
-        updateSavedState(consoleId, true, savedStateHash);
+      } catch (e) {
+        console.error("Background fetch failed", e);
       }
-    } catch (e) {
-      console.error("Background fetch failed", e);
-    }
-  };
+    },
+    [currentWorkspace, onConsoleSelect],
+  );
 
   const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
     setMenuAnchor(event.currentTarget);
