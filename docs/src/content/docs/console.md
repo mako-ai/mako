@@ -28,9 +28,11 @@ Hit `Cmd+Enter` (Mac) or `Ctrl+Enter` to execute. Results appear in a table belo
 Open the chat panel and describe what you want. The agent will:
 
 1. Inspect your database schema
-2. Write the query
+2. Write or revise the query
 3. Execute it to verify it works
-4. Place it in your console
+4. Place the result in your console
+
+When the agent edits a console, the chat shows the target console name and a compact diff preview of the change. Click the console name in the tool card to jump back to that console. Large edits are truncated in the preview, so use the editor as the source of truth for the full generated SQL.
 
 ### Organizing
 
