@@ -99,6 +99,7 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
   {
     id: "scheduled-query-executor",
     name: "Execute Scheduled Query",
+    retries: 0,
     concurrency: {
       key: "event.data.consoleId",
       limit: 1,
@@ -218,28 +219,36 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
 
         await SavedConsole.updateOne(
           { _id: new Types.ObjectId(consoleId) },
-          {
-            $set: {
-              "scheduledRun.lastAt": completedAt,
-              "scheduledRun.lastStatus": status,
-              "scheduledRun.lastError": errorMessage,
-              "scheduledRun.lastDurationMs": durationMs,
-              "scheduledRun.lastRowCount": rowCount,
-              ...(nextAt ? { "scheduledRun.nextAt": nextAt } : {}),
-            },
-            $inc: {
-              "scheduledRun.runCount": 1,
-              "scheduledRun.consecutiveFailures": status === "error" ? 1 : 0,
-            },
-          },
+          status === "error"
+            ? {
+                $set: {
+                  "scheduledRun.lastAt": completedAt,
+                  "scheduledRun.lastStatus": status,
+                  "scheduledRun.lastError": errorMessage,
+                  "scheduledRun.lastDurationMs": durationMs,
+                  "scheduledRun.lastRowCount": rowCount,
+                  ...(nextAt ? { "scheduledRun.nextAt": nextAt } : {}),
+                },
+                $inc: {
+                  "scheduledRun.runCount": 1,
+                  "scheduledRun.consecutiveFailures": 1,
+                },
+              }
+            : {
+                $set: {
+                  "scheduledRun.lastAt": completedAt,
+                  "scheduledRun.lastStatus": status,
+                  "scheduledRun.lastError": errorMessage,
+                  "scheduledRun.lastDurationMs": durationMs,
+                  "scheduledRun.lastRowCount": rowCount,
+                  "scheduledRun.consecutiveFailures": 0,
+                  ...(nextAt ? { "scheduledRun.nextAt": nextAt } : {}),
+                },
+                $inc: {
+                  "scheduledRun.runCount": 1,
+                },
+              },
         );
-
-        if (status === "success") {
-          await SavedConsole.updateOne(
-            { _id: new Types.ObjectId(consoleId) },
-            { $set: { "scheduledRun.consecutiveFailures": 0 } },
-          );
-        }
       });
       isFinalized = true;
 
