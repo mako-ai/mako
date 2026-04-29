@@ -35,7 +35,7 @@ export default function V6ComparisonTable() {
           </div>
           <div className="flex items-center gap-4">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors hidden sm:flex items-center gap-1"
             >
               <GitHubIcon className="w-4 h-4" />
@@ -390,7 +390,7 @@ export default function V6ComparisonTable() {
               Get Started Free
             </a>
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="w-full sm:w-auto px-8 py-3.5 border border-zinc-700 text-white font-semibold rounded-lg hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
             >
               <GitHubIcon className="w-5 h-5" />
@@ -411,7 +411,7 @@ export default function V6ComparisonTable() {
           </div>
           <div className="flex items-center gap-6 text-sm text-zinc-500">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-zinc-900 dark:hover:text-white transition-colors"
             >
               GitHub

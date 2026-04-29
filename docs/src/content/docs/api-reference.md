@@ -149,6 +149,40 @@ The response is a **Server-Sent Events (SSE)** stream:
 | `DELETE` | `/api/workspaces/:wid/chats/:id` | Delete a chat      |
 
 
+## Skills
+
+Workspace skills — named playbooks the agent can author and load on demand. See [Skills](/skills/) for the conceptual model.
+
+| Method   | Endpoint                                            | Description                                   |
+| -------- | --------------------------------------------------- | --------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/skills`                       | List every skill in the workspace             |
+| `GET`    | `/api/workspaces/:wid/skills/:id`                   | Get a single skill with full body             |
+| `PUT`    | `/api/workspaces/:wid/skills/:id`                   | Edit `loadWhen`, `body`, or `entities`        |
+| `POST`   | `/api/workspaces/:wid/skills/:id/suppress`          | Toggle the `suppressed` flag                  |
+| `DELETE` | `/api/workspaces/:wid/skills/:id`                   | Permanently delete a skill                    |
+
+All endpoints require authentication and workspace access. Agent-side CRUD is available through the `save_skill`, `delete_skill`, `load_skill`, and `search_skills` tools — see [AI Agent](/ai-agent/#targeted-playbooks-skills).
+
+### Skill Response Shape
+
+```json
+{
+  "success": true,
+  "skill": {
+    "id": "6620...",
+    "name": "mrr_walkthrough_fr",
+    "loadWhen": "Building a sales report or answering questions about MRR in France",
+    "body": "...",
+    "entities": ["mrr", "france", "subscriptions"],
+    "suppressed": false,
+    "useCount": 12,
+    "createdBy": "6612...",
+    "createdAt": "2026-04-23T12:36:00.000Z",
+    "updatedAt": "2026-04-23T12:36:00.000Z"
+  }
+}
+```
+
 ## Dashboards
 
 | Method   | Endpoint                                                         | Description                          |

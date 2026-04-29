@@ -646,7 +646,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
             );
           }
         }}
-        title="Save Dashboard"
+        title="Name Dashboard Version"
       />
 
       <Snackbar

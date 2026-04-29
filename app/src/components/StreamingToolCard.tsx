@@ -36,6 +36,7 @@ import {
   Wrench,
   X,
   ExternalLink,
+  SquareTerminal,
 } from "lucide-react";
 import {
   getAgentToolManifestEntry,
@@ -55,7 +56,20 @@ interface StreamingToolCardProps {
   state: ToolPartState;
   input?: unknown;
   output?: unknown;
+  labelOverride?: string;
+  leadingIconUrl?: string;
+  leadingIconAlt?: string;
+  bodyPreview?: { content: string; language: string };
+  onTitleClick?: () => void;
   onDetailClick?: () => void;
+  /**
+   * Optional — used as a defensive check in the memo comparator so that
+   * React re-renders if the underlying tool call identity actually changed.
+   * In practice parents also use this as the React key, so unmount/remount
+   * handles identity changes, but comparing here keeps memoization safe if
+   * the key strategy ever regresses.
+   */
+  toolCallId?: string;
 }
 
 const ICON_SIZE = 13;
@@ -210,7 +224,38 @@ const pulseKf = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
+const titleShimmerKf = keyframes`
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+`;
+
 // ── Component ────────────────────────────────────────────────
+
+// Terminal states: once the tool call reaches one of these, `input` and
+// `output` are immutable. useChat's `experimental_throttle` still hands us
+// fresh cloned `input` / `output` object references on every tick while the
+// active assistant message streams below, but the contents never change —
+// so a reference-equality memo comparator (like we had before) would
+// needlessly re-render every already-completed card ~20×/sec and make them
+// feel unresponsive (scroll jitters, expand toggle lags). Checking state is
+// enough to bail out here because the parent also uses `toolCallId` as the
+// React key, so a truly different tool call would remount and reset memo.
+const TERMINAL_TOOL_STATES = new Set<ToolPartState>([
+  "output-available",
+  "error",
+]);
+
+function toolInputSignature(input: unknown): string {
+  // Only called while the tool is still active (non-terminal state), so the
+  // payload is small (just the fields being streamed into). JSON.stringify
+  // is plenty fast here and gives us stable value equality across clones.
+  try {
+    return JSON.stringify(input ?? null);
+  } catch {
+    // Circular / non-serializable → conservatively force a re-render.
+    return `__unserializable_${Math.random()}`;
+  }
+}
 
 export const StreamingToolCard = React.memo(
   function StreamingToolCard({
@@ -218,6 +263,11 @@ export const StreamingToolCard = React.memo(
     state,
     input,
     output,
+    labelOverride,
+    leadingIconUrl,
+    leadingIconAlt,
+    bodyPreview,
+    onTitleClick,
     onDetailClick,
   }: StreamingToolCardProps) {
     const config = getToolConfig(toolName);
@@ -269,12 +319,15 @@ export const StreamingToolCard = React.memo(
     const rawContent = config.preview
       ? inputObj?.[config.preview.field]
       : undefined;
-    const code =
+    const defaultCode =
       typeof rawContent === "string"
         ? rawContent
         : rawContent && typeof rawContent === "object"
           ? JSON.stringify(rawContent, null, 2)
           : "";
+    const code = bodyPreview?.content ?? defaultCode;
+    const codeLanguage =
+      bodyPreview?.language ?? config.preview?.language ?? "text";
 
     useEffect(() => {
       if (isStreaming && !userScrolled && codeContainerRef.current) {
@@ -290,7 +343,7 @@ export const StreamingToolCard = React.memo(
       setUserScrolled(!isAtBottom);
     }, []);
 
-    const label = config.getLabel(input);
+    const label = labelOverride ?? config.getLabel(input);
 
     const outputSummary = useMemo(
       () => (isDone || isError ? getOutputSummary(output) : null),
@@ -308,6 +361,8 @@ export const StreamingToolCard = React.memo(
 
     const hasVisibleBody =
       code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
+
+    const canExpand = hasVisibleBody;
 
     const statusText = isStreaming
       ? "Generating…"
@@ -340,8 +395,9 @@ export const StreamingToolCard = React.memo(
       >
         {/* Header */}
         <Box
+          className="tool-card-header"
           onClick={() => {
-            if ((isDone || isError) && hasVisibleBody) {
+            if (canExpand) {
               setExpanded(prev => !prev);
             } else {
               onDetailClick?.();
@@ -364,23 +420,74 @@ export const StreamingToolCard = React.memo(
         >
           <Box
             sx={{
+              position: "relative",
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
+              width: ICON_SIZE + 3,
+              height: ICON_SIZE + 3,
+              flexShrink: 0,
               color: isActive ? "primary.main" : "text.secondary",
+              "& .tool-card-leading-icon, & .tool-card-chevron-icon": {
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "opacity 0.12s ease",
+              },
+              "& .tool-card-leading-icon": {
+                opacity: canExpand && expanded ? 0 : 1,
+              },
+              "& .tool-card-chevron-icon": {
+                opacity: canExpand ? (expanded ? 1 : 0) : 0,
+              },
+              ...(canExpand && {
+                ".tool-card-header:hover & .tool-card-leading-icon": {
+                  opacity: 0,
+                },
+                ".tool-card-header:hover & .tool-card-chevron-icon": {
+                  opacity: 1,
+                },
+              }),
             }}
           >
-            {(isDone || isError) && hasVisibleBody ? (
-              expanded ? (
+            <Box className="tool-card-leading-icon">
+              {leadingIconUrl ? (
+                <Box
+                  component="img"
+                  src={leadingIconUrl}
+                  alt={leadingIconAlt ?? ""}
+                  sx={{
+                    width: ICON_SIZE + 3,
+                    height: ICON_SIZE + 3,
+                    objectFit: "contain",
+                    display: "block",
+                  }}
+                  draggable={false}
+                />
+              ) : labelOverride ? (
+                <SquareTerminal size={ICON_SIZE + 2} strokeWidth={1.6} />
+              ) : (
+                renderToolIcon(config.icon)
+              )}
+            </Box>
+            <Box className="tool-card-chevron-icon">
+              {expanded ? (
                 <ChevronDown size={14} />
               ) : (
                 <ChevronRight size={14} />
-              )
-            ) : (
-              renderToolIcon(config.icon)
-            )}
+              )}
+            </Box>
           </Box>
 
           <Typography
+            component={onTitleClick ? "button" : "span"}
+            onClick={(event: React.MouseEvent<HTMLElement>) => {
+              if (!onTitleClick) return;
+              event.stopPropagation();
+              onTitleClick();
+            }}
             variant="caption"
             sx={{
               fontWeight: 500,
@@ -389,6 +496,30 @@ export const StreamingToolCard = React.memo(
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
+              fontSize: "0.75rem",
+              ...(isStreaming && {
+                background: theme =>
+                  theme.palette.mode === "dark"
+                    ? "linear-gradient(90deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.95) 45%, rgba(255,255,255,0.55) 90%)"
+                    : "linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.9) 45%, rgba(0,0,0,0.45) 90%)",
+                backgroundSize: "200% 100%",
+                backgroundClip: "text",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+                animation: `${titleShimmerKf} 1.6s linear infinite`,
+              }),
+              ...(onTitleClick && {
+                p: 0,
+                border: 0,
+                backgroundColor: "transparent",
+                textAlign: "left",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                lineHeight: "inherit",
+                "&:hover": {
+                  textDecoration: "underline",
+                },
+              }),
             }}
           >
             {label}
@@ -450,7 +581,7 @@ export const StreamingToolCard = React.memo(
             >
               <SyntaxHighlighter
                 style={syntaxTheme}
-                language={config.preview?.language ?? "text"}
+                language={codeLanguage}
                 PreTag="div"
                 customStyle={{
                   fontSize: "0.78rem",
@@ -500,9 +631,34 @@ export const StreamingToolCard = React.memo(
       </Box>
     );
   },
-  (prev, next) =>
-    prev.toolName === next.toolName &&
-    prev.state === next.state &&
-    prev.input === next.input &&
-    prev.output === next.output,
+  (prev, next) => {
+    // Defensive: if the logical tool call changed, always re-render. In the
+    // normal case the parent keys by toolCallId so this branch is dead, but
+    // it protects us if the key strategy ever regresses.
+    if (prev.toolCallId !== next.toolCallId) return false;
+    if (prev.toolName !== next.toolName) return false;
+    if (prev.state !== next.state) return false;
+    if (prev.labelOverride !== next.labelOverride) return false;
+    if (prev.leadingIconUrl !== next.leadingIconUrl) return false;
+    if (prev.leadingIconAlt !== next.leadingIconAlt) return false;
+    if (prev.bodyPreview?.content !== next.bodyPreview?.content) return false;
+    if (prev.bodyPreview?.language !== next.bodyPreview?.language) return false;
+
+    // Terminal states are immutable. Even if useChat handed us new cloned
+    // references for `input` / `output` this tick, the contents are the
+    // same — skip the render.
+    if (TERMINAL_TOOL_STATES.has(next.state)) return true;
+
+    // Non-terminal (input-streaming / input-available / output-streaming):
+    // reference-equality first for the fast path, then fall back to value
+    // equality so growing streamed input fields still trigger re-renders.
+    if (prev.input === next.input && prev.output === next.output) return true;
+    if (toolInputSignature(prev.input) !== toolInputSignature(next.input)) {
+      return false;
+    }
+    if (toolInputSignature(prev.output) !== toolInputSignature(next.output)) {
+      return false;
+    }
+    return true;
+  },
 );

@@ -12,7 +12,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/mako-ai/mono",
+          href: "https://github.com/mako-ai/mako",
         },
       ],
       sidebar: [
@@ -32,6 +32,7 @@ export default defineConfig({
             { label: "Dashboards", slug: "dashboards" },
             { label: "Query Runner", slug: "query-runner" },
             { label: "Self-Directive", slug: "self-directive" },
+            { label: "Skills", slug: "skills" },
           ],
         },
         {

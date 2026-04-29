@@ -27,7 +27,10 @@ export const modifyConsoleSchema = z.object({
   position: z
     .number()
     .nullable()
-    .describe("Position for insert action (null for replace/append/patch)"),
+    .optional()
+    .describe(
+      "Line number for the 'insert' action (1-indexed). Omit or pass null for 'replace', 'append', and 'patch' actions.",
+    ),
   consoleId: z
     .string()
     .describe(

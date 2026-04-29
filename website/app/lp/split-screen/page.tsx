@@ -33,7 +33,7 @@ export default function V4SplitScreen() {
                 Docs
               </Link>
               <Link
-                href="https://github.com/mako-ai/mono"
+                href="https://github.com/mako-ai/mako"
                 className="hover:text-white transition-colors"
               >
                 GitHub
@@ -86,7 +86,7 @@ export default function V4SplitScreen() {
                   Start Free
                 </a>
                 <a
-                  href="https://github.com/mako-ai/mono"
+                  href="https://github.com/mako-ai/mako"
                   className="px-6 py-3 border border-slate-700 text-white font-semibold rounded-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
                 >
                   <GitHubIcon className="w-5 h-5" />
@@ -229,7 +229,7 @@ export default function V4SplitScreen() {
           </div>
           <div className="flex items-center gap-6 text-sm text-slate-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub

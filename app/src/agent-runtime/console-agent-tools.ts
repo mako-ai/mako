@@ -5,7 +5,10 @@ import type {
 import type { ConsoleTab } from "../store/lib/types";
 import { useConsoleStore } from "../store/consoleStore";
 import { generateObjectId } from "../utils/objectId";
-import { applyModification } from "../utils/consoleModification";
+import {
+  applyModification,
+  buildModificationDiff,
+} from "../utils/consoleModification";
 import {
   CONSOLE_EXECUTOR_TOOL_NAMES,
   type AgentToolName,
@@ -137,11 +140,26 @@ export async function executeConsoleAgentTool({
   if (toolName === "modify_console") {
     const action = input.action as "replace" | "insert" | "append" | "patch";
     const content = input.content as string;
-    const position = input.position as number | null;
     const consoleId = input.consoleId as string | undefined;
     const modifyTitle = input.title as string | undefined;
-    const startLine = input.startLine as number | undefined;
-    const endLine = input.endLine as number | undefined;
+
+    // Some tool-calling models (e.g. Qwen via Vercel AI Gateway) serialize
+    // numeric and nullable fields as strings (e.g. "" or "0"). Coerce here so
+    // we accept those without rejecting the call.
+    const coerceOptionalNumber = (raw: unknown): number | null | undefined => {
+      if (raw === undefined || raw === null) return raw as null | undefined;
+      if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+      if (typeof raw === "string") {
+        const trimmed = raw.trim();
+        if (trimmed === "" || trimmed.toLowerCase() === "null") return null;
+        const parsed = Number(trimmed);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return null;
+    };
+    const position = coerceOptionalNumber(input.position) ?? null;
+    const startLine = coerceOptionalNumber(input.startLine) ?? undefined;
+    const endLine = coerceOptionalNumber(input.endLine) ?? undefined;
 
     if (!consoleId) {
       emitToolOutput(addToolOutput, toolName, toolCallId, {
@@ -218,6 +236,7 @@ export async function executeConsoleAgentTool({
       endLine,
     };
     const newContent = applyModification(currentContent, modification);
+    const diff = buildModificationDiff(currentContent, modification);
     currentStore.updateContent(consoleId, newContent);
 
     if (modifyTitle) {
@@ -227,6 +246,8 @@ export async function executeConsoleAgentTool({
     emitToolOutput(addToolOutput, toolName, toolCallId, {
       success: true,
       consoleId,
+      title: modifyTitle ?? targetConsole.title,
+      diff,
       message: `Console ${action}${action === "patch" ? "ed" : "d"} successfully`,
     });
     return true;

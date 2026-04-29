@@ -80,6 +80,13 @@ import {
   computeDashboardStateHash,
 } from "../utils/stateHash";
 import type { ScheduledQueryRunItem } from "../lib/api-types";
+import {
+  logRenderDebug,
+  onRenderDebug,
+  renderDebugEnabled,
+  useRenderCount,
+  useWhyChanged,
+} from "../utils/renderDebug";
 
 interface QueryPageInfo {
   pageSize: number;
@@ -468,6 +475,30 @@ function Editor({
     scheduleModalTab?.schedule?.cron?.trim() &&
       scheduleModalTab?.schedule?.timezone?.trim(),
   );
+  const activeTab = activeConsoleId ? tabs[activeConsoleId] : undefined;
+  useRenderCount("Editor", {
+    activeConsoleId,
+    tabCount: consoleTabs.length,
+  });
+  useWhyChanged("Editor", {
+    currentWorkspaceId: currentWorkspace?.id,
+    tabsRef: tabs,
+    consoleTabsRef: consoleTabs,
+    tabCount: consoleTabs.length,
+    activeConsoleId,
+    activeTabKind: activeTab?.kind,
+    activeTabContentRef: activeTab?.content,
+    activeTabResultsRef: activeConsoleId ? tabResults[activeConsoleId] : null,
+    activeTabResultsExecutedAt: activeConsoleId
+      ? tabResults[activeConsoleId]?.executedAt
+      : undefined,
+    executingTabsRef: executingTabs,
+    cancellingTabsRef: cancellingTabs,
+    isSaving,
+    tabViewModesRef: tabViewModes,
+    tabChartSpecsRef: tabChartSpecs,
+    availableDatabasesRef: availableDatabases,
+  });
 
   const setChartSpecForTab = useCallback(
     (tabId: string, spec: import("../lib/chart-spec").MakoChartSpec | null) => {
@@ -484,6 +515,9 @@ function Editor({
     },
     [updateResultsViewMode],
   );
+  const handlePanelLayout = useCallback((tabId: string, layout: number[]) => {
+    logRenderDebug("Editor.panel-layout", { tabId, layout });
+  }, []);
 
   // Refs for each Console instance
   const consoleRefs = useRef<Record<string, React.RefObject<ConsoleRef>>>({});
@@ -2020,213 +2054,233 @@ function Editor({
                   />
                 ) : (
                   /* Console tab: editor + results split */
-                  <PanelGroup
-                    direction="vertical"
-                    style={{ height: "100%", width: "100%" }}
+                  <React.Profiler
+                    id={`Editor.console-panels.${tab.id}`}
+                    onRender={onRenderDebug}
                   >
-                    <Panel defaultSize={60} minSize={1}>
-                      <Console
-                        ref={consoleRefs.current[tab.id]}
-                        consoleId={tab.id}
-                        initialContent={tab.content}
-                        title={tab.title}
-                        onExecute={(content, connectionId, databaseId) =>
-                          handleConsoleExecute(tab.id, content, connectionId, {
-                            databaseId: databaseId || tab.databaseId,
-                            databaseName: tab.databaseName,
-                          })
-                        }
-                        onCancel={() => handleConsoleCancel(tab.id)}
-                        onSave={(content, currentPath) =>
-                          handleConsoleSave(tab.id, content, currentPath)
-                        }
-                        onSaveAsCopy={content =>
-                          handleSaveAsCopy(tab.id, content)
-                        }
-                        onRenameMove={(content, currentPath) =>
-                          handleRenameMove(tab.id, content, currentPath)
-                        }
-                        isExecuting={executingTabs[tab.id] || false}
-                        isCancelling={cancellingTabs[tab.id] || false}
-                        isSaving={isSaving}
-                        onContentChange={content => {
-                          updateContent(tab.id, content);
-                          if (!tab.isDirty) {
-                            updateDirty(tab.id, true);
+                    <PanelGroup
+                      direction="vertical"
+                      style={{ height: "100%", width: "100%" }}
+                      onLayout={
+                        renderDebugEnabled
+                          ? layout => handlePanelLayout(tab.id, layout)
+                          : undefined
+                      }
+                    >
+                      <Panel defaultSize={60} minSize={1}>
+                        <Console
+                          ref={consoleRefs.current[tab.id]}
+                          consoleId={tab.id}
+                          initialContent={tab.content}
+                          title={tab.title}
+                          onExecute={(content, connectionId, databaseId) =>
+                            handleConsoleExecute(
+                              tab.id,
+                              content,
+                              connectionId,
+                              {
+                                databaseId: databaseId || tab.databaseId,
+                                databaseName: tab.databaseName,
+                              },
+                            )
                           }
-                          // Also refresh activeEditorContent for Chat consumers
-                          const ref = consoleRefs.current[tab.id]?.current;
-                          if (activeConsoleId === tab.id && ref) {
-                            setActiveEditorContent(ref.getCurrentContent());
+                          onCancel={() => handleConsoleCancel(tab.id)}
+                          onSave={(content, currentPath) =>
+                            handleConsoleSave(tab.id, content, currentPath)
                           }
-                        }}
-                        connectionId={tab.connectionId}
-                        databaseId={tab.databaseId}
-                        databaseName={tab.databaseName}
-                        databases={availableDatabases}
-                        onDatabaseChange={connId =>
-                          updateConnection(tab.id, connId)
-                        }
-                        onDatabaseNameChange={(dbId, dbName) =>
-                          updateDatabase(tab.id, dbId, dbName)
-                        }
-                        filePath={tab.filePath}
-                        enableVersionControl={true}
-                        onHistoryClick={() => {
-                          setVersionHistoryTabId(tab.id);
-                          setVersionHistoryEntityType("console");
-                          setVersionHistoryOpen(true);
-                        }}
-                        historyAvailable={tab.isSaved}
-                        schedule={tab.schedule}
-                        onCreateSchedule={() =>
-                          handleOpenScheduleModal(tab.id, "create")
-                        }
-                        onUpdateSchedule={() =>
-                          handleOpenScheduleModal(tab.id, "update")
-                        }
-                        onRemoveSchedule={() => {
-                          void handleRemoveSchedule(tab.id);
-                        }}
-                      />
-                    </Panel>
-
-                    <StyledVerticalResizeHandle />
-
-                    <Panel defaultSize={40} minSize={1}>
-                      <Box sx={{ height: "100%", overflow: "hidden" }}>
-                        <Box
-                          sx={{
-                            height: "100%",
-                            display: "flex",
-                            flexDirection: "column",
+                          onSaveAsCopy={content =>
+                            handleSaveAsCopy(tab.id, content)
+                          }
+                          onRenameMove={(content, currentPath) =>
+                            handleRenameMove(tab.id, content, currentPath)
+                          }
+                          isExecuting={executingTabs[tab.id] || false}
+                          isCancelling={cancellingTabs[tab.id] || false}
+                          isSaving={isSaving}
+                          onContentChange={content => {
+                            updateContent(tab.id, content);
+                            if (!tab.isDirty) {
+                              updateDirty(tab.id, true);
+                            }
+                            // Also refresh activeEditorContent for Chat consumers
+                            const ref = consoleRefs.current[tab.id]?.current;
+                            if (activeConsoleId === tab.id && ref) {
+                              setActiveEditorContent(ref.getCurrentContent());
+                            }
                           }}
-                        >
+                          connectionId={tab.connectionId}
+                          databaseId={tab.databaseId}
+                          databaseName={tab.databaseName}
+                          databases={availableDatabases}
+                          onDatabaseChange={connId =>
+                            updateConnection(tab.id, connId)
+                          }
+                          onDatabaseNameChange={(dbId, dbName) =>
+                            updateDatabase(tab.id, dbId, dbName)
+                          }
+                          filePath={tab.filePath}
+                          enableVersionControl={true}
+                          onHistoryClick={() => {
+                            setVersionHistoryTabId(tab.id);
+                            setVersionHistoryEntityType("console");
+                            setVersionHistoryOpen(true);
+                          }}
+                          historyAvailable={tab.isSaved}
+                          schedule={tab.schedule}
+                          onCreateSchedule={() =>
+                            handleOpenScheduleModal(tab.id, "create")
+                          }
+                          onUpdateSchedule={() =>
+                            handleOpenScheduleModal(tab.id, "update")
+                          }
+                          onRemoveSchedule={() => {
+                            void handleRemoveSchedule(tab.id);
+                          }}
+                        />
+                      </Panel>
+
+                      <StyledVerticalResizeHandle />
+
+                      <Panel defaultSize={40} minSize={1}>
+                        <Box sx={{ height: "100%", overflow: "hidden" }}>
                           <Box
                             sx={{
-                              px: 1.5,
-                              borderBottom: 1,
-                              borderColor: "divider",
-                              minHeight: 36,
+                              height: "100%",
                               display: "flex",
-                              alignItems: "center",
+                              flexDirection: "column",
                             }}
                           >
-                            <Tabs
-                              value={tabBottomPanel[tab.id] || "results"}
-                              onChange={(_event, value: "results" | "runs") => {
-                                setTabBottomPanel(prev => ({
-                                  ...prev,
-                                  [tab.id]: value,
-                                }));
-                                if (value === "runs") {
-                                  void loadScheduledRunsForTab(tab.id);
-                                }
-                              }}
+                            <Box
                               sx={{
+                                px: 1.5,
+                                borderBottom: 1,
+                                borderColor: "divider",
                                 minHeight: 36,
-                                "& .MuiTabs-indicator": {
-                                  height: 2,
-                                },
+                                display: "flex",
+                                alignItems: "center",
                               }}
                             >
-                              <Tab
-                                value="results"
-                                label="Results"
-                                disableRipple
-                                sx={{
-                                  minHeight: 36,
-                                  py: 0.25,
-                                  px: 1.25,
-                                  minWidth: 0,
-                                  textTransform: "none",
-                                  fontSize: "0.875rem",
-                                  fontWeight: 600,
-                                  color: "text.secondary",
-                                  "&.Mui-selected": {
-                                    color: "text.primary",
-                                  },
-                                }}
-                              />
-                              <Tab
-                                value="runs"
-                                label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
-                                disabled={!tab.schedule}
-                                disableRipple
-                                sx={{
-                                  minHeight: 36,
-                                  py: 0.25,
-                                  px: 1.25,
-                                  minWidth: 0,
-                                  textTransform: "none",
-                                  fontSize: "0.875rem",
-                                  fontWeight: 600,
-                                  color: "text.secondary",
-                                  "&.Mui-selected": {
-                                    color: "text.primary",
-                                  },
-                                  "&.Mui-disabled": {
-                                    opacity: 0.5,
-                                  },
-                                }}
-                              />
-                            </Tabs>
-                          </Box>
-                          <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-                            {(tabBottomPanel[tab.id] || "results") ===
-                            "runs" ? (
-                              <ScheduledRunsPanel
-                                loading={
-                                  tabScheduledRunsLoading[tab.id] || false
-                                }
-                                error={tabScheduledRunsError[tab.id]}
-                                runs={tabScheduledRuns[tab.id] || []}
-                              />
-                            ) : (
-                              <ResultsTable
-                                results={tabResults[tab.id] || null}
-                                chartSpec={tabChartSpecs[tab.id] ?? null}
-                                onChartSpecChange={spec =>
-                                  setChartSpecForTab(tab.id, spec)
-                                }
-                                viewMode={tabViewModes[tab.id] ?? "table"}
-                                onViewModeChange={mode =>
-                                  setViewModeForTab(tab.id, mode)
-                                }
-                                onChartRenderError={error => {
-                                  const cb =
-                                    pendingRenderCallbackRef.current[tab.id];
-                                  if (cb) {
-                                    cb({ success: false, error });
-                                    delete pendingRenderCallbackRef.current[
-                                      tab.id
-                                    ];
+                              <Tabs
+                                value={tabBottomPanel[tab.id] || "results"}
+                                onChange={(
+                                  _event,
+                                  value: "results" | "runs",
+                                ) => {
+                                  setTabBottomPanel(prev => ({
+                                    ...prev,
+                                    [tab.id]: value,
+                                  }));
+                                  if (value === "runs") {
+                                    void loadScheduledRunsForTab(tab.id);
                                   }
                                 }}
-                                onChartRenderSuccess={() => {
-                                  const cb =
-                                    pendingRenderCallbackRef.current[tab.id];
-                                  if (cb) {
-                                    cb({ success: true });
-                                    delete pendingRenderCallbackRef.current[
-                                      tab.id
-                                    ];
-                                  }
+                                sx={{
+                                  minHeight: 36,
+                                  "& .MuiTabs-indicator": {
+                                    height: 2,
+                                  },
                                 }}
-                                onPreviousPage={() =>
-                                  handlePreviousResultsPage(tab.id)
-                                }
-                                onNextPage={() => handleNextResultsPage(tab.id)}
-                                onDownload={format =>
-                                  handleDownloadResults(tab.id, format)
-                                }
-                              />
-                            )}
+                              >
+                                <Tab
+                                  value="results"
+                                  label="Results"
+                                  disableRipple
+                                  sx={{
+                                    minHeight: 36,
+                                    py: 0.25,
+                                    px: 1.25,
+                                    minWidth: 0,
+                                    textTransform: "none",
+                                    fontSize: "0.875rem",
+                                    fontWeight: 600,
+                                    color: "text.secondary",
+                                    "&.Mui-selected": {
+                                      color: "text.primary",
+                                    },
+                                  }}
+                                />
+                                <Tab
+                                  value="runs"
+                                  label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
+                                  disabled={!tab.schedule}
+                                  disableRipple
+                                  sx={{
+                                    minHeight: 36,
+                                    py: 0.25,
+                                    px: 1.25,
+                                    minWidth: 0,
+                                    textTransform: "none",
+                                    fontSize: "0.875rem",
+                                    fontWeight: 600,
+                                    color: "text.secondary",
+                                    "&.Mui-selected": {
+                                      color: "text.primary",
+                                    },
+                                    "&.Mui-disabled": {
+                                      opacity: 0.5,
+                                    },
+                                  }}
+                                />
+                              </Tabs>
+                            </Box>
+                            <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+                              {(tabBottomPanel[tab.id] || "results") ===
+                              "runs" ? (
+                                <ScheduledRunsPanel
+                                  loading={
+                                    tabScheduledRunsLoading[tab.id] || false
+                                  }
+                                  error={tabScheduledRunsError[tab.id]}
+                                  runs={tabScheduledRuns[tab.id] || []}
+                                />
+                              ) : (
+                                <ResultsTable
+                                  results={tabResults[tab.id] || null}
+                                  chartSpec={tabChartSpecs[tab.id] ?? null}
+                                  onChartSpecChange={spec =>
+                                    setChartSpecForTab(tab.id, spec)
+                                  }
+                                  viewMode={tabViewModes[tab.id] ?? "table"}
+                                  onViewModeChange={mode =>
+                                    setViewModeForTab(tab.id, mode)
+                                  }
+                                  onChartRenderError={error => {
+                                    const cb =
+                                      pendingRenderCallbackRef.current[tab.id];
+                                    if (cb) {
+                                      cb({ success: false, error });
+                                      delete pendingRenderCallbackRef.current[
+                                        tab.id
+                                      ];
+                                    }
+                                  }}
+                                  onChartRenderSuccess={() => {
+                                    const cb =
+                                      pendingRenderCallbackRef.current[tab.id];
+                                    if (cb) {
+                                      cb({ success: true });
+                                      delete pendingRenderCallbackRef.current[
+                                        tab.id
+                                      ];
+                                    }
+                                  }}
+                                  onPreviousPage={() =>
+                                    handlePreviousResultsPage(tab.id)
+                                  }
+                                  onNextPage={() =>
+                                    handleNextResultsPage(tab.id)
+                                  }
+                                  onDownload={format =>
+                                    handleDownloadResults(tab.id, format)
+                                  }
+                                />
+                              )}
+                            </Box>
                           </Box>
                         </Box>
-                      </Box>
-                    </Panel>
-                  </PanelGroup>
+                      </Panel>
+                    </PanelGroup>
+                  </React.Profiler>
                 )}
               </Box>
             ))}
@@ -2342,7 +2396,7 @@ function Editor({
         open={commentDialogOpen}
         onSave={handleCommentSaveConfirm}
         onCancel={handleCommentSaveCancel}
-        title="Save Console"
+        title="Name Console Version"
         defaultComment={suggestedComment}
         loading={suggestedCommentLoading}
         diff={saveCommentDiff}

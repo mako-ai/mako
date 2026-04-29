@@ -22,7 +22,7 @@ export default function V9InteractiveDemo() {
               Features
             </Link>
             <Link
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub
@@ -146,7 +146,7 @@ export default function V9InteractiveDemo() {
                 Launch Mako
               </a>
               <a
-                href="https://github.com/mako-ai/mono"
+                href="https://github.com/mako-ai/mako"
                 className="w-full sm:w-auto px-8 py-4 border border-white/20 text-white font-semibold rounded-lg hover:bg-white/5 transition-colors flex items-center justify-center gap-2"
               >
                 <GitHubIcon className="w-5 h-5" />
@@ -168,7 +168,7 @@ export default function V9InteractiveDemo() {
           </div>
           <div className="flex items-center gap-6 text-sm text-slate-400">
             <a
-              href="https://github.com/mako-ai/mono"
+              href="https://github.com/mako-ai/mako"
               className="hover:text-white transition-colors"
             >
               GitHub
