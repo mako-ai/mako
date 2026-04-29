@@ -441,6 +441,7 @@ function Editor({
   const updateResultsViewMode = useConsoleStore(
     state => state.updateResultsViewMode,
   );
+  const updateMetadata = useConsoleStore(state => state.updateMetadata);
   const setActiveTab = useConsoleStore(state => state.setActiveTab);
   const getVersionManager = useConsoleStore(state => state.getVersionManager);
   const generateSaveComment = useConsoleStore(
@@ -463,6 +464,10 @@ function Editor({
   const consoleTabs = useConsoleStore(useShallow(selectConsoleTabs));
   const activeConsoleId = activeTabId;
   const scheduleModalTab = scheduleModalTabId ? tabs[scheduleModalTabId] : null;
+  const scheduleModalHasSchedule = Boolean(
+    scheduleModalTab?.schedule?.cron?.trim() &&
+      scheduleModalTab?.schedule?.timezone?.trim(),
+  );
 
   const setChartSpecForTab = useCallback(
     (tabId: string, spec: import("../lib/chart-spec").MakoChartSpec | null) => {
@@ -1274,6 +1279,25 @@ function Editor({
     [currentWorkspace, listScheduledRuns],
   );
 
+  useEffect(() => {
+    if (!activeTabId) return;
+
+    const activeTab = tabs[activeTabId];
+    if (!activeTab?.metadata?.openScheduledRuns) return;
+
+    setTabBottomPanel(prev =>
+      prev[activeTabId] === "runs" ? prev : { ...prev, [activeTabId]: "runs" },
+    );
+    void loadScheduledRunsForTab(activeTabId);
+
+    const nextMetadata = { ...(activeTab.metadata || {}) };
+    delete nextMetadata.openScheduledRuns;
+    updateMetadata(
+      activeTabId,
+      Object.keys(nextMetadata).length > 0 ? nextMetadata : undefined,
+    );
+  }, [activeTabId, tabs, loadScheduledRunsForTab, updateMetadata]);
+
   const handleOpenScheduleModal = useCallback(
     (tabId: string, mode: "create" | "update") => {
       setScheduleModalTabId(tabId);
@@ -2078,26 +2102,76 @@ function Editor({
                             flexDirection: "column",
                           }}
                         >
-                          <Tabs
-                            value={tabBottomPanel[tab.id] || "results"}
-                            onChange={(_event, value: "results" | "runs") => {
-                              setTabBottomPanel(prev => ({
-                                ...prev,
-                                [tab.id]: value,
-                              }));
-                              if (value === "runs") {
-                                void loadScheduledRunsForTab(tab.id);
-                              }
+                          <Box
+                            sx={{
+                              px: 1.5,
+                              borderBottom: 1,
+                              borderColor: "divider",
+                              minHeight: 36,
+                              display: "flex",
+                              alignItems: "center",
                             }}
-                            sx={{ minHeight: 40 }}
                           >
-                            <Tab value="results" label="Results" />
-                            <Tab
-                              value="runs"
-                              label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
-                              disabled={!tab.schedule}
-                            />
-                          </Tabs>
+                            <Tabs
+                              value={tabBottomPanel[tab.id] || "results"}
+                              onChange={(_event, value: "results" | "runs") => {
+                                setTabBottomPanel(prev => ({
+                                  ...prev,
+                                  [tab.id]: value,
+                                }));
+                                if (value === "runs") {
+                                  void loadScheduledRunsForTab(tab.id);
+                                }
+                              }}
+                              sx={{
+                                minHeight: 36,
+                                "& .MuiTabs-indicator": {
+                                  height: 2,
+                                },
+                              }}
+                            >
+                              <Tab
+                                value="results"
+                                label="Results"
+                                disableRipple
+                                sx={{
+                                  minHeight: 36,
+                                  py: 0.25,
+                                  px: 1.25,
+                                  minWidth: 0,
+                                  textTransform: "none",
+                                  fontSize: "0.875rem",
+                                  fontWeight: 600,
+                                  color: "text.secondary",
+                                  "&.Mui-selected": {
+                                    color: "text.primary",
+                                  },
+                                }}
+                              />
+                              <Tab
+                                value="runs"
+                                label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
+                                disabled={!tab.schedule}
+                                disableRipple
+                                sx={{
+                                  minHeight: 36,
+                                  py: 0.25,
+                                  px: 1.25,
+                                  minWidth: 0,
+                                  textTransform: "none",
+                                  fontSize: "0.875rem",
+                                  fontWeight: 600,
+                                  color: "text.secondary",
+                                  "&.Mui-selected": {
+                                    color: "text.primary",
+                                  },
+                                  "&.Mui-disabled": {
+                                    opacity: 0.5,
+                                  },
+                                }}
+                              />
+                            </Tabs>
+                          </Box>
                           <Box sx={{ flexGrow: 1, minHeight: 0 }}>
                             {(tabBottomPanel[tab.id] || "results") ===
                             "runs" ? (
@@ -2306,12 +2380,12 @@ function Editor({
           onClose={() => setScheduleModalTabId(null)}
           onSave={handleSaveSchedule}
           onRemove={
-            scheduleModalMode === "update" && scheduleModalTab.schedule
+            scheduleModalMode === "update" && scheduleModalHasSchedule
               ? async () => handleRemoveSchedule(scheduleModalTab.id)
               : undefined
           }
           onRunNow={
-            scheduleModalMode === "update" && scheduleModalTab.schedule
+            scheduleModalMode === "update" && scheduleModalHasSchedule
               ? async () => handleRunScheduledNow(scheduleModalTab.id)
               : undefined
           }

@@ -175,6 +175,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const savedStateHash = tab?.savedStateHash;
   const isSaved = tab?.isSaved ?? false;
   const isReadOnly = tab?.readOnly ?? false;
+  const hasSchedule = Boolean(
+    schedule?.cron?.trim() && schedule?.timezone?.trim(),
+  );
 
   // State for info modal
   const [infoModalOpen, setInfoModalOpen] = useState(false);
@@ -1014,7 +1017,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                 title={
                   !isSaved
                     ? "Save this console before scheduling it"
-                    : schedule
+                    : hasSchedule
                       ? "Update scheduled query"
                       : "Create scheduled query"
                 }
@@ -1027,7 +1030,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                       <Badge
                         color="success"
                         variant="dot"
-                        invisible={!schedule}
+                        invisible={!hasSchedule}
                         overlap="circular"
                       >
                         <ScheduleIcon size={16} />
@@ -1049,7 +1052,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                 onClose={() => setScheduleMenuAnchor(null)}
               >
                 <MenuItem
-                  disabled={!isSaved || Boolean(schedule)}
+                  disabled={!isSaved || hasSchedule}
                   onClick={() => {
                     setScheduleMenuAnchor(null);
                     onCreateSchedule?.();
@@ -1058,7 +1061,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   Create new scheduled query
                 </MenuItem>
                 <MenuItem
-                  disabled={!isSaved || !schedule}
+                  disabled={!isSaved || !hasSchedule}
                   onClick={() => {
                     setScheduleMenuAnchor(null);
                     onUpdateSchedule?.();
@@ -1066,7 +1069,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                 >
                   Update scheduled query
                 </MenuItem>
-                {schedule && onRemoveSchedule && (
+                {hasSchedule && onRemoveSchedule && (
                   <MenuItem
                     onClick={() => {
                       setScheduleMenuAnchor(null);

@@ -43,6 +43,7 @@ interface ConsoleActions {
   updateContent: (id: string, content: string) => void;
   updateTitle: (id: string, title: string) => void;
   updateDirty: (id: string, isDirty: boolean) => void;
+  updateMetadata: (id: string, metadata?: Record<string, unknown>) => void;
   updateIcon: (id: string, icon: string) => void;
   updateConnection: (id: string, connectionId?: string) => void;
   updateDatabase: (
@@ -66,7 +67,11 @@ interface ConsoleActions {
   getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
 
   // API operations
-  loadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
+  loadConsole: (
+    workspaceId: string,
+    consoleId: string,
+    options?: { openScheduledRuns?: boolean },
+  ) => Promise<void>;
   reloadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
   fetchConsoleContent: (
     workspaceId: string,
@@ -317,6 +322,18 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
         }),
 
+      updateMetadata: (id, metadata) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            if (metadata && Object.keys(metadata).length > 0) {
+              tab.metadata = metadata;
+            } else {
+              delete tab.metadata;
+            }
+          }
+        }),
+
       updateIcon: (id, icon) =>
         set(state => {
           const tab = state.tabs[id];
@@ -379,9 +396,16 @@ export const useConsoleStore = create<ConsoleStore>()(
       getVersionManager: consoleId => versionManagers.get(consoleId) || null,
 
       // API operations
-      loadConsole: async (workspaceId, consoleId) => {
+      loadConsole: async (workspaceId, consoleId, options) => {
         // Check if console is already loaded
         if (get().tabs[consoleId]) {
+          if (options?.openScheduledRuns) {
+            const existingMetadata = get().tabs[consoleId].metadata;
+            get().updateMetadata(consoleId, {
+              ...(existingMetadata || {}),
+              openScheduledRuns: true,
+            });
+          }
           get().setActiveTab(consoleId);
           return;
         }
@@ -418,6 +442,9 @@ export const useConsoleStore = create<ConsoleStore>()(
               access: res.access,
               owner_id: res.owner_id,
               readOnly: res.readOnly,
+              metadata: options?.openScheduledRuns
+                ? { openScheduledRuns: true }
+                : undefined,
             });
             get().setActiveTab(res.id);
           } else {

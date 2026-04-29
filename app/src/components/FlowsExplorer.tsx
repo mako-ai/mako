@@ -275,7 +275,9 @@ export function FlowsExplorer() {
     if (!workspaceId) return;
 
     if (flowNode.itemType === "scheduled-query" && flowNode.consoleId) {
-      await loadConsole(workspaceId, flowNode.consoleId);
+      await loadConsole(workspaceId, flowNode.consoleId, {
+        openScheduledRuns: true,
+      });
       return;
     }
 
