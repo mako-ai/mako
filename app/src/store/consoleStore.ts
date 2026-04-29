@@ -13,6 +13,8 @@ import type {
   ConsoleSaveResponse,
   QueryCancelResponse,
   QueryExecuteResponse,
+  ScheduledQueryRunsResponse,
+  ScheduledQueryScheduleResponse,
 } from "../lib/api-types";
 
 interface ConsoleState {
@@ -42,6 +44,7 @@ interface ConsoleActions {
   updateContent: (id: string, content: string) => void;
   updateTitle: (id: string, title: string) => void;
   updateDirty: (id: string, isDirty: boolean) => void;
+  updateMetadata: (id: string, metadata?: Record<string, unknown>) => void;
   updateIcon: (id: string, icon: string) => void;
   updateConnection: (id: string, connectionId?: string) => void;
   updateDatabase: (
@@ -65,7 +68,11 @@ interface ConsoleActions {
   getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
 
   // API operations
-  loadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
+  loadConsole: (
+    workspaceId: string,
+    consoleId: string,
+    options?: { openScheduledRuns?: boolean },
+  ) => Promise<void>;
   reloadConsole: (workspaceId: string, consoleId: string) => Promise<void>;
   fetchConsoleContent: (
     workspaceId: string,
@@ -136,6 +143,24 @@ interface ConsoleActions {
     },
     signal?: AbortSignal,
   ) => Promise<{ comment: string | null; diff: string | null }>;
+  setSchedule: (
+    workspaceId: string,
+    consoleId: string,
+    input: { name: string; cron: string; timezone: string },
+  ) => Promise<ScheduledQueryScheduleResponse>;
+  removeSchedule: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<{ success: boolean; error?: string }>;
+  runScheduledNow: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<ScheduledQueryScheduleResponse>;
+  listScheduledRuns: (
+    workspaceId: string,
+    consoleId: string,
+    limit?: number,
+  ) => Promise<ScheduledQueryRunsResponse>;
 }
 
 type ConsoleStore = ConsoleState & ConsoleActions;
@@ -302,6 +327,18 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
         }),
 
+      updateMetadata: (id, metadata) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            if (metadata && Object.keys(metadata).length > 0) {
+              tab.metadata = metadata;
+            } else {
+              delete tab.metadata;
+            }
+          }
+        }),
+
       updateIcon: (id, icon) =>
         set(state => {
           const tab = state.tabs[id];
@@ -381,9 +418,16 @@ export const useConsoleStore = create<ConsoleStore>()(
       getVersionManager: consoleId => versionManagers.get(consoleId) || null,
 
       // API operations
-      loadConsole: async (workspaceId, consoleId) => {
+      loadConsole: async (workspaceId, consoleId, options) => {
         // Check if console is already loaded
         if (get().tabs[consoleId]) {
+          if (options?.openScheduledRuns) {
+            const existingMetadata = get().tabs[consoleId].metadata;
+            get().updateMetadata(consoleId, {
+              ...(existingMetadata || {}),
+              openScheduledRuns: true,
+            });
+          }
           get().setActiveTab(consoleId);
           return;
         }
@@ -415,6 +459,14 @@ export const useConsoleStore = create<ConsoleStore>()(
               kind: "console",
               chartSpec: res.chartSpec,
               resultsViewMode: res.resultsViewMode,
+              schedule: res.schedule,
+              scheduledRun: res.scheduledRun,
+              access: res.access,
+              owner_id: res.owner_id,
+              readOnly: res.readOnly,
+              metadata: options?.openScheduledRuns
+                ? { openScheduledRuns: true }
+                : undefined,
             });
             get().setActiveTab(res.id);
           } else {
@@ -487,6 +539,8 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.access = res.access;
                 tab.owner_id = res.owner_id;
                 tab.readOnly = res.readOnly;
+                tab.schedule = res.schedule;
+                tab.scheduledRun = res.scheduledRun;
               }
             });
 
@@ -703,6 +757,89 @@ export const useConsoleStore = create<ConsoleStore>()(
             : { comment: null, diff: null };
         } catch {
           return { comment: null, diff: null };
+        }
+      },
+
+      setSchedule: async (workspaceId, consoleId, input) => {
+        try {
+          const response = await apiClient.put<ScheduledQueryScheduleResponse>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/schedule`,
+            input,
+          );
+
+          if (response.success) {
+            set(state => {
+              const tab = state.tabs[consoleId];
+              if (tab) {
+                tab.title = response.console?.name || input.name;
+                tab.schedule = response.schedule;
+                tab.scheduledRun = response.scheduledRun;
+              }
+            });
+          }
+
+          return response;
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Failed to update schedule",
+          } as ScheduledQueryScheduleResponse;
+        }
+      },
+
+      removeSchedule: async (workspaceId, consoleId) => {
+        try {
+          const response = await apiClient.delete<{
+            success: boolean;
+            error?: string;
+          }>(`/workspaces/${workspaceId}/consoles/${consoleId}/schedule`);
+
+          if (response.success) {
+            set(state => {
+              const tab = state.tabs[consoleId];
+              if (tab) {
+                delete tab.schedule;
+                if (tab.scheduledRun) {
+                  delete tab.scheduledRun.nextAt;
+                }
+              }
+            });
+          }
+
+          return response;
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Failed to remove schedule",
+          };
+        }
+      },
+
+      runScheduledNow: async (workspaceId, consoleId) => {
+        try {
+          return await apiClient.post<ScheduledQueryScheduleResponse>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/schedule/run`,
+          );
+        } catch (e) {
+          return {
+            success: false,
+            error: e instanceof Error ? e.message : "Failed to run schedule",
+          } as ScheduledQueryScheduleResponse;
+        }
+      },
+
+      listScheduledRuns: async (workspaceId, consoleId, limit = 50) => {
+        try {
+          return await apiClient.get<ScheduledQueryRunsResponse>(
+            `/workspaces/${workspaceId}/consoles/${consoleId}/schedule/runs`,
+            { limit: String(limit) },
+          );
+        } catch (e) {
+          return {
+            success: false,
+            runs: [],
+            error: e instanceof Error ? e.message : "Failed to load runs",
+          } as ScheduledQueryRunsResponse & { error?: string };
         }
       },
 

@@ -77,6 +77,21 @@ export interface ConsoleTab {
   owner_id?: string;
   /** True if the current user can only read (not edit) this console */
   readOnly?: boolean;
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  scheduledRun?: {
+    nextAt?: string;
+    lastAt?: string;
+    lastStatus?: "success" | "error";
+    lastError?: string;
+    lastDurationMs?: number;
+    lastRowsAffected?: number;
+    lastRowCount?: number;
+    runCount: number;
+    consecutiveFailures: number;
+  };
 }
 
 /**

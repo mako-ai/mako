@@ -7,7 +7,12 @@ const logger = loggers.query();
 /**
  * Query execution source types
  */
-export type QuerySource = "console_ui" | "api" | "agent" | "flow";
+export type QuerySource =
+  | "console_ui"
+  | "api"
+  | "agent"
+  | "flow"
+  | "scheduled_query";
 
 /**
  * Query execution status types
