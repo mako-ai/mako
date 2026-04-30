@@ -19,6 +19,7 @@ import {
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { enqueueWebhookProcess } from "../webhook-process-enqueue";
 
 const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
@@ -1347,6 +1348,16 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       ingestPendingWebhookEvents(logger),
     )) as { ingested: number; dropped: number; failed: number };
 
+    const staleCleanup = (await step.run(
+      "cleanup-stale-pending-cdc",
+      cleanupStalePendingCdcEvents,
+    )) as {
+      scanned: number;
+      droppedCdc: number;
+      droppedWebhooks: number;
+      cursorsAdvanced: number;
+    };
+
     const staleEntities = (await step.run(
       "find-stale-entities",
       findStaleEntities,
@@ -1369,12 +1380,17 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       totalTriggered = staleEntities.length;
     }
 
-    if (ingestResult.ingested > 0 || totalTriggered > 0) {
+    if (
+      ingestResult.ingested > 0 ||
+      totalTriggered > 0 ||
+      staleCleanup.droppedCdc > 0
+    ) {
       logger.info("CDC scheduler completed", {
         ingested: ingestResult.ingested,
         dropped: ingestResult.dropped,
         failed: ingestResult.failed,
         materializeTriggered: totalTriggered,
+        stalePendingCleanup: staleCleanup,
       });
     }
 
@@ -1383,6 +1399,7 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       dropped: ingestResult.dropped,
       failed: ingestResult.failed,
       materializeTriggered: totalTriggered,
+      stalePendingCleanup: staleCleanup,
     };
   },
 );

@@ -2157,6 +2157,11 @@ CdcChangeEventSchema.index({
 });
 CdcChangeEventSchema.index({
   flowId: 1,
+  materializationStatus: 1,
+  webhookEventId: 1,
+});
+CdcChangeEventSchema.index({
+  flowId: 1,
   entity: 1,
   stageStatus: 1,
   ingestSeq: 1,
