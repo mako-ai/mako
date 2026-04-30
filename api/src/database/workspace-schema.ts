@@ -2157,20 +2157,32 @@ CdcChangeEventSchema.index({
 });
 CdcChangeEventSchema.index({
   flowId: 1,
-  materializationStatus: 1,
-  webhookEventId: 1,
-});
-CdcChangeEventSchema.index({
-  flowId: 1,
   entity: 1,
   stageStatus: 1,
   ingestSeq: 1,
 });
+/** Successfully materialized rows — shorter retention. */
 CdcChangeEventSchema.index(
   { appliedAt: 1 },
   {
+    name: "cdc_applied_events_ttl_36h",
+    expireAfterSeconds: 36 * 60 * 60,
+    partialFilterExpression: {
+      appliedAt: { $exists: true },
+      materializationStatus: "applied",
+    },
+  },
+);
+/** Dropped rows (e.g. entity disabled) — keep longer for audit. */
+CdcChangeEventSchema.index(
+  { appliedAt: 1 },
+  {
+    name: "cdc_dropped_events_ttl_7d",
     expireAfterSeconds: 7 * 24 * 60 * 60,
-    partialFilterExpression: { appliedAt: { $exists: true } },
+    partialFilterExpression: {
+      appliedAt: { $exists: true },
+      materializationStatus: "dropped",
+    },
   },
 );
 
