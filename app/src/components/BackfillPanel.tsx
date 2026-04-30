@@ -38,6 +38,7 @@ import {
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
   Replay as RetryIcon,
+  Refresh as RefreshIcon,
   WarningAmber as WarningAmberIcon,
 } from "@mui/icons-material";
 import { useFlowStore } from "../store/flowStore";
@@ -383,6 +384,7 @@ export function BackfillPanel({
     string,
     number | null
   > | null>(null);
+  const [destCountsLoading, setDestCountsLoading] = useState(false);
 
   const cdcPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const logPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -571,17 +573,23 @@ export function BackfillPanel({
   }, [tab, fetchEventCounts]);
 
   const pollDestCounts = useCallback(async () => {
-    const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
-    if (counts) setDestinationCounts(counts);
+    setDestCountsLoading(true);
+    try {
+      const counts = await fetchCdcDestinationCounts(workspaceId, flowId);
+      if (counts) setDestinationCounts(counts);
+    } finally {
+      setDestCountsLoading(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, flowId]);
 
+  // Destination row counts are slow-moving and require a destination round
+  // trip. Fetch once when the panel opens for a flow; otherwise the user
+  // refreshes manually via the button next to "Destination rows".
   useEffect(() => {
+    setDestinationCounts(null);
     pollDestCounts();
-    const id = setInterval(pollDestCounts, 30_000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId, flowId]);
+  }, [workspaceId, flowId, pollDestCounts]);
 
   const withBusy = async (
     fn: () => Promise<unknown>,
@@ -1154,13 +1162,48 @@ export function BackfillPanel({
               >
                 Rows applied: {totalRowsApplied.toLocaleString()}
               </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ display: "block", mt: 0.1, fontSize: "0.68rem" }}
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.5,
+                  mt: 0.1,
+                }}
               >
-                Destination rows: {totalDestinationRows.toLocaleString()}
-              </Typography>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ fontSize: "0.68rem" }}
+                >
+                  Destination rows:{" "}
+                  {destinationCounts === null
+                    ? "—"
+                    : totalDestinationRows.toLocaleString()}
+                </Typography>
+                <Tooltip title="Refresh destination row counts">
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={pollDestCounts}
+                      disabled={destCountsLoading}
+                      sx={{ p: 0.25 }}
+                    >
+                      <RefreshIcon
+                        sx={{
+                          fontSize: 12,
+                          ...(destCountsLoading && {
+                            animation: "spin 1s linear infinite",
+                            "@keyframes spin": {
+                              "0%": { transform: "rotate(0deg)" },
+                              "100%": { transform: "rotate(360deg)" },
+                            },
+                          }),
+                        }}
+                      />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </Box>
               {cdc.lastMaterializedAt && (
                 <Typography
                   variant="caption"
