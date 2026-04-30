@@ -108,10 +108,6 @@ export interface ScheduledQueryScheduleResponse {
     timezone: string;
   };
   scheduledRun?: ConsoleContentResponse["scheduledRun"];
-  console?: {
-    id: string;
-    name: string;
-  };
   eventId?: string;
   error?: string;
 }

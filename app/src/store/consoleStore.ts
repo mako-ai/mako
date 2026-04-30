@@ -146,7 +146,7 @@ interface ConsoleActions {
   setSchedule: (
     workspaceId: string,
     consoleId: string,
-    input: { name: string; cron: string; timezone: string },
+    input: { cron: string; timezone: string },
   ) => Promise<ScheduledQueryScheduleResponse>;
   removeSchedule: (
     workspaceId: string,
@@ -798,7 +798,6 @@ export const useConsoleStore = create<ConsoleStore>()(
             set(state => {
               const tab = state.tabs[consoleId];
               if (tab) {
-                tab.title = response.console?.name || input.name;
                 tab.schedule = response.schedule;
                 tab.scheduledRun = response.scheduledRun;
               }

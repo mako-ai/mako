@@ -328,10 +328,6 @@ consoleRoutes.put("/:id/schedule", async (c: AuthenticatedContext) => {
     });
     const nextAt = getNextScheduledConsoleRunAt(schedule);
 
-    if (typeof body?.name === "string" && body.name.trim()) {
-      savedConsole.name = body.name.trim();
-    }
-
     savedConsole.schedule = schedule;
     savedConsole.scheduledRun = {
       nextAt,
@@ -351,10 +347,6 @@ consoleRoutes.put("/:id/schedule", async (c: AuthenticatedContext) => {
       success: true,
       schedule: savedConsole.schedule,
       scheduledRun: savedConsole.scheduledRun,
-      console: {
-        id: savedConsole._id.toString(),
-        name: savedConsole.name,
-      },
     });
   } catch (error) {
     logger.error("Error updating console schedule", { error });
