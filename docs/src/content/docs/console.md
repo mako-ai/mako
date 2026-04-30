@@ -12,6 +12,7 @@ The Console is Mako's query editor. It connects to any database you've added and
 - **Saved queries**: Consoles persist in your workspace, organized in folders
 - **Shareable**: Share consoles with your team via the workspace
 - **API access**: Execute saved consoles programmatically via REST API
+- **Scheduled queries**: Run saved consoles on cron schedules and inspect run history
 
 ## Working with Consoles
 
@@ -36,6 +37,12 @@ Open the chat panel and describe what you want. The agent will:
 
 Consoles can be organized into folders. Use the sidebar tree to drag and arrange.
 
+### Scheduling Saved Consoles
+
+Workspace admins can schedule a saved console to run automatically from the console header. Scheduled consoles use five-field cron expressions plus an IANA timezone, for example `0 0 * * *` with `UTC` for a daily midnight run.
+
+When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. Admins can also trigger a scheduled console manually with **Run now**.
+
 ## Console API
 
 Saved consoles can be executed programmatically. This is useful for building dashboards, automations, or integrations on top of your queries.
@@ -55,6 +62,11 @@ Authorization: Bearer revops_YOUR_API_KEY
 | `GET`  | `/api/workspaces/:wid/consoles/list`        | List all consoles          |
 | `GET`  | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
 | `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a console          |
+| `PUT` | `/api/workspaces/:wid/consoles/:id/schedule` | Create or update a schedule (admin only) |
+| `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a schedule (admin only) |
+| `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console now (admin only) |
+| `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
+| `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
 
 ### Example
 

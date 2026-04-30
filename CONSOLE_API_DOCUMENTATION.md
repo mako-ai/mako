@@ -115,6 +115,67 @@ Execute a saved console and get the results.
 }
 ```
 
+### Create or Update Console Schedule
+
+Schedule a saved console to run automatically. Requires workspace admin access.
+
+**Endpoint:** `PUT /api/workspaces/{workspaceId}/consoles/{consoleId}/schedule`
+
+**Request Body:**
+
+```json
+{
+  "name": "Daily revenue check",
+  "cron": "0 0 * * *",
+  "timezone": "UTC"
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "schedule": {
+    "cron": "0 0 * * *",
+    "timezone": "UTC"
+  },
+  "scheduledRun": {
+    "nextAt": "2026-04-30T00:00:00.000Z",
+    "runCount": 0,
+    "consecutiveFailures": 0
+  },
+  "console": {
+    "id": "console_id",
+    "name": "Daily revenue check"
+  }
+}
+```
+
+### Remove Console Schedule
+
+Remove automatic scheduling from a saved console. Requires workspace admin access.
+
+**Endpoint:** `DELETE /api/workspaces/{workspaceId}/consoles/{consoleId}/schedule`
+
+### Run Scheduled Console Now
+
+Trigger the scheduled console immediately. Requires workspace admin access.
+
+**Endpoint:** `POST /api/workspaces/{workspaceId}/consoles/{consoleId}/schedule/run`
+
+### List Scheduled Run History
+
+Get recent runs for a scheduled console. Requires workspace admin access.
+
+**Endpoint:** `GET /api/workspaces/{workspaceId}/consoles/{consoleId}/schedule/runs?limit=50`
+
+### List Workspace Scheduled Queries
+
+List all saved consoles in the workspace that have a schedule. Requires workspace admin access.
+
+**Endpoint:** `GET /api/workspaces/{workspaceId}/scheduled-queries`
+
 ## Error Responses
 
 All error responses follow this format:
