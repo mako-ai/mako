@@ -175,20 +175,25 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
         connection: IDatabaseConnection;
       };
 
-      const executionStartedAt = Date.now();
-      const result = await step.run("execute-query", async () =>
-        databaseConnectionService.executeQuery(
+      const execution = await step.run("execute-query", async () => {
+        const executionStartedAt = Date.now();
+        const result = await databaseConnectionService.executeQuery(
           consoleDoc.connection,
           consoleDoc.savedConsole.code,
           {
             databaseId: consoleDoc.savedConsole.databaseId,
             databaseName: consoleDoc.savedConsole.databaseName,
           },
-        ),
-      );
+        );
+
+        return {
+          result,
+          durationMs: Date.now() - executionStartedAt,
+        };
+      });
 
       const completedAt = new Date();
-      const durationMs = Date.now() - executionStartedAt;
+      const { result, durationMs } = execution;
       const rowCount =
         result.rowCount ??
         (Array.isArray(result.data) ? result.data.length : undefined);
