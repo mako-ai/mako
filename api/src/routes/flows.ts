@@ -146,6 +146,18 @@ function escapeSqlLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+function escapePostgresIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function escapeBigQueryPath(path: string): string {
+  return `\`${path.replace(/`/g, "\\`")}\``;
+}
+
+function isSafeSqlIdentifier(identifier: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier);
+}
+
 function buildDestinationCountBatchQuery(params: {
   destinationType?: string;
   schema: string;
@@ -1595,9 +1607,12 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
       .drop()
       .catch(() => undefined);
 
-    for (const key of destinationCountCache.keys()) {
-      if (key.startsWith(`${workspaceId}:${flowId}:${entity}:`)) {
-        destinationCountCache.delete(key);
+    // The batch cache stores one entry per (workspace, flow, sorted entity
+    // list); invalidate every entry for this flow so the next read reflects
+    // the freshly-truncated entity table.
+    for (const key of destinationCountBatchCache.keys()) {
+      if (key.startsWith(`${workspaceId}:${flowId}:`)) {
+        destinationCountBatchCache.delete(key);
       }
     }
 
