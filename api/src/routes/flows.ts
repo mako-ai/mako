@@ -136,11 +136,15 @@ function toLagSeconds(value: Date | null): number | null {
   return Math.max(Math.floor((Date.now() - value.getTime()) / 1000), 0);
 }
 
-const DESTINATION_COUNT_CACHE_TTL_MS = 30_000;
-const destinationCountCache = new Map<
+const DESTINATION_COUNT_CACHE_TTL_MS = 60_000;
+const destinationCountBatchCache = new Map<
   string,
-  { value: number | null; expiresAt: number }
+  { value: Record<string, number | null>; expiresAt: number }
 >();
+
+function escapeSqlLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 
 function escapePostgresIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
@@ -154,39 +158,25 @@ function isSafeSqlIdentifier(identifier: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier);
 }
 
-function buildDestinationCountQuery(params: {
+function buildDestinationCountBatchQuery(params: {
   destinationType?: string;
   schema: string;
-  tableName: string;
+  tableNames: string[];
   projectId?: string;
 }): string | null {
+  if (params.tableNames.length === 0) return null;
   const type = (params.destinationType || "").toLowerCase();
+  const inList = params.tableNames.map(escapeSqlLiteral).join(",");
   if (type === "bigquery") {
     const dataset = params.projectId
       ? `\`${params.projectId}\`.\`${params.schema}\``
       : `\`${params.schema}\``;
-    return `SELECT row_count AS total_count FROM ${dataset}.__TABLES__ WHERE table_id = '${params.tableName}'`;
+    return `SELECT table_id, row_count FROM ${dataset}.__TABLES__ WHERE table_id IN (${inList})`;
   }
   if (type.includes("postgres")) {
-    const escLiteral = (v: string) => `'${v.replace(/'/g, "''")}'`;
-    return `SELECT reltuples::bigint AS total_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escLiteral(params.schema)} AND c.relname = ${escLiteral(params.tableName)}`;
+    return `SELECT c.relname AS table_id, c.reltuples::bigint AS row_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escapeSqlLiteral(params.schema)} AND c.relname IN (${inList})`;
   }
   return null;
-}
-
-function extractCountFromQueryResult(data: unknown): number | null {
-  if (!Array.isArray(data) || data.length === 0) return null;
-  const row = data[0];
-  if (!row || typeof row !== "object") return null;
-  const record = row as Record<string, unknown>;
-  const raw =
-    record.total_count ??
-    record.totalCount ??
-    record.count ??
-    record.cnt ??
-    record["COUNT(*)"];
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function isTableMissingError(errorMessage?: string): boolean {
@@ -202,98 +192,131 @@ function isTableMissingError(errorMessage?: string): boolean {
   );
 }
 
-async function getDestinationEntityRowCount(params: {
+async function getDestinationEntityRowCountsBatch(params: {
   workspaceId: string;
   flowId: string;
-  entity: string;
+  entities: string[];
   destinationType?: string;
   destination: any;
   schema: string;
   baseTablePrefix?: string;
-}): Promise<number | null> {
+}): Promise<Record<string, number | null>> {
+  const sortedEntities = [...params.entities].sort();
   const cacheKey = [
     params.workspaceId,
     params.flowId,
-    params.entity,
     params.destinationType || "",
     params.schema,
     params.baseTablePrefix || "",
     String((params.destination as any)?.connection?.project_id || ""),
+    sortedEntities.join("|"),
   ].join(":");
-  const cached = destinationCountCache.get(cacheKey);
+  const cached = destinationCountBatchCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.value;
   }
 
-  const tableName = cdcLiveTableName(
-    params.baseTablePrefix,
-    params.entity,
-    params.flowId,
-  );
-  const query = buildDestinationCountQuery({
+  const empty: Record<string, number | null> = {};
+  for (const entity of params.entities) empty[entity] = null;
+
+  if (params.entities.length === 0) {
+    destinationCountBatchCache.set(cacheKey, {
+      value: empty,
+      expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
+    });
+    return empty;
+  }
+
+  // Map each entity to its destination table name, keep both directions.
+  const tableToEntity = new Map<string, string>();
+  const tableNames: string[] = [];
+  for (const entity of params.entities) {
+    const tableName = cdcLiveTableName(
+      params.baseTablePrefix,
+      entity,
+      params.flowId,
+    );
+    tableToEntity.set(tableName, entity);
+    tableNames.push(tableName);
+  }
+
+  const query = buildDestinationCountBatchQuery({
     destinationType: params.destinationType,
     schema: params.schema,
-    tableName,
+    tableNames,
     projectId: (params.destination as any)?.connection?.project_id,
   });
   if (!query) {
-    destinationCountCache.set(cacheKey, {
-      value: null,
+    destinationCountBatchCache.set(cacheKey, {
+      value: empty,
       expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
     });
-    return null;
+    return empty;
   }
 
   const driver = databaseRegistry.getDriver(params.destination.type);
   if (!driver?.executeQuery) {
-    destinationCountCache.set(cacheKey, {
-      value: null,
+    destinationCountBatchCache.set(cacheKey, {
+      value: empty,
       expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
     });
-    return null;
+    return empty;
   }
 
+  // Default everything to 0 — if a table doesn't appear in __TABLES__/pg_class,
+  // it doesn't exist yet, which is semantically the same as "0 rows".
+  const result: Record<string, number | null> = {};
+  for (const entity of params.entities) result[entity] = 0;
+
   try {
-    const result = await driver.executeQuery(params.destination, query);
-    if (!result.success) {
-      if (isTableMissingError(result.error)) {
-        destinationCountCache.set(cacheKey, {
-          value: 0,
+    const queryResult = await driver.executeQuery(params.destination, query);
+    if (!queryResult.success) {
+      if (isTableMissingError(queryResult.error)) {
+        destinationCountBatchCache.set(cacheKey, {
+          value: result,
           expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
         });
-        return 0;
+        return result;
       }
-      logger.warn("Failed to count destination rows for CDC entity", {
+      logger.warn("Failed to count destination rows for CDC flow", {
         flowId: params.flowId,
-        entity: params.entity,
         destinationType: params.destinationType,
-        error: result.error,
+        error: queryResult.error,
       });
-      destinationCountCache.set(cacheKey, {
-        value: null,
+      destinationCountBatchCache.set(cacheKey, {
+        value: empty,
         expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
       });
-      return null;
+      return empty;
     }
 
-    const count = extractCountFromQueryResult(result.data);
-    destinationCountCache.set(cacheKey, {
-      value: count,
+    if (Array.isArray(queryResult.data)) {
+      for (const row of queryResult.data as Array<Record<string, unknown>>) {
+        const tableId = String(row.table_id ?? row.tableId ?? "");
+        const entity = tableToEntity.get(tableId);
+        if (!entity) continue;
+        const raw = row.row_count ?? row.rowCount ?? row.total_count;
+        const parsed = Number(raw);
+        result[entity] = Number.isFinite(parsed) ? parsed : null;
+      }
+    }
+
+    destinationCountBatchCache.set(cacheKey, {
+      value: result,
       expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
     });
-    return count;
+    return result;
   } catch (error) {
-    logger.warn("Destination row count query errored for CDC entity", {
+    logger.warn("Destination row count batch query errored", {
       flowId: params.flowId,
-      entity: params.entity,
       destinationType: params.destinationType,
       error: error instanceof Error ? error.message : String(error),
     });
-    destinationCountCache.set(cacheKey, {
-      value: null,
+    destinationCountBatchCache.set(cacheKey, {
+      value: empty,
       expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
     });
-    return null;
+    return empty;
   }
 }
 
@@ -1584,9 +1607,12 @@ flowRoutes.post("/:flowId/sync-cdc/reset-entity", async c => {
       .drop()
       .catch(() => undefined);
 
-    for (const key of destinationCountCache.keys()) {
-      if (key.startsWith(`${workspaceId}:${flowId}:${entity}:`)) {
-        destinationCountCache.delete(key);
+    // The batch cache stores one entry per (workspace, flow, sorted entity
+    // list); invalidate every entry for this flow so the next read reflects
+    // the freshly-truncated entity table.
+    for (const key of destinationCountBatchCache.keys()) {
+      if (key.startsWith(`${workspaceId}:${flowId}:`)) {
+        destinationCountBatchCache.delete(key);
       }
     }
 
@@ -2878,25 +2904,15 @@ flowRoutes.get("/:flowId/sync-cdc/destination-counts", async c => {
       ]),
     );
 
-    const counts = await Promise.all(
-      uniqueEntities.map(async entity => {
-        const value = await getDestinationEntityRowCount({
-          workspaceId,
-          flowId,
-          entity,
-          destinationType: destination.type,
-          destination,
-          schema: flow.tableDestination?.schema || "",
-          baseTablePrefix: flow.tableDestination?.tableName,
-        });
-        return [entity, value] as const;
-      }),
-    );
-
-    const data: Record<string, number | null> = {};
-    for (const [entity, count] of counts) {
-      data[entity] = count;
-    }
+    const data = await getDestinationEntityRowCountsBatch({
+      workspaceId,
+      flowId,
+      entities: uniqueEntities,
+      destinationType: destination.type,
+      destination,
+      schema: flow.tableDestination?.schema || "",
+      baseTablePrefix: flow.tableDestination?.tableName,
+    });
 
     return c.json({ success: true, data });
   } catch (error) {

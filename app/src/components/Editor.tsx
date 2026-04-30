@@ -1345,7 +1345,7 @@ function Editor({
   );
 
   const handleSaveSchedule = useCallback(
-    async (input: { name: string; cron: string; timezone: string }) => {
+    async (input: { cron: string; timezone: string }) => {
       if (!currentWorkspace || !scheduleModalTabId) {
         throw new Error("No workspace selected");
       }

@@ -28,11 +28,7 @@ interface ScheduleConsoleModalProps {
   };
   connectionLabel?: string;
   onClose: () => void;
-  onSave: (input: {
-    name: string;
-    cron: string;
-    timezone: string;
-  }) => Promise<void>;
+  onSave: (input: { cron: string; timezone: string }) => Promise<void>;
   onRemove?: () => Promise<void>;
   onRunNow?: () => Promise<void>;
 }
@@ -98,7 +94,9 @@ export default function ScheduleConsoleModal({
   onRemove,
   onRunNow,
 }: ScheduleConsoleModalProps) {
-  const [name, setName] = useState(initialName);
+  const displayConsoleName =
+    initialName.split("/").filter(Boolean).pop() ?? initialName;
+
   const [preset, setPreset] = useState<SchedulePreset>(
     presetFromCron(initialSchedule?.cron || "0 0 * * *"),
   );
@@ -117,7 +115,6 @@ export default function ScheduleConsoleModal({
 
   useEffect(() => {
     if (!open) return;
-    setName(initialName);
     setPreset(presetFromCron(initialSchedule?.cron || "0 0 * * *"));
     setTime(timeFromCron(initialSchedule?.cron || ""));
     setCustomCron(initialSchedule?.cron || "");
@@ -127,7 +124,7 @@ export default function ScheduleConsoleModal({
         "UTC",
     );
     setError(null);
-  }, [open, initialName, initialSchedule]);
+  }, [open, initialSchedule]);
 
   const cron = useMemo(
     () => cronFromPreset(preset, time, weekday, customCron),
@@ -153,7 +150,7 @@ export default function ScheduleConsoleModal({
     try {
       setIsSubmitting(true);
       setError(null);
-      await onSave({ name: name.trim(), cron, timezone });
+      await onSave({ cron, timezone });
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save schedule");
@@ -189,8 +186,7 @@ export default function ScheduleConsoleModal({
     }
   };
 
-  const isValid =
-    Boolean(name.trim()) && Boolean(cron.trim()) && previewRuns.length > 0;
+  const isValid = Boolean(cron.trim()) && previewRuns.length > 0;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
@@ -203,13 +199,12 @@ export default function ScheduleConsoleModal({
         <Stack spacing={2.5} sx={{ pt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
 
-          <TextField
-            label="Name"
-            value={name}
-            onChange={event => setName(event.target.value)}
-            fullWidth
-            required
-          />
+          <Box>
+            <Typography variant="subtitle2" color="text.secondary">
+              Console
+            </Typography>
+            <Typography variant="body1">{displayConsoleName}</Typography>
+          </Box>
 
           <Box>
             <Typography variant="subtitle2" sx={{ mb: 1 }}>
