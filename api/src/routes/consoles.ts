@@ -469,16 +469,28 @@ consoleRoutes.get("/:id/schedule/runs", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Invalid console ID" }, 400);
     }
 
-    const runs = await ScheduledQueryRun.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-      consoleId: new Types.ObjectId(consoleId),
-    })
-      .sort({ triggeredAt: -1 })
-      .limit(limit)
-      .lean();
+    const workspaceObjectId = new Types.ObjectId(workspaceId);
+    const consoleObjectId = new Types.ObjectId(consoleId);
+
+    const [runs, consoleDoc] = await Promise.all([
+      ScheduledQueryRun.find({
+        workspaceId: workspaceObjectId,
+        consoleId: consoleObjectId,
+      })
+        .sort({ triggeredAt: -1 })
+        .limit(limit)
+        .lean(),
+      SavedConsole.findOne({
+        _id: consoleObjectId,
+        workspaceId: workspaceObjectId,
+      })
+        .select("scheduledRun")
+        .lean(),
+    ]);
 
     return c.json({
       success: true,
+      scheduledRun: consoleDoc?.scheduledRun,
       runs: runs.map(run => ({
         id: run._id.toString(),
         triggeredAt: run.triggeredAt,

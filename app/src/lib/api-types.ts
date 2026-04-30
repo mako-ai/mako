@@ -96,6 +96,8 @@ export interface ScheduledQueryRunItem {
 export interface ScheduledQueryRunsResponse {
   success: boolean;
   runs: ScheduledQueryRunItem[];
+  /** Latest snapshot from SavedConsole.scheduledRun (for Runs tab counter). */
+  scheduledRun?: ConsoleContentResponse["scheduledRun"];
   error?: string;
 }
 
