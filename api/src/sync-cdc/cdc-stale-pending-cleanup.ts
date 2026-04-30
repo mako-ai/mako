@@ -104,7 +104,8 @@ export async function cleanupStalePendingCdcEvents(): Promise<{
       cdcRows
         .map(r => r.webhookEventId)
         .filter(
-          (id): id is string => Boolean(id) && Types.ObjectId.isValid(id),
+          (id): id is string =>
+            typeof id === "string" && Types.ObjectId.isValid(id),
         ),
     ),
   ).map(id => new Types.ObjectId(id));
