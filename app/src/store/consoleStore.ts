@@ -161,6 +161,11 @@ interface ConsoleActions {
     consoleId: string,
     limit?: number,
   ) => Promise<ScheduledQueryRunsResponse>;
+  /** Merge latest scheduledRun snapshot (e.g. after GET schedule/runs). */
+  updateTabScheduledRun: (
+    tabId: string,
+    scheduledRun: ConsoleContentResponse["scheduledRun"] | undefined,
+  ) => void;
 }
 
 type ConsoleStore = ConsoleState & ConsoleActions;
@@ -197,6 +202,28 @@ const shouldAutoSave = (getState: () => ConsoleState, consoleId: string) => {
   const tab = getState().tabs[consoleId];
   return tab ? !tab.isSaved : true;
 };
+
+function normalizeScheduledRunSnapshotForTab(
+  scheduledRun: ConsoleContentResponse["scheduledRun"],
+): ConsoleTab["scheduledRun"] {
+  const toIso = (v: unknown): string | undefined => {
+    if (v == null) return undefined;
+    if (typeof v === "string") return v;
+    if (v instanceof Date) return v.toISOString();
+    return String(v);
+  };
+  return {
+    nextAt: toIso(scheduledRun?.nextAt),
+    lastAt: toIso(scheduledRun?.lastAt),
+    lastStatus: scheduledRun?.lastStatus,
+    lastError: scheduledRun?.lastError,
+    lastDurationMs: scheduledRun?.lastDurationMs,
+    lastRowsAffected: scheduledRun?.lastRowsAffected,
+    lastRowCount: scheduledRun?.lastRowCount,
+    runCount: scheduledRun?.runCount ?? 0,
+    consecutiveFailures: scheduledRun?.consecutiveFailures ?? 0,
+  };
+}
 
 export const useConsoleStore = create<ConsoleStore>()(
   persist(
@@ -842,6 +869,13 @@ export const useConsoleStore = create<ConsoleStore>()(
           } as ScheduledQueryRunsResponse & { error?: string };
         }
       },
+
+      updateTabScheduledRun: (tabId, scheduledRun) =>
+        set(state => {
+          const tab = state.tabs[tabId];
+          if (!tab || scheduledRun == null) return;
+          tab.scheduledRun = normalizeScheduledRunSnapshotForTab(scheduledRun);
+        }),
 
       autoSaveConsole: (
         workspaceId,

@@ -141,24 +141,30 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
 
     try {
       const consoleDoc = (await step.run("load-console", async () => {
-        const savedConsole = (await SavedConsole.findOne({
+        const savedConsoleDoc = await SavedConsole.findOne({
           _id: new Types.ObjectId(consoleId),
           workspaceId: new Types.ObjectId(workspaceId),
-        }).lean()) as ISavedConsole | null;
+        });
 
-        if (!savedConsole) {
+        if (!savedConsoleDoc) {
           throw new Error("Scheduled console not found");
         }
 
-        const connection = savedConsole.connectionId
-          ? ((await DatabaseConnection.findById(
-              savedConsole.connectionId,
-            ).lean()) as IDatabaseConnection | null)
+        const savedConsole = savedConsoleDoc.toObject({
+          getters: true,
+        }) as ISavedConsole;
+
+        const connectionMongooseDoc = savedConsole.connectionId
+          ? await DatabaseConnection.findById(savedConsole.connectionId)
           : null;
 
-        if (!connection) {
+        if (!connectionMongooseDoc) {
           throw new Error("Scheduled console has no database connection");
         }
+
+        const connection = connectionMongooseDoc.toObject({
+          getters: true,
+        }) as IDatabaseConnection;
 
         return {
           savedConsole,

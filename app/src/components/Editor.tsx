@@ -462,6 +462,9 @@ function Editor({
   const removeSchedule = useConsoleStore(state => state.removeSchedule);
   const runScheduledNow = useConsoleStore(state => state.runScheduledNow);
   const listScheduledRuns = useConsoleStore(state => state.listScheduledRuns);
+  const updateTabScheduledRun = useConsoleStore(
+    state => state.updateTabScheduledRun,
+  );
   const openTab = useConsoleStore(state => state.openTab);
   const reorderTabs = useConsoleStore(state => state.reorderTabs);
   const reloadConsole = useConsoleStore(state => state.reloadConsole);
@@ -1301,6 +1304,7 @@ function Editor({
       const response = await listScheduledRuns(currentWorkspace.id, tabId, 50);
       if (response.success) {
         setTabScheduledRuns(prev => ({ ...prev, [tabId]: response.runs }));
+        updateTabScheduledRun(tabId, response.scheduledRun);
       } else {
         setTabScheduledRunsError(prev => ({
           ...prev,
@@ -1310,7 +1314,7 @@ function Editor({
 
       setTabScheduledRunsLoading(prev => ({ ...prev, [tabId]: false }));
     },
-    [currentWorkspace, listScheduledRuns],
+    [currentWorkspace, listScheduledRuns, updateTabScheduledRun],
   );
 
   useEffect(() => {
