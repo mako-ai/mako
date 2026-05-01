@@ -46,6 +46,12 @@ Drift detection and correction is best-effort: if any step fails for a column, t
 
 The console surfaces drift in the **Backfill Panel** with an auto-correction notice per affected entity. Under the hood this calls the `sync-cdc/schema-health` endpoint (see [API Reference](/api-reference/#flows)) which compares each live column's `data_type` from `INFORMATION_SCHEMA.COLUMNS` against the connector schema.
 
+### Destination Row Counts
+
+The **Backfill Panel** shows destination row totals next to CDC progress. Counts are fetched lazily when the panel opens and when you click the refresh icon beside **Destination rows**; they do not poll continuously.
+
+For BigQuery and PostgreSQL destinations, Mako batches all entity counts into a single metadata query and caches the result briefly. Missing destination tables are shown as `0` rows.
+
 
 ## Job Queue
 

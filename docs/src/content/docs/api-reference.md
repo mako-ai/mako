@@ -69,7 +69,22 @@ See [Console](/console/) for full API documentation with examples.
 | `GET`  | `/api/workspaces/:wid/flows/:id`                                   | Get flow status                                              |
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/status`                   | Get CDC stream status                                        |
 | `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/schema-health`            | Compare live destination column types to the connector schema (BigQuery; detects drift) |
-| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`       | Row counts per entity in the destination                     |
+| `GET`  | `/api/workspaces/:wid/flows/:id/sync-cdc/destination-counts`       | Batched row counts per entity in the destination             |
+
+### Destination Counts Response
+
+Returns a map of CDC entity name to destination row count. Mako batches BigQuery and PostgreSQL counts into one metadata query and may return `0` for configured entities whose destination table does not exist yet.
+
+```json
+{
+  "success": true,
+  "data": {
+    "contacts": 125000,
+    "organizations": 8421,
+    "opportunities": 0
+  }
+}
+```
 
 ### Schema Health Response
 
