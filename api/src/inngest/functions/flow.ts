@@ -1126,11 +1126,13 @@ export const flowFunction = inngest.createFunction(
         });
 
         if (executionId && flowRef) {
+          const terminalWorkspaceId = String(flowRef.workspaceId);
+          const terminalExecutionId = executionId;
           await step.run("emit-flow-terminal-notification", async () => {
             await emitFlowExecutionTerminalEvent({
-              workspaceId: String(flowRef.workspaceId),
+              workspaceId: terminalWorkspaceId,
               flowId,
-              executionId,
+              executionId: terminalExecutionId,
               triggerType: runTriggerType,
             });
           });
@@ -1866,11 +1868,13 @@ export const flowFunction = inngest.createFunction(
       });
 
       if (executionId && flowRef) {
+        const terminalWorkspaceId = String(flowRef.workspaceId);
+        const terminalExecutionId = executionId;
         await step.run("emit-flow-terminal-notification", async () => {
           await emitFlowExecutionTerminalEvent({
-            workspaceId: String(flowRef.workspaceId),
+            workspaceId: terminalWorkspaceId,
             flowId,
-            executionId,
+            executionId: terminalExecutionId,
             triggerType: runTriggerType,
           });
         });
@@ -2011,11 +2015,13 @@ export const flowFunction = inngest.createFunction(
               status: isCancelled ? "cancelled" : "failed",
             });
 
-            if (!isCancelled && flowRef) {
+            if (!isCancelled && flowRef && executionId) {
+              const failureTerminalWorkspaceId = String(flowRef.workspaceId);
+              const failureTerminalExecutionId = executionId;
               await emitFlowExecutionTerminalEvent({
-                workspaceId: String(flowRef.workspaceId),
+                workspaceId: failureTerminalWorkspaceId,
                 flowId,
-                executionId,
+                executionId: failureTerminalExecutionId,
                 triggerType: runTriggerType,
               });
             }
