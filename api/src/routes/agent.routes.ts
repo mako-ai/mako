@@ -330,6 +330,15 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Only enrich logging context after authorization succeeds
   enrichContextWithWorkspace(workspaceId);
 
+  let canManageScheduledQueries = false;
+  if (workspace) {
+    canManageScheduledQueries = true;
+  } else if (user?.id) {
+    const member = await workspaceService.getMember(workspaceId, user.id);
+    canManageScheduledQueries =
+      member?.role === "owner" || member?.role === "admin";
+  }
+
   // Load billing plan + disabled model IDs for plan-appropriate defaults and blocklist.
   const wsForModels = await Workspace.findById(workspaceId).select(
     "billing.plan billing.subscriptionStatus settings.disabledModelIds",
@@ -582,6 +591,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     activeConsoleResults,
     activeDashboardContext: dashboardContext.activeDashboardContext,
     toolExecutionContext,
+    canManageScheduledQueries,
   };
 
   // Create agent configuration
