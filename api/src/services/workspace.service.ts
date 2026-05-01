@@ -136,6 +136,14 @@ export class WorkspaceService {
   }
 
   /**
+   * Whether the user is an owner or admin of the workspace
+   */
+  async isAdmin(workspaceId: string, userId: string): Promise<boolean> {
+    const member = await this.getMember(workspaceId, userId);
+    return member?.role === "owner" || member?.role === "admin";
+  }
+
+  /**
    * Check if user has access to workspace
    */
   async hasAccess(workspaceId: string, userId: string): Promise<boolean> {

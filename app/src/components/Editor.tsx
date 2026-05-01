@@ -70,6 +70,7 @@ import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
@@ -272,6 +273,7 @@ function Editor({
   resultsContextRef,
 }: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
   >({});
@@ -321,6 +323,19 @@ function Editor({
   const [isSaving, setIsSaving] = useState(false);
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [errorPreviewRetry, setErrorPreviewRetry] = useState<{
+    tabId: string;
+    contentToExecute: string;
+    connectionId: string;
+    options?: {
+      databaseId?: string;
+      databaseName?: string;
+      cursor?: string | null;
+      currentPage?: number;
+      cursorHistory?: Array<string | null>;
+      pageSize?: number;
+    };
+  } | null>(null);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const connectionsMap = useSchemaStore(state => state.connections);
@@ -903,6 +918,7 @@ function Editor({
       currentPage?: number;
       cursorHistory?: Array<string | null>;
       pageSize?: number;
+      confirmUnsafe?: boolean;
     },
   ) => {
     if (!contentToExecute.trim()) return;
@@ -939,6 +955,7 @@ function Editor({
           signal: abortController.signal,
           pageSize: options?.pageSize ?? 500,
           cursor: options?.cursor ?? null,
+          confirmUnsafe: options?.confirmUnsafe,
         },
       );
       const executionTime = Date.now() - startTime;
@@ -984,7 +1001,32 @@ function Editor({
           },
         }));
       } else if (result.error !== "Query cancelled") {
-        setErrorMessage(JSON.stringify(result.error, null, 2));
+        const errText =
+          typeof result.error === "string"
+            ? result.error
+            : JSON.stringify(result.error, null, 2);
+        setErrorMessage(errText);
+        if (
+          "code" in result &&
+          result.code === "PREVIEW_BLOCKED" &&
+          !options?.confirmUnsafe
+        ) {
+          setErrorPreviewRetry({
+            tabId,
+            contentToExecute,
+            connectionId,
+            options: {
+              databaseId: options?.databaseId,
+              databaseName: options?.databaseName,
+              cursor: options?.cursor,
+              currentPage: options?.currentPage,
+              cursorHistory: options?.cursorHistory,
+              pageSize: options?.pageSize,
+            },
+          });
+        } else {
+          setErrorPreviewRetry(null);
+        }
         setErrorModalOpen(true);
         setTabResults(prev => ({ ...prev, [tabId]: null }));
         setTabPagination(prev => ({ ...prev, [tabId]: null }));
@@ -1751,6 +1793,7 @@ function Editor({
   const handleCloseErrorModal = () => {
     setErrorModalOpen(false);
     setErrorMessage("");
+    setErrorPreviewRetry(null);
   };
 
   const handleCloseSnackbar = () => {
@@ -2346,6 +2389,27 @@ function Editor({
           </Box>
         </DialogContent>
         <DialogActions>
+          {isWorkspaceAdmin && errorPreviewRetry && (
+            <Button
+              onClick={() => {
+                const retry = errorPreviewRetry;
+                setErrorPreviewRetry(null);
+                setErrorModalOpen(false);
+                setErrorMessage("");
+                void handleConsoleExecute(
+                  retry.tabId,
+                  retry.contentToExecute,
+                  retry.connectionId,
+                  { ...retry.options, confirmUnsafe: true },
+                );
+              }}
+              color="error"
+              variant="contained"
+              disableElevation
+            >
+              Execute anyway
+            </Button>
+          )}
           <Button
             onClick={handleCloseErrorModal}
             variant="contained"

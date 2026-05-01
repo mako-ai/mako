@@ -950,7 +950,13 @@ export interface IQueryExecution extends Document {
   consoleId?: Types.ObjectId; // If executed from a saved console
 
   // Execution context
-  source: "console_ui" | "api" | "agent" | "flow" | "scheduled_query";
+  source:
+    | "console_ui"
+    | "console_ui_admin_override"
+    | "api"
+    | "agent"
+    | "flow"
+    | "scheduled_query";
   databaseType: string; // postgresql, mongodb, bigquery, etc.
   queryLanguage: "sql" | "mongodb" | "javascript";
 
@@ -2367,7 +2373,14 @@ const QueryExecutionSchema = new Schema<IQueryExecution>(
     // Execution context
     source: {
       type: String,
-      enum: ["console_ui", "api", "agent", "flow", "scheduled_query"],
+      enum: [
+        "console_ui",
+        "console_ui_admin_override",
+        "api",
+        "agent",
+        "flow",
+        "scheduled_query",
+      ],
       required: true,
     },
     databaseType: { type: String, required: true },

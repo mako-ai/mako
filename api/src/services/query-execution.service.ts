@@ -9,6 +9,7 @@ const logger = loggers.query();
  */
 export type QuerySource =
   | "console_ui"
+  | "console_ui_admin_override"
   | "api"
   | "agent"
   | "flow"
