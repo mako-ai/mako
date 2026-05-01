@@ -126,7 +126,7 @@ INNGEST_SIGNING_KEY=your_inngest_signing_key
 | Hono          | 4.7.11     | Web framework          |
 | Mongoose      | 8.15.1     | MongoDB ODM            |
 | Arctic        | 3.7.0      | OAuth                  |
-| Inngest       | 3.39.2     | Event-driven workflows |
+| Inngest       | 3.54.1     | Event-driven workflows |
 | Vercel AI SDK | 6.0.0-beta | LLM abstraction        |
 
 ### Frontend

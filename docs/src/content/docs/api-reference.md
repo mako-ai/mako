@@ -58,8 +58,13 @@ Authorization: Bearer revops_YOUR_API_KEY
 | `GET`  | `/api/workspaces/:wid/consoles/list`        | List all consoles          |
 | `GET`  | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
 | `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a saved console    |
+| `PUT` | `/api/workspaces/:wid/consoles/:id/schedule` | Create or update a saved console schedule (admin only) |
+| `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a saved console schedule (admin only) |
+| `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console immediately (admin only) |
+| `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
+| `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
 
-See [Console](/console/) for full API documentation with examples.
+See [Console](/console/) for full API documentation with examples. Scheduled query endpoints require workspace admin access and use the same session/API-key authentication as other workspace endpoints.
 
 ## Flows
 
