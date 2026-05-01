@@ -25,6 +25,10 @@ import {
   scheduledQueryExecutorFunction,
   scheduledQuerySchedulerFunction,
 } from "./functions/scheduled-query";
+import {
+  flowRunTerminalFanoutFunction,
+  notificationDeliverFunction,
+} from "./functions/flow-run-notifications";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -38,6 +42,8 @@ const baseFunctions = [
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
+  flowRunTerminalFanoutFunction,
+  notificationDeliverFunction,
 ];
 
 const allWebhookFunctions = [
@@ -109,6 +115,8 @@ export {
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
+  flowRunTerminalFanoutFunction,
+  notificationDeliverFunction,
   syncBackfillEntityFunction,
   webhookEventProcessFunction,
   webhookEventProcessCdcFunction,

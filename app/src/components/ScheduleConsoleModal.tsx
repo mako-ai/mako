@@ -15,6 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import { CronExpressionParser } from "cron-parser";
+import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
 type SchedulePreset = "hourly" | "daily" | "every6h" | "weekly" | "custom";
 
@@ -27,6 +28,11 @@ interface ScheduleConsoleModalProps {
     timezone: string;
   };
   connectionLabel?: string;
+  /** Workspace containing the console — enables notification UI when set */
+  workspaceId?: string;
+  /** Saved console id for notification rules (omit until console is saved server-side) */
+  notificationConsoleId?: string;
+  workspaceRole?: string;
   onClose: () => void;
   onSave: (input: { cron: string; timezone: string }) => Promise<void>;
   onRemove?: () => Promise<void>;
@@ -89,6 +95,9 @@ export default function ScheduleConsoleModal({
   initialName,
   initialSchedule,
   connectionLabel,
+  workspaceId,
+  notificationConsoleId,
+  workspaceRole,
   onClose,
   onSave,
   onRemove,
@@ -319,17 +328,15 @@ export default function ScheduleConsoleModal({
             </Typography>
           )}
 
-          <Box>
-            <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-              Coming in v2
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Destination
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Notifications
-            </Typography>
-          </Box>
+          {workspaceId && workspaceRole && (
+            <FlowRunNotificationsSection
+              workspaceId={workspaceId}
+              resourceType="scheduled_query"
+              resourceId={notificationConsoleId}
+              workspaceRole={workspaceRole}
+              compact
+            />
+          )}
         </Stack>
       </DialogContent>
       <DialogActions sx={{ justifyContent: "space-between", px: 3 }}>

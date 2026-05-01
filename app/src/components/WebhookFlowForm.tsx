@@ -34,6 +34,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
+import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
 interface WebhookFlowFormProps {
   flowId?: string;
@@ -1803,6 +1804,15 @@ export function WebhookFlowForm({
                         provisioning.
                       </Typography>
                     </Alert>
+                  )}
+
+                  {currentWorkspace && (
+                    <FlowRunNotificationsSection
+                      workspaceId={currentWorkspace.id}
+                      resourceType="flow"
+                      resourceId={currentFlowId ?? undefined}
+                      workspaceRole={currentWorkspace.role}
+                    />
                   )}
                 </Stack>
               </AccordionDetails>

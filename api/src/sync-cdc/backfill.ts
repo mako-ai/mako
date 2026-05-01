@@ -428,6 +428,7 @@ export class CdcBackfillService {
         flowId,
         noJitter: true,
         backfill: true,
+        triggerType: "manual",
         backfillRunId: runId,
         ...(effectiveScope.length > 0
           ? { backfillEntities: effectiveScope }

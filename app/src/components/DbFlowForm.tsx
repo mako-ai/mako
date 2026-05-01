@@ -52,6 +52,7 @@ import { trackEvent } from "../lib/analytics";
 import { ConnectionSelector } from "./ConnectionSelector";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { SchemaMappingTable, TypeCoercion } from "./SchemaMappingTable";
+import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
 interface DbFlowFormProps {
   flowId?: string;
@@ -2463,6 +2464,15 @@ export const DbFlowForm = forwardRef<DbFlowFormRef, DbFlowFormProps>(
                               You can enable automatic scheduling at any time.
                             </Typography>
                           </Alert>
+                        )}
+
+                        {currentWorkspace && (
+                          <FlowRunNotificationsSection
+                            workspaceId={currentWorkspace.id}
+                            resourceType="flow"
+                            resourceId={currentFlowId}
+                            workspaceRole={currentWorkspace.role}
+                          />
                         )}
 
                         {/* Save Button */}

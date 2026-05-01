@@ -133,6 +133,91 @@ export interface ScheduledQueryListResponse {
   scheduledQueries: ScheduledQueryListItem[];
 }
 
+// ==================== Flow run notifications ====================
+
+export type NotificationResourceTypeApi = "scheduled_query" | "flow";
+
+export type NotificationTriggerApi = "success" | "failure";
+
+export type NotificationChannelTypeApi = "email" | "webhook" | "slack";
+
+export interface NotificationRuleChannelEmailApi {
+  type: "email";
+  recipients: string[];
+}
+
+export interface NotificationRuleChannelWebhookApi {
+  type: "webhook";
+  urlPreview: string;
+  hasSigningSecret: boolean;
+}
+
+export interface NotificationRuleChannelSlackApi {
+  type: "slack";
+  displayLabel: string;
+  webhookConfigured: boolean;
+}
+
+export type NotificationRuleChannelApi =
+  | NotificationRuleChannelEmailApi
+  | NotificationRuleChannelWebhookApi
+  | NotificationRuleChannelSlackApi;
+
+export interface NotificationRuleApi {
+  id: string;
+  workspaceId: string;
+  resourceType: NotificationResourceTypeApi;
+  resourceId: string;
+  enabled: boolean;
+  triggers: NotificationTriggerApi[];
+  channel: NotificationRuleChannelApi;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NotificationRulesListResponse {
+  success: boolean;
+  rules: NotificationRuleApi[];
+}
+
+export interface NotificationDeliveryApi {
+  id: string;
+  ruleId: string;
+  runId: string;
+  trigger: NotificationTriggerApi;
+  channelType: NotificationChannelTypeApi;
+  status: "pending" | "sent" | "failed" | "skipped";
+  attempts: number;
+  lastError?: string;
+  httpStatus?: number;
+  sentAt?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+export interface NotificationDeliveriesResponse {
+  success: boolean;
+  deliveries: NotificationDeliveryApi[];
+}
+
+export interface NotificationRuleCreateResponse {
+  success: boolean;
+  rule: NotificationRuleApi;
+  signingSecretOnce?: string;
+}
+
+export interface NotificationRuleUpdateResponse {
+  success: boolean;
+  rule: NotificationRuleApi;
+  signingSecretOnce?: string;
+}
+
+export interface NotificationTestResponse {
+  success: boolean;
+  message?: string;
+}
+
 // ==================== Query Execution Endpoints ====================
 
 export interface QueryExecuteResponse {

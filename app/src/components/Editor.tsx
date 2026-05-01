@@ -2435,6 +2435,11 @@ function Editor({
               connection => connection.id === scheduleModalTab.connectionId,
             )?.displayName || scheduleModalTab.databaseName
           }
+          workspaceId={currentWorkspace?.id}
+          notificationConsoleId={
+            scheduleModalTab.isSaved ? scheduleModalTab.id : undefined
+          }
+          workspaceRole={currentWorkspace?.role}
           onClose={() => setScheduleModalTabId(null)}
           onSave={handleSaveSchedule}
           onRemove={
