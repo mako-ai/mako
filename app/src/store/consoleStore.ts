@@ -17,6 +17,14 @@ import type {
   ScheduledQueryScheduleResponse,
 } from "../lib/api-types";
 
+export type QueryExecuteResult =
+  | QueryExecuteResponse
+  | {
+      success: false;
+      error: string;
+      code?: "PREVIEW_BLOCKED" | "FORBIDDEN";
+    };
+
 interface ConsoleState {
   tabs: Record<string, ConsoleTab>;
   /** Order in which tabs are displayed in the tab bar. Source of truth for the UI. */
@@ -106,8 +114,9 @@ interface ConsoleActions {
       signal?: AbortSignal;
       pageSize?: number;
       cursor?: string | null;
+      confirmUnsafe?: boolean;
     },
-  ) => Promise<QueryExecuteResponse>;
+  ) => Promise<QueryExecuteResult>;
   cancelQuery: (
     workspaceId: string,
     executionId: string,
@@ -667,21 +676,33 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       executeQuery: async (workspaceId, connectionId, query, options) => {
         try {
-          const res = await apiClient.post<QueryExecuteResponse>(
-            `/workspaces/${workspaceId}/execute`,
-            {
-              connectionId,
-              query,
-              databaseId: options?.databaseId,
-              databaseName: options?.databaseName,
-              executionId: options?.executionId,
-              pageSize: options?.pageSize,
-              cursor: options?.cursor,
-              mode: "preview",
-              source: "console_ui",
-            },
-            { signal: options?.signal },
-          );
+          const payload = {
+            connectionId,
+            query,
+            databaseId: options?.databaseId,
+            databaseName: options?.databaseName,
+            executionId: options?.executionId,
+            pageSize: options?.pageSize,
+            cursor: options?.cursor,
+            mode: "preview" as const,
+            source: "console_ui",
+            ...(options?.confirmUnsafe ? { confirmUnsafe: true } : {}),
+          };
+
+          const { status, body: res } =
+            await apiClient.postWithStatus<QueryExecuteResponse>(
+              `/workspaces/${workspaceId}/execute`,
+              payload,
+              { signal: options?.signal, alsoOk: [400, 403] },
+            );
+
+          if (status === 400 || status === 403) {
+            return {
+              success: false,
+              error: res.error || "Execution failed",
+              code: res.code,
+            };
+          }
 
           return res.success
             ? res

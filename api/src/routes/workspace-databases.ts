@@ -24,6 +24,7 @@ import { createStreamingExportResponse } from "../utils/query-export-stream";
 import { createArrowIPCStreamResponse } from "../utils/arrow-serializer";
 import { writeParquetTempFile } from "../utils/parquet-serializer";
 import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
+import { workspaceService } from "../services/workspace.service";
 import { promises as fsPromises } from "fs";
 
 const logger = loggers.db();
@@ -1048,6 +1049,7 @@ workspaceExecuteRoutes.post(
         mode,
         pageSize,
         cursor,
+        confirmUnsafe,
       } = body;
       const effectiveConnectionId =
         queryDefinition?.connectionId || connectionId;
@@ -1107,8 +1109,66 @@ workspaceExecuteRoutes.post(
       };
 
       const isPreviewMode = mode === "preview";
-      const result = isPreviewMode
-        ? await databaseConnectionService.executePreviewQuery(
+      const wantsUnsafeOverride = confirmUnsafe === true;
+
+      let useFullExecute = !isPreviewMode;
+      let usedAdminPreviewOverride = false;
+
+      if (
+        isPreviewMode &&
+        typeof executableQuery === "string" &&
+        database.type !== "mongodb" &&
+        database.type !== "cloudflare-kv"
+      ) {
+        const safety = checkPreviewQuerySafety(executableQuery);
+        if (!safety.safe) {
+          if (!wantsUnsafeOverride) {
+            return c.json(
+              {
+                success: false,
+                error: safety.errors.join(" "),
+                code: "PREVIEW_BLOCKED" as const,
+              },
+              400,
+            );
+          }
+          if (!user?.id) {
+            return c.json(
+              {
+                success: false,
+                error:
+                  "Admin session required to override preview safety (API keys cannot use confirmUnsafe)",
+                code: "FORBIDDEN" as const,
+              },
+              403,
+            );
+          }
+          const isAdmin = await workspaceService.isAdmin(
+            workspace._id.toString(),
+            user.id,
+          );
+          if (!isAdmin) {
+            return c.json(
+              {
+                success: false,
+                error: "Admin access required to override preview safety",
+                code: "FORBIDDEN" as const,
+              },
+              403,
+            );
+          }
+          useFullExecute = true;
+          usedAdminPreviewOverride = true;
+        }
+      }
+
+      const result = useFullExecute
+        ? await databaseConnectionService.executeQuery(
+            database,
+            executableQuery,
+            options,
+          )
+        : await databaseConnectionService.executePreviewQuery(
             database,
             executableQuery,
             {
@@ -1119,11 +1179,6 @@ workspaceExecuteRoutes.post(
                   : pageSize,
               cursor: typeof cursor === "string" ? cursor : null,
             },
-          )
-        : await databaseConnectionService.executeQuery(
-            database,
-            executableQuery,
-            options,
           );
 
       // Determine execution status and extract row count
@@ -1171,9 +1226,12 @@ workspaceExecuteRoutes.post(
       const userId = user?.id || apiKey?.createdBy;
       if (userId && database) {
         // Determine source: API key auth = "api", otherwise check body or default to "console_ui"
-        const executionSource: QuerySource = apiKey
+        let executionSource: QuerySource = apiKey
           ? "api"
           : source || "console_ui";
+        if (usedAdminPreviewOverride && !apiKey) {
+          executionSource = "console_ui_admin_override";
+        }
 
         // Validate consoleId before converting to ObjectId
         let validConsoleId: Types.ObjectId | undefined;
@@ -1207,7 +1265,12 @@ workspaceExecuteRoutes.post(
           errorType,
         });
 
-        if (isPreviewMode && "pageInfo" in result && result.pageInfo) {
+        if (
+          isPreviewMode &&
+          !useFullExecute &&
+          "pageInfo" in result &&
+          result.pageInfo
+        ) {
           logger.debug("Executed preview query page", {
             connectionId: database._id.toString(),
             databaseType: database.type,

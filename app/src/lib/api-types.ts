@@ -146,6 +146,7 @@ export interface QueryExecuteResponse {
     capApplied: boolean;
   };
   error?: string;
+  code?: "PREVIEW_BLOCKED" | "FORBIDDEN";
   executionTime?: number;
   rowCount?: number;
   fields?: Array<
