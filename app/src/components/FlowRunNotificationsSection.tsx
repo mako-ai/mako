@@ -8,7 +8,6 @@ import {
   CardContent,
   Checkbox,
   Chip,
-  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -30,13 +29,12 @@ import {
   Add as AddIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
-  ExpandLess as ExpandLessIcon,
-  ExpandMore as ExpandMoreIcon,
   NotificationsActive as NotifyIcon,
   Science as TestIcon,
 } from "@mui/icons-material";
 import type {
   NotificationChannelTypeApi,
+  NotificationDeliveryApi,
   NotificationResourceTypeApi,
   NotificationRuleApi,
   NotificationTriggerApi,
@@ -68,6 +66,22 @@ function triggersLabel(triggers: NotificationTriggerApi[]): string {
   if (triggers.includes("success")) parts.push("Success");
   if (triggers.includes("failure")) parts.push("Failure");
   return parts.join(" · ");
+}
+
+function formatDeliveryWhen(d: NotificationDeliveryApi): string {
+  const raw = d.completedAt ?? d.sentAt ?? d.createdAt;
+  try {
+    return new Date(raw).toLocaleString();
+  } catch {
+    return raw;
+  }
+}
+
+function formatDeliveryLine(d: NotificationDeliveryApi): string {
+  const when = formatDeliveryWhen(d);
+  return `${when} · ${d.trigger} · ${d.channelType} · ${d.status}${
+    d.lastError ? ` — ${d.lastError}` : ""
+  }`;
 }
 
 function channelTitle(type: NotificationChannelTypeApi): string {
@@ -124,7 +138,7 @@ export function FlowRunNotificationsSection({
   const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
   const [slackLabel, setSlackLabel] = useState("");
 
-  const [deliveriesOpen, setDeliveriesOpen] = useState(false);
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [testRuleId, setTestRuleId] = useState<string | null>(null);
   const [testTrigger, setTestTrigger] =
@@ -176,7 +190,10 @@ export function FlowRunNotificationsSection({
     setLoadError(null);
     void (async () => {
       try {
-        await fetchRules(workspaceId, resourceType, resourceId);
+        await Promise.all([
+          fetchRules(workspaceId, resourceType, resourceId),
+          fetchDeliveries(workspaceId, resourceType, resourceId),
+        ]);
       } catch (e) {
         if (!cancelled) {
           setLoadError(
@@ -188,12 +205,27 @@ export function FlowRunNotificationsSection({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, resourceId, resourceType, fetchRules]);
+  }, [
+    workspaceId,
+    resourceId,
+    resourceType,
+    fetchRules,
+    fetchDeliveries,
+  ]);
 
-  useEffect(() => {
-    if (!deliveriesOpen || !workspaceId || !resourceId) return;
-    void fetchDeliveries(workspaceId, resourceType, resourceId);
-  }, [deliveriesOpen, workspaceId, resourceId, resourceType, fetchDeliveries]);
+  const handleRefreshDeliveries = useCallback(async () => {
+    if (!workspaceId || !resourceId) return;
+    setDeliveriesLoading(true);
+    try {
+      await fetchDeliveries(workspaceId, resourceType, resourceId);
+    } catch (e) {
+      setLoadError(
+        e instanceof Error ? e.message : "Failed to load delivery history",
+      );
+    } finally {
+      setDeliveriesLoading(false);
+    }
+  }, [workspaceId, resourceId, resourceType, fetchDeliveries]);
 
   const parsedRecipients = useMemo(() => {
     return recipientsText
@@ -449,30 +481,60 @@ export function FlowRunNotificationsSection({
         )}
       </Stack>
 
-      <Button
-        size="small"
-        onClick={() => setDeliveriesOpen(o => !o)}
-        endIcon={deliveriesOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-        sx={{ mt: 1 }}
-      >
-        Recent deliveries
-      </Button>
-      <Collapse in={deliveriesOpen}>
-        <Stack spacing={0.5} sx={{ mt: 1, pl: 0.5 }}>
-          {(deliveries ?? []).length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
-              No delivery history yet.
-            </Typography>
-          ) : (
-            (deliveries ?? []).slice(0, 10).map(d => (
-              <Typography key={d.id} variant="caption" display="block">
-                {d.trigger} · {d.channelType} · {d.status}
-                {d.lastError ? ` — ${d.lastError}` : ""}
-              </Typography>
-            ))
-          )}
+      <Box sx={{ mt: 2 }}>
+        <Stack
+          direction="row"
+          alignItems="baseline"
+          justifyContent="space-between"
+          spacing={1}
+          sx={{ mb: 0.75 }}
+        >
+          <Typography variant="subtitle2" color="text.secondary">
+            Delivery log
+          </Typography>
+          <Button
+            size="small"
+            variant="text"
+            onClick={() => void handleRefreshDeliveries()}
+            disabled={deliveriesLoading}
+            sx={{ minWidth: "auto", textTransform: "none" }}
+          >
+            {deliveriesLoading ? "Loading…" : "Refresh"}
+          </Button>
         </Stack>
-      </Collapse>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          Last attempts for this query or flow (newest first).
+        </Typography>
+        {(deliveries ?? []).length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No deliveries yet. They appear here after a run completes and a
+            notification is sent.
+          </Typography>
+        ) : (
+          <Stack
+            component="ul"
+            spacing={0.5}
+            sx={{
+              m: 0,
+              pl: 2,
+              listStyleType: "disc",
+              "& li": { display: "list-item", pl: 0.25 },
+            }}
+          >
+            {(deliveries ?? []).slice(0, 10).map(d => (
+              <Typography
+                key={d.id}
+                component="li"
+                variant="body2"
+                color="text.secondary"
+                sx={{ wordBreak: "break-word" }}
+              >
+                {formatDeliveryLine(d)}
+              </Typography>
+            ))}
+          </Stack>
+        )}
+      </Box>
 
       <Dialog
         open={dialogOpen}
