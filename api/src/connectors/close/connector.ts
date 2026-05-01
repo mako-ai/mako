@@ -88,7 +88,6 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "activity.note", action: "updated" },
   { object_type: "activity.note", action: "deleted" },
   { object_type: "activity.meeting", action: "created" },
-  { object_type: "activity.meeting", action: "updated" },
   { object_type: "activity.meeting", action: "deleted" },
   { object_type: "activity.meeting", action: "scheduled" },
   { object_type: "activity.meeting", action: "started" },
