@@ -2,11 +2,9 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import type {
-  NotificationChannelTypeApi,
   NotificationDeliveryApi,
   NotificationResourceTypeApi,
   NotificationRuleApi,
-  NotificationTriggerApi,
 } from "../lib/api-types";
 
 function resourceKey(
@@ -110,18 +108,13 @@ export const useNotificationRuleStore = create<
         success: boolean;
         rule: NotificationRuleApi;
         signingSecretOnce?: string;
-      }>(
-        `/workspaces/${workspaceId}/notification-rules/${ruleId}`,
-        body,
-      );
+      }>(`/workspaces/${workspaceId}/notification-rules/${ruleId}`, body);
       const rt = res.rule.resourceType;
       const rid = res.rule.resourceId;
       const key = resourceKey(rt, rid);
       set(s => {
         const list = s.rulesByKey[key] || [];
-        s.rulesByKey[key] = list.map(r =>
-          r.id === ruleId ? res.rule : r,
-        );
+        s.rulesByKey[key] = list.map(r => (r.id === ruleId ? res.rule : r));
       });
       return { rule: res.rule, signingSecretOnce: res.signingSecretOnce };
     },
@@ -138,7 +131,10 @@ export const useNotificationRuleStore = create<
     },
 
     testNotification: async (workspaceId, body) => {
-      await apiClient.post(`/workspaces/${workspaceId}/notification-rules/test`, body);
+      await apiClient.post(
+        `/workspaces/${workspaceId}/notification-rules/test`,
+        body,
+      );
     },
 
     clearCacheForResource: (resourceType, resourceId) => {

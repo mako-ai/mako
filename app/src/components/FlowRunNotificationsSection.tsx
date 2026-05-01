@@ -90,12 +90,8 @@ export function FlowRunNotificationsSection({
   workspaceRole,
   compact,
 }: FlowRunNotificationsSectionProps) {
-  const canManage =
-    workspaceRole === "owner" || workspaceRole === "admin";
-
-  const cacheKey = resourceId
-    ? resourceCacheKey(resourceType, resourceId)
-    : "";
+  const canManage = workspaceRole === "owner" || workspaceRole === "admin";
+  const cacheKey = resourceId ? resourceCacheKey(resourceType, resourceId) : "";
 
   const rules = useNotificationRuleStore(s =>
     cacheKey ? s.rulesByKey[cacheKey] : undefined,
@@ -197,13 +193,7 @@ export function FlowRunNotificationsSection({
   useEffect(() => {
     if (!deliveriesOpen || !workspaceId || !resourceId) return;
     void fetchDeliveries(workspaceId, resourceType, resourceId);
-  }, [
-    deliveriesOpen,
-    workspaceId,
-    resourceId,
-    resourceType,
-    fetchDeliveries,
-  ]);
+  }, [deliveriesOpen, workspaceId, resourceId, resourceType, fetchDeliveries]);
 
   const parsedRecipients = useMemo(() => {
     return recipientsText
@@ -294,7 +284,10 @@ export function FlowRunNotificationsSection({
     }
   };
 
-  const handleToggleEnabled = async (rule: NotificationRuleApi, on: boolean) => {
+  const handleToggleEnabled = async (
+    rule: NotificationRuleApi,
+    on: boolean,
+  ) => {
     if (!workspaceId || !canManage) return;
     setBusyRuleId(rule.id);
     try {
@@ -340,8 +333,9 @@ export function FlowRunNotificationsSection({
   if (!resourceId) {
     return (
       <Alert severity="info" sx={{ mt: compact ? 0 : 2 }}>
-        Save this {resourceType === "scheduled_query" ? "query" : "flow"}{" "}
-        first to configure run notifications.
+        {`Save this ${
+          resourceType === "scheduled_query" ? "query" : "flow"
+        } first to configure run notifications.`}
       </Alert>
     );
   }
@@ -369,7 +363,12 @@ export function FlowRunNotificationsSection({
       </Stack>
 
       {!canManage && (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          display="block"
+          sx={{ mb: 1 }}
+        >
           Only workspace admins can edit notifications.
         </Typography>
       )}
@@ -573,9 +572,7 @@ export function FlowRunNotificationsSection({
                     control={
                       <Checkbox
                         checked={rotateWebhookSecret}
-                        onChange={e =>
-                          setRotateWebhookSecret(e.target.checked)
-                        }
+                        onChange={e => setRotateWebhookSecret(e.target.checked)}
                       />
                     }
                     label="Rotate signing secret"
