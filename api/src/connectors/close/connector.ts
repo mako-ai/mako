@@ -70,6 +70,9 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "opportunity", action: "updated" },
   { object_type: "opportunity", action: "deleted" },
   { object_type: "activity.call", action: "created" },
+  { object_type: "activity.call", action: "deleted" },
+  { object_type: "activity.call", action: "answered" },
+  { object_type: "activity.call", action: "completed" },
   { object_type: "activity.email", action: "created" },
   { object_type: "activity.email", action: "updated" },
   { object_type: "activity.email", action: "deleted" },
@@ -2211,7 +2214,7 @@ export class CloseConnector extends BaseConnector {
 
     // Activity sub-type events: "activity.note.created" → entity "activities:Note"
     const activityMatch = eventType.match(
-      /^activity\.(\w+)\.(created|updated|sent|deleted|completed|scheduled|started|canceled)$/,
+      /^activity\.(\w+)\.(created|updated|sent|deleted|answered|completed|scheduled|started|canceled)$/,
     );
     if (activityMatch) {
       const subTypeMap: Record<string, string> = {
