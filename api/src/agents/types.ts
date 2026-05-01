@@ -154,6 +154,11 @@ export interface AgentContext {
   };
   /** Request-scoped execution registry for cancellable server tools */
   toolExecutionContext?: AgentToolExecutionContext;
+  /**
+   * Actor may attach cron schedules to saved consoles (workspace owner/admin),
+   * or API-key requests act as workspace-scoped automation (same as HTTP schedule routes).
+   */
+  canManageScheduledQueries?: boolean;
 }
 
 /**

@@ -17,6 +17,7 @@ import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-t
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
+import { createScheduleQueryTool } from "../../agent-lib/tools/schedule-query-tool";
 import type { ConsoleDataV2 } from "../../agent-lib/types";
 
 /**
@@ -164,6 +165,7 @@ export const consoleAgentFactory: AgentFactory = (
     consoleHints = "",
     skillsBlock = "",
     activeConsoleResults,
+    canManageScheduledQueries = false,
   } = context;
 
   // Build database lookup maps
@@ -201,6 +203,9 @@ export const consoleAgentFactory: AgentFactory = (
     activeConsoleResults,
   );
 
+  const scheduleQueryPrompt =
+    "\n\n---\n\n### Scheduled query runs\nTo run a **saved** console on a cron, use `schedule_query` only after the user explicitly confirms the cron expression, timezone, and which saved console id to use. The console must already be saved and bound to a connection. Workspace members who are not owner/admin cannot schedule (they need an admin or an API-key-authenticated request).\n";
+
   // Create tools
   const tools = createUniversalTools(
     workspaceId,
@@ -216,6 +221,10 @@ export const consoleAgentFactory: AgentFactory = (
     context.toolExecutionContext,
   );
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
+  const scheduleQueryTools = createScheduleQueryTool({
+    workspaceId,
+    canManageScheduledQueries,
+  });
 
   return {
     systemPrompt: [
@@ -229,7 +238,11 @@ export const consoleAgentFactory: AgentFactory = (
       {
         role: "system" as const,
         content:
-          selfDirectiveContext + skillsBlock + consoleHints + runtimeContext,
+          selfDirectiveContext +
+          skillsBlock +
+          consoleHints +
+          scheduleQueryPrompt +
+          runtimeContext,
       },
     ],
     tools: {
@@ -238,6 +251,7 @@ export const consoleAgentFactory: AgentFactory = (
       ...skillTools,
       ...consoleSearchTools,
       ...versionHistoryTools,
+      ...scheduleQueryTools,
     } as Record<string, any>,
   };
 };
