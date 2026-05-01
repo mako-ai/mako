@@ -390,7 +390,12 @@ export function FlowRunNotificationsSection({
         <Typography variant="subtitle2" color="text.secondary">
           Run notifications
         </Typography>
-        <Stack direction="row" alignItems="center" spacing={0.5} flexWrap="wrap">
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={0.5}
+          flexWrap="wrap"
+        >
           <Button
             size="small"
             variant="text"
@@ -536,7 +541,9 @@ export function FlowRunNotificationsSection({
         </DialogTitle>
         <DialogContent dividers sx={{ flex: 1, overflow: "auto", py: 2 }}>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Notification send attempts for this {resourceType === "flow" ? "flow" : "scheduled query"}, newest first (up to 100).
+            Notification send attempts for this{" "}
+            {resourceType === "flow" ? "flow" : "scheduled query"}, newest first
+            (up to 100).
           </Typography>
           {deliveryLogLoading ? (
             <Typography variant="body2" color="text.secondary">

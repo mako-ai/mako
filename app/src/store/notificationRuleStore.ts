@@ -73,12 +73,7 @@ export const useNotificationRuleStore = create<
       return res.rules || [];
     },
 
-    fetchDeliveries: async (
-      workspaceId,
-      resourceType,
-      resourceId,
-      options,
-    ) => {
+    fetchDeliveries: async (workspaceId, resourceType, resourceId, options) => {
       const key = resourceKey(resourceType, resourceId);
       const params: Record<string, string> = {
         resourceType,
