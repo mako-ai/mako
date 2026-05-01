@@ -11,7 +11,6 @@ import {
   NotificationRule,
   SavedConsole,
   decrypt,
-  encrypt,
   type INotificationRuleChannel,
   type NotificationChannelType,
   type NotificationResourceType,
