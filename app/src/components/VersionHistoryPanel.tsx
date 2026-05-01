@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Drawer,
+  Backdrop,
   Box,
   Typography,
   List,
@@ -108,6 +109,17 @@ export function VersionHistoryPanel({
     }
   }, [open, workspaceId, entityType, entityId, fetchHistory]);
 
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (restoreDialogOpen) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, restoreDialogOpen, onClose]);
+
   const handleVersionClick = useCallback(
     async (item: VersionListItem) => {
       if (!workspaceId) return;
@@ -166,6 +178,12 @@ export function VersionHistoryPanel({
 
   return (
     <>
+      <Backdrop
+        open={open}
+        onClick={onClose}
+        sx={{ zIndex: theme => theme.zIndex.drawer - 2 }}
+      />
+
       <Drawer
         variant="persistent"
         anchor="right"
@@ -184,7 +202,6 @@ export function VersionHistoryPanel({
             zIndex: theme => theme.zIndex.drawer - 1,
           },
         }}
-        ModalProps={{ keepMounted: false }}
       >
         {selectedVersion && (
           <>
@@ -277,9 +294,10 @@ export function VersionHistoryPanel({
       </Drawer>
 
       <Drawer
+        variant="persistent"
         anchor="right"
         open={open}
-        onClose={onClose}
+        hideBackdrop
         PaperProps={{
           sx: {
             width: LIST_WIDTH,
