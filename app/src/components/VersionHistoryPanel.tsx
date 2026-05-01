@@ -5,7 +5,6 @@ import {
   Typography,
   List,
   ListItemButton,
-  ListItemText,
   Chip,
   IconButton,
   Tooltip,
@@ -16,15 +15,18 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Divider,
+  Avatar,
+  Stack,
 } from "@mui/material";
 import { X, RotateCcw } from "lucide-react";
+import Editor from "@monaco-editor/react";
 import {
   useVersionStore,
   type VersionListItem,
   type VersionDetail,
 } from "../store/versionStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useTheme } from "../contexts/ThemeContext";
 
 interface VersionHistoryPanelProps {
   open: boolean;
@@ -34,6 +36,9 @@ interface VersionHistoryPanelProps {
   currentCode?: string;
   onRestore?: () => void;
 }
+
+const LIST_WIDTH = 380;
+const PREVIEW_WIDTH = 640;
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
@@ -53,6 +58,15 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return parts
+    .slice(0, 2)
+    .map(p => p[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
 export function VersionHistoryPanel({
   open,
   onClose,
@@ -60,6 +74,7 @@ export function VersionHistoryPanel({
   entityId,
   onRestore,
 }: VersionHistoryPanelProps) {
+  const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
 
@@ -82,6 +97,12 @@ export function VersionHistoryPanel({
   const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
+    if (!open) {
+      setSelectedVersion(null);
+    }
+  }, [open]);
+
+  useEffect(() => {
     if (open && workspaceId && entityId) {
       fetchHistory(workspaceId, entityType, entityId);
     }
@@ -90,6 +111,13 @@ export function VersionHistoryPanel({
   const handleVersionClick = useCallback(
     async (item: VersionListItem) => {
       if (!workspaceId) return;
+      setSelectedVersion({
+        ...item,
+        snapshot:
+          entityType === "console"
+            ? { code: "" }
+            : ({} as Record<string, unknown>),
+      });
       setLoadingDetail(true);
       const detail = await fetchVersion(
         workspaceId,
@@ -128,13 +156,137 @@ export function VersionHistoryPanel({
     }
   };
 
+  const monacoTheme = effectiveMode === "dark" ? "vs-dark" : "light";
+  const snapshotValue =
+    selectedVersion == null
+      ? ""
+      : entityType === "console"
+        ? ((selectedVersion.snapshot.code as string) ?? "")
+        : JSON.stringify(selectedVersion.snapshot ?? {}, null, 2);
+
   return (
     <>
+      <Drawer
+        variant="persistent"
+        anchor="right"
+        open={open && Boolean(selectedVersion)}
+        hideBackdrop
+        PaperProps={{
+          sx: {
+            width: PREVIEW_WIDTH,
+            maxWidth: `calc(100vw - ${LIST_WIDTH}px)`,
+            right: LIST_WIDTH,
+            height: "100vh",
+            borderRight: 1,
+            borderColor: "divider",
+            display: "flex",
+            flexDirection: "column",
+            zIndex: theme => theme.zIndex.drawer - 1,
+          },
+        }}
+        ModalProps={{ keepMounted: false }}
+      >
+        {selectedVersion && (
+          <>
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 1,
+                px: 2,
+                py: 1.5,
+                borderBottom: 1,
+                borderColor: "divider",
+                flexShrink: 0,
+              }}
+            >
+              <Stack
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                sx={{ minWidth: 0, flex: 1 }}
+              >
+                <Chip
+                  size="small"
+                  label={`v${selectedVersion.version}`}
+                  color="primary"
+                  sx={{ height: 20, fontSize: "0.7rem", fontWeight: 600 }}
+                />
+                <Typography variant="subtitle2" sx={{ flexShrink: 0 }}>
+                  Snapshot
+                </Typography>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  noWrap
+                  sx={{ minWidth: 0 }}
+                >
+                  {selectedVersion.savedByName} ·{" "}
+                  {formatDate(selectedVersion.createdAt)}
+                </Typography>
+              </Stack>
+              <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
+                <Button
+                  size="small"
+                  startIcon={<RotateCcw size={14} />}
+                  onClick={() => handleRestoreClick(selectedVersion)}
+                >
+                  Restore
+                </Button>
+                <IconButton size="small" onClick={() => setSelectedVersion(null)}>
+                  <X size={18} />
+                </IconButton>
+              </Stack>
+            </Box>
+
+            <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
+              {loadingDetail ? (
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    height: "100%",
+                  }}
+                >
+                  <CircularProgress size={20} />
+                </Box>
+              ) : (
+                <Editor
+                  height="100%"
+                  language={entityType === "console" ? "sql" : "json"}
+                  theme={monacoTheme}
+                  value={snapshotValue}
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    fontSize: 12,
+                    wordWrap: "on",
+                    renderLineHighlight: "none",
+                  }}
+                />
+              )}
+            </Box>
+          </>
+        )}
+      </Drawer>
+
       <Drawer
         anchor="right"
         open={open}
         onClose={onClose}
-        PaperProps={{ sx: { width: 380, maxWidth: "90vw" } }}
+        PaperProps={{
+          sx: {
+            width: LIST_WIDTH,
+            maxWidth: "90vw",
+            display: "flex",
+            flexDirection: "column",
+            height: "100%",
+            zIndex: theme => theme.zIndex.drawer,
+          },
+        }}
       >
         <Box
           sx={{
@@ -145,6 +297,7 @@ export function VersionHistoryPanel({
             py: 1.5,
             borderBottom: 1,
             borderColor: "divider",
+            flexShrink: 0,
           }}
         >
           <Typography variant="subtitle1" fontWeight={600}>
@@ -172,74 +325,103 @@ export function VersionHistoryPanel({
             </Typography>
           </Box>
         ) : (
-          <List dense disablePadding sx={{ overflow: "auto", flex: 1 }}>
+          <List
+            dense
+            disablePadding
+            sx={{ overflow: "auto", flex: 1, minHeight: 0 }}
+          >
             {versions.map(v => (
               <ListItemButton
                 key={v.version}
                 selected={selectedVersion?.version === v.version}
                 onClick={() => handleVersionClick(v)}
-                sx={{ alignItems: "flex-start", px: 2, py: 1 }}
+                sx={{
+                  flexDirection: "column",
+                  alignItems: "stretch",
+                  gap: 0.5,
+                  px: 2,
+                  py: 1,
+                  "& .row-actions": {
+                    opacity: 0,
+                    transition: "opacity 120ms ease",
+                  },
+                  "&:hover .row-actions, &.Mui-selected .row-actions": {
+                    opacity: 1,
+                  },
+                }}
               >
-                <ListItemText
-                  primary={
-                    <Box
-                      sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.75,
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  <Chip
+                    size="small"
+                    label={`v${v.version}`}
+                    color={
+                      selectedVersion?.version === v.version
+                        ? "primary"
+                        : "default"
+                    }
+                    sx={{ height: 20, fontSize: "0.7rem", fontWeight: 600 }}
+                  />
+                  <Avatar sx={{ width: 20, height: 20, fontSize: "0.65rem" }}>
+                    {initials(v.savedByName)}
+                  </Avatar>
+                  <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
+                    {v.savedByName}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {formatDate(v.createdAt)}
+                  </Typography>
+                  <Tooltip title="Restore this version">
+                    <IconButton
+                      size="small"
+                      className="row-actions"
+                      onClick={e => {
+                        e.stopPropagation();
+                        handleRestoreClick(v);
                       }}
                     >
-                      <Typography variant="body2" fontWeight={600}>
-                        v{v.version}
-                      </Typography>
-                      {v.restoredFrom && (
-                        <Chip
-                          label={`from v${v.restoredFrom}`}
-                          size="small"
-                          variant="outlined"
-                          sx={{ height: 18, fontSize: "0.7rem" }}
-                        />
-                      )}
-                      <Box sx={{ flex: 1 }} />
-                      <Tooltip title="Restore this version">
-                        <IconButton
-                          size="small"
-                          onClick={e => {
-                            e.stopPropagation();
-                            handleRestoreClick(v);
-                          }}
-                          sx={{ opacity: 0.6, "&:hover": { opacity: 1 } }}
-                        >
-                          <RotateCcw size={14} />
-                        </IconButton>
-                      </Tooltip>
-                    </Box>
-                  }
-                  secondary={
-                    <>
+                      <RotateCcw size={14} />
+                    </IconButton>
+                  </Tooltip>
+                </Box>
+
+                {(v.comment || v.restoredFrom != null) && (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.75,
+                      pl: 3.5,
+                      minWidth: 0,
+                    }}
+                  >
+                    {v.restoredFrom != null && (
+                      <Chip
+                        label={`from v${v.restoredFrom}`}
+                        size="small"
+                        variant="outlined"
+                        sx={{ height: 18, fontSize: "0.7rem", flexShrink: 0 }}
+                      />
+                    )}
+                    {v.comment ? (
                       <Typography
-                        component="span"
                         variant="caption"
                         color="text.secondary"
+                        fontStyle="italic"
+                        noWrap
+                        sx={{ minWidth: 0 }}
                       >
-                        {v.savedByName} &middot; {formatDate(v.createdAt)}
+                        {v.comment}
                       </Typography>
-                      {v.comment && (
-                        <Typography
-                          variant="caption"
-                          display="block"
-                          sx={{
-                            mt: 0.25,
-                            color: "text.primary",
-                            fontStyle: "italic",
-                          }}
-                        >
-                          {v.comment}
-                        </Typography>
-                      )}
-                    </>
-                  }
-                />
+                    ) : null}
+                  </Box>
+                )}
               </ListItemButton>
             ))}
             {versions.length < total && (
@@ -259,40 +441,6 @@ export function VersionHistoryPanel({
               </Box>
             )}
           </List>
-        )}
-
-        {selectedVersion && (
-          <>
-            <Divider />
-            <Box sx={{ px: 2, py: 1.5 }}>
-              <Typography variant="caption" fontWeight={600}>
-                Version {selectedVersion.version} snapshot
-              </Typography>
-              {loadingDetail ? (
-                <CircularProgress size={16} sx={{ ml: 1 }} />
-              ) : (
-                <Box
-                  component="pre"
-                  sx={{
-                    mt: 1,
-                    p: 1.5,
-                    borderRadius: 1,
-                    bgcolor: "action.hover",
-                    fontSize: "0.75rem",
-                    fontFamily: "monospace",
-                    overflow: "auto",
-                    maxHeight: 260,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  {entityType === "console"
-                    ? ((selectedVersion.snapshot.code as string) ?? "")
-                    : JSON.stringify(selectedVersion.snapshot, null, 2)}
-                </Box>
-              )}
-            </Box>
-          </>
         )}
       </Drawer>
 
