@@ -65,7 +65,9 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "lead", action: "updated" },
   { object_type: "lead", action: "deleted" },
   { object_type: "lead", action: "merged" },
+  { object_type: "contact", action: "created" },
   { object_type: "contact", action: "updated" },
+  { object_type: "contact", action: "deleted" },
   { object_type: "opportunity", action: "created" },
   { object_type: "opportunity", action: "updated" },
   { object_type: "opportunity", action: "deleted" },
@@ -114,13 +116,21 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "custom_fields.opportunity", action: "created" },
   { object_type: "custom_fields.opportunity", action: "updated" },
   { object_type: "custom_fields.opportunity", action: "deleted" },
+  { object_type: "custom_fields.activity", action: "created" },
+  { object_type: "custom_fields.activity", action: "updated" },
   { object_type: "custom_fields.activity", action: "deleted" },
+  { object_type: "custom_fields.custom_object", action: "created" },
+  { object_type: "custom_fields.custom_object", action: "updated" },
   { object_type: "custom_fields.custom_object", action: "deleted" },
   { object_type: "custom_fields.shared", action: "created" },
   { object_type: "custom_fields.shared", action: "updated" },
   { object_type: "custom_fields.shared", action: "deleted" },
+  { object_type: "custom_activity_type", action: "created" },
   { object_type: "custom_activity_type", action: "updated" },
+  { object_type: "custom_activity_type", action: "deleted" },
+  { object_type: "custom_object_type", action: "created" },
   { object_type: "custom_object_type", action: "updated" },
+  { object_type: "custom_object_type", action: "deleted" },
   { object_type: "custom_object", action: "created" },
   { object_type: "custom_object", action: "updated" },
   { object_type: "custom_object", action: "deleted" },
@@ -2202,7 +2212,9 @@ export class CloseConnector extends BaseConnector {
       "lead.merged": { entity: "leads", operation: "upsert" },
 
       // Contacts
+      "contact.created": { entity: "contacts", operation: "upsert" },
       "contact.updated": { entity: "contacts", operation: "upsert" },
+      "contact.deleted": { entity: "contacts", operation: "delete" },
 
       // Opportunities
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
@@ -2263,7 +2275,7 @@ export class CloseConnector extends BaseConnector {
 
     // Custom object/activity type events
     const typeMatch = eventType.match(
-      /^(custom_activity_type|custom_object_type)\.(updated)$/,
+      /^(custom_activity_type|custom_object_type)\.(created|updated|deleted)$/,
     );
     if (typeMatch) {
       const entityMap: Record<string, string> = {
@@ -2272,7 +2284,7 @@ export class CloseConnector extends BaseConnector {
       };
       return {
         entity: entityMap[typeMatch[1]],
-        operation: "upsert",
+        operation: typeMatch[2] === "deleted" ? "delete" : "upsert",
       };
     }
 
