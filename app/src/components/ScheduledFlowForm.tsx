@@ -41,6 +41,7 @@ import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { trackEvent } from "../lib/analytics";
+import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
 interface ScheduledFlowFormProps {
   flowId?: string;
@@ -1544,6 +1545,15 @@ export function ScheduledFlowForm({
                     {watchTimezone && ` in ${watchTimezone}`}
                   </Typography>
                 </Alert>
+              )}
+
+              {currentWorkspace && (
+                <FlowRunNotificationsSection
+                  workspaceId={currentWorkspace.id}
+                  resourceType="flow"
+                  resourceId={currentFlowId}
+                  workspaceRole={currentWorkspace.role}
+                />
               )}
             </Stack>
           </form>

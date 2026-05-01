@@ -1351,6 +1351,7 @@ flowRoutes.post("/:flowId/backfill", async c => {
         flowId: flow._id.toString(),
         noJitter: true,
         backfill: true,
+        triggerType: "manual",
       },
     });
 

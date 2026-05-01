@@ -33,6 +33,7 @@ interface EmailServiceConfig {
   invitationTemplateId?: string;
   verificationTemplateId?: string;
   passwordResetTemplateId?: string;
+  flowRunNotificationTemplateId?: string;
 }
 
 /**
@@ -55,6 +56,8 @@ function getConfig(): EmailServiceConfig {
     invitationTemplateId: process.env.SENDGRID_INVITATION_TEMPLATE_ID,
     verificationTemplateId: process.env.SENDGRID_VERIFICATION_TEMPLATE_ID,
     passwordResetTemplateId: process.env.SENDGRID_PASSWORD_RESET_TEMPLATE_ID,
+    flowRunNotificationTemplateId:
+      process.env.SENDGRID_FLOW_RUN_NOTIFICATION_TEMPLATE_ID,
   };
 }
 
@@ -252,6 +255,55 @@ export class EmailService {
     });
 
     logger.info("Password reset email sent", { to });
+  }
+
+  /**
+   * Flow / scheduled query run completion notifications (dynamic template).
+   */
+  async sendFlowRunNotificationEmails(
+    recipients: string[],
+    dynamicTemplateData: Record<string, unknown>,
+  ): Promise<void> {
+    const config = getConfig();
+    const subject =
+      typeof dynamicTemplateData.trigger === "string"
+        ? `Mako: Run ${dynamicTemplateData.trigger}`
+        : "Mako: Run notification";
+
+    if (!config.apiKey) {
+      for (const to of recipients) {
+        logEmailForDev(
+          "Flow run notification",
+          to,
+          subject,
+          dynamicTemplateData,
+        );
+      }
+      logger.info("Flow run notification emails logged (dev mode)", {
+        count: recipients.length,
+      });
+      return;
+    }
+
+    if (!config.flowRunNotificationTemplateId) {
+      logger.warn(
+        "SENDGRID_FLOW_RUN_NOTIFICATION_TEMPLATE_ID not configured — skipping flow run emails",
+      );
+      return;
+    }
+
+    for (const to of recipients) {
+      await sendMail({
+        to,
+        from: config.fromEmail,
+        subject,
+        templateId: config.flowRunNotificationTemplateId,
+        dynamicTemplateData,
+      });
+    }
+    logger.info("Flow run notification emails sent", {
+      count: recipients.length,
+    });
   }
 }
 

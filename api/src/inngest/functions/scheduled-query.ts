@@ -11,6 +11,7 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import { loggers } from "../../logging";
 import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
+import { emitScheduledQueryTerminalEvent } from "../../services/flow-run-notification.emit";
 
 const logger = loggers.inngest();
 
@@ -263,6 +264,15 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
       });
       isFinalized = true;
 
+      await step.run("emit-scheduled-query-terminal-notification", async () => {
+        await emitScheduledQueryTerminalEvent({
+          workspaceId,
+          consoleId,
+          runId: run.id,
+          triggerType,
+        });
+      });
+
       queryExecutionService.track({
         userId: triggeredBy || consoleDoc.savedConsole.createdBy,
         workspaceId: consoleDoc.savedConsole.workspaceId,
@@ -331,6 +341,17 @@ export const scheduledQueryExecutorFunction = inngest.createFunction(
           },
         );
       });
+      await step.run(
+        "emit-scheduled-query-terminal-notification-error",
+        async () => {
+          await emitScheduledQueryTerminalEvent({
+            workspaceId,
+            consoleId,
+            runId: run.id,
+            triggerType,
+          });
+        },
+      );
       throw error;
     }
   },

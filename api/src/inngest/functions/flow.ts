@@ -34,6 +34,7 @@ import {
   purgeSoftDeletesAfterBackfill,
 } from "../../sync-cdc/backfill";
 import { syncBackfillEntityFunction } from "./sync-entity";
+import { emitFlowExecutionTerminalEvent } from "../../services/flow-run-notification.emit";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -409,14 +410,29 @@ export const flowFunction = inngest.createFunction(
   },
   { event: "flow.execute" },
   async ({ event, step, logger }) => {
-    const { flowId, noJitter, backfill, backfillRunId, backfillEntities } =
-      event.data as {
-        flowId: string;
-        noJitter?: boolean;
-        backfill?: boolean;
-        backfillRunId?: string;
-        backfillEntities?: string[];
-      };
+    const {
+      flowId,
+      noJitter,
+      backfill,
+      backfillRunId,
+      backfillEntities,
+      triggerType: eventTriggerType,
+    } = event.data as {
+      flowId: string;
+      noJitter?: boolean;
+      backfill?: boolean;
+      backfillRunId?: string;
+      backfillEntities?: string[];
+      triggerType?: "manual" | "schedule";
+    };
+    const runTriggerType: "manual" | "schedule" =
+      eventTriggerType === "manual"
+        ? "manual"
+        : eventTriggerType === "schedule"
+          ? "schedule"
+          : noJitter
+            ? "manual"
+            : "schedule";
     const requestedBackfillEntities = Array.isArray(backfillEntities)
       ? Array.from(
           new Set(
@@ -447,7 +463,11 @@ export const flowFunction = inngest.createFunction(
         new Types.ObjectId(flowId),
         new Types.ObjectId(flow.workspaceId),
         {
-          dataSourceId: new Types.ObjectId(flow.dataSourceId),
+          dataSourceId: flow.dataSourceId
+            ? new Types.ObjectId(flow.dataSourceId)
+            : flow.databaseSource?.connectionId
+              ? new Types.ObjectId(flow.databaseSource.connectionId)
+              : new Types.ObjectId(flow.destinationDatabaseId),
           destinationDatabaseId: new Types.ObjectId(flow.destinationDatabaseId),
           destinationDatabaseName: flow.destinationDatabaseName,
           syncMode: flow.syncMode === "incremental" ? "incremental" : "full",
@@ -1104,6 +1124,19 @@ export const flowFunction = inngest.createFunction(
             }
           }
         });
+
+        if (executionId && flowRef) {
+          const terminalWorkspaceId = String(flowRef.workspaceId);
+          const terminalExecutionId = executionId;
+          await step.run("emit-flow-terminal-notification", async () => {
+            await emitFlowExecutionTerminalEvent({
+              workspaceId: terminalWorkspaceId,
+              flowId,
+              executionId: terminalExecutionId,
+              triggerType: runTriggerType,
+            });
+          });
+        }
 
         return {
           success: true,
@@ -1834,6 +1867,19 @@ export const flowFunction = inngest.createFunction(
         }
       });
 
+      if (executionId && flowRef) {
+        const terminalWorkspaceId = String(flowRef.workspaceId);
+        const terminalExecutionId = executionId;
+        await step.run("emit-flow-terminal-notification", async () => {
+          await emitFlowExecutionTerminalEvent({
+            workspaceId: terminalWorkspaceId,
+            flowId,
+            executionId: terminalExecutionId,
+            triggerType: runTriggerType,
+          });
+        });
+      }
+
       return { success: true, message: "Sync completed successfully" };
     } catch (error: any) {
       void appendExecutionLog("error", "Flow execution failed", {
@@ -1968,6 +2014,17 @@ export const flowFunction = inngest.createFunction(
               executionId,
               status: isCancelled ? "cancelled" : "failed",
             });
+
+            if (!isCancelled && flowRef && executionId) {
+              const failureTerminalWorkspaceId = String(flowRef.workspaceId);
+              const failureTerminalExecutionId = executionId;
+              await emitFlowExecutionTerminalEvent({
+                workspaceId: failureTerminalWorkspaceId,
+                flowId,
+                executionId: failureTerminalExecutionId,
+                triggerType: runTriggerType,
+              });
+            }
           } catch (completeError) {
             logger.error("Failed to complete error execution logging", {
               flowId,
@@ -2265,7 +2322,10 @@ export const flowSchedulerFunction = inngest.createFunction(
         // Trigger the flow (without noJitter flag, so jitter will be applied)
         await step.sendEvent(`trigger-flow-${flow._id}`, {
           name: "flow.execute",
-          data: { flowId: flow._id.toString() },
+          data: {
+            flowId: flow._id.toString(),
+            triggerType: "schedule",
+          },
         });
 
         const flowDisplayName = await getFlowDisplayName(flow);
@@ -2306,6 +2366,7 @@ export const manualFlowFunction = inngest.createFunction(
       data: {
         flowId,
         noJitter: true, // Skip jitter for manual execution
+        triggerType: "manual",
       },
     });
 
