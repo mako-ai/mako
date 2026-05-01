@@ -234,7 +234,10 @@ export function VersionHistoryPanel({
                 >
                   Restore
                 </Button>
-                <IconButton size="small" onClick={() => setSelectedVersion(null)}>
+                <IconButton
+                  size="small"
+                  onClick={() => setSelectedVersion(null)}
+                >
                   <X size={18} />
                 </IconButton>
               </Stack>
@@ -371,7 +374,11 @@ export function VersionHistoryPanel({
                   <Avatar sx={{ width: 20, height: 20, fontSize: "0.65rem" }}>
                     {initials(v.savedByName)}
                   </Avatar>
-                  <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography
+                    variant="body2"
+                    noWrap
+                    sx={{ flex: 1, minWidth: 0 }}
+                  >
                     {v.savedByName}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
