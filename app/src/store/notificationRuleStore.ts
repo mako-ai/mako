@@ -29,6 +29,7 @@ interface NotificationRuleActions {
     workspaceId: string,
     resourceType: NotificationResourceTypeApi,
     resourceId: string,
+    options?: { limit?: number; skipCache?: boolean },
   ) => Promise<NotificationDeliveryApi[]>;
   createRule: (
     workspaceId: string,
@@ -72,19 +73,31 @@ export const useNotificationRuleStore = create<
       return res.rules || [];
     },
 
-    fetchDeliveries: async (workspaceId, resourceType, resourceId) => {
+    fetchDeliveries: async (
+      workspaceId,
+      resourceType,
+      resourceId,
+      options,
+    ) => {
       const key = resourceKey(resourceType, resourceId);
+      const params: Record<string, string> = {
+        resourceType,
+        resourceId,
+      };
+      if (options?.limit != null) {
+        params.limit = String(options.limit);
+      }
       const res = await apiClient.get<{
         success: boolean;
         deliveries: NotificationDeliveryApi[];
-      }>(`/workspaces/${workspaceId}/notification-rules/deliveries`, {
-        resourceType,
-        resourceId,
-      });
-      set(s => {
-        s.deliveriesByKey[key] = res.deliveries || [];
-      });
-      return res.deliveries || [];
+      }>(`/workspaces/${workspaceId}/notification-rules/deliveries`, params);
+      const list = res.deliveries || [];
+      if (!options?.skipCache) {
+        set(s => {
+          s.deliveriesByKey[key] = list;
+        });
+      }
+      return list;
     },
 
     createRule: async (workspaceId, body) => {

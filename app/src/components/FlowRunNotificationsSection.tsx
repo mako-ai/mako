@@ -27,8 +27,10 @@ import {
 } from "@mui/material";
 import {
   Add as AddIcon,
+  Close as CloseIcon,
   Delete as DeleteIcon,
   Edit as EditIcon,
+  History as HistoryIcon,
   NotificationsActive as NotifyIcon,
   Science as TestIcon,
 } from "@mui/icons-material";
@@ -110,9 +112,6 @@ export function FlowRunNotificationsSection({
   const rules = useNotificationRuleStore(s =>
     cacheKey ? s.rulesByKey[cacheKey] : undefined,
   );
-  const deliveries = useNotificationRuleStore(s =>
-    cacheKey ? s.deliveriesByKey[cacheKey] : undefined,
-  );
   const fetchRules = useNotificationRuleStore(s => s.fetchRules);
   const fetchDeliveries = useNotificationRuleStore(s => s.fetchDeliveries);
   const createRule = useNotificationRuleStore(s => s.createRule);
@@ -138,7 +137,11 @@ export function FlowRunNotificationsSection({
   const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
   const [slackLabel, setSlackLabel] = useState("");
 
-  const [deliveriesLoading, setDeliveriesLoading] = useState(false);
+  const [deliveryLogOpen, setDeliveryLogOpen] = useState(false);
+  const [deliveryLogItems, setDeliveryLogItems] = useState<
+    NotificationDeliveryApi[]
+  >([]);
+  const [deliveryLogLoading, setDeliveryLogLoading] = useState(false);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [testRuleId, setTestRuleId] = useState<string | null>(null);
   const [testTrigger, setTestTrigger] =
@@ -190,10 +193,7 @@ export function FlowRunNotificationsSection({
     setLoadError(null);
     void (async () => {
       try {
-        await Promise.all([
-          fetchRules(workspaceId, resourceType, resourceId),
-          fetchDeliveries(workspaceId, resourceType, resourceId),
-        ]);
+        await fetchRules(workspaceId, resourceType, resourceId);
       } catch (e) {
         if (!cancelled) {
           setLoadError(
@@ -205,27 +205,32 @@ export function FlowRunNotificationsSection({
     return () => {
       cancelled = true;
     };
-  }, [
-    workspaceId,
-    resourceId,
-    resourceType,
-    fetchRules,
-    fetchDeliveries,
-  ]);
+  }, [workspaceId, resourceId, resourceType, fetchRules]);
 
-  const handleRefreshDeliveries = useCallback(async () => {
+  const loadDeliveryLog = useCallback(async () => {
     if (!workspaceId || !resourceId) return;
-    setDeliveriesLoading(true);
+    setDeliveryLogLoading(true);
     try {
-      await fetchDeliveries(workspaceId, resourceType, resourceId);
+      const list = await fetchDeliveries(
+        workspaceId,
+        resourceType,
+        resourceId,
+        { limit: 100, skipCache: true },
+      );
+      setDeliveryLogItems(list);
     } catch (e) {
       setLoadError(
         e instanceof Error ? e.message : "Failed to load delivery history",
       );
     } finally {
-      setDeliveriesLoading(false);
+      setDeliveryLogLoading(false);
     }
   }, [workspaceId, resourceId, resourceType, fetchDeliveries]);
+
+  const handleOpenDeliveryLog = useCallback(() => {
+    setDeliveryLogOpen(true);
+    void loadDeliveryLog();
+  }, [loadDeliveryLog]);
 
   const parsedRecipients = useMemo(() => {
     return recipientsText
@@ -379,19 +384,33 @@ export function FlowRunNotificationsSection({
         alignItems="center"
         justifyContent="space-between"
         sx={{ mb: 1 }}
+        flexWrap="wrap"
+        gap={1}
       >
         <Typography variant="subtitle2" color="text.secondary">
           Run notifications
         </Typography>
-        {canManage && (
+        <Stack direction="row" alignItems="center" spacing={0.5} flexWrap="wrap">
           <Button
             size="small"
-            startIcon={<AddIcon />}
-            onClick={openCreateDialog}
+            variant="text"
+            startIcon={<HistoryIcon fontSize="small" />}
+            onClick={handleOpenDeliveryLog}
+            disabled={!resourceId}
+            sx={{ textTransform: "none" }}
           >
-            Add notification
+            View delivery log
           </Button>
-        )}
+          {canManage && (
+            <Button
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={openCreateDialog}
+            >
+              Add notification
+            </Button>
+          )}
+        </Stack>
       </Stack>
 
       {!canManage && (
@@ -481,60 +500,90 @@ export function FlowRunNotificationsSection({
         )}
       </Stack>
 
-      <Box sx={{ mt: 2 }}>
-        <Stack
-          direction="row"
-          alignItems="baseline"
-          justifyContent="space-between"
-          spacing={1}
-          sx={{ mb: 0.75 }}
+      <Dialog
+        open={deliveryLogOpen}
+        onClose={() => setDeliveryLogOpen(false)}
+        fullWidth
+        maxWidth="sm"
+        scroll="paper"
+        PaperProps={{
+          sx: {
+            maxHeight: "min(560px, 85vh)",
+            display: "flex",
+            flexDirection: "column",
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+            pr: 1,
+          }}
         >
-          <Typography variant="subtitle2" color="text.secondary">
+          <Typography component="span" variant="h6" fontWeight={600}>
             Delivery log
           </Typography>
-          <Button
+          <IconButton
             size="small"
-            variant="text"
-            onClick={() => void handleRefreshDeliveries()}
-            disabled={deliveriesLoading}
-            sx={{ minWidth: "auto", textTransform: "none" }}
+            aria-label="Close delivery log"
+            onClick={() => setDeliveryLogOpen(false)}
           >
-            {deliveriesLoading ? "Loading…" : "Refresh"}
-          </Button>
-        </Stack>
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-          Last attempts for this query or flow (newest first).
-        </Typography>
-        {(deliveries ?? []).length === 0 ? (
-          <Typography variant="body2" color="text.secondary">
-            No deliveries yet. They appear here after a run completes and a
-            notification is sent.
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers sx={{ flex: 1, overflow: "auto", py: 2 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Notification send attempts for this {resourceType === "flow" ? "flow" : "scheduled query"}, newest first (up to 100).
           </Typography>
-        ) : (
-          <Stack
-            component="ul"
-            spacing={0.5}
-            sx={{
-              m: 0,
-              pl: 2,
-              listStyleType: "disc",
-              "& li": { display: "list-item", pl: 0.25 },
-            }}
+          {deliveryLogLoading ? (
+            <Typography variant="body2" color="text.secondary">
+              Loading…
+            </Typography>
+          ) : deliveryLogItems.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No deliveries yet. Entries appear after a run finishes and a
+              notification is sent.
+            </Typography>
+          ) : (
+            <Stack
+              component="ul"
+              spacing={1}
+              sx={{
+                m: 0,
+                pl: 2,
+                listStyleType: "disc",
+                "& li": { display: "list-item", pl: 0.25 },
+              }}
+            >
+              {deliveryLogItems.map(d => (
+                <Typography
+                  key={d.id}
+                  component="li"
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ wordBreak: "break-word" }}
+                >
+                  {formatDeliveryLine(d)}
+                </Typography>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 2, py: 1.5 }}>
+          <Button
+            onClick={() => void loadDeliveryLog()}
+            disabled={deliveryLogLoading}
           >
-            {(deliveries ?? []).slice(0, 10).map(d => (
-              <Typography
-                key={d.id}
-                component="li"
-                variant="body2"
-                color="text.secondary"
-                sx={{ wordBreak: "break-word" }}
-              >
-                {formatDeliveryLine(d)}
-              </Typography>
-            ))}
-          </Stack>
-        )}
-      </Box>
+            Refresh
+          </Button>
+          <Button variant="contained" onClick={() => setDeliveryLogOpen(false)}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog
         open={dialogOpen}
