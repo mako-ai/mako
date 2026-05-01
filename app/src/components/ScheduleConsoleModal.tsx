@@ -3,17 +3,16 @@ import {
   Alert,
   Box,
   Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
+  Drawer,
   FormControlLabel,
+  IconButton,
   Radio,
   RadioGroup,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
+import CloseIcon from "@mui/icons-material/Close";
 import { CronExpressionParser } from "cron-parser";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
@@ -197,15 +196,50 @@ export default function ScheduleConsoleModal({
 
   const isValid = Boolean(cron.trim()) && previewRuns.length > 0;
 
+  const title =
+    mode === "create" ? "Create scheduled query" : "Update scheduled query";
+
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>
-        {mode === "create"
-          ? "Create scheduled query"
-          : "Update scheduled query"}
-      </DialogTitle>
-      <DialogContent dividers>
-        <Stack spacing={2.5} sx={{ pt: 1 }}>
+    <Drawer
+      anchor="right"
+      open={open}
+      onClose={onClose}
+      PaperProps={{
+        sx: {
+          width: { xs: "100%", sm: 440 },
+          maxWidth: "100vw",
+          display: "flex",
+          flexDirection: "column",
+        },
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+          px: 2,
+          py: 1.5,
+          borderBottom: 1,
+          borderColor: "divider",
+          flexShrink: 0,
+        }}
+      >
+        <Typography variant="subtitle1" fontWeight={600}>
+          {title}
+        </Typography>
+        <IconButton
+          size="small"
+          onClick={onClose}
+          aria-label="Close schedule panel"
+        >
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+
+      <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
+        <Stack spacing={2.5}>
           {error && <Alert severity="error">{error}</Alert>}
 
           <Box>
@@ -338,8 +372,22 @@ export default function ScheduleConsoleModal({
             />
           )}
         </Stack>
-      </DialogContent>
-      <DialogActions sx={{ justifyContent: "space-between", px: 3 }}>
+      </Box>
+
+      <Box
+        sx={{
+          flexShrink: 0,
+          borderTop: 1,
+          borderColor: "divider",
+          px: 2,
+          py: 1.5,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 1,
+        }}
+      >
         <Box>
           {mode === "update" && onRemove && (
             <Button color="error" onClick={handleRemove} disabled={isRemoving}>
@@ -347,7 +395,7 @@ export default function ScheduleConsoleModal({
             </Button>
           )}
         </Box>
-        <Box sx={{ display: "flex", gap: 1 }}>
+        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
           <Button onClick={onClose}>Cancel</Button>
           {mode === "update" && onRunNow && (
             <Button onClick={handleRunNow} disabled={isRunningNow}>
@@ -362,7 +410,7 @@ export default function ScheduleConsoleModal({
             Save
           </Button>
         </Box>
-      </DialogActions>
-    </Dialog>
+      </Box>
+    </Drawer>
   );
 }
