@@ -48,3 +48,14 @@ disable-model-invocation: true
 - Don't commit `.env`, credentials, or `dist/` files.
 - If there's nothing to commit, say so and stop.
 - Always run `git diff` first to understand the actual changes before writing the commit message.
+
+## Pre-commit gate (required)
+
+Before `git commit` / opening a PR, run full lint for every package you touched (CI is stricter than local hooks; **Prettier violations fail ESLint** as `prettier/prettier`):
+
+| You changed files under... | Run |
+| --- | --- |
+| `app/` | `pnpm --filter app run lint` (and `pnpm --filter app run typecheck` if TS changed) |
+| `api/` | `pnpm --filter api run lint` |
+
+Fix all reported errors; do not push with "fix CI later" lint failures.

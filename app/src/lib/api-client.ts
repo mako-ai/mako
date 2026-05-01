@@ -203,9 +203,7 @@ class ApiClient {
     }
 
     const errBody = body as { error?: string };
-    throw new Error(
-      errBody?.error || `HTTP error! status: ${response.status}`,
-    );
+    throw new Error(errBody?.error || `HTTP error! status: ${response.status}`);
   }
 
   /**
