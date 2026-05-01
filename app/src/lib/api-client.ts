@@ -171,7 +171,6 @@ class ApiClient {
       headers: {
         "Content-Type": "application/json",
         ...workspaceHeaders,
-        ...headers,
       },
       credentials: "include",
     });
