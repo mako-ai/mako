@@ -118,7 +118,6 @@ interface ConsoleProps {
   };
   onCreateSchedule?: () => void;
   onUpdateSchedule?: () => void;
-  onRemoveSchedule?: () => void;
 }
 
 export interface ConsoleRef {
@@ -164,7 +163,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     schedule,
     onCreateSchedule,
     onUpdateSchedule,
-    onRemoveSchedule,
   } = props;
 
   const editorRef = useRef<any>(null);
@@ -216,9 +214,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const [modifiedContent, setModifiedContent] = useState("");
   const [pendingModification, setPendingModification] =
     useState<ConsoleModification | null>(null);
-  const [scheduleMenuAnchor, setScheduleMenuAnchor] =
-    useState<HTMLElement | null>(null);
-
   // Editor key to force remount when needed
   const [editorKey, setEditorKey] = useState(0);
 
@@ -345,8 +340,6 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
   const isLoadingDatabases =
     schemaLoading[`tree:${connectionId}:root`] || false;
-
-  const scheduleMenuOpen = Boolean(scheduleMenuAnchor);
 
   // Fetch sub-databases if needed (for cluster mode)
   useEffect(() => {
@@ -1048,75 +1041,39 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           )}
 
           {!isReadOnly && (onCreateSchedule || onUpdateSchedule) && (
-            <>
-              <Tooltip
-                title={
-                  !isSaved
-                    ? "Save this console before scheduling it"
-                    : hasSchedule
-                      ? "Update scheduled query"
-                      : "Create scheduled query"
-                }
-              >
-                <span>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={
-                      <Badge
-                        color="success"
-                        variant="dot"
-                        invisible={!hasSchedule}
-                        overlap="circular"
-                      >
-                        <ScheduleIcon size={16} />
-                      </Badge>
-                    }
-                    onClick={event =>
-                      setScheduleMenuAnchor(event.currentTarget)
-                    }
-                    disabled={!isSaved}
-                    sx={{ ml: 1, whiteSpace: "nowrap" }}
-                  >
-                    Schedule
-                  </Button>
-                </span>
-              </Tooltip>
-              <Menu
-                anchorEl={scheduleMenuAnchor}
-                open={scheduleMenuOpen}
-                onClose={() => setScheduleMenuAnchor(null)}
-              >
-                <MenuItem
-                  disabled={!isSaved || hasSchedule}
-                  onClick={() => {
-                    setScheduleMenuAnchor(null);
-                    onCreateSchedule?.();
-                  }}
+            <Tooltip
+              title={
+                !isSaved
+                  ? "Save this console before scheduling it"
+                  : hasSchedule
+                    ? "Update scheduled query"
+                    : "Create scheduled query"
+              }
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={
+                    <Badge
+                      color="success"
+                      variant="dot"
+                      invisible={!hasSchedule}
+                      overlap="circular"
+                    >
+                      <ScheduleIcon size={16} />
+                    </Badge>
+                  }
+                  onClick={() =>
+                    hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.()
+                  }
+                  disabled={!isSaved}
+                  sx={{ ml: 1, whiteSpace: "nowrap" }}
                 >
-                  Create new scheduled query
-                </MenuItem>
-                <MenuItem
-                  disabled={!isSaved || !hasSchedule}
-                  onClick={() => {
-                    setScheduleMenuAnchor(null);
-                    onUpdateSchedule?.();
-                  }}
-                >
-                  Update scheduled query
-                </MenuItem>
-                {hasSchedule && onRemoveSchedule && (
-                  <MenuItem
-                    onClick={() => {
-                      setScheduleMenuAnchor(null);
-                      onRemoveSchedule();
-                    }}
-                  >
-                    Remove schedule
-                  </MenuItem>
-                )}
-              </Menu>
-            </>
+                  Schedule
+                </Button>
+              </span>
+            </Tooltip>
           )}
 
           {onSave && !isReadOnly && (

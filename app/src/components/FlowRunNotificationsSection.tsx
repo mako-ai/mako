@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Card,
@@ -86,6 +87,13 @@ function formatDeliveryLine(d: NotificationDeliveryApi): string {
   }`;
 }
 
+/** Loose client-side check — invalid chips block save until corrected */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function splitRecipientTokens(raw: string): string[] {
+  return raw.split(/[\s,;]+/).map(s => s.trim());
+}
+
 function channelTitle(type: NotificationChannelTypeApi): string {
   switch (type) {
     case "email":
@@ -130,7 +138,7 @@ export function FlowRunNotificationsSection({
   const [failureChecked, setFailureChecked] = useState(true);
   const [channelType, setChannelType] =
     useState<NotificationChannelTypeApi>("email");
-  const [recipientsText, setRecipientsText] = useState("");
+  const [recipients, setRecipients] = useState<string[]>([]);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookSigningSecret, setWebhookSigningSecret] = useState("");
   const [rotateWebhookSecret, setRotateWebhookSecret] = useState(false);
@@ -152,7 +160,7 @@ export function FlowRunNotificationsSection({
     setSuccessChecked(true);
     setFailureChecked(true);
     setChannelType("email");
-    setRecipientsText("");
+    setRecipients([]);
     setWebhookUrl("");
     setWebhookSigningSecret("");
     setRotateWebhookSecret(false);
@@ -175,9 +183,9 @@ export function FlowRunNotificationsSection({
     const ch = rule.channel;
     setChannelType(ch.type);
     if (ch.type === "email") {
-      setRecipientsText(ch.recipients.join(", "));
+      setRecipients(ch.recipients);
     } else {
-      setRecipientsText("");
+      setRecipients([]);
     }
     setWebhookUrl("");
     setWebhookSigningSecret("");
@@ -232,12 +240,20 @@ export function FlowRunNotificationsSection({
     void loadDeliveryLog();
   }, [loadDeliveryLog]);
 
-  const parsedRecipients = useMemo(() => {
-    return recipientsText
-      .split(/[\n,]+/)
-      .map(s => s.trim())
-      .filter(Boolean);
-  }, [recipientsText]);
+  const parsedRecipients = useMemo(
+    () => recipients.filter(r => EMAIL_RE.test(r)),
+    [recipients],
+  );
+
+  const invalidRecipients = useMemo(
+    () => recipients.filter(r => !EMAIL_RE.test(r)),
+    [recipients],
+  );
+  const hasInvalidRecipients = invalidRecipients.length > 0;
+
+  const emailRecipientsSaveBlocked =
+    channelType === "email" &&
+    (recipients.length === 0 || hasInvalidRecipients);
 
   const buildPayloadBase = (): Record<string, unknown> | null => {
     const triggers: NotificationTriggerApi[] = [];
@@ -647,14 +663,55 @@ export function FlowRunNotificationsSection({
             </FormControl>
 
             {channelType === "email" && (
-              <TextField
-                label="Recipients"
-                placeholder="comma or newline separated"
-                fullWidth
-                multiline
-                minRows={2}
-                value={recipientsText}
-                onChange={e => setRecipientsText(e.target.value)}
+              <Autocomplete
+                multiple
+                freeSolo
+                autoSelect
+                options={[]}
+                value={recipients}
+                onChange={(_, next) => {
+                  const expanded = next.flatMap(v =>
+                    typeof v === "string" ? splitRecipientTokens(v) : [v],
+                  );
+                  const seen = new Set<string>();
+                  const deduped: string[] = [];
+                  for (const s of expanded) {
+                    const t = s.trim();
+                    if (!t || seen.has(t)) continue;
+                    seen.add(t);
+                    deduped.push(t);
+                  }
+                  setRecipients(deduped);
+                }}
+                renderTags={(value, getTagProps) =>
+                  value.map((email, index) => {
+                    const valid = EMAIL_RE.test(email);
+                    const tagProps = getTagProps({ index });
+                    return (
+                      <Chip
+                        {...tagProps}
+                        key={email}
+                        label={email}
+                        size="small"
+                        color={valid ? "default" : "error"}
+                        variant={valid ? "filled" : "outlined"}
+                      />
+                    );
+                  })
+                }
+                renderInput={params => (
+                  <TextField
+                    {...params}
+                    label="Recipients"
+                    placeholder="Type an email and press Enter"
+                    error={hasInvalidRecipients}
+                    helperText={
+                      hasInvalidRecipients
+                        ? `Invalid: ${invalidRecipients.join(", ")}`
+                        : "Press Enter, comma, or blur to add"
+                    }
+                  />
+                )}
               />
             )}
 
@@ -733,7 +790,11 @@ export function FlowRunNotificationsSection({
             {secretBanner ? "Done" : "Cancel"}
           </Button>
           {!secretBanner && (
-            <Button variant="contained" onClick={() => void handleSaveDialog()}>
+            <Button
+              variant="contained"
+              disabled={emailRecipientsSaveBlocked}
+              onClick={() => void handleSaveDialog()}
+            >
               Save
             </Button>
           )}

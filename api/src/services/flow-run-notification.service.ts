@@ -15,6 +15,8 @@ import {
   type NotificationResourceType,
   type NotificationTrigger,
 } from "../database/workspace-schema";
+import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
+import { renderEmail } from "../emails/render";
 import { loggers } from "../logging";
 import { emailService } from "./email.service";
 import {
@@ -306,20 +308,15 @@ async function deliverEmail(
 ): Promise<void> {
   const list = recipients.map(r => r.trim()).filter(Boolean);
   if (list.length === 0) return;
-  const templateData: Record<string, unknown> = {
-    trigger: payload.trigger,
-    resource_type: payload.resourceType,
-    resource_name: payload.resourceName,
-    run_id: payload.runId,
-    completed_at: payload.completedAt,
-    duration_ms: payload.durationMs ?? "",
-    row_count: payload.rowCount ?? "",
-    error_message: payload.errorMessage ?? "",
-    schedule_trigger: payload.triggerType ?? "",
-    open_url: payload.deepLink ?? "",
-    payload_json: JSON.stringify(payload),
-  };
-  await emailService.sendFlowRunNotificationEmails(list, templateData);
+  const { html, text, subject } = await renderEmail(
+    RunNotificationTemplate,
+    payload,
+  );
+  await emailService.sendFlowRunNotificationEmails(list, {
+    html,
+    text,
+    subject,
+  });
 }
 
 async function deliverWebhook(

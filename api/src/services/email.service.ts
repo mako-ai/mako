@@ -1,22 +1,39 @@
 /**
- * Email service using SendGrid for transactional emails
+ * Email service using SendGrid for sending mail.
  *
- * Security: All user-controlled data (workspace names, inviter names, etc.)
- * is passed to SendGrid dynamic templates which handle escaping.
- * We never interpolate user data into HTML strings directly.
+ * - Invitation / verification / password-reset: SendGrid dynamic templates
+ *   (template variables are escaped by SendGrid).
+ * - Flow & scheduled-query run notifications: HTML + plain text rendered in-repo
+ *   via React Email (@react-email); user content is rendered as React text nodes
+ *   (never dangerouslySetInnerHTML).
  */
 
 import { getLogger } from "../logging";
 
 const logger = getLogger(["email"]);
 
-interface SendGridMailData {
-  to: string;
-  from: string;
-  subject: string;
-  templateId: string;
-  dynamicTemplateData: Record<string, any>;
+const HTML_LOG_TRUNCATE = 500;
+
+function truncateForLog(html: string): string {
+  if (html.length <= HTML_LOG_TRUNCATE) return html;
+  return `${html.slice(0, HTML_LOG_TRUNCATE)}… (${html.length} chars total)`;
 }
+
+type SendGridMailData =
+  | {
+      to: string;
+      from: string;
+      subject: string;
+      templateId: string;
+      dynamicTemplateData: Record<string, unknown>;
+    }
+  | {
+      to: string;
+      from: string;
+      subject: string;
+      html: string;
+      text: string;
+    };
 
 interface SendGridResponse {
   statusCode: number;
@@ -33,7 +50,6 @@ interface EmailServiceConfig {
   invitationTemplateId?: string;
   verificationTemplateId?: string;
   passwordResetTemplateId?: string;
-  flowRunNotificationTemplateId?: string;
 }
 
 /**
@@ -56,8 +72,6 @@ function getConfig(): EmailServiceConfig {
     invitationTemplateId: process.env.SENDGRID_INVITATION_TEMPLATE_ID,
     verificationTemplateId: process.env.SENDGRID_VERIFICATION_TEMPLATE_ID,
     passwordResetTemplateId: process.env.SENDGRID_PASSWORD_RESET_TEMPLATE_ID,
-    flowRunNotificationTemplateId:
-      process.env.SENDGRID_FLOW_RUN_NOTIFICATION_TEMPLATE_ID,
   };
 }
 
@@ -69,18 +83,20 @@ function logEmailForDev(
   type: string,
   to: string,
   subject: string,
-  templateData: Record<string, any>,
+  payload:
+    | { kind: "template"; templateData: Record<string, unknown> }
+    | { kind: "content"; text: string; htmlTruncated: string },
 ): void {
   logger.info("Email Service - Dev Mode", {
     type,
     to,
     subject,
-    templateData,
+    ...payload,
   });
 }
 
 /**
- * Send email via SendGrid API using dynamic templates only
+ * Send email via SendGrid API (dynamic template or html+text body)
  */
 async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
   const config = getConfig();
@@ -90,18 +106,34 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
     return { statusCode: 200 };
   }
 
-  const body = {
-    personalizations: [
-      {
-        to: [{ email: data.to }],
-        dynamic_template_data: data.dynamicTemplateData,
-        subject: data.subject,
-      },
-    ],
-    from: { email: data.from, name: config.fromName },
-    template_id: data.templateId,
-    subject: data.subject,
-  };
+  const body =
+    "templateId" in data
+      ? {
+          personalizations: [
+            {
+              to: [{ email: data.to }],
+              dynamic_template_data: data.dynamicTemplateData,
+              subject: data.subject,
+            },
+          ],
+          from: { email: data.from, name: config.fromName },
+          template_id: data.templateId,
+          subject: data.subject,
+        }
+      : {
+          personalizations: [
+            {
+              to: [{ email: data.to }],
+              subject: data.subject,
+            },
+          ],
+          from: { email: data.from, name: config.fromName },
+          subject: data.subject,
+          content: [
+            { type: "text/plain", value: data.text },
+            { type: "text/html", value: data.html },
+          ],
+        };
 
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
@@ -125,9 +157,10 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
 }
 
 /**
- * Email service class with methods for different email types
+ * Email service class with methods for different email types.
  *
- * All methods require SendGrid dynamic template IDs to be configured.
+ * Invitation / verification / password reset require SendGrid dynamic template IDs.
+ * Run notifications use SendGrid only as transport (HTML body from React Email).
  * In dev mode (no API key), emails are logged but not sent.
  */
 export class EmailService {
@@ -153,7 +186,7 @@ export class EmailService {
         "Invitation",
         to,
         `You've been invited to join ${workspaceName}`,
-        templateData,
+        { kind: "template", templateData },
       );
       logger.info("Invitation email logged (dev mode)", { to, workspaceName });
       return;
@@ -197,7 +230,7 @@ export class EmailService {
         "Verification",
         to,
         "Verify your email address",
-        templateData,
+        { kind: "template", templateData },
       );
       logger.info("Verification email logged (dev mode)", { to });
       return;
@@ -233,7 +266,10 @@ export class EmailService {
     };
 
     if (!config.apiKey) {
-      logEmailForDev("Password Reset", to, "Reset your password", templateData);
+      logEmailForDev("Password Reset", to, "Reset your password", {
+        kind: "template",
+        templateData,
+      });
       logger.info("Password reset email logged (dev mode)", { to });
       return;
     }
@@ -258,26 +294,21 @@ export class EmailService {
   }
 
   /**
-   * Flow / scheduled query run completion notifications (dynamic template).
+   * Flow / scheduled query run completion notifications (in-repo HTML + text).
    */
   async sendFlowRunNotificationEmails(
     recipients: string[],
-    dynamicTemplateData: Record<string, unknown>,
+    body: { html: string; text: string; subject: string },
   ): Promise<void> {
     const config = getConfig();
-    const subject =
-      typeof dynamicTemplateData.trigger === "string"
-        ? `Mako: Run ${dynamicTemplateData.trigger}`
-        : "Mako: Run notification";
 
     if (!config.apiKey) {
       for (const to of recipients) {
-        logEmailForDev(
-          "Flow run notification",
-          to,
-          subject,
-          dynamicTemplateData,
-        );
+        logEmailForDev("Flow run notification", to, body.subject, {
+          kind: "content",
+          text: body.text,
+          htmlTruncated: truncateForLog(body.html),
+        });
       }
       logger.info("Flow run notification emails logged (dev mode)", {
         count: recipients.length,
@@ -285,20 +316,13 @@ export class EmailService {
       return;
     }
 
-    if (!config.flowRunNotificationTemplateId) {
-      logger.warn(
-        "SENDGRID_FLOW_RUN_NOTIFICATION_TEMPLATE_ID not configured — skipping flow run emails",
-      );
-      return;
-    }
-
     for (const to of recipients) {
       await sendMail({
         to,
         from: config.fromEmail,
-        subject,
-        templateId: config.flowRunNotificationTemplateId,
-        dynamicTemplateData,
+        subject: body.subject,
+        html: body.html,
+        text: body.text,
       });
     }
     logger.info("Flow run notification emails sent", {

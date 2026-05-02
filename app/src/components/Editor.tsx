@@ -2180,9 +2180,6 @@ function Editor({
                           onUpdateSchedule={() =>
                             handleOpenScheduleModal(tab.id, "update")
                           }
-                          onRemoveSchedule={() => {
-                            void handleRemoveSchedule(tab.id);
-                          }}
                         />
                       </Panel>
 
