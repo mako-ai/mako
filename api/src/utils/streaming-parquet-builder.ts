@@ -170,10 +170,16 @@ function escapeDuckDBValue(
       return "NULL";
     }
     default: {
-      if (typeof value === "object") {
-        return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
-      }
-      return `'${String(value).replace(/'/g, "''")}'`;
+      // DuckDB VARCHAR cannot store \u0000, and an embedded NUL truncates the
+      // SQL at the napi/C++ boundary — the parser then sees an unterminated
+      // '...' literal. Strip NULs at the boundary before the single-quote
+      // escape so connector payloads with inlined binary (e.g. Close emails
+      // with embedded PNG bytes) don't kill the whole batch.
+      const raw =
+        typeof value === "object" ? JSON.stringify(value) : String(value);
+      // eslint-disable-next-line no-control-regex
+      const stripped = raw.replace(/\u0000/g, "");
+      return `'${stripped.replace(/'/g, "''")}'`;
     }
   }
 }
