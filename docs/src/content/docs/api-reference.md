@@ -114,6 +114,21 @@ Returns a map of CDC entity name to destination row count. Mako batches BigQuery
 
 Accepts an optional `?entity=<name>` query parameter to scope the check to a single entity. Drift is auto-corrected on the next CDC merge — see [Schema Evolution](/data-sync/#schema-evolution-bigquery).
 
+## Notification Rules
+
+Email, webhook, and Slack notifications for terminal scheduled-query and flow runs. See [Notifications](/notifications/) for the full guide and webhook payload shape.
+
+| Method | Endpoint | Description |
+| ------ | -------- | ----------- |
+| `GET`    | `/api/workspaces/:wid/notification-rules`                | List rules. Query: `resourceType`, `resourceId`. |
+| `GET`    | `/api/workspaces/:wid/notification-rules/deliveries`     | List recent deliveries. Query: `resourceType`, `resourceId`, optional `limit`. |
+| `POST`   | `/api/workspaces/:wid/notification-rules`                | Create a rule. Admin only. |
+| `PATCH`  | `/api/workspaces/:wid/notification-rules/:ruleId`        | Update triggers / channel / enabled flag. Admin only. |
+| `DELETE` | `/api/workspaces/:wid/notification-rules/:ruleId`        | Delete a rule. Admin only. |
+| `POST`   | `/api/workspaces/:wid/notification-rules/test`           | Send a test notification (saved rule by `ruleId` or ad-hoc channel). |
+
+Webhook deliveries include an `X-Mako-Signature` HMAC-SHA256 header. The signing secret is returned **once** as `signingSecretOnce` on create or rotation and is not retrievable later.
+
 ## Chat API (AI Agent)
 
 The Chat API enables programmatic access to Mako's AI agent with streaming responses.

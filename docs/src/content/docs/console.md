@@ -41,7 +41,7 @@ Consoles can be organized into folders. Use the sidebar tree to drag and arrange
 
 Workspace admins can schedule a saved console to run automatically from the console header. Scheduled consoles use five-field cron expressions plus an IANA timezone, for example `0 0 * * *` with `UTC` for a daily midnight run.
 
-When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. Admins can also trigger a scheduled console manually with **Run now**.
+When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. Admins can also trigger a scheduled console manually with **Run now**. You can attach **notifications** to a schedule (email, webhook, or Slack) — see [Notifications](/notifications/).
 
 ## Console API
 

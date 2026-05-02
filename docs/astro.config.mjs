@@ -33,6 +33,7 @@ export default defineConfig({
             { label: "Query Runner", slug: "query-runner" },
             { label: "Self-Directive", slug: "self-directive" },
             { label: "Skills", slug: "skills" },
+            { label: "Notifications", slug: "notifications" },
           ],
         },
         {
