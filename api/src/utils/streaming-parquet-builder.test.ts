@@ -223,6 +223,61 @@ async function testBuildParquetPreservesNullsInTypedColumns() {
   }
 }
 
+async function testBuildParquetStripsNulBytesInVarcharColumns() {
+  console.log(
+    "  buildParquetFromBatches: NUL bytes in VARCHAR values do not break the batch",
+  );
+
+  // Connector payloads occasionally contain raw binary bytes (e.g. Close email
+  // bodies with inlined PNG attachments — magic header `\x89PNG\r\n\x1a\n`
+  // followed by `\x00 \x00 \x00 \x0d`). Without NUL stripping the embedded
+  // `\u0000` truncates the SQL at the napi/C++ boundary and DuckDB throws
+  // `Parser Error: unterminated quoted string`.
+  const png = "\u0089PNG\r\n\u001a\n\u0000\u0000\u0000\rIHDR";
+  const body = `Bonjour\nje n'ai aucun numéro\n\n${png}\nPowered by [**Intercom**](https://www.intercom.com/)`;
+
+  const rows = [
+    { id: "row-with-nul", body },
+    { id: "row-also-nul", body: `prefix\u0000suffix` },
+    { id: "row-nested-json", body: { nested: `inner\u0000value` } },
+    { id: "row-clean", body: "no nul here" },
+  ];
+
+  const result = await buildParquetFromBatches({
+    filenameBase: "test-nul-bytes",
+    streamBatches: async insertBatch => {
+      await insertBatch(rows);
+    },
+  });
+
+  assert.equal(result.rowCount, 4);
+
+  const instance = await DuckDBInstance.create(":memory:");
+  const conn = await instance.connect();
+  try {
+    await conn.run(
+      `CREATE TABLE _verify AS SELECT * FROM read_parquet('${result.filePath.replace(/'/g, "''")}')`,
+    );
+
+    const readback = await conn.run("SELECT id, body FROM _verify ORDER BY id");
+    const readbackRows = await readback.getRows();
+    assert.equal(readbackRows.length, 4);
+
+    for (const row of readbackRows) {
+      const value = String(row[1] ?? "");
+      assert.ok(
+        !value.includes("\u0000"),
+        `row ${row[0]} should have no NUL bytes after stripping`,
+      );
+    }
+  } finally {
+    conn.closeSync();
+    await fsPromises
+      .rm(result.filePath, { force: true })
+      .catch(() => undefined);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -240,6 +295,8 @@ async function main() {
   await testBuildParquetWithoutFields();
   console.log("  PASSED");
   await testBuildParquetPreservesNullsInTypedColumns();
+  console.log("  PASSED");
+  await testBuildParquetStripsNulBytesInVarcharColumns();
   console.log("  PASSED\n");
 
   console.log("All tests passed.");
