@@ -47,9 +47,12 @@ Authorization: Bearer revops_YOUR_API_KEY
 
 ## Query Execution
 
-| Method | Endpoint       | Description                    |
-| ------ | -------------- | ------------------------------ |
-| `POST` | `/api/execute` | Execute a SQL or MongoDB query |
+Session cookie or `Authorization: Bearer revops_*` API key required. Use the database connection ID from `GET /api/workspaces/:wid/connectors`.
+
+| Method | Endpoint                                                      | Description                                        |
+| ------ | ------------------------------------------------------------- | -------------------------------------------------- |
+| `POST` | `/api/workspaces/:wid/databases/:databaseId/execute`        | Run a query against one connection (`body.query`) |
+| `POST` | `/api/workspaces/:wid/execute`                                | Execute with `query` / `queryDefinition`, pagination, exports (`POST …/execute/export` supports `format=arrow`, `parquet`, `ndjson`, `csv`) |
 
 ## Consoles
 
