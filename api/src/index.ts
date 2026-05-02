@@ -7,7 +7,6 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { consoleRoutes } from "./routes/consoles";
-import { executeRoutes } from "./routes/execute";
 import { databaseRoutes } from "./routes/database";
 import { dataSourceRoutes } from "./routes/sources";
 import { customPromptRoutes } from "./routes/custom-prompt";
@@ -136,8 +135,6 @@ app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
   dashboardMaterializationRoutes,
 );
-app.route("/api/run", executeRoutes);
-app.route("/api/execute", executeRoutes);
 app.route("/api/database", databaseRoutes);
 app.route("/api/agent", agentRoutes);
 app.route("/api/admin", adminRoutes);
