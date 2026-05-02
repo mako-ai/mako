@@ -57,6 +57,7 @@ import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
+import SlackWebhookCompletePage from "./pages/SlackWebhookCompletePage";
 
 // Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
 const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
@@ -778,6 +779,15 @@ function App() {
 
         {/* Onboarding test route - for manual testing */}
         <Route path="/onboarding" element={<OnboardingTestRoute />} />
+
+        <Route
+          path="/workspace/:workspaceId/slack-webhook-complete"
+          element={
+            <AuthWrapper>
+              <SlackWebhookCompletePage />
+            </AuthWrapper>
+          }
+        />
 
         {/* Main app route - authentication required */}
         <Route path="/*" element={<MainApp />} />

@@ -8,6 +8,7 @@ import {
   KeySquare as ApiKeyIcon,
   Palette as AppearanceIcon,
   ShieldCheck as AdminIcon,
+  Plug as IntegrationsIcon,
 } from "lucide-react";
 import ExplorerShell from "./ExplorerShell";
 import { useAuth } from "../contexts/auth-context";
@@ -28,6 +29,7 @@ const SECTION_ICONS: Record<
   billing: props => <BillingIcon {...props} />,
   members: props => <MembersIcon {...props} />,
   "api-keys": props => <ApiKeyIcon {...props} />,
+  integrations: props => <IntegrationsIcon {...props} />,
   appearance: props => <AppearanceIcon {...props} />,
   admin: props => <AdminIcon {...props} />,
 };

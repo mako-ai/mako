@@ -17,6 +17,19 @@ import {
   verifyTransferToken,
 } from "./oauth-proxy";
 import { loggers } from "../logging";
+import { Types } from "mongoose";
+import {
+  decodeSlackOAuthState,
+  exchangeSlackOAuthCode,
+  parseSlackOAuthResponse,
+  signSlackWebhookClaim,
+  slackOAuthConfigured,
+} from "./slack";
+import {
+  SlackConnection,
+  encrypt,
+} from "../database/workspace-schema";
+import { workspaceService } from "../services/workspace.service";
 
 const logger = loggers.auth();
 
@@ -660,6 +673,119 @@ authRoutes.get("/github/callback", async c => {
   } catch (error: any) {
     logger.error("GitHub OAuth error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+  }
+});
+
+// ── Slack OAuth callback (workspace notifications; registered redirect on Slack app) ──
+
+authRoutes.get("/slack/callback", async c => {
+  try {
+    const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, "") || "";
+    const redirectErr = (msg: string) =>
+      c.redirect(`${clientUrl}/?slack_error=${encodeURIComponent(msg)}`);
+
+    if (!slackOAuthConfigured()) {
+      logger.warn("Slack callback: OAuth not configured");
+      return redirectErr("slack_not_configured");
+    }
+
+    const code = c.req.query("code");
+    const stateParam = c.req.query("state");
+    const storedNonce = getCookie(c, "slack_oauth_nonce");
+
+    const slackState = stateParam ? decodeSlackOAuthState(stateParam) : null;
+    if (
+      !code ||
+      !slackState ||
+      !storedNonce ||
+      slackState.nonce !== storedNonce
+    ) {
+      logger.warn("Slack OAuth callback: invalid state or missing params");
+      return redirectErr("oauth_error");
+    }
+
+    if (!isAllowedOrigin(slackState.origin)) {
+      logger.warn("Slack OAuth callback: untrusted caller origin", {
+        origin: slackState.origin,
+      });
+      return redirectErr("oauth_error");
+    }
+
+    const isAdmin = await workspaceService.hasRole(
+      slackState.workspaceId,
+      slackState.userId,
+      ["owner", "admin"],
+    );
+    if (!isAdmin) {
+      logger.warn("Slack OAuth callback: user not workspace admin", {
+        workspaceId: slackState.workspaceId,
+      });
+      return redirectErr("forbidden");
+    }
+
+    setCookie(c, "slack_oauth_nonce", "", { maxAge: 0, path: "/" });
+
+    const rawAccess = await exchangeSlackOAuthCode(code);
+    let parsed;
+    try {
+      parsed = parseSlackOAuthResponse(rawAccess, slackState.installType);
+    } catch (e) {
+      logger.error("Slack OAuth parse failed", { error: e });
+      return redirectErr("oauth_error");
+    }
+
+    const productionApiOrigin = getProductionUrl().replace(/\/$/, "");
+    let callerOrigin = slackState.origin.replace(/\/$/, "");
+    if (callerOrigin === productionApiOrigin && clientUrl) {
+      callerOrigin = clientUrl;
+    }
+
+    if (parsed.installType === "bot") {
+      const scopes = (parsed.scope || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean);
+      await SlackConnection.findOneAndUpdate(
+        { workspaceId: new Types.ObjectId(slackState.workspaceId) },
+        {
+          $set: {
+            workspaceId: new Types.ObjectId(slackState.workspaceId),
+            teamId: parsed.teamId,
+            teamName: parsed.teamName,
+            botUserId: parsed.botUserId!,
+            botTokenEncrypted: encrypt(parsed.botAccessToken!),
+            scopes,
+            installedByUserId: slackState.userId,
+            installedAt: new Date(),
+          },
+          $unset: { revokedAt: 1 },
+        },
+        { upsert: true },
+      );
+
+      const target = new URL(
+        `${callerOrigin}${slackState.returnTo.startsWith("/") ? slackState.returnTo : `/${slackState.returnTo}`}`,
+      );
+      target.searchParams.set("slack", "connected");
+      return c.redirect(target.toString());
+    }
+
+    const wh = parsed.incomingWebhook!;
+    const claim = signSlackWebhookClaim({
+      workspaceId: slackState.workspaceId,
+      webhookUrl: wh.url,
+      channelLabel: wh.channel || wh.channelId,
+      exp: Date.now() + 120_000,
+    });
+    const receiveUrl = new URL(
+      `${callerOrigin}/api/workspaces/${slackState.workspaceId}/slack/webhook-receive`,
+    );
+    receiveUrl.searchParams.set("token", claim);
+    return c.redirect(receiveUrl.toString());
+  } catch (error: unknown) {
+    logger.error("Slack OAuth callback error", { error });
+    const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, "") || "/";
+    return c.redirect(`${clientUrl}/?slack_error=oauth_error`);
   }
 });
 

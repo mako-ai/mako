@@ -159,5 +159,11 @@ export function ruleSummary(rule: NotificationRuleApi): string {
   const ch = rule.channel;
   if (ch.type === "email") return ch.recipients.join(", ");
   if (ch.type === "webhook") return ch.urlPreview || "Webhook";
+  if (ch.type === "slack" && ch.slackBotMode && ch.slackChannelName) {
+    return ch.slackChannelName;
+  }
+  if (ch.type === "slack" && ch.slackBotMode && ch.slackChannelId) {
+    return ch.slackChannelId;
+  }
   return ch.displayLabel || "Slack";
 }

@@ -43,6 +43,7 @@ import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
+import { slackRoutes } from "./routes/slack";
 import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -129,6 +130,7 @@ app.route(
   "/api/workspaces/:workspaceId/notification-rules",
   notificationRulesRoutes,
 );
+app.route("/api/workspaces/:workspaceId/slack", slackRoutes);
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);

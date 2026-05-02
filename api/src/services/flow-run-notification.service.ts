@@ -6,11 +6,13 @@ import {
   SavedConsole,
   NotificationRule,
   NotificationDelivery,
+  SlackConnection,
   decrypt,
   encrypt,
   type IFlow,
   type INotificationRule,
   type INotificationRuleChannel,
+  type INotificationRuleChannelSlack,
   type NotificationChannelType,
   type NotificationResourceType,
   type NotificationTrigger,
@@ -214,7 +216,7 @@ async function deliverToChannel(
       );
       return;
     case "slack":
-      await deliverSlack(decrypt(channel.webhookUrlEncrypted), payload);
+      await deliverSlack(channel, payload);
       return;
     default:
       throw new Error("Unknown channel type");
@@ -343,11 +345,8 @@ async function deliverWebhook(
   }
 }
 
-async function deliverSlack(
-  webhookUrl: string,
-  payload: NotificationOutboundPayload,
-): Promise<void> {
-  const text =
+function buildSlackMrkdwn(payload: NotificationOutboundPayload): string {
+  return (
     `*Mako run ${payload.trigger}*\n` +
     `*${payload.resourceType}*: ${payload.resourceName}\n` +
     `Run: \`${payload.runId}\`\n` +
@@ -355,30 +354,74 @@ async function deliverSlack(
     (payload.durationMs != null ? `\nDuration: ${payload.durationMs}ms` : "") +
     (payload.rowCount != null ? `\nRows: ${payload.rowCount}` : "") +
     (payload.errorMessage ? `\nError: ${payload.errorMessage}` : "") +
-    (payload.deepLink ? `\n<${payload.deepLink}|Open in Mako>` : "");
+    (payload.deepLink ? `\n<${payload.deepLink}|Open in Mako>` : "")
+  );
+}
 
-  const slackBody = JSON.stringify({
-    text,
-    blocks: [
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text,
-        },
+function buildSlackBlocks(text: string): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text,
       },
-    ],
-  });
+    },
+  ];
+}
 
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: slackBody,
-  });
-  if (!response.ok) {
-    const t = await response.text().catch(() => "");
-    throw new Error(`Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`);
+async function deliverSlack(
+  channel: INotificationRuleChannelSlack,
+  payload: NotificationOutboundPayload,
+): Promise<void> {
+  const text = buildSlackMrkdwn(payload);
+  const blocks = buildSlackBlocks(text);
+
+  if (channel.connectionId && channel.channelId) {
+    const conn = await SlackConnection.findById(channel.connectionId).lean();
+    if (!conn || conn.revokedAt) {
+      throw new Error("Slack connection missing or revoked");
+    }
+    const token = decrypt(conn.botTokenEncrypted);
+    const res = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        channel: channel.channelId,
+        text,
+        blocks,
+      }),
+    });
+    const json = (await res.json()) as { ok: boolean; error?: string };
+    if (!json.ok) {
+      throw new Error(
+        `Slack chat.postMessage failed: ${json.error || "unknown"}`,
+      );
+    }
+    return;
   }
+
+  if (channel.webhookUrlEncrypted) {
+    const webhookUrl = decrypt(channel.webhookUrlEncrypted);
+    const slackBody = JSON.stringify({ text, blocks });
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: slackBody,
+    });
+    if (!response.ok) {
+      const t = await response.text().catch(() => "");
+      throw new Error(
+        `Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`,
+      );
+    }
+    return;
+  }
+
+  throw new Error("Slack channel has no connection or webhook configured");
 }
 
 /** Encrypt channel secrets for persistence */
@@ -395,10 +438,26 @@ export function encryptNotificationChannel(
       signingSecretEncrypted: encrypt(channel.signingSecretEncrypted),
     };
   }
+  const slack = channel as INotificationRuleChannelSlack;
+  if (slack.connectionId && slack.channelId) {
+    return {
+      type: "slack",
+      connectionId: slack.connectionId,
+      channelId: slack.channelId,
+      channelName: slack.channelName,
+      ...(slack.webhookUrlEncrypted
+        ? { webhookUrlEncrypted: encrypt(slack.webhookUrlEncrypted) }
+        : {}),
+      displayLabel: slack.displayLabel,
+    };
+  }
+  if (!slack.webhookUrlEncrypted) {
+    throw new Error("Slack channel requires webhook URL or connection + channel");
+  }
   return {
     type: "slack",
-    webhookUrlEncrypted: encrypt(channel.webhookUrlEncrypted),
-    displayLabel: channel.displayLabel,
+    webhookUrlEncrypted: encrypt(slack.webhookUrlEncrypted),
+    displayLabel: slack.displayLabel,
   };
 }
 
@@ -429,12 +488,17 @@ export function sanitizeRuleForClient(rule: INotificationRule): Record<string, u
       },
     };
   }
+  const slackCh = ch as INotificationRuleChannelSlack;
   return {
     ...base,
     channel: {
       type: "slack",
-      displayLabel: ch.displayLabel || "",
-      webhookConfigured: Boolean(ch.webhookUrlEncrypted),
+      displayLabel: slackCh.displayLabel || slackCh.channelName || "",
+      webhookConfigured: Boolean(slackCh.webhookUrlEncrypted),
+      slackConnectionId: slackCh.connectionId?.toString(),
+      slackChannelId: slackCh.channelId,
+      slackChannelName: slackCh.channelName,
+      slackBotMode: Boolean(slackCh.connectionId && slackCh.channelId),
     },
   };
 }

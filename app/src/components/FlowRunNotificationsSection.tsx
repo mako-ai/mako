@@ -45,6 +45,10 @@ import {
   ruleSummary,
   useNotificationRuleStore,
 } from "../store/notificationRuleStore";
+import { useSlackIntegrationStore } from "../store/slackIntegrationStore";
+import { getApiBasePath } from "../lib/api-base-path";
+
+const SLACK_WEBHOOK_PENDING_KEY = "slack_webhook_oauth_pending";
 
 export interface FlowRunNotificationsSectionProps {
   workspaceId: string;
@@ -118,6 +122,14 @@ export function FlowRunNotificationsSection({
   const updateRule = useNotificationRuleStore(s => s.updateRule);
   const deleteRule = useNotificationRuleStore(s => s.deleteRule);
   const testNotification = useNotificationRuleStore(s => s.testNotification);
+  const fetchSlackConnection = useSlackIntegrationStore(s => s.fetchConnection);
+  const fetchSlackChannels = useSlackIntegrationStore(s => s.fetchChannels);
+  const slackConn = useSlackIntegrationStore(s =>
+    s.connectionByWorkspace[workspaceId],
+  );
+  const slackChannelOptions = useSlackIntegrationStore(s =>
+    s.channelsByWorkspace[workspaceId],
+  );
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -136,6 +148,9 @@ export function FlowRunNotificationsSection({
   const [rotateWebhookSecret, setRotateWebhookSecret] = useState(false);
   const [slackWebhookUrl, setSlackWebhookUrl] = useState("");
   const [slackLabel, setSlackLabel] = useState("");
+  const [slackChannelSelectId, setSlackChannelSelectId] = useState("");
+  const [slackUseWebhookManual, setSlackUseWebhookManual] = useState(false);
+  const [slackChannelsLoading, setSlackChannelsLoading] = useState(false);
 
   const [deliveryLogOpen, setDeliveryLogOpen] = useState(false);
   const [deliveryLogItems, setDeliveryLogItems] = useState<
@@ -158,6 +173,8 @@ export function FlowRunNotificationsSection({
     setRotateWebhookSecret(false);
     setSlackWebhookUrl("");
     setSlackLabel("");
+    setSlackChannelSelectId("");
+    setSlackUseWebhookManual(false);
     setSecretBanner(null);
   }, []);
 
@@ -183,7 +200,21 @@ export function FlowRunNotificationsSection({
     setWebhookSigningSecret("");
     setRotateWebhookSecret(false);
     setSlackWebhookUrl("");
-    setSlackLabel(ch.type === "slack" ? ch.displayLabel || "" : "");
+    if (ch.type === "slack") {
+      if (ch.slackBotMode && ch.slackChannelId) {
+        setSlackChannelSelectId(ch.slackChannelId);
+        setSlackUseWebhookManual(false);
+        setSlackLabel(ch.slackChannelName || "");
+      } else {
+        setSlackChannelSelectId("");
+        setSlackUseWebhookManual(true);
+        setSlackLabel(ch.displayLabel || "");
+      }
+    } else {
+      setSlackLabel("");
+      setSlackChannelSelectId("");
+      setSlackUseWebhookManual(false);
+    }
     setDialogOpen(true);
   };
 
@@ -206,6 +237,72 @@ export function FlowRunNotificationsSection({
       cancelled = true;
     };
   }, [workspaceId, resourceId, resourceType, fetchRules]);
+
+  useEffect(() => {
+    if (!dialogOpen || channelType !== "slack" || !workspaceId || !canManage) {
+      return;
+    }
+    void (async () => {
+      await fetchSlackConnection(workspaceId);
+    })();
+  }, [
+    dialogOpen,
+    channelType,
+    workspaceId,
+    canManage,
+    fetchSlackConnection,
+  ]);
+
+  useEffect(() => {
+    if (
+      !dialogOpen ||
+      channelType !== "slack" ||
+      !workspaceId ||
+      slackUseWebhookManual ||
+      slackConn === undefined ||
+      slackConn === null
+    ) {
+      return;
+    }
+    setSlackChannelsLoading(true);
+    void (async () => {
+      try {
+        await fetchSlackChannels(workspaceId);
+      } catch {
+        // channels optional; user can still paste webhook
+      } finally {
+        setSlackChannelsLoading(false);
+      }
+    })();
+  }, [
+    dialogOpen,
+    channelType,
+    workspaceId,
+    slackConn,
+    slackUseWebhookManual,
+    fetchSlackChannels,
+  ]);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    try {
+      const raw = sessionStorage.getItem(SLACK_WEBHOOK_PENDING_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        workspaceId?: string;
+        slackWebhookUrl?: string;
+        displayLabel?: string;
+      };
+      if (parsed.workspaceId !== workspaceId || !parsed.slackWebhookUrl) return;
+      sessionStorage.removeItem(SLACK_WEBHOOK_PENDING_KEY);
+      setChannelType("slack");
+      setSlackUseWebhookManual(true);
+      setSlackWebhookUrl(parsed.slackWebhookUrl);
+      if (parsed.displayLabel) setSlackLabel(parsed.displayLabel);
+    } catch {
+      sessionStorage.removeItem(SLACK_WEBHOOK_PENDING_KEY);
+    }
+  }, [workspaceId]);
 
   const loadDeliveryLog = useCallback(async () => {
     if (!workspaceId || !resourceId) return;
@@ -268,14 +365,28 @@ export function FlowRunNotificationsSection({
         base.rotateWebhookSecret = true;
       }
     } else if (channelType === "slack") {
-      if (editingRule && slackWebhookUrl.trim() === "") {
-        // keep URL server-side
-      } else if (!slackWebhookUrl.trim()) {
-        return null;
+      const wsConnected = slackConn !== undefined && slackConn !== null;
+      if (wsConnected && !slackUseWebhookManual) {
+        if (!slackChannelSelectId.trim()) return null;
+        base.slackChannelId = slackChannelSelectId.trim();
+        const opt = slackChannelOptions?.find(
+          c => c.id === slackChannelSelectId.trim(),
+        );
+        const label =
+          opt?.name?.startsWith("#") || opt?.isPrivate
+            ? opt?.name || slackLabel.trim()
+            : slackLabel.trim() || (opt ? `#${opt.name}` : "");
+        if (label) base.slackChannelName = label;
       } else {
-        base.slackWebhookUrl = slackWebhookUrl.trim();
+        if (editingRule && slackWebhookUrl.trim() === "") {
+          // keep URL server-side (webhook mode)
+        } else if (!slackWebhookUrl.trim()) {
+          return null;
+        } else {
+          base.slackWebhookUrl = slackWebhookUrl.trim();
+        }
+        if (slackLabel.trim()) base.displayLabel = slackLabel.trim();
       }
-      if (slackLabel.trim()) base.displayLabel = slackLabel.trim();
     }
 
     return base;
@@ -701,24 +812,126 @@ export function FlowRunNotificationsSection({
 
             {channelType === "slack" && (
               <>
-                <TextField
-                  label="Slack incoming webhook URL"
-                  fullWidth
-                  required={!editingRule}
-                  placeholder={
-                    editingRule?.channel.type === "slack"
-                      ? "Leave blank to keep current webhook"
-                      : undefined
-                  }
-                  value={slackWebhookUrl}
-                  onChange={e => setSlackWebhookUrl(e.target.value)}
-                />
-                <TextField
-                  label="Label (optional)"
-                  fullWidth
-                  value={slackLabel}
-                  onChange={e => setSlackLabel(e.target.value)}
-                />
+                {canManage && slackConn === undefined && (
+                  <Typography variant="caption" color="text.secondary">
+                    Checking Slack workspace connection…
+                  </Typography>
+                )}
+                {canManage &&
+                  slackConn === null &&
+                  !slackUseWebhookManual && (
+                    <Stack spacing={1}>
+                      <Typography variant="body2" color="text.secondary">
+                        Connect Slack once to pick channels from a list, or add a
+                        channel-only webhook (legacy).
+                      </Typography>
+                      <Stack direction="row" spacing={1} flexWrap="wrap">
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={() => {
+                            if (!workspaceId) return;
+                            const base = getApiBasePath(
+                              import.meta.env.VITE_API_URL,
+                            );
+                            const returnTo = encodeURIComponent("/");
+                            window.location.href = `${base}/workspaces/${workspaceId}/slack/install?installType=bot&returnTo=${returnTo}`;
+                          }}
+                        >
+                          Connect Slack workspace
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => {
+                            if (!workspaceId) return;
+                            const base = getApiBasePath(
+                              import.meta.env.VITE_API_URL,
+                            );
+                            const returnTo = encodeURIComponent("/");
+                            window.location.href = `${base}/workspaces/${workspaceId}/slack/install?installType=webhook&returnTo=${returnTo}`;
+                          }}
+                        >
+                          Add Slack channel (webhook)
+                        </Button>
+                      </Stack>
+                      <Button
+                        size="small"
+                        onClick={() => setSlackUseWebhookManual(true)}
+                      >
+                        Paste webhook URL manually
+                      </Button>
+                    </Stack>
+                  )}
+                {canManage && slackConn != null && !slackUseWebhookManual && (
+                  <Stack spacing={1}>
+                    <FormControl fullWidth size="small" disabled={slackChannelsLoading}>
+                      <InputLabel>Slack channel</InputLabel>
+                      <Select
+                        label="Slack channel"
+                        value={slackChannelSelectId}
+                        onChange={e => setSlackChannelSelectId(e.target.value)}
+                      >
+                        <MenuItem value="">
+                          <em>Select a channel</em>
+                        </MenuItem>
+                        {(slackChannelOptions || []).map(ch => (
+                          <MenuItem key={ch.id} value={ch.id}>
+                            {ch.isPrivate ? "Private: " : "#"}
+                            {ch.name}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <Typography variant="caption" color="text.secondary">
+                      Invite the Mako app to private channels so it can post
+                      there.
+                    </Typography>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setSlackUseWebhookManual(true);
+                        setSlackChannelSelectId("");
+                      }}
+                    >
+                      Use per-channel webhook instead
+                    </Button>
+                  </Stack>
+                )}
+                {slackUseWebhookManual && (
+                  <>
+                    <TextField
+                      label="Slack incoming webhook URL"
+                      fullWidth
+                      required={!editingRule}
+                      placeholder={
+                        editingRule?.channel.type === "slack" &&
+                        !editingRule.channel.slackBotMode
+                          ? "Leave blank to keep current webhook"
+                          : undefined
+                      }
+                      value={slackWebhookUrl}
+                      onChange={e => setSlackWebhookUrl(e.target.value)}
+                    />
+                    <TextField
+                      label="Label (optional)"
+                      fullWidth
+                      value={slackLabel}
+                      onChange={e => setSlackLabel(e.target.value)}
+                    />
+                    {slackConn != null && (
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          setSlackUseWebhookManual(false);
+                          setSlackWebhookUrl("");
+                        }}
+                      >
+                        Use workspace bot + channel list
+                      </Button>
+                    )}
+                  </>
+                )}
               </>
             )}
           </Stack>
