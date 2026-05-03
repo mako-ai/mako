@@ -139,6 +139,7 @@ export function FlowRunNotificationsSection({
   const [channelType, setChannelType] =
     useState<NotificationChannelTypeApi>("email");
   const [recipients, setRecipients] = useState<string[]>([]);
+  const [recipientsInput, setRecipientsInput] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookSigningSecret, setWebhookSigningSecret] = useState("");
   const [rotateWebhookSecret, setRotateWebhookSecret] = useState(false);
@@ -161,6 +162,7 @@ export function FlowRunNotificationsSection({
     setFailureChecked(true);
     setChannelType("email");
     setRecipients([]);
+    setRecipientsInput("");
     setWebhookUrl("");
     setWebhookSigningSecret("");
     setRotateWebhookSecret(false);
@@ -187,6 +189,7 @@ export function FlowRunNotificationsSection({
     } else {
       setRecipients([]);
     }
+    setRecipientsInput("");
     setWebhookUrl("");
     setWebhookSigningSecret("");
     setRotateWebhookSecret(false);
@@ -240,10 +243,24 @@ export function FlowRunNotificationsSection({
     void loadDeliveryLog();
   }, [loadDeliveryLog]);
 
-  const parsedRecipients = useMemo(
-    () => recipients.filter(r => EMAIL_RE.test(r)),
-    [recipients],
-  );
+  const commitRecipientsInput = useCallback((raw: string): string[] => {
+    const tokens = splitRecipientTokens(raw).filter(Boolean);
+    if (tokens.length === 0) return [];
+    let merged: string[] = [];
+    setRecipients(prev => {
+      const seen = new Set(prev);
+      const next = [...prev];
+      for (const t of tokens) {
+        if (!seen.has(t)) {
+          seen.add(t);
+          next.push(t);
+        }
+      }
+      merged = next;
+      return next;
+    });
+    return merged;
+  }, []);
 
   const invalidRecipients = useMemo(
     () => recipients.filter(r => !EMAIL_RE.test(r)),
@@ -251,11 +268,21 @@ export function FlowRunNotificationsSection({
   );
   const hasInvalidRecipients = invalidRecipients.length > 0;
 
+  // Treat a pending valid email in the input box as if it were already chipped,
+  // so the Save button stays enabled even if the user forgets to press Enter.
+  const pendingInputIsValidEmail =
+    recipientsInput.trim() !== "" &&
+    EMAIL_RE.test(recipientsInput.trim()) &&
+    !recipients.includes(recipientsInput.trim());
+
   const emailRecipientsSaveBlocked =
     channelType === "email" &&
-    (recipients.length === 0 || hasInvalidRecipients);
+    (hasInvalidRecipients ||
+      (recipients.length === 0 && !pendingInputIsValidEmail));
 
-  const buildPayloadBase = (): Record<string, unknown> | null => {
+  const buildPayloadBase = (
+    effectiveRecipients: string[] = recipients,
+  ): Record<string, unknown> | null => {
     const triggers: NotificationTriggerApi[] = [];
     if (successChecked) triggers.push("success");
     if (failureChecked) triggers.push("failure");
@@ -267,8 +294,11 @@ export function FlowRunNotificationsSection({
     };
 
     if (channelType === "email") {
-      if (parsedRecipients.length === 0) return null;
-      base.recipients = parsedRecipients;
+      const valid = effectiveRecipients.filter(r => EMAIL_RE.test(r));
+      if (valid.length === 0 || valid.length !== effectiveRecipients.length) {
+        return null;
+      }
+      base.recipients = valid;
     } else if (channelType === "webhook") {
       if (editingRule && webhookUrl.trim() === "") {
         // keep URL server-side
@@ -299,7 +329,12 @@ export function FlowRunNotificationsSection({
 
   const handleSaveDialog = async () => {
     if (!workspaceId || !resourceId || !canManage) return;
-    const body = buildPayloadBase();
+    let effectiveRecipients = recipients;
+    if (channelType === "email" && recipientsInput.trim() !== "") {
+      effectiveRecipients = commitRecipientsInput(recipientsInput);
+      setRecipientsInput("");
+    }
+    const body = buildPayloadBase(effectiveRecipients);
     if (!body) {
       setLoadError(
         "Choose at least one event (success or failure) and complete the channel fields.",
@@ -666,22 +701,41 @@ export function FlowRunNotificationsSection({
               <Autocomplete
                 multiple
                 freeSolo
-                autoSelect
                 options={[]}
                 value={recipients}
-                onChange={(_, next) => {
-                  const expanded = next.flatMap(v =>
-                    typeof v === "string" ? splitRecipientTokens(v) : [v],
-                  );
-                  const seen = new Set<string>();
-                  const deduped: string[] = [];
-                  for (const s of expanded) {
-                    const t = s.trim();
-                    if (!t || seen.has(t)) continue;
-                    seen.add(t);
-                    deduped.push(t);
+                inputValue={recipientsInput}
+                onInputChange={(_, val, reason) => {
+                  if (reason === "reset") {
+                    setRecipientsInput("");
+                    return;
                   }
-                  setRecipients(deduped);
+                  // Pasting/typing a separator commits everything up to the
+                  // last (still-being-typed) token. Catches comma, semicolon,
+                  // whitespace, and bulk paste like "a@b.com, c@d.com".
+                  if (/[\s,;]/.test(val)) {
+                    const parts = val.split(/[\s,;]+/);
+                    const trailing = parts.pop() ?? "";
+                    const completed = parts.filter(Boolean).join(" ");
+                    if (completed) commitRecipientsInput(completed);
+                    setRecipientsInput(trailing);
+                    return;
+                  }
+                  setRecipientsInput(val);
+                }}
+                onChange={(_, next, reason) => {
+                  // Only used for chip removal (Backspace / Delete icon) — chip
+                  // creation is handled explicitly via onKeyDown / onBlur /
+                  // onInputChange so MUI's freeSolo flow can't swallow Enter.
+                  if (
+                    reason === "removeOption" ||
+                    reason === "clear" ||
+                    reason === "blur"
+                  ) {
+                    const strs = next.filter(
+                      (v): v is string => typeof v === "string",
+                    );
+                    setRecipients(strs);
+                  }
                 }}
                 renderTags={(value, getTagProps) =>
                   value.map((email, index) => {
@@ -710,6 +764,23 @@ export function FlowRunNotificationsSection({
                         ? `Invalid: ${invalidRecipients.join(", ")}`
                         : "Press Enter, comma, or blur to add"
                     }
+                    onKeyDown={e => {
+                      if (
+                        (e.key === "Enter" || e.key === "Tab") &&
+                        recipientsInput.trim() !== ""
+                      ) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        commitRecipientsInput(recipientsInput);
+                        setRecipientsInput("");
+                      }
+                    }}
+                    onBlur={() => {
+                      if (recipientsInput.trim() !== "") {
+                        commitRecipientsInput(recipientsInput);
+                        setRecipientsInput("");
+                      }
+                    }}
                   />
                 )}
               />
