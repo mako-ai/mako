@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Card,
@@ -26,6 +25,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { MuiChipsInput } from "mui-chips-input";
 import {
   Add as AddIcon,
   Close as CloseIcon,
@@ -87,12 +87,8 @@ function formatDeliveryLine(d: NotificationDeliveryApi): string {
   }`;
 }
 
-/** Loose client-side check — invalid chips block save until corrected */
+/** Loose client-side check — used by `MuiChipsInput`'s `validate` to block bad chips */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function splitRecipientTokens(raw: string): string[] {
-  return raw.split(/[\s,;]+/).map(s => s.trim());
-}
 
 function channelTitle(type: NotificationChannelTypeApi): string {
   switch (type) {
@@ -139,7 +135,6 @@ export function FlowRunNotificationsSection({
   const [channelType, setChannelType] =
     useState<NotificationChannelTypeApi>("email");
   const [recipients, setRecipients] = useState<string[]>([]);
-  const [recipientsInput, setRecipientsInput] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookSigningSecret, setWebhookSigningSecret] = useState("");
   const [rotateWebhookSecret, setRotateWebhookSecret] = useState(false);
@@ -162,7 +157,6 @@ export function FlowRunNotificationsSection({
     setFailureChecked(true);
     setChannelType("email");
     setRecipients([]);
-    setRecipientsInput("");
     setWebhookUrl("");
     setWebhookSigningSecret("");
     setRotateWebhookSecret(false);
@@ -189,7 +183,6 @@ export function FlowRunNotificationsSection({
     } else {
       setRecipients([]);
     }
-    setRecipientsInput("");
     setWebhookUrl("");
     setWebhookSigningSecret("");
     setRotateWebhookSecret(false);
@@ -243,46 +236,26 @@ export function FlowRunNotificationsSection({
     void loadDeliveryLog();
   }, [loadDeliveryLog]);
 
-  const commitRecipientsInput = useCallback((raw: string): string[] => {
-    const tokens = splitRecipientTokens(raw).filter(Boolean);
-    if (tokens.length === 0) return [];
-    let merged: string[] = [];
-    setRecipients(prev => {
-      const seen = new Set(prev);
-      const next = [...prev];
-      for (const t of tokens) {
-        if (!seen.has(t)) {
-          seen.add(t);
-          next.push(t);
-        }
-      }
-      merged = next;
-      return next;
-    });
-    return merged;
-  }, []);
+  // `MuiChipsInput`'s `validate` prevents invalid emails from ever entering
+  // `recipients`, so all we need to gate Save on is "at least one chip".
+  const emailRecipientsSaveBlocked =
+    channelType === "email" && recipients.length === 0;
 
-  const invalidRecipients = useMemo(
-    () => recipients.filter(r => !EMAIL_RE.test(r)),
+  const validateRecipientChip = useCallback(
+    (chipValue: string) => {
+      const trimmed = chipValue.trim();
+      if (!EMAIL_RE.test(trimmed)) {
+        return { isError: true, textError: `${trimmed} is not a valid email` };
+      }
+      if (recipients.includes(trimmed)) {
+        return { isError: true, textError: `${trimmed} is already added` };
+      }
+      return true;
+    },
     [recipients],
   );
-  const hasInvalidRecipients = invalidRecipients.length > 0;
 
-  // Treat a pending valid email in the input box as if it were already chipped,
-  // so the Save button stays enabled even if the user forgets to press Enter.
-  const pendingInputIsValidEmail =
-    recipientsInput.trim() !== "" &&
-    EMAIL_RE.test(recipientsInput.trim()) &&
-    !recipients.includes(recipientsInput.trim());
-
-  const emailRecipientsSaveBlocked =
-    channelType === "email" &&
-    (hasInvalidRecipients ||
-      (recipients.length === 0 && !pendingInputIsValidEmail));
-
-  const buildPayloadBase = (
-    effectiveRecipients: string[] = recipients,
-  ): Record<string, unknown> | null => {
+  const buildPayloadBase = (): Record<string, unknown> | null => {
     const triggers: NotificationTriggerApi[] = [];
     if (successChecked) triggers.push("success");
     if (failureChecked) triggers.push("failure");
@@ -294,11 +267,8 @@ export function FlowRunNotificationsSection({
     };
 
     if (channelType === "email") {
-      const valid = effectiveRecipients.filter(r => EMAIL_RE.test(r));
-      if (valid.length === 0 || valid.length !== effectiveRecipients.length) {
-        return null;
-      }
-      base.recipients = valid;
+      if (recipients.length === 0) return null;
+      base.recipients = recipients;
     } else if (channelType === "webhook") {
       if (editingRule && webhookUrl.trim() === "") {
         // keep URL server-side
@@ -329,12 +299,7 @@ export function FlowRunNotificationsSection({
 
   const handleSaveDialog = async () => {
     if (!workspaceId || !resourceId || !canManage) return;
-    let effectiveRecipients = recipients;
-    if (channelType === "email" && recipientsInput.trim() !== "") {
-      effectiveRecipients = commitRecipientsInput(recipientsInput);
-      setRecipientsInput("");
-    }
-    const body = buildPayloadBase(effectiveRecipients);
+    const body = buildPayloadBase();
     if (!body) {
       setLoadError(
         "Choose at least one event (success or failure) and complete the channel fields.",
@@ -698,90 +663,19 @@ export function FlowRunNotificationsSection({
             </FormControl>
 
             {channelType === "email" && (
-              <Autocomplete
-                multiple
-                freeSolo
-                options={[]}
+              <MuiChipsInput
+                fullWidth
+                size="small"
+                label="Recipients"
+                placeholder="Type an email and press Enter"
+                helperText="Press Enter to add. Backspace removes the last chip."
                 value={recipients}
-                inputValue={recipientsInput}
-                onInputChange={(_, val, reason) => {
-                  if (reason === "reset") {
-                    setRecipientsInput("");
-                    return;
-                  }
-                  // Pasting/typing a separator commits everything up to the
-                  // last (still-being-typed) token. Catches comma, semicolon,
-                  // whitespace, and bulk paste like "a@b.com, c@d.com".
-                  if (/[\s,;]/.test(val)) {
-                    const parts = val.split(/[\s,;]+/);
-                    const trailing = parts.pop() ?? "";
-                    const completed = parts.filter(Boolean).join(" ");
-                    if (completed) commitRecipientsInput(completed);
-                    setRecipientsInput(trailing);
-                    return;
-                  }
-                  setRecipientsInput(val);
-                }}
-                onChange={(_, next, reason) => {
-                  // Only used for chip removal (Backspace / Delete icon) — chip
-                  // creation is handled explicitly via onKeyDown / onBlur /
-                  // onInputChange so MUI's freeSolo flow can't swallow Enter.
-                  if (
-                    reason === "removeOption" ||
-                    reason === "clear" ||
-                    reason === "blur"
-                  ) {
-                    const strs = next.filter(
-                      (v): v is string => typeof v === "string",
-                    );
-                    setRecipients(strs);
-                  }
-                }}
-                renderTags={(value, getTagProps) =>
-                  value.map((email, index) => {
-                    const valid = EMAIL_RE.test(email);
-                    const tagProps = getTagProps({ index });
-                    return (
-                      <Chip
-                        {...tagProps}
-                        key={email}
-                        label={email}
-                        size="small"
-                        color={valid ? "default" : "error"}
-                        variant={valid ? "filled" : "outlined"}
-                      />
-                    );
-                  })
-                }
-                renderInput={params => (
-                  <TextField
-                    {...params}
-                    label="Recipients"
-                    placeholder="Type an email and press Enter"
-                    error={hasInvalidRecipients}
-                    helperText={
-                      hasInvalidRecipients
-                        ? `Invalid: ${invalidRecipients.join(", ")}`
-                        : "Press Enter, comma, or blur to add"
-                    }
-                    onKeyDown={e => {
-                      if (
-                        (e.key === "Enter" || e.key === "Tab") &&
-                        recipientsInput.trim() !== ""
-                      ) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        commitRecipientsInput(recipientsInput);
-                        setRecipientsInput("");
-                      }
-                    }}
-                    onBlur={() => {
-                      if (recipientsInput.trim() !== "") {
-                        commitRecipientsInput(recipientsInput);
-                        setRecipientsInput("");
-                      }
-                    }}
-                  />
+                onChange={setRecipients}
+                addOnBlur
+                hideClearAll
+                validate={validateRecipientChip}
+                renderChip={(Component, key, chipProps) => (
+                  <Component {...chipProps} key={key} size="small" />
                 )}
               />
             )}
