@@ -21,6 +21,7 @@ import {
   Chip,
   Skeleton,
   Snackbar,
+  Stack,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -145,8 +146,61 @@ export function ApiKeyManager() {
     });
   };
 
+  const workspaceId = currentWorkspace?.id;
+
   return (
     <Box>
+      {workspaceId && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 600 }}>
+            Workspace ID
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Use this value as{" "}
+            <Box component="span" sx={{ fontFamily: "monospace" }}>
+              :workspaceId
+            </Box>{" "}
+            in API paths (for example{" "}
+            <Box component="span" sx={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
+              /api/workspaces/{workspaceId}/execute
+            </Box>
+            ).
+          </Typography>
+          <Stack
+            direction="row"
+            alignItems="center"
+            spacing={1}
+            sx={{ flexWrap: "wrap" }}
+          >
+            <Box
+              component="code"
+              sx={{
+                flex: 1,
+                minWidth: 0,
+                p: 1,
+                pr: 0.5,
+                borderRadius: 1,
+                bgcolor: "action.hover",
+                fontFamily: "monospace",
+                fontSize: "0.8rem",
+                wordBreak: "break-all",
+              }}
+            >
+              {workspaceId}
+            </Box>
+            <Tooltip title="Copy workspace ID">
+              <IconButton
+                size="small"
+                onClick={() => copyToClipboard(workspaceId)}
+                aria-label="Copy workspace ID"
+              >
+                <CopyIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </Alert>
+      )}
+
       <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 3 }}>
         <Button
           variant="contained"
@@ -275,6 +329,39 @@ export function ApiKeyManager() {
           <Alert severity="warning" sx={{ mb: 2 }}>
             Store this key securely - it won&apos;t be shown again!
           </Alert>
+          {workspaceId && (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                Workspace ID
+              </Typography>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box
+                  component="code"
+                  sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    p: 1,
+                    borderRadius: 1,
+                    bgcolor: "grey.100",
+                    fontFamily: "monospace",
+                    fontSize: "0.8rem",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {workspaceId}
+                </Box>
+                <Tooltip title="Copy workspace ID">
+                  <IconButton
+                    size="small"
+                    onClick={() => copyToClipboard(workspaceId)}
+                    aria-label="Copy workspace ID"
+                  >
+                    <CopyIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Box>
+          )}
           <Box sx={{ mb: 2 }}>
             <Typography variant="body2" color="text.secondary" gutterBottom>
               API Key Name
@@ -341,6 +428,30 @@ export function ApiKeyManager() {
             >
               {`Authorization: Bearer ${newApiKey?.key}`}
             </Box>
+            {workspaceId && (
+              <>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mt: 2 }}
+                >
+                  Example endpoint (replace BASE_URL with your API host):
+                </Typography>
+                <Box
+                  component="pre"
+                  sx={{
+                    mt: 1,
+                    p: 1.5,
+                    bgcolor: "grey.100",
+                    borderRadius: 1,
+                    fontSize: "0.75rem",
+                    overflow: "auto",
+                  }}
+                >
+                  {`POST BASE_URL/api/workspaces/${workspaceId}/execute`}
+                </Box>
+              </>
+            )}
           </Box>
         </DialogContent>
         <DialogActions>
