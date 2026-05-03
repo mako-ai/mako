@@ -42,6 +42,7 @@ import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
+import { devEmailPreviewRoutes } from "./routes/dev-email-preview.routes";
 import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -128,6 +129,11 @@ app.route(
   "/api/workspaces/:workspaceId/notification-rules",
   notificationRulesRoutes,
 );
+
+if (process.env.NODE_ENV !== "production") {
+  app.route("/api/dev/email-preview", devEmailPreviewRoutes);
+}
+
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
