@@ -161,7 +161,10 @@ export function ApiKeyManager() {
               :workspaceId
             </Box>{" "}
             in API paths (for example{" "}
-            <Box component="span" sx={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
+            <Box
+              component="span"
+              sx={{ fontFamily: "monospace", fontSize: "0.8rem" }}
+            >
               /api/workspaces/{workspaceId}/execute
             </Box>
             ).
