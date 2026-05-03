@@ -10,8 +10,10 @@ import {
   NotificationDelivery,
   NotificationRule,
   SavedConsole,
+  SlackConnection,
   decrypt,
   type INotificationRuleChannel,
+  type INotificationRuleChannelSlack,
   type NotificationChannelType,
   type NotificationResourceType,
   type NotificationTrigger,
@@ -88,12 +90,15 @@ function parseTriggers(raw: unknown): NotificationTrigger[] | null {
   return out.length > 0 ? [...new Set(out)] : null;
 }
 
-function parseChannelFromBody(body: Record<string, unknown>): {
+async function parseChannelFromBody(
+  workspaceId: string,
+  body: Record<string, unknown>,
+): Promise<{
   channel: INotificationRuleChannel;
   rotateWebhookSecret?: boolean;
   /** Present only when a new signing secret was generated (plain text, return once) */
   webhookSigningSecretPlain?: string;
-} | null {
+} | null> {
   const type = body.channelType as NotificationChannelType | undefined;
   if (type === "email") {
     const recipients = body.recipients;
@@ -127,17 +132,39 @@ function parseChannelFromBody(body: Record<string, unknown>): {
     };
   }
   if (type === "slack") {
-    const webhookUrl =
+    const slackChannelId =
+      typeof body.slackChannelId === "string" ? body.slackChannelId.trim() : "";
+    const slackWebhookUrl =
       typeof body.slackWebhookUrl === "string"
         ? body.slackWebhookUrl.trim()
         : "";
-    if (!webhookUrl) return null;
+    if (slackChannelId && slackWebhookUrl) return null;
+    if (slackChannelId) {
+      const conn = await SlackConnection.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        revokedAt: { $exists: false },
+      }).lean();
+      if (!conn) return null;
+      const channelName =
+        typeof body.slackChannelName === "string"
+          ? body.slackChannelName.trim()
+          : "";
+      return {
+        channel: {
+          type: "slack",
+          connectionId: conn._id,
+          channelId: slackChannelId,
+          channelName: channelName || undefined,
+        },
+      };
+    }
+    if (!slackWebhookUrl) return null;
     const displayLabel =
       typeof body.displayLabel === "string" ? body.displayLabel.trim() : "";
     return {
       channel: {
         type: "slack",
-        webhookUrlEncrypted: webhookUrl,
+        webhookUrlEncrypted: slackWebhookUrl,
         displayLabel: displayLabel || undefined,
       },
     };
@@ -310,7 +337,7 @@ notificationRulesRoutes.post("/", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "Resource not found" }, 404);
     }
 
-    const parsed = parseChannelFromBody(body);
+    const parsed = await parseChannelFromBody(workspaceId, body);
     if (!parsed) {
       return c.json({ success: false, error: "Invalid channel configuration" }, 400);
     }
@@ -384,7 +411,7 @@ notificationRulesRoutes.patch("/:ruleId", async (c: AuthenticatedContext) => {
       let channel: INotificationRuleChannel;
 
       if (channelType === "email") {
-        const parsed = parseChannelFromBody(body);
+        const parsed = await parseChannelFromBody(workspaceId, body);
         if (!parsed || parsed.channel.type !== "email") {
           return c.json(
             { success: false, error: "Invalid email recipients" },
@@ -394,7 +421,7 @@ notificationRulesRoutes.patch("/:ruleId", async (c: AuthenticatedContext) => {
         channel = encryptNotificationChannel(parsed.channel);
       } else if (channelType === "webhook") {
         if (existing.channel.type !== "webhook") {
-          const parsed = parseChannelFromBody(body);
+          const parsed = await parseChannelFromBody(workspaceId, body);
           if (!parsed || parsed.channel.type !== "webhook") {
             return c.json(
               { success: false, error: "Webhook URL required" },
@@ -435,33 +462,94 @@ notificationRulesRoutes.patch("/:ruleId", async (c: AuthenticatedContext) => {
         }
       } else if (channelType === "slack") {
         if (existing.channel.type !== "slack") {
-          const parsed = parseChannelFromBody(body);
+          const parsed = await parseChannelFromBody(workspaceId, body);
           if (!parsed || parsed.channel.type !== "slack") {
             return c.json(
-              { success: false, error: "Slack webhook URL required" },
+              {
+                success: false,
+                error:
+                  "Slack: provide slackChannelId (workspace bot) or slackWebhookUrl",
+              },
               400,
             );
           }
           channel = encryptNotificationChannel(parsed.channel);
         } else {
-          const prev = existing.channel as {
-            webhookUrlEncrypted: string;
-            displayLabel?: string;
-          };
-          const urlRaw =
+          const prev = existing.channel as INotificationRuleChannelSlack;
+          const urlFromBody =
             typeof body.slackWebhookUrl === "string" &&
             body.slackWebhookUrl.trim()
               ? body.slackWebhookUrl.trim()
-              : decrypt(prev.webhookUrlEncrypted);
-          const displayLabel =
-            typeof body.displayLabel === "string"
-              ? body.displayLabel.trim()
-              : prev.displayLabel;
-          channel = encryptNotificationChannel({
-            type: "slack",
-            webhookUrlEncrypted: urlRaw,
-            displayLabel: displayLabel || undefined,
-          });
+              : undefined;
+          const slackChannelId =
+            typeof body.slackChannelId === "string"
+              ? body.slackChannelId.trim()
+              : "";
+
+          if (urlFromBody) {
+            const displayLabel =
+              typeof body.displayLabel === "string"
+                ? body.displayLabel.trim()
+                : prev.displayLabel;
+            channel = encryptNotificationChannel({
+              type: "slack",
+              webhookUrlEncrypted: urlFromBody,
+              displayLabel: displayLabel || undefined,
+            });
+          } else if (slackChannelId || (prev.connectionId && prev.channelId)) {
+            const conn = await SlackConnection.findOne({
+              workspaceId: new Types.ObjectId(workspaceId),
+              revokedAt: { $exists: false },
+            }).lean();
+            if (!conn) {
+              return c.json(
+                { success: false, error: "Connect Slack workspace first" },
+                400,
+              );
+            }
+            if (
+              prev.connectionId &&
+              conn._id.toString() !== prev.connectionId.toString()
+            ) {
+              return c.json(
+                { success: false, error: "Slack workspace connection mismatch" },
+                400,
+              );
+            }
+            const channelId = slackChannelId || prev.channelId;
+            if (!channelId) {
+              return c.json(
+                { success: false, error: "slackChannelId required" },
+                400,
+              );
+            }
+            const channelName =
+              typeof body.slackChannelName === "string"
+                ? body.slackChannelName.trim()
+                : prev.channelName;
+            channel = encryptNotificationChannel({
+              type: "slack",
+              connectionId: conn._id,
+              channelId,
+              channelName: channelName || undefined,
+            });
+          } else if (prev.webhookUrlEncrypted) {
+            const urlRaw = decrypt(prev.webhookUrlEncrypted);
+            const displayLabel =
+              typeof body.displayLabel === "string"
+                ? body.displayLabel.trim()
+                : prev.displayLabel;
+            channel = encryptNotificationChannel({
+              type: "slack",
+              webhookUrlEncrypted: urlRaw,
+              displayLabel: displayLabel || undefined,
+            });
+          } else {
+            return c.json(
+              { success: false, error: "Invalid existing Slack channel" },
+              400,
+            );
+          }
         }
       } else {
         return c.json({ success: false, error: "Invalid channel type" }, 400);
@@ -573,7 +661,7 @@ notificationRulesRoutes.post("/test", async (c: AuthenticatedContext) => {
       }
       channel = rule.channel as INotificationRuleChannel;
     } else {
-      const parsed = parseChannelFromBody(body);
+      const parsed = await parseChannelFromBody(workspaceId, body);
       if (!parsed) {
         return c.json(
           { success: false, error: "Invalid channel configuration" },

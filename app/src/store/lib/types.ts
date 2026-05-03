@@ -27,6 +27,7 @@ export type SettingsSection =
   | "billing"
   | "members"
   | "api-keys"
+  | "integrations"
   | "appearance"
   | "admin";
 

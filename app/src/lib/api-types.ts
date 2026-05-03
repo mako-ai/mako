@@ -156,6 +156,10 @@ export interface NotificationRuleChannelSlackApi {
   type: "slack";
   displayLabel: string;
   webhookConfigured: boolean;
+  slackBotMode?: boolean;
+  slackConnectionId?: string;
+  slackChannelId?: string;
+  slackChannelName?: string;
 }
 
 export type NotificationRuleChannelApi =

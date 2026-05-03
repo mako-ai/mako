@@ -454,9 +454,14 @@ export interface INotificationRuleChannelWebhook {
 
 export interface INotificationRuleChannelSlack {
   type: "slack";
-  /** Encrypted incoming webhook URL */
-  webhookUrlEncrypted: string;
-  /** UI label only, e.g. #alerts */
+  /** Workspace Slack bot connection (preferred); posts via chat.postMessage */
+  connectionId?: Types.ObjectId;
+  channelId?: string;
+  /** Cached label for UI, e.g. #alerts */
+  channelName?: string;
+  /** Encrypted incoming webhook URL (legacy / per-rule install) */
+  webhookUrlEncrypted?: string;
+  /** UI label for webhook mode */
   displayLabel?: string;
 }
 
@@ -501,6 +506,20 @@ export interface INotificationDelivery extends Document {
   sentAt?: Date;
   completedAt?: Date;
   createdAt: Date;
+}
+
+/** One Slack workspace connection per Mako workspace (bot token for notifications). */
+export interface ISlackConnection extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  teamId: string;
+  teamName: string;
+  botUserId: string;
+  botTokenEncrypted: string;
+  scopes: string[];
+  installedByUserId: string;
+  installedAt: Date;
+  revokedAt?: Date;
 }
 
 /**
@@ -2615,6 +2634,33 @@ NotificationDeliverySchema.index(
   { expireAfterSeconds: 7776000 },
 );
 
+const SlackConnectionSchema = new Schema<ISlackConnection>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    teamId: { type: String, required: true },
+    teamName: { type: String, required: true },
+    botUserId: { type: String, required: true },
+    botTokenEncrypted: { type: String, required: true },
+    scopes: {
+      type: [String],
+      default: [],
+    },
+    installedByUserId: { type: String, required: true },
+    installedAt: { type: Date, required: true, default: Date.now },
+    revokedAt: { type: Date },
+  },
+  {
+    collection: "slack_connections",
+    timestamps: false,
+  },
+);
+
+SlackConnectionSchema.index({ workspaceId: 1 }, { unique: true });
+
 export interface IMaterializationRun extends Document {
   workspaceId: Types.ObjectId;
   dashboardId: Types.ObjectId;
@@ -3367,6 +3413,10 @@ export const NotificationRule = mongoose.model<INotificationRule>(
 export const NotificationDelivery = mongoose.model<INotificationDelivery>(
   "NotificationDelivery",
   NotificationDeliverySchema,
+);
+export const SlackConnection = mongoose.model<ISlackConnection>(
+  "SlackConnection",
+  SlackConnectionSchema,
 );
 export const MaterializationRun = mongoose.model<IMaterializationRun>(
   "MaterializationRun",

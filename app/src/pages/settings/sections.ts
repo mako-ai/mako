@@ -13,6 +13,7 @@ export const SECTION_LABELS: Record<SettingsSection, string> = {
   billing: "Billing",
   members: "Members",
   "api-keys": "API Keys",
+  integrations: "Integrations",
   appearance: "Appearance",
   admin: "Super Admin",
 };
@@ -28,6 +29,7 @@ export const SECTION_ORDER: SettingsSection[] = [
   "billing",
   "members",
   "api-keys",
+  "integrations",
   "appearance",
   "admin",
 ];

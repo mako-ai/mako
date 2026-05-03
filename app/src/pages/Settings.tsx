@@ -7,6 +7,7 @@ import SettingsMembers from "./settings/SettingsMembers";
 import SettingsApiKeys from "./settings/SettingsApiKeys";
 import SettingsAppearance from "./settings/SettingsAppearance";
 import SettingsAdmin from "./settings/SettingsAdmin";
+import SettingsIntegrations from "./settings/SettingsIntegrations";
 
 interface Props {
   /**
@@ -34,6 +35,8 @@ function Settings({ section = "prompt" }: Props) {
       return <SettingsMembers />;
     case "api-keys":
       return <SettingsApiKeys />;
+    case "integrations":
+      return <SettingsIntegrations />;
     case "appearance":
       return <SettingsAppearance />;
     case "admin":
