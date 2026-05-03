@@ -49,10 +49,17 @@ Authorization: Bearer revops_YOUR_API_KEY
 
 Session cookie or `Authorization: Bearer revops_*` API key required. Use the database connection ID from `GET /api/workspaces/:wid/connectors`.
 
-| Method | Endpoint                                                      | Description                                        |
-| ------ | ------------------------------------------------------------- | -------------------------------------------------- |
-| `POST` | `/api/workspaces/:wid/databases/:databaseId/execute`        | Run a query against one connection (`body.query`) |
-| `POST` | `/api/workspaces/:wid/execute`                                | Execute with `query` / `queryDefinition`, pagination, exports (`POST …/execute/export` supports `format=arrow`, `parquet`, `ndjson`, `csv`) |
+| Method | Endpoint                                               | Description                                                                                                          |
+| ------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/api/workspaces/:wid/databases/:databaseId/execute`   | Run a query against a specific connection (`body.query`)                                                             |
+| `POST` | `/api/workspaces/:wid/execute`                         | Execute with `query` or `queryDefinition`; supports pagination via `body.pagination`                                 |
+| `POST` | `/api/workspaces/:wid/execute/export`                  | Stream results as `format` = `arrow`, `parquet`, `ndjson`, or `csv`                                                  |
+| `POST` | `/api/workspaces/:wid/execute/cancel`                  | Cancel an in-flight query by `executionId`                                                                           |
+
+:::caution[Breaking change]
+The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoints were removed in [#401](https://github.com/mako-ai/mako/pull/401) (they allowed unauthenticated RCE). Callers must move to the workspace-scoped endpoints above and authenticate with a session cookie or `Bearer revops_*` API key.
+:::
+
 
 ## Consoles
 
