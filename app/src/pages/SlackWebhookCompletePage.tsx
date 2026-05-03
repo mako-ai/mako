@@ -43,7 +43,9 @@ export default function SlackWebhookCompletePage() {
         navigate("/", { replace: true });
       } catch (e) {
         if (!cancelled) {
-          setMessage(e instanceof Error ? e.message : "Could not complete Slack setup");
+          setMessage(
+            e instanceof Error ? e.message : "Could not complete Slack setup",
+          );
           setWorking(false);
         }
       }

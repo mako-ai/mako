@@ -72,20 +72,29 @@ export default function SlackIntegrationCard() {
           Slack
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Connect your Slack workspace once. Flow and scheduled query notifications
-          can post to any channel the bot is invited to.
+          Connect your Slack workspace once. Flow and scheduled query
+          notifications can post to any channel the bot is invited to.
         </Typography>
         {error && (
-          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          <Alert
+            severity="error"
+            sx={{ mb: 2 }}
+            onClose={() => setError(null)}
+          >
             {error}
           </Alert>
         )}
         {connected && connection ? (
           <Box>
             <Typography variant="body2">
-              Connected: <strong>{connection.teamName}</strong> ({connection.teamId})
+              Connected: <strong>{connection.teamName}</strong> (
+              {connection.teamId})
             </Typography>
-            <Typography variant="caption" color="text.secondary" display="block">
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              display="block"
+            >
               Installed by user {connection.installedByUserId} ·{" "}
               {new Date(connection.installedAt).toLocaleString()}
             </Typography>

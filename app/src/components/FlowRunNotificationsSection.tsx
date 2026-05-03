@@ -124,11 +124,11 @@ export function FlowRunNotificationsSection({
   const testNotification = useNotificationRuleStore(s => s.testNotification);
   const fetchSlackConnection = useSlackIntegrationStore(s => s.fetchConnection);
   const fetchSlackChannels = useSlackIntegrationStore(s => s.fetchChannels);
-  const slackConn = useSlackIntegrationStore(s =>
-    s.connectionByWorkspace[workspaceId],
+  const slackConn = useSlackIntegrationStore(
+    s => s.connectionByWorkspace[workspaceId],
   );
-  const slackChannelOptions = useSlackIntegrationStore(s =>
-    s.channelsByWorkspace[workspaceId],
+  const slackChannelOptions = useSlackIntegrationStore(
+    s => s.channelsByWorkspace[workspaceId],
   );
 
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -245,13 +245,7 @@ export function FlowRunNotificationsSection({
     void (async () => {
       await fetchSlackConnection(workspaceId);
     })();
-  }, [
-    dialogOpen,
-    channelType,
-    workspaceId,
-    canManage,
-    fetchSlackConnection,
-  ]);
+  }, [dialogOpen, channelType, workspaceId, canManage, fetchSlackConnection]);
 
   useEffect(() => {
     if (
@@ -817,55 +811,57 @@ export function FlowRunNotificationsSection({
                     Checking Slack workspace connection…
                   </Typography>
                 )}
-                {canManage &&
-                  slackConn === null &&
-                  !slackUseWebhookManual && (
-                    <Stack spacing={1}>
-                      <Typography variant="body2" color="text.secondary">
-                        Connect Slack once to pick channels from a list, or add a
-                        channel-only webhook (legacy).
-                      </Typography>
-                      <Stack direction="row" spacing={1} flexWrap="wrap">
-                        <Button
-                          size="small"
-                          variant="contained"
-                          onClick={() => {
-                            if (!workspaceId) return;
-                            const base = getApiBasePath(
-                              import.meta.env.VITE_API_URL,
-                            );
-                            const returnTo = encodeURIComponent("/");
-                            window.location.href = `${base}/workspaces/${workspaceId}/slack/install?installType=bot&returnTo=${returnTo}`;
-                          }}
-                        >
-                          Connect Slack workspace
-                        </Button>
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => {
-                            if (!workspaceId) return;
-                            const base = getApiBasePath(
-                              import.meta.env.VITE_API_URL,
-                            );
-                            const returnTo = encodeURIComponent("/");
-                            window.location.href = `${base}/workspaces/${workspaceId}/slack/install?installType=webhook&returnTo=${returnTo}`;
-                          }}
-                        >
-                          Add Slack channel (webhook)
-                        </Button>
-                      </Stack>
+                {canManage && slackConn === null && !slackUseWebhookManual && (
+                  <Stack spacing={1}>
+                    <Typography variant="body2" color="text.secondary">
+                      Connect Slack once to pick channels from a list, or add a
+                      channel-only webhook (legacy).
+                    </Typography>
+                    <Stack direction="row" spacing={1} flexWrap="wrap">
                       <Button
                         size="small"
-                        onClick={() => setSlackUseWebhookManual(true)}
+                        variant="contained"
+                        onClick={() => {
+                          if (!workspaceId) return;
+                          const base = getApiBasePath(
+                            import.meta.env.VITE_API_URL,
+                          );
+                          const returnTo = encodeURIComponent("/");
+                          window.location.href = `${base}/workspaces/${workspaceId}/slack/install?installType=bot&returnTo=${returnTo}`;
+                        }}
                       >
-                        Paste webhook URL manually
+                        Connect Slack workspace
+                      </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => {
+                          if (!workspaceId) return;
+                          const base = getApiBasePath(
+                            import.meta.env.VITE_API_URL,
+                          );
+                          const returnTo = encodeURIComponent("/");
+                          window.location.href = `${base}/workspaces/${workspaceId}/slack/install?installType=webhook&returnTo=${returnTo}`;
+                        }}
+                      >
+                        Add Slack channel (webhook)
                       </Button>
                     </Stack>
-                  )}
+                    <Button
+                      size="small"
+                      onClick={() => setSlackUseWebhookManual(true)}
+                    >
+                      Paste webhook URL manually
+                    </Button>
+                  </Stack>
+                )}
                 {canManage && slackConn != null && !slackUseWebhookManual && (
                   <Stack spacing={1}>
-                    <FormControl fullWidth size="small" disabled={slackChannelsLoading}>
+                    <FormControl
+                      fullWidth
+                      size="small"
+                      disabled={slackChannelsLoading}
+                    >
                       <InputLabel>Slack channel</InputLabel>
                       <Select
                         label="Slack channel"
