@@ -4,7 +4,6 @@ import {
   Head,
   Hr,
   Html,
-  Img,
   Preview,
   Section,
   Text,
@@ -18,16 +17,13 @@ export interface MakoLayoutProps {
   children: ReactNode;
 }
 
-/** Inline SVG wordmark — avoids external image hosts for reliable inbox rendering */
+/**
+ * Text wordmark — Gmail strips `data:` and many corporate clients block remote
+ * images by default, so styled HTML text is the only thing guaranteed to render
+ * across every inbox.
+ */
 function MakoWordmark() {
-  return (
-    <Img
-      alt="Mako"
-      src="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2288%22%20height%3D%2224%22%20viewBox%3D%220%200%2088%2024%22%20fill%3D%22none%22%3E%3Ctext%20x%3D%220%22%20y%3D%2218%22%20fill%3D%22%23111827%22%20font-family%3D%22system-ui%2CSegoe%20UI%2Csans-serif%22%20font-size%3D%2218%22%20font-weight%3D%22600%22%3EMako%3C%2Ftext%3E%3C%2Fsvg%3E"
-      width={88}
-      height={24}
-    />
-  );
+  return <Text style={wordmarkStyle}>Mako</Text>;
 }
 
 export function MakoLayout({
@@ -80,6 +76,17 @@ const containerStyle = {
 
 const headerStyle = {
   marginBottom: "24px",
+};
+
+const wordmarkStyle = {
+  color: "#111827",
+  fontFamily:
+    '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Ubuntu,sans-serif',
+  fontSize: "20px",
+  fontWeight: 700,
+  letterSpacing: "-0.01em",
+  lineHeight: "24px",
+  margin: 0,
 };
 
 const hrStyle = {
