@@ -76,11 +76,7 @@ export default function SlackIntegrationCard() {
           notifications can post to any channel the bot is invited to.
         </Typography>
         {error && (
-          <Alert
-            severity="error"
-            sx={{ mb: 2 }}
-            onClose={() => setError(null)}
-          >
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
             {error}
           </Alert>
         )}
