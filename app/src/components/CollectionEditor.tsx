@@ -30,6 +30,8 @@ import {
 } from "@mui/icons-material";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
+import { useWorkspace } from "../contexts/workspace-context";
+import { useSchemaStore } from "../store/schemaStore";
 
 interface CollectionInfo {
   name: string;
@@ -45,6 +47,8 @@ interface CollectionEditorProps {
   onCreate?: () => void;
   onDelete?: (collectionName: string) => void;
   isExecuting: boolean;
+  databaseId?: string;
+  workspaceId?: string;
 }
 
 export interface CollectionEditorRef {
@@ -65,12 +69,19 @@ const CollectionEditorComponent = (
     onCreate,
     onDelete,
     isExecuting,
+    databaseId,
+    workspaceId,
   }: CollectionEditorProps,
   ref: React.Ref<CollectionEditorRef>,
 ) => {
   const editorRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const { effectiveMode } = useTheme();
+  const { currentWorkspace } = useWorkspace();
+  const fetchDatabaseCollectionInfo = useSchemaStore(
+    s => s.fetchCollectionInfo,
+  );
+  const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
   const [currentQuery, setCurrentQuery] = useState("");
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -133,20 +144,17 @@ db.createCollection("new_collection_name", {
   }, [selectedCollection, isCreatingNew]);
 
   const fetchCollectionDetails = async () => {
-    if (!selectedCollection) return;
+    if (!selectedCollection || !effectiveWorkspaceId || !databaseId) return;
 
     try {
       setLoadingDetails(true);
-      const response = await fetch(
-        `/api/database/collections/${encodeURIComponent(
-          selectedCollection,
-        )}/info`,
+      const data = await fetchDatabaseCollectionInfo(
+        effectiveWorkspaceId,
+        databaseId,
+        selectedCollection,
       );
-      const data = await response.json();
 
-      if (data.success) {
-        setCollectionDetails(data.data);
-      }
+      setCollectionDetails(data);
     } catch (error) {
       console.error("Failed to fetch collection details:", error);
     } finally {

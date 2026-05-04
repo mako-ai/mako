@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Db } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
   requireWorkspace,
@@ -28,6 +29,80 @@ import { workspaceService } from "../services/workspace.service";
 import { promises as fsPromises } from "fs";
 
 const logger = loggers.db();
+
+type WorkspaceDatabaseRouteError = {
+  response: { success: false; error: string };
+  status: 400 | 404;
+};
+
+type WorkspaceDatabaseResult =
+  | WorkspaceDatabaseRouteError
+  | { database: IDatabaseConnection };
+
+type WorkspaceMongoDbResult = WorkspaceDatabaseRouteError | { db: Db };
+
+function isWorkspaceDatabaseRouteError(
+  result: WorkspaceDatabaseResult,
+): result is WorkspaceDatabaseRouteError {
+  return "response" in result;
+}
+
+function isWorkspaceMongoDbRouteError(
+  result: WorkspaceMongoDbResult,
+): result is WorkspaceDatabaseRouteError {
+  return "response" in result;
+}
+
+async function getWorkspaceDatabase(
+  workspaceId: Types.ObjectId,
+  databaseId: string,
+): Promise<WorkspaceDatabaseResult> {
+  if (!Types.ObjectId.isValid(databaseId)) {
+    return {
+      response: { success: false, error: "Invalid database ID" },
+      status: 400 as const,
+    };
+  }
+
+  const database = await DatabaseConnection.findOne({
+    _id: new Types.ObjectId(databaseId),
+    workspaceId,
+  });
+
+  if (!database) {
+    return {
+      response: { success: false, error: "Database not found" },
+      status: 404 as const,
+    };
+  }
+
+  if (database.type !== "mongodb") {
+    return {
+      response: {
+        success: false,
+        error: "This endpoint is only for MongoDB databases",
+      },
+      status: 400 as const,
+    };
+  }
+
+  return { database };
+}
+
+async function getWorkspaceMongoDb(
+  workspaceId: Types.ObjectId,
+  databaseId: string,
+): Promise<WorkspaceMongoDbResult> {
+  const result = await getWorkspaceDatabase(workspaceId, databaseId);
+  if (isWorkspaceDatabaseRouteError(result)) return result;
+
+  const connection = await databaseConnectionService.getConnection(
+    result.database,
+  );
+  return {
+    db: connection.db(result.database.connection.database),
+  };
+}
 
 function sanitizeDownloadFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
@@ -810,7 +885,9 @@ workspaceDatabaseRoutes.get(
         const connection =
           await databaseConnectionService.getConnection(database);
         const db = connection.db(database.connection.database);
-        const collections = await db.listCollections().toArray();
+        const collections = await db
+          .listCollections({ type: "collection" })
+          .toArray();
 
         return c.json({
           success: true,
@@ -865,6 +942,75 @@ workspaceDatabaseRoutes.get(
 );
 
 // Get collection info for MongoDB
+workspaceDatabaseRoutes.post(
+  "/:id/collections",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const databaseId = c.req.param("id");
+      const body = await c.req.json();
+
+      if (!body.name) {
+        return c.json(
+          { success: false, error: "Collection name is required" },
+          400,
+        );
+      }
+
+      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      if (isWorkspaceMongoDbRouteError(result)) {
+        return c.json(result.response, result.status);
+      }
+
+      const existingCollections = await result.db
+        .listCollections({ name: body.name })
+        .toArray();
+      if (existingCollections.length > 0) {
+        return c.json(
+          {
+            success: false,
+            error: `Collection '${body.name}' already exists`,
+          },
+          409,
+        );
+      }
+
+      const collection = await result.db.createCollection(
+        body.name,
+        body.options,
+      );
+
+      return c.json(
+        {
+          success: true,
+          message: "Collection created successfully",
+          data: {
+            name: collection.collectionName,
+            namespace: collection.namespace,
+            created: true,
+          },
+        },
+        201,
+      );
+    } catch (error) {
+      logger.error("Error creating collection", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to create collection",
+        },
+        500,
+      );
+    }
+  },
+);
+
 workspaceDatabaseRoutes.get(
   "/:id/collections/:name",
   unifiedAuthMiddleware,
@@ -926,6 +1072,7 @@ workspaceDatabaseRoutes.get(
         data: {
           name: collectionName,
           type: collections[0].type,
+          options: (collections[0] as any).options,
           stats: {
             count: stats.count,
             size: stats.size,
@@ -946,6 +1093,122 @@ workspaceDatabaseRoutes.get(
             error instanceof Error
               ? error.message
               : "Failed to get collection info",
+        },
+        500,
+      );
+    }
+  },
+);
+
+workspaceDatabaseRoutes.get(
+  "/:id/collections/:name/info",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const databaseId = c.req.param("id");
+      const collectionName = c.req.param("name");
+
+      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      if (isWorkspaceMongoDbRouteError(result)) {
+        return c.json(result.response, result.status);
+      }
+
+      const collections = await result.db
+        .listCollections({ name: collectionName })
+        .toArray();
+      if (collections.length === 0) {
+        return c.json(
+          { success: false, error: `Collection '${collectionName}' not found` },
+          404,
+        );
+      }
+
+      const collection = result.db.collection(collectionName);
+      const stats = await result.db.command({ collStats: collectionName });
+      const indexes = await collection.indexes();
+      const sampleDocuments = await collection.find({}).limit(5).toArray();
+
+      return c.json({
+        success: true,
+        data: {
+          name: collectionName,
+          type: collections[0].type,
+          options: (collections[0] as any).options,
+          stats: {
+            count: stats.count,
+            size: stats.size,
+            avgObjSize: stats.avgObjSize,
+            storageSize: stats.storageSize,
+            indexes: stats.nindexes,
+            totalIndexSize: stats.totalIndexSize,
+          },
+          indexes,
+          sampleDocuments,
+        },
+      });
+    } catch (error) {
+      logger.error("Error getting collection info", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get collection info",
+        },
+        500,
+      );
+    }
+  },
+);
+
+workspaceDatabaseRoutes.delete(
+  "/:id/collections/:name",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const databaseId = c.req.param("id");
+      const collectionName = c.req.param("name");
+
+      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      if (isWorkspaceMongoDbRouteError(result)) {
+        return c.json(result.response, result.status);
+      }
+
+      const existingCollections = await result.db
+        .listCollections({ name: collectionName })
+        .toArray();
+      if (existingCollections.length === 0) {
+        return c.json(
+          { success: false, error: `Collection '${collectionName}' not found` },
+          404,
+        );
+      }
+
+      const deleted = await result.db.dropCollection(collectionName);
+
+      return c.json({
+        success: true,
+        message: "Collection deleted successfully",
+        data: {
+          name: collectionName,
+          deleted,
+        },
+      });
+    } catch (error) {
+      logger.error("Error deleting collection", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to delete collection",
         },
         500,
       );
@@ -1007,6 +1270,206 @@ workspaceDatabaseRoutes.get(
         {
           success: false,
           error: error instanceof Error ? error.message : "Failed to get views",
+        },
+        500,
+      );
+    }
+  },
+);
+
+workspaceDatabaseRoutes.post(
+  "/:id/views",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const databaseId = c.req.param("id");
+      const body = await c.req.json();
+
+      if (!body.name || !body.viewOn || !body.pipeline) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "View name, viewOn (source collection), and pipeline are required",
+          },
+          400,
+        );
+      }
+
+      if (!Array.isArray(body.pipeline)) {
+        return c.json(
+          { success: false, error: "View pipeline must be an array" },
+          400,
+        );
+      }
+
+      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      if (isWorkspaceMongoDbRouteError(result)) {
+        return c.json(result.response, result.status);
+      }
+
+      const existingViews = await result.db
+        .listCollections({ name: body.name })
+        .toArray();
+      if (existingViews.length > 0) {
+        return c.json(
+          { success: false, error: `View '${body.name}' already exists` },
+          409,
+        );
+      }
+
+      const sourceCollections = await result.db
+        .listCollections({ name: body.viewOn })
+        .toArray();
+      if (sourceCollections.length === 0) {
+        return c.json(
+          {
+            success: false,
+            error: `Source collection '${body.viewOn}' does not exist`,
+          },
+          404,
+        );
+      }
+
+      await result.db.createCollection(body.name, {
+        viewOn: body.viewOn,
+        pipeline: body.pipeline,
+        ...body.options,
+      });
+
+      return c.json(
+        {
+          success: true,
+          message: "View created successfully",
+          data: {
+            name: body.name,
+            viewOn: body.viewOn,
+            pipeline: body.pipeline,
+            created: true,
+          },
+        },
+        201,
+      );
+    } catch (error) {
+      logger.error("Error creating view", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to create view",
+        },
+        500,
+      );
+    }
+  },
+);
+
+workspaceDatabaseRoutes.get(
+  "/:id/views/:name/info",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const databaseId = c.req.param("id");
+      const viewName = c.req.param("name");
+
+      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      if (isWorkspaceMongoDbRouteError(result)) {
+        return c.json(result.response, result.status);
+      }
+
+      const views = await result.db
+        .listCollections({ name: viewName, type: "view" })
+        .toArray();
+      if (views.length === 0) {
+        return c.json(
+          { success: false, error: `View '${viewName}' not found` },
+          404,
+        );
+      }
+
+      const viewInfo = views[0];
+      const collection = result.db.collection(viewName);
+      const stats = await result.db.command({ collStats: viewName });
+      const sampleDocuments = await collection.find({}).limit(5).toArray();
+
+      return c.json({
+        success: true,
+        data: {
+          name: viewName,
+          type: viewInfo.type,
+          options: (viewInfo as any).options,
+          viewOn: (viewInfo as any).options?.viewOn,
+          pipeline: (viewInfo as any).options?.pipeline,
+          stats: {
+            count: stats.count,
+            size: stats.size,
+            avgObjSize: stats.avgObjSize,
+          },
+          sampleDocuments,
+        },
+      });
+    } catch (error) {
+      logger.error("Error getting view info", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to get view info",
+        },
+        500,
+      );
+    }
+  },
+);
+
+workspaceDatabaseRoutes.delete(
+  "/:id/views/:name",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  requireWorkspaceRole(["owner", "admin", "member"]),
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspace = c.get("workspace");
+      const databaseId = c.req.param("id");
+      const viewName = c.req.param("name");
+
+      const result = await getWorkspaceMongoDb(workspace._id, databaseId);
+      if (isWorkspaceMongoDbRouteError(result)) {
+        return c.json(result.response, result.status);
+      }
+
+      const existingViews = await result.db
+        .listCollections({ name: viewName, type: "view" })
+        .toArray();
+      if (existingViews.length === 0) {
+        return c.json(
+          { success: false, error: `View '${viewName}' not found` },
+          404,
+        );
+      }
+
+      const deleted = await result.db.dropCollection(viewName);
+
+      return c.json({
+        success: true,
+        message: "View deleted successfully",
+        data: {
+          name: viewName,
+          deleted,
+        },
+      });
+    } catch (error) {
+      logger.error("Error deleting view", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to delete view",
         },
         500,
       );

@@ -23,6 +23,8 @@ import {
 } from "@mui/icons-material";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
+import { useWorkspace } from "../contexts/workspace-context";
+import { useSchemaStore } from "../store/schemaStore";
 
 interface ViewDefinition {
   name: string;
@@ -39,6 +41,8 @@ interface ViewEditorProps {
   onDelete?: (viewName: string) => void;
   isExecuting: boolean;
   isSaving: boolean;
+  databaseId?: string;
+  workspaceId?: string;
 }
 
 export interface ViewEditorRef {
@@ -62,12 +66,17 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
       onDelete,
       isExecuting,
       isSaving,
+      databaseId,
+      workspaceId,
     }: ViewEditorProps,
     ref: React.Ref<ViewEditorRef>,
   ) {
     const editorRef = useRef<any>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const { effectiveMode } = useTheme();
+    const { currentWorkspace } = useWorkspace();
+    const fetchDatabaseCollections = useSchemaStore(s => s.fetchCollections);
+    const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
     const [currentContent, setCurrentContent] = useState("");
     const [isCreatingNew, setIsCreatingNew] = useState(false);
     const [collections, setCollections] = useState<string[]>([]);
@@ -77,18 +86,23 @@ const ViewEditor = forwardRef<ViewEditorRef, ViewEditorProps>(
     // Fetch collections for placeholder
     useEffect(() => {
       const fetchCollections = async () => {
+        if (!effectiveWorkspaceId || !databaseId) {
+          setCollections([]);
+          return;
+        }
+
         try {
-          const response = await fetch("/api/database/collections");
-          const data = await response.json();
-          if (data.success) {
-            setCollections(data.data.map((col: any) => col.name));
-          }
+          const data = await fetchDatabaseCollections(
+            effectiveWorkspaceId,
+            databaseId,
+          );
+          setCollections(data.map(col => col.name));
         } catch (err) {
           console.error("Failed to fetch collections:", err);
         }
       };
       fetchCollections();
-    }, []);
+    }, [databaseId, effectiveWorkspaceId, fetchDatabaseCollections]);
 
     // Update current content when viewDefinition changes or when creating new
     useEffect(() => {

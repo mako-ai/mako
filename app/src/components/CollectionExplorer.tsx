@@ -17,13 +17,11 @@ import {
   Refresh as RefreshIcon,
   Add as AddIcon,
 } from "@mui/icons-material";
-
-interface CollectionInfo {
-  name: string;
-  type: string;
-  options: any;
-  info: any;
-}
+import { useWorkspace } from "../contexts/workspace-context";
+import {
+  useSchemaStore,
+  type DatabaseCollectionInfo as CollectionInfo,
+} from "../store/schemaStore";
 
 interface CollectionExplorerProps {
   onCollectionSelect: (
@@ -33,6 +31,8 @@ interface CollectionExplorerProps {
   selectedCollection?: string;
   onCreateNew?: () => void;
   onCollectionDoubleClick?: (collection: CollectionInfo) => void;
+  databaseId?: string;
+  workspaceId?: string;
 }
 
 const CollectionExplorer: React.FC<CollectionExplorerProps> = ({
@@ -40,37 +40,45 @@ const CollectionExplorer: React.FC<CollectionExplorerProps> = ({
   selectedCollection,
   onCreateNew,
   onCollectionDoubleClick,
+  databaseId,
+  workspaceId,
 }) => {
+  const { currentWorkspace } = useWorkspace();
+  const fetchDatabaseCollections = useSchemaStore(s => s.fetchCollections);
+  const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchCollections = useCallback(async () => {
+    if (!effectiveWorkspaceId || !databaseId) {
+      setCollections([]);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
 
-      const response = await fetch("/api/database/collections");
-      const data = await response.json();
+      const data = await fetchDatabaseCollections(
+        effectiveWorkspaceId,
+        databaseId,
+      );
 
-      if (data.success) {
-        // Debug: raw collections data can be inspected here if needed
-        // Sort collections alphabetically by name
-        const sortedCollections = data.data.sort(
-          (a: CollectionInfo, b: CollectionInfo) =>
-            a.name.localeCompare(b.name),
-        );
-        setCollections(sortedCollections);
-      } else {
-        setError(data.error || "Failed to fetch collections");
-      }
+      // Debug: raw collections data can be inspected here if needed
+      // Sort collections alphabetically by name
+      const sortedCollections = data.sort(
+        (a: CollectionInfo, b: CollectionInfo) => a.name.localeCompare(b.name),
+      );
+      setCollections(sortedCollections);
     } catch (err) {
       setError("Failed to connect to the database API");
       console.error("Error fetching collections:", err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [databaseId, effectiveWorkspaceId, fetchDatabaseCollections]);
 
   useEffect(() => {
     fetchCollections();

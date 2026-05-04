@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Dialog,
   DialogTitle,
@@ -18,12 +18,16 @@ import {
 import { Close as CloseIcon } from "@mui/icons-material";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
+import { useWorkspace } from "../contexts/workspace-context";
+import { useSchemaStore } from "../store/schemaStore";
 
 interface CreateViewDialogProps {
   open: boolean;
   onClose: () => void;
   onCreateView: (viewDefinition: any) => void;
   isCreating: boolean;
+  databaseId?: string;
+  workspaceId?: string;
 }
 
 const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
@@ -31,8 +35,13 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
   onClose,
   onCreateView,
   isCreating,
+  databaseId,
+  workspaceId,
 }) => {
   const { effectiveMode } = useTheme();
+  const { currentWorkspace } = useWorkspace();
+  const fetchDatabaseCollections = useSchemaStore(s => s.fetchCollections);
+  const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
   const [viewName, setViewName] = useState("");
   const [viewOn, setViewOn] = useState("");
   const [collections, setCollections] = useState<string[]>([]);
@@ -40,6 +49,23 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
     '[\n  {\n    "$match": {\n      // Add your match criteria here\n    }\n  }\n]',
   );
   const [error, setError] = useState<string | null>(null);
+
+  const fetchCollections = useCallback(async () => {
+    if (!effectiveWorkspaceId || !databaseId) {
+      setCollections([]);
+      return;
+    }
+
+    try {
+      const data = await fetchDatabaseCollections(
+        effectiveWorkspaceId,
+        databaseId,
+      );
+      setCollections(data.map(col => col.name));
+    } catch (err) {
+      console.error("Failed to fetch collections:", err);
+    }
+  }, [databaseId, effectiveWorkspaceId, fetchDatabaseCollections]);
 
   useEffect(() => {
     if (open) {
@@ -52,19 +78,7 @@ const CreateViewDialog: React.FC<CreateViewDialogProps> = ({
       );
       setError(null);
     }
-  }, [open]);
-
-  const fetchCollections = async () => {
-    try {
-      const response = await fetch("/api/database/collections");
-      const data = await response.json();
-      if (data.success) {
-        setCollections(data.data.map((col: any) => col.name));
-      }
-    } catch (err) {
-      console.error("Failed to fetch collections:", err);
-    }
-  };
+  }, [fetchCollections, open]);
 
   const validatePipeline = (pipelineStr: string): any[] | null => {
     try {

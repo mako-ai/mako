@@ -21,28 +21,30 @@ import {
   ExpandMore,
 } from "@mui/icons-material";
 import { useExplorerStore } from "../store/explorerStore";
-
-interface ViewInfo {
-  name: string;
-  type: string;
-  options: {
-    viewOn?: string;
-    pipeline?: any[];
-  };
-  info: any;
-}
+import { useWorkspace } from "../contexts/workspace-context";
+import {
+  useSchemaStore,
+  type DatabaseViewInfo as ViewInfo,
+} from "../store/schemaStore";
 
 interface ViewExplorerProps {
   onViewSelect: (viewName: string, viewDefinition: any) => void;
   selectedView?: string;
   onCreateNew?: () => void;
+  databaseId?: string;
+  workspaceId?: string;
 }
 
 const ViewExplorer: React.FC<ViewExplorerProps> = ({
   onViewSelect,
   selectedView,
   onCreateNew,
+  databaseId,
+  workspaceId,
 }) => {
+  const { currentWorkspace } = useWorkspace();
+  const fetchDatabaseViews = useSchemaStore(s => s.fetchViews);
+  const effectiveWorkspaceId = workspaceId || currentWorkspace?.id;
   const [views, setViews] = useState<ViewInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -53,29 +55,30 @@ const ViewExplorer: React.FC<ViewExplorerProps> = ({
   const expandCollection = useExplorerStore(state => state.expandCollection);
 
   const fetchViews = useCallback(async () => {
+    if (!effectiveWorkspaceId || !databaseId) {
+      setViews([]);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setError(null);
 
-      const response = await fetch("/api/database/views");
-      const data = await response.json();
+      const data = await fetchDatabaseViews(effectiveWorkspaceId, databaseId);
 
-      if (data.success) {
-        // Debug: raw views data can be inspected here if needed
-        setViews(data.data);
+      // Debug: raw views data can be inspected here if needed
+      setViews(data);
 
-        // Keep all collections collapsed by default
-        // The global state will handle the default collapsed state
-      } else {
-        setError(data.error || "Failed to fetch views");
-      }
+      // Keep all collections collapsed by default
+      // The global state will handle the default collapsed state
     } catch (err) {
       setError("Failed to connect to the database API");
       console.error("Error fetching views:", err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [databaseId, effectiveWorkspaceId, fetchDatabaseViews]);
 
   useEffect(() => {
     fetchViews();
