@@ -49,7 +49,7 @@ Saved consoles can be executed programmatically. This is useful for building das
 
 ### Authentication
 
-Create an API key in workspace settings. Include it in requests:
+Create an API key in **Workspace settings → API Keys**. The same page shows your **Workspace ID** with a copy button — substitute it for `WORKSPACE_ID` in the examples below. Include the key in requests:
 
 ```bash
 Authorization: Bearer revops_YOUR_API_KEY
