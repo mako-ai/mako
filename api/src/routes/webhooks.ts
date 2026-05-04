@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { Types } from "mongoose";
 import {
   Flow,
   WebhookEvent,
@@ -13,7 +14,10 @@ import {
   resolveConfiguredEntities,
 } from "../sync-cdc/entity-selection";
 import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
-import { loggers } from "../logging";
+import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
+import type { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { workspaceService } from "../services/workspace.service";
+import { enrichContextWithWorkspace, loggers } from "../logging";
 
 const logger = loggers.inngest("webhook");
 
@@ -28,6 +32,34 @@ function isCdcFlow(
     Boolean(flow.tableDestination?.connectionId) &&
     hasCdcDestinationAdapter(destinationType)
   );
+}
+
+async function requireWebhookTestAccess(
+  c: AuthenticatedContext,
+  workspaceId: string,
+) {
+  const authenticatedWorkspace = c.get("workspace");
+  const user = c.get("user");
+
+  if (authenticatedWorkspace) {
+    if (authenticatedWorkspace._id.toString() !== workspaceId) {
+      return c.json(
+        { error: "API key not authorized for this workspace" },
+        403,
+      );
+    }
+  } else if (user) {
+    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
+    if (!hasAccess) {
+      return c.json({ error: "Access denied to workspace" }, 403);
+    }
+  } else {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  enrichContextWithWorkspace(workspaceId);
+  c.set("workspaceId", workspaceId);
+  return null;
 }
 
 /**
@@ -250,82 +282,96 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
  * Test webhook endpoint
  * Sends a test event to verify webhook configuration
  */
-router.post("/webhooks/:workspaceId/:flowId/test", async c => {
-  const { workspaceId, flowId } = c.req.param();
+router.post(
+  "/webhooks/:workspaceId/:flowId/test",
+  unifiedAuthMiddleware,
+  async (c: AuthenticatedContext) => {
+    const { workspaceId, flowId } = c.req.param();
 
-  try {
-    const flow = await Flow.findOne({
-      _id: flowId,
-      workspaceId: workspaceId,
-      type: "webhook",
-    });
+    try {
+      if (
+        !Types.ObjectId.isValid(workspaceId) ||
+        !Types.ObjectId.isValid(flowId)
+      ) {
+        return c.json({ error: "Invalid webhook test endpoint" }, 400);
+      }
 
-    if (!flow) {
-      return c.json({ error: "Webhook flow not found" });
-    }
+      const accessDenied = await requireWebhookTestAccess(c, workspaceId);
+      if (accessDenied) return accessDenied;
 
-    // Create a test event
-    const testEvent = {
-      id: `test_${uuidv4()}`,
-      type: "test.webhook",
-      created: Math.floor(Date.now() / 1000),
-      data: {
-        message: "This is a test webhook event",
-        timestamp: new Date().toISOString(),
-      },
-    };
+      const flow = await Flow.findOne({
+        _id: flowId,
+        workspaceId: workspaceId,
+        type: "webhook",
+      });
 
-    // Store the test event
-    const webhookEvent = new WebhookEvent({
-      flowId,
-      workspaceId,
-      eventId: testEvent.id,
-      eventType: testEvent.type,
-      receivedAt: new Date(),
-      status: "pending",
-      attempts: 0,
-      rawPayload: testEvent,
-    });
+      if (!flow) {
+        return c.json({ error: "Webhook flow not found" });
+      }
 
-    await webhookEvent.save();
+      // Create a test event
+      const testEvent = {
+        id: `test_${uuidv4()}`,
+        type: "test.webhook",
+        created: Math.floor(Date.now() / 1000),
+        data: {
+          message: "This is a test webhook event",
+          timestamp: new Date().toISOString(),
+        },
+      };
 
-    const destConn = flow.destinationDatabaseId
-      ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-          .select("type")
-          .lean()
-      : null;
+      // Store the test event
+      const webhookEvent = new WebhookEvent({
+        flowId,
+        workspaceId,
+        eventId: testEvent.id,
+        eventType: testEvent.type,
+        receivedAt: new Date(),
+        status: "pending",
+        attempts: 0,
+        rawPayload: testEvent,
+      });
 
-    if (isCdcFlow(flow, destConn?.type)) {
+      await webhookEvent.save();
+
+      const destConn = flow.destinationDatabaseId
+        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+      if (isCdcFlow(flow, destConn?.type)) {
+        return c.json({
+          success: true,
+          message:
+            "Test webhook saved — will be ingested on next cron cycle (<=2 min)",
+          eventId: testEvent.id,
+        });
+      }
+
+      await enqueueWebhookProcess({
+        flowId,
+        workspaceId,
+        eventId: webhookEvent.eventId,
+        isTest: true,
+        flow: {
+          syncEngine: flow.syncEngine,
+          destinationDatabaseId: flow.destinationDatabaseId,
+          tableDestination: flow.tableDestination,
+        },
+        destinationTypeHint: destConn?.type,
+      });
+
       return c.json({
         success: true,
-        message:
-          "Test webhook saved — will be ingested on next cron cycle (<=2 min)",
+        message: "Test webhook sent successfully",
         eventId: testEvent.id,
       });
+    } catch (error) {
+      logger.error("Test webhook error", { error });
+      return c.json({ error: "Failed to send test webhook" }, 500);
     }
-
-    await enqueueWebhookProcess({
-      flowId,
-      workspaceId,
-      eventId: webhookEvent.eventId,
-      isTest: true,
-      flow: {
-        syncEngine: flow.syncEngine,
-        destinationDatabaseId: flow.destinationDatabaseId,
-        tableDestination: flow.tableDestination,
-      },
-      destinationTypeHint: destConn?.type,
-    });
-
-    return c.json({
-      success: true,
-      message: "Test webhook sent successfully",
-      eventId: testEvent.id,
-    });
-  } catch (error) {
-    logger.error("Test webhook error", { error });
-    return c.json({ error: "Failed to send test webhook" }, 500);
-  }
-});
+  },
+);
 
 export { router as webhookRoutes };

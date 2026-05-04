@@ -36,6 +36,27 @@ export interface TreeNode {
   metadata?: Record<string, unknown>;
 }
 
+export interface DatabaseCollectionInfo {
+  name: string;
+  type: string;
+  options?: {
+    capped?: boolean;
+    [key: string]: unknown;
+  };
+  info?: unknown;
+}
+
+export interface DatabaseViewInfo {
+  name: string;
+  type: string;
+  options: {
+    viewOn?: string;
+    pipeline?: unknown[];
+    [key: string]: unknown;
+  };
+  info?: unknown;
+}
+
 /** Column information for autocomplete */
 export interface ColumnInfo {
   name: string;
@@ -166,6 +187,19 @@ interface SchemaState {
     payload: Record<string, unknown>,
     databaseId?: string,
   ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
+  fetchCollections: (
+    workspaceId: string,
+    connectionId: string,
+  ) => Promise<DatabaseCollectionInfo[]>;
+  fetchCollectionInfo: (
+    workspaceId: string,
+    connectionId: string,
+    collectionName: string,
+  ) => Promise<unknown | null>;
+  fetchViews: (
+    workspaceId: string,
+    connectionId: string,
+  ) => Promise<DatabaseViewInfo[]>;
 
   // === Console Template ===
   fetchConsoleTemplate: (
@@ -667,6 +701,56 @@ export const useSchemaStore = create<SchemaState>()(
                 : "Failed to save database",
           };
         }
+      },
+
+      fetchCollections: async (workspaceId, connectionId) => {
+        const res = await apiClient.get<{
+          success: boolean;
+          data: DatabaseCollectionInfo[];
+          error?: string;
+        }>(`/workspaces/${workspaceId}/databases/${connectionId}/collections`);
+
+        if (!res.success) {
+          throw new Error(res.error || "Failed to fetch collections");
+        }
+
+        return res.data;
+      },
+
+      fetchCollectionInfo: async (
+        workspaceId,
+        connectionId,
+        collectionName,
+      ) => {
+        const res = await apiClient.get<{
+          success: boolean;
+          data: unknown;
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/databases/${connectionId}/collections/${encodeURIComponent(
+            collectionName,
+          )}/info`,
+        );
+
+        if (!res.success) {
+          throw new Error(res.error || "Failed to fetch collection info");
+        }
+
+        return res.data;
+      },
+
+      fetchViews: async (workspaceId, connectionId) => {
+        const res = await apiClient.get<{
+          success: boolean;
+          data: DatabaseViewInfo[];
+          error?: string;
+        }>(`/workspaces/${workspaceId}/databases/${connectionId}/views`);
+
+        if (!res.success) {
+          throw new Error(res.error || "Failed to fetch views");
+        }
+
+        return res.data;
       },
 
       fetchConsoleTemplate: async (
