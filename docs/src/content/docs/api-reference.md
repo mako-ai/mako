@@ -17,6 +17,8 @@ Two authentication methods:
 Authorization: Bearer revops_YOUR_API_KEY
 ```
 
+Create API keys in **Workspace settings → API Keys**. The same page surfaces your **Workspace ID** (the value to substitute for `:wid` / `:workspaceId` / `WORKSPACE_ID` below) with a copy button.
+
 ### Auth Endpoints
 
 | Method | Endpoint             | Description                     |
