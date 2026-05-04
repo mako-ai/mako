@@ -4,6 +4,7 @@
  */
 
 import { Hono } from "hono";
+import { attachmentAsDataUri, MAKO_LOGO_ATTACHMENT } from "../emails/assets";
 import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
 import type { NotificationOutboundPayload } from "../services/flow-run-notification.types";
 import { renderEmail } from "../emails/render";
@@ -30,9 +31,7 @@ function sampleRunNotificationPayload(
     durationMs: trigger === "failure" ? 8420 : 12540,
     rowCount: trigger === "failure" ? undefined : 12840,
     errorMessage:
-      trigger === "failure"
-        ? "connection timeout after 8000ms"
-        : undefined,
+      trigger === "failure" ? "connection timeout after 8000ms" : undefined,
     triggerType: "schedule",
     workspaceId: "demo-workspace",
     deepLink,
@@ -44,7 +43,14 @@ devEmailPreviewRoutes.get("/run-notification", async c => {
   const trigger = raw === "failure" ? "failure" : "success";
   const payload = sampleRunNotificationPayload(trigger);
   const { html } = await renderEmail(RunNotificationTemplate, payload);
-  return c.html(html);
+  // Browsers can't resolve `cid:` URLs (those are SendGrid-only). Inline the
+  // attachment as a `data:` URI so the preview shows the same logo a recipient
+  // would see in their inbox.
+  const previewHtml = html.replaceAll(
+    `cid:${MAKO_LOGO_ATTACHMENT.contentId}`,
+    attachmentAsDataUri(MAKO_LOGO_ATTACHMENT),
+  );
+  return c.html(previewHtml);
 });
 
 export { devEmailPreviewRoutes };

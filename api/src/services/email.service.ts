@@ -8,6 +8,7 @@
  *   (never dangerouslySetInnerHTML).
  */
 
+import type { InlineAttachment } from "../emails/assets";
 import { getLogger } from "../logging";
 
 const logger = getLogger(["email"]);
@@ -33,6 +34,8 @@ type SendGridMailData =
       subject: string;
       html: string;
       text: string;
+      /** Embedded as inline attachments referenced via `<img src="cid:..."/>`. */
+      inlineAttachments?: InlineAttachment[];
     };
 
 interface SendGridResponse {
@@ -133,6 +136,17 @@ async function sendMail(data: SendGridMailData): Promise<SendGridResponse> {
             { type: "text/plain", value: data.text },
             { type: "text/html", value: data.html },
           ],
+          ...(data.inlineAttachments && data.inlineAttachments.length > 0
+            ? {
+                attachments: data.inlineAttachments.map(att => ({
+                  content: att.contentBase64,
+                  type: att.contentType,
+                  filename: att.filename,
+                  disposition: "inline",
+                  content_id: att.contentId,
+                })),
+              }
+            : {}),
         };
 
   const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
@@ -226,12 +240,10 @@ export class EmailService {
     };
 
     if (!config.apiKey) {
-      logEmailForDev(
-        "Verification",
-        to,
-        "Verify your email address",
-        { kind: "template", templateData },
-      );
+      logEmailForDev("Verification", to, "Verify your email address", {
+        kind: "template",
+        templateData,
+      });
       logger.info("Verification email logged (dev mode)", { to });
       return;
     }
@@ -298,7 +310,12 @@ export class EmailService {
    */
   async sendFlowRunNotificationEmails(
     recipients: string[],
-    body: { html: string; text: string; subject: string },
+    body: {
+      html: string;
+      text: string;
+      subject: string;
+      inlineAttachments?: InlineAttachment[];
+    },
   ): Promise<void> {
     const config = getConfig();
 
@@ -323,10 +340,12 @@ export class EmailService {
         subject: body.subject,
         html: body.html,
         text: body.text,
+        inlineAttachments: body.inlineAttachments,
       });
     }
     logger.info("Flow run notification emails sent", {
       count: recipients.length,
+      inlineAttachmentCount: body.inlineAttachments?.length ?? 0,
     });
   }
 }

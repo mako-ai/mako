@@ -4,6 +4,7 @@ import {
   Head,
   Hr,
   Html,
+  Img,
   Preview,
   Section,
   Text,
@@ -18,12 +19,22 @@ export interface MakoLayoutProps {
 }
 
 /**
- * Text wordmark — Gmail strips `data:` and many corporate clients block remote
- * images by default, so styled HTML text is the only thing guaranteed to render
- * across every inbox.
+ * Logo is referenced via a Content-ID (`cid:`) URL and shipped as an inline
+ * SendGrid attachment (see `api/src/emails/assets/index.ts` and
+ * `email.service.ts`). This works in Gmail, Apple Mail, iOS Mail and Outlook
+ * web without depending on a public asset host. Clients that don't render SVG
+ * (e.g. Outlook desktop on Windows) fall back to the styled `Mako` alt text.
  */
 function MakoWordmark() {
-  return <Text style={wordmarkStyle}>Mako</Text>;
+  return (
+    <Img
+      src="cid:mako-logo"
+      alt="Mako"
+      width={36}
+      height={32}
+      style={logoImgStyle}
+    />
+  );
 }
 
 export function MakoLayout({
@@ -43,9 +54,7 @@ export function MakoLayout({
           {children}
           <Hr style={hrStyle} />
           <Section style={footerStyle}>
-            {footerNote ? (
-              <Text style={mutedStyle}>{footerNote}</Text>
-            ) : null}
+            {footerNote ? <Text style={mutedStyle}>{footerNote}</Text> : null}
             <Text style={mutedStyle}>
               You receive this email because a notification rule was configured
               for this workspace in Mako. Adjust rules from the app under Run
@@ -78,15 +87,14 @@ const headerStyle = {
   marginBottom: "24px",
 };
 
-const wordmarkStyle = {
+const logoImgStyle = {
+  display: "block",
+  // alt text styling — only seen when SVG fails to render
   color: "#111827",
-  fontFamily:
-    '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Ubuntu,sans-serif',
   fontSize: "20px",
   fontWeight: 700,
-  letterSpacing: "-0.01em",
-  lineHeight: "24px",
-  margin: 0,
+  fontFamily:
+    '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Ubuntu,sans-serif',
 };
 
 const hrStyle = {
