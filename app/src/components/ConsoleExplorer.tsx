@@ -37,6 +37,7 @@ import {
   type ConsoleEntry,
   type ConsoleSearchResult,
 } from "../store/consoleTreeStore";
+import { useConsoleStore } from "../store/consoleStore";
 import { useConsoleContentStore } from "../store/consoleContentStore";
 import { filterTree } from "../store/lib/tree-helpers";
 import FileExplorerDialog from "./FileExplorerDialog";
@@ -77,6 +78,9 @@ function ConsoleExplorer(
   const clearSearch = useConsoleTreeStore(state => state.clearSearch);
   const searchResults = useConsoleTreeStore(state => state.searchResults);
   const searchLoading = useConsoleTreeStore(state => state.searchLoading);
+  const updateTabFilePath = useConsoleStore(state => state.updateFilePath);
+  const updateTabTitle = useConsoleStore(state => state.updateTitle);
+  const updateTabAccess = useConsoleStore(state => state.updateAccess);
   const myConsolesMap = useConsoleTreeStore(state => state.myConsoles);
   const sharedWithWorkspaceMap = useConsoleTreeStore(
     state => state.sharedWithWorkspace,
@@ -311,6 +315,37 @@ function ConsoleExplorer(
     return null;
   };
 
+  const getSectionForItem = (item: ConsoleEntry): "my" | "workspace" => {
+    if (!item.id) return "my";
+    const inWorkspace = findParentFolderId(sharedWithWorkspace, item.id);
+    return inWorkspace !== undefined ? "workspace" : "my";
+  };
+
+  const findFolderPathById = (
+    nodes: ConsoleEntry[],
+    folderId: string,
+  ): string | null => {
+    for (const node of nodes) {
+      if (node.id === folderId && node.isDirectory) return node.path;
+      if (node.isDirectory && node.children) {
+        const found = findFolderPathById(node.children, folderId);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const getPathForMoveTarget = (
+    targetFolderId: string | null,
+    section: "my" | "workspace",
+    itemName: string,
+  ): string => {
+    if (!targetFolderId) return itemName;
+    const tree = section === "workspace" ? sharedWithWorkspace : myConsoles;
+    const folderPath = findFolderPathById(tree, targetFolderId);
+    return folderPath ? `${folderPath}/${itemName}` : itemName;
+  };
+
   const handleMoveTo = (item: ConsoleEntry) => {
     setSelectedItem(item);
     setExplorerDialogOpen(true);
@@ -319,6 +354,7 @@ function ConsoleExplorer(
   const handleMoveConfirm = async (
     targetFolderId: string | null,
     newName?: string,
+    section: "my" | "workspace" = "my",
   ) => {
     if (!currentWorkspace || !selectedItem?.id) return;
 
@@ -333,9 +369,33 @@ function ConsoleExplorer(
     }
 
     if (selectedItem.isDirectory) {
-      await moveFolder(currentWorkspace.id, selectedItem.id, targetFolderId);
+      await moveFolder(
+        currentWorkspace.id,
+        selectedItem.id,
+        targetFolderId,
+        section === "workspace" ? "workspace" : "private",
+      );
     } else {
-      await moveConsole(currentWorkspace.id, selectedItem.id, targetFolderId);
+      const success = await moveConsole(
+        currentWorkspace.id,
+        selectedItem.id,
+        targetFolderId,
+        section === "workspace" ? "workspace" : "private",
+      );
+      if (success) {
+        const nextName = newName || selectedItem.name;
+        const nextPath = getPathForMoveTarget(
+          targetFolderId,
+          section,
+          nextName,
+        );
+        updateTabFilePath(selectedItem.id, nextPath);
+        updateTabTitle(selectedItem.id, nextPath);
+        updateTabAccess(
+          selectedItem.id,
+          section === "workspace" ? "workspace" : "private",
+        );
+      }
     }
 
     setExplorerDialogOpen(false);
@@ -636,6 +696,7 @@ function ConsoleExplorer(
         initialFolderId={
           selectedItem ? getParentFolderIdForItem(selectedItem) : null
         }
+        initialSection={selectedItem ? getSectionForItem(selectedItem) : "my"}
       />
     </>
   );

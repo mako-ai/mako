@@ -61,6 +61,7 @@ interface ConsoleActions {
     databaseName?: string,
   ) => void;
   updateFilePath: (id: string, filePath: string) => void;
+  updateAccess: (id: string, access?: "private" | "workspace") => void;
   updateSavedState: (
     id: string,
     isSaved: boolean,
@@ -98,6 +99,7 @@ interface ConsoleActions {
     chartSpec?: Record<string, unknown>,
     resultsViewMode?: string,
     comment?: string,
+    access?: "private" | "workspace",
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -417,6 +419,15 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
         }),
 
+      updateAccess: (id, access) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            if (tab.access === access) return;
+            tab.access = access;
+          }
+        }),
+
       updateSavedState: (id, isSaved, savedStateHash) =>
         set(state => {
           const tab = state.tabs[id];
@@ -612,6 +623,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         chartSpec,
         resultsViewMode,
         comment,
+        access,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
@@ -631,6 +643,9 @@ export const useConsoleStore = create<ConsoleStore>()(
                 chartSpec: chartSpec ?? null,
                 resultsViewMode,
                 comment: comment ?? "",
+                access,
+                isPrivate:
+                  access === undefined ? undefined : access === "private",
               }),
             },
           );
