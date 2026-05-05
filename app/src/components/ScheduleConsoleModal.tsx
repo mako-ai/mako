@@ -196,8 +196,7 @@ export default function ScheduleConsoleModal({
 
   const isValid = Boolean(cron.trim()) && previewRuns.length > 0;
 
-  const title =
-    mode === "create" ? "Create scheduled query" : "Update scheduled query";
+  const title = mode === "create" ? "Schedule query" : "Update scheduled query";
 
   return (
     <Drawer
@@ -397,7 +396,7 @@ export default function ScheduleConsoleModal({
         </Box>
         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
           <Button onClick={onClose}>Cancel</Button>
-          {mode === "update" && onRunNow && (
+          {onRunNow && (
             <Button onClick={handleRunNow} disabled={isRunningNow}>
               Run now
             </Button>

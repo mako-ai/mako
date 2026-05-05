@@ -1432,6 +1432,9 @@ function Editor({
       if (!response.success) {
         throw new Error(response.error || "Failed to run scheduled query");
       }
+      setTabBottomPanel(prev => ({ ...prev, [tabId]: "runs" }));
+      setSnackbarMessage("Async query run queued");
+      setSnackbarOpen(true);
       await loadScheduledRunsForTab(tabId);
     },
     [currentWorkspace, runScheduledNow, loadScheduledRunsForTab],
@@ -2246,7 +2249,7 @@ function Editor({
                                 <Tab
                                   value="runs"
                                   label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
-                                  disabled={!tab.schedule}
+                                  disabled={!tab.isSaved}
                                   disableRipple
                                   sx={{
                                     minHeight: 36,
@@ -2509,7 +2512,7 @@ function Editor({
               : undefined
           }
           onRunNow={
-            scheduleModalMode === "update" && scheduleModalHasSchedule
+            scheduleModalTab.isSaved
               ? async () => handleRunScheduledNow(scheduleModalTab.id)
               : undefined
           }
