@@ -35,8 +35,12 @@ interface FileExplorerDialogProps {
   defaultName?: string;
   isSaving?: boolean;
 
-  /** move mode: called with (targetFolderId, newName) */
-  onMove?: (targetFolderId: string | null, newName?: string) => void;
+  /** move mode: called with (targetFolderId, newName, section) */
+  onMove?: (
+    targetFolderId: string | null,
+    newName?: string,
+    section?: "my" | "workspace",
+  ) => void;
   itemName?: string;
   isDirectory?: boolean;
 
@@ -45,6 +49,7 @@ interface FileExplorerDialogProps {
 
   /** Pre-select this folder on open (e.g. the item's current parent) */
   initialFolderId?: string | null;
+  initialSection?: "my" | "workspace";
 }
 
 export default function FileExplorerDialog({
@@ -58,6 +63,7 @@ export default function FileExplorerDialog({
   itemName = "",
   onNewFolder,
   initialFolderId,
+  initialSection,
   isDirectory = false,
 }: FileExplorerDialogProps) {
   const { currentWorkspace } = useWorkspace();
@@ -83,10 +89,10 @@ export default function FileExplorerDialog({
       setConsoleName(effectiveName);
       setFolderName("");
       setSelectedFolderId(initialFolderId ?? null);
-      setSelectedSection("my");
+      setSelectedSection(initialSection ?? "my");
       setOverwriteConfirm(false);
     }
-  }, [open, effectiveName, initialFolderId]);
+  }, [open, effectiveName, initialFolderId, initialSection]);
 
   const handleLocationChange = (
     folderId: string | null,
@@ -156,7 +162,11 @@ export default function FileExplorerDialog({
     } else if (mode === "move") {
       const newName = consoleName.trim();
       const nameChanged = newName && newName !== itemName;
-      onMove?.(selectedFolderId, nameChanged ? newName : undefined);
+      onMove?.(
+        selectedFolderId,
+        nameChanged ? newName : undefined,
+        selectedSection,
+      );
     } else if (mode === "new-folder") {
       if (!folderName.trim()) return;
       onNewFolder?.(selectedFolderId, folderName.trim());

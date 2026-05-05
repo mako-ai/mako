@@ -553,6 +553,7 @@ consoleRoutes.post("/", async (c: Context) => {
       description,
       language,
       isPrivate,
+      access,
     } = body;
     const user = c.get("user");
 
@@ -641,6 +642,7 @@ consoleRoutes.post("/", async (c: Context) => {
         description,
         language,
         isPrivate,
+        access,
       },
     );
 
@@ -856,6 +858,22 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         if (body.resultsViewMode !== undefined) {
           setFields.resultsViewMode = body.resultsViewMode;
         }
+        if (body.access !== undefined) {
+          setFields.access = body.access;
+          setFields.isPrivate = body.access === "private";
+        }
+
+        const setOnInsertFields: Record<string, any> = {
+          createdBy: user.id,
+          owner_id: user.id,
+          language: "sql" as const,
+          executionCount: 0,
+          createdAt: now,
+        };
+        if (body.access === undefined) {
+          setOnInsertFields.isPrivate = true;
+          setOnInsertFields.access = "private" as const;
+        }
 
         const result = await SavedConsole.findOneAndUpdate(
           {
@@ -865,15 +883,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           {
             $set: setFields,
             $inc: { version: 1 },
-            $setOnInsert: {
-              createdBy: user.id,
-              owner_id: user.id,
-              language: "sql" as const,
-              isPrivate: true,
-              access: "private" as const,
-              executionCount: 0,
-              createdAt: now,
-            },
+            $setOnInsert: setOnInsertFields,
           },
           { upsert: true, new: true },
         );
@@ -919,6 +929,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       if (body.resultsViewMode !== undefined) {
         setFields.resultsViewMode = body.resultsViewMode;
       }
+      if (body.access !== undefined) {
+        setFields.access = body.access;
+        setFields.isPrivate = body.access === "private";
+      }
 
       // If this is an explicit save without path (e.g., Cmd+S on already saved), mark as saved
       if (isExplicitSave) {
@@ -930,11 +944,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           createdBy: user.id,
           owner_id: user.id,
           language: "sql" as const,
-          isPrivate: true,
-          access: "private" as const,
           executionCount: 0,
           createdAt: now,
         };
+        if (body.access === undefined) {
+          setOnInsertFields.isPrivate = true;
+          setOnInsertFields.access = "private" as const;
+        }
         // Only add name to $setOnInsert if not already in $set (avoid MongoDB conflict)
         if (!setFields.name) {
           setOnInsertFields.name = body.title || "Untitled";
@@ -1083,6 +1099,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         description: body.description,
         language: body.language,
         isPrivate: body.isPrivate,
+        access: body.access,
       },
     );
 

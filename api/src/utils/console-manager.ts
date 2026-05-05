@@ -186,6 +186,35 @@ export class ConsoleManager {
   }
 
   /**
+   * Resolve the access level a user sees after folder inheritance.
+   */
+  async resolveAccessWithInheritance(
+    console: ISavedConsole,
+  ): Promise<ConsoleAccessLevel> {
+    const ownAccess = ConsoleManager.resolveAccess(console);
+    if (ownAccess === "workspace") return "workspace";
+
+    let currentFolderId = console.folderId?.toString();
+    while (currentFolderId) {
+      const folder = (await ConsoleFolder.findById(currentFolderId)
+        .select("access isPrivate parentId")
+        .lean()) as {
+        access?: ConsoleAccessLevel;
+        isPrivate?: boolean;
+        parentId?: Types.ObjectId;
+      } | null;
+      if (!folder) break;
+
+      const folderAccess =
+        folder.access || (folder.isPrivate ? "private" : "workspace");
+      if (folderAccess === "workspace") return "workspace";
+      currentFolderId = folder.parentId?.toString();
+    }
+
+    return "private";
+  }
+
+  /**
    * Get all consoles in a tree structure from database.
    * Only returns explicitly saved consoles (isSaved: true), not drafts.
    */
@@ -517,6 +546,9 @@ export class ConsoleManager {
           }
         }
 
+        const effectiveAccess =
+          await this.resolveAccessWithInheritance(savedConsole);
+
         return {
           content: savedConsole.code,
           connectionId: savedConsole.connectionId?.toString(),
@@ -529,7 +561,7 @@ export class ConsoleManager {
           isSaved: savedConsole.isSaved,
           chartSpec: savedConsole.chartSpec,
           resultsViewMode: savedConsole.resultsViewMode,
-          access: ConsoleManager.resolveAccess(savedConsole),
+          access: effectiveAccess,
           owner_id: savedConsole.owner_id || savedConsole.createdBy,
           _raw: savedConsole,
         };
@@ -708,6 +740,7 @@ export class ConsoleManager {
       description?: string;
       language?: "sql" | "javascript" | "mongodb";
       isPrivate?: boolean;
+      access?: ConsoleAccessLevel;
     },
   ): Promise<ISavedConsole> {
     try {
@@ -759,6 +792,14 @@ export class ConsoleManager {
         savedConsole = await SavedConsole.findOne(query);
       }
 
+      const requestedAccess =
+        options?.access ??
+        (options?.isPrivate === undefined
+          ? undefined
+          : options.isPrivate
+            ? "private"
+            : "workspace");
+
       if (savedConsole) {
         // Update existing console (draft -> saved)
         savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
@@ -783,8 +824,9 @@ export class ConsoleManager {
           savedConsole.description = options.description;
         }
         if (options?.language) savedConsole.language = options.language;
-        if (options?.isPrivate !== undefined) {
-          savedConsole.isPrivate = options.isPrivate;
+        if (requestedAccess !== undefined) {
+          savedConsole.access = requestedAccess;
+          savedConsole.isPrivate = requestedAccess === "private";
         }
         // Backfill owner_id if missing
         if (!savedConsole.owner_id) {
@@ -800,7 +842,9 @@ export class ConsoleManager {
         await savedConsole.save();
       } else {
         // Create new console (explicitly saved)
-        const isPrivate = options?.isPrivate || false;
+        const access =
+          options?.access ?? (options?.isPrivate ? "private" : "workspace");
+        const isPrivate = access === "private";
         const consoleData: any = {
           workspaceId: new Types.ObjectId(workspaceId),
           folderId: folderId ? new Types.ObjectId(folderId) : undefined,
@@ -814,10 +858,10 @@ export class ConsoleManager {
           code: content,
           language: options?.language || this.detectLanguage(content),
           createdBy: userId,
-          isPrivate: isPrivate,
+          isPrivate,
           isSaved: true,
           executionCount: 0,
-          access: (isPrivate ? "private" : "workspace") as ConsoleAccessLevel,
+          access,
           owner_id: userId,
         };
 

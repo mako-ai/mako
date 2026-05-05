@@ -441,6 +441,7 @@ function Editor({
     databaseId?: string;
     databaseName?: string;
     comment?: string;
+    access?: "private" | "workspace";
   } | null>(null);
 
   // Refs for query cancellation (per-tab to support parallel queries)
@@ -456,6 +457,7 @@ function Editor({
   const updateConnection = useConsoleStore(state => state.updateConnection);
   const updateDatabase = useConsoleStore(state => state.updateDatabase);
   const updateFilePath = useConsoleStore(state => state.updateFilePath);
+  const updateAccess = useConsoleStore(state => state.updateAccess);
   const updateTitle = useConsoleStore(state => state.updateTitle);
   const updateDirty = useConsoleStore(state => state.updateDirty);
   const updateSavedState = useConsoleStore(state => state.updateSavedState);
@@ -1178,6 +1180,7 @@ function Editor({
         tabChartSpecs[tabId] ?? undefined,
         tabViewModes[tabId],
         comment,
+        currentTab?.access,
       );
 
       // Handle conflict - show resolution dialog
@@ -1190,6 +1193,7 @@ function Editor({
           databaseId,
           databaseName,
           comment,
+          access: currentTab?.access,
         });
         setConflictData(result.conflict);
         setConflictDialogOpen(true);
@@ -1201,6 +1205,7 @@ function Editor({
         // Update file path and title
         updateFilePath(tabId, savePath);
         updateTitle(tabId, savePath);
+        updateAccess(tabId, currentTab?.access);
         updateDirty(tabId, true);
 
         // Update saved state (isSaved=true, new savedStateHash)
@@ -1500,6 +1505,7 @@ function Editor({
         tabChartSpecs[pendingSaveData.tabId] ?? undefined,
         tabViewModes[pendingSaveData.tabId],
         pendingSaveData.comment,
+        pendingSaveData.access,
       );
 
       if (result.success) {
@@ -1508,6 +1514,7 @@ function Editor({
         // Update the tab properties
         updateFilePath(tabId, pendingSaveData.path);
         updateTitle(tabId, pendingSaveData.path);
+        updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
         // Update saved state (isSaved=true, new savedStateHash)
@@ -1552,7 +1559,7 @@ function Editor({
   const handleSaveDialogConfirm = async (
     name: string,
     folderId: string | null,
-    _section: "my" | "workspace",
+    section: "my" | "workspace",
   ) => {
     if (!saveDialogTabId || !currentWorkspace) return;
     setSaveDialogOpen(false);
@@ -1583,6 +1590,8 @@ function Editor({
           databaseId,
           tabChartSpecs[saveDialogTabId] ?? undefined,
           tabViewModes[saveDialogTabId],
+          undefined,
+          section === "workspace" ? "workspace" : "private",
         );
 
         if (result.error === "conflict" && result.conflict) {
@@ -1593,6 +1602,7 @@ function Editor({
             connectionId,
             databaseId,
             databaseName,
+            access: section === "workspace" ? "workspace" : "private",
           });
           setConflictData(result.conflict);
           setConflictDialogOpen(true);
@@ -1603,6 +1613,10 @@ function Editor({
         if (result.success) {
           updateFilePath(targetId, savePath);
           updateTitle(targetId, savePath);
+          updateAccess(
+            targetId,
+            section === "workspace" ? "workspace" : "private",
+          );
           updateDirty(targetId, true);
 
           const newHash = computeConsoleStateHash(
@@ -1648,6 +1662,8 @@ function Editor({
             databaseName,
             databaseId,
             folderId: folderId || undefined,
+            access: section === "workspace" ? "workspace" : "private",
+            isPrivate: section !== "workspace",
             chartSpec: tabChartSpecs[saveDialogTabId] ?? null,
             resultsViewMode: tabViewModes[saveDialogTabId],
             comment: "",
@@ -1665,6 +1681,7 @@ function Editor({
           connectionId,
           databaseId,
           databaseName,
+          access: section === "workspace" ? "workspace" : "private",
         });
         setConflictData(result.conflict);
         setConflictDialogOpen(true);
@@ -1687,6 +1704,10 @@ function Editor({
           // "new" — first-time save of a draft; update the originating tab.
           updateFilePath(targetId, savePath);
           updateTitle(targetId, savePath);
+          updateAccess(
+            targetId,
+            section === "workspace" ? "workspace" : "private",
+          );
           updateDirty(targetId, true);
 
           const newHash = computeConsoleStateHash(
@@ -2453,6 +2474,11 @@ function Editor({
           }
           return tab.title || "";
         })()}
+        initialSection={
+          saveDialogTabId && tabs[saveDialogTabId]?.access === "workspace"
+            ? "workspace"
+            : "my"
+        }
         isSaving={isSaving}
       />
 
