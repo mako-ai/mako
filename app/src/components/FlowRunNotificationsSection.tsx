@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Card,
@@ -26,6 +25,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { MuiChipsInput } from "mui-chips-input";
 import {
   Add as AddIcon,
   Close as CloseIcon,
@@ -87,12 +87,8 @@ function formatDeliveryLine(d: NotificationDeliveryApi): string {
   }`;
 }
 
-/** Loose client-side check — invalid chips block save until corrected */
+/** Loose client-side check — used by `MuiChipsInput`'s `validate` to block bad chips */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function splitRecipientTokens(raw: string): string[] {
-  return raw.split(/[\s,;]+/).map(s => s.trim());
-}
 
 function channelTitle(type: NotificationChannelTypeApi): string {
   switch (type) {
@@ -240,20 +236,24 @@ export function FlowRunNotificationsSection({
     void loadDeliveryLog();
   }, [loadDeliveryLog]);
 
-  const parsedRecipients = useMemo(
-    () => recipients.filter(r => EMAIL_RE.test(r)),
-    [recipients],
-  );
-
-  const invalidRecipients = useMemo(
-    () => recipients.filter(r => !EMAIL_RE.test(r)),
-    [recipients],
-  );
-  const hasInvalidRecipients = invalidRecipients.length > 0;
-
+  // `MuiChipsInput`'s `validate` prevents invalid emails from ever entering
+  // `recipients`, so all we need to gate Save on is "at least one chip".
   const emailRecipientsSaveBlocked =
-    channelType === "email" &&
-    (recipients.length === 0 || hasInvalidRecipients);
+    channelType === "email" && recipients.length === 0;
+
+  const validateRecipientChip = useCallback(
+    (chipValue: string) => {
+      const trimmed = chipValue.trim();
+      if (!EMAIL_RE.test(trimmed)) {
+        return { isError: true, textError: `${trimmed} is not a valid email` };
+      }
+      if (recipients.includes(trimmed)) {
+        return { isError: true, textError: `${trimmed} is already added` };
+      }
+      return true;
+    },
+    [recipients],
+  );
 
   const buildPayloadBase = (): Record<string, unknown> | null => {
     const triggers: NotificationTriggerApi[] = [];
@@ -267,8 +267,8 @@ export function FlowRunNotificationsSection({
     };
 
     if (channelType === "email") {
-      if (parsedRecipients.length === 0) return null;
-      base.recipients = parsedRecipients;
+      if (recipients.length === 0) return null;
+      base.recipients = recipients;
     } else if (channelType === "webhook") {
       if (editingRule && webhookUrl.trim() === "") {
         // keep URL server-side
@@ -663,54 +663,19 @@ export function FlowRunNotificationsSection({
             </FormControl>
 
             {channelType === "email" && (
-              <Autocomplete
-                multiple
-                freeSolo
-                autoSelect
-                options={[]}
+              <MuiChipsInput
+                fullWidth
+                size="small"
+                label="Recipients"
+                placeholder="Type an email and press Enter"
+                helperText="Press Enter to add. Backspace removes the last chip."
                 value={recipients}
-                onChange={(_, next) => {
-                  const expanded = next.flatMap(v =>
-                    typeof v === "string" ? splitRecipientTokens(v) : [v],
-                  );
-                  const seen = new Set<string>();
-                  const deduped: string[] = [];
-                  for (const s of expanded) {
-                    const t = s.trim();
-                    if (!t || seen.has(t)) continue;
-                    seen.add(t);
-                    deduped.push(t);
-                  }
-                  setRecipients(deduped);
-                }}
-                renderTags={(value, getTagProps) =>
-                  value.map((email, index) => {
-                    const valid = EMAIL_RE.test(email);
-                    const tagProps = getTagProps({ index });
-                    return (
-                      <Chip
-                        {...tagProps}
-                        key={email}
-                        label={email}
-                        size="small"
-                        color={valid ? "default" : "error"}
-                        variant={valid ? "filled" : "outlined"}
-                      />
-                    );
-                  })
-                }
-                renderInput={params => (
-                  <TextField
-                    {...params}
-                    label="Recipients"
-                    placeholder="Type an email and press Enter"
-                    error={hasInvalidRecipients}
-                    helperText={
-                      hasInvalidRecipients
-                        ? `Invalid: ${invalidRecipients.join(", ")}`
-                        : "Press Enter, comma, or blur to add"
-                    }
-                  />
+                onChange={setRecipients}
+                addOnBlur
+                hideClearAll
+                validate={validateRecipientChip}
+                renderChip={(Component, key, chipProps) => (
+                  <Component {...chipProps} key={key} size="small" />
                 )}
               />
             )}

@@ -38,6 +38,7 @@
     "immer": "^10.1.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.511.0",
+    "mui-chips-input": "^9.0.0",
     "nanoid": "^5.1.7",
     "openai": "^4.103.0",
     "react": "^18.2.0",
