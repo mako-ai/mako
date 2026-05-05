@@ -40,16 +40,42 @@ Create API keys in **Workspace settings → API Keys**. The same page surfaces y
 
 ## Database Connections
 
-| Method   | Endpoint                                   | Description         |
-| -------- | ------------------------------------------ | ------------------- |
-| `GET`    | `/api/workspaces/:wid/connectors`          | List connections    |
-| `POST`   | `/api/workspaces/:wid/connectors`          | Add a connection    |
-| `POST`   | `/api/workspaces/:wid/connectors/:id/test` | Test a connection   |
-| `DELETE` | `/api/workspaces/:wid/connectors/:id`      | Remove a connection |
+These endpoints manage connections to user databases (PostgreSQL, MySQL, MongoDB, BigQuery, ClickHouse, Redshift, SQLite, Cloudflare D1/KV) that Mako queries on the user's behalf. For SaaS data-source connectors (Stripe, Close, PostHog, GraphQL, REST, BigQuery sync), see [SaaS Connectors](/connectors/).
+
+| Method   | Endpoint                                              | Description                                                                |
+| -------- | ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/databases`                      | List database connections                                                  |
+| `POST`   | `/api/workspaces/:wid/databases`                      | Add a database connection                                                  |
+| `GET`    | `/api/workspaces/:wid/databases/:id`                  | Get a single database connection (passwords masked)                        |
+| `PUT`    | `/api/workspaces/:wid/databases/:id`                  | Update a database connection                                               |
+| `DELETE` | `/api/workspaces/:wid/databases/:id`                  | Remove a database connection                                               |
+| `POST`   | `/api/workspaces/:wid/databases/test-connection`      | Test a candidate connection without saving                                 |
+| `POST`   | `/api/workspaces/:wid/databases/:id/test`             | Test an existing connection                                                |
+| `POST`   | `/api/workspaces/:wid/databases/demo`                 | Provision the demo Chinook database (onboarding)                           |
+
+### MongoDB Collections & Views
+
+For MongoDB connections, collection and view management is exposed under the same workspace-scoped database routes. The legacy unauthenticated `/api/database/*` routes were removed in [#408](https://github.com/mako-ai/mako/pull/408) — all callers must use the endpoints below.
+
+| Method   | Endpoint                                                              | Description                                  |
+| -------- | --------------------------------------------------------------------- | -------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/databases/:id/collections`                      | List collections                             |
+| `POST`   | `/api/workspaces/:wid/databases/:id/collections`                      | Create a collection                          |
+| `GET`    | `/api/workspaces/:wid/databases/:id/collections/:name`                | Get collection stats and indexes             |
+| `GET`    | `/api/workspaces/:wid/databases/:id/collections/:name/info`           | Get collection metadata only                 |
+| `DELETE` | `/api/workspaces/:wid/databases/:id/collections/:name`                | Drop a collection                            |
+| `GET`    | `/api/workspaces/:wid/databases/:id/views`                            | List views                                   |
+| `POST`   | `/api/workspaces/:wid/databases/:id/views`                            | Create a view (`viewOn`, `pipeline`)         |
+| `GET`    | `/api/workspaces/:wid/databases/:id/views/:name/info`                 | Get view metadata                            |
+| `DELETE` | `/api/workspaces/:wid/databases/:id/views/:name`                      | Drop a view                                  |
+
+:::caution[Breaking change]
+The legacy `/api/database/collections`, `/api/database/views`, and related top-level routes were removed in [#408](https://github.com/mako-ai/mako/pull/408). Callers must use the workspace-scoped endpoints above and authenticate with a session cookie or `Bearer revops_*` API key.
+:::
 
 ## Query Execution
 
-Session cookie or `Authorization: Bearer revops_*` API key required. Use the database connection ID from `GET /api/workspaces/:wid/connectors`.
+Session cookie or `Authorization: Bearer revops_*` API key required. Use the database connection ID from `GET /api/workspaces/:wid/databases`.
 
 | Method | Endpoint                                               | Description                                                                                                          |
 | ------ | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
