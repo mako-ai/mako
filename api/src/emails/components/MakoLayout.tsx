@@ -4,6 +4,7 @@ import {
   Head,
   Hr,
   Html,
+  Img,
   Preview,
   Section,
   Text,
@@ -18,12 +19,28 @@ export interface MakoLayoutProps {
 }
 
 /**
- * Text wordmark — Gmail strips `data:` and many corporate clients block remote
- * images by default, so styled HTML text is the only thing guaranteed to render
- * across every inbox.
+ * Logo URL — defaults to the PNG hosted on the Mako app domain (`app.mako.ai`
+ * via Cloudflare's edge CDN, sourced from `app/public/email/mako-logo.png`).
+ * Override with `EMAIL_LOGO_URL` for staging / preview deploys.
+ *
+ * We deliberately use a hosted PNG rather than a `data:` URI (stripped by
+ * Gmail), an inline-SVG (no Outlook-desktop support), or a CID attachment
+ * (heavier per-message, complicates the mail pipeline) — see the notes in
+ * `docs/notifications.md`.
  */
-function MakoWordmark() {
-  return <Text style={wordmarkStyle}>Mako</Text>;
+const LOGO_URL =
+  process.env.EMAIL_LOGO_URL ?? "https://app.mako.ai/email/mako-logo.png";
+
+function MakoLogo() {
+  return (
+    <Img
+      src={LOGO_URL}
+      alt="Mako"
+      width={120}
+      height={60}
+      style={logoImgStyle}
+    />
+  );
 }
 
 export function MakoLayout({
@@ -38,14 +55,12 @@ export function MakoLayout({
       <Body style={bodyStyle}>
         <Container style={containerStyle}>
           <Section style={headerStyle}>
-            <MakoWordmark />
+            <MakoLogo />
           </Section>
           {children}
           <Hr style={hrStyle} />
           <Section style={footerStyle}>
-            {footerNote ? (
-              <Text style={mutedStyle}>{footerNote}</Text>
-            ) : null}
+            {footerNote ? <Text style={mutedStyle}>{footerNote}</Text> : null}
             <Text style={mutedStyle}>
               You receive this email because a notification rule was configured
               for this workspace in Mako. Adjust rules from the app under Run
@@ -78,15 +93,14 @@ const headerStyle = {
   marginBottom: "24px",
 };
 
-const wordmarkStyle = {
+const logoImgStyle = {
+  display: "block",
+  // Fallback styling for clients that block remote images and surface alt text.
   color: "#111827",
-  fontFamily:
-    '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Ubuntu,sans-serif',
   fontSize: "20px",
   fontWeight: 700,
-  letterSpacing: "-0.01em",
-  lineHeight: "24px",
-  margin: 0,
+  fontFamily:
+    '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Ubuntu,sans-serif',
 };
 
 const hrStyle = {
