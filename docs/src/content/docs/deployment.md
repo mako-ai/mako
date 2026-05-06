@@ -69,6 +69,7 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |
 | `GH_CLIENT_ID` + `SECRET`      | Optional    | GitHub OAuth                             |
 | `SENDGRID_API_KEY`             | Optional    | Email invitations                        |
+| `EMAIL_LOGO_URL`               | Optional    | Logo for run-notification emails (default: `https://app.mako.ai/email/mako-logo.png`). Override for self-hosted/staging. |
 | `BILLING_ENABLED`              | Optional    | Set `true` to enable Stripe billing (default: `false`) |
 | `STRIPE_SECRET_KEY`            | Optional    | Stripe secret key (required if billing enabled) |
 | `STRIPE_WEBHOOK_SECRET`        | Optional    | Stripe webhook signing secret |
