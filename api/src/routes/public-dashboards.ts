@@ -90,7 +90,8 @@ app.get("/:token", async c => {
     if (!doc?.published?.snapshot) {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
-    const snapshot = doc.published.snapshot as DashboardPublishedSnapshotDoc;
+    const snapshot = doc.published
+      .snapshot as unknown as DashboardPublishedSnapshotDoc;
     const data = embedPayloadFromPublishedSnapshot(snapshot, token);
     return c.json({ success: true, data });
   } catch (error) {
@@ -113,7 +114,8 @@ app.get("/:token/artifacts/:dataSourceId", async c => {
     if (!doc?.published?.snapshot) {
       return c.json({ success: false, error: "Dashboard not found" }, 404);
     }
-    const snapshot = doc.published.snapshot as DashboardPublishedSnapshotDoc;
+    const snapshot = doc.published
+      .snapshot as unknown as DashboardPublishedSnapshotDoc;
     const artifact = snapshot.artifacts?.find(
       a => a.dataSourceId === dataSourceId,
     );

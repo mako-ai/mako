@@ -208,6 +208,7 @@ function sanitizeDashboardResponse<
   T extends Record<string, any> & {
     dataSources?: Array<Record<string, unknown>>;
     materializationSchedule?: unknown;
+    published?: unknown;
   },
 >(dashboard: T): T {
   delete dashboard.materializationMode;
