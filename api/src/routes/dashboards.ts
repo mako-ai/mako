@@ -27,6 +27,7 @@ import {
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import {
   buildDashboardPublishedSnapshot,
+  ensureDashboardMaterializedForPublish,
   hashDashboardShareToken,
   newDashboardShareToken,
 } from "../services/dashboard-publish.service";
@@ -556,7 +557,15 @@ app.post("/:id/publish", async (c: AuthenticatedContext) => {
       );
     }
 
-    const built = await buildDashboardPublishedSnapshot(dashboard);
+    const ensured = await ensureDashboardMaterializedForPublish(
+      dashboard._id.toString(),
+      workspaceId,
+    );
+    if (!ensured.ok) {
+      return c.json({ success: false, error: ensured.error }, 400);
+    }
+
+    const built = await buildDashboardPublishedSnapshot(ensured.dashboard);
     if (!built.ok) {
       return c.json({ success: false, error: built.error }, 400);
     }
@@ -564,14 +573,14 @@ app.post("/:id/publish", async (c: AuthenticatedContext) => {
     const shareToken = newDashboardShareToken();
     const tokenHash = hashDashboardShareToken(shareToken);
 
-    dashboard.set("published", {
+    ensured.dashboard.set("published", {
       enabled: true,
       tokenHash,
       publishedAt: new Date(),
       publishedBy: userId,
       snapshot: built.snapshot,
     });
-    await dashboard.save();
+    await ensured.dashboard.save();
 
     return c.json({
       success: true,

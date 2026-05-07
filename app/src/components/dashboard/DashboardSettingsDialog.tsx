@@ -390,8 +390,9 @@ export default function DashboardSettingsDialog({
             Public link
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Read-only page for anyone with the link. Every data source must be
-            materialized (ready) before publishing.
+            Read-only page for anyone with the link. Publish refreshes
+            materialization if needed (this can take up to a couple of minutes
+            for large data sources).
           </Typography>
           {dashboard?.published?.enabled ? (
             <>
