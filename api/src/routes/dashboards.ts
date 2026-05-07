@@ -25,6 +25,11 @@ import {
   validateDashboardMaterializationSchedule,
 } from "../services/dashboard-materialization-schedule.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
+import {
+  buildDashboardPublishedSnapshot,
+  hashDashboardShareToken,
+  newDashboardShareToken,
+} from "../services/dashboard-publish.service";
 import { DashboardManager } from "../utils/dashboard-manager";
 import {
   createVersion,
@@ -228,6 +233,13 @@ function sanitizeDashboardResponse<
         return next;
       },
     );
+  }
+  if (dashboard.published && typeof dashboard.published === "object") {
+    const p = dashboard.published as Record<string, unknown>;
+    dashboard.published = {
+      enabled: Boolean(p.enabled),
+      ...(p.publishedAt ? { publishedAt: p.publishedAt } : {}),
+    } as typeof dashboard.published;
   }
   return dashboard;
 }
@@ -501,6 +513,124 @@ app.get("/:id", async (c: AuthenticatedContext) => {
     });
   } catch (error) {
     logger.error("Error getting dashboard", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/dashboards/:id/publish — public share (materialized snapshot)
+app.post("/:id/publish", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+
+    if (!Types.ObjectId.isValid(id)) {
+      return c.json({ success: false, error: "Invalid dashboard ID" }, 400);
+    }
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+      return c.json(
+        { success: false, error: "You do not have permission to publish" },
+        403,
+      );
+    }
+
+    const built = await buildDashboardPublishedSnapshot(dashboard);
+    if (!built.ok) {
+      return c.json({ success: false, error: built.error }, 400);
+    }
+
+    const shareToken = newDashboardShareToken();
+    const tokenHash = hashDashboardShareToken(shareToken);
+
+    dashboard.set("published", {
+      enabled: true,
+      tokenHash,
+      publishedAt: new Date(),
+      publishedBy: userId,
+      snapshot: built.snapshot,
+    });
+    await dashboard.save();
+
+    return c.json({
+      success: true,
+      data: {
+        shareToken,
+        publicPath: `/p/d/${shareToken}`,
+      },
+    });
+  } catch (error) {
+    logger.error("Error publishing dashboard", { error });
+    return c.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+});
+
+// DELETE /api/workspaces/:workspaceId/dashboards/:id/publish — revoke public share
+app.delete("/:id/publish", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const id = c.req.param("id");
+
+    if (!Types.ObjectId.isValid(id)) {
+      return c.json({ success: false, error: "Invalid dashboard ID" }, 400);
+    }
+
+    const dashboard = await Dashboard.findOne({
+      _id: new Types.ObjectId(id),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+
+    if (!dashboard) {
+      return c.json({ success: false, error: "Dashboard not found" }, 404);
+    }
+
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+      return c.json(
+        { success: false, error: "You do not have permission to unpublish" },
+        403,
+      );
+    }
+
+    await Dashboard.updateOne(
+      { _id: dashboard._id },
+      { $unset: { published: "" } },
+    );
+
+    return c.json({ success: true });
+  } catch (error) {
+    logger.error("Error unpublishing dashboard", { error });
     return c.json(
       {
         success: false,

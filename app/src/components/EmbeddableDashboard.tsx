@@ -6,6 +6,7 @@ import {
   ThemeProvider,
   createTheme,
 } from "@mui/material";
+import { useParams } from "react-router-dom";
 import { ResponsiveGridLayout, useContainerWidth } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
@@ -53,6 +54,7 @@ const darkTheme = createTheme({ palette: { mode: "dark" } });
 const lightTheme = createTheme({ palette: { mode: "light" } });
 
 const EmbeddableDashboard: React.FC = () => {
+  const { token } = useParams<{ token: string }>();
   const [spec, setSpec] = useState<EmbedDashboardSpec | null>(null);
   const [db, setDb] = useState<AsyncDuckDB | null>(null);
   const [loading, setLoading] = useState(true);
@@ -72,30 +74,35 @@ const EmbeddableDashboard: React.FC = () => {
   );
 
   useEffect(() => {
-    const token = window.location.pathname.split("/embed/")[1];
     if (!token) {
-      setError("Missing embed token");
+      setError("Missing share token");
       setLoading(false);
       return;
     }
 
     (async () => {
       try {
-        const res = await fetch(`/api/embed/dashboards/${token}`);
+        const res = await fetch(
+          `/api/public/dashboards/${encodeURIComponent(token)}`,
+        );
         if (!res.ok) {
           throw new Error(`Failed to load dashboard: ${res.statusText}`);
         }
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || "Failed to load");
-        setSpec(data.data);
+        const body = (await res.json()) as {
+          success: boolean;
+          data?: EmbedDashboardSpec;
+          error?: string;
+        };
+        if (!body.success || !body.data) {
+          throw new Error(body.error || "Failed to load");
+        }
+        setSpec(body.data);
 
         const duckdb = await initDuckDB();
         setDb(duckdb);
 
-        for (const ds of data.data.dataSources) {
-          const exportRes = await fetch(ds.exportUrl, {
-            credentials: "include",
-          });
+        for (const ds of body.data.dataSources) {
+          const exportRes = await fetch(ds.exportUrl);
           if (exportRes.ok) {
             const buffer = new Uint8Array(await exportRes.arrayBuffer());
             await loadArrowTable(duckdb, ds.name, buffer);
@@ -111,7 +118,7 @@ const EmbeddableDashboard: React.FC = () => {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [token]);
 
   if (loading) {
     return (
@@ -196,19 +203,6 @@ const EmbeddableDashboard: React.FC = () => {
           color: "text.primary",
         }}
       >
-        <Box
-          sx={{
-            px: 3,
-            py: 2,
-            borderBottom: "1px solid",
-            borderColor: "divider",
-          }}
-        >
-          <Typography variant="h5" sx={{ fontWeight: 600 }}>
-            {spec.title}
-          </Typography>
-        </Box>
-
         <Box ref={gridContainerRef} sx={{ p: 2 }}>
           {dataReady && db ? (
             <ResponsiveGridLayout

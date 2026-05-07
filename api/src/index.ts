@@ -39,6 +39,7 @@ import { billingRoutes } from "./routes/billing";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook";
 import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
+import { publicDashboardRoutes } from "./routes/public-dashboards";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
 import { devEmailPreviewRoutes } from "./routes/dev-email-preview.routes";
@@ -110,6 +111,7 @@ app.get("/health", c => {
 
 // API routes
 app.route("/api/auth", authRoutes);
+app.route("/api/public/dashboards", publicDashboardRoutes);
 app.route("/api/workspaces", workspaceRoutes);
 app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
 app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);

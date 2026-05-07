@@ -2843,6 +2843,15 @@ export interface IDashboard extends Document {
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
+
+  /** Public read-only share (opaque token hash + frozen snapshot). */
+  published?: {
+    enabled: boolean;
+    tokenHash: string;
+    publishedAt: Date;
+    publishedBy: string;
+    snapshot: Record<string, unknown>;
+  };
 }
 
 /**
@@ -3167,6 +3176,20 @@ const DashboardSchema = new Schema<IDashboard>(
     },
     owner_id: { type: String },
     createdBy: { type: String, required: true },
+
+    published: {
+      type: new Schema(
+        {
+          enabled: { type: Boolean, required: true },
+          tokenHash: { type: String, required: true },
+          publishedAt: { type: Date, required: true },
+          publishedBy: { type: String, required: true },
+          snapshot: { type: Schema.Types.Mixed, required: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
   },
   {
     collection: "dashboards",
@@ -3177,6 +3200,16 @@ const DashboardSchema = new Schema<IDashboard>(
 DashboardSchema.index({ workspaceId: 1 });
 DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
 DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
+DashboardSchema.index(
+  { "published.tokenHash": 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      "published.enabled": true,
+      "published.tokenHash": { $type: "string" },
+    },
+  },
+);
 
 /**
  * DashboardFolder Schema

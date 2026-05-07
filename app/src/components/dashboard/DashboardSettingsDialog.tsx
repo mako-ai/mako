@@ -89,7 +89,17 @@ export default function DashboardSettingsDialog({
     "mosaic" | "legacy"
   >("mosaic");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [lastPublishedUrl, setLastPublishedUrl] = useState<string | null>(null);
   const isReadOnly = dashboard?.readOnly === true;
+
+  useEffect(() => {
+    if (open) {
+      setPublishError(null);
+      setLastPublishedUrl(null);
+    }
+  }, [open]);
 
   useEffect(() => {
     if (dashboard && open) {
@@ -162,6 +172,37 @@ export default function DashboardSettingsDialog({
       .getState()
       .duplicateDashboard(workspaceId, dashboard._id);
     onClose();
+  };
+
+  const handlePublish = async () => {
+    if (!workspaceId || !dashboard) return;
+    setPublishBusy(true);
+    setPublishError(null);
+    setLastPublishedUrl(null);
+    const result = await useDashboardStore
+      .getState()
+      .publishDashboard(workspaceId, dashboard._id);
+    setPublishBusy(false);
+    if (result.ok) {
+      setLastPublishedUrl(`${window.location.origin}${result.publicPath}`);
+    } else {
+      setPublishError(result.error);
+    }
+  };
+
+  const handleUnpublish = async () => {
+    if (!workspaceId || !dashboard) return;
+    setPublishBusy(true);
+    setPublishError(null);
+    const result = await useDashboardStore
+      .getState()
+      .unpublishDashboard(workspaceId, dashboard._id);
+    setPublishBusy(false);
+    if (!result.ok) {
+      setPublishError(result.error);
+    } else {
+      setLastPublishedUrl(null);
+    }
   };
 
   const handleDelete = async () => {
@@ -341,6 +382,80 @@ export default function DashboardSettingsDialog({
             </FormControl>
           </>
         )}
+
+        <Divider />
+
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+          <Typography variant="subtitle2" color="text.secondary">
+            Public link
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Read-only page for anyone with the link. Every data source must be
+            materialized (ready) before publishing.
+          </Typography>
+          {dashboard?.published?.enabled ? (
+            <>
+              <Alert severity="info">
+                Published
+                {dashboard.published.publishedAt
+                  ? ` · ${new Date(dashboard.published.publishedAt).toLocaleString()}`
+                  : ""}
+                . The URL is only shown when you publish; publish again to
+                rotate the link.
+              </Alert>
+              {!isReadOnly && (
+                <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    disabled={publishBusy}
+                    onClick={() => void handlePublish()}
+                  >
+                    Publish again
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    disabled={publishBusy}
+                    onClick={() => void handleUnpublish()}
+                  >
+                    Unpublish
+                  </Button>
+                </Box>
+              )}
+            </>
+          ) : (
+            !isReadOnly && (
+              <Button
+                variant="outlined"
+                size="small"
+                disabled={publishBusy}
+                onClick={() => void handlePublish()}
+              >
+                Publish
+              </Button>
+            )
+          )}
+          {publishError ? <Alert severity="error">{publishError}</Alert> : null}
+          {lastPublishedUrl ? (
+            <Alert
+              severity="success"
+              action={
+                <Button
+                  size="small"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(lastPublishedUrl)
+                  }
+                >
+                  Copy
+                </Button>
+              }
+            >
+              {lastPublishedUrl}
+            </Alert>
+          ) : null}
+        </Box>
 
         <Divider sx={{ mt: 1 }} />
 

@@ -43,6 +43,8 @@ import { FlowsExplorer } from "./components/FlowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
+const loadPublicDashboard = () => import("./components/EmbeddableDashboard");
+const PublicDashboardPage = lazy(loadPublicDashboard);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -768,6 +770,16 @@ function App() {
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* Published dashboard — no authentication */}
+        <Route
+          path="/p/d/:token"
+          element={
+            <Suspense fallback={<LoadingScreen />}>
+              <PublicDashboardPage />
+            </Suspense>
+          }
+        />
 
         {/* Auth routes - redirect to "/" if already logged in */}
         <Route path="/login" element={<LoginRoute />} />

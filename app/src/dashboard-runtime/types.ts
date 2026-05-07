@@ -72,6 +72,8 @@ export interface Dashboard
   owner_id?: string;
   createdBy: string;
   readOnly?: boolean;
+  /** Sanitized from API — no token or snapshot payload. */
+  published?: { enabled: boolean; publishedAt?: string };
   createdAt: string;
   updatedAt: string;
   snapshots?: Record<

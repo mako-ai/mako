@@ -163,6 +163,17 @@ interface DashboardStoreState {
     workspaceId: string,
     id: string,
   ) => Promise<Dashboard | null>;
+  publishDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+  ) => Promise<
+    | { ok: true; shareToken: string; publicPath: string }
+    | { ok: false; error: string }
+  >;
+  unpublishDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   openDashboard: (
     workspaceId: string,
     dashboardId: string,
@@ -423,6 +434,52 @@ export const useDashboardStore = create<DashboardStoreState>()(
           return null;
         } catch {
           return null;
+        }
+      },
+
+      publishDashboard: async (workspaceId: string, dashboardId: string) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: { shareToken: string; publicPath: string };
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/publish`,
+            {},
+          );
+
+          if (response.success && response.data?.shareToken) {
+            await get().reloadDashboard(workspaceId, dashboardId);
+            return {
+              ok: true,
+              shareToken: response.data.shareToken,
+              publicPath: response.data.publicPath,
+            };
+          }
+          return {
+            ok: false,
+            error: response.error || "Failed to publish",
+          };
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            error: e instanceof Error ? e.message : "Failed to publish",
+          };
+        }
+      },
+
+      unpublishDashboard: async (workspaceId: string, dashboardId: string) => {
+        try {
+          await apiClient.delete(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/publish`,
+          );
+          await get().reloadDashboard(workspaceId, dashboardId);
+          return { ok: true };
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            error: e instanceof Error ? e.message : "Failed to unpublish",
+          };
         }
       },
 
