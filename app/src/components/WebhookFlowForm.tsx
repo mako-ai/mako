@@ -53,6 +53,33 @@ interface EntityLayoutConfig {
   enabled?: boolean;
 }
 
+const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set(["stripe", "close", "claap"]);
+
+const CLAAP_ENTITY_FIELDS: Record<string, string[]> = {
+  recordings: [
+    "id",
+    "title",
+    "state",
+    "createdAt",
+    "durationSeconds",
+    "source",
+    "url",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+  workspace: [
+    "id",
+    "name",
+    "createdAt",
+    "membersCount",
+    "recordingsCount",
+    "_dataSourceId",
+    "_dataSourceName",
+    "_syncedAt",
+  ],
+};
+
 const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
   leads: [
     "id",
@@ -610,6 +637,51 @@ export function WebhookFlowForm({
                 };
           }),
         );
+      } else if (connectorType === "claap") {
+        const entities = [
+          {
+            name: "recordings",
+            label: "Recordings",
+            partitionField: "createdAt",
+            clusterFields: [] as string[],
+          },
+          {
+            name: "workspace",
+            label: "Workspace",
+            partitionField: "createdAt",
+            clusterFields: [] as string[],
+          },
+        ];
+        setEntityMetadata(entities);
+        const existingFlowClaap =
+          !isNewMode && currentFlowId
+            ? flows.find(j => j._id === currentFlowId)
+            : null;
+        const savedLayoutsClaap: EntityLayoutConfig[] =
+          existingFlowClaap?.entityLayouts || watch("entityLayouts") || [];
+        const savedByEntity = new Map(
+          savedLayoutsClaap.map((l: EntityLayoutConfig) => [l.entity, l]),
+        );
+        setValue(
+          "entityLayouts",
+          entities.map(e => {
+            const saved = savedByEntity.get(e.name);
+            return saved
+              ? {
+                  ...saved,
+                  label: e.label,
+                  enabled: saved.enabled !== false,
+                }
+              : {
+                  entity: e.name,
+                  label: e.label,
+                  partitionField: e.partitionField,
+                  partitionGranularity: "day" as const,
+                  clusterFields: e.clusterFields || [],
+                  enabled: true,
+                };
+          }),
+        );
       } else if (connectorType === "stripe") {
         const entities = [
           {
@@ -706,8 +778,8 @@ export function WebhookFlowForm({
     setIsLoadingConnectors(true);
     try {
       const sources = await fetchConnectors(workspaceId);
-      const webhookCapable = (sources || []).filter(
-        source => source.type === "stripe" || source.type === "close",
+      const webhookCapable = (sources || []).filter(source =>
+        WEBHOOK_CAPABLE_CONNECTOR_TYPES.has(source.type),
       );
       setConnectors(webhookCapable);
     } catch (error) {
@@ -1143,7 +1215,8 @@ export function WebhookFlowForm({
                         )}
                         {connectors.length === 0 && !isLoadingConnectors && (
                           <FormHelperText>
-                            Only Stripe and Close connectors support webhooks
+                            Create a Stripe, Close, or Claap data source to use
+                            webhook flows
                           </FormHelperText>
                         )}
                       </FormControl>
@@ -1454,7 +1527,13 @@ export function WebhookFlowForm({
                               </Typography>
                             </Box>
                             {watchEntityLayouts.map((layout, idx) => {
-                              const entityFields = CLOSE_ENTITY_FIELDS[
+                              const entityFieldMap =
+                                selectedConnectorType === "close"
+                                  ? CLOSE_ENTITY_FIELDS
+                                  : selectedConnectorType === "claap"
+                                    ? CLAAP_ENTITY_FIELDS
+                                    : {};
+                              const entityFields = entityFieldMap[
                                 layout.entity
                               ] || ["_syncedAt", "_dataSourceId", "id"];
                               const timestampFields = entityFields.filter(
@@ -1791,7 +1870,9 @@ export function WebhookFlowForm({
                         <Typography variant="caption" color="text.secondary">
                           {selectedConnectorType === "stripe"
                             ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
-                            : "Enter the webhook signing secret from your provider"}
+                            : selectedConnectorType === "claap"
+                              ? "Enter the X-Claap-Webhook-Secret from your Claap webhook settings"
+                              : "Enter the webhook signing secret from your provider"}
                         </Typography>
                       </Box>
                     </Stack>

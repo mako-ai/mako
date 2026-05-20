@@ -1,112 +1,211 @@
 ---
 name: add-connector
-description: Scaffold a new data source connector for the Mako sync system. Use when creating a new connector, adding a data source integration, or implementing a new sync provider.
+description: Scaffold a new data source connector for the Mako sync system with backfill, CDC webhooks, tests, and deployment checks. Use when creating a new connector, adding a data source integration, or implementing a new sync provider.
 ---
 
 # Add a New Data Source Connector
 
 ## Overview
 
-Connectors are pluggable, self-contained integrations under `api/src/connectors/<type>/`. They extend `BaseConnector` and are auto-discovered by the registry.
+Connectors are pluggable, self-contained integrations under `api/src/connectors/<type>/`. They extend `BaseConnector` and are auto-discovered by the registry. For production CDC flows, follow the **Close** reference implementation (`api/src/connectors/close/`) — not the minimal Stripe stub alone.
 
-## Steps
+## Checklist
 
-### 1. Create the connector directory
+```
+- [ ] Create api/src/connectors/<name>/ (connector.ts, schema.ts, index.ts, icon.svg)
+- [ ] Implement getConfigSchema() — credentials only; wire every field at runtime
+- [ ] Implement supportsResumableFetching + fetchEntityChunk (required for Inngest CDC backfill)
+- [ ] Implement supportsWebhooks + verifyWebhook + getWebhookEventMapping + extractWebhookData
+- [ ] Optional: resolveSchema() + schema.ts for typed CDC / schema-health
+- [ ] Add connector.test.ts (mocked HTTP/webhooks; no committed secrets)
+- [ ] pnpm --filter api run lint && tsx api/src/connectors/<name>/connector.test.ts
+- [ ] Manual: data source → CDC webhook flow → backfill → live webhook
+```
+
+## Directory layout
 
 ```bash
 mkdir -p api/src/connectors/<name>
 ```
 
-### 2. Implement the connector class
+```
+api/src/connectors/<name>/
+├── connector.ts      # Main class *Connector extends BaseConnector
+├── schema.ts         # resolve<Entity>Schema + ConnectorEntitySchema maps
+├── index.ts          # export { XxxConnector } from "./connector"
+├── connector.test.ts # node assert tests (see close/connector.test.ts)
+└── icon.svg          # optional; copied by api build
+```
 
-Create `api/src/connectors/<name>/connector.ts` (the registry looks for `connector.ts` first, then `index.ts`):
+Registry auto-discovers `*Connector` in `connector.ts` or `index.ts` — no manual registration.
+
+## Config schema (credentials only)
 
 ```typescript
-import {
-  BaseConnector,
-  FetchOptions,
-  ConnectionTestResult,
-} from "../base/BaseConnector";
-import { IConnector } from "../../database/workspace-schema";
-
-export class MySourceConnector extends BaseConnector {
-  constructor(dataSource: IConnector) {
-    super(dataSource);
-  }
-
-  getMetadata() {
-    return {
-      name: "My Source",
-      version: "1.0.0",
-      description: "Syncs data from My Source",
-      supportedEntities: ["entity1", "entity2"],
-    };
-  }
-
-  async testConnection(): Promise<ConnectionTestResult> {
-    // Validate credentials from this.dataSource.connection
-    return { success: true, message: "Connected" };
-  }
-
-  getAvailableEntities(): string[] {
-    return this.getMetadata().supportedEntities;
-  }
-
-  async fetchEntity(options: FetchOptions): Promise<void> {
-    const { entityName, onBatch, onProgress, signal } = options;
-    // Fetch data and call onBatch() with each batch of records
-    // Respect signal for cancellation
-  }
-
-  static getConfigSchema() {
-    return {
-      fields: [
-        { name: "apiKey", label: "API Key", type: "password", required: true },
-        {
-          name: "endpoint",
-          label: "Endpoint URL",
-          type: "string",
-          required: true,
-        },
-      ],
-      // For query-based connectors, add transferQueries (configured at Flow level):
-      // transferQueries: {
-      //   label: "Queries",
-      //   required: true,
-      //   fields: [
-      //     { name: "name", label: "Entity Name", type: "string", required: true },
-      //     { name: "query", label: "Query", type: "textarea", required: true, rows: 8 },
-      //   ],
-      // },
-    };
-  }
+static getConfigSchema() {
+  return {
+    fields: [
+      {
+        name: "api_key",
+        label: "API Key",
+        type: "password",
+        required: true,
+        helperText: "Provider API key",
+      },
+      {
+        name: "api_base_url",
+        label: "API Base URL",
+        type: "string",
+        required: false,
+        default: "https://api.example.com",
+      },
+    ],
+  };
 }
 ```
 
-### 3. Verify auto-registration
+- **Do not** put webhook secrets in connector config. Webhook verification uses `flow.webhookConfig.secret` passed into `verifyWebhook({ secret })` when Claap/Stripe/Close deliver events.
+- Query-based connectors: use `transferQueries` at **Flow** level, not in connector config.
 
-The registry at `api/src/connectors/registry.ts` auto-discovers connectors by scanning subdirectories. It finds the first export ending with `"Connector"` in `connector.ts` or `index.ts`. No manual registration needed.
+## Required methods
 
-Verify by checking that `connectorRegistry.hasConnector("<name>")` returns `true` after restart.
+| Method | Purpose |
+|--------|---------|
+| `testConnection()` | Validate credentials (lightweight GET) |
+| `getAvailableEntities()` / `getEntityMetadata()` | Entity list + optional layout hints |
+| `fetchEntity()` | Full sync fallback |
+| `fetchEntityChunk()` + `supportsResumableFetching(): true` | **Required** for Inngest chunked CDC backfill |
+| `validateConfig()` | Provider-specific required fields |
 
-### 4. Test the connector
+## Resumable backfill pattern
 
-1. Start the dev server: `pnpm dev`
-2. Create a data source in the UI with the new connector type
-3. Verify the config schema renders correctly (schema-driven, no UI changes needed)
-4. Create a Flow using the new data source and test sync
+`performSyncChunk` in `api/src/sync/sync-orchestrator.ts` **requires** `supportsResumableFetching()`. Without `fetchEntityChunk`, CDC backfill fails.
 
-## Key Rules
+```typescript
+async fetchEntityChunk(options: ResumableFetchOptions): Promise<FetchState> {
+  const { entity, onBatch, onProgress, since, state } = options;
+  const maxIterations = options.maxIterations ?? 10;
+  let cursor = state?.metadata?.cursor as string | undefined;
+  let recordCount = state?.totalProcessed ?? 0;
+  let iterations = 0;
 
-- Connector must be **100% self-contained** under its folder. No `if (type === "<name>")` checks in shared code.
-- Credential/connection fields go in `getConfigSchema()`. Query definitions go at the **Flow level** via `transferQueries`.
-- UI is **schema-driven** — the frontend reads the schema and renders forms dynamically.
-- Support both full and incremental sync modes where applicable.
-- Use `this.dataSource.connection` to access stored (decrypted) credentials.
+  while (iterations < maxIterations) {
+    const page = await this.fetchPage(entity, { cursor, since });
+    if (page.records.length > 0) {
+      await onBatch(page.records);
+      recordCount += page.records.length;
+      onProgress?.(recordCount, page.totalCount);
+    }
+    cursor = page.nextCursor;
+    iterations++;
+    if (!cursor) {
+      return {
+        totalProcessed: recordCount,
+        hasMore: false,
+        iterationsInChunk: iterations,
+        metadata: { cursor: null },
+      };
+    }
+    await this.sleep(this.getRateLimitDelay());
+  }
 
-## Reference Files
+  return {
+    totalProcessed: recordCount,
+    hasMore: true,
+    iterationsInChunk: iterations,
+    metadata: { cursor },
+  };
+}
+```
 
-- Base class: `api/src/connectors/base/BaseConnector.ts`
+- Store pagination cursor in `FetchState.metadata` (not only top-level `cursor` unless your API matches).
+- Support `since` → provider incremental filter (`createdAfter`, `date_updated__gte`, etc.).
+- Handle **429** / **5xx**: respect `Retry-After`, exponential backoff; do not log auth headers.
+
+## Webhooks + CDC
+
+| Method | Production use |
+|--------|----------------|
+| `supportsWebhooks()` | Gate in `api/src/routes/webhooks.ts` |
+| `verifyWebhook()` | Signature/secret check; return parsed event |
+| `getWebhookEventMapping()` | Map `eventType` → `{ entity, operation }` |
+| `extractWebhookData()` | `{ id, data }` for CDC ingest |
+| `normalizeBackfillRecord()` | Align webhook payload with backfill shape when they differ |
+| `extractWebhookCdcRecords()` | Override for tests; production uses mapping + extract |
+
+**Webhook callback URL** (generated per flow):
+
+```
+{BASE_URL}/api/webhooks/{workspaceId}/{flowId}
+```
+
+- Local dev: `pnpm dev:tunnel` and set `BASE_URL` / `PUBLIC_URL` to the public HTTPS tunnel origin.
+- Register that URL in the provider; paste provider webhook secret into the **Mako flow** webhook secret field.
+
+**Normalize event type for Mako:** `webhooks.ts` sets `eventType` from `event.type` first. If the provider nests type (e.g. Claap `event.event.type`), flatten in `verifyWebhook`:
+
+```typescript
+return {
+  valid: true,
+  event: {
+    ...parsed,
+    type: parsed.event?.type ?? parsed.type,
+    id: parsed.eventId ?? parsed.id,
+  },
+};
+```
+
+Claap verifies `X-Claap-Webhook-Secret` against `flow.webhookConfig.secret` (shared secret header, not HMAC).
+
+Auto-provisioning (`createWebhookSubscription`) is optional — only if the provider API supports it (Close does; Claap is manual).
+
+## Typed schema (recommended)
+
+Add `schema.ts` with `ConnectorEntitySchema` per entity + `resolveSchema(entity)`:
+
+- Include `MAKO_SYSTEM_FIELDS` from `BaseConnector`.
+- `unknownFieldPolicy: "string"` for forward-compatible APIs.
+- `getEntityMetadata()` may set `layoutSuggestion: { partitionField: "createdAt", partitionGranularity: "day", clusterFields: ["_dataSourceId", "id"] }`.
+
+Used by sync orchestrator (`normalizePayloadBySchema`), CDC consumer, and `GET .../flows/:flowId/schema`.
+
+## Tests
+
+Mirror `api/src/connectors/close/connector.test.ts`:
+
+```bash
+tsx api/src/connectors/<name>/connector.test.ts
+```
+
+Cover: config validation, webhook verify pass/fail, event mapping, `extractWebhookData`, CDC record shape, schema resolution, pagination state — all with **mocked** HTTP (no real API keys in repo).
+
+## Verify before PR
+
+```bash
+pnpm --filter api run lint
+tsx api/src/connectors/<name>/connector.test.ts
+pnpm run lint:all   # includes connector-agnosticism check
+```
+
+Live smoke (credentials in UI/env only, never commit):
+
+1. Create data source with API key → Test connection
+2. CDC flow (`syncEngine: cdc`) + warehouse destination → enable `recordings` (or your entities)
+3. Backfill one entity → confirm rows in destination
+4. Register webhook URL in provider; set flow webhook secret → trigger event → `webhookConfig.lastReceivedAt` updates within ~2 min (CDC cron ingest)
+
+## Reference files
+
+- Base: `api/src/connectors/base/BaseConnector.ts`
 - Registry: `api/src/connectors/registry.ts`
-- Existing example: `api/src/connectors/stripe/connector.ts`
-- Schema rules: `.cursor/rules/15-connector-agnostic.mdc`
+- Complex reference: `api/src/connectors/close/connector.ts`, `close/schema.ts`, `close/connector.test.ts`
+- Simple reference: `api/src/connectors/stripe/connector.ts`
+- Webhook route: `api/src/routes/webhooks.ts`
+- Endpoint helper: `api/src/utils/webhook.utils.ts`
+- Rules: `.cursor/rules/15-connector-agnostic.mdc`
+
+## Rules
+
+- 100% self-contained under `api/src/connectors/<type>/` — no `if (type === "<name>")` outside that folder.
+- UI is schema-driven; no app changes for new connectors.
+- Every `getConfigSchema()` field must be read in the connector client.
