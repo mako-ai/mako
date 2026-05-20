@@ -68,6 +68,9 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "contact", action: "created" },
   { object_type: "contact", action: "updated" },
   { object_type: "contact", action: "deleted" },
+  { object_type: "user", action: "created" },
+  { object_type: "user", action: "updated" },
+  { object_type: "user", action: "deleted" },
   { object_type: "opportunity", action: "created" },
   { object_type: "opportunity", action: "updated" },
   { object_type: "opportunity", action: "deleted" },
@@ -2216,6 +2219,11 @@ export class CloseConnector extends BaseConnector {
       "contact.updated": { entity: "contacts", operation: "upsert" },
       "contact.deleted": { entity: "contacts", operation: "delete" },
 
+      // Users
+      "user.created": { entity: "users", operation: "upsert" },
+      "user.updated": { entity: "users", operation: "upsert" },
+      "user.deleted": { entity: "users", operation: "delete" },
+
       // Opportunities
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
       "opportunity.updated": { entity: "opportunities", operation: "upsert" },
@@ -2337,6 +2345,7 @@ export class CloseConnector extends BaseConnector {
     const entityToObjectTypes: Record<string, string[]> = {
       leads: ["lead"],
       contacts: ["contact"],
+      users: ["user"],
       opportunities: ["opportunity"],
       custom_fields: [
         "custom_fields.lead",
