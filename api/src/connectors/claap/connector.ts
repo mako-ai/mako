@@ -9,6 +9,8 @@ import {
   WebhookEventMapping,
   EntityMetadata,
   NormalizedCdcRecord,
+  ProvisionWebhookOptions,
+  ProvisionWebhookResult,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolveClaapEntitySchema } from "./schema";
@@ -25,6 +27,12 @@ const SUPPORTED_WEBHOOK_EVENTS = [
   "recording_updated",
 ] as const;
 
+type ClaapWebhookRecord = {
+  id: string;
+  url: string;
+  secret?: string;
+};
+
 type ClaapListRecordingsResult = {
   recordings: Record<string, unknown>[];
   pagination: {
@@ -32,6 +40,125 @@ type ClaapListRecordingsResult = {
     totalCount?: number;
   };
 };
+
+function extractClaapResult(data: unknown): unknown {
+  if (data && typeof data === "object" && "result" in data) {
+    return (data as { result: unknown }).result;
+  }
+  return data;
+}
+
+function resolveClaapWebhookUrl(record: unknown): string {
+  if (!record || typeof record !== "object") return "";
+  const candidate = record as Record<string, unknown>;
+  for (const key of ["url", "endpoint", "callbackUrl", "targetUrl"]) {
+    const value = candidate[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function resolveClaapWebhookId(record: unknown): string {
+  if (!record || typeof record !== "object") return "";
+  const candidate = record as Record<string, unknown>;
+  for (const key of ["id", "_id", "webhookId"]) {
+    const value = candidate[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function resolveClaapSigningSecret(record: unknown): string | undefined {
+  if (!record || typeof record !== "object") return undefined;
+  const candidate = record as Record<string, unknown>;
+  for (const key of [
+    "secret",
+    "signingSecret",
+    "signing_secret",
+    "webhookSecret",
+  ]) {
+    const value = candidate[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function normalizeClaapWebhookList(data: unknown): ClaapWebhookRecord[] {
+  const result = extractClaapResult(data);
+  const rawList = Array.isArray(result)
+    ? result
+    : result && typeof result === "object"
+      ? ((result as { webhooks?: unknown }).webhooks ??
+        (result as { data?: unknown }).data ??
+        [])
+      : [];
+
+  if (!Array.isArray(rawList)) return [];
+
+  const normalized: ClaapWebhookRecord[] = [];
+  for (const item of rawList) {
+    const id = resolveClaapWebhookId(item);
+    const url = resolveClaapWebhookUrl(item);
+    if (!id || !url) continue;
+    normalized.push({
+      id,
+      url,
+      secret: resolveClaapSigningSecret(item),
+    });
+  }
+  return normalized;
+}
+
+function normalizeClaapWebhookRecord(data: unknown): ClaapWebhookRecord | null {
+  const result = extractClaapResult(data);
+  const candidate =
+    result && typeof result === "object"
+      ? ((result as { webhook?: unknown }).webhook ?? result)
+      : data;
+  const id = resolveClaapWebhookId(candidate);
+  const url = resolveClaapWebhookUrl(candidate);
+  if (!id) return null;
+  return {
+    id,
+    url,
+    secret: resolveClaapSigningSecret(candidate),
+  };
+}
+
+function formatClaapApiError(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    const data = error.response?.data as
+      | { error?: { message?: string }; message?: string }
+      | string
+      | undefined;
+
+    const directError =
+      typeof data === "string"
+        ? data
+        : typeof data?.error?.message === "string"
+          ? data.error.message
+          : typeof data?.message === "string"
+            ? data.message
+            : undefined;
+
+    const serialized =
+      !directError && data && typeof data === "object"
+        ? JSON.stringify(data)
+        : undefined;
+
+    const detail = directError || serialized || error.message;
+    return status ? `HTTP ${status}: ${detail}` : detail;
+  }
+
+  return error instanceof Error ? error.message : String(error);
+}
 
 export class ClaapConnector extends BaseConnector {
   private claapApi: AxiosInstance | null = null;
@@ -371,6 +498,114 @@ export class ClaapConnector extends BaseConnector {
 
   supportsWebhooks(): boolean {
     return true;
+  }
+
+  supportsWebhookProvisioning(): boolean {
+    return true;
+  }
+
+  async createWebhookSubscription(
+    options: ProvisionWebhookOptions,
+  ): Promise<ProvisionWebhookResult> {
+    const api = this.getClaapClient();
+
+    const requestedEvents = Array.isArray(options.events)
+      ? options.events
+          .map(event => event.trim())
+          .filter((event): event is string => event.length > 0)
+      : [];
+
+    const effectiveEvents =
+      requestedEvents.length > 0
+        ? requestedEvents
+        : this.getWebhookEventsForEntities(options.enabledEntities ?? []);
+
+    const unsupported = effectiveEvents.filter(
+      event =>
+        !SUPPORTED_WEBHOOK_EVENTS.includes(
+          event as (typeof SUPPORTED_WEBHOOK_EVENTS)[number],
+        ),
+    );
+    if (requestedEvents.length > 0 && unsupported.length > 0) {
+      logger.warn("Ignoring unsupported Claap webhook events", {
+        unsupportedEvents: unsupported,
+      });
+    }
+
+    const events = effectiveEvents.filter(event =>
+      SUPPORTED_WEBHOOK_EVENTS.includes(
+        event as (typeof SUPPORTED_WEBHOOK_EVENTS)[number],
+      ),
+    );
+
+    if (events.length === 0) {
+      throw new Error(
+        requestedEvents.length > 0
+          ? `No valid Claap webhook events configured. Unsupported events: ${unsupported.join(", ")}`
+          : "No valid Claap webhook events configured",
+      );
+    }
+
+    const payload = {
+      url: options.endpointUrl,
+      events,
+    };
+
+    try {
+      const existingResponse = await this.executeWithRetry(() =>
+        api.get("/v1/webhooks"),
+      );
+      const existing = normalizeClaapWebhookList(existingResponse.data).find(
+        webhook => webhook.url === options.endpointUrl,
+      );
+
+      if (existing) {
+        try {
+          await this.executeWithRetry(() =>
+            api.put(`/v1/webhooks/${existing.id}`, payload),
+          );
+          logger.info(
+            "Updated Claap webhook events for existing subscription",
+            {
+              webhookId: existing.id,
+              eventCount: events.length,
+            },
+          );
+        } catch (updateError) {
+          logger.warn("Could not update events on existing Claap webhook", {
+            webhookId: existing.id,
+            error: updateError,
+          });
+        }
+
+        return {
+          providerWebhookId: existing.id,
+          endpointUrl: options.endpointUrl,
+          signingSecret: existing.secret,
+        };
+      }
+
+      const response = await this.executeWithRetry(() =>
+        api.post("/v1/webhooks", payload),
+      );
+      const created = normalizeClaapWebhookRecord(response.data);
+      const providerWebhookId = created?.id;
+      if (!providerWebhookId) {
+        throw new Error(
+          "Claap webhook created but no subscription id returned by API",
+        );
+      }
+
+      return {
+        providerWebhookId,
+        endpointUrl: options.endpointUrl,
+        signingSecret: created.secret,
+      };
+    } catch (error) {
+      throw new Error(
+        `Failed to create Claap webhook subscription: ${formatClaapApiError(error)}`,
+      );
+    }
   }
 
   async verifyWebhook(

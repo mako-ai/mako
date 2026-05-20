@@ -30,8 +30,10 @@ export function resolveSourceTimestamp(
   const candidates = [
     payload?.date_updated,
     payload?.updated_at,
+    payload?.updatedAt,
     payload?.date_created,
     payload?.created_at,
+    payload?.createdAt,
     payload?.timestamp,
     payload?._syncedAt,
   ];

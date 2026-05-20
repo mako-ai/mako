@@ -210,6 +210,7 @@ async function runWebhookEventProcess({
         // Apply connector-specific record normalization so the webhook payload
         // matches the backfill shape (e.g. lead allowlist + custom field flattening).
         let normalizedPayload = flatData;
+        let connectorSourceTs: Date | undefined;
         if (isCdcEnabled && connector.normalizeBackfillRecord) {
           const cdcRecord = connector.normalizeBackfillRecord(
             resolvedEntity,
@@ -217,6 +218,9 @@ async function runWebhookEventProcess({
           );
           if (cdcRecord?.payload) {
             normalizedPayload = cdcRecord.payload as Record<string, unknown>;
+          }
+          if (cdcRecord?.sourceTs) {
+            connectorSourceTs = cdcRecord.sourceTs;
           }
         }
 
@@ -264,10 +268,12 @@ async function runWebhookEventProcess({
         }
 
         if (isCdcEnabled && flow.tableDestination?.connectionId) {
-          const sourceTs = resolveSourceTimestamp(
-            documentData,
-            new Date(webhookEvent.receivedAt),
-          );
+          const sourceTs =
+            connectorSourceTs ??
+            resolveSourceTimestamp(
+              documentData,
+              new Date(webhookEvent.receivedAt),
+            );
           await cdcIngestService.appendNormalizedEvents({
             workspaceId: String(flow.workspaceId),
             flowId: String(flowId),
@@ -1200,6 +1206,7 @@ async function ingestPendingWebhookEvents(logger: {
       }
 
       let normalizedPayload = flatData;
+      let connectorSourceTs: Date | undefined;
       if (connector.normalizeBackfillRecord) {
         const cdcRecord = connector.normalizeBackfillRecord(
           resolvedEntity,
@@ -1207,6 +1214,9 @@ async function ingestPendingWebhookEvents(logger: {
         );
         if (cdcRecord?.payload) {
           normalizedPayload = cdcRecord.payload as Record<string, unknown>;
+        }
+        if (cdcRecord?.sourceTs) {
+          connectorSourceTs = cdcRecord.sourceTs;
         }
       }
 
@@ -1240,10 +1250,9 @@ async function ingestPendingWebhookEvents(logger: {
         continue;
       }
 
-      const sourceTs = resolveSourceTimestamp(
-        documentData,
-        new Date(webhookEvent.receivedAt),
-      );
+      const sourceTs =
+        connectorSourceTs ??
+        resolveSourceTimestamp(documentData, new Date(webhookEvent.receivedAt));
 
       cdcEvents.push({
         entity: resolvedEntity,
