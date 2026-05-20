@@ -147,6 +147,7 @@ function testSupportsResumableFetching() {
   const connector = createConnector();
   assert.equal(connector.supportsResumableFetching(), true);
   assert.equal(connector.supportsWebhooks(), true);
+  assert.equal(connector.supportsWebhookProvisioning(), true);
 }
 
 function testEntityMetadataIncludesLayoutSuggestion() {

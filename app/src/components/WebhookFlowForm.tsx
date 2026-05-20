@@ -54,6 +54,7 @@ interface EntityLayoutConfig {
 }
 
 const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set(["stripe", "close", "claap"]);
+const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set(["close", "claap"]);
 
 const CLAAP_ENTITY_FIELDS: Record<string, string[]> = {
   recordings: [
@@ -443,7 +444,15 @@ export function WebhookFlowForm({
   const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
   const selectedConnectorType = selectedConnector?.type;
   const canProvisionWebhook =
-    !isNewMode && Boolean(currentFlowId) && selectedConnectorType === "close";
+    !isNewMode &&
+    Boolean(currentFlowId) &&
+    WEBHOOK_PROVISIONING_CONNECTOR_TYPES.has(selectedConnectorType || "");
+  const provisionProviderLabel =
+    selectedConnectorType === "claap"
+      ? "Claap"
+      : selectedConnectorType === "close"
+        ? "Close"
+        : "Provider";
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -1044,7 +1053,9 @@ export function WebhookFlowForm({
       await useFlowStore.getState().fetchFlows(currentWorkspace.id);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Failed to create in Close",
+        err instanceof Error
+          ? err.message
+          : `Failed to create webhook in ${provisionProviderLabel}`,
       );
     } finally {
       setIsProvisioningWebhook(false);
@@ -1794,7 +1805,8 @@ export function WebhookFlowForm({
                           />
                         </Box>
                         <Typography variant="caption" color="text.secondary">
-                          Copy this URL to your Stripe/Close webhook settings
+                          Copy this URL to your Stripe, Close, or Claap webhook
+                          settings
                         </Typography>
                         {canProvisionWebhook && (
                           <Box
@@ -1813,15 +1825,21 @@ export function WebhookFlowForm({
                               disabled={isSubmitting || isProvisioningWebhook}
                             >
                               {isProvisioningWebhook
-                                ? "Creating in Close..."
-                                : "Create in Close"}
+                                ? `Creating in ${provisionProviderLabel}...`
+                                : `Create in ${provisionProviderLabel}`}
                             </Button>
                             <Typography
                               variant="caption"
                               color="text.secondary"
                             >
-                              One click creates the Close webhook and stores its
-                              signing secret.
+                              One click creates the {provisionProviderLabel}{" "}
+                              webhook
+                              {selectedConnectorType === "close"
+                                ? " and stores its signing secret"
+                                : selectedConnectorType === "claap"
+                                  ? " (copy the secret into this form if Claap shows it once)"
+                                  : ""}
+                              .
                             </Typography>
                           </Box>
                         )}
