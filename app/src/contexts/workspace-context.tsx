@@ -387,7 +387,18 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           { role },
         );
         setMembers(prev =>
-          prev.map(member => (member.userId === userId ? updated : member)),
+          prev.map(member =>
+            member.userId === userId
+              ? {
+                  ...member,
+                  ...updated,
+                  id: updated.id || member.id,
+                  userId: updated.userId || member.userId,
+                  email: updated.email || member.email,
+                  joinedAt: updated.joinedAt || member.joinedAt,
+                }
+              : member,
+          ),
         );
       } catch (err: any) {
         setError(err.message || "Failed to update member role");
