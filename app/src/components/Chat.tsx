@@ -86,7 +86,9 @@ import {
 import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
+  DASHBOARD_EXECUTOR_TOOL_NAMES,
   LONG_RUNNING_DASHBOARD_TOOL_NAMES,
+  getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
 import { UpgradePrompt } from "./UpgradePrompt";
@@ -1496,55 +1498,70 @@ const Chat: React.FC<ChatProps> = ({
         }
 
         // --- Dashboard tools (client-side) ---
-        try {
-          const activeDashboardTool = LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(
-            toolName as AgentToolName,
-          )
-            ? registerActiveClientToolCall(toolName, toolCall.toolCallId)
-            : null;
+        if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const isLongRunningDashboardTool =
+            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName);
 
-          const dashboardToolOutput = await executeDashboardAgentTool(
-            toolName,
-            input,
-            activeDashboardTool
-              ? {
-                  executionId: activeDashboardTool.executionId,
-                  signal: activeDashboardTool.abortController.signal,
+          if (isLongRunningDashboardTool) {
+            const activeDashboardTool = registerActiveClientToolCall(
+              toolName,
+              toolCall.toolCallId,
+            );
+
+            // Fire-and-forget for long-running dashboard work. The AI SDK
+            // awaits onToolCall while reading the SSE stream; awaiting here can
+            // prevent the finish chunk from being processed, which delays the
+            // automatic continuation until the HTTP stream times out.
+            void (async () => {
+              try {
+                const dashboardToolOutput = await executeDashboardAgentTool(
+                  toolName,
+                  input,
+                  {
+                    executionId: activeDashboardTool.executionId,
+                    signal: activeDashboardTool.abortController.signal,
+                  },
+                );
+
+                settleActiveClientToolCall(
+                  toolName,
+                  toolCall.toolCallId,
+                  dashboardToolOutput ?? {
+                    success: false,
+                    error: `Dashboard tool "${toolName}" did not return a result.`,
+                  },
+                );
+              } catch (dashboardError) {
+                if (manualStopRequestedRef.current) {
+                  return;
                 }
-              : undefined,
-          );
-
-          if (dashboardToolOutput !== null) {
-            if (activeDashboardTool) {
-              settleActiveClientToolCall(
-                toolName,
-                toolCall.toolCallId,
-                dashboardToolOutput,
-              );
-            } else {
-              addToolOutput({
-                tool: toolName,
-                toolCallId: toolCall.toolCallId,
-                output: dashboardToolOutput,
-              });
-            }
+                settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                  success: false,
+                  error:
+                    dashboardError instanceof Error
+                      ? dashboardError.message
+                      : "Dashboard tool execution failed",
+                });
+              }
+            })();
             return;
           }
-        } catch (dashboardError) {
-          if (
-            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName)
-          ) {
-            if (manualStopRequestedRef.current) {
-              return;
-            }
-            settleActiveClientToolCall(toolName, toolCall.toolCallId, {
-              success: false,
-              error:
-                dashboardError instanceof Error
-                  ? dashboardError.message
-                  : "Dashboard tool execution failed",
+
+          try {
+            const dashboardToolOutput = await executeDashboardAgentTool(
+              toolName,
+              input,
+            );
+
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output: dashboardToolOutput ?? {
+                success: false,
+                error: `Dashboard tool "${toolName}" did not return a result.`,
+              },
             });
-          } else {
+          } catch (dashboardError) {
             addToolOutput({
               tool: toolName,
               toolCallId: toolCall.toolCallId,
@@ -1713,6 +1730,19 @@ const Chat: React.FC<ChatProps> = ({
               success: true,
               flowTabs,
               message: `Found ${flowTabs.length} open flow tab(s)`,
+            },
+          });
+          return;
+        }
+
+        const manifestEntry = getAgentToolManifestEntry(toolName);
+        if (manifestEntry?.execution === "client") {
+          addToolOutput({
+            tool: toolName,
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Client-side tool "${toolName}" is registered but has no browser handler.`,
             },
           });
           return;
