@@ -560,15 +560,11 @@ const userMessagePaperSx = {
   backgroundColor: "background.paper",
   overflow: "hidden",
 } as const;
-const userMessageBoxSx = {
+const userMessageTextSx = {
   maxWidth: "100%",
-  "& .MuiListItemText-primary": {
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    overflowWrap: "break-word",
-    overflow: "visible",
-    textOverflow: "unset",
-  },
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  overflowWrap: "break-word",
 } as const;
 const assistantMessageSx = {
   flex: 1,
@@ -689,15 +685,13 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
               </Box>
             )}
             {textContent && (
-              <Box sx={userMessageBoxSx}>
-                <ListItemText
-                  primary={textContent}
-                  primaryTypographyProps={{
-                    variant: "body2",
-                    color: "text.primary",
-                  }}
-                />
-              </Box>
+              <Typography
+                variant="body2"
+                color="text.primary"
+                sx={userMessageTextSx}
+              >
+                {textContent}
+              </Typography>
             )}
           </Paper>
         </Box>
