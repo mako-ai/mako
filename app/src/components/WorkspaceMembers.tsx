@@ -102,6 +102,11 @@ export function WorkspaceMembers() {
     userId: string,
     newRole: "admin" | "member" | "viewer",
   ) => {
+    if (!userId) {
+      setError("Cannot update role for a member with missing user details");
+      return;
+    }
+
     try {
       await updateMemberRole(userId, newRole);
     } catch (error: any) {
@@ -110,6 +115,11 @@ export function WorkspaceMembers() {
   };
 
   const handleRemoveMember = async (userId: string) => {
+    if (!userId) {
+      setError("Cannot remove a member with missing user details");
+      return;
+    }
+
     if (window.confirm("Are you sure you want to remove this member?")) {
       try {
         await removeMember(userId);
@@ -157,7 +167,7 @@ export function WorkspaceMembers() {
   const rows: MemberRow[] = useMemo(() => {
     const memberRows: MemberRow[] = members.map(member => ({
       id: member.id,
-      email: member.email,
+      email: member.email ?? "",
       role: member.role,
       status: "active" as const,
       joinedAt: member.joinedAt,
@@ -166,7 +176,7 @@ export function WorkspaceMembers() {
 
     const inviteRows: MemberRow[] = invites.map(invite => ({
       id: invite.id,
-      email: invite.email,
+      email: invite.email ?? "",
       role: invite.role,
       status: "pending" as const,
       expiresAt: invite.expiresAt,
@@ -246,6 +256,14 @@ export function WorkspaceMembers() {
           </TableHead>
           <TableBody>
             {rows.map(row => {
+              const displayEmail = row.email || "Unknown user";
+              const avatarLabel =
+                displayEmail.trim().charAt(0).toUpperCase() || "?";
+              const rowDate =
+                row.status === "active" ? row.joinedAt : row.expiresAt;
+              const formattedDate = rowDate
+                ? new Date(rowDate).toLocaleDateString()
+                : "Unknown";
               const isCurrentUser = row.email === user?.email;
               const isOwner = row.role === "owner";
               const canEdit = canManageMembers && !isOwner && !isCurrentUser;
@@ -260,10 +278,10 @@ export function WorkspaceMembers() {
                         {row.status === "pending" ? (
                           <Email />
                         ) : (
-                          row.email[0].toUpperCase()
+                          avatarLabel
                         )}
                       </Avatar>
-                      <Typography variant="body2">{row.email}</Typography>
+                      <Typography variant="body2">{displayEmail}</Typography>
                     </Box>
                   </TableCell>
                   <TableCell>
@@ -284,11 +302,7 @@ export function WorkspaceMembers() {
                   <TableCell>
                     <Typography variant="caption" color="text.secondary">
                       {row.status === "active" ? "Joined" : "Expires"}{" "}
-                      {new Date(
-                        row.status === "active"
-                          ? (row.joinedAt ?? "")
-                          : (row.expiresAt ?? ""),
-                      ).toLocaleDateString()}
+                      {formattedDate}
                     </Typography>
                   </TableCell>
                   <TableCell>

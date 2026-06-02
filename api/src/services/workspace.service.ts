@@ -236,7 +236,8 @@ export class WorkspaceService {
       role,
       joinedAt: new Date(),
     });
-    return member.save();
+    await member.save();
+    return member.populate("userId", "email");
   }
 
   /**
@@ -254,7 +255,7 @@ export class WorkspaceService {
       },
       { role: newRole },
       { new: true },
-    );
+    ).populate("userId", "email");
   }
 
   /**

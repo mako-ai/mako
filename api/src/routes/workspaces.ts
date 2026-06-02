@@ -16,6 +16,29 @@ const logger = loggers.workspace();
 
 export const workspaceRoutes = new Hono();
 
+type WorkspaceMemberResponseSource = {
+  _id: unknown;
+  userId?: unknown;
+  role: string;
+  joinedAt: unknown;
+};
+
+function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
+  const populatedUser =
+    member.userId && typeof member.userId === "object"
+      ? (member.userId as { _id?: unknown; email?: unknown })
+      : null;
+
+  return {
+    id: member._id,
+    userId: populatedUser?._id ?? member.userId,
+    email:
+      typeof populatedUser?.email === "string" ? populatedUser.email : "",
+    role: member.role,
+    joinedAt: member.joinedAt,
+  };
+}
+
 // Get pending invitations for current user's email
 workspaceRoutes.get(
   "/pending-invites",
@@ -672,13 +695,7 @@ workspaceRoutes.get(
 
       return c.json({
         success: true,
-        data: members.map((member: any) => ({
-          id: member._id,
-          userId: member.userId._id || member.userId,
-          email: member.userId.email || "",
-          role: member.role,
-          joinedAt: member.joinedAt,
-        })),
+        data: members.map(serializeWorkspaceMember),
       });
     } catch (error) {
       logger.error("Error getting members", { error });
@@ -737,12 +754,7 @@ workspaceRoutes.post(
       return c.json(
         {
           success: true,
-          data: {
-            id: member._id,
-            userId: member.userId,
-            role: member.role,
-            joinedAt: member.joinedAt,
-          },
+          data: serializeWorkspaceMember(member),
         },
         201,
       );
@@ -812,12 +824,7 @@ workspaceRoutes.put(
 
       return c.json({
         success: true,
-        data: {
-          id: updatedMember._id,
-          userId: updatedMember.userId,
-          role: updatedMember.role,
-          joinedAt: updatedMember.joinedAt,
-        },
+        data: serializeWorkspaceMember(updatedMember),
       });
     } catch (error) {
       logger.error("Error updating member role", { error });
