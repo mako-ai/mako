@@ -1,0 +1,166 @@
+---
+title: "Common Table Expressions (CTEs) in SQLite"
+description: "Learn how to use SQLite common table expressions: ordinary CTEs with WITH, recursive CTEs with WITH RECURSIVE, materialization hints, and practical hierarchy and series examples."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "cte", "recursive-queries"]
+date: "2026-06-02"
+---
+
+A common table expression (CTE) is a named, temporary result set that exists only for the duration of a single SQL statement. SQLite has supported CTEs since **version 3.8.3** (February 2014). They behave like a [view](/guides/sqlite/views) scoped to one query, and they make complex statements easier to read by factoring subqueries out into named blocks.
+
+There are two kinds: ordinary and recursive.
+
+## Ordinary CTEs
+
+You create a CTE by prepending a `WITH` clause to a `SELECT`, `INSERT`, `UPDATE`, or `DELETE` statement.
+
+```sql
+WITH active_users AS (
+  SELECT id, name, country
+  FROM users
+  WHERE active = 1
+)
+SELECT * FROM active_users WHERE country = 'US';
+```
+
+The `active_users` CTE reads like a temporary view. You can reference it multiple times in the same statement, which is the main advantage over a derived table.
+
+### Chaining Multiple CTEs
+
+A single `WITH` clause can define several CTEs separated by commas. A later CTE can reference an earlier one.
+
+```sql
+WITH
+  recent_orders AS (
+    SELECT * FROM orders WHERE order_date >= '2026-01-01'
+  ),
+  order_totals AS (
+    SELECT customer_id, SUM(amount) AS total
+    FROM recent_orders
+    GROUP BY customer_id
+  )
+SELECT c.name, t.total
+FROM order_totals t
+JOIN customers c ON c.id = t.customer_id
+ORDER BY t.total DESC;
+```
+
+This staged approach keeps each transformation readable instead of nesting subqueries several levels deep.
+
+### CTEs vs. Subqueries vs. Views
+
+| | CTE | Subquery | View |
+|---|---|---|---|
+| Scope | Single statement | Single statement | Persistent (until dropped) |
+| Reusable in query | Yes | No (must repeat) | Yes |
+| Recursive | Yes | No | No (unless wrapping a recursive CTE) |
+| Stored in schema | No | No | Yes |
+
+Reach for a CTE when you need to reference the same intermediate result more than once in a query, or when nesting makes the statement hard to follow. Reach for a view when the same logic is reused across many queries.
+
+## Recursive CTEs
+
+A recursive CTE walks trees and graphs, something ordinary SQL can't do. The structure is fixed:
+
+1. An **anchor** (initial) query
+2. `UNION ALL` (or `UNION`)
+3. A **recursive** query that references the CTE itself
+
+```sql
+WITH RECURSIVE counter(n) AS (
+  SELECT 1                 -- anchor
+  UNION ALL
+  SELECT n + 1 FROM counter WHERE n < 10  -- recursive step
+)
+SELECT n FROM counter;
+```
+
+This generates the numbers 1 through 10. The recursion stops when the recursive query returns no rows, here when `n` reaches 10.
+
+### Walking a Hierarchy
+
+The classic use case is an employee org chart or any parent/child table.
+
+```sql
+WITH RECURSIVE org AS (
+  SELECT id, name, manager_id, 0 AS depth
+  FROM employees
+  WHERE manager_id IS NULL          -- start at the top
+
+  UNION ALL
+
+  SELECT e.id, e.name, e.manager_id, org.depth + 1
+  FROM employees e
+  JOIN org ON e.manager_id = org.id
+)
+SELECT depth, name FROM org ORDER BY depth, name;
+```
+
+The `depth` column tracks how far down the tree each row sits, which is handy for indenting output.
+
+### Generating a Date Series
+
+Recursive CTEs are a clean way to produce a continuous series, useful for filling gaps in time-based reports.
+
+```sql
+WITH RECURSIVE dates(d) AS (
+  SELECT '2026-01-01'
+  UNION ALL
+  SELECT date(d, '+1 day') FROM dates WHERE d < '2026-01-31'
+)
+SELECT d FROM dates;
+```
+
+Join this against your data with a `LEFT JOIN` to surface days that have no rows.
+
+### UNION vs. UNION ALL
+
+`UNION ALL` keeps every generated row and is faster. `UNION` removes duplicates on each step, which can prevent infinite loops when walking a graph with cycles, at the cost of more work. For trees with no cycles, use `UNION ALL`.
+
+## Materialization Hints
+
+Since **SQLite 3.35.0** (March 2021), you can tell the query planner whether to materialize a CTE (compute it once into a temporary table) or inline it.
+
+```sql
+WITH big_cte AS MATERIALIZED (
+  SELECT ... -- expensive aggregation referenced several times
+)
+SELECT * FROM big_cte a JOIN big_cte b ON ...;
+
+WITH small_cte AS NOT MATERIALIZED (
+  SELECT ... -- cheap, referenced once
+)
+SELECT * FROM small_cte;
+```
+
+Use `MATERIALIZED` when a CTE is expensive and referenced multiple times, so it isn't recomputed each time. Use `NOT MATERIALIZED` when inlining lets the planner push filters into the CTE. Without a hint, SQLite decides on its own, which is the right default for most queries.
+
+## Data-Modifying CTEs
+
+CTEs work in front of `INSERT`, `UPDATE`, and `DELETE`, not just `SELECT`.
+
+```sql
+WITH stale AS (
+  SELECT id FROM sessions WHERE last_seen < date('now', '-30 days')
+)
+DELETE FROM sessions WHERE id IN (SELECT id FROM stale);
+```
+
+The CTE itself is read-only; the data change happens in the outer statement.
+
+## Common Mistakes
+
+**Missing the RECURSIVE keyword** -- a self-referencing CTE needs `WITH RECURSIVE`. Without it, SQLite reports that the CTE table doesn't exist.
+
+**No termination condition** -- a recursive CTE with no `WHERE` to stop it runs until it hits SQLite's recursion limit and errors out. Always bound the recursion.
+
+**Referencing a CTE before it's defined** -- CTEs are read in order within the `WITH` clause. A CTE can use ones defined before it, not after.
+
+**Expecting persistence** -- a CTE vanishes when the statement finishes. If you need it across statements, use a [view](/guides/sqlite/views) or a temporary table instead.
+
+For more on the read patterns CTEs build on, see our SQLite [subqueries](/guides/sqlite/subqueries) and [joins](/guides/sqlite/joins-guide) guides.
+
+## Exploring These Queries
+
+Mako connects to SQLite with AI autocomplete that understands multi-CTE and recursive queries. Try it at [mako.ai](https://mako.ai).
