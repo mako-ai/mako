@@ -1372,9 +1372,23 @@ const Chat: React.FC<ChatProps> = ({
   const activeClientToolCallsRef = useRef(
     new Map<string, ActiveClientToolCall>(),
   );
+  const cancelledClientToolCallIdsRef = useRef(new Set<string>());
+  const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
   workspaceIdRef.current = currentWorkspace?.id;
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
+
+  const cancelActiveClientToolCalls = useCallback((reason: string): void => {
+    for (const activeToolCall of activeClientToolCallsRef.current.values()) {
+      cancelledClientToolCallIdsRef.current.add(activeToolCall.toolCallId);
+      activeToolCall.abortController.abort(reason);
+      activeToolCall.settled = true;
+      void Promise.resolve(activeToolCall.cancel()).catch(() => undefined);
+    }
+
+    activeClientToolCallsRef.current.clear();
+    setActiveClientToolCallCount(0);
+  }, []);
 
   const autoSendWhenComplete = useCallback((options: AutoSendPredicateArgs) => {
     if (manualStopRequestedRef.current) {
@@ -1523,6 +1537,10 @@ const Chat: React.FC<ChatProps> = ({
                   },
                 );
 
+                if (activeDashboardTool.abortController.signal.aborted) {
+                  return;
+                }
+
                 settleActiveClientToolCall(
                   toolName,
                   toolCall.toolCallId,
@@ -1532,7 +1550,10 @@ const Chat: React.FC<ChatProps> = ({
                   },
                 );
               } catch (dashboardError) {
-                if (manualStopRequestedRef.current) {
+                if (
+                  manualStopRequestedRef.current ||
+                  activeDashboardTool.abortController.signal.aborted
+                ) {
                   return;
                 }
                 settleActiveClientToolCall(toolName, toolCall.toolCallId, {
@@ -1768,6 +1789,7 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
+      cancelActiveClientToolCalls("stream-error");
       // When the stream disconnects (e.g. 524 timeout), tool calls may be
       // stuck in "input-available" state. The AI SDK blocks sendMessage until
       // all tool calls are settled. Patch them to "error" so the chat remains
@@ -1831,6 +1853,7 @@ const Chat: React.FC<ChatProps> = ({
       const executionId =
         options?.executionId ?? `chat-tool-${generateObjectId()}`;
 
+      cancelledClientToolCallIdsRef.current.delete(toolCallId);
       activeClientToolCallsRef.current.set(toolCallId, {
         toolCallId,
         toolName,
@@ -1841,6 +1864,7 @@ const Chat: React.FC<ChatProps> = ({
           options?.cancellationOutput ?? createCancellationOutput(toolName),
         settled: false,
       });
+      setActiveClientToolCallCount(activeClientToolCallsRef.current.size);
 
       return { abortController, executionId };
     },
@@ -1853,6 +1877,10 @@ const Chat: React.FC<ChatProps> = ({
       toolCallId: string,
       output: Record<string, unknown>,
     ): void => {
+      if (cancelledClientToolCallIdsRef.current.delete(toolCallId)) {
+        return;
+      }
+
       const activeToolCall = activeClientToolCallsRef.current.get(toolCallId);
       if (!activeToolCall) {
         if (!manualStopRequestedRef.current) {
@@ -1871,6 +1899,7 @@ const Chat: React.FC<ChatProps> = ({
       }
 
       activeClientToolCallsRef.current.delete(toolCallId);
+      setActiveClientToolCallCount(activeClientToolCallsRef.current.size);
     },
     [addToolOutput],
   );
@@ -1879,8 +1908,9 @@ const Chat: React.FC<ChatProps> = ({
     manualStopRequestedRef.current = true;
 
     for (const activeToolCall of activeClientToolCallsRef.current.values()) {
+      cancelledClientToolCallIdsRef.current.add(activeToolCall.toolCallId);
       activeToolCall.abortController.abort("chat-stop");
-      void activeToolCall.cancel();
+      void Promise.resolve(activeToolCall.cancel()).catch(() => undefined);
 
       if (!activeToolCall.settled) {
         activeToolCall.settled = true;
@@ -1893,10 +1923,14 @@ const Chat: React.FC<ChatProps> = ({
     }
 
     activeClientToolCallsRef.current.clear();
+    setActiveClientToolCallCount(0);
     stop();
   }, [addToolOutput, stop]);
 
-  const isLoading = status === "streaming" || status === "submitted";
+  const isLoading =
+    status === "streaming" ||
+    status === "submitted" ||
+    activeClientToolCallCount > 0;
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
   useRenderCount("Chat", {
@@ -2110,6 +2144,7 @@ const Chat: React.FC<ChatProps> = ({
 
   // Create new chat session - just generate a new ID locally (no API call needed)
   const createNewSession = () => {
+    cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     setChatId(generateObjectId());
     setMessages([]);
@@ -2125,6 +2160,7 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const handleSelectSession = (id: string) => {
+    cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     setChatId(id);
     setMessages([]);
