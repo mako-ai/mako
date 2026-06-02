@@ -275,11 +275,7 @@ export function WorkspaceMembers() {
                       <Avatar
                         sx={{ width: 32, height: 32, fontSize: "0.875rem" }}
                       >
-                        {row.status === "pending" ? (
-                          <Email />
-                        ) : (
-                          avatarLabel
-                        )}
+                        {row.status === "pending" ? <Email /> : avatarLabel}
                       </Avatar>
                       <Typography variant="body2">{displayEmail}</Typography>
                     </Box>
