@@ -21,6 +21,7 @@ import {
   CENTER_PANE_MIN_WIDTH_PX,
   DEFAULT_LEFT_PANE_WIDTH_PX,
   DEFAULT_RIGHT_PANE_WIDTH_PX,
+  SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
   SIDE_PANEL_MAX_WIDTH_PX,
   SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
@@ -97,6 +98,8 @@ function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
+  const closeLeftPane = useUIStore(state => state.closeLeftPane);
+  const closeRightPane = useUIStore(state => state.closeRightPane);
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
@@ -191,10 +194,18 @@ function MainApp() {
       const el =
         side === "left" ? leftPaneElRef.current : rightPaneElRef.current;
       let finalWidth = startWidth;
+      let shouldCollapse = false;
 
       const onMove = (ev: PointerEvent) => {
         const delta = ev.clientX - startX;
         const raw = side === "left" ? startWidth + delta : startWidth - delta;
+        shouldCollapse = raw < SIDE_PANEL_COLLAPSE_THRESHOLD_PX;
+        if (shouldCollapse) {
+          finalWidth = 0;
+          if (el) el.style.width = "0px";
+          return;
+        }
+
         finalWidth = clamp(raw, SIDE_PANEL_MIN_WIDTH_PX, maxWidth);
         if (el) el.style.width = `${finalWidth}px`;
       };
@@ -204,6 +215,15 @@ function MainApp() {
         window.removeEventListener("pointerup", onUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+
+        if (shouldCollapse) {
+          if (side === "left") {
+            closeLeftPane();
+          } else {
+            closeRightPane();
+          }
+          return;
+        }
 
         if (side === "left") {
           setLeftWidth(finalWidth);
@@ -219,7 +239,7 @@ function MainApp() {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [leftPaneOpen, rightPaneOpen, setPaneWidths],
+    [closeLeftPane, closeRightPane, leftPaneOpen, rightPaneOpen, setPaneWidths],
   );
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
