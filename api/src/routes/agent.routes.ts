@@ -55,6 +55,11 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
 import { getEffectiveBillingPlan } from "../billing/config";
 import {
+  decodeAttachmentKey,
+  getChatAttachmentStore,
+  readAttachmentAsDataUrl,
+} from "../services/chat-attachment-store.service";
+import {
   getAgentFactory,
   detectAgentId,
   getAllAgentMeta,
@@ -67,6 +72,76 @@ import { toNum, extractTokenCounts } from "../utils/safe-num";
 const logger = loggers.agent();
 
 export const agentRoutes = new Hono();
+
+function getStoredAttachmentKey(
+  part: Record<string, unknown>,
+  workspaceId: string,
+): string | null {
+  if (typeof part.storageKey === "string" && part.storageKey.length > 0) {
+    return part.storageKey.split("/").includes(workspaceId)
+      ? part.storageKey
+      : null;
+  }
+
+  if (typeof part.url !== "string") {
+    return null;
+  }
+
+  const marker = "/chat-attachments/";
+  const markerIndex = part.url.indexOf(marker);
+  if (markerIndex === -1) {
+    return null;
+  }
+
+  const attachmentId = part.url
+    .slice(markerIndex + marker.length)
+    .split(/[/?#]/)[0];
+  const decoded = decodeAttachmentKey(attachmentId);
+  return decoded?.split("/").includes(workspaceId) ? decoded : null;
+}
+
+async function hydrateChatAttachmentUrlsForModel(
+  messages: UIMessage[],
+  workspaceId: string,
+): Promise<UIMessage[]> {
+  const store = getChatAttachmentStore();
+
+  return Promise.all(
+    messages.map(async msg => {
+      const parts = msg.parts ?? [];
+      const hydratedParts = await Promise.all(
+        parts.map(async part => {
+          const p = part as Record<string, unknown>;
+          if (p.type !== "file") {
+            return part;
+          }
+
+          const storageKey = getStoredAttachmentKey(p, workspaceId);
+          const mediaType = p.mediaType;
+          if (!storageKey || typeof mediaType !== "string") {
+            return part;
+          }
+
+          try {
+            const signedUrl = await store.getSignedUrl(storageKey, 3600);
+            if (signedUrl) {
+              return { ...p, url: signedUrl };
+            }
+          } catch (error) {
+            logger.warn("Failed to sign chat attachment for model", {
+              error,
+              storageKey,
+            });
+          }
+
+          const dataUrl = await readAttachmentAsDataUrl(storageKey, mediaType);
+          return dataUrl ? { ...p, url: dataUrl } : part;
+        }),
+      );
+      return { ...msg, parts: hydratedParts as UIMessage["parts"] };
+    }),
+  );
+}
 
 // Apply unified auth middleware to all routes
 agentRoutes.use("*", unifiedAuthMiddleware);
@@ -604,7 +679,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Sanitize messages to remove incomplete tool calls from interrupted streams
   // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
-  const sanitizedMessages = sanitizeMessagesForModel(messages);
+  const modelReadyMessages = await hydrateChatAttachmentUrlsForModel(
+    messages,
+    workspaceId,
+  );
+  const sanitizedMessages = sanitizeMessagesForModel(modelReadyMessages);
 
   // Convert UI messages (from useChat) to model messages (for streamText)
   const modelMessages = await convertToModelMessages(sanitizedMessages);

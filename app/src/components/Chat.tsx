@@ -676,6 +676,8 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                     component="img"
                     src={fp.url}
                     alt="Attached image"
+                    loading="lazy"
+                    decoding="async"
                     sx={{
                       maxWidth: 200,
                       maxHeight: 200,
@@ -845,6 +847,13 @@ interface ImageAttachment {
   previewUrl: string;
 }
 
+type DurableFileUIPart = FileUIPart & {
+  storageKey?: string;
+  attachmentId?: string;
+  filename?: string;
+  size?: number;
+};
+
 interface ChatInputAreaProps {
   onSubmit: (text: string, files?: FileUIPart[]) => void;
   onStop: () => void;
@@ -852,15 +861,52 @@ interface ChatInputAreaProps {
   disabled: boolean;
   focusKey: string | number;
   paletteMode: "light" | "dark";
+  workspaceId?: string;
+  chatId: string;
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
+async function uploadChatImageAttachment(options: {
+  workspaceId: string;
+  chatId: string;
+  file: File;
+}): Promise<DurableFileUIPart> {
+  const form = new FormData();
+  form.set("chatId", options.chatId);
+  form.set("file", options.file);
+
+  const response = await fetch(
+    `/api/workspaces/${options.workspaceId}/chat-attachments`,
+    {
+      method: "POST",
+      body: form,
+    },
+  );
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+    throw new Error(payload?.error || "Failed to upload image attachment");
+  }
+
+  const uploaded = (await response.json()) as {
+    url: string;
+    storageKey?: string;
+    attachmentId?: string;
+    mediaType: string;
+    filename?: string;
+    size?: number;
+  };
+
+  return {
+    type: "file",
+    url: uploaded.url,
+    mediaType: uploaded.mediaType,
+    filename: uploaded.filename || options.file.name || undefined,
+    storageKey: uploaded.storageKey,
+    attachmentId: uploaded.attachmentId,
+    size: uploaded.size,
+  };
 }
 
 const ChatInputArea = React.memo(
@@ -871,10 +917,13 @@ const ChatInputArea = React.memo(
     disabled,
     focusKey,
     paletteMode: _paletteMode,
+    workspaceId,
+    chatId,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
     const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
+    const [submissionError, setSubmissionError] = useState<string | null>(null);
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imagesRef = useRef<ImageAttachment[]>([]);
@@ -907,6 +956,7 @@ const ChatInputArea = React.memo(
     const addImages = useCallback((files: File[]) => {
       const imageFiles = files.filter(f => f.type.startsWith("image/"));
       if (imageFiles.length === 0) return;
+      setSubmissionError(null);
       setImages(prev => [
         ...prev,
         ...imageFiles.map(file => ({
@@ -955,14 +1005,21 @@ const ChatInputArea = React.memo(
 
       setIsPreparingSubmission(true);
       let fileParts: FileUIPart[] | undefined;
+      setSubmissionError(null);
       try {
         if (hasImages) {
+          if (!workspaceId) {
+            setSubmissionError("Select a workspace before attaching images.");
+            return;
+          }
           fileParts = await Promise.all(
-            currentImages.map(async img => ({
-              type: "file" as const,
-              url: await readFileAsDataUrl(img.file),
-              mediaType: img.file.type,
-            })),
+            currentImages.map(img =>
+              uploadChatImageAttachment({
+                workspaceId,
+                chatId,
+                file: img.file,
+              }),
+            ),
           );
           currentImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
         }
@@ -970,10 +1027,24 @@ const ChatInputArea = React.memo(
         onSubmit(input, fileParts);
         setInput("");
         setImages([]);
+      } catch (error) {
+        setSubmissionError(
+          error instanceof Error
+            ? error.message
+            : "Failed to upload image attachment",
+        );
       } finally {
         setIsPreparingSubmission(false);
       }
-    }, [images, input, isLoading, isPreparingSubmission, onSubmit]);
+    }, [
+      chatId,
+      images,
+      input,
+      isLoading,
+      isPreparingSubmission,
+      onSubmit,
+      workspaceId,
+    ]);
 
     const hasContent = input.trim() || images.length > 0;
     const isSubmitDisabled =
@@ -1000,6 +1071,11 @@ const ChatInputArea = React.memo(
           }}
           onPaste={handlePaste}
         >
+          {submissionError && (
+            <Alert severity="error" sx={{ m: 0.5 }}>
+              {submissionError}
+            </Alert>
+          )}
           {images.length > 0 && (
             <Box
               sx={{
@@ -2532,6 +2608,8 @@ const Chat: React.FC<ChatProps> = ({
         disabled={!currentWorkspace}
         focusKey={`${chatId}-${messages.length}`}
         paletteMode={paletteMode}
+        workspaceId={currentWorkspace?.id}
+        chatId={chatId}
       />
 
       {/* Tool Debug Dialog */}

@@ -522,6 +522,9 @@ export interface IMessagePart {
   url?: string; // Data URL or remote URL of the attachment
   mediaType?: string; // MIME type, e.g. "image/png"
   filename?: string; // Optional original file name
+  storageKey?: string; // Object-store key for durable chat attachments
+  attachmentId?: string; // Encoded storage key used by the authenticated proxy URL
+  size?: number; // Original attachment size in bytes, when known
 }
 
 /**
@@ -1610,6 +1613,9 @@ const ChatSchema = new Schema<IChat>(
             url: String,
             mediaType: String,
             filename: String,
+            storageKey: String,
+            attachmentId: String,
+            size: Number,
           },
         ],
         // Legacy fields - kept for backward compatibility with existing chats

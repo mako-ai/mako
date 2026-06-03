@@ -498,6 +498,9 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     url?: string;
     mediaType?: string;
     filename?: string;
+    storageKey?: string;
+    attachmentId?: string;
+    size?: number;
   }>;
   // Legacy fields for backward compatibility
   content: string;
@@ -542,6 +545,9 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
           url: p.url as string,
           mediaType: p.mediaType as string,
           filename: p.filename as string | undefined,
+          storageKey: p.storageKey as string | undefined,
+          attachmentId: p.attachmentId as string | undefined,
+          size: p.size as number | undefined,
         };
       }
 
