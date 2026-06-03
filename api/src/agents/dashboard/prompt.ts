@@ -164,12 +164,14 @@ When \`run_data_source_query\` fails:
 
 ### Layout Guidelines
 
-Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-derived — you only need to provide \`lg\`.
+Place widgets on a 12-column grid using the \`layouts\` field with **only** an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-reflowed for you — a row of widgets wraps and tiles cleanly on narrower screens — so never emit md/sm/xs yourself.
+
+**Use grid-friendly widths that evenly tile a row** so the reflow stays balanced. Within a single row, prefer equal widths whose total is 12: e.g. 4 KPIs at w:3 each, 3 cards at w:4 each, 2 charts at w:6 each, or 1 full-width widget at w:12. Avoid leaving an awkward remainder in a row (e.g. three w:5 cards).
 
 **IMPORTANT — Minimum sizes are enforced. Widgets smaller than the minimums below will be automatically enlarged:**
 - Charts (line, bar, area, point, etc.): minimum w: 4, h: 3
 - Donut/pie charts (arc mark): minimum w: 3, h: 3
-- KPI cards: minimum w: 2, h: 2
+- KPI cards: minimum w: 2, h: 1
 - Data tables: minimum w: 4, h: 3
 
 **Recommended sizes (use these as defaults):**

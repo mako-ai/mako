@@ -17,7 +17,7 @@ import {
   Divider,
   Alert,
 } from "@mui/material";
-import { Copy, Trash2 } from "lucide-react";
+import { Copy, RotateCcw, Trash2 } from "lucide-react";
 import { useDashboardStore } from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useConsoleStore } from "../../store/consoleStore";
@@ -242,6 +242,41 @@ export default function DashboardSettingsDialog({
             disabled={isReadOnly}
           />
         </Box>
+
+        {!isReadOnly && (
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 2,
+            }}
+          >
+            <Box>
+              <Typography variant="body2">Responsive layout</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Smaller screens are arranged automatically from your
+                large-screen layout. Resetting clears any manual tablet/mobile
+                tweaks.
+              </Typography>
+            </Box>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<RotateCcw size={16} />}
+              onClick={() => {
+                if (dashboardId) {
+                  useDashboardStore
+                    .getState()
+                    .resetResponsiveLayouts(dashboardId);
+                }
+              }}
+              sx={{ flexShrink: 0 }}
+            >
+              Reset to auto
+            </Button>
+          </Box>
+        )}
 
         <FormControlLabel
           control={

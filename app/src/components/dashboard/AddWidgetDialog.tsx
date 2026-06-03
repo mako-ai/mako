@@ -22,7 +22,7 @@ import {
   type DashboardWidget,
 } from "../../store/dashboardStore";
 import { executeDashboardSql } from "../../dashboard-runtime/commands";
-import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
+import { getWidgetSizeDefaults } from "@mako/schemas";
 
 interface AddWidgetDialogProps {
   open: boolean;
@@ -34,14 +34,12 @@ function buildDefaultLayouts(
   type: DashboardWidget["type"],
 ): DashboardWidget["layouts"] {
   const d = getWidgetSizeDefaults(type);
-  return deriveResponsiveLayouts({
-    x: 0,
-    y: 0,
-    w: d.w,
-    h: d.h,
-    minW: d.minW,
-    minH: d.minH,
-  });
+  // Only the `lg` breakpoint is authored; md/sm/xs are auto-reflowed at render.
+  // Min sizes are derived from the widget type at render, so we don't bake them
+  // into stored layouts (keeps the door open to adjusting limits later).
+  return {
+    lg: { x: 0, y: 0, w: d.w, h: d.h },
+  };
 }
 
 export default function AddWidgetDialog({
