@@ -10,11 +10,9 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import type { LeftPaneView } from "./lib/types";
 
-export const DEFAULT_LEFT_PANE_SIZE = 15;
-export const DEFAULT_RIGHT_PANE_SIZE = 20;
-export const SIDE_PANEL_MIN_DEFAULT_WIDTH_PX = 150;
-export const SIDE_PANEL_MAX_DEFAULT_WIDTH_PX = 300;
-export const SIDE_PANEL_COLLAPSE_THRESHOLD_PX = 120;
+export const DEFAULT_LEFT_PANE_WIDTH_PX = 260;
+export const DEFAULT_RIGHT_PANE_WIDTH_PX = 360;
+export const SIDE_PANEL_MIN_WIDTH_PX = 120;
 
 interface ActiveEditorContent {
   content: string;
