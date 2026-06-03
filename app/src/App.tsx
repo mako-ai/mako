@@ -189,7 +189,11 @@ function MainApp() {
     if (panelContainerWidth <= 0 || isHandleDraggingRef.current) return;
 
     const leftPct = leftPaneOpen
-      ? pxToPanelPercent(targetLeftPx, panelContainerWidth, DEFAULT_LEFT_PANE_SIZE)
+      ? pxToPanelPercent(
+          targetLeftPx,
+          panelContainerWidth,
+          DEFAULT_LEFT_PANE_SIZE,
+        )
       : 0;
     const rightPct = rightPaneOpen
       ? pxToPanelPercent(
