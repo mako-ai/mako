@@ -182,6 +182,7 @@ export default function DashboardSettingsDialog({
       .getState()
       .updateDashboard(workspaceId, dashboard._id, {
         widgets: resetWidgets,
+        version: dashboard.version,
       } as any);
   };
 

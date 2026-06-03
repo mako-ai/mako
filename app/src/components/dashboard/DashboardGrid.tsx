@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Box, Typography, IconButton, Tooltip } from "@mui/material";
 import { Database, Plus } from "lucide-react";
 import { ResponsiveGridLayout } from "react-grid-layout";
@@ -104,6 +104,7 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   const widgets = useMemo(() => dashboard?.widgets ?? [], [dashboard]);
   const [activeBreakpoint, setActiveBreakpoint] =
     useState<DashboardBreakpoint>("lg");
+  const isLayoutInteractionRef = useRef(false);
   const crossFilterResolution =
     dashboard?.crossFilter.resolution ?? "intersect";
   const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
@@ -111,6 +112,7 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   const handleLayoutChange = useCallback(
     (_layout: any, allLayouts: Record<string, any>) => {
       if (!dashboard || !dashboardId || !allLayouts || !isEditMode) return;
+      if (!isLayoutInteractionRef.current) return;
       const activeItems = allLayouts[activeBreakpoint];
       if (!Array.isArray(activeItems)) return;
 
@@ -391,6 +393,22 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
         onBreakpointChange={breakpoint =>
           setActiveBreakpoint(breakpoint as DashboardBreakpoint)
         }
+        onDragStart={() => {
+          isLayoutInteractionRef.current = true;
+        }}
+        onResizeStart={() => {
+          isLayoutInteractionRef.current = true;
+        }}
+        onDragStop={() => {
+          window.setTimeout(() => {
+            isLayoutInteractionRef.current = false;
+          }, 0);
+        }}
+        onResizeStop={() => {
+          window.setTimeout(() => {
+            isLayoutInteractionRef.current = false;
+          }, 0);
+        }}
         dragConfig={{ handle: ".drag-handle", enabled: isEditMode }}
         resizeConfig={{ enabled: isEditMode }}
       >
