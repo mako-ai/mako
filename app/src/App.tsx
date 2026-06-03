@@ -93,6 +93,16 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+// Avoid persisting sub-pixel churn (e.g. floating-point % → px round-trips).
+function hasMeaningfulChange(
+  current: number | null,
+  next: number,
+  thresholdPx = 1,
+): boolean {
+  if (current === null) return true;
+  return Math.abs(current - next) > thresholdPx;
+}
+
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
@@ -111,6 +121,10 @@ function MainApp() {
   // distinguish user-initiated resizes (which should be persisted) from
   // window/container resizes (where we keep side panels at a fixed width).
   const isHandleDraggingRef = useRef(false);
+  // Last container width we re-pinned against, so we only react to genuine
+  // container-size changes (not the initial mount or re-renders triggered by
+  // saving a freshly dragged width).
+  const prevPanelContainerWidthRef = useRef(0);
 
   // Initialize with window width to avoid 0 width on first render
   const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
@@ -163,6 +177,18 @@ function MainApp() {
       ? rightPaneWidthPx
       : defaultRightPx;
 
+  // Authoritative pixel widths, mirrored into refs so effects/handlers can
+  // read the latest value without re-subscribing via dependency arrays.
+  const leftWidthPxRef = useRef(targetLeftPx);
+  const rightWidthPxRef = useRef(targetRightPx);
+  leftWidthPxRef.current = targetLeftPx;
+  rightWidthPxRef.current = targetRightPx;
+
+  const toPanelPct = useCallback(
+    (px: number) => (px / panelContainerWidth) * 100,
+    [panelContainerWidth],
+  );
+
   // Convert to percentages for Panel (the library sizes panels in %)
   const leftSizePct =
     panelContainerWidth > 0
@@ -202,10 +228,16 @@ function MainApp() {
 
         // Only save if panel is actually open (size > 0)
         if (leftPct > 0) {
-          updates.leftPaneWidthPx = (leftPct * panelContainerWidth) / 100;
+          const px = (leftPct * panelContainerWidth) / 100;
+          if (hasMeaningfulChange(leftPaneWidthPx, px)) {
+            updates.leftPaneWidthPx = px;
+          }
         }
         if (rightPct > 0) {
-          updates.rightPaneWidthPx = (rightPct * panelContainerWidth) / 100;
+          const px = (rightPct * panelContainerWidth) / 100;
+          if (hasMeaningfulChange(rightPaneWidthPx, px)) {
+            updates.rightPaneWidthPx = px;
+          }
         }
 
         if (Object.keys(updates).length > 0) {
@@ -213,7 +245,7 @@ function MainApp() {
         }
       }, 200);
     },
-    [panelContainerWidth, setPaneWidths],
+    [panelContainerWidth, leftPaneWidthPx, rightPaneWidthPx, setPaneWidths],
   );
 
   // Handle external open/close for Left Pane
@@ -223,7 +255,8 @@ function MainApp() {
       const panel = leftPaneRef.current;
       if (panel && panel.isCollapsed()) {
         panel.expand();
-        panel.resize((defaultLeftPx / panelContainerWidth) * 100);
+        // Restore the user's last width (or frozen default), not a stale default.
+        panel.resize(toPanelPct(leftWidthPxRef.current));
       }
     } else if (!leftPaneOpen && prevLeftOpen.current) {
       const panel = leftPaneRef.current;
@@ -232,7 +265,7 @@ function MainApp() {
       }
     }
     prevLeftOpen.current = leftPaneOpen;
-  }, [leftPaneOpen, defaultLeftPx, panelContainerWidth]);
+  }, [leftPaneOpen, panelContainerWidth, toPanelPct]);
 
   // Handle external open/close for Right Pane
   const prevRightOpen = useRef(rightPaneOpen);
@@ -241,7 +274,8 @@ function MainApp() {
       const panel = rightPaneRef.current;
       if (panel && panel.isCollapsed()) {
         panel.expand();
-        panel.resize((defaultRightPx / panelContainerWidth) * 100);
+        // Restore the user's last width (or frozen default), not a stale default.
+        panel.resize(toPanelPct(rightWidthPxRef.current));
       }
     } else if (!rightPaneOpen && prevRightOpen.current) {
       const panel = rightPaneRef.current;
@@ -250,7 +284,7 @@ function MainApp() {
       }
     }
     prevRightOpen.current = rightPaneOpen;
-  }, [rightPaneOpen, defaultRightPx, panelContainerWidth]);
+  }, [rightPaneOpen, panelContainerWidth, toPanelPct]);
 
   // Keep the side panels at a fixed pixel width when the window/container is
   // resized. react-resizable-panels stores sizes as percentages, so without
@@ -260,31 +294,73 @@ function MainApp() {
   // matching the fixed-sidebar behavior of apps like Slack and Cursor.
   useEffect(() => {
     if (panelContainerWidth <= 0) return;
+
+    const prevWidth = prevPanelContainerWidthRef.current;
+    prevPanelContainerWidthRef.current = panelContainerWidth;
+
+    // Skip the initial mount (defaultSize already handles it) and re-renders
+    // where the container width didn't actually change.
+    if (prevWidth === 0 || prevWidth === panelContainerWidth) return;
     // Don't fight an active manual drag.
     if (isHandleDraggingRef.current) return;
 
     const leftPanel = leftPaneRef.current;
     if (leftPanel && leftPaneOpen && !leftPanel.isCollapsed()) {
-      leftPanel.resize((targetLeftPx / panelContainerWidth) * 100);
+      leftPanel.resize(toPanelPct(leftWidthPxRef.current));
     }
 
     const rightPanel = rightPaneRef.current;
     if (rightPanel && rightPaneOpen && !rightPanel.isCollapsed()) {
-      rightPanel.resize((targetRightPx / panelContainerWidth) * 100);
+      rightPanel.resize(toPanelPct(rightWidthPxRef.current));
     }
-  }, [
-    panelContainerWidth,
-    targetLeftPx,
-    targetRightPx,
-    leftPaneOpen,
-    rightPaneOpen,
-  ]);
+  }, [panelContainerWidth, leftPaneOpen, rightPaneOpen, toPanelPct]);
 
   // Track resize-handle drag state so we can distinguish user-initiated
-  // resizes (persisted) from window resizes (fixed-width side panels).
-  const handleDragging = useCallback((isDragging: boolean) => {
-    isHandleDraggingRef.current = isDragging;
-  }, []);
+  // resizes (persisted) from window resizes (fixed-width side panels). On drag
+  // end we read the panels' final size directly and persist immediately, which
+  // is more precise than relying on the trailing debounced onLayout.
+  const handleDragging = useCallback(
+    (isDragging: boolean) => {
+      isHandleDraggingRef.current = isDragging;
+      if (isDragging || panelContainerWidth <= 0) return;
+
+      if (persistTimeoutRef.current) {
+        clearTimeout(persistTimeoutRef.current);
+        persistTimeoutRef.current = null;
+      }
+
+      const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
+        {};
+
+      const leftPanel = leftPaneRef.current;
+      if (leftPanel && leftPaneOpen && !leftPanel.isCollapsed()) {
+        const px = (leftPanel.getSize() * panelContainerWidth) / 100;
+        if (hasMeaningfulChange(leftPaneWidthPx, px)) {
+          updates.leftPaneWidthPx = px;
+        }
+      }
+
+      const rightPanel = rightPaneRef.current;
+      if (rightPanel && rightPaneOpen && !rightPanel.isCollapsed()) {
+        const px = (rightPanel.getSize() * panelContainerWidth) / 100;
+        if (hasMeaningfulChange(rightPaneWidthPx, px)) {
+          updates.rightPaneWidthPx = px;
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        setPaneWidths(updates);
+      }
+    },
+    [
+      panelContainerWidth,
+      leftPaneOpen,
+      rightPaneOpen,
+      leftPaneWidthPx,
+      rightPaneWidthPx,
+      setPaneWidths,
+    ],
+  );
 
   const defaultLeftPanelSize = leftPaneOpen ? leftSizePct : 0;
   const defaultRightPanelSize = rightPaneOpen ? rightSizePct : 0;
