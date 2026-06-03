@@ -4,6 +4,7 @@ import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
+import { isModelReadyFilePart } from "../utils/message-sanitizer";
 
 const logger = loggers.agent();
 
@@ -506,41 +507,47 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
   }>;
 } {
   // NEW: Store raw parts array - this preserves chronological order
-  const storedParts = (msg.parts || []).map(part => {
-    const p = part as Record<string, unknown>;
-    const partType = p.type as string;
+  const storedParts = (msg.parts || [])
+    .map(part => {
+      const p = part as Record<string, unknown>;
+      const partType = p.type as string;
 
-    if (partType === "text") {
-      return { type: "text", text: p.text as string };
-    }
+      if (partType === "text") {
+        return { type: "text", text: p.text as string };
+      }
 
-    if (partType === "reasoning") {
-      // Reasoning parts may have text in 'text' or 'reasoning' field
-      return {
-        type: "reasoning",
-        reasoning: (p.reasoning as string) || (p.text as string),
-      };
-    }
+      if (partType === "reasoning") {
+        // Reasoning parts may have text in 'text' or 'reasoning' field
+        return {
+          type: "reasoning",
+          reasoning: (p.reasoning as string) || (p.text as string),
+        };
+      }
 
-    // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
-    if (partType.startsWith("tool-") || partType === "dynamic-tool") {
-      const toolName =
-        partType === "dynamic-tool"
-          ? (p.toolName as string)
-          : partType.split("-").slice(1).join("-");
-      return {
-        type: partType,
-        toolCallId: p.toolCallId as string,
-        toolName: toolName || (p.toolName as string),
-        input: p.input ?? {},
-        output: p.output ?? null,
-        state: (p.state as string) || "output-available",
-      };
-    }
+      // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
+      if (partType.startsWith("tool-") || partType === "dynamic-tool") {
+        const toolName =
+          partType === "dynamic-tool"
+            ? (p.toolName as string)
+            : partType.split("-").slice(1).join("-");
+        return {
+          type: partType,
+          toolCallId: p.toolCallId as string,
+          toolName: toolName || (p.toolName as string),
+          input: p.input ?? {},
+          output: p.output ?? null,
+          state: (p.state as string) || "output-available",
+        };
+      }
 
-    // Unknown part type - store as-is
-    return { type: partType, ...p };
-  });
+      if (partType === "file" && !isModelReadyFilePart(p)) {
+        return null;
+      }
+
+      // Unknown part type - store as-is
+      return { type: partType, ...p };
+    })
+    .filter(part => part !== null);
 
   // TODO: Remove legacy field extraction once we're OK with losing backward compatibility
   // for old consumers that read content/reasoning/toolCalls instead of parts.

@@ -1,7 +1,35 @@
 import type { UIMessage } from "ai";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export function isModelReadyFilePart(part: unknown): boolean {
+  if (!isRecord(part) || part.type !== "file") {
+    return false;
+  }
+
+  const mediaType = part.mediaType;
+  const url = part.url;
+  const data = part.data;
+
+  return (
+    typeof mediaType === "string" &&
+    mediaType.length > 0 &&
+    ((typeof url === "string" && url.length > 0) ||
+      typeof data === "string" ||
+      data instanceof Uint8Array)
+  );
+}
+
+function fallbackTextForRole(role: UIMessage["role"]): string {
+  return role === "user"
+    ? "[Attachment unavailable]"
+    : "[Response interrupted]";
+}
+
 /**
- * Sanitize UIMessages by removing incomplete tool parts.
+ * Sanitize UIMessages by removing parts that cannot be converted to model input.
  *
  * When a chat stream is interrupted (user closes browser, network failure, etc.),
  * tool parts may be saved to the database in an incomplete state (e.g., "input-available",
@@ -17,22 +45,22 @@ import type { UIMessage } from "ai";
  *
  * This function filters out incomplete tool parts before sending to the model.
  * Complete tool states: output-available, output-error, output-denied.
+ *
+ * File parts also need validation. AI SDK UI messages may contain historical
+ * file placeholders with only an internal `_id`; those are useful for UI
+ * bookkeeping but are not valid model input and make `streamText` reject the
+ * prompt with "The messages do not match the ModelMessage[] schema."
  */
 export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
   return messages.map(msg => {
-    // Only assistant messages can have tool parts
-    if (msg.role !== "assistant") {
-      return msg;
-    }
-
-    // Empty assistant messages (e.g. from interrupted streams persisted with
+    // Empty messages (e.g. from interrupted streams persisted with
     // no content) must not be forwarded to `convertToModelMessages`, which
     // throws "The messages do not match the ModelMessage[] schema." Replace
-    // with the same placeholder we use for tool-only messages below.
+    // with the same placeholder we use when all parts are removed below.
     if (!msg.parts || msg.parts.length === 0) {
       return {
         ...msg,
-        parts: [{ type: "text" as const, text: "[Response interrupted]" }],
+        parts: [{ type: "text" as const, text: fallbackTextForRole(msg.role) }],
       };
     }
 
@@ -71,6 +99,10 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
     });
 
     const sanitizedParts = partsNormalized.filter(part => {
+      if (part.type === "file") {
+        return isModelReadyFilePart(part);
+      }
+
       const partType = part.type;
 
       // Keep all non-tool parts (text, reasoning, etc.)
@@ -99,7 +131,7 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
     if (sanitizedParts.length === 0) {
       return {
         ...msg,
-        parts: [{ type: "text" as const, text: "[Response interrupted]" }],
+        parts: [{ type: "text" as const, text: fallbackTextForRole(msg.role) }],
       };
     }
 
