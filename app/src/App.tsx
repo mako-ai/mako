@@ -107,7 +107,6 @@ function MainApp() {
   const rightPaneRef = useRef<ImperativePanelHandle | null>(null);
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
   const isPanelDragRef = useRef(false);
-  const prevPanelContainerWidthRef = useRef(0);
 
   // Initialize with window width to avoid 0 width on first render
   const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
@@ -128,18 +127,28 @@ function MainApp() {
     return () => observer.disconnect();
   }, []);
 
-  // Calculate default and initial sizes
-  const defaultLeftPx = clamp(
-    (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
-    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  );
-
-  const defaultRightPx = clamp(
-    (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
-    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  );
+  // Freeze default side panel widths once, so they stay pixel-based and do not
+  // drift with container width changes.
+  const defaultLeftPxRef = useRef<number | null>(null);
+  const defaultRightPxRef = useRef<number | null>(null);
+  if (panelContainerWidth > 0 && defaultLeftPxRef.current === null) {
+    defaultLeftPxRef.current = clamp(
+      (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
+      SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+      SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+    );
+  }
+  if (panelContainerWidth > 0 && defaultRightPxRef.current === null) {
+    defaultRightPxRef.current = clamp(
+      (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
+      SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+      SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+    );
+  }
+  const defaultLeftPx =
+    defaultLeftPxRef.current ?? SIDE_PANEL_MIN_DEFAULT_WIDTH_PX;
+  const defaultRightPx =
+    defaultRightPxRef.current ?? SIDE_PANEL_MIN_DEFAULT_WIDTH_PX;
 
   const resolvedLeftPaneWidthPx =
     leftPaneWidthPx && leftPaneWidthPx > 0 ? leftPaneWidthPx : defaultLeftPx;
@@ -236,13 +245,6 @@ function MainApp() {
   // Keep side panels fixed in pixels on container/window resize.
   useEffect(() => {
     if (panelContainerWidth <= 0) return;
-
-    const previousWidth = prevPanelContainerWidthRef.current;
-    prevPanelContainerWidthRef.current = panelContainerWidth;
-
-    if (previousWidth === 0 || previousWidth === panelContainerWidth) {
-      return;
-    }
     if (isPanelDragRef.current) {
       return;
     }
