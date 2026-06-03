@@ -1,6 +1,37 @@
 import type { UIMessage } from "ai";
 
 /**
+ * Returns true when a `file` UI part is well-formed enough to survive
+ * `convertToModelMessages`. The AI SDK `FileUIPart` schema requires a string
+ * `url` (data URL or remote URL); `mediaType` is also expected. Parts missing
+ * these fields cannot be converted and poison the whole request.
+ */
+function isValidFilePart(
+  part: { type: string } & Record<string, unknown>,
+): boolean {
+  const url = part.url;
+  return typeof url === "string" && url.length > 0;
+}
+
+/**
+ * Drop malformed `file` parts from a message's parts array.
+ *
+ * Historically, file attachments were persisted before the DB schema stored
+ * `url`/`mediaType`, so Mongoose stripped those fields and reduced the part to
+ * `{ type: "file", _id }`. When such a message is replayed, the AI SDK throws
+ * "Invalid prompt: The messages do not match the ModelMessage[] schema." Since
+ * the file payload is unrecoverable, we drop the broken part entirely so the
+ * rest of the conversation (and any sibling text part) still goes through.
+ */
+function dropMalformedFileParts(
+  parts: ReadonlyArray<{ type: string } & Record<string, unknown>>,
+): Array<{ type: string } & Record<string, unknown>> {
+  return parts.filter(part =>
+    part?.type === "file" ? isValidFilePart(part) : true,
+  );
+}
+
+/**
  * Sanitize UIMessages by removing incomplete tool parts.
  *
  * When a chat stream is interrupted (user closes browser, network failure, etc.),
@@ -17,26 +48,48 @@ import type { UIMessage } from "ai";
  *
  * This function filters out incomplete tool parts before sending to the model.
  * Complete tool states: output-available, output-error, output-denied.
+ *
+ * It also drops malformed `file` parts (missing `url`/`mediaType`) on any
+ * message role, which otherwise make `convertToModelMessages` reject the entire
+ * request with "The messages do not match the ModelMessage[] schema."
  */
 export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
   return messages.map(msg => {
-    // Only assistant messages can have tool parts
+    // Drop malformed file parts on every message role first — a single broken
+    // file part (e.g. a legacy `{ type: "file", _id }`) poisons the whole
+    // request, not just assistant messages.
+    const fileSafeParts = dropMalformedFileParts(
+      (msg.parts ?? []) as Array<{ type: string } & Record<string, unknown>>,
+    );
+
+    // Non-assistant messages only need the file-part repair. Guard against a
+    // user/system message being left with zero parts (e.g. it contained only a
+    // broken attachment) — an empty parts array also fails schema validation.
     if (msg.role !== "assistant") {
-      return msg;
+      if (fileSafeParts.length === (msg.parts?.length ?? 0)) {
+        return msg;
+      }
+      if (fileSafeParts.length === 0) {
+        return {
+          ...msg,
+          parts: [{ type: "text" as const, text: "[Attachment removed]" }],
+        };
+      }
+      return { ...msg, parts: fileSafeParts as UIMessage["parts"] };
     }
 
     // Empty assistant messages (e.g. from interrupted streams persisted with
     // no content) must not be forwarded to `convertToModelMessages`, which
     // throws "The messages do not match the ModelMessage[] schema." Replace
     // with the same placeholder we use for tool-only messages below.
-    if (!msg.parts || msg.parts.length === 0) {
+    if (fileSafeParts.length === 0) {
       return {
         ...msg,
         parts: [{ type: "text" as const, text: "[Response interrupted]" }],
       };
     }
 
-    const partsNormalized = msg.parts.map(part => {
+    const partsNormalized = fileSafeParts.map(part => {
       const partType = part.type;
       if (
         typeof partType !== "string" ||
@@ -103,6 +156,6 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
       };
     }
 
-    return { ...msg, parts: sanitizedParts };
+    return { ...msg, parts: sanitizedParts as UIMessage["parts"] };
   });
 }

@@ -494,6 +494,9 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     input?: unknown;
     output?: unknown;
     state?: string;
+    url?: string;
+    mediaType?: string;
+    filename?: string;
   }>;
   // Legacy fields for backward compatibility
   content: string;
@@ -519,6 +522,18 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
       return {
         type: "reasoning",
         reasoning: (p.reasoning as string) || (p.text as string),
+      };
+    }
+
+    // File parts (AI SDK FileUIPart): persist url/mediaType/filename explicitly
+    // so the attachment round-trips. Dropping these fields would reduce the part
+    // to `{ type: "file", _id }` and break convertToModelMessages on replay.
+    if (partType === "file") {
+      return {
+        type: "file",
+        url: p.url as string,
+        mediaType: p.mediaType as string,
+        filename: p.filename as string | undefined,
       };
     }
 
