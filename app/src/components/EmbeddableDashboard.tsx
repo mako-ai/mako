@@ -16,6 +16,7 @@ import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
 import DataTableWidget from "./widgets/DataTableWidget";
 import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import { buildSmartResponsiveLayouts } from "../utils/dashboard-responsive-layouts";
 
 interface EmbedDashboardSpec {
   title: string;
@@ -156,12 +157,12 @@ const EmbeddableDashboard: React.FC = () => {
       static: boolean;
     };
     const result: Record<string, GridItem[]> = {};
+    const smartLayouts = buildSmartResponsiveLayouts(spec.widgets);
+
     for (const bp of breakpoints) {
       const items: GridItem[] = [];
       for (const w of spec.widgets) {
-        const wAny = w as any;
-        const bpLayout =
-          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
+        const bpLayout = smartLayouts[bp]?.[w.id];
         if (!bpLayout) continue;
         items.push({
           i: w.id,
