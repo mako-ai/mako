@@ -14,7 +14,10 @@ import type {
   Dashboard,
   DashboardSessionRuntimeState,
 } from "../../dashboard-runtime/types";
-import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
+import {
+  buildGridLayoutsFromWidgets,
+  getWidgetSizeDefaults,
+} from "@mako/schemas";
 import WidgetContainer from "../widgets/WidgetContainer";
 import MosaicChart from "../widgets/MosaicChart";
 import MosaicKpiCard from "../widgets/MosaicKpiCard";
@@ -107,7 +110,13 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
           if (!Array.isArray(items)) continue;
           const item = items.find((i: any) => i.i === widget.id);
           if (!item) continue;
-          const newPos = { x: item.x, y: item.y, w: item.w, h: item.h };
+          const newPos = {
+            x: item.x,
+            y: item.y,
+            w: item.w,
+            h: item.h,
+            userSet: true as const,
+          };
           const existing = (currentLayouts as any)[bp];
           if (
             !existing ||
@@ -150,70 +159,24 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
     [dashboardId],
   );
 
-  const allGridLayouts = useMemo(() => {
-    const breakpoints = ["lg", "md", "sm", "xs"] as const;
-    type GridItem = {
-      i: string;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-      minW: number;
-      minH: number;
-    };
-    const result: Record<string, GridItem[]> = {};
-    for (const bp of breakpoints) {
-      const items: GridItem[] = [];
-      for (const w of widgets) {
-        const wAny = w as any;
-        const vegaMark =
-          typeof w.vegaLiteSpec?.mark === "string"
-            ? w.vegaLiteSpec.mark
-            : ((w.vegaLiteSpec?.mark as Record<string, unknown> | undefined)
-                ?.type as string | undefined);
-        const sizeDefaults = getWidgetSizeDefaults(w.type, vegaMark);
-
-        let bpLayout =
-          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
-
-        if (!bpLayout && w.layouts?.lg) {
-          const lgWithMins = {
-            ...w.layouts.lg,
-            minW: w.layouts.lg.minW ?? sizeDefaults.minW,
-            minH: w.layouts.lg.minH ?? sizeDefaults.minH,
-          };
-          bpLayout = deriveResponsiveLayouts(lgWithMins)[bp];
-        }
-
-        if (!bpLayout) continue;
-        items.push({
-          i: w.id,
-          x: bpLayout.x ?? 0,
-          y: bpLayout.y ?? 0,
-          w: bpLayout.w ?? sizeDefaults.w,
-          h: bpLayout.h ?? sizeDefaults.h,
-          minW: bpLayout.minW ?? sizeDefaults.minW,
-          minH: bpLayout.minH ?? sizeDefaults.minH,
-        });
-      }
-      if (items.length > 0) result[bp] = items;
-    }
-    if (!result.lg) {
-      result.lg = widgets.map(w => {
-        const sd = getWidgetSizeDefaults(w.type);
-        return {
-          i: w.id,
-          x: 0,
-          y: 0,
-          w: sd.w,
-          h: sd.h,
-          minW: sd.minW,
-          minH: sd.minH,
-        };
-      });
-    }
-    return result;
-  }, [widgets]);
+  const allGridLayouts = useMemo(
+    () =>
+      buildGridLayoutsFromWidgets(widgets, {
+        getMinSize: w => {
+          const widget = w as DashboardWidget;
+          const vegaMark =
+            typeof widget.vegaLiteSpec?.mark === "string"
+              ? widget.vegaLiteSpec.mark
+              : ((
+                  widget.vegaLiteSpec?.mark as
+                    | Record<string, unknown>
+                    | undefined
+                )?.type as string | undefined);
+          return getWidgetSizeDefaults(widget.type, vegaMark);
+        },
+      }),
+    [widgets],
+  );
 
   const renderWidget = (widget: DashboardWidget) => {
     const snapshot = dashboard.snapshots?.[widget.id];

@@ -1,4 +1,22 @@
 import { z } from "zod";
+import {
+  deriveResponsiveLayouts,
+  isLegacyProportionalLayout,
+  BREAKPOINT_COLS,
+} from "./layout-packing";
+
+export { deriveResponsiveLayouts, BREAKPOINT_COLS } from "./layout-packing";
+export {
+  packLayoutsForBreakpoint,
+  buildGridLayoutsFromWidgets,
+  shouldAutoPackBreakpoint,
+  isLegacyProportionalLayout,
+  resolveLgLayout,
+  RESPONSIVE_BREAKPOINTS,
+  type BreakpointKey,
+  type GridLayoutItem,
+  type WidgetForGridLayout,
+} from "./layout-packing";
 
 export const DashboardQueryLanguageSchema = z.enum([
   "sql",
@@ -89,6 +107,8 @@ export const WidgetLayoutSchema = z.object({
   h: z.number(),
   minW: z.number().optional(),
   minH: z.number().optional(),
+  /** When true, this breakpoint layout was set by the user and must not be auto-packed. */
+  userSet: z.boolean().optional(),
 });
 
 export type WidgetLayout = z.infer<typeof WidgetLayoutSchema>;
@@ -193,8 +213,6 @@ export type DashboardDefinition = z.infer<typeof DashboardDefinitionSchema>;
 
 const DEFAULT_LAYOUT: WidgetLayout = { x: 0, y: 0, w: 6, h: 4 };
 
-const BREAKPOINT_COLS = { lg: 12, md: 10, sm: 6, xs: 4 } as const;
-
 /**
  * Returns recommended size and enforced minimums for a widget based on its
  * type and (for charts) the Vega-Lite mark type.
@@ -209,34 +227,6 @@ export function getWidgetSizeDefaults(
   return { w: 12, h: 5, minW: 4, minH: 3 };
 }
 
-/**
- * Derive `md`, `sm`, and `xs` layouts from an `lg` layout by proportionally
- * scaling widths to match each breakpoint's column count.
- */
-export function deriveResponsiveLayouts(
-  lgLayout: WidgetLayout,
-): DashboardWidget["layouts"] {
-  const derive = (cols: number): WidgetLayout => {
-    const scale = cols / BREAKPOINT_COLS.lg;
-    const minW = lgLayout.minW ?? 2;
-    const w = Math.min(Math.max(Math.round(lgLayout.w * scale), minW), cols);
-    return {
-      x: Math.min(Math.round(lgLayout.x * scale), cols - w),
-      y: lgLayout.y,
-      w,
-      h: lgLayout.h,
-      ...(lgLayout.minW != null ? { minW: Math.min(lgLayout.minW, cols) } : {}),
-      ...(lgLayout.minH != null ? { minH: lgLayout.minH } : {}),
-    };
-  };
-  return {
-    lg: lgLayout,
-    md: derive(BREAKPOINT_COLS.md),
-    sm: derive(BREAKPOINT_COLS.sm),
-    xs: derive(BREAKPOINT_COLS.xs),
-  };
-}
-
 function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
   if (!raw) return { ...DEFAULT_LAYOUT };
   return {
@@ -246,7 +236,22 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
     h: typeof raw.h === "number" ? raw.h : DEFAULT_LAYOUT.h,
     ...(typeof raw.minW === "number" ? { minW: raw.minW } : {}),
     ...(typeof raw.minH === "number" ? { minH: raw.minH } : {}),
+    ...(raw.userSet === true ? { userSet: true } : {}),
   };
+}
+
+function pickExplicitBreakpointLayout(
+  lg: WidgetLayout,
+  raw: Record<string, unknown>,
+  bp: "md" | "sm" | "xs",
+): WidgetLayout | undefined {
+  const candidate = raw[bp];
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const layout = safeLayout(candidate as Record<string, unknown>);
+  if (isLegacyProportionalLayout(lg, layout, BREAKPOINT_COLS[bp])) {
+    return undefined;
+  }
+  return layout;
 }
 
 /**
@@ -264,21 +269,17 @@ export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
     const raw = w.layouts as Record<string, unknown>;
     if (raw.lg && typeof raw.lg === "object") {
       const lg = safeLayout(raw.lg as Record<string, unknown>);
-      const derived = deriveResponsiveLayouts(lg);
       const result: DashboardWidget["layouts"] = {
         lg,
-        md:
-          raw.md && typeof raw.md === "object"
-            ? safeLayout(raw.md as Record<string, unknown>)
-            : derived.md,
-        sm:
-          raw.sm && typeof raw.sm === "object"
-            ? safeLayout(raw.sm as Record<string, unknown>)
-            : derived.sm,
-        xs:
-          raw.xs && typeof raw.xs === "object"
-            ? safeLayout(raw.xs as Record<string, unknown>)
-            : derived.xs,
+        ...(pickExplicitBreakpointLayout(lg, raw, "md")
+          ? { md: pickExplicitBreakpointLayout(lg, raw, "md")! }
+          : {}),
+        ...(pickExplicitBreakpointLayout(lg, raw, "sm")
+          ? { sm: pickExplicitBreakpointLayout(lg, raw, "sm")! }
+          : {}),
+        ...(pickExplicitBreakpointLayout(lg, raw, "xs")
+          ? { xs: pickExplicitBreakpointLayout(lg, raw, "xs")! }
+          : {}),
       };
       return { ...widget, layouts: result };
     }

@@ -16,6 +16,7 @@ import ChartWidget from "./widgets/ChartWidget";
 import KpiCard from "./widgets/KpiCard";
 import DataTableWidget from "./widgets/DataTableWidget";
 import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
+import { buildGridLayoutsFromWidgets } from "@mako/schemas";
 
 interface EmbedDashboardSpec {
   title: string;
@@ -145,47 +146,9 @@ const EmbeddableDashboard: React.FC = () => {
 
   const theme = spec.theme === "dark" ? darkTheme : lightTheme;
 
-  const allGridLayouts = (() => {
-    const breakpoints = ["lg", "md", "sm", "xs"] as const;
-    type GridItem = {
-      i: string;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-      static: boolean;
-    };
-    const result: Record<string, GridItem[]> = {};
-    for (const bp of breakpoints) {
-      const items: GridItem[] = [];
-      for (const w of spec.widgets) {
-        const wAny = w as any;
-        const bpLayout =
-          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
-        if (!bpLayout) continue;
-        items.push({
-          i: w.id,
-          x: bpLayout.x ?? 0,
-          y: bpLayout.y ?? 0,
-          w: bpLayout.w ?? 6,
-          h: bpLayout.h ?? 4,
-          static: true,
-        });
-      }
-      if (items.length > 0) result[bp] = items;
-    }
-    if (!result.lg) {
-      result.lg = spec.widgets.map(w => ({
-        i: w.id,
-        x: 0,
-        y: 0,
-        w: 6,
-        h: 4,
-        static: true,
-      }));
-    }
-    return result;
-  })();
+  const allGridLayouts = buildGridLayoutsFromWidgets(spec.widgets, {
+    static: true,
+  });
 
   return (
     <ThemeProvider theme={theme}>
