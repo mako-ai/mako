@@ -8,6 +8,7 @@ export const RESPONSIVE_BREAKPOINTS = ["lg", "md", "sm", "xs"] as const;
 export type LayoutItem = {
   id: string;
   layout: WidgetLayout;
+  type?: "chart" | "kpi" | "table";
 };
 
 export type GridLayoutItem = {
@@ -50,13 +51,19 @@ function scaledWidth(layout: WidgetLayout, cols: number, lgCols: number): number
  * Detect layouts produced by the legacy proportional scaler (same row y, scaled x/w).
  * These should be replaced by row packing so existing dashboards reflow correctly.
  */
+function isUserAuthoredLayout(bp: WidgetLayout | undefined): boolean {
+  if (!bp) return false;
+  if (bp.userSet === true) return true;
+  return (bp as WidgetLayout & { custom?: boolean }).custom === true;
+}
+
 export function isLegacyProportionalLayout(
   lg: WidgetLayout,
   bp: WidgetLayout,
   cols: number,
   lgCols: number = BREAKPOINT_COLS.lg,
 ): boolean {
-  if (bp.userSet) return false;
+  if (isUserAuthoredLayout(bp)) return false;
   const expectedW = scaledWidth(lg, cols, lgCols);
   const expectedX = Math.min(
     Math.round(lg.x * (cols / lgCols)),
@@ -71,8 +78,73 @@ export function shouldAutoPackBreakpoint(
   cols: number,
 ): boolean {
   if (!bp) return true;
-  if (bp.userSet) return false;
+  if (isUserAuthoredLayout(bp)) return false;
   return isLegacyProportionalLayout(lg, bp, cols);
+}
+
+/** Group widgets into visual rows when their vertical spans overlap on `lg`. */
+function groupIntoRows(items: LayoutItem[]): LayoutItem[][] {
+  const sorted = [...items].sort(
+    (a, b) => a.layout.y - b.layout.y || a.layout.x - b.layout.x,
+  );
+  const rows: LayoutItem[][] = [];
+  let current: LayoutItem[] = [];
+  let rowBottom = -Infinity;
+
+  for (const item of sorted) {
+    const top = item.layout.y;
+    const bottom = item.layout.y + item.layout.h;
+    if (current.length === 0 || top < rowBottom) {
+      current.push(item);
+      rowBottom = current.length === 1 ? bottom : Math.max(rowBottom, bottom);
+    } else {
+      rows.push(current);
+      current = [item];
+      rowBottom = bottom;
+    }
+  }
+  if (current.length > 0) rows.push(current);
+  return rows;
+}
+
+function preferredWidgetWidth(
+  item: LayoutItem,
+  cols: number,
+  lgCols: number = BREAKPOINT_COLS.lg,
+): number {
+  const layout = item.layout;
+  const minW = effectiveMinW(layout, cols);
+  const type = item.type;
+
+  if (type === "table") return cols;
+
+  if (type === "chart") {
+    if (layout.w >= 9) return cols;
+    if (layout.w >= 6) {
+      return cols >= 10 ? Math.max(Math.floor(cols / 2), minW) : cols;
+    }
+    if (cols <= 4) return cols;
+  }
+
+  return scaledWidth(layout, cols, lgCols);
+}
+
+function distributeRowWidths(
+  cells: Array<{ id: string; w: number; layout: WidgetLayout }>,
+  cols: number,
+): void {
+  let sum = cells.reduce((acc, cell) => acc + cell.w, 0);
+  let leftover = cols - sum;
+  for (let i = 0; leftover > 0; i += 1, leftover -= 1) {
+    cells[i % cells.length].w += 1;
+  }
+  while (sum > cols) {
+    const widest = cells.reduce((a, b) => (b.w > a.w ? b : a), cells[0]);
+    const minW = effectiveMinW(widest.layout, cols);
+    if (widest.w <= minW) break;
+    widest.w -= 1;
+    sum -= 1;
+  }
 }
 
 /**
@@ -87,32 +159,21 @@ export function packLayoutsForBreakpoint(
   const result = new Map<string, WidgetLayout>();
   if (items.length === 0) return result;
 
-  const sorted = [...items].sort((a, b) => {
-    const dy = a.layout.y - b.layout.y;
-    if (dy !== 0) return dy;
-    return a.layout.x - b.layout.x;
-  });
-
-  const rowGroups: LayoutItem[][] = [];
-  for (const item of sorted) {
-    const last = rowGroups[rowGroups.length - 1];
-    if (!last || last[0].layout.y !== item.layout.y) {
-      rowGroups.push([item]);
-    } else {
-      last.push(item);
-    }
-  }
-
+  const rowGroups = groupIntoRows(items);
   let globalY = 0;
 
   for (const row of rowGroups) {
     const rowHeight = Math.max(...row.map(i => i.layout.h));
     const totalLgW = row.reduce((sum, i) => sum + i.layout.w, 0);
     const sameHeight = row.every(i => i.layout.h === row[0].layout.h);
-    const isStrip =
-      row.length > 1 && sameHeight && totalLgW <= lgCols && rowHeight <= 4;
+    const isKpiStrip =
+      row.length > 1 &&
+      row.every(i => i.type === "kpi") &&
+      sameHeight &&
+      totalLgW <= lgCols &&
+      rowHeight <= 4;
 
-    if (isStrip) {
+    if (isKpiStrip) {
       packUniformStripRow(row, cols, globalY, result);
       globalY += rowHeight;
       continue;
@@ -164,16 +225,24 @@ function packUniformStripRow(
     const count = Math.min(perRow, n - itemIndex);
     const baseW = Math.floor(cols / count);
     const remainder = cols % count;
-    let x = 0;
 
+    const cells: Array<{ id: string; w: number; layout: WidgetLayout }> = [];
     for (let i = 0; i < count; i++) {
       const item = row[itemIndex + i];
-      const w = Math.min(
-        Math.max(baseW + (i < remainder ? 1 : 0), effectiveMinW(item.layout, cols)),
-        cols,
+      cells.push({
+        id: item.id,
+        layout: item.layout,
+        w: Math.max(baseW + (i < remainder ? 1 : 0), effectiveMinW(item.layout, cols)),
+      });
+    }
+    distributeRowWidths(cells, cols);
+    let rowX = 0;
+    for (const cell of cells) {
+      result.set(
+        cell.id,
+        layoutWithMeta(cell.layout, rowX, globalY + subRowY, cell.w, rowHeight),
       );
-      result.set(item.id, layoutWithMeta(item.layout, x, globalY + subRowY, w, rowHeight));
-      x += w;
+      rowX += cell.w;
     }
 
     itemIndex += count;
@@ -188,29 +257,46 @@ function packGreedyRow(
   globalY: number,
   result: Map<string, WidgetLayout>,
 ): number {
-  let x = 0;
-  let subRowY = 0;
-  let subRowHeight = 0;
+  const subRows: Array<Array<{ item: LayoutItem; w: number }>> = [];
+  let cur: Array<{ item: LayoutItem; w: number }> = [];
+  let curW = 0;
 
   for (const item of row) {
-    const w = scaledWidth(item.layout, cols, lgCols);
-    const h = item.layout.h;
-
-    if (x > 0 && x + w > cols) {
-      subRowY += subRowHeight;
-      x = 0;
-      subRowHeight = 0;
+    const w = Math.min(preferredWidgetWidth(item, cols, lgCols), cols);
+    if (cur.length > 0 && curW + w > cols) {
+      subRows.push(cur);
+      cur = [];
+      curW = 0;
     }
+    cur.push({ item, w });
+    curW += w;
+  }
+  if (cur.length > 0) subRows.push(cur);
 
-    result.set(
-      item.id,
-      layoutWithMeta(item.layout, x, globalY + subRowY, w, h),
-    );
-    x += w;
-    subRowHeight = Math.max(subRowHeight, h);
+  let subRowY = 0;
+  for (const sub of subRows) {
+    const cells = sub.map(cell => ({
+      id: cell.item.id,
+      w: cell.w,
+      layout: cell.item.layout,
+    }));
+    distributeRowWidths(cells, cols);
+    let x = 0;
+    let subRowHeight = 0;
+    for (const cell of cells) {
+      const item = sub.find(s => s.item.id === cell.id)?.item;
+      if (!item) continue;
+      result.set(
+        cell.id,
+        layoutWithMeta(item.layout, x, globalY + subRowY, cell.w, item.layout.h),
+      );
+      x += cell.w;
+      subRowHeight = Math.max(subRowHeight, item.layout.h);
+    }
+    subRowY += subRowHeight;
   }
 
-  return subRowY + subRowHeight;
+  return subRowY;
 }
 
 function layoutWithMeta(
@@ -253,6 +339,7 @@ export function buildGridLayoutsFromWidgets(
   const lgItems: LayoutItem[] = widgets.map(w => ({
     id: w.id,
     layout: resolveLgLayout(w),
+    type: w.type,
   }));
 
   const result: Record<string, GridLayoutItem[]> = {};

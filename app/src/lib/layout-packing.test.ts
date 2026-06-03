@@ -10,6 +10,7 @@ describe("packLayoutsForBreakpoint", () => {
   it("packs four KPIs in one lg row without overlapping on md", () => {
     const items = [0, 1, 2, 3].map(i => ({
       id: `kpi-${i}`,
+      type: "kpi" as const,
       layout: { x: i * 3, y: 0, w: 3, h: 2, minW: 2, minH: 2 },
     }));
     const packed = packLayoutsForBreakpoint(items, BREAKPOINT_COLS.md);
@@ -28,6 +29,7 @@ describe("packLayoutsForBreakpoint", () => {
   it("wraps four KPIs into two rows of two on sm", () => {
     const items = [0, 1, 2, 3].map(i => ({
       id: `kpi-${i}`,
+      type: "kpi" as const,
       layout: { x: i * 3, y: 0, w: 3, h: 2, minW: 2, minH: 2 },
     }));
     const packed = packLayoutsForBreakpoint(items, BREAKPOINT_COLS.sm);
@@ -44,14 +46,26 @@ describe("packLayoutsForBreakpoint", () => {
 
   it("keeps full-width chart on its own row", () => {
     const items = [
-      { id: "kpi", layout: { x: 0, y: 0, w: 3, h: 2, minW: 2, minH: 2 } },
-      { id: "chart", layout: { x: 0, y: 2, w: 12, h: 5, minW: 4, minH: 3 } },
+      {
+        id: "kpi",
+        type: "kpi" as const,
+        layout: { x: 0, y: 0, w: 3, h: 2, minW: 2, minH: 2 },
+      },
+      {
+        id: "chart",
+        type: "chart" as const,
+        layout: { x: 0, y: 2, w: 12, h: 5, minW: 4, minH: 3 },
+      },
     ];
     const packed = packLayoutsForBreakpoint(items, BREAKPOINT_COLS.sm);
     expect(packed.get("chart")).toMatchObject({ x: 0, w: 6 });
     const chart = packed.get("chart");
     const kpi = packed.get("kpi");
-    expect(chart && kpi && chart.y).toBeGreaterThanOrEqual(kpi.y);
+    expect(chart).toBeDefined();
+    expect(kpi).toBeDefined();
+    if (chart && kpi) {
+      expect(chart.y).toBeGreaterThanOrEqual(kpi.y);
+    }
   });
 });
 

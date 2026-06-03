@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
 import { Box, Typography, IconButton, Tooltip } from "@mui/material";
 import { Database, Plus } from "lucide-react";
 import { ResponsiveGridLayout } from "react-grid-layout";
@@ -15,9 +15,13 @@ import type {
   DashboardSessionRuntimeState,
 } from "../../dashboard-runtime/types";
 import {
+  BREAKPOINT_COLS,
   buildGridLayoutsFromWidgets,
   getWidgetSizeDefaults,
+  isLegacyProportionalLayout,
 } from "@mako/schemas";
+
+const SMALL_BREAKPOINTS = ["md", "sm", "xs"] as const;
 import WidgetContainer from "../widgets/WidgetContainer";
 import MosaicChart from "../widgets/MosaicChart";
 import MosaicKpiCard from "../widgets/MosaicKpiCard";
@@ -89,10 +93,20 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   const crossFilterResolution =
     dashboard?.crossFilter.resolution ?? "intersect";
   const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
+  const currentBreakpointRef = useRef<string>("lg");
+
+  const handleBreakpointChange = useCallback((bp: string) => {
+    currentBreakpointRef.current = bp;
+  }, []);
 
   const handleLayoutChange = useCallback(
     (_layout: any, allLayouts: Record<string, any>) => {
       if (!dashboard || !dashboardId || !allLayouts || !isEditMode) return;
+
+      const activeBreakpoint = currentBreakpointRef.current || "lg";
+      const activeItems = allLayouts[activeBreakpoint];
+      if (!Array.isArray(activeItems)) return;
+      const isLg = activeBreakpoint === "lg";
 
       for (const widget of dashboard.widgets) {
         const currentLayouts =
@@ -100,41 +114,63 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
           ((widget as any).layout
             ? { lg: (widget as any).layout }
             : { lg: { x: 0, y: 0, w: 6, h: 4 } });
-        const updatedLayouts: Record<
-          string,
-          { x: number; y: number; w: number; h: number }
-        > = {};
-        let changed = false;
+        const item = activeItems.find((i: any) => i.i === widget.id);
+        if (!item) continue;
 
-        for (const [bp, items] of Object.entries(allLayouts)) {
-          if (!Array.isArray(items)) continue;
-          const item = items.find((i: any) => i.i === widget.id);
-          if (!item) continue;
-          const newPos = {
-            x: item.x,
-            y: item.y,
-            w: item.w,
-            h: item.h,
-            userSet: true as const,
+        const prev =
+          (currentLayouts as any)[activeBreakpoint] ?? currentLayouts.lg;
+        const next: Record<string, number | boolean> = {
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+        };
+        if (typeof prev?.minW === "number") next.minW = prev.minW;
+        if (typeof prev?.minH === "number") next.minH = prev.minH;
+        if (!isLg) next.userSet = true;
+
+        const existing = (currentLayouts as any)[activeBreakpoint];
+        if (
+          existing &&
+          existing.x === next.x &&
+          existing.y === next.y &&
+          existing.w === next.w &&
+          existing.h === next.h
+        ) {
+          continue;
+        }
+
+        let nextLayouts: Record<string, unknown> = {
+          ...currentLayouts,
+          [activeBreakpoint]: next,
+        };
+
+        if (isLg) {
+          const lgLayout = next as {
+            x: number;
+            y: number;
+            w: number;
+            h: number;
           };
-          const existing = (currentLayouts as any)[bp];
-          if (
-            !existing ||
-            existing.x !== newPos.x ||
-            existing.y !== newPos.y ||
-            existing.w !== newPos.w ||
-            existing.h !== newPos.h
-          ) {
-            updatedLayouts[bp] = newPos;
-            changed = true;
+          for (const bp of SMALL_BREAKPOINTS) {
+            const existingBp = (currentLayouts as any)[bp];
+            if (
+              existingBp &&
+              isLegacyProportionalLayout(
+                lgLayout,
+                existingBp,
+                BREAKPOINT_COLS[bp],
+              )
+            ) {
+              const { [bp]: _removed, ...rest } = nextLayouts;
+              nextLayouts = rest;
+            }
           }
         }
 
-        if (changed) {
-          modifyWidgetAction(dashboardId, widget.id, {
-            layouts: { ...currentLayouts, ...updatedLayouts },
-          } as any);
-        }
+        modifyWidgetAction(dashboardId, widget.id, {
+          layouts: nextLayouts,
+        } as any);
       }
     },
     [dashboard, dashboardId, isEditMode],
@@ -318,6 +354,7 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
         cols={{ lg: 12, md: 10, sm: 6, xs: 4 }}
         rowHeight={dashboard.layout?.rowHeight || 80}
         onLayoutChange={handleLayoutChange}
+        onBreakpointChange={handleBreakpointChange}
         dragConfig={{ handle: ".drag-handle", enabled: isEditMode }}
         resizeConfig={{ enabled: isEditMode }}
       >

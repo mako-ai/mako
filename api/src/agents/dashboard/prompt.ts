@@ -164,7 +164,7 @@ When \`run_data_source_query\` fails:
 
 ### Layout Guidelines
 
-Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-packed at render time from \`lg\` (row wrap, equal-width KPI strips) — you only need to provide \`lg\` unless the user asks for a custom tablet/mobile layout.
+Place widgets on a 12-column grid using the \`layouts\` field with **only** an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-packed at render time from \`lg\` (row wrap, equal-width KPI strips) — never emit md/sm/xs yourself unless the user explicitly asks for a custom tablet/mobile layout.
 
 **IMPORTANT — Minimum sizes are enforced. Widgets smaller than the minimums below will be automatically enlarged:**
 - Charts (line, bar, area, point, etc.): minimum w: 4, h: 3

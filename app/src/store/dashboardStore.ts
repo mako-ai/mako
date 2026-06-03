@@ -201,6 +201,7 @@ interface DashboardStoreState {
     changes: Partial<DashboardWidget>,
   ) => void;
   removeWidget: (dashboardId: string, widgetId: string) => void;
+  resetResponsiveLayouts: (dashboardId: string) => void;
   addRelationship: (dashboardId: string, rel: TableRelationship) => void;
   removeRelationship: (dashboardId: string, relId: string) => void;
   addGlobalFilter: (dashboardId: string, filter: GlobalFilter) => void;
@@ -702,6 +703,22 @@ export const useDashboardStore = create<DashboardStoreState>()(
           const d = state.openDashboards[dashboardId];
           if (d) {
             d.widgets = d.widgets.filter(w => w.id !== widgetId);
+          }
+        });
+      },
+
+      resetResponsiveLayouts: (dashboardId: string) => {
+        get().pushHistory(dashboardId);
+        set(state => {
+          const d = state.openDashboards[dashboardId];
+          if (!d) return;
+          for (const w of d.widgets) {
+            const legacy = (w as { layout?: DashboardWidget["layouts"]["lg"] })
+              .layout;
+            const lg = w.layouts?.lg ?? legacy;
+            if (lg) {
+              w.layouts = { lg };
+            }
           }
         });
       },

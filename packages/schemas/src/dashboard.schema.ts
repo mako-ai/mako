@@ -236,7 +236,7 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
     h: typeof raw.h === "number" ? raw.h : DEFAULT_LAYOUT.h,
     ...(typeof raw.minW === "number" ? { minW: raw.minW } : {}),
     ...(typeof raw.minH === "number" ? { minH: raw.minH } : {}),
-    ...(raw.userSet === true ? { userSet: true } : {}),
+    ...(raw.userSet === true || raw.custom === true ? { userSet: true } : {}),
   };
 }
 
