@@ -21,6 +21,7 @@ import {
   CENTER_PANE_MIN_WIDTH_PX,
   DEFAULT_LEFT_PANE_WIDTH_PX,
   DEFAULT_RIGHT_PANE_WIDTH_PX,
+  SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
   SIDE_PANEL_MAX_WIDTH_PX,
   SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
@@ -97,6 +98,8 @@ function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
+  const setLeftPaneOpen = useUIStore(state => state.setLeftPaneOpen);
+  const setRightPaneOpen = useUIStore(state => state.setRightPaneOpen);
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
@@ -191,12 +194,23 @@ function MainApp() {
       const el =
         side === "left" ? leftPaneElRef.current : rightPaneElRef.current;
       let finalWidth = startWidth;
+      // Dragging the pane narrower than the collapse threshold fully collapses
+      // it on release (and keeps the previous width so reopening restores it).
+      let shouldCollapse = false;
 
       const onMove = (ev: PointerEvent) => {
         const delta = ev.clientX - startX;
         const raw = side === "left" ? startWidth + delta : startWidth - delta;
+        shouldCollapse = raw < SIDE_PANEL_COLLAPSE_THRESHOLD_PX;
+        // Let the pane visibly shrink down to the collapse threshold for
+        // feedback, while the committed width stays clamped to the min.
+        const liveWidth = clamp(
+          raw,
+          SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
+          maxWidth,
+        );
         finalWidth = clamp(raw, SIDE_PANEL_MIN_WIDTH_PX, maxWidth);
-        if (el) el.style.width = `${finalWidth}px`;
+        if (el) el.style.width = `${liveWidth}px`;
       };
 
       const onUp = () => {
@@ -204,6 +218,17 @@ function MainApp() {
         window.removeEventListener("pointerup", onUp);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
+
+        if (shouldCollapse) {
+          // Collapse entirely; preserve the last committed width so the pane
+          // returns to its previous size when reopened from the sidebar.
+          if (side === "left") {
+            setLeftPaneOpen(false);
+          } else {
+            setRightPaneOpen(false);
+          }
+          return;
+        }
 
         if (side === "left") {
           setLeftWidth(finalWidth);
@@ -219,7 +244,13 @@ function MainApp() {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [leftPaneOpen, rightPaneOpen, setPaneWidths],
+    [
+      leftPaneOpen,
+      rightPaneOpen,
+      setPaneWidths,
+      setLeftPaneOpen,
+      setRightPaneOpen,
+    ],
   );
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
