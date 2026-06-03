@@ -13,6 +13,7 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   DashboardDefinitionSchema,
+  normalizeDashboardWidgetsLayouts,
   normalizeWidgetLayouts,
   sanitizeTableRef,
   buildTableRef,
@@ -192,9 +193,7 @@ async function normalizeDashboardDataSources(
 
 function normalizeDashboardWidgetLayouts(dashboard: Record<string, any>) {
   if (Array.isArray(dashboard.widgets)) {
-    dashboard.widgets = dashboard.widgets.map((w: Record<string, unknown>) =>
-      normalizeWidgetLayouts(w),
-    );
+    dashboard.widgets = normalizeDashboardWidgetsLayouts(dashboard.widgets);
   }
   return dashboard;
 }
@@ -753,7 +752,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
 
     // Normalize widget layouts and defaults before schema validation
     if (Array.isArray(body.widgets)) {
-      body.widgets = body.widgets.map((w: Record<string, unknown>) => {
+      body.widgets = normalizeDashboardWidgetsLayouts(body.widgets).map(w => {
         const normalized = normalizeWidgetLayouts(w);
         if (!normalized.crossFilter) {
           normalized.crossFilter = { enabled: true };

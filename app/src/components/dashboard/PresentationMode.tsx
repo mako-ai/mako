@@ -15,6 +15,7 @@ import WidgetContainer from "../widgets/WidgetContainer";
 import ChartWidget from "../widgets/ChartWidget";
 import KpiCard from "../widgets/KpiCard";
 import DataTableWidget from "../widgets/DataTableWidget";
+import { normalizeDashboardWidgetsLayouts } from "@mako/schemas";
 
 interface PresentationModeProps {
   onExit: () => void;
@@ -100,12 +101,13 @@ const PresentationMode: React.FC<PresentationModeProps> = ({ onExit }) => {
       static: boolean;
     };
     const result: Record<string, GridItem[]> = {};
+    const normalizedWidgets = normalizeDashboardWidgetsLayouts(
+      activeDashboard.widgets,
+    );
     for (const bp of breakpoints) {
       const items: GridItem[] = [];
-      for (const w of activeDashboard.widgets) {
-        const wAny = w as any;
-        const bpLayout =
-          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
+      for (const w of normalizedWidgets) {
+        const bpLayout = w.layouts?.[bp];
         if (!bpLayout) continue;
         items.push({
           i: w.id,

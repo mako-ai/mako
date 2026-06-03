@@ -14,7 +14,10 @@ import type {
   Dashboard,
   DashboardSessionRuntimeState,
 } from "../../dashboard-runtime/types";
-import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
+import {
+  getWidgetSizeDefaults,
+  normalizeDashboardWidgetsLayouts,
+} from "@mako/schemas";
 import WidgetContainer from "../widgets/WidgetContainer";
 import MosaicChart from "../widgets/MosaicChart";
 import MosaicKpiCard from "../widgets/MosaicKpiCard";
@@ -162,10 +165,10 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
       minH: number;
     };
     const result: Record<string, GridItem[]> = {};
+    const normalizedWidgets = normalizeDashboardWidgetsLayouts(widgets);
     for (const bp of breakpoints) {
       const items: GridItem[] = [];
-      for (const w of widgets) {
-        const wAny = w as any;
+      for (const w of normalizedWidgets) {
         const vegaMark =
           typeof w.vegaLiteSpec?.mark === "string"
             ? w.vegaLiteSpec.mark
@@ -173,18 +176,7 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
                 ?.type as string | undefined);
         const sizeDefaults = getWidgetSizeDefaults(w.type, vegaMark);
 
-        let bpLayout =
-          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
-
-        if (!bpLayout && w.layouts?.lg) {
-          const lgWithMins = {
-            ...w.layouts.lg,
-            minW: w.layouts.lg.minW ?? sizeDefaults.minW,
-            minH: w.layouts.lg.minH ?? sizeDefaults.minH,
-          };
-          bpLayout = deriveResponsiveLayouts(lgWithMins)[bp];
-        }
-
+        const bpLayout = w.layouts?.[bp];
         if (!bpLayout) continue;
         items.push({
           i: w.id,

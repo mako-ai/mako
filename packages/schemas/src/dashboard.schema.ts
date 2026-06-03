@@ -194,6 +194,17 @@ export type DashboardDefinition = z.infer<typeof DashboardDefinitionSchema>;
 const DEFAULT_LAYOUT: WidgetLayout = { x: 0, y: 0, w: 6, h: 4 };
 
 const BREAKPOINT_COLS = { lg: 12, md: 10, sm: 6, xs: 4 } as const;
+type LayoutBreakpoint = keyof typeof BREAKPOINT_COLS;
+
+type LayoutWidgetInput = Record<string, unknown> & {
+  id?: unknown;
+  type?: unknown;
+  layouts?: unknown;
+  layout?: unknown;
+  vegaLiteSpec?: unknown;
+};
+
+const RESPONSIVE_BREAKPOINTS = ["lg", "md", "sm", "xs"] as const;
 
 /**
  * Returns recommended size and enforced minimums for a widget based on its
@@ -235,6 +246,227 @@ export function deriveResponsiveLayouts(
     sm: derive(BREAKPOINT_COLS.sm),
     xs: derive(BREAKPOINT_COLS.xs),
   };
+}
+
+function getWidgetVegaMark(widget: LayoutWidgetInput): string | undefined {
+  const spec = widget.vegaLiteSpec;
+  if (!spec || typeof spec !== "object") return undefined;
+  const mark = (spec as Record<string, unknown>).mark;
+  if (typeof mark === "string") return mark;
+  if (mark && typeof mark === "object") {
+    const type = (mark as Record<string, unknown>).type;
+    return typeof type === "string" ? type : undefined;
+  }
+  return undefined;
+}
+
+function getWidgetType(widget: LayoutWidgetInput): "chart" | "kpi" | "table" {
+  return widget.type === "kpi" || widget.type === "table"
+    ? widget.type
+    : "chart";
+}
+
+function readRawLayouts(
+  widget: LayoutWidgetInput,
+): Partial<Record<LayoutBreakpoint, WidgetLayout>> {
+  const result: Partial<Record<LayoutBreakpoint, WidgetLayout>> = {};
+  const rawLayouts =
+    widget.layouts && typeof widget.layouts === "object"
+      ? (widget.layouts as Record<string, unknown>)
+      : null;
+
+  for (const bp of RESPONSIVE_BREAKPOINTS) {
+    const raw = rawLayouts?.[bp];
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      result[bp] = safeLayout(raw as Record<string, unknown>);
+    }
+  }
+
+  if (
+    !result.lg &&
+    widget.layout &&
+    typeof widget.layout === "object" &&
+    !Array.isArray(widget.layout)
+  ) {
+    result.lg = safeLayout(widget.layout as Record<string, unknown>);
+  }
+
+  return result;
+}
+
+function withWidgetMinimums(
+  widget: LayoutWidgetInput,
+  layout: WidgetLayout,
+): WidgetLayout {
+  const defaults = getWidgetSizeDefaults(
+    getWidgetType(widget),
+    getWidgetVegaMark(widget),
+  );
+  return {
+    ...layout,
+    minW: layout.minW ?? defaults.minW,
+    minH: layout.minH ?? defaults.minH,
+  };
+}
+
+function preferredWidgetWidth(
+  widget: LayoutWidgetInput,
+  layout: WidgetLayout,
+  cols: number,
+): number {
+  const type = getWidgetType(widget);
+  const minW = Math.min(layout.minW ?? 2, cols);
+
+  if (type === "table") return cols;
+
+  if (type === "chart") {
+    if (layout.w >= 9) return cols;
+    if (layout.w >= 6) {
+      return cols >= 10 ? Math.max(Math.floor(cols / 2), minW) : cols;
+    }
+    if (cols <= 4) return cols;
+  }
+
+  const scaled = Math.round((layout.w * cols) / BREAKPOINT_COLS.lg);
+  return Math.min(Math.max(scaled, minW), cols);
+}
+
+function packKpiRow(
+  widgets: Array<{ widget: LayoutWidgetInput; lg: WidgetLayout }>,
+  cols: number,
+  y: number,
+): { layouts: Map<string, WidgetLayout>; nextY: number } {
+  const layouts = new Map<string, WidgetLayout>();
+  const perRow = cols <= 4 ? 1 : 2;
+  let cursorY = y;
+
+  for (let index = 0; index < widgets.length; index += perRow) {
+    const row = widgets.slice(index, index + perRow);
+    const singleRemainder = row.length === 1 && widgets.length > perRow;
+    const width = singleRemainder ? cols : Math.floor(cols / row.length);
+    const rowHeight = Math.max(...row.map(entry => entry.lg.h));
+    let cursorX = 0;
+
+    for (let rowIndex = 0; rowIndex < row.length; rowIndex += 1) {
+      const { widget, lg } = row[rowIndex];
+      const w = rowIndex === row.length - 1 ? cols - cursorX : width;
+      layouts.set(String(widget.id), {
+        x: cursorX,
+        y: cursorY,
+        w,
+        h: lg.h,
+        ...(lg.minW != null ? { minW: Math.min(lg.minW, cols) } : {}),
+        ...(lg.minH != null ? { minH: lg.minH } : {}),
+      });
+      cursorX += w;
+    }
+
+    cursorY += rowHeight;
+  }
+
+  return { layouts, nextY: cursorY };
+}
+
+function packMixedRow(
+  widgets: Array<{ widget: LayoutWidgetInput; lg: WidgetLayout }>,
+  cols: number,
+  y: number,
+): { layouts: Map<string, WidgetLayout>; nextY: number } {
+  const layouts = new Map<string, WidgetLayout>();
+  let cursorX = 0;
+  let cursorY = y;
+  let rowHeight = 0;
+
+  for (const { widget, lg } of widgets) {
+    const w = preferredWidgetWidth(widget, lg, cols);
+    if (cursorX > 0 && cursorX + w > cols) {
+      cursorY += rowHeight;
+      cursorX = 0;
+      rowHeight = 0;
+    }
+
+    layouts.set(String(widget.id), {
+      x: cursorX,
+      y: cursorY,
+      w,
+      h: lg.h,
+      ...(lg.minW != null ? { minW: Math.min(lg.minW, cols) } : {}),
+      ...(lg.minH != null ? { minH: lg.minH } : {}),
+    });
+    cursorX += w;
+    rowHeight = Math.max(rowHeight, lg.h);
+  }
+
+  return { layouts, nextY: cursorY + rowHeight };
+}
+
+function deriveBreakpointLayouts(
+  widgets: Array<{ widget: LayoutWidgetInput; lg: WidgetLayout }>,
+  breakpoint: Exclude<LayoutBreakpoint, "lg">,
+): Map<string, WidgetLayout> {
+  const cols = BREAKPOINT_COLS[breakpoint];
+  const rows = new Map<
+    number,
+    Array<{ widget: LayoutWidgetInput; lg: WidgetLayout }>
+  >();
+
+  for (const entry of widgets) {
+    const row = rows.get(entry.lg.y) ?? [];
+    row.push(entry);
+    rows.set(entry.lg.y, row);
+  }
+
+  const layouts = new Map<string, WidgetLayout>();
+  let cursorY = 0;
+
+  for (const [, row] of [...rows.entries()].sort(([a], [b]) => a - b)) {
+    row.sort((a, b) => a.lg.x - b.lg.x);
+    const packed = row.every(entry => getWidgetType(entry.widget) === "kpi")
+      ? packKpiRow(row, cols, cursorY)
+      : packMixedRow(row, cols, cursorY);
+    for (const [id, layout] of packed.layouts) {
+      layouts.set(id, layout);
+    }
+    cursorY = packed.nextY;
+  }
+
+  return layouts;
+}
+
+/**
+ * Normalize a full dashboard widget list while deriving responsive layouts from
+ * row intent rather than scaling each widget independently. Explicit user
+ * breakpoint layouts are preserved; only missing breakpoints are synthesized.
+ */
+export function normalizeDashboardWidgetsLayouts<T extends LayoutWidgetInput>(
+  widgets: T[],
+): Array<T & { layouts: DashboardWidget["layouts"] }> {
+  const entries = widgets.map(widget => {
+    const rawLayouts = readRawLayouts(widget);
+    const lg = withWidgetMinimums(
+      widget,
+      rawLayouts.lg ?? { ...DEFAULT_LAYOUT },
+    );
+    return { widget, rawLayouts, lg };
+  });
+
+  const derived = {
+    md: deriveBreakpointLayouts(entries, "md"),
+    sm: deriveBreakpointLayouts(entries, "sm"),
+    xs: deriveBreakpointLayouts(entries, "xs"),
+  };
+
+  return entries.map(({ widget, rawLayouts, lg }) => {
+    const id = String(widget.id);
+    const layouts: DashboardWidget["layouts"] = {
+      lg,
+      md: rawLayouts.md ?? derived.md.get(id) ?? deriveResponsiveLayouts(lg).md,
+      sm: rawLayouts.sm ?? derived.sm.get(id) ?? deriveResponsiveLayouts(lg).sm,
+      xs: rawLayouts.xs ?? derived.xs.get(id) ?? deriveResponsiveLayouts(lg).xs,
+    };
+    const { layout: _removed, ...rest } = widget;
+    return { ...rest, layouts } as T & { layouts: DashboardWidget["layouts"] };
+  });
 }
 
 function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
