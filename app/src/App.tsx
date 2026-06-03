@@ -107,6 +107,11 @@ function MainApp() {
   const rightPaneRef = useRef<ImperativePanelHandle | null>(null);
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
 
+  // True while the user is actively dragging a resize handle. Used to
+  // distinguish user-initiated resizes (which should be persisted) from
+  // window/container resizes (where we keep side panels at a fixed width).
+  const isHandleDraggingRef = useRef(false);
+
   // Initialize with window width to avoid 0 width on first render
   const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
     typeof window === "undefined" ? 1000 : window.innerWidth - 52,
@@ -126,39 +131,65 @@ function MainApp() {
     return () => observer.disconnect();
   }, []);
 
-  // Calculate default and initial sizes
-  const defaultLeftPx = clamp(
-    (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
-    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  );
+  // Frozen default pixel widths for the side panels. These are computed once
+  // from the first known container width and then kept constant, so the side
+  // panels behave as fixed-width (like Slack/Cursor) even before the user has
+  // dragged them — rather than scaling with every window resize.
+  const defaultLeftPxRef = useRef<number | null>(null);
+  const defaultRightPxRef = useRef<number | null>(null);
+  if (panelContainerWidth > 0 && defaultLeftPxRef.current === null) {
+    defaultLeftPxRef.current = clamp(
+      (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
+      SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+      SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+    );
+    defaultRightPxRef.current = clamp(
+      (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
+      SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+      SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
+    );
+  }
+  const defaultLeftPx =
+    defaultLeftPxRef.current ?? SIDE_PANEL_MIN_DEFAULT_WIDTH_PX;
+  const defaultRightPx =
+    defaultRightPxRef.current ?? SIDE_PANEL_MIN_DEFAULT_WIDTH_PX;
 
-  const defaultRightPx = clamp(
-    (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
-    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  );
-
-  const initialLeftPx =
+  // The fixed pixel width we want each side panel to keep: the user's
+  // dragged width if they've set one, otherwise the frozen default.
+  const targetLeftPx =
     leftPaneWidthPx && leftPaneWidthPx > 0 ? leftPaneWidthPx : defaultLeftPx;
-  const initialRightPx =
+  const targetRightPx =
     rightPaneWidthPx && rightPaneWidthPx > 0
       ? rightPaneWidthPx
       : defaultRightPx;
 
-  // Convert to percentages for Panel
-  const leftSizePct = (initialLeftPx / panelContainerWidth) * 100;
-  const rightSizePct = (initialRightPx / panelContainerWidth) * 100;
+  // Convert to percentages for Panel (the library sizes panels in %)
+  const leftSizePct =
+    panelContainerWidth > 0
+      ? (targetLeftPx / panelContainerWidth) * 100
+      : DEFAULT_LEFT_PANE_SIZE;
+  const rightSizePct =
+    panelContainerWidth > 0
+      ? (targetRightPx / panelContainerWidth) * 100
+      : DEFAULT_RIGHT_PANE_SIZE;
 
   // Threshold for collapsing
   const collapseThresholdPct =
-    (SIDE_PANEL_COLLAPSE_THRESHOLD_PX / panelContainerWidth) * 100;
+    panelContainerWidth > 0
+      ? (SIDE_PANEL_COLLAPSE_THRESHOLD_PX / panelContainerWidth) * 100
+      : 0;
 
   // Handle layout changes (persistence)
   const persistTimeoutRef = useRef<number | null>(null);
   const handleLayout = useCallback(
     (sizes: number[]) => {
       if (panelContainerWidth <= 0) return;
+
+      // Only persist the widths when the change came from the user dragging a
+      // resize handle. Window/container resizes also trigger onLayout, but in
+      // that case we keep the side panels at their fixed pixel width and must
+      // not overwrite the saved width with a proportionally-scaled value.
+      if (!isHandleDraggingRef.current) return;
 
       if (persistTimeoutRef.current) {
         clearTimeout(persistTimeoutRef.current);
@@ -220,6 +251,40 @@ function MainApp() {
     }
     prevRightOpen.current = rightPaneOpen;
   }, [rightPaneOpen, defaultRightPx, panelContainerWidth]);
+
+  // Keep the side panels at a fixed pixel width when the window/container is
+  // resized. react-resizable-panels stores sizes as percentages, so without
+  // this the side panels would scale proportionally with the window. By
+  // re-applying the target pixel width as a percentage of the new container
+  // width, only the center (main content) panel absorbs the size change —
+  // matching the fixed-sidebar behavior of apps like Slack and Cursor.
+  useEffect(() => {
+    if (panelContainerWidth <= 0) return;
+    // Don't fight an active manual drag.
+    if (isHandleDraggingRef.current) return;
+
+    const leftPanel = leftPaneRef.current;
+    if (leftPanel && leftPaneOpen && !leftPanel.isCollapsed()) {
+      leftPanel.resize((targetLeftPx / panelContainerWidth) * 100);
+    }
+
+    const rightPanel = rightPaneRef.current;
+    if (rightPanel && rightPaneOpen && !rightPanel.isCollapsed()) {
+      rightPanel.resize((targetRightPx / panelContainerWidth) * 100);
+    }
+  }, [
+    panelContainerWidth,
+    targetLeftPx,
+    targetRightPx,
+    leftPaneOpen,
+    rightPaneOpen,
+  ]);
+
+  // Track resize-handle drag state so we can distinguish user-initiated
+  // resizes (persisted) from window resizes (fixed-width side panels).
+  const handleDragging = useCallback((isDragging: boolean) => {
+    isHandleDraggingRef.current = isDragging;
+  }, []);
 
   const defaultLeftPanelSize = leftPaneOpen ? leftSizePct : 0;
   const defaultRightPanelSize = rightPaneOpen ? rightSizePct : 0;
@@ -560,6 +625,7 @@ function MainApp() {
             </Panel>
 
             <StyledHorizontalResizeHandle
+              onDragging={handleDragging}
               style={
                 leftPaneOpen
                   ? undefined
@@ -582,6 +648,7 @@ function MainApp() {
             </Panel>
 
             <StyledHorizontalResizeHandle
+              onDragging={handleDragging}
               style={
                 rightPaneOpen
                   ? undefined
