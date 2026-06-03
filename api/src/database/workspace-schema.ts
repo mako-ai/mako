@@ -508,9 +508,12 @@ export interface INotificationDelivery extends Document {
  * Stores parts in chronological order to preserve the original message structure
  */
 export interface IMessagePart {
-  type: string; // "text", "reasoning", "tool-{toolName}", "dynamic-tool"
+  type: string; // "text", "reasoning", "file", "tool-{toolName}", "dynamic-tool"
   text?: string; // For text and reasoning parts
   reasoning?: string; // Alternative field for reasoning content
+  url?: string; // For file/image parts
+  mediaType?: string; // For file/image parts (e.g. "image/png")
+  data?: unknown; // For file parts supplied as inline data instead of a URL
   toolCallId?: string; // For tool parts
   toolName?: string; // For tool parts
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
@@ -1593,6 +1596,11 @@ const ChatSchema = new Schema<IChat>(
             },
             text: String,
             reasoning: String,
+            // File part fields (for image/attachment messages)
+            url: String,
+            mediaType: String,
+            data: Schema.Types.Mixed,
+            // Tool part fields
             toolCallId: String,
             toolName: String,
             input: Schema.Types.Mixed,

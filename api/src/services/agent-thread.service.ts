@@ -4,7 +4,10 @@ import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
-import { isModelReadyFilePart } from "../utils/message-sanitizer";
+import {
+  isModelReadyFilePart,
+  sanitizeMessagesForModel,
+} from "../utils/message-sanitizer";
 
 const logger = loggers.agent();
 
@@ -490,6 +493,9 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     type: string;
     text?: string;
     reasoning?: string;
+    url?: string;
+    mediaType?: string;
+    data?: unknown;
     toolCallId?: string;
     toolName?: string;
     input?: unknown;
@@ -524,6 +530,30 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
         };
       }
 
+      if (partType === "file") {
+        if (!isModelReadyFilePart(p)) {
+          return null;
+        }
+
+        const filePart: {
+          type: "file";
+          mediaType: string;
+          url?: string;
+          data?: unknown;
+        } = {
+          type: "file",
+          mediaType: p.mediaType as string,
+        };
+
+        if (typeof p.url === "string" && p.url.length > 0) {
+          filePart.url = p.url;
+        } else {
+          filePart.data = p.data;
+        }
+
+        return filePart;
+      }
+
       // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
       if (partType.startsWith("tool-") || partType === "dynamic-tool") {
         const toolName =
@@ -538,10 +568,6 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
           output: p.output ?? null,
           state: (p.state as string) || "output-available",
         };
-      }
-
-      if (partType === "file" && !isModelReadyFilePart(p)) {
-        return null;
       }
 
       // Unknown part type - store as-is
@@ -650,15 +676,16 @@ export const saveChat = async (
   // zero-parts message. Persisting it would poison the chat — on the next
   // turn `convertToModelMessages` would reject the history with
   // "Invalid prompt: The messages do not match the ModelMessage[] schema."
-  const persistableMessages = messages.filter(
+  const nonEmptyMessages = messages.filter(
     m => m.role !== "assistant" || (m.parts && m.parts.length > 0),
   );
-  if (persistableMessages.length !== messages.length) {
+  if (nonEmptyMessages.length !== messages.length) {
     logger.warn("Dropping empty assistant messages before persistence", {
       chatId,
-      dropped: messages.length - persistableMessages.length,
+      dropped: messages.length - nonEmptyMessages.length,
     });
   }
+  const persistableMessages = sanitizeMessagesForModel(nonEmptyMessages);
 
   const storedMessages = persistableMessages.map(
     convertUIMessageToStoredFormat,

@@ -863,6 +863,28 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+function isUsableLoadedFilePart(part: Record<string, unknown>): boolean {
+  return (
+    part.type === "file" &&
+    typeof part.mediaType === "string" &&
+    part.mediaType.length > 0 &&
+    ((typeof part.url === "string" && part.url.length > 0) ||
+      typeof part.data === "string")
+  );
+}
+
+function hasUsableLoadedUserContent(
+  parts: Array<Record<string, unknown>>,
+): boolean {
+  return parts.some(
+    part =>
+      (part.type === "text" &&
+        typeof part.text === "string" &&
+        part.text.trim().length > 0) ||
+      isUsableLoadedFilePart(part),
+  );
+}
+
 const ChatInputArea = React.memo(
   ({
     onSubmit,
@@ -1966,7 +1988,7 @@ const Chat: React.FC<ChatProps> = ({
           // Tool calls are included for UI display (shows what tools were used).
           // The backend sanitizes these before sending to the AI to avoid
           // "tool_use without tool_result" errors.
-          const convertedMessages =
+          const rawMessages =
             data.messages?.map((msg: any) => {
               // NEW: If parts are stored, use them directly (preserves chronological order)
               if (
@@ -1980,70 +2002,84 @@ const Chat: React.FC<ChatProps> = ({
                     msg._id?.toString() ||
                     `${Date.now()}-${Math.random()}`,
                   role: msg.role,
-                  parts: msg.parts.map((p: any) => {
-                    // Convert stored part to UI format
-                    if (p.type === "text") {
-                      return { type: "text", text: p.text || "" };
-                    }
-                    if (p.type === "reasoning") {
-                      // Handle both 'reasoning' and 'text' fields for reasoning parts
-                      return {
-                        type: "reasoning",
-                        text: p.reasoning || p.text || "",
-                      };
-                    }
-                    // Tool parts: ensure state is set for UI rendering
-                    // AI SDK v6 uses output-error (not "error") so convertToModelMessages
-                    // emits a matching tool-result for Anthropic.
-                    if (
-                      p.type?.startsWith("tool-") ||
-                      p.type === "dynamic-tool"
-                    ) {
-                      const toolState = p.state as string | undefined;
-                      const interruptedText =
-                        "Interrupted — stream disconnected before tool completed";
-                      if (toolState === "error") {
-                        const output = p.output as
-                          | { error?: unknown }
-                          | null
-                          | undefined;
-                        const errorText =
-                          typeof p.errorText === "string"
-                            ? p.errorText
-                            : typeof output?.error === "string"
-                              ? output.error
-                              : output?.error != null
-                                ? String(output.error)
-                                : "Tool failed";
+                  parts: msg.parts
+                    .map((p: any) => {
+                      // Convert stored part to UI format
+                      if (p.type === "text") {
+                        return { type: "text", text: p.text || "" };
+                      }
+                      if (p.type === "reasoning") {
+                        // Handle both 'reasoning' and 'text' fields for reasoning parts
+                        return {
+                          type: "reasoning",
+                          text: p.reasoning || p.text || "",
+                        };
+                      }
+                      if (p.type === "file") {
+                        const filePart = {
+                          type: "file",
+                          mediaType: p.mediaType,
+                          ...(typeof p.url === "string" && p.url.length > 0
+                            ? { url: p.url }
+                            : { data: p.data }),
+                        };
+                        return isUsableLoadedFilePart(filePart)
+                          ? filePart
+                          : null;
+                      }
+                      // Tool parts: ensure state is set for UI rendering
+                      // AI SDK v6 uses output-error (not "error") so convertToModelMessages
+                      // emits a matching tool-result for Anthropic.
+                      if (
+                        p.type?.startsWith("tool-") ||
+                        p.type === "dynamic-tool"
+                      ) {
+                        const toolState = p.state as string | undefined;
+                        const interruptedText =
+                          "Interrupted — stream disconnected before tool completed";
+                        if (toolState === "error") {
+                          const output = p.output as
+                            | { error?: unknown }
+                            | null
+                            | undefined;
+                          const errorText =
+                            typeof p.errorText === "string"
+                              ? p.errorText
+                              : typeof output?.error === "string"
+                                ? output.error
+                                : output?.error != null
+                                  ? String(output.error)
+                                  : "Tool failed";
+                          return {
+                            ...p,
+                            state: "output-error",
+                            input: p.input ?? {},
+                            output: undefined,
+                            errorText,
+                          };
+                        }
+                        const isComplete =
+                          toolState === "output-available" ||
+                          toolState === "output-error" ||
+                          toolState === "output-denied";
+                        if (isComplete) {
+                          return {
+                            ...p,
+                            input: p.input ?? {},
+                          };
+                        }
                         return {
                           ...p,
                           state: "output-error",
                           input: p.input ?? {},
                           output: undefined,
-                          errorText,
+                          errorText: interruptedText,
                         };
                       }
-                      const isComplete =
-                        toolState === "output-available" ||
-                        toolState === "output-error" ||
-                        toolState === "output-denied";
-                      if (isComplete) {
-                        return {
-                          ...p,
-                          input: p.input ?? {},
-                        };
-                      }
-                      return {
-                        ...p,
-                        state: "output-error",
-                        input: p.input ?? {},
-                        output: undefined,
-                        errorText: interruptedText,
-                      };
-                    }
-                    // Unknown part type - pass through as-is
-                    return p;
-                  }),
+                      // Unknown part type - pass through as-is
+                      return p;
+                    })
+                    .filter((p: any) => p !== null),
                 };
               }
 
@@ -2096,6 +2132,27 @@ const Chat: React.FC<ChatProps> = ({
                 parts,
               };
             }) || [];
+          const convertedMessages = rawMessages
+            .map((msg: any) => {
+              const parts = Array.isArray(msg.parts)
+                ? msg.parts.filter(
+                    (p: any) => p.type !== "file" || isUsableLoadedFilePart(p),
+                  )
+                : [];
+              if (msg.role === "assistant" && parts.length === 0) {
+                return {
+                  ...msg,
+                  parts: [
+                    { type: "text", text: "[Response interrupted]" },
+                  ] as Array<Record<string, unknown>>,
+                };
+              }
+              return { ...msg, parts };
+            })
+            .filter(
+              (msg: any) =>
+                msg.role !== "user" || hasUsableLoadedUserContent(msg.parts),
+            );
           setMessages(convertedMessages);
 
           // Restore consoles that were modified by the agent in this chat
