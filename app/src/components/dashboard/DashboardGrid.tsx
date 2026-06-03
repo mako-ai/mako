@@ -122,12 +122,18 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
             : { lg: { x: 0, y: 0, w: 6, h: 4 } });
         const item = activeItems.find((i: any) => i.i === widget.id);
         if (!item) continue;
-        const newPos = { x: item.x, y: item.y, w: item.w, h: item.h };
+        const newPos = {
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+          ...(activeBreakpoint === "lg" ? {} : { custom: true }),
+        };
         const existing = (currentLayouts as any)[activeBreakpoint];
         let changed = false;
         let nextLayouts = currentLayouts as Record<
           string,
-          { x: number; y: number; w: number; h: number }
+          { x: number; y: number; w: number; h: number; custom?: boolean }
         >;
         if (
           !existing ||

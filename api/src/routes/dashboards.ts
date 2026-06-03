@@ -581,7 +581,15 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       updateFields.dataSources = normalizedDataSources.dataSources || [];
     }
     if (body.widgets !== undefined) {
-      updateFields.widgets = body.widgets;
+      updateFields.widgets = Array.isArray(body.widgets)
+        ? body.widgets.map((w: Record<string, unknown>) => {
+            const normalized = normalizeWidgetLayouts(w);
+            if (!normalized.crossFilter) {
+              normalized.crossFilter = { enabled: true };
+            }
+            return normalized;
+          })
+        : body.widgets;
     }
     if (body.relationships !== undefined) {
       updateFields.relationships = body.relationships;

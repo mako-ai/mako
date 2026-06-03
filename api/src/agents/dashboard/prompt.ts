@@ -166,6 +166,8 @@ When \`run_data_source_query\` fails:
 
 Place widgets on a 12-column grid using the \`layouts\` field with at least an \`lg\` breakpoint. Smaller breakpoints (md/sm/xs) are auto-derived from whole dashboard row intent — you only need to provide \`lg\` unless you intentionally want a custom tablet/mobile arrangement. Explicit md/sm/xs layouts are always preserved.
 
+Use grid-friendly widths that evenly tile a row so the responsive reflow stays balanced. Within one row, prefer widths whose total is 12: for example 4 KPIs at w:3 each, 3 cards at w:4 each, 2 charts at w:6 each, or 1 full-width widget at w:12. Avoid awkward leftovers like three w:5 cards.
+
 **IMPORTANT — Minimum sizes are enforced. Widgets smaller than the minimums below will be automatically enlarged:**
 - Charts (line, bar, area, point, etc.): minimum w: 4, h: 3
 - Donut/pie charts (arc mark): minimum w: 3, h: 3

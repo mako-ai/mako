@@ -2750,6 +2750,7 @@ export interface IDashboard extends Document {
         h: number;
         minW?: number;
         minH?: number;
+        custom?: boolean;
       };
       md?: {
         x: number;
@@ -2758,6 +2759,7 @@ export interface IDashboard extends Document {
         h: number;
         minW?: number;
         minH?: number;
+        custom?: boolean;
       };
       sm?: {
         x: number;
@@ -2766,6 +2768,7 @@ export interface IDashboard extends Document {
         h: number;
         minW?: number;
         minH?: number;
+        custom?: boolean;
       };
       xs?: {
         x: number;
@@ -2774,6 +2777,7 @@ export interface IDashboard extends Document {
         h: number;
         minW?: number;
         minH?: number;
+        custom?: boolean;
       };
     };
   }>;
@@ -3058,6 +3062,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number, required: true },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           md: {
             x: { type: Number },
@@ -3066,6 +3071,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           sm: {
             x: { type: Number },
@@ -3074,6 +3080,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           xs: {
             x: { type: Number },
@@ -3082,6 +3089,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
         },
       },

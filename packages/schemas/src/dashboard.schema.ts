@@ -89,6 +89,8 @@ export const WidgetLayoutSchema = z.object({
   h: z.number(),
   minW: z.number().optional(),
   minH: z.number().optional(),
+  /** True when a user intentionally edited this breakpoint layout. */
+  custom: z.boolean().optional(),
 });
 
 export type WidgetLayout = z.infer<typeof WidgetLayoutSchema>;
@@ -443,6 +445,7 @@ function isUserAuthoredBreakpoint(
   breakpoint: Exclude<LayoutBreakpoint, "lg">,
 ): rawLayout is WidgetLayout {
   if (!rawLayout) return false;
+  if (rawLayout.custom === true) return true;
   const legacyDerived = deriveResponsiveLayouts(lg)[breakpoint];
   if (!legacyDerived) return true;
   return !layoutsMatch(rawLayout, legacyDerived);
@@ -551,6 +554,7 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
     h: typeof raw.h === "number" ? raw.h : DEFAULT_LAYOUT.h,
     ...(typeof raw.minW === "number" ? { minW: raw.minW } : {}),
     ...(typeof raw.minH === "number" ? { minH: raw.minH } : {}),
+    ...(typeof raw.custom === "boolean" ? { custom: raw.custom } : {}),
   };
 }
 

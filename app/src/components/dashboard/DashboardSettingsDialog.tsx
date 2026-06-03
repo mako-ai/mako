@@ -18,7 +18,10 @@ import {
   Alert,
 } from "@mui/material";
 import { Copy, Trash2 } from "lucide-react";
-import { useDashboardStore } from "../../store/dashboardStore";
+import {
+  useDashboardStore,
+  type DashboardWidget,
+} from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useConsoleStore } from "../../store/consoleStore";
 
@@ -164,6 +167,24 @@ export default function DashboardSettingsDialog({
     onClose();
   };
 
+  const handleResetResponsiveLayouts = async () => {
+    if (!workspaceId || !dashboard || isReadOnly) return;
+    const resetWidgets = dashboard.widgets.map(widget => {
+      const lgLayout = widget.layouts?.lg ??
+        (widget as any).layout ?? { x: 0, y: 0, w: 6, h: 4 };
+      return {
+        ...widget,
+        layouts: { lg: lgLayout },
+      } as DashboardWidget;
+    });
+
+    await useDashboardStore
+      .getState()
+      .updateDashboard(workspaceId, dashboard._id, {
+        widgets: resetWidgets,
+      } as any);
+  };
+
   const handleDelete = async () => {
     if (!workspaceId || !dashboard) return;
     await useDashboardStore
@@ -241,6 +262,22 @@ export default function DashboardSettingsDialog({
             slotProps={{ htmlInput: { min: 20 } }}
             disabled={isReadOnly}
           />
+        </Box>
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            Responsive tablet and mobile layouts are generated automatically
+            from the large-screen layout unless you edit those breakpoints.
+          </Typography>
+          <Box>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={handleResetResponsiveLayouts}
+              disabled={isReadOnly || !dashboard?.widgets.length}
+            >
+              Reset responsive layouts to auto
+            </Button>
+          </Box>
         </Box>
 
         <FormControlLabel
