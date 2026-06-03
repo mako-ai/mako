@@ -4,7 +4,7 @@ import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import {
   DashboardDefinitionSchema,
-  normalizeDashboardWidgetsLayouts,
+  normalizeWidgetLayouts,
 } from "@mako/schemas";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import { disposeDashboardRuntime } from "../dashboard-runtime/gateway";
@@ -462,9 +462,12 @@ export const useDashboardStore = create<DashboardStoreState>()(
           if (response.data) {
             const dashboard = response.data;
             if (Array.isArray(dashboard.widgets)) {
-              dashboard.widgets = normalizeDashboardWidgetsLayouts(
-                dashboard.widgets,
-              ) as typeof dashboard.widgets;
+              dashboard.widgets = dashboard.widgets.map(
+                w =>
+                  normalizeWidgetLayouts(
+                    w as Record<string, unknown>,
+                  ) as typeof w,
+              );
             }
             set(state => {
               state.openDashboards[dashboardId] = dashboard;

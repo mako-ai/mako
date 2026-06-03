@@ -15,6 +15,7 @@ import type {
   DashboardSessionRuntimeState,
 } from "../../dashboard-runtime/types";
 import {
+  deriveResponsiveLayouts,
   getWidgetSizeDefaults,
   normalizeDashboardWidgetsLayouts,
 } from "@mako/schemas";
@@ -30,6 +31,19 @@ const {
 } = useDashboardStore.getState();
 
 type DashboardBreakpoint = "lg" | "md" | "sm" | "xs";
+const RESPONSIVE_BREAKPOINTS: DashboardBreakpoint[] = ["lg", "md", "sm", "xs"];
+const SMALL_BREAKPOINTS: Exclude<DashboardBreakpoint, "lg">[] = [
+  "md",
+  "sm",
+  "xs",
+];
+
+function layoutsEqual(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+) {
+  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
 
 function resolveWidgetLayout(widget: DashboardWidget) {
   const vegaMark =
@@ -106,16 +120,15 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
           ((widget as any).layout
             ? { lg: (widget as any).layout }
             : { lg: { x: 0, y: 0, w: 6, h: 4 } });
-        const updatedLayouts: Record<
-          string,
-          { x: number; y: number; w: number; h: number }
-        > = {};
-        let changed = false;
-
         const item = activeItems.find((i: any) => i.i === widget.id);
         if (!item) continue;
         const newPos = { x: item.x, y: item.y, w: item.w, h: item.h };
         const existing = (currentLayouts as any)[activeBreakpoint];
+        let changed = false;
+        let nextLayouts = currentLayouts as Record<
+          string,
+          { x: number; y: number; w: number; h: number }
+        >;
         if (
           !existing ||
           existing.x !== newPos.x ||
@@ -123,13 +136,29 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
           existing.w !== newPos.w ||
           existing.h !== newPos.h
         ) {
-          updatedLayouts[activeBreakpoint] = newPos;
+          nextLayouts = { ...nextLayouts, [activeBreakpoint]: newPos };
+          if (activeBreakpoint === "lg") {
+            const legacyLayouts = deriveResponsiveLayouts(
+              existing ?? resolveWidgetLayout(widget),
+            );
+            for (const bp of SMALL_BREAKPOINTS) {
+              const existingBreakpoint = nextLayouts[bp];
+              const legacyBreakpoint = legacyLayouts[bp];
+              if (
+                existingBreakpoint &&
+                legacyBreakpoint &&
+                layoutsEqual(existingBreakpoint, legacyBreakpoint)
+              ) {
+                delete nextLayouts[bp];
+              }
+            }
+          }
           changed = true;
         }
 
         if (changed) {
           modifyWidgetAction(dashboardId, widget.id, {
-            layouts: { ...currentLayouts, ...updatedLayouts },
+            layouts: nextLayouts,
           } as any);
         }
       }
@@ -161,7 +190,6 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   );
 
   const allGridLayouts = useMemo(() => {
-    const breakpoints = ["lg", "md", "sm", "xs"] as const;
     type GridItem = {
       i: string;
       x: number;
@@ -173,7 +201,7 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
     };
     const result: Record<string, GridItem[]> = {};
     const normalizedWidgets = normalizeDashboardWidgetsLayouts(widgets);
-    for (const bp of breakpoints) {
+    for (const bp of RESPONSIVE_BREAKPOINTS) {
       const items: GridItem[] = [];
       for (const w of normalizedWidgets) {
         const vegaMark =
