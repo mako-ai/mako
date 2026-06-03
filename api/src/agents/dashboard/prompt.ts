@@ -171,7 +171,7 @@ Place widgets on a 12-column grid using the \`layouts\` field with **only** an \
 **IMPORTANT — Minimum sizes are enforced. Widgets smaller than the minimums below will be automatically enlarged:**
 - Charts (line, bar, area, point, etc.): minimum w: 4, h: 3
 - Donut/pie charts (arc mark): minimum w: 3, h: 3
-- KPI cards: minimum w: 2, h: 2
+- KPI cards: minimum w: 2, h: 1
 - Data tables: minimum w: 4, h: 3
 
 **Recommended sizes (use these as defaults):**

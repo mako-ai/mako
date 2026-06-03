@@ -155,6 +155,25 @@ describe("buildResponsiveGridLayouts", () => {
     expect(md.find(i => i.i === "a")).toMatchObject({ x: 0, y: 0, w: 10 });
   });
 
+  it("gives KPI cards a min height of 1 so they can be a single row tall", () => {
+    const layouts = buildResponsiveGridLayouts(kpiWidgets, 12);
+    for (const item of layouts.lg) {
+      expect(item.minH).toBe(1);
+    }
+  });
+
+  it("restores KPI minH:1 even for legacy widgets that stored minH:2", () => {
+    const legacy: ReflowableWidget[] = [
+      {
+        id: "old",
+        type: "kpi",
+        layouts: { lg: { x: 0, y: 0, w: 3, h: 2, minW: 2, minH: 2 } },
+      },
+    ];
+    const layouts = buildResponsiveGridLayouts(legacy, 12);
+    expect(layouts.lg[0].minH).toBe(1);
+  });
+
   it("respects a custom lg column count", () => {
     const widgets: ReflowableWidget[] = [
       { id: "a", type: "kpi", layouts: { lg: { x: 0, y: 0, w: 12, h: 2 } } },

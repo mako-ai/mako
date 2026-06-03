@@ -71,8 +71,11 @@ export function buildResponsiveGridLayouts(
   for (const w of widgets) {
     const sizeDefaults = getWidgetSizeDefaults(w.type, resolveVegaMark(w));
     const raw = w.layouts?.lg ?? w.layout;
-    const minW = raw?.minW ?? sizeDefaults.minW;
-    const minH = raw?.minH ?? sizeDefaults.minH;
+    // Min sizes are type-derived rules, not user data, so always take them from
+    // the current sizeDefaults. This lets existing widgets pick up adjusted
+    // limits (e.g. the restored KPI minH: 1) without a migration.
+    const minW = sizeDefaults.minW;
+    const minH = sizeDefaults.minH;
     lgItems.push({
       id: w.id,
       type: w.type,

@@ -210,7 +210,7 @@ export function getWidgetSizeDefaults(
   type: "chart" | "kpi" | "table",
   vegaMark?: string,
 ): { w: number; h: number; minW: number; minH: number } {
-  if (type === "kpi") return { w: 3, h: 2, minW: 2, minH: 2 };
+  if (type === "kpi") return { w: 3, h: 2, minW: 2, minH: 1 };
   if (type === "table") return { w: 12, h: 5, minW: 4, minH: 3 };
   if (vegaMark === "arc") return { w: 4, h: 4, minW: 3, minH: 3 };
   return { w: 12, h: 5, minW: 4, minH: 3 };

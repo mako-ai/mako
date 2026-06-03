@@ -35,8 +35,10 @@ function buildDefaultLayouts(
 ): DashboardWidget["layouts"] {
   const d = getWidgetSizeDefaults(type);
   // Only the `lg` breakpoint is authored; md/sm/xs are auto-reflowed at render.
+  // Min sizes are derived from the widget type at render, so we don't bake them
+  // into stored layouts (keeps the door open to adjusting limits later).
   return {
-    lg: { x: 0, y: 0, w: d.w, h: d.h, minW: d.minW, minH: d.minH },
+    lg: { x: 0, y: 0, w: d.w, h: d.h },
   };
 }
 
