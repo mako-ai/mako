@@ -513,6 +513,7 @@ export interface IMessagePart {
   reasoning?: string; // Alternative field for reasoning content
   url?: string; // For file/image parts
   mediaType?: string; // For file/image parts (e.g. "image/png")
+  filename?: string; // Original filename when available
   data?: unknown; // For file parts supplied as inline data instead of a URL
   toolCallId?: string; // For tool parts
   toolName?: string; // For tool parts
@@ -1599,6 +1600,7 @@ const ChatSchema = new Schema<IChat>(
             // File part fields (for image/attachment messages)
             url: String,
             mediaType: String,
+            filename: String,
             data: Schema.Types.Mixed,
             // Tool part fields
             toolCallId: String,

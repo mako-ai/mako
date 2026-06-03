@@ -984,6 +984,7 @@ const ChatInputArea = React.memo(
               type: "file" as const,
               url: await readFileAsDataUrl(img.file),
               mediaType: img.file.type,
+              filename: img.file.name,
             })),
           );
           currentImages.forEach(img => URL.revokeObjectURL(img.previewUrl));
@@ -2019,6 +2020,10 @@ const Chat: React.FC<ChatProps> = ({
                         const filePart = {
                           type: "file",
                           mediaType: p.mediaType,
+                          ...(typeof p.filename === "string" &&
+                          p.filename.length > 0
+                            ? { filename: p.filename }
+                            : {}),
                           ...(typeof p.url === "string" && p.url.length > 0
                             ? { url: p.url }
                             : { data: p.data }),

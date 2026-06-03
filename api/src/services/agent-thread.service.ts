@@ -495,6 +495,7 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     reasoning?: string;
     url?: string;
     mediaType?: string;
+    filename?: string;
     data?: unknown;
     toolCallId?: string;
     toolName?: string;
@@ -539,11 +540,16 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
           type: "file";
           mediaType: string;
           url?: string;
+          filename?: string;
           data?: unknown;
         } = {
           type: "file",
           mediaType: p.mediaType as string,
         };
+
+        if (typeof p.filename === "string" && p.filename.length > 0) {
+          filePart.filename = p.filename;
+        }
 
         if (typeof p.url === "string" && p.url.length > 0) {
           filePart.url = p.url;
