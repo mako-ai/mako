@@ -10,10 +10,20 @@ import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import type { LeftPaneView } from "./lib/types";
 
+/** @deprecated Percent defaults — use DEFAULT_*_PANE_WIDTH_PX for layout */
 export const DEFAULT_LEFT_PANE_SIZE = 15;
+/** @deprecated Percent defaults — use DEFAULT_*_PANE_WIDTH_PX for layout */
 export const DEFAULT_RIGHT_PANE_SIZE = 20;
+/** @deprecated Use SIDE_PANEL_MIN_WIDTH_PX */
 export const SIDE_PANEL_MIN_DEFAULT_WIDTH_PX = 150;
+/** @deprecated Use SIDE_PANEL_MAX_WIDTH_PX */
 export const SIDE_PANEL_MAX_DEFAULT_WIDTH_PX = 300;
+
+/** Default fixed widths for explorer (left) and chat (right) panes */
+export const DEFAULT_LEFT_PANE_WIDTH_PX = 260;
+export const DEFAULT_RIGHT_PANE_WIDTH_PX = 400;
+export const SIDE_PANEL_MIN_WIDTH_PX = 150;
+export const SIDE_PANEL_MAX_WIDTH_PX = 600;
 export const SIDE_PANEL_COLLAPSE_THRESHOLD_PX = 120;
 
 interface ActiveEditorContent {
