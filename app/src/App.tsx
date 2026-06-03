@@ -18,20 +18,14 @@ import {
 import { trackPageView } from "./lib/analytics";
 import Sidebar from "./components/Sidebar";
 import {
-  DEFAULT_LEFT_PANE_SIZE,
-  DEFAULT_RIGHT_PANE_SIZE,
-  SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
-  SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+  CENTER_PANE_MIN_WIDTH_PX,
+  DEFAULT_LEFT_PANE_WIDTH_PX,
+  DEFAULT_RIGHT_PANE_WIDTH_PX,
+  SIDE_PANEL_MAX_WIDTH_PX,
+  SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
 } from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
-import {
-  Panel,
-  PanelGroup,
-  PanelResizeHandle,
-  type ImperativePanelHandle,
-} from "react-resizable-panels";
 import Chat from "./components/Chat";
 import DatabaseExplorer, {
   type CollectionInfo,
@@ -58,11 +52,16 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 
-// Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
-const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+// Draggable divider between a fixed-width side pane and the flexible center.
+// Resizing changes the side pane's pixel width directly (not a percentage),
+// so side panes stay a fixed width and only the center pane flexes.
+const ResizeDivider = styled("div")(({ theme }) => ({
+  flex: "0 0 4px",
   width: "4px",
+  alignSelf: "stretch",
   background: theme.palette.divider,
   cursor: "col-resize",
+  touchAction: "none",
   transition: "background-color 0.2s ease",
   "&:hover": {
     backgroundColor: theme.palette.primary.main,
@@ -87,142 +86,141 @@ function InvitePage() {
 import { UrlSync } from "./components/UrlSync";
 
 // Main application component (extracted from original App)
-const EDITOR_PANEL_MIN_SIZE = 30;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+type SidePane = "left" | "right";
+
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
-  const setLeftPaneOpen = useUIStore(state => state.setLeftPaneOpen);
-  const setRightPaneOpen = useUIStore(state => state.setRightPaneOpen);
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
 
-  const leftPaneRef = useRef<ImperativePanelHandle | null>(null);
-  const rightPaneRef = useRef<ImperativePanelHandle | null>(null);
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
+  const leftPaneElRef = useRef<HTMLDivElement | null>(null);
+  const rightPaneElRef = useRef<HTMLDivElement | null>(null);
 
-  // Initialize with window width to avoid 0 width on first render
-  const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
-    typeof window === "undefined" ? 1000 : window.innerWidth - 52,
+  // Side panes have a FIXED pixel width. Only the center pane flexes to fill
+  // the remaining space, so resizing the window never changes the side panes —
+  // it only grows/shrinks the center (Slack/Cursor behavior). The width is a
+  // local px value, seeded from (and persisted back to) the UI store.
+  const [leftWidth, setLeftWidth] = useState(() =>
+    leftPaneWidthPx && leftPaneWidthPx > 0
+      ? clamp(leftPaneWidthPx, SIDE_PANEL_MIN_WIDTH_PX, SIDE_PANEL_MAX_WIDTH_PX)
+      : DEFAULT_LEFT_PANE_WIDTH_PX,
   );
-
-  // Keep container width updated
-  useEffect(() => {
-    const el = panelContainerRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(entries => {
-      const newWidth = entries[0].contentRect.width;
-      if (newWidth > 0) {
-        setPanelContainerWidth(newWidth);
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  // Calculate default and initial sizes
-  const defaultLeftPx = clamp(
-    (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
-    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  );
-
-  const defaultRightPx = clamp(
-    (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
-    SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-    SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  );
-
-  const initialLeftPx =
-    leftPaneWidthPx && leftPaneWidthPx > 0 ? leftPaneWidthPx : defaultLeftPx;
-  const initialRightPx =
+  const [rightWidth, setRightWidth] = useState(() =>
     rightPaneWidthPx && rightPaneWidthPx > 0
-      ? rightPaneWidthPx
-      : defaultRightPx;
-
-  // Convert to percentages for Panel
-  const leftSizePct = (initialLeftPx / panelContainerWidth) * 100;
-  const rightSizePct = (initialRightPx / panelContainerWidth) * 100;
-
-  // Threshold for collapsing
-  const collapseThresholdPct =
-    (SIDE_PANEL_COLLAPSE_THRESHOLD_PX / panelContainerWidth) * 100;
-
-  // Handle layout changes (persistence)
-  const persistTimeoutRef = useRef<number | null>(null);
-  const handleLayout = useCallback(
-    (sizes: number[]) => {
-      if (panelContainerWidth <= 0) return;
-
-      if (persistTimeoutRef.current) {
-        clearTimeout(persistTimeoutRef.current);
-      }
-
-      persistTimeoutRef.current = window.setTimeout(() => {
-        const [leftPct, , rightPct] = sizes;
-        const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
-          {};
-
-        // Only save if panel is actually open (size > 0)
-        if (leftPct > 0) {
-          updates.leftPaneWidthPx = (leftPct * panelContainerWidth) / 100;
-        }
-        if (rightPct > 0) {
-          updates.rightPaneWidthPx = (rightPct * panelContainerWidth) / 100;
-        }
-
-        if (Object.keys(updates).length > 0) {
-          setPaneWidths(updates);
-        }
-      }, 200);
-    },
-    [panelContainerWidth, setPaneWidths],
+      ? clamp(
+          rightPaneWidthPx,
+          SIDE_PANEL_MIN_WIDTH_PX,
+          SIDE_PANEL_MAX_WIDTH_PX,
+        )
+      : DEFAULT_RIGHT_PANE_WIDTH_PX,
   );
 
-  // Handle external open/close for Left Pane
-  const prevLeftOpen = useRef(leftPaneOpen);
-  useEffect(() => {
-    if (leftPaneOpen && !prevLeftOpen.current) {
-      const panel = leftPaneRef.current;
-      if (panel && panel.isCollapsed()) {
-        panel.expand();
-        panel.resize((defaultLeftPx / panelContainerWidth) * 100);
-      }
-    } else if (!leftPaneOpen && prevLeftOpen.current) {
-      const panel = leftPaneRef.current;
-      if (panel && !panel.isCollapsed()) {
-        panel.collapse();
-      }
-    }
-    prevLeftOpen.current = leftPaneOpen;
-  }, [leftPaneOpen, defaultLeftPx, panelContainerWidth]);
+  // Mirror widths into refs so the drag handler reads fresh values without
+  // being re-created on every width change.
+  const leftWidthRef = useRef(leftWidth);
+  const rightWidthRef = useRef(rightWidth);
+  leftWidthRef.current = leftWidth;
+  rightWidthRef.current = rightWidth;
 
-  // Handle external open/close for Right Pane
-  const prevRightOpen = useRef(rightPaneOpen);
+  // Keep local widths in sync if the persisted store value changes elsewhere.
   useEffect(() => {
-    if (rightPaneOpen && !prevRightOpen.current) {
-      const panel = rightPaneRef.current;
-      if (panel && panel.isCollapsed()) {
-        panel.expand();
-        panel.resize((defaultRightPx / panelContainerWidth) * 100);
-      }
-    } else if (!rightPaneOpen && prevRightOpen.current) {
-      const panel = rightPaneRef.current;
-      if (panel && !panel.isCollapsed()) {
-        panel.collapse();
-      }
+    if (leftPaneWidthPx && leftPaneWidthPx > 0) {
+      setLeftWidth(
+        clamp(
+          leftPaneWidthPx,
+          SIDE_PANEL_MIN_WIDTH_PX,
+          SIDE_PANEL_MAX_WIDTH_PX,
+        ),
+      );
     }
-    prevRightOpen.current = rightPaneOpen;
-  }, [rightPaneOpen, defaultRightPx, panelContainerWidth]);
+  }, [leftPaneWidthPx]);
+  useEffect(() => {
+    if (rightPaneWidthPx && rightPaneWidthPx > 0) {
+      setRightWidth(
+        clamp(
+          rightPaneWidthPx,
+          SIDE_PANEL_MIN_WIDTH_PX,
+          SIDE_PANEL_MAX_WIDTH_PX,
+        ),
+      );
+    }
+  }, [rightPaneWidthPx]);
 
-  const defaultLeftPanelSize = leftPaneOpen ? leftSizePct : 0;
-  const defaultRightPanelSize = rightPaneOpen ? rightSizePct : 0;
+  // Begin a manual drag-resize of a side pane. The new width is applied
+  // imperatively to the pane element during the drag (so heavy children like
+  // the editor/chat don't re-render on every pointer move), then committed to
+  // React state + the store on release.
+  const beginResize = useCallback(
+    (side: SidePane, e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+
+      const container = panelContainerRef.current;
+      const containerWidth = container
+        ? container.clientWidth
+        : window.innerWidth;
+      const startX = e.clientX;
+      const startWidth =
+        side === "left" ? leftWidthRef.current : rightWidthRef.current;
+      const otherWidth =
+        side === "left"
+          ? rightPaneOpen
+            ? rightWidthRef.current
+            : 0
+          : leftPaneOpen
+            ? leftWidthRef.current
+            : 0;
+
+      // Cap so the center pane keeps a usable minimum width.
+      const maxWidth = Math.max(
+        SIDE_PANEL_MIN_WIDTH_PX,
+        Math.min(
+          SIDE_PANEL_MAX_WIDTH_PX,
+          containerWidth - otherWidth - CENTER_PANE_MIN_WIDTH_PX - 8,
+        ),
+      );
+
+      const el =
+        side === "left" ? leftPaneElRef.current : rightPaneElRef.current;
+      let finalWidth = startWidth;
+
+      const onMove = (ev: PointerEvent) => {
+        const delta = ev.clientX - startX;
+        const raw = side === "left" ? startWidth + delta : startWidth - delta;
+        finalWidth = clamp(raw, SIDE_PANEL_MIN_WIDTH_PX, maxWidth);
+        if (el) el.style.width = `${finalWidth}px`;
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+
+        if (side === "left") {
+          setLeftWidth(finalWidth);
+          setPaneWidths({ leftPaneWidthPx: finalWidth });
+        } else {
+          setRightWidth(finalWidth);
+          setPaneWidths({ rightPaneWidthPx: finalWidth });
+        }
+      };
+
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [leftPaneOpen, rightPaneOpen, setPaneWidths],
+  );
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
@@ -523,23 +521,27 @@ function MainApp() {
 
         <Box
           ref={panelContainerRef}
-          sx={{ height: "100%", flex: 1, minWidth: 0 }}
+          sx={{
+            height: "100%",
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "row",
+          }}
         >
-          <PanelGroup
-            direction="horizontal"
-            style={{ height: "100%", width: "100%" }}
-            onLayout={handleLayout}
-          >
-            <Panel
-              ref={leftPaneRef}
-              collapsible
-              collapsedSize={0}
-              defaultSize={defaultLeftPanelSize}
-              minSize={collapseThresholdPct}
-              onCollapse={() => setLeftPaneOpen(false)}
-              onExpand={() => setLeftPaneOpen(true)}
-            >
-              <Box sx={{ height: "100%", overflow: "hidden" }}>
+          {/* Left side pane — fixed pixel width, resizable by hand */}
+          {leftPaneOpen && (
+            <>
+              <Box
+                ref={leftPaneElRef}
+                style={{ width: leftWidth }}
+                sx={{
+                  flex: "0 0 auto",
+                  flexShrink: 0,
+                  height: "100%",
+                  overflow: "hidden",
+                }}
+              >
                 <Suspense
                   fallback={
                     <Box
@@ -557,54 +559,29 @@ function MainApp() {
                   {renderLeftPane()}
                 </Suspense>
               </Box>
-            </Panel>
+              <ResizeDivider onPointerDown={e => beginResize("left", e)} />
+            </>
+          )}
 
-            <StyledHorizontalResizeHandle
-              style={
-                leftPaneOpen
-                  ? undefined
-                  : {
-                      width: 0,
-                      minWidth: 0,
-                      opacity: 0,
-                      pointerEvents: "none",
-                    }
-              }
+          {/* Center (main content) — flexes to fill remaining space */}
+          <Box sx={{ flex: "1 1 0", minWidth: 0, height: "100%" }}>
+            <Editor
+              dbFlowFormRef={dbFlowFormRef}
+              onChartSpecChangeRef={onChartSpecChangeRef}
+              resultsContextRef={resultsContextRef}
             />
+          </Box>
 
-            {/* Editor + Results vertical layout inside Editor component */}
-            <Panel minSize={EDITOR_PANEL_MIN_SIZE}>
-              <Editor
-                dbFlowFormRef={dbFlowFormRef}
-                onChartSpecChangeRef={onChartSpecChangeRef}
-                resultsContextRef={resultsContextRef}
-              />
-            </Panel>
-
-            <StyledHorizontalResizeHandle
-              style={
-                rightPaneOpen
-                  ? undefined
-                  : {
-                      width: 0,
-                      minWidth: 0,
-                      opacity: 0,
-                      pointerEvents: "none",
-                    }
-              }
-            />
-
-            <Panel
-              ref={rightPaneRef}
-              collapsible
-              collapsedSize={0}
-              defaultSize={defaultRightPanelSize}
-              minSize={collapseThresholdPct}
-              onCollapse={() => setRightPaneOpen(false)}
-              onExpand={() => setRightPaneOpen(true)}
-            >
+          {/* Right side pane (chat) — fixed pixel width, resizable by hand */}
+          {rightPaneOpen && (
+            <>
+              <ResizeDivider onPointerDown={e => beginResize("right", e)} />
               <Box
+                ref={rightPaneElRef}
+                style={{ width: rightWidth }}
                 sx={{
+                  flex: "0 0 auto",
+                  flexShrink: 0,
                   height: "100%",
                   overflow: "hidden",
                   borderLeft: "1px solid",
@@ -618,8 +595,8 @@ function MainApp() {
                   resultsContextRef={resultsContextRef}
                 />
               </Box>
-            </Panel>
-          </PanelGroup>
+            </>
+          )}
         </Box>
       </Box>
     </AuthWrapper>
