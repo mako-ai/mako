@@ -676,6 +676,8 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                     component="img"
                     src={fp.url}
                     alt="Attached image"
+                    loading="lazy"
+                    decoding="async"
                     sx={{
                       maxWidth: 200,
                       maxHeight: 200,

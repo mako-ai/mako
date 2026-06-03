@@ -11,6 +11,7 @@ import { dataSourceRoutes } from "./routes/sources";
 import { customPromptRoutes } from "./routes/custom-prompt";
 import { skillsRoutes } from "./routes/skills";
 import { chatsRoutes } from "./routes/chats";
+import { chatImagesRoutes } from "./routes/chat-images";
 import { agentRoutes } from "./routes/agent.routes";
 import { adminRoutes } from "./routes/admin.routes";
 import { authRoutes } from "./auth/auth.controller";
@@ -115,6 +116,7 @@ app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
 app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
 app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
 app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
+app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
 // Connectors routes

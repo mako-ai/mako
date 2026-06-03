@@ -591,6 +591,29 @@ export interface IChat extends Document {
 }
 
 /**
+ * Chat attachment model interface.
+ *
+ * Chat image attachments are uploaded to object storage (filesystem / GCS / S3)
+ * instead of being inlined as base64 data URLs in the chat document. This keeps
+ * chat documents well under the 16 MB BSON limit (the previous behaviour caused
+ * silent save failures and "lost" images on reload) and lets the browser fetch
+ * each image lazily through an authenticated proxy.
+ */
+export interface IChatAttachment extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  chatId: string; // Chat _id this attachment belongs to (string ObjectId hex)
+  createdBy: string; // User id that owns the attachment (matches Chat.createdBy)
+  storageKey: string; // Key within the object store
+  mediaType: string; // MIME type, e.g. "image/png"
+  filename?: string; // Optional original file name
+  size: number; // Byte size of the stored object
+  sha256: string; // Content hash, used to deduplicate re-uploads within a chat
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
  * Query configuration for GraphQL/PostHog flows
  */
 export interface IFlowQuery {
@@ -1761,6 +1784,61 @@ const ChatSchema = new Schema<IChat>(
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
 ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
+
+/**
+ * Chat Attachment Schema
+ *
+ * Stores metadata for chat image attachments whose bytes live in object
+ * storage. The proxy route streams these back to the browser, and the agent
+ * route resolves them to data URLs when replaying history to the model.
+ */
+const ChatAttachmentSchema = new Schema<IChatAttachment>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    chatId: {
+      type: String,
+      required: true,
+    },
+    createdBy: {
+      type: String,
+      ref: "User",
+      required: true,
+    },
+    storageKey: {
+      type: String,
+      required: true,
+    },
+    mediaType: {
+      type: String,
+      required: true,
+    },
+    filename: {
+      type: String,
+      required: false,
+    },
+    size: {
+      type: Number,
+      required: true,
+    },
+    sha256: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    timestamps: true,
+  },
+);
+
+// Dedupe re-uploads of the same image within a chat (same bytes -> same doc).
+ChatAttachmentSchema.index(
+  { workspaceId: 1, chatId: 1, sha256: 1 },
+  { unique: true },
+);
 
 /**
  * Flow Schema (data sync flow configuration)
@@ -3343,6 +3421,10 @@ export const SavedConsole = mongoose.model<ISavedConsole>(
   SavedConsoleSchema,
 );
 export const Chat = mongoose.model<IChat>("Chat", ChatSchema);
+export const ChatAttachment = mongoose.model<IChatAttachment>(
+  "ChatAttachment",
+  ChatAttachmentSchema,
+);
 export const Flow = mongoose.model<IFlow>("Flow", FlowSchema);
 export const FlowExecution = mongoose.model<IFlowExecution>(
   "FlowExecution",
