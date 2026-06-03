@@ -445,7 +445,9 @@ class S3ChatAttachmentStore implements ChatAttachmentStore {
       if (!response.ok || !response.body) {
         return null;
       }
-      return Readable.fromWeb(response.body);
+      return Readable.fromWeb(
+        response.body as unknown as Parameters<typeof Readable.fromWeb>[0],
+      );
     } catch {
       return null;
     }
@@ -529,7 +531,9 @@ export function buildChatAttachmentKey(options: {
 }
 
 function extensionForMediaType(mediaType: string, filename?: string): string {
-  const filenameExtension = filename ? path.extname(filename).toLowerCase() : "";
+  const filenameExtension = filename
+    ? path.extname(filename).toLowerCase()
+    : "";
   if (/^\.[a-z0-9]+$/i.test(filenameExtension)) {
     return filenameExtension;
   }
