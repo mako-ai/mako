@@ -4,6 +4,7 @@ import type { UIMessage } from "ai";
 import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
+import { isModelReadyFilePart } from "../utils/message-sanitizer";
 
 const logger = loggers.agent();
 
@@ -509,53 +510,61 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
   }>;
 } {
   // NEW: Store raw parts array - this preserves chronological order
-  const storedParts = (msg.parts || []).map(part => {
-    const p = part as Record<string, unknown>;
-    const partType = p.type as string;
+  const storedParts = (msg.parts || [])
+    .map(part => {
+      const p = part as Record<string, unknown>;
+      const partType = p.type as string;
 
-    if (partType === "text") {
-      return { type: "text", text: p.text as string };
-    }
+      if (partType === "text") {
+        return { type: "text", text: p.text as string };
+      }
 
-    if (partType === "reasoning") {
-      // Reasoning parts may have text in 'text' or 'reasoning' field
-      return {
-        type: "reasoning",
-        reasoning: (p.reasoning as string) || (p.text as string),
-      };
-    }
+      if (partType === "reasoning") {
+        // Reasoning parts may have text in 'text' or 'reasoning' field
+        return {
+          type: "reasoning",
+          reasoning: (p.reasoning as string) || (p.text as string),
+        };
+      }
 
-    // File parts (AI SDK FileUIPart): persist url/mediaType/filename explicitly
-    // so the attachment round-trips. Dropping these fields would reduce the part
-    // to `{ type: "file", _id }` and break convertToModelMessages on replay.
-    if (partType === "file") {
-      return {
-        type: "file",
-        url: p.url as string,
-        mediaType: p.mediaType as string,
-        filename: p.filename as string | undefined,
-      };
-    }
+      // File parts (AI SDK FileUIPart): persist url/mediaType/filename
+      // explicitly so the attachment round-trips. Dropping these fields would
+      // reduce the part to `{ type: "file", _id }` and break
+      // convertToModelMessages on replay. Parts that are not model-ready
+      // (missing mediaType + payload) are unrecoverable, so drop them rather
+      // than persist a poison pill.
+      if (partType === "file") {
+        if (!isModelReadyFilePart(p)) {
+          return null;
+        }
+        return {
+          type: "file",
+          url: p.url as string,
+          mediaType: p.mediaType as string,
+          filename: p.filename as string | undefined,
+        };
+      }
 
-    // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
-    if (partType.startsWith("tool-") || partType === "dynamic-tool") {
-      const toolName =
-        partType === "dynamic-tool"
-          ? (p.toolName as string)
-          : partType.split("-").slice(1).join("-");
-      return {
-        type: partType,
-        toolCallId: p.toolCallId as string,
-        toolName: toolName || (p.toolName as string),
-        input: p.input ?? {},
-        output: p.output ?? null,
-        state: (p.state as string) || "output-available",
-      };
-    }
+      // Tool parts: type is "tool-{toolName}" or "dynamic-tool"
+      if (partType.startsWith("tool-") || partType === "dynamic-tool") {
+        const toolName =
+          partType === "dynamic-tool"
+            ? (p.toolName as string)
+            : partType.split("-").slice(1).join("-");
+        return {
+          type: partType,
+          toolCallId: p.toolCallId as string,
+          toolName: toolName || (p.toolName as string),
+          input: p.input ?? {},
+          output: p.output ?? null,
+          state: (p.state as string) || "output-available",
+        };
+      }
 
-    // Unknown part type - store as-is
-    return { type: partType, ...p };
-  });
+      // Unknown part type - store as-is
+      return { type: partType, ...p };
+    })
+    .filter((part): part is NonNullable<typeof part> => part !== null);
 
   // TODO: Remove legacy field extraction once we're OK with losing backward compatibility
   // for old consumers that read content/reasoning/toolCalls instead of parts.

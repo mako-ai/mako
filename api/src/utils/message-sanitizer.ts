@@ -1,33 +1,51 @@
 import type { UIMessage } from "ai";
 
-/**
- * Returns true when a `file` UI part is well-formed enough to survive
- * `convertToModelMessages`. The AI SDK `FileUIPart` schema requires a string
- * `url` (data URL or remote URL); `mediaType` is also expected. Parts missing
- * these fields cannot be converted and poison the whole request.
- */
-function isValidFilePart(
-  part: { type: string } & Record<string, unknown>,
-): boolean {
-  const url = part.url;
-  return typeof url === "string" && url.length > 0;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 /**
- * Drop malformed `file` parts from a message's parts array.
+ * Returns true when a `file` part is well-formed enough to be converted to
+ * model input. The AI SDK `FileUIPart` schema requires a non-empty `mediaType`
+ * plus a payload — either a string `url` (data URL or remote URL) or inline
+ * `data` (base64 string or `Uint8Array`).
  *
  * Historically, file attachments were persisted before the DB schema stored
  * `url`/`mediaType`, so Mongoose stripped those fields and reduced the part to
- * `{ type: "file", _id }`. When such a message is replayed, the AI SDK throws
- * "Invalid prompt: The messages do not match the ModelMessage[] schema." Since
- * the file payload is unrecoverable, we drop the broken part entirely so the
- * rest of the conversation (and any sibling text part) still goes through.
+ * `{ type: "file", _id }`. Replaying such a part makes the AI SDK throw
+ * "Invalid prompt: The messages do not match the ModelMessage[] schema."
+ * Validating here lets us drop the unrecoverable part both before sending to
+ * the model and before persisting it again.
+ */
+export function isModelReadyFilePart(part: unknown): boolean {
+  if (!isRecord(part) || part.type !== "file") {
+    return false;
+  }
+
+  const mediaType = part.mediaType;
+  const url = part.url;
+  const data = part.data;
+
+  return (
+    typeof mediaType === "string" &&
+    mediaType.length > 0 &&
+    ((typeof url === "string" && url.length > 0) ||
+      (typeof data === "string" && data.length > 0) ||
+      data instanceof Uint8Array)
+  );
+}
+
+/**
+ * Drop malformed `file` parts from a message's parts array. Non-file parts are
+ * always kept; file parts are kept only when model-ready. The unrecoverable
+ * file payload is dropped so the rest of the conversation (and any sibling text
+ * part) still goes through.
  */
 function dropMalformedFileParts(
   parts: ReadonlyArray<{ type: string } & Record<string, unknown>>,
 ): Array<{ type: string } & Record<string, unknown>> {
   return parts.filter(part =>
-    part?.type === "file" ? isValidFilePart(part) : true,
+    part?.type === "file" ? isModelReadyFilePart(part) : true,
   );
 }
 
