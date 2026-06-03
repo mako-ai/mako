@@ -4,6 +4,8 @@ interface ImportMetaEnv {
   readonly VITE_API_URL: string;
   readonly VITE_MUI_LICENSE_KEY: string;
   readonly VITE_DISABLE_OAUTH?: string; // Set to "true" to disable OAuth (for PR previews)
+  readonly VITE_CLOUDFLARE_IMAGE_RESIZING?: string;
+  readonly VITE_CHAT_ATTACHMENT_IMAGE_OPTIONS?: string;
   // Add more env variables as needed
 }
 

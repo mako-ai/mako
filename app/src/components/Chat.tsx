@@ -105,6 +105,57 @@ interface ChatSessionMeta {
   updatedAt?: string;
 }
 
+const DEFAULT_CHAT_IMAGE_RESIZING_OPTIONS =
+  "width=400,height=400,fit=scale-down,quality=85,format=auto";
+
+function isCloudflareImageResizingEnabled(): boolean {
+  const configured = import.meta.env.VITE_CLOUDFLARE_IMAGE_RESIZING;
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+  return import.meta.env.PROD;
+}
+
+function buildCloudflareImageUrl(originUrl: string): string {
+  if (!isCloudflareImageResizingEnabled() || !originUrl.startsWith("/")) {
+    return originUrl;
+  }
+
+  const options =
+    import.meta.env.VITE_CHAT_ATTACHMENT_IMAGE_OPTIONS ||
+    DEFAULT_CHAT_IMAGE_RESIZING_OPTIONS;
+  return `/cdn-cgi/image/${options.replace(/^\/+|\/+$/g, "")}${originUrl}`;
+}
+
+function ChatAttachmentImage({ url, alt }: { url: string; alt: string }) {
+  const optimizedUrl = useMemo(() => buildCloudflareImageUrl(url), [url]);
+  const [src, setSrc] = useState(optimizedUrl);
+
+  useEffect(() => {
+    setSrc(optimizedUrl);
+  }, [optimizedUrl]);
+
+  return (
+    <Box
+      component="img"
+      src={src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      onError={() => {
+        if (src !== url) {
+          setSrc(url);
+        }
+      }}
+      sx={{
+        maxWidth: 200,
+        maxHeight: 200,
+        borderRadius: 1,
+        objectFit: "contain",
+      }}
+    />
+  );
+}
+
 // CodeBlock component for syntax highlighting
 const CodeBlock = React.memo(
   ({
@@ -671,19 +722,10 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 }}
               >
                 {fileParts.map((fp, i) => (
-                  <Box
+                  <ChatAttachmentImage
                     key={i}
-                    component="img"
-                    src={fp.url}
+                    url={fp.url}
                     alt="Attached image"
-                    loading="lazy"
-                    decoding="async"
-                    sx={{
-                      maxWidth: 200,
-                      maxHeight: 200,
-                      borderRadius: 1,
-                      objectFit: "contain",
-                    }}
                   />
                 ))}
               </Box>

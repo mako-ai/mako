@@ -63,11 +63,15 @@ function nodeStreamToWeb(
       });
     },
     pull() {
-      (nodeStream as NodeJS.ReadableStream & { resume?: () => void }).resume?.();
+      (
+        nodeStream as NodeJS.ReadableStream & { resume?: () => void }
+      ).resume?.();
     },
     cancel() {
       closed = true;
-      (nodeStream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+      (
+        nodeStream as NodeJS.ReadableStream & { destroy?: () => void }
+      ).destroy?.();
     },
   });
 }
@@ -81,7 +85,10 @@ async function verifyWorkspaceAccess(
 
   if (workspace) {
     if (workspace._id.toString() !== workspaceId) {
-      return c.json({ error: "API key not authorized for this workspace" }, 403);
+      return c.json(
+        { error: "API key not authorized for this workspace" },
+        403,
+      );
     }
   } else if (user) {
     const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
@@ -143,7 +150,10 @@ chatAttachmentRoutes.post("/", async (c: AuthenticatedContext) => {
     return c.json({ error: "Only image attachments are supported" }, 400);
   }
 
-  if (typeof uploaded.size === "number" && uploaded.size > MAX_ATTACHMENT_BYTES) {
+  if (
+    typeof uploaded.size === "number" &&
+    uploaded.size > MAX_ATTACHMENT_BYTES
+  ) {
     return c.json({ error: "Image attachment is too large" }, 413);
   }
 
@@ -205,6 +215,7 @@ chatAttachmentRoutes.get("/:attachmentId", async (c: AuthenticatedContext) => {
     "Content-Type": metadata.contentType,
     "Cache-Control": "private, max-age=86400, immutable",
     "X-Content-Type-Options": "nosniff",
+    Vary: "Cookie, Authorization",
   };
   if (metadata.size != null) {
     headers["Content-Length"] = String(metadata.size);
