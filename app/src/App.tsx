@@ -762,7 +762,7 @@ function MainApp() {
             </Panel>
 
             <StyledHorizontalResizeHandle
-              onDragging={handlePanelDragging}
+              onDragging={handleLeftPanelDragging}
               style={
                 leftPaneOpen
                   ? undefined
@@ -785,7 +785,7 @@ function MainApp() {
             </Panel>
 
             <StyledHorizontalResizeHandle
-              onDragging={handlePanelDragging}
+              onDragging={handleRightPanelDragging}
               style={
                 rightPaneOpen
                   ? undefined
