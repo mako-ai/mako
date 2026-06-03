@@ -3066,6 +3066,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           sm: {
             x: { type: Number },
@@ -3074,6 +3075,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           xs: {
             x: { type: Number },
@@ -3082,6 +3084,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
         },
       },
