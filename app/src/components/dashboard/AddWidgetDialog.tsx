@@ -22,7 +22,7 @@ import {
   type DashboardWidget,
 } from "../../store/dashboardStore";
 import { executeDashboardSql } from "../../dashboard-runtime/commands";
-import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
+import { getWidgetSizeDefaults } from "@mako/schemas";
 
 interface AddWidgetDialogProps {
   open: boolean;
@@ -34,14 +34,16 @@ function buildDefaultLayouts(
   type: DashboardWidget["type"],
 ): DashboardWidget["layouts"] {
   const d = getWidgetSizeDefaults(type);
-  return deriveResponsiveLayouts({
-    x: 0,
-    y: 0,
-    w: d.w,
-    h: d.h,
-    minW: d.minW,
-    minH: d.minH,
-  });
+  return {
+    lg: {
+      x: 0,
+      y: 0,
+      w: d.w,
+      h: d.h,
+      minW: d.minW,
+      minH: d.minH,
+    },
+  };
 }
 
 export default function AddWidgetDialog({

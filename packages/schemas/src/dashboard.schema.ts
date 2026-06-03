@@ -89,6 +89,8 @@ export const WidgetLayoutSchema = z.object({
   h: z.number(),
   minW: z.number().optional(),
   minH: z.number().optional(),
+  // Explicit user override marker for non-lg breakpoints.
+  custom: z.boolean().optional(),
 });
 
 export type WidgetLayout = z.infer<typeof WidgetLayoutSchema>;
@@ -246,6 +248,7 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
     h: typeof raw.h === "number" ? raw.h : DEFAULT_LAYOUT.h,
     ...(typeof raw.minW === "number" ? { minW: raw.minW } : {}),
     ...(typeof raw.minH === "number" ? { minH: raw.minH } : {}),
+    ...(raw.custom === true ? { custom: true } : {}),
   };
 }
 

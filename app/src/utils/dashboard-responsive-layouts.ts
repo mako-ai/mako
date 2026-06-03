@@ -63,9 +63,15 @@ export function buildSmartResponsiveLayouts(
       const derivedBp = derived[bp] ?? model.lg;
       if (explicit && typeof explicit === "object") {
         const normalized = normalizeLayout(explicit, derivedBp);
-        const isAutoDerived = areLayoutsEqual(normalized, derivedBp);
         layoutsByBreakpoint[bp][model.id] = normalized;
-        autoDerivedByBreakpoint[bp][model.id] = isAutoDerived;
+        autoDerivedByBreakpoint[bp][model.id] =
+          normalized.custom === true
+            ? false
+            : isLegacyProportionalLayout(
+                model.lg,
+                normalized,
+                BREAKPOINT_COLS[bp],
+              ) || areLayoutsEqual(normalized, derivedBp);
       } else {
         layoutsByBreakpoint[bp][model.id] = derivedBp;
         autoDerivedByBreakpoint[bp][model.id] = true;
@@ -130,6 +136,7 @@ function normalizeLayout(
     h: typeof raw?.h === "number" ? raw.h : fallback.h,
     minW: typeof raw?.minW === "number" ? raw.minW : fallback.minW,
     minH: typeof raw?.minH === "number" ? raw.minH : fallback.minH,
+    custom: raw?.custom === true ? true : undefined,
   };
 }
 
@@ -144,18 +151,38 @@ function areLayoutsEqual(a: WidgetLayout, b: WidgetLayout): boolean {
   );
 }
 
+function scaledWidth(
+  layout: WidgetLayout,
+  cols: number,
+  lgCols: number = BREAKPOINT_COLS.lg,
+): number {
+  const minW = Math.min(Math.max(layout.minW ?? 1, 1), cols);
+  const scale = cols / lgCols;
+  return Math.min(Math.max(Math.round(layout.w * scale), minW), cols);
+}
+
+function isLegacyProportionalLayout(
+  lg: WidgetLayout,
+  bp: WidgetLayout,
+  cols: number,
+): boolean {
+  const expectedW = scaledWidth(lg, cols);
+  const expectedX = Math.min(
+    Math.round(lg.x * (cols / BREAKPOINT_COLS.lg)),
+    Math.max(0, cols - expectedW),
+  );
+  return bp.y === lg.y && bp.w === expectedW && bp.x === expectedX;
+}
+
 function applySmartKpiFallback(
   breakpoint: Exclude<DashboardBreakpoint, "lg">,
   models: WidgetModel[],
   layoutsForBreakpoint: LayoutByWidgetId,
   autoDerivedFlags: AutoDerivedByWidgetId,
 ) {
-  const perRow = breakpoint === "md" ? 2 : 1;
-  if (perRow < 1) return;
+  const preferredPerRow = breakpoint === "md" ? 2 : breakpoint === "sm" ? 2 : 1;
 
   const cols = BREAKPOINT_COLS[breakpoint];
-  const spans = splitColumns(cols, perRow);
-  if (spans.length === 0) return;
 
   const modelsByLgY = new Map<number, WidgetModel[]>();
   for (const model of models) {
@@ -174,11 +201,10 @@ function applySmartKpiFallback(
     if (!bandModels.every(model => autoDerivedFlags[model.id])) continue;
 
     const sorted = [...bandModels].sort((a, b) => a.lg.x - b.lg.x);
-    const minWViolation = sorted.some((model, index) => {
-      const targetSpan = spans[index % perRow];
-      return (model.lg.minW ?? 1) > targetSpan.w;
-    });
-    if (minWViolation) continue;
+    const perRow = resolvePerRow(sorted, cols, preferredPerRow);
+    if (perRow < 1) continue;
+    const spans = splitColumns(cols, perRow);
+    if (spans.length === 0) continue;
 
     const baseY = Math.min(
       ...sorted.map(model => layoutsForBreakpoint[model.id]?.y ?? 0),
@@ -220,4 +246,25 @@ function splitColumns(
     cursor += width;
   }
   return spans;
+}
+
+function resolvePerRow(
+  models: WidgetModel[],
+  cols: number,
+  preferredPerRow: number,
+): number {
+  for (
+    let perRow = Math.min(models.length, preferredPerRow);
+    perRow >= 1;
+    perRow -= 1
+  ) {
+    const spans = splitColumns(cols, perRow);
+    const minWViolation = models.some((model, index) => {
+      const targetSpan = spans[index % perRow];
+      return (model.lg.minW ?? 1) > targetSpan.w;
+    });
+    if (!minWViolation) return perRow;
+  }
+
+  return 1;
 }

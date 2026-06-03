@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
 import { Box, Typography, IconButton, Tooltip } from "@mui/material";
 import { Database, Plus } from "lucide-react";
 import { ResponsiveGridLayout } from "react-grid-layout";
@@ -88,45 +88,70 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
     dashboard?.crossFilter.resolution ?? "intersect";
   const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
 
-  const handleLayoutChange = useCallback(
-    (_layout: any, allLayouts: Record<string, any>) => {
-      if (!dashboard || !dashboardId || !allLayouts || !isEditMode) return;
+  const currentBreakpointRef = useRef<"lg" | "md" | "sm" | "xs">("lg");
+  const handleBreakpointChange = useCallback((breakpoint: string) => {
+    if (
+      breakpoint === "lg" ||
+      breakpoint === "md" ||
+      breakpoint === "sm" ||
+      breakpoint === "xs"
+    ) {
+      currentBreakpointRef.current = breakpoint;
+    }
+  }, []);
+
+  const persistActiveBreakpointLayout = useCallback(
+    (
+      layout: ReadonlyArray<{
+        i: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+      }>,
+    ) => {
+      if (!dashboard || !dashboardId || !isEditMode) return;
+      const activeBreakpoint = currentBreakpointRef.current;
 
       for (const widget of dashboard.widgets) {
+        const item = layout.find(i => i.i === widget.id);
+        if (!item) continue;
+
         const currentLayouts =
           widget.layouts ??
           ((widget as any).layout
             ? { lg: (widget as any).layout }
             : { lg: { x: 0, y: 0, w: 6, h: 4 } });
-        const updatedLayouts: Record<
-          string,
-          { x: number; y: number; w: number; h: number }
-        > = {};
-        let changed = false;
+        const existing = (currentLayouts as any)[activeBreakpoint];
+        const next = {
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+          ...(typeof existing?.minW === "number"
+            ? { minW: existing.minW }
+            : {}),
+          ...(typeof existing?.minH === "number"
+            ? { minH: existing.minH }
+            : {}),
+          ...(activeBreakpoint !== "lg" ? { custom: true } : {}),
+        };
 
-        for (const [bp, items] of Object.entries(allLayouts)) {
-          if (!Array.isArray(items)) continue;
-          const item = items.find((i: any) => i.i === widget.id);
-          if (!item) continue;
-          const newPos = { x: item.x, y: item.y, w: item.w, h: item.h };
-          const existing = (currentLayouts as any)[bp];
-          if (
-            !existing ||
-            existing.x !== newPos.x ||
-            existing.y !== newPos.y ||
-            existing.w !== newPos.w ||
-            existing.h !== newPos.h
-          ) {
-            updatedLayouts[bp] = newPos;
-            changed = true;
-          }
+        if (
+          existing &&
+          existing.x === next.x &&
+          existing.y === next.y &&
+          existing.w === next.w &&
+          existing.h === next.h &&
+          (activeBreakpoint === "lg" ||
+            (existing.custom === true && next.custom === true))
+        ) {
+          continue;
         }
 
-        if (changed) {
-          modifyWidgetAction(dashboardId, widget.id, {
-            layouts: { ...currentLayouts, ...updatedLayouts },
-          } as any);
-        }
+        modifyWidgetAction(dashboardId, widget.id, {
+          layouts: { ...currentLayouts, [activeBreakpoint]: next },
+        } as any);
       }
     },
     [dashboard, dashboardId, isEditMode],
@@ -344,7 +369,9 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
         breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480 }}
         cols={{ lg: 12, md: 10, sm: 6, xs: 4 }}
         rowHeight={dashboard.layout?.rowHeight || 80}
-        onLayoutChange={handleLayoutChange}
+        onBreakpointChange={handleBreakpointChange}
+        onDragStop={layout => persistActiveBreakpointLayout(layout)}
+        onResizeStop={layout => persistActiveBreakpointLayout(layout)}
         dragConfig={{ handle: ".drag-handle", enabled: isEditMode }}
         resizeConfig={{ enabled: isEditMode }}
       >
