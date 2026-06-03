@@ -93,17 +93,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function hasMeaningfulChange(
-  a: number | null,
-  b: number,
-  threshold = 2,
-): boolean {
-  if (a === null) {
-    return true;
-  }
-  return Math.abs(a - b) > threshold;
-}
-
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
@@ -117,6 +106,8 @@ function MainApp() {
   const leftPaneRef = useRef<ImperativePanelHandle | null>(null);
   const rightPaneRef = useRef<ImperativePanelHandle | null>(null);
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
+  const isPanelDragRef = useRef(false);
+  const prevPanelContainerWidthRef = useRef(0);
 
   // Initialize with window width to avoid 0 width on first render
   const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
@@ -157,79 +148,137 @@ function MainApp() {
       ? rightPaneWidthPx
       : defaultRightPx;
 
+  // Authoritative pixel widths for side panels. These stay fixed on window
+  // resize; only explicit drag-resize updates them.
+  const leftWidthPxRef = useRef(resolvedLeftPaneWidthPx);
+  const rightWidthPxRef = useRef(resolvedRightPaneWidthPx);
+  leftWidthPxRef.current = resolvedLeftPaneWidthPx;
+  rightWidthPxRef.current = resolvedRightPaneWidthPx;
+
+  const toPanelPct = useCallback(
+    (px: number) =>
+      panelContainerWidth > 0 ? (px / panelContainerWidth) * 100 : 0,
+    [panelContainerWidth],
+  );
+
   // Convert to percentages for Panel
-  const leftSizePct = (resolvedLeftPaneWidthPx / panelContainerWidth) * 100;
-  const rightSizePct = (resolvedRightPaneWidthPx / panelContainerWidth) * 100;
+  const leftSizePct = toPanelPct(resolvedLeftPaneWidthPx);
+  const rightSizePct = toPanelPct(resolvedRightPaneWidthPx);
 
   // Threshold for collapsing
   const collapseThresholdPct =
     (SIDE_PANEL_COLLAPSE_THRESHOLD_PX / panelContainerWidth) * 100;
 
-  // Handle layout changes (persistence)
-  const persistTimeoutRef = useRef<number | null>(null);
-  const lastLayoutSnapshotRef = useRef<{
-    leftPct: number;
-    rightPct: number;
-    containerWidth: number;
-  } | null>(null);
-  const handleLayout = useCallback(
+  const applyFixedSidePanelSizes = useCallback(() => {
+    if (panelContainerWidth <= 0) return;
+
+    const leftPanel = leftPaneRef.current;
+    if (leftPaneOpen && leftPanel && !leftPanel.isCollapsed()) {
+      leftPanel.resize(toPanelPct(leftWidthPxRef.current));
+    }
+
+    const rightPanel = rightPaneRef.current;
+    if (rightPaneOpen && rightPanel && !rightPanel.isCollapsed()) {
+      rightPanel.resize(toPanelPct(rightWidthPxRef.current));
+    }
+  }, [leftPaneOpen, panelContainerWidth, rightPaneOpen, toPanelPct]);
+
+  const persistSidePanelWidths = useCallback(
     (sizes: number[]) => {
       if (panelContainerWidth <= 0) return;
+
+      const [leftPct, , rightPct] = sizes;
+      const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
+        {};
+
+      if (leftPct > 0) {
+        const px = (leftPct * panelContainerWidth) / 100;
+        leftWidthPxRef.current = px;
+        updates.leftPaneWidthPx = px;
+      }
+      if (rightPct > 0) {
+        const px = (rightPct * panelContainerWidth) / 100;
+        rightWidthPxRef.current = px;
+        updates.rightPaneWidthPx = px;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        setPaneWidths(updates);
+      }
+    },
+    [panelContainerWidth, setPaneWidths],
+  );
+
+  const persistSidePanelWidthsFromHandles = useCallback(() => {
+    if (panelContainerWidth <= 0) return;
+
+    const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } = {};
+
+    const leftPanel = leftPaneRef.current;
+    if (leftPaneOpen && leftPanel && !leftPanel.isCollapsed()) {
+      const px = (leftPanel.getSize() * panelContainerWidth) / 100;
+      leftWidthPxRef.current = px;
+      updates.leftPaneWidthPx = px;
+    }
+
+    const rightPanel = rightPaneRef.current;
+    if (rightPaneOpen && rightPanel && !rightPanel.isCollapsed()) {
+      const px = (rightPanel.getSize() * panelContainerWidth) / 100;
+      rightWidthPxRef.current = px;
+      updates.rightPaneWidthPx = px;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      setPaneWidths(updates);
+    }
+  }, [leftPaneOpen, panelContainerWidth, rightPaneOpen, setPaneWidths]);
+
+  // Keep side panels fixed in pixels on container/window resize.
+  useEffect(() => {
+    if (panelContainerWidth <= 0) return;
+
+    const previousWidth = prevPanelContainerWidthRef.current;
+    prevPanelContainerWidthRef.current = panelContainerWidth;
+
+    if (previousWidth === 0 || previousWidth === panelContainerWidth) {
+      return;
+    }
+    if (isPanelDragRef.current) {
+      return;
+    }
+
+    applyFixedSidePanelSizes();
+  }, [applyFixedSidePanelSizes, panelContainerWidth]);
+
+  // Persist widths only for explicit divider drags.
+  const persistTimeoutRef = useRef<number | null>(null);
+  const handleLayout = useCallback(
+    (sizes: number[]) => {
+      if (!isPanelDragRef.current || panelContainerWidth <= 0) return;
 
       if (persistTimeoutRef.current) {
         clearTimeout(persistTimeoutRef.current);
       }
 
       persistTimeoutRef.current = window.setTimeout(() => {
-        const [leftPct, , rightPct] = sizes;
-        const lastSnapshot = lastLayoutSnapshotRef.current;
-        const containerWidthChangedSinceLastLayout =
-          lastSnapshot !== null &&
-          Math.abs(lastSnapshot.containerWidth - panelContainerWidth) > 1;
-        const leftPctChanged =
-          lastSnapshot === null ||
-          Math.abs(lastSnapshot.leftPct - leftPct) > 0.1;
-        const rightPctChanged =
-          lastSnapshot === null ||
-          Math.abs(lastSnapshot.rightPct - rightPct) > 0.1;
-
-        lastLayoutSnapshotRef.current = {
-          leftPct,
-          rightPct,
-          containerWidth: panelContainerWidth,
-        };
-
-        // Ignore pure container resize events where pane percentages did not change.
-        if (
-          containerWidthChangedSinceLastLayout &&
-          !leftPctChanged &&
-          !rightPctChanged
-        ) {
-          return;
-        }
-
-        const nextLeftPx = (leftPct * panelContainerWidth) / 100;
-        const nextRightPx = (rightPct * panelContainerWidth) / 100;
-        const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
-          {};
-
-        // Only save if panel is actually open (size > 0)
-        if (leftPct > 0 && hasMeaningfulChange(leftPaneWidthPx, nextLeftPx)) {
-          updates.leftPaneWidthPx = nextLeftPx;
-        }
-        if (
-          rightPct > 0 &&
-          hasMeaningfulChange(rightPaneWidthPx, nextRightPx)
-        ) {
-          updates.rightPaneWidthPx = nextRightPx;
-        }
-
-        if (Object.keys(updates).length > 0) {
-          setPaneWidths(updates);
-        }
+        persistSidePanelWidths(sizes);
       }, 200);
     },
-    [leftPaneWidthPx, panelContainerWidth, rightPaneWidthPx, setPaneWidths],
+    [panelContainerWidth, persistSidePanelWidths],
+  );
+
+  const handlePanelDrag = useCallback(
+    (isDragging: boolean) => {
+      isPanelDragRef.current = isDragging;
+      if (!isDragging) {
+        if (persistTimeoutRef.current) {
+          clearTimeout(persistTimeoutRef.current);
+          persistTimeoutRef.current = null;
+        }
+        persistSidePanelWidthsFromHandles();
+      }
+    },
+    [persistSidePanelWidthsFromHandles],
   );
 
   // Handle external open/close for Left Pane
@@ -239,7 +288,7 @@ function MainApp() {
       const panel = leftPaneRef.current;
       if (panel && panel.isCollapsed()) {
         panel.expand();
-        panel.resize((resolvedLeftPaneWidthPx / panelContainerWidth) * 100);
+        panel.resize(toPanelPct(leftWidthPxRef.current));
       }
     } else if (!leftPaneOpen && prevLeftOpen.current) {
       const panel = leftPaneRef.current;
@@ -248,7 +297,7 @@ function MainApp() {
       }
     }
     prevLeftOpen.current = leftPaneOpen;
-  }, [leftPaneOpen, panelContainerWidth, resolvedLeftPaneWidthPx]);
+  }, [leftPaneOpen, toPanelPct]);
 
   // Handle external open/close for Right Pane
   const prevRightOpen = useRef(rightPaneOpen);
@@ -257,7 +306,7 @@ function MainApp() {
       const panel = rightPaneRef.current;
       if (panel && panel.isCollapsed()) {
         panel.expand();
-        panel.resize((resolvedRightPaneWidthPx / panelContainerWidth) * 100);
+        panel.resize(toPanelPct(rightWidthPxRef.current));
       }
     } else if (!rightPaneOpen && prevRightOpen.current) {
       const panel = rightPaneRef.current;
@@ -266,36 +315,7 @@ function MainApp() {
       }
     }
     prevRightOpen.current = rightPaneOpen;
-  }, [panelContainerWidth, resolvedRightPaneWidthPx, rightPaneOpen]);
-
-  const previousContainerWidthRef = useRef(panelContainerWidth);
-  useEffect(() => {
-    const previousWidth = previousContainerWidthRef.current;
-    previousContainerWidthRef.current = panelContainerWidth;
-
-    if (
-      panelContainerWidth <= 0 ||
-      Math.abs(previousWidth - panelContainerWidth) < 1
-    ) {
-      return;
-    }
-
-    const leftPanel = leftPaneRef.current;
-    if (leftPaneOpen && leftPanel && !leftPanel.isCollapsed()) {
-      leftPanel.resize((resolvedLeftPaneWidthPx / panelContainerWidth) * 100);
-    }
-
-    const rightPanel = rightPaneRef.current;
-    if (rightPaneOpen && rightPanel && !rightPanel.isCollapsed()) {
-      rightPanel.resize((resolvedRightPaneWidthPx / panelContainerWidth) * 100);
-    }
-  }, [
-    leftPaneOpen,
-    panelContainerWidth,
-    resolvedLeftPaneWidthPx,
-    resolvedRightPaneWidthPx,
-    rightPaneOpen,
-  ]);
+  }, [rightPaneOpen, toPanelPct]);
 
   const defaultLeftPanelSize = leftPaneOpen ? leftSizePct : 0;
   const defaultRightPanelSize = rightPaneOpen ? rightSizePct : 0;
@@ -636,6 +656,7 @@ function MainApp() {
             </Panel>
 
             <StyledHorizontalResizeHandle
+              onDragging={handlePanelDrag}
               style={
                 leftPaneOpen
                   ? undefined
@@ -658,6 +679,7 @@ function MainApp() {
             </Panel>
 
             <StyledHorizontalResizeHandle
+              onDragging={handlePanelDrag}
               style={
                 rightPaneOpen
                   ? undefined
