@@ -1,6 +1,7 @@
 import {
   getWidgetSizeDefaults,
   reflowLayout,
+  resolveLayoutCollisions,
   type ReflowItem,
 } from "@mako/schemas";
 
@@ -74,6 +75,7 @@ export function buildResponsiveGridLayouts(
     const minH = raw?.minH ?? sizeDefaults.minH;
     lgItems.push({
       id: w.id,
+      type: w.type,
       layout: {
         x: typeof raw?.x === "number" ? raw.x : 0,
         y: typeof raw?.y === "number" ? raw.y : 0,
@@ -103,13 +105,34 @@ export function buildResponsiveGridLayouts(
     const isCustomBp = widgets.some(w => w.layouts?.[bp]?.custom === true);
     const reflowed = reflowLayout(lgItems, lgCols, targetCols);
 
+    const resolvedById = isCustomBp
+      ? // A user has arranged this breakpoint. Honor stored positions, fall back
+        // to the reflow for any widget added since (e.g. via the AI agent), then
+        // push any fallback that collides with the user's layout down a row.
+        resolveLayoutCollisions(
+          widgets.map(w => {
+            const stored = w.layouts?.[bp];
+            const mins = minsById[w.id];
+            const lay =
+              stored && typeof stored === "object" ? stored : reflowed[w.id];
+            return {
+              id: w.id,
+              layout: {
+                x: lay?.x ?? 0,
+                y: lay?.y ?? 0,
+                w: lay?.w ?? mins.minW,
+                h: lay?.h ?? mins.minH,
+                ...(lay?.minW != null ? { minW: lay.minW } : {}),
+                ...(lay?.minH != null ? { minH: lay.minH } : {}),
+              },
+            };
+          }),
+        )
+      : reflowed;
+
     result[bp] = widgets.map(w => {
       const mins = minsById[w.id];
-      const stored = w.layouts?.[bp];
-      const lay =
-        isCustomBp && stored && typeof stored === "object"
-          ? stored
-          : reflowed[w.id];
+      const lay = resolvedById[w.id];
       return {
         i: w.id,
         x: lay?.x ?? 0,

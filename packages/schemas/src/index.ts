@@ -14,6 +14,7 @@ export {
   deriveResponsiveLayouts,
   reflowLayout,
   reflowResponsiveLayouts,
+  resolveLayoutCollisions,
   type ReflowItem,
   type WidgetLayout,
   type DashboardQueryLanguage,

@@ -247,10 +247,51 @@ export function deriveResponsiveLayouts(
 export interface ReflowItem {
   id: string;
   layout: WidgetLayout;
+  /**
+   * Widget kind. Used to pick a more natural width when reflowing: tables and
+   * very wide charts go full-width, half-width charts stay roughly half on wide
+   * breakpoints, while KPIs and small widgets scale proportionally.
+   */
+  type?: "chart" | "kpi" | "table";
 }
 
 function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Choose a widget's target width for a breakpoint. Proportional scaling is the
+ * baseline, but charts and tables get type-aware treatment so they don't end up
+ * awkwardly narrow on smaller grids.
+ */
+function preferredWidth(
+  item: ReflowItem,
+  sourceCols: number,
+  targetCols: number,
+): number {
+  const { w, minW } = item.layout;
+  const minWidth = clampInt(minW ?? 1, 1, targetCols);
+  const proportional = clampInt(
+    Math.round((w / sourceCols) * targetCols),
+    minWidth,
+    targetCols,
+  );
+
+  if (item.type === "table") return targetCols;
+
+  if (item.type === "chart") {
+    // A near-full-width chart stays full-width; a half-width chart stays ~half
+    // on roomy grids but goes full-width once the grid gets very narrow.
+    if (w >= sourceCols * 0.75) return targetCols;
+    if (w >= sourceCols * 0.5) {
+      return targetCols >= 10
+        ? clampInt(Math.floor(targetCols / 2), minWidth, targetCols)
+        : targetCols;
+    }
+    if (targetCols <= 4) return targetCols;
+  }
+
+  return proportional;
 }
 
 /**
@@ -299,11 +340,7 @@ function reflowRow(
   );
   const n = sorted.length;
 
-  const targetW = sorted.map(it => {
-    const minW = clampInt(it.layout.minW ?? 1, 1, targetCols);
-    const scaled = Math.round((it.layout.w / sourceCols) * targetCols);
-    return clampInt(scaled, minW, targetCols);
-  });
+  const targetW = sorted.map(it => preferredWidth(it, sourceCols, targetCols));
 
   const widths = sorted.map(it => it.layout.w);
   const allEqual = widths.every(w => w === widths[0]);
@@ -416,6 +453,35 @@ export function reflowLayout(
       rowBottom = Math.max(rowBottom, cell.ry + cell.item.layout.h);
     }
     cursorY += rowBottom;
+  }
+  return result;
+}
+
+function rectsOverlap(a: WidgetLayout, b: WidgetLayout): boolean {
+  return (
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  );
+}
+
+/**
+ * Safety net: given a set of placed layouts (keyed by id, in placement order),
+ * push any overlapping item straight down until it no longer collides. Already
+ * collision-free layouts are returned unchanged. This guarantees the grid never
+ * renders overlapping widgets even when reflowed items are mixed with
+ * user-arranged ones.
+ */
+export function resolveLayoutCollisions(
+  ordered: Array<{ id: string; layout: WidgetLayout }>,
+): Record<string, WidgetLayout> {
+  const placed: WidgetLayout[] = [];
+  const result: Record<string, WidgetLayout> = {};
+  for (const { id, layout } of ordered) {
+    const next = { ...layout };
+    while (placed.some(p => rectsOverlap(next, p))) {
+      next.y += 1;
+    }
+    placed.push(next);
+    result[id] = next;
   }
   return result;
 }
