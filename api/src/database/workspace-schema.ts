@@ -516,6 +516,12 @@ export interface IMessagePart {
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
   output?: unknown; // Tool result (named 'output' for AI SDK v6 compat, was 'result')
   state?: string; // Tool state: "input-streaming", "input-available", "output-streaming", "output-available", "error"
+  // File parts (AI SDK FileUIPart). Without these fields, persisted attachments
+  // are reduced to `{ type: "file", _id }` and break `convertToModelMessages`
+  // with "The messages do not match the ModelMessage[] schema."
+  url?: string; // Data URL or remote URL of the attachment
+  mediaType?: string; // MIME type, e.g. "image/png"
+  filename?: string; // Optional original file name
 }
 
 /**
@@ -1598,6 +1604,12 @@ const ChatSchema = new Schema<IChat>(
             input: Schema.Types.Mixed,
             output: Schema.Types.Mixed,
             state: String,
+            // File parts (AI SDK FileUIPart). Persisting these keeps attachments
+            // round-trippable; without them Mongoose strict mode strips the
+            // fields and breaks convertToModelMessages on the next turn.
+            url: String,
+            mediaType: String,
+            filename: String,
           },
         ],
         // Legacy fields - kept for backward compatibility with existing chats
