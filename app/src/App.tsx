@@ -18,20 +18,14 @@ import {
 import { trackPageView } from "./lib/analytics";
 import Sidebar from "./components/Sidebar";
 import {
-  DEFAULT_LEFT_PANE_SIZE,
-  DEFAULT_RIGHT_PANE_SIZE,
-  SIDE_PANEL_COLLAPSE_THRESHOLD_PX,
-  SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-  SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
+  CENTER_PANE_MIN_WIDTH_PX,
+  DEFAULT_LEFT_PANE_WIDTH_PX,
+  DEFAULT_RIGHT_PANE_WIDTH_PX,
+  SIDE_PANEL_MAX_WIDTH_PX,
+  SIDE_PANEL_MIN_WIDTH_PX,
   useUIStore,
 } from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
-import {
-  Panel,
-  PanelGroup,
-  PanelResizeHandle,
-  type ImperativePanelHandle,
-} from "react-resizable-panels";
 import Chat from "./components/Chat";
 import DatabaseExplorer, {
   type CollectionInfo,
@@ -58,11 +52,16 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
 
-// Styled PanelResizeHandle components (moved from Databases.tsx/Consoles.tsx)
-const StyledHorizontalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
+// Draggable divider between a fixed-width side pane and the flexible center.
+// Resizing changes the side pane's pixel width directly (not a percentage),
+// so side panes stay a fixed width and only the center pane flexes.
+const ResizeDivider = styled("div")(({ theme }) => ({
+  flex: "0 0 4px",
   width: "4px",
+  alignSelf: "stretch",
   background: theme.palette.divider,
   cursor: "col-resize",
+  touchAction: "none",
   transition: "background-color 0.2s ease",
   "&:hover": {
     backgroundColor: theme.palette.primary.main,
@@ -87,283 +86,141 @@ function InvitePage() {
 import { UrlSync } from "./components/UrlSync";
 
 // Main application component (extracted from original App)
-const EDITOR_PANEL_MIN_SIZE = 30;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-// Avoid persisting sub-pixel churn (e.g. floating-point % → px round-trips).
-function hasMeaningfulChange(
-  current: number | null,
-  next: number,
-  thresholdPx = 1,
-): boolean {
-  if (current === null) return true;
-  return Math.abs(current - next) > thresholdPx;
-}
+type SidePane = "left" | "right";
 
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
-  const setLeftPaneOpen = useUIStore(state => state.setLeftPaneOpen);
-  const setRightPaneOpen = useUIStore(state => state.setRightPaneOpen);
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
 
-  const leftPaneRef = useRef<ImperativePanelHandle | null>(null);
-  const rightPaneRef = useRef<ImperativePanelHandle | null>(null);
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
+  const leftPaneElRef = useRef<HTMLDivElement | null>(null);
+  const rightPaneElRef = useRef<HTMLDivElement | null>(null);
 
-  // True while the user is actively dragging a resize handle. Used to
-  // distinguish user-initiated resizes (which should be persisted) from
-  // window/container resizes (where we keep side panels at a fixed width).
-  const isHandleDraggingRef = useRef(false);
-  // Last container width we re-pinned against, so we only react to genuine
-  // container-size changes (not the initial mount or re-renders triggered by
-  // saving a freshly dragged width).
-  const prevPanelContainerWidthRef = useRef(0);
-
-  // Initialize with window width to avoid 0 width on first render
-  const [panelContainerWidth, setPanelContainerWidth] = useState(() =>
-    typeof window === "undefined" ? 1000 : window.innerWidth - 52,
+  // Side panes have a FIXED pixel width. Only the center pane flexes to fill
+  // the remaining space, so resizing the window never changes the side panes —
+  // it only grows/shrinks the center (Slack/Cursor behavior). The width is a
+  // local px value, seeded from (and persisted back to) the UI store.
+  const [leftWidth, setLeftWidth] = useState(() =>
+    leftPaneWidthPx && leftPaneWidthPx > 0
+      ? clamp(leftPaneWidthPx, SIDE_PANEL_MIN_WIDTH_PX, SIDE_PANEL_MAX_WIDTH_PX)
+      : DEFAULT_LEFT_PANE_WIDTH_PX,
   );
-
-  // Keep container width updated
-  useEffect(() => {
-    const el = panelContainerRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(entries => {
-      const newWidth = entries[0].contentRect.width;
-      if (newWidth > 0) {
-        setPanelContainerWidth(newWidth);
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  // Frozen default pixel widths for the side panels. These are computed once
-  // from the first known container width and then kept constant, so the side
-  // panels behave as fixed-width (like Slack/Cursor) even before the user has
-  // dragged them — rather than scaling with every window resize.
-  const defaultLeftPxRef = useRef<number | null>(null);
-  const defaultRightPxRef = useRef<number | null>(null);
-  if (panelContainerWidth > 0 && defaultLeftPxRef.current === null) {
-    defaultLeftPxRef.current = clamp(
-      (panelContainerWidth * DEFAULT_LEFT_PANE_SIZE) / 100,
-      SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-      SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-    );
-    defaultRightPxRef.current = clamp(
-      (panelContainerWidth * DEFAULT_RIGHT_PANE_SIZE) / 100,
-      SIDE_PANEL_MIN_DEFAULT_WIDTH_PX,
-      SIDE_PANEL_MAX_DEFAULT_WIDTH_PX,
-    );
-  }
-  const defaultLeftPx =
-    defaultLeftPxRef.current ?? SIDE_PANEL_MIN_DEFAULT_WIDTH_PX;
-  const defaultRightPx =
-    defaultRightPxRef.current ?? SIDE_PANEL_MIN_DEFAULT_WIDTH_PX;
-
-  // The fixed pixel width we want each side panel to keep: the user's
-  // dragged width if they've set one, otherwise the frozen default.
-  const targetLeftPx =
-    leftPaneWidthPx && leftPaneWidthPx > 0 ? leftPaneWidthPx : defaultLeftPx;
-  const targetRightPx =
+  const [rightWidth, setRightWidth] = useState(() =>
     rightPaneWidthPx && rightPaneWidthPx > 0
-      ? rightPaneWidthPx
-      : defaultRightPx;
-
-  // Authoritative pixel widths, mirrored into refs so effects/handlers can
-  // read the latest value without re-subscribing via dependency arrays.
-  const leftWidthPxRef = useRef(targetLeftPx);
-  const rightWidthPxRef = useRef(targetRightPx);
-  leftWidthPxRef.current = targetLeftPx;
-  rightWidthPxRef.current = targetRightPx;
-
-  const toPanelPct = useCallback(
-    (px: number) => (px / panelContainerWidth) * 100,
-    [panelContainerWidth],
+      ? clamp(
+          rightPaneWidthPx,
+          SIDE_PANEL_MIN_WIDTH_PX,
+          SIDE_PANEL_MAX_WIDTH_PX,
+        )
+      : DEFAULT_RIGHT_PANE_WIDTH_PX,
   );
 
-  // Convert to percentages for Panel (the library sizes panels in %)
-  const leftSizePct =
-    panelContainerWidth > 0
-      ? (targetLeftPx / panelContainerWidth) * 100
-      : DEFAULT_LEFT_PANE_SIZE;
-  const rightSizePct =
-    panelContainerWidth > 0
-      ? (targetRightPx / panelContainerWidth) * 100
-      : DEFAULT_RIGHT_PANE_SIZE;
+  // Mirror widths into refs so the drag handler reads fresh values without
+  // being re-created on every width change.
+  const leftWidthRef = useRef(leftWidth);
+  const rightWidthRef = useRef(rightWidth);
+  leftWidthRef.current = leftWidth;
+  rightWidthRef.current = rightWidth;
 
-  // Threshold for collapsing
-  const collapseThresholdPct =
-    panelContainerWidth > 0
-      ? (SIDE_PANEL_COLLAPSE_THRESHOLD_PX / panelContainerWidth) * 100
-      : 0;
+  // Keep local widths in sync if the persisted store value changes elsewhere.
+  useEffect(() => {
+    if (leftPaneWidthPx && leftPaneWidthPx > 0) {
+      setLeftWidth(
+        clamp(
+          leftPaneWidthPx,
+          SIDE_PANEL_MIN_WIDTH_PX,
+          SIDE_PANEL_MAX_WIDTH_PX,
+        ),
+      );
+    }
+  }, [leftPaneWidthPx]);
+  useEffect(() => {
+    if (rightPaneWidthPx && rightPaneWidthPx > 0) {
+      setRightWidth(
+        clamp(
+          rightPaneWidthPx,
+          SIDE_PANEL_MIN_WIDTH_PX,
+          SIDE_PANEL_MAX_WIDTH_PX,
+        ),
+      );
+    }
+  }, [rightPaneWidthPx]);
 
-  // Handle layout changes (persistence)
-  const persistTimeoutRef = useRef<number | null>(null);
-  const handleLayout = useCallback(
-    (sizes: number[]) => {
-      if (panelContainerWidth <= 0) return;
+  // Begin a manual drag-resize of a side pane. The new width is applied
+  // imperatively to the pane element during the drag (so heavy children like
+  // the editor/chat don't re-render on every pointer move), then committed to
+  // React state + the store on release.
+  const beginResize = useCallback(
+    (side: SidePane, e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
 
-      // Only persist the widths when the change came from the user dragging a
-      // resize handle. Window/container resizes also trigger onLayout, but in
-      // that case we keep the side panels at their fixed pixel width and must
-      // not overwrite the saved width with a proportionally-scaled value.
-      if (!isHandleDraggingRef.current) return;
+      const container = panelContainerRef.current;
+      const containerWidth = container
+        ? container.clientWidth
+        : window.innerWidth;
+      const startX = e.clientX;
+      const startWidth =
+        side === "left" ? leftWidthRef.current : rightWidthRef.current;
+      const otherWidth =
+        side === "left"
+          ? rightPaneOpen
+            ? rightWidthRef.current
+            : 0
+          : leftPaneOpen
+            ? leftWidthRef.current
+            : 0;
 
-      if (persistTimeoutRef.current) {
-        clearTimeout(persistTimeoutRef.current);
-      }
+      // Cap so the center pane keeps a usable minimum width.
+      const maxWidth = Math.max(
+        SIDE_PANEL_MIN_WIDTH_PX,
+        Math.min(
+          SIDE_PANEL_MAX_WIDTH_PX,
+          containerWidth - otherWidth - CENTER_PANE_MIN_WIDTH_PX - 8,
+        ),
+      );
 
-      persistTimeoutRef.current = window.setTimeout(() => {
-        const [leftPct, , rightPct] = sizes;
-        const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
-          {};
+      const el =
+        side === "left" ? leftPaneElRef.current : rightPaneElRef.current;
+      let finalWidth = startWidth;
 
-        // Only save if panel is actually open (size > 0)
-        if (leftPct > 0) {
-          const px = (leftPct * panelContainerWidth) / 100;
-          if (hasMeaningfulChange(leftPaneWidthPx, px)) {
-            updates.leftPaneWidthPx = px;
-          }
+      const onMove = (ev: PointerEvent) => {
+        const delta = ev.clientX - startX;
+        const raw = side === "left" ? startWidth + delta : startWidth - delta;
+        finalWidth = clamp(raw, SIDE_PANEL_MIN_WIDTH_PX, maxWidth);
+        if (el) el.style.width = `${finalWidth}px`;
+      };
+
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+
+        if (side === "left") {
+          setLeftWidth(finalWidth);
+          setPaneWidths({ leftPaneWidthPx: finalWidth });
+        } else {
+          setRightWidth(finalWidth);
+          setPaneWidths({ rightPaneWidthPx: finalWidth });
         }
-        if (rightPct > 0) {
-          const px = (rightPct * panelContainerWidth) / 100;
-          if (hasMeaningfulChange(rightPaneWidthPx, px)) {
-            updates.rightPaneWidthPx = px;
-          }
-        }
+      };
 
-        if (Object.keys(updates).length > 0) {
-          setPaneWidths(updates);
-        }
-      }, 200);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
     },
-    [panelContainerWidth, leftPaneWidthPx, rightPaneWidthPx, setPaneWidths],
+    [leftPaneOpen, rightPaneOpen, setPaneWidths],
   );
-
-  // Handle external open/close for Left Pane
-  const prevLeftOpen = useRef(leftPaneOpen);
-  useEffect(() => {
-    if (leftPaneOpen && !prevLeftOpen.current) {
-      const panel = leftPaneRef.current;
-      if (panel && panel.isCollapsed()) {
-        panel.expand();
-        // Restore the user's last width (or frozen default), not a stale default.
-        panel.resize(toPanelPct(leftWidthPxRef.current));
-      }
-    } else if (!leftPaneOpen && prevLeftOpen.current) {
-      const panel = leftPaneRef.current;
-      if (panel && !panel.isCollapsed()) {
-        panel.collapse();
-      }
-    }
-    prevLeftOpen.current = leftPaneOpen;
-  }, [leftPaneOpen, panelContainerWidth, toPanelPct]);
-
-  // Handle external open/close for Right Pane
-  const prevRightOpen = useRef(rightPaneOpen);
-  useEffect(() => {
-    if (rightPaneOpen && !prevRightOpen.current) {
-      const panel = rightPaneRef.current;
-      if (panel && panel.isCollapsed()) {
-        panel.expand();
-        // Restore the user's last width (or frozen default), not a stale default.
-        panel.resize(toPanelPct(rightWidthPxRef.current));
-      }
-    } else if (!rightPaneOpen && prevRightOpen.current) {
-      const panel = rightPaneRef.current;
-      if (panel && !panel.isCollapsed()) {
-        panel.collapse();
-      }
-    }
-    prevRightOpen.current = rightPaneOpen;
-  }, [rightPaneOpen, panelContainerWidth, toPanelPct]);
-
-  // Keep the side panels at a fixed pixel width when the window/container is
-  // resized. react-resizable-panels stores sizes as percentages, so without
-  // this the side panels would scale proportionally with the window. By
-  // re-applying the target pixel width as a percentage of the new container
-  // width, only the center (main content) panel absorbs the size change —
-  // matching the fixed-sidebar behavior of apps like Slack and Cursor.
-  useEffect(() => {
-    if (panelContainerWidth <= 0) return;
-
-    const prevWidth = prevPanelContainerWidthRef.current;
-    prevPanelContainerWidthRef.current = panelContainerWidth;
-
-    // Skip the initial mount (defaultSize already handles it) and re-renders
-    // where the container width didn't actually change.
-    if (prevWidth === 0 || prevWidth === panelContainerWidth) return;
-    // Don't fight an active manual drag.
-    if (isHandleDraggingRef.current) return;
-
-    const leftPanel = leftPaneRef.current;
-    if (leftPanel && leftPaneOpen && !leftPanel.isCollapsed()) {
-      leftPanel.resize(toPanelPct(leftWidthPxRef.current));
-    }
-
-    const rightPanel = rightPaneRef.current;
-    if (rightPanel && rightPaneOpen && !rightPanel.isCollapsed()) {
-      rightPanel.resize(toPanelPct(rightWidthPxRef.current));
-    }
-  }, [panelContainerWidth, leftPaneOpen, rightPaneOpen, toPanelPct]);
-
-  // Track resize-handle drag state so we can distinguish user-initiated
-  // resizes (persisted) from window resizes (fixed-width side panels). On drag
-  // end we read the panels' final size directly and persist immediately, which
-  // is more precise than relying on the trailing debounced onLayout.
-  const handleDragging = useCallback(
-    (isDragging: boolean) => {
-      isHandleDraggingRef.current = isDragging;
-      if (isDragging || panelContainerWidth <= 0) return;
-
-      if (persistTimeoutRef.current) {
-        clearTimeout(persistTimeoutRef.current);
-        persistTimeoutRef.current = null;
-      }
-
-      const updates: { leftPaneWidthPx?: number; rightPaneWidthPx?: number } =
-        {};
-
-      const leftPanel = leftPaneRef.current;
-      if (leftPanel && leftPaneOpen && !leftPanel.isCollapsed()) {
-        const px = (leftPanel.getSize() * panelContainerWidth) / 100;
-        if (hasMeaningfulChange(leftPaneWidthPx, px)) {
-          updates.leftPaneWidthPx = px;
-        }
-      }
-
-      const rightPanel = rightPaneRef.current;
-      if (rightPanel && rightPaneOpen && !rightPanel.isCollapsed()) {
-        const px = (rightPanel.getSize() * panelContainerWidth) / 100;
-        if (hasMeaningfulChange(rightPaneWidthPx, px)) {
-          updates.rightPaneWidthPx = px;
-        }
-      }
-
-      if (Object.keys(updates).length > 0) {
-        setPaneWidths(updates);
-      }
-    },
-    [
-      panelContainerWidth,
-      leftPaneOpen,
-      rightPaneOpen,
-      leftPaneWidthPx,
-      rightPaneWidthPx,
-      setPaneWidths,
-    ],
-  );
-
-  const defaultLeftPanelSize = leftPaneOpen ? leftSizePct : 0;
-  const defaultRightPanelSize = rightPaneOpen ? rightSizePct : 0;
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
@@ -664,23 +521,27 @@ function MainApp() {
 
         <Box
           ref={panelContainerRef}
-          sx={{ height: "100%", flex: 1, minWidth: 0 }}
+          sx={{
+            height: "100%",
+            flex: 1,
+            minWidth: 0,
+            display: "flex",
+            flexDirection: "row",
+          }}
         >
-          <PanelGroup
-            direction="horizontal"
-            style={{ height: "100%", width: "100%" }}
-            onLayout={handleLayout}
-          >
-            <Panel
-              ref={leftPaneRef}
-              collapsible
-              collapsedSize={0}
-              defaultSize={defaultLeftPanelSize}
-              minSize={collapseThresholdPct}
-              onCollapse={() => setLeftPaneOpen(false)}
-              onExpand={() => setLeftPaneOpen(true)}
-            >
-              <Box sx={{ height: "100%", overflow: "hidden" }}>
+          {/* Left side pane — fixed pixel width, resizable by hand */}
+          {leftPaneOpen && (
+            <>
+              <Box
+                ref={leftPaneElRef}
+                style={{ width: leftWidth }}
+                sx={{
+                  flex: "0 0 auto",
+                  flexShrink: 0,
+                  height: "100%",
+                  overflow: "hidden",
+                }}
+              >
                 <Suspense
                   fallback={
                     <Box
@@ -698,56 +559,29 @@ function MainApp() {
                   {renderLeftPane()}
                 </Suspense>
               </Box>
-            </Panel>
+              <ResizeDivider onPointerDown={e => beginResize("left", e)} />
+            </>
+          )}
 
-            <StyledHorizontalResizeHandle
-              onDragging={handleDragging}
-              style={
-                leftPaneOpen
-                  ? undefined
-                  : {
-                      width: 0,
-                      minWidth: 0,
-                      opacity: 0,
-                      pointerEvents: "none",
-                    }
-              }
+          {/* Center (main content) — flexes to fill remaining space */}
+          <Box sx={{ flex: "1 1 0", minWidth: 0, height: "100%" }}>
+            <Editor
+              dbFlowFormRef={dbFlowFormRef}
+              onChartSpecChangeRef={onChartSpecChangeRef}
+              resultsContextRef={resultsContextRef}
             />
+          </Box>
 
-            {/* Editor + Results vertical layout inside Editor component */}
-            <Panel minSize={EDITOR_PANEL_MIN_SIZE}>
-              <Editor
-                dbFlowFormRef={dbFlowFormRef}
-                onChartSpecChangeRef={onChartSpecChangeRef}
-                resultsContextRef={resultsContextRef}
-              />
-            </Panel>
-
-            <StyledHorizontalResizeHandle
-              onDragging={handleDragging}
-              style={
-                rightPaneOpen
-                  ? undefined
-                  : {
-                      width: 0,
-                      minWidth: 0,
-                      opacity: 0,
-                      pointerEvents: "none",
-                    }
-              }
-            />
-
-            <Panel
-              ref={rightPaneRef}
-              collapsible
-              collapsedSize={0}
-              defaultSize={defaultRightPanelSize}
-              minSize={collapseThresholdPct}
-              onCollapse={() => setRightPaneOpen(false)}
-              onExpand={() => setRightPaneOpen(true)}
-            >
+          {/* Right side pane (chat) — fixed pixel width, resizable by hand */}
+          {rightPaneOpen && (
+            <>
+              <ResizeDivider onPointerDown={e => beginResize("right", e)} />
               <Box
+                ref={rightPaneElRef}
+                style={{ width: rightWidth }}
                 sx={{
+                  flex: "0 0 auto",
+                  flexShrink: 0,
                   height: "100%",
                   overflow: "hidden",
                   borderLeft: "1px solid",
@@ -761,8 +595,8 @@ function MainApp() {
                   resultsContextRef={resultsContextRef}
                 />
               </Box>
-            </Panel>
-          </PanelGroup>
+            </>
+          )}
         </Box>
       </Box>
     </AuthWrapper>
