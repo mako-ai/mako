@@ -89,6 +89,13 @@ export const WidgetLayoutSchema = z.object({
   h: z.number(),
   minW: z.number().optional(),
   minH: z.number().optional(),
+  /**
+   * Marks a breakpoint layout as explicitly arranged by the user. When set on a
+   * non-`lg` breakpoint, the responsive auto-reflow leaves that breakpoint alone
+   * so the user stays in control. `lg` is always the authored source of truth and
+   * never carries this flag.
+   */
+  custom: z.boolean().optional(),
 });
 
 export type WidgetLayout = z.infer<typeof WidgetLayoutSchema>;
@@ -237,6 +244,198 @@ export function deriveResponsiveLayouts(
   };
 }
 
+export interface ReflowItem {
+  id: string;
+  layout: WidgetLayout;
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Group widgets into visual rows based on their `lg` placement. Items whose
+ * vertical spans overlap are considered part of the same row (e.g. a row of KPI
+ * cards all at y=0). Rows are returned top-to-bottom, items left-to-right.
+ */
+function groupIntoRows(items: ReflowItem[]): ReflowItem[][] {
+  const sorted = [...items].sort(
+    (a, b) => a.layout.y - b.layout.y || a.layout.x - b.layout.x,
+  );
+  const rows: ReflowItem[][] = [];
+  let current: ReflowItem[] = [];
+  let rowBottom = -Infinity;
+  for (const item of sorted) {
+    const top = item.layout.y;
+    const bottom = item.layout.y + item.layout.h;
+    if (current.length === 0 || top < rowBottom) {
+      current.push(item);
+      rowBottom = current.length === 1 ? bottom : Math.max(rowBottom, bottom);
+    } else {
+      rows.push(current);
+      current = [item];
+      rowBottom = bottom;
+    }
+  }
+  if (current.length > 0) rows.push(current);
+  return rows;
+}
+
+type PlacedCell = { item: ReflowItem; x: number; w: number; ry: number };
+
+/**
+ * Reflow a single visual row of widgets into `targetCols`, wrapping onto extra
+ * rows when they no longer fit and snapping widths so each packed sub-row is
+ * flush (no floating gaps or staircases). Returns each item's position relative
+ * to the top of this row group (`ry`).
+ */
+function reflowRow(
+  row: ReflowItem[],
+  sourceCols: number,
+  targetCols: number,
+): PlacedCell[] {
+  const sorted = [...row].sort(
+    (a, b) => a.layout.x - b.layout.x || a.layout.y - b.layout.y,
+  );
+  const n = sorted.length;
+
+  const targetW = sorted.map(it => {
+    const minW = clampInt(it.layout.minW ?? 1, 1, targetCols);
+    const scaled = Math.round((it.layout.w / sourceCols) * targetCols);
+    return clampInt(scaled, minW, targetCols);
+  });
+
+  const widths = sorted.map(it => it.layout.w);
+  const allEqual = widths.every(w => w === widths[0]);
+  const sumW = widths.reduce((a, b) => a + b, 0);
+  const tilesFullRow = Math.abs(sumW - sourceCols) <= 1;
+
+  let perRow: number | null = null;
+  if (n > 1 && allEqual && tilesFullRow) {
+    const baseW = Math.max(1, targetW[0]);
+    const maxPerRow = Math.max(1, Math.floor(targetCols / baseW));
+    const numRows = Math.ceil(n / maxPerRow);
+    perRow = Math.ceil(n / numRows);
+  }
+
+  const subRows: { item: ReflowItem; w: number }[][] = [];
+  if (perRow != null) {
+    for (let i = 0; i < n; i += perRow) {
+      subRows.push(
+        sorted
+          .slice(i, i + perRow)
+          .map((item, j) => ({ item, w: targetW[i + j] })),
+      );
+    }
+  } else {
+    let cur: { item: ReflowItem; w: number }[] = [];
+    let curW = 0;
+    sorted.forEach((item, i) => {
+      const w = Math.min(targetW[i], targetCols);
+      if (cur.length > 0 && curW + w > targetCols) {
+        subRows.push(cur);
+        cur = [];
+        curW = 0;
+      }
+      cur.push({ item, w });
+      curW += w;
+    });
+    if (cur.length > 0) subRows.push(cur);
+  }
+
+  const placed: PlacedCell[] = [];
+  let ry = 0;
+  for (const sub of subRows) {
+    let sum = sub.reduce((a, b) => a + b.w, 0);
+    let leftover = targetCols - sum;
+    for (let i = 0; leftover > 0; i++, leftover--) {
+      sub[i % sub.length].w += 1;
+    }
+    while (sum > targetCols) {
+      const widest = sub.reduce((a, b) => (b.w > a.w ? b : a), sub[0]);
+      const minW = clampInt(widest.item.layout.minW ?? 1, 1, targetCols);
+      if (widest.w <= minW) break;
+      widest.w -= 1;
+      sum -= 1;
+    }
+    let x = 0;
+    let maxH = 0;
+    for (const cell of sub) {
+      placed.push({ item: cell.item, x, w: cell.w, ry });
+      x += cell.w;
+      maxH = Math.max(maxH, cell.item.layout.h);
+    }
+    ry += maxH;
+  }
+  return placed;
+}
+
+/**
+ * Deterministically reflow a set of widgets (positioned for `sourceCols`) into a
+ * narrower `targetCols` grid. Rows of widgets wrap and tile cleanly instead of
+ * proportionally shrinking into overlapping "staircase" positions.
+ *
+ * When `targetCols >= sourceCols` the layout is returned unchanged (no narrowing
+ * needed). The result maps widget id → layout for the target breakpoint.
+ */
+export function reflowLayout(
+  items: ReflowItem[],
+  sourceCols: number,
+  targetCols: number,
+): Record<string, WidgetLayout> {
+  const result: Record<string, WidgetLayout> = {};
+  if (items.length === 0) return result;
+
+  if (targetCols >= sourceCols) {
+    for (const it of items) {
+      const w = Math.min(it.layout.w, targetCols);
+      result[it.id] = {
+        ...it.layout,
+        w,
+        x: Math.min(it.layout.x, targetCols - w),
+      };
+    }
+    return result;
+  }
+
+  const rows = groupIntoRows(items);
+  let cursorY = 0;
+  for (const row of rows) {
+    const placed = reflowRow(row, sourceCols, targetCols);
+    let rowBottom = 0;
+    for (const cell of placed) {
+      const { minW, minH } = cell.item.layout;
+      result[cell.item.id] = {
+        x: cell.x,
+        y: cursorY + cell.ry,
+        w: cell.w,
+        h: cell.item.layout.h,
+        ...(minW != null ? { minW: clampInt(minW, 1, targetCols) } : {}),
+        ...(minH != null ? { minH } : {}),
+      };
+      rowBottom = Math.max(rowBottom, cell.ry + cell.item.layout.h);
+    }
+    cursorY += rowBottom;
+  }
+  return result;
+}
+
+/**
+ * Build the full set of auto-derived responsive breakpoints (`md`/`sm`/`xs`)
+ * for a collection of widgets using the row-aware {@link reflowLayout}. The `lg`
+ * breakpoint is the source of truth and is not included in the output.
+ */
+export function reflowResponsiveLayouts(
+  items: ReflowItem[],
+  sourceCols: number = BREAKPOINT_COLS.lg,
+): Record<"md" | "sm" | "xs", Record<string, WidgetLayout>> {
+  return {
+    md: reflowLayout(items, sourceCols, BREAKPOINT_COLS.md),
+    sm: reflowLayout(items, sourceCols, BREAKPOINT_COLS.sm),
+    xs: reflowLayout(items, sourceCols, BREAKPOINT_COLS.xs),
+  };
+}
+
 function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
   if (!raw) return { ...DEFAULT_LAYOUT };
   return {
@@ -246,6 +445,7 @@ function safeLayout(raw: Record<string, unknown> | undefined): WidgetLayout {
     h: typeof raw.h === "number" ? raw.h : DEFAULT_LAYOUT.h,
     ...(typeof raw.minW === "number" ? { minW: raw.minW } : {}),
     ...(typeof raw.minH === "number" ? { minH: raw.minH } : {}),
+    ...(raw.custom === true ? { custom: true } : {}),
   };
 }
 
@@ -263,44 +463,45 @@ export function normalizeWidgetLayouts<T extends Record<string, unknown>>(
   if (w.layouts && typeof w.layouts === "object" && !Array.isArray(w.layouts)) {
     const raw = w.layouts as Record<string, unknown>;
     if (raw.lg && typeof raw.lg === "object") {
-      const lg = safeLayout(raw.lg as Record<string, unknown>);
-      const derived = deriveResponsiveLayouts(lg);
-      const result: DashboardWidget["layouts"] = {
-        lg,
-        md:
-          raw.md && typeof raw.md === "object"
-            ? safeLayout(raw.md as Record<string, unknown>)
-            : derived.md,
-        sm:
-          raw.sm && typeof raw.sm === "object"
-            ? safeLayout(raw.sm as Record<string, unknown>)
-            : derived.sm,
-        xs:
-          raw.xs && typeof raw.xs === "object"
-            ? safeLayout(raw.xs as Record<string, unknown>)
-            : derived.xs,
-      };
+      const lg = onlyBaseLayout(safeLayout(raw.lg as Record<string, unknown>));
+      const result: DashboardWidget["layouts"] = { lg };
+      // Only retain smaller breakpoints the user explicitly arranged. Non-custom
+      // breakpoints are intentionally dropped so the responsive reflow governs
+      // them at render time (avoids "frozen" stale layouts on resize).
+      for (const bp of ["md", "sm", "xs"] as const) {
+        const value = raw[bp];
+        if (value && typeof value === "object") {
+          const safe = safeLayout(value as Record<string, unknown>);
+          if (safe.custom === true) result[bp] = safe;
+        }
+      }
       return { ...widget, layouts: result };
     }
     const firstBp = (["md", "sm", "xs"] as const).find(
       bp => raw[bp] && typeof raw[bp] === "object",
     );
     const lg = firstBp
-      ? safeLayout(raw[firstBp] as Record<string, unknown>)
+      ? onlyBaseLayout(safeLayout(raw[firstBp] as Record<string, unknown>))
       : safeLayout(undefined);
-    return { ...widget, layouts: deriveResponsiveLayouts(lg) };
+    return { ...widget, layouts: { lg } };
   }
 
   if (w.layout && typeof w.layout === "object" && !Array.isArray(w.layout)) {
-    const lg = safeLayout(w.layout as Record<string, unknown>);
+    const lg = onlyBaseLayout(safeLayout(w.layout as Record<string, unknown>));
     const { layout: _removed, ...rest } = widget;
-    return { ...rest, layouts: deriveResponsiveLayouts(lg) } as T & {
+    return { ...rest, layouts: { lg } } as T & {
       layouts: DashboardWidget["layouts"];
     };
   }
 
   return {
     ...widget,
-    layouts: deriveResponsiveLayouts({ ...DEFAULT_LAYOUT }),
+    layouts: { lg: { ...DEFAULT_LAYOUT } },
   };
+}
+
+/** Strip the `custom` flag — `lg` is always the authored base, never an override. */
+function onlyBaseLayout(layout: WidgetLayout): WidgetLayout {
+  const { custom: _custom, ...base } = layout;
+  return base;
 }
