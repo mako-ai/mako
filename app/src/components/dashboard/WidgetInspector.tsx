@@ -96,17 +96,18 @@ const WidgetInspector: React.FC<WidgetInspectorProps> = ({
   const handleDuplicate = async () => {
     const { nanoid } = await import("nanoid");
     const lgLayout = widget.layouts?.lg ?? resolveWidgetLayout(widget);
+    const sourceLayouts = widget.layouts ?? { lg: lgLayout };
+    const shiftedLayouts = Object.fromEntries(
+      Object.entries(sourceLayouts).map(([bp, layout]) => [
+        bp,
+        { ...layout, y: layout.y + layout.h },
+      ]),
+    ) as DashboardWidget["layouts"];
     const newWidget: DashboardWidget = {
       ...widget,
       id: nanoid(),
       title: `${widget.title || "Widget"} (copy)`,
-      layouts: {
-        ...(widget.layouts ?? {}),
-        lg: {
-          ...lgLayout,
-          y: lgLayout.y + lgLayout.h,
-        },
-      },
+      layouts: shiftedLayouts,
     };
     if (dashboardId) addWidget(dashboardId, newWidget);
     onClose();

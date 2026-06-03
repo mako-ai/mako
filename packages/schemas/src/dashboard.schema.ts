@@ -294,6 +294,10 @@ function readRawLayouts(
   return result;
 }
 
+function layoutsMatch(a: WidgetLayout, b: WidgetLayout): boolean {
+  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+}
+
 function withWidgetMinimums(
   widget: LayoutWidgetInput,
   layout: WidgetLayout,
@@ -433,10 +437,74 @@ function deriveBreakpointLayouts(
   return layouts;
 }
 
+function isUserAuthoredBreakpoint(
+  rawLayout: WidgetLayout | undefined,
+  lg: WidgetLayout,
+  breakpoint: Exclude<LayoutBreakpoint, "lg">,
+): rawLayout is WidgetLayout {
+  if (!rawLayout) return false;
+  const legacyDerived = deriveResponsiveLayouts(lg)[breakpoint];
+  if (!legacyDerived) return true;
+  return !layoutsMatch(rawLayout, legacyDerived);
+}
+
+function layoutsOverlap(a: WidgetLayout, b: WidgetLayout): boolean {
+  return (
+    a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  );
+}
+
+function resolveBreakpointCollisions(
+  entries: Array<{
+    widget: LayoutWidgetInput;
+    rawLayouts: Partial<Record<LayoutBreakpoint, WidgetLayout>>;
+    lg: WidgetLayout;
+  }>,
+  generated: Map<string, WidgetLayout>,
+  breakpoint: Exclude<LayoutBreakpoint, "lg">,
+): Map<string, WidgetLayout> {
+  const resolved = new Map<string, WidgetLayout>();
+  const placed: WidgetLayout[] = [];
+  const generatedEntries: Array<{ id: string; layout: WidgetLayout }> = [];
+
+  for (const entry of entries) {
+    const id = String(entry.widget.id);
+    const rawLayout = entry.rawLayouts[breakpoint];
+    if (isUserAuthoredBreakpoint(rawLayout, entry.lg, breakpoint)) {
+      resolved.set(id, rawLayout);
+      placed.push(rawLayout);
+      continue;
+    }
+
+    const layout = generated.get(id);
+    if (layout) {
+      generatedEntries.push({ id, layout });
+    }
+  }
+
+  generatedEntries.sort(
+    (a, b) => a.layout.y - b.layout.y || a.layout.x - b.layout.x,
+  );
+
+  for (const { id, layout } of generatedEntries) {
+    const nextLayout = { ...layout };
+    while (
+      placed.some(placedLayout => layoutsOverlap(nextLayout, placedLayout))
+    ) {
+      nextLayout.y += 1;
+    }
+    resolved.set(id, nextLayout);
+    placed.push(nextLayout);
+  }
+
+  return resolved;
+}
+
 /**
  * Normalize a full dashboard widget list while deriving responsive layouts from
  * row intent rather than scaling each widget independently. Explicit user
- * breakpoint layouts are preserved; only missing breakpoints are synthesized.
+ * breakpoint layouts are preserved; missing or legacy auto-derived breakpoints
+ * are synthesized.
  */
 export function normalizeDashboardWidgetsLayouts<T extends LayoutWidgetInput>(
   widgets: T[],
@@ -450,19 +518,24 @@ export function normalizeDashboardWidgetsLayouts<T extends LayoutWidgetInput>(
     return { widget, rawLayouts, lg };
   });
 
-  const derived = {
+  const generated = {
     md: deriveBreakpointLayouts(entries, "md"),
     sm: deriveBreakpointLayouts(entries, "sm"),
     xs: deriveBreakpointLayouts(entries, "xs"),
+  };
+  const derived = {
+    md: resolveBreakpointCollisions(entries, generated.md, "md"),
+    sm: resolveBreakpointCollisions(entries, generated.sm, "sm"),
+    xs: resolveBreakpointCollisions(entries, generated.xs, "xs"),
   };
 
   return entries.map(({ widget, rawLayouts, lg }) => {
     const id = String(widget.id);
     const layouts: DashboardWidget["layouts"] = {
       lg,
-      md: rawLayouts.md ?? derived.md.get(id) ?? deriveResponsiveLayouts(lg).md,
-      sm: rawLayouts.sm ?? derived.sm.get(id) ?? deriveResponsiveLayouts(lg).sm,
-      xs: rawLayouts.xs ?? derived.xs.get(id) ?? deriveResponsiveLayouts(lg).xs,
+      md: derived.md.get(id) ?? deriveResponsiveLayouts(lg).md,
+      sm: derived.sm.get(id) ?? deriveResponsiveLayouts(lg).sm,
+      xs: derived.xs.get(id) ?? deriveResponsiveLayouts(lg).xs,
     };
     const { layout: _removed, ...rest } = widget;
     return { ...rest, layouts } as T & { layouts: DashboardWidget["layouts"] };
