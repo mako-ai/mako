@@ -835,6 +835,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             const group = reasoningGroups.get(partIndex);
             if (!group) return null;
             const isGroupStreaming = partIndex === streamingReasoningGroupStart;
+            if (!group.text && !isGroupStreaming) return null;
             return (
               <ReasoningDisplay
                 key={`reasoning-${partIndex}`}

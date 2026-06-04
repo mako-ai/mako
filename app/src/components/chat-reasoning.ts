@@ -3,43 +3,43 @@ export interface ReasoningGroup {
   lastIndex: number;
 }
 
+// Groups contiguous assistant "reasoning" parts into display blocks. A
+// just-started thinking block can arrive with empty text, so empty runs still
+// need their own group identity; otherwise the previous completed group can be
+// mistaken for the active streaming block and re-open.
 export function computeReasoningGroups(
   parts: Array<Record<string, unknown>>,
 ): Map<number, ReasoningGroup> {
   const groups = new Map<number, ReasoningGroup>();
 
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    if (p.type !== "reasoning") continue;
-    const text = typeof p.text === "string" ? p.text.trim() : "";
-    if (!text) {
-      for (const [, group] of groups) {
-        if (group.lastIndex === i - 1) {
-          group.lastIndex = i;
-          break;
-        }
-      }
+  let i = 0;
+  while (i < parts.length) {
+    if (parts[i].type !== "reasoning") {
+      i++;
       continue;
     }
 
-    const prevIndex = i - 1;
-    let groupStart = i;
-    for (const [start, group] of groups) {
-      if (group.lastIndex === prevIndex) {
-        groupStart = start;
-        break;
+    const start = i;
+    const texts: string[] = [];
+    let lastIndex = i;
+
+    while (i < parts.length && parts[i].type === "reasoning") {
+      const part = parts[i];
+      const rawText =
+        typeof part.text === "string"
+          ? part.text
+          : typeof part.reasoning === "string"
+            ? part.reasoning
+            : "";
+      const trimmed = rawText.trim();
+      if (trimmed) {
+        texts.push(trimmed);
       }
+      lastIndex = i;
+      i++;
     }
 
-    if (groupStart === i) {
-      groups.set(i, { text, lastIndex: i });
-    } else {
-      const existing = groups.get(groupStart);
-      if (existing) {
-        existing.text += "\n\n" + text;
-        existing.lastIndex = i;
-      }
-    }
+    groups.set(start, { text: texts.join("\n\n"), lastIndex });
   }
 
   return groups;

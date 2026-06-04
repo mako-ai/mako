@@ -297,7 +297,7 @@ describe("StreamingToolCard memo comparator", () => {
 });
 
 describe("reasoning group streaming identity", () => {
-  it("does not mark the previous reasoning group as streaming when a separated empty reasoning part starts", () => {
+  it("marks a new separated empty reasoning group as streaming instead of the previous group", () => {
     const parts = [
       { type: "reasoning", text: "First thought" },
       { type: "text", text: "Interim answer" },
@@ -312,7 +312,8 @@ describe("reasoning group streaming identity", () => {
     const groups = computeReasoningGroups(parts);
 
     expect(groups.get(0)).toEqual({ text: "First thought", lastIndex: 0 });
-    expect(getStreamingReasoningGroupStart(parts, groups)).toBeNull();
+    expect(groups.get(3)).toEqual({ text: "", lastIndex: 3 });
+    expect(getStreamingReasoningGroupStart(parts, groups)).toBe(3);
   });
 
   it("marks a new separated reasoning group as streaming once it has text", () => {
@@ -344,6 +345,14 @@ describe("reasoning group streaming identity", () => {
 
     expect(groups.get(0)).toEqual({ text: "Still thinking", lastIndex: 1 });
     expect(getStreamingReasoningGroupStart(parts, groups)).toBe(0);
+  });
+
+  it("reads persisted reasoning text when a history part uses the reasoning field", () => {
+    const parts = [{ type: "reasoning", reasoning: "From history" }];
+
+    const groups = computeReasoningGroups(parts);
+
+    expect(groups.get(0)).toEqual({ text: "From history", lastIndex: 0 });
   });
 });
 
