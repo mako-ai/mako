@@ -53,6 +53,13 @@ export interface CurationDoc {
   models: CuratedModelEntry[];
   defaultChatModelId: string | null;
   defaultFreeChatModelId: string | null;
+  /**
+   * Explicit model used for cheap "utility" / fast tasks (version comments,
+   * titles, descriptions). When null, the cheapest tool-use model is picked
+   * heuristically. Super admins set this so they can, e.g., bump the Haiku
+   * version after refreshing the catalog.
+   */
+  utilityModelId: string | null;
   lastRefreshError: string | null;
 }
 
@@ -73,6 +80,7 @@ export interface AdminCatalogView {
   models: AdminCatalogModel[];
   defaultChatModelId: string | null;
   defaultFreeChatModelId: string | null;
+  utilityModelId: string | null;
   lastRefreshError: string | null;
   gatewayFetchedAt: string | null;
   curationUpdatedAt: string | null;
@@ -131,7 +139,12 @@ let cachedFreeTierIds: Set<string> | null = null;
 let cachedDefaults: {
   defaultChatModelId: string | null;
   defaultFreeChatModelId: string | null;
-} = { defaultChatModelId: null, defaultFreeChatModelId: null };
+  utilityModelId: string | null;
+} = {
+  defaultChatModelId: null,
+  defaultFreeChatModelId: null,
+  utilityModelId: null,
+};
 let cacheTimestamp = 0;
 
 // ---------------------------------------------------------------------------
@@ -239,6 +252,7 @@ const EMPTY_CURATION: CurationDoc = {
   models: [],
   defaultChatModelId: null,
   defaultFreeChatModelId: null,
+  utilityModelId: null,
   lastRefreshError: null,
 };
 
@@ -250,6 +264,7 @@ async function loadCuration(): Promise<CurationDoc> {
     models: Array.isArray(data.models) ? data.models : [],
     defaultChatModelId: data.defaultChatModelId ?? null,
     defaultFreeChatModelId: data.defaultFreeChatModelId ?? null,
+    utilityModelId: data.utilityModelId ?? null,
     lastRefreshError: data.lastRefreshError ?? null,
   };
 }
@@ -298,6 +313,9 @@ export async function setCuratedModel(
     if (curation.defaultFreeChatModelId === modelId) {
       curation.defaultFreeChatModelId = null;
     }
+    if (curation.utilityModelId === modelId) {
+      curation.utilityModelId = null;
+    }
   }
   // If tier flipped away from free, drop the free-default pointer
   if (update.tier === "pro" && curation.defaultFreeChatModelId === modelId) {
@@ -311,6 +329,7 @@ export async function setCuratedModel(
 export async function setCuratedDefaults(update: {
   defaultChatModelId?: string | null;
   defaultFreeChatModelId?: string | null;
+  utilityModelId?: string | null;
 }): Promise<CurationDoc> {
   const curation = await loadCuration();
   if (update.defaultChatModelId !== undefined) {
@@ -318,6 +337,9 @@ export async function setCuratedDefaults(update: {
   }
   if (update.defaultFreeChatModelId !== undefined) {
     curation.defaultFreeChatModelId = update.defaultFreeChatModelId;
+  }
+  if (update.utilityModelId !== undefined) {
+    curation.utilityModelId = update.utilityModelId;
   }
   await saveCuration(curation);
   return curation;
@@ -373,6 +395,7 @@ function mergeCatalog(
   defaults: {
     defaultChatModelId: string | null;
     defaultFreeChatModelId: string | null;
+    utilityModelId: string | null;
   };
 } {
   const pricingMap = new Map<string, { input: number; output: number }>();
@@ -421,6 +444,7 @@ function mergeCatalog(
     defaults: {
       defaultChatModelId: curation.defaultChatModelId,
       defaultFreeChatModelId: curation.defaultFreeChatModelId,
+      utilityModelId: curation.utilityModelId,
     },
   };
 }
@@ -435,6 +459,7 @@ async function loadFromDb(): Promise<{
   defaults: {
     defaultChatModelId: string | null;
     defaultFreeChatModelId: string | null;
+    utilityModelId: string | null;
   };
 } | null> {
   const docs = await ModelCatalogSnapshot.find({
@@ -461,6 +486,7 @@ async function loadFromDb(): Promise<{
           (curationDoc.data as any).defaultChatModelId ?? null,
         defaultFreeChatModelId:
           (curationDoc.data as any).defaultFreeChatModelId ?? null,
+        utilityModelId: (curationDoc.data as any).utilityModelId ?? null,
         lastRefreshError: (curationDoc.data as any).lastRefreshError ?? null,
       }
     : { ...EMPTY_CURATION };
@@ -497,7 +523,11 @@ async function ensureCatalog(): Promise<void> {
   );
   cachedCatalog = [];
   cachedFreeTierIds = new Set(FALLBACK_FREE);
-  cachedDefaults = { defaultChatModelId: null, defaultFreeChatModelId: null };
+  cachedDefaults = {
+    defaultChatModelId: null,
+    defaultFreeChatModelId: null,
+    utilityModelId: null,
+  };
   cacheTimestamp = 0;
 }
 
@@ -508,7 +538,11 @@ async function ensureCatalog(): Promise<void> {
 export function invalidateCatalog(): void {
   cachedCatalog = null;
   cachedFreeTierIds = null;
-  cachedDefaults = { defaultChatModelId: null, defaultFreeChatModelId: null };
+  cachedDefaults = {
+    defaultChatModelId: null,
+    defaultFreeChatModelId: null,
+    utilityModelId: null,
+  };
   cacheTimestamp = 0;
 }
 
@@ -558,7 +592,11 @@ export async function warmCatalog(): Promise<void> {
 
   cachedCatalog = [];
   cachedFreeTierIds = new Set(FALLBACK_FREE);
-  cachedDefaults = { defaultChatModelId: null, defaultFreeChatModelId: null };
+  cachedDefaults = {
+    defaultChatModelId: null,
+    defaultFreeChatModelId: null,
+    utilityModelId: null,
+  };
   cacheTimestamp = 0;
 }
 
@@ -614,26 +652,34 @@ export async function getDefaultFreeChatModelId(): Promise<string> {
   return FALLBACK_FREE[0];
 }
 
-export async function getUtilityChatModelId(): Promise<string> {
-  await ensureCatalog();
+/**
+ * Cheapest tool-use models, cheapest first. When the super admin has pinned an
+ * explicit utility model and it is still visible, it is promoted to the front.
+ */
+function rankedUtilityModelIds(): string[] {
   const candidates = (cachedCatalog ?? []).filter(
     m => m.tags.includes("tool-use") && m.blendedCostPerM !== null,
   );
   candidates.sort(
     (a, b) => (a.blendedCostPerM ?? Infinity) - (b.blendedCostPerM ?? Infinity),
   );
-  return candidates[0]?.id ?? FALLBACK_FREE[0];
+  const ids = candidates.map(m => m.id);
+
+  const pinned = cachedDefaults.utilityModelId;
+  if (pinned && (cachedCatalog ?? []).some(m => m.id === pinned)) {
+    return [pinned, ...ids.filter(id => id !== pinned)];
+  }
+  return ids;
+}
+
+export async function getUtilityChatModelId(): Promise<string> {
+  await ensureCatalog();
+  return rankedUtilityModelIds()[0] ?? FALLBACK_FREE[0];
 }
 
 export async function getUtilityModelIds(count = 3): Promise<string[]> {
   await ensureCatalog();
-  const candidates = (cachedCatalog ?? []).filter(
-    m => m.tags.includes("tool-use") && m.blendedCostPerM !== null,
-  );
-  candidates.sort(
-    (a, b) => (a.blendedCostPerM ?? Infinity) - (b.blendedCostPerM ?? Infinity),
-  );
-  return candidates.slice(0, count).map(m => m.id);
+  return rankedUtilityModelIds().slice(0, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +738,7 @@ export async function getAdminCatalogView(): Promise<AdminCatalogView> {
     models,
     defaultChatModelId: curation.defaultChatModelId,
     defaultFreeChatModelId: curation.defaultFreeChatModelId,
+    utilityModelId: curation.utilityModelId,
     lastRefreshError: curation.lastRefreshError,
     gatewayFetchedAt: gatewayDoc?.fetchedAt
       ? new Date(gatewayDoc.fetchedAt).toISOString()

@@ -37,6 +37,7 @@ interface AdminCatalogResponse {
   models: AdminCuratedModel[];
   defaultChatModelId: string | null;
   defaultFreeChatModelId: string | null;
+  utilityModelId: string | null;
   gatewayFetchedAt: string | null;
   curationUpdatedAt: string | null;
   lastRefreshError: string | null;
@@ -149,6 +150,7 @@ export default function SettingsAdmin() {
   const updateDefaults = async (patch: {
     defaultChatModelId?: string | null;
     defaultFreeChatModelId?: string | null;
+    utilityModelId?: string | null;
   }) => {
     if (!data) return;
     setSavingDefaults(true);
@@ -162,6 +164,10 @@ export default function SettingsAdmin() {
         patch.defaultFreeChatModelId !== undefined
           ? patch.defaultFreeChatModelId
           : data.defaultFreeChatModelId,
+      utilityModelId:
+        patch.utilityModelId !== undefined
+          ? patch.utilityModelId
+          : data.utilityModelId,
     };
     setData(next);
     try {
@@ -170,6 +176,7 @@ export default function SettingsAdmin() {
         body: JSON.stringify({
           defaultChatModelId: next.defaultChatModelId,
           defaultFreeChatModelId: next.defaultFreeChatModelId,
+          utilityModelId: next.utilityModelId,
         }),
       });
     } catch (err) {
@@ -274,7 +281,9 @@ export default function SettingsAdmin() {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Toggle visibility per model and assign each one to a tier.
             Workspaces on the free plan only see models assigned to the free
-            tier.
+            tier. The <strong>Fast</strong> model powers cheap utility tasks
+            (version/commit messages, chat titles, descriptions); leave it unset
+            to auto-pick the cheapest tool-use model.
           </Typography>
 
           {loadError && (
@@ -336,6 +345,9 @@ export default function SettingsAdmin() {
                     </TableCell>
                     <TableCell align="center" sx={{ width: 80 }}>
                       Default&nbsp;free
+                    </TableCell>
+                    <TableCell align="center" sx={{ width: 70 }}>
+                      Fast
                     </TableCell>
                   </TableRow>
                 </TableHead>
@@ -421,11 +433,25 @@ export default function SettingsAdmin() {
                           sx={{ p: 0.5 }}
                         />
                       </TableCell>
+                      <TableCell align="center">
+                        <Radio
+                          size="small"
+                          checked={data?.utilityModelId === m.id}
+                          onChange={() =>
+                            updateDefaults({
+                              utilityModelId:
+                                data?.utilityModelId === m.id ? null : m.id,
+                            })
+                          }
+                          disabled={!m.visible || savingDefaults}
+                          sx={{ p: 0.5 }}
+                        />
+                      </TableCell>
                     </TableRow>
                   ))}
                   {filteredModels.length === 0 && !loading && (
                     <TableRow>
-                      <TableCell colSpan={7} align="center">
+                      <TableCell colSpan={8} align="center">
                         <Typography variant="body2" color="text.secondary">
                           No models match the current filter.
                         </Typography>
