@@ -615,6 +615,17 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       }
     }
     if (body.access !== undefined) {
+      // Changing visibility is owner/admin-only — collaborators can edit
+      // content but must not be able to re-scope who can see the dashboard.
+      if (!DashboardManager.isOwner(dashboard, userId) && !isAdmin) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can change dashboard visibility",
+          },
+          403,
+        );
+      }
       updateFields.access = body.access;
     }
 
@@ -1034,6 +1045,10 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
     const spec: any = dashboard.toObject();
     delete spec._id;
     delete spec.__v;
+    // A duplicate is a fresh, owner-only private copy: never inherit the
+    // original's collaborators or a stale edit lock.
+    delete spec.sharedWith;
+    delete spec.editLock;
     spec.title = `${spec.title} (copy)`;
     spec.createdBy = userId;
     spec.owner_id = userId;
@@ -1549,6 +1564,16 @@ app.patch("/:id/move", async (c: AuthenticatedContext) => {
       dashboard.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
     }
     if (access !== undefined) {
+      // Visibility changes are owner/admin-only (see PUT handler).
+      if (!DashboardManager.isOwner(dashboard, userId) && !isAdmin) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can change dashboard visibility",
+          },
+          403,
+        );
+      }
       dashboard.access = access;
     }
     await dashboard.save();
