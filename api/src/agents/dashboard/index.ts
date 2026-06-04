@@ -69,6 +69,6 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
       ...consoleSearchTools,
       ...dashboardSearchTools,
       ...versionHistoryTools,
-    } as Record<string, unknown>,
+    },
   };
 }

@@ -252,6 +252,6 @@ export const consoleAgentFactory: AgentFactory = (
       ...consoleSearchTools,
       ...versionHistoryTools,
       ...scheduleQueryTools,
-    } as Record<string, any>,
+    },
   };
 };

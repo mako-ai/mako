@@ -646,7 +646,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     model,
     system: systemPrompt,
     messages: modelMessages,
-    tools: tools as Record<string, any>,
+    tools,
     stopWhen: stepCountIs(MAX_STEPS),
     providerOptions: providerOptions as Record<string, unknown>,
     abortSignal: requestSignal,
@@ -665,6 +665,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         });
       }
     },
+    // Cast covers `providerOptions` (gateway/anthropic option bag), not `tools`,
+    // which is already a typed `ToolSet` from the agent config.
   } as Parameters<typeof streamText>[0]);
 
   // Return native AI SDK UI message stream response (for useChat compatibility)
