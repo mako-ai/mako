@@ -11,6 +11,10 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { chatMessageRowArePropsEqual } from "../chat-message-comparator";
+import {
+  computeReasoningGroups,
+  getStreamingReasoningGroupStart,
+} from "../chat-reasoning";
 import { StreamingMarkdown } from "../StreamingMarkdown";
 import { StreamingToolCard } from "../StreamingToolCard";
 
@@ -289,6 +293,57 @@ describe("StreamingToolCard memo comparator", () => {
       output: sharedOutput,
     });
     expect(compare(prev, next)).toBe(true);
+  });
+});
+
+describe("reasoning group streaming identity", () => {
+  it("does not mark the previous reasoning group as streaming when a separated empty reasoning part starts", () => {
+    const parts = [
+      { type: "reasoning", text: "First thought" },
+      { type: "text", text: "Interim answer" },
+      {
+        type: "tool-run_console",
+        state: "output-available",
+        toolCallId: "tool-1",
+      },
+      { type: "reasoning", text: "" },
+    ];
+
+    const groups = computeReasoningGroups(parts);
+
+    expect(groups.get(0)).toEqual({ text: "First thought", lastIndex: 0 });
+    expect(getStreamingReasoningGroupStart(parts, groups)).toBeNull();
+  });
+
+  it("marks a new separated reasoning group as streaming once it has text", () => {
+    const parts = [
+      { type: "reasoning", text: "First thought" },
+      { type: "text", text: "Interim answer" },
+      {
+        type: "tool-run_console",
+        state: "output-available",
+        toolCallId: "tool-1",
+      },
+      { type: "reasoning", text: "Second thought" },
+    ];
+
+    const groups = computeReasoningGroups(parts);
+
+    expect(groups.get(0)).toEqual({ text: "First thought", lastIndex: 0 });
+    expect(groups.get(3)).toEqual({ text: "Second thought", lastIndex: 3 });
+    expect(getStreamingReasoningGroupStart(parts, groups)).toBe(3);
+  });
+
+  it("keeps a contiguous reasoning group streaming through an empty trailing part", () => {
+    const parts = [
+      { type: "reasoning", text: "Still thinking" },
+      { type: "reasoning", text: "" },
+    ];
+
+    const groups = computeReasoningGroups(parts);
+
+    expect(groups.get(0)).toEqual({ text: "Still thinking", lastIndex: 1 });
+    expect(getStreamingReasoningGroupStart(parts, groups)).toBe(0);
   });
 });
 
