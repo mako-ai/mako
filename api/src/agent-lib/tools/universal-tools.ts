@@ -12,8 +12,7 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools } from "./console-tools-client";
-import { clientChartTools } from "./chart-tools-client";
+import { clientConsoleTools, clientChartTools } from "@mako/agent-tools";
 import { createMongoToolsV2 } from "./mongodb-tools";
 import { createSqlToolsV2 } from "./sql-tools";
 

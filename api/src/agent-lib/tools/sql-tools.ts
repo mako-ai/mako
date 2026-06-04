@@ -11,7 +11,7 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools } from "./console-tools-client";
+import { clientConsoleTools } from "@mako/agent-tools";
 import {
   truncateSamples,
   truncateQueryResults,

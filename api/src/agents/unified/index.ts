@@ -1,6 +1,6 @@
 import type { AgentConfig, AgentContext, AgentMeta } from "../types";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
-import { clientDashboardTools } from "../../agent-lib/tools/dashboard-tools-client";
+import { clientDashboardTools } from "@mako/agent-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";

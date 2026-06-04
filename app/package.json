@@ -21,6 +21,7 @@
     "@duckdb/duckdb-wasm": "1.33.1-dev20.0",
     "@emotion/react": "^11.11.1",
     "@emotion/styled": "^11.11.0",
+    "@mako/agent-tools": "workspace:*",
     "@mako/schemas": "workspace:*",
     "@monaco-editor/react": "^4.6.0",
     "@mui/icons-material": "^7.1.0",

@@ -12,6 +12,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
+import { clientFlowTools } from "@mako/agent-tools";
 import type {
   AgentFactory,
   AgentMeta,
@@ -44,15 +45,13 @@ import {
   inspectTableSchema,
 } from "../../agent-lib/tools/shared/database-discovery";
 
-// Import unified schema for type-safe field names and context injection
+// Import unified schema for context injection
 import {
-  FIELD_PATHS,
   CONTEXT_FIELDS,
-  TYPE_COERCION_SCHEMA,
   getNestedValue,
   getFieldMeta,
   formatContextValue,
-} from "../../schemas/db-flow-form.schema";
+} from "@mako/schemas";
 
 /**
  * Flow agent metadata for UI and routing
@@ -90,85 +89,9 @@ const explainTemplateParams = z.object({
 });
 
 /**
- * Schemas for client-side flow tools
- * Uses FIELD_PATHS from unified schema for type-safe field names
- */
-const getFormStateSchema = z.object({});
-
-/**
- * Structured value type for set_form_field.
- *
- * Instead of z.any() (which gives the LLM no type hints and causes it to
- * stringify arrays), we define a union of the actual types the LLM should return.
- * This ensures the AI SDK sends a proper JSON schema to the model, so arrays
- * come back as arrays, objects as objects, etc.
- *
- * See: https://ai-sdk.dev/docs/ai-sdk-core/generating-structured-data
- */
-const formFieldValue = z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z
-    .array(TYPE_COERCION_SCHEMA)
-    .describe("Array of type coercions (for typeCoercions field)"),
-  z.array(z.string()).describe("Array of strings (e.g., keyColumns)"),
-  z
-    .object({
-      trackingColumn: z.string(),
-      trackingType: z.enum(["timestamp", "numeric"]),
-    })
-    .describe("Incremental config object"),
-  z
-    .object({
-      keyColumns: z.array(z.string()),
-      strategy: z.enum(["update", "ignore", "replace"]),
-    })
-    .describe("Conflict config object"),
-  z
-    .object({
-      mode: z.enum(["offset", "keyset"]),
-      keysetColumn: z.string().optional(),
-      keysetDirection: z.enum(["asc", "desc"]).optional(),
-    })
-    .describe("Pagination config object"),
-]);
-
-// Type-safe field names derived from the unified schema
-const setFormFieldSchema = z.object({
-  fieldName: z
-    .enum(FIELD_PATHS as unknown as [string, ...string[]])
-    .describe(
-      'Nested field path to update (e.g., "databaseSource.query", "schedule.cron", "tableDestination.tableName")',
-    ),
-  value: formFieldValue.describe(
-    "New value for the field. Arrays and objects must be actual JSON, NOT stringified.",
-  ),
-});
-
-const setMultipleFieldsSchema = z.object({
-  fields: z
-    .record(z.string(), formFieldValue)
-    .describe("Object with nested field paths as keys and new values"),
-});
-
-/**
- * Schemas for tab management tools (client-side)
- */
-const createFlowTabSchema = z.object({
-  title: z
-    .string()
-    .optional()
-    .describe(
-      'Optional title for the new flow tab (default: "New Database Sync")',
-    ),
-});
-
-const listFlowTabsSchema = z.object({});
-
-/**
  * Create tools for flow agent
- * Uses shared database discovery tools from agent-lib
+ * Uses shared database discovery tools from agent-lib and the shared
+ * client-side flow tools from @mako/agent-tools.
  */
 export function createFlowTools(
   workspaceId: string,
@@ -524,44 +447,11 @@ export function createFlowTools(
 
     // =========================================================================
     // Client-side tools (no execute function - handled by frontend)
-    // Field names are now derived from the unified schema (FIELD_PATHS)
+    // Shared with the frontend via @mako/agent-tools so the tool surface and
+    // its types can never drift. Field names derive from the unified schema.
     // =========================================================================
 
-    get_form_state: tool({
-      description:
-        "Get the current form configuration values. Use this to understand what the user has already configured.",
-      inputSchema: getFormStateSchema,
-    }),
-
-    set_form_field: tool({
-      description:
-        'Update a single form field using nested path. Examples: "databaseSource.query", "schedule.cron", "tableDestination.tableName", "typeCoercions" (for column mappings array).',
-      inputSchema: setFormFieldSchema,
-    }),
-
-    set_multiple_fields: tool({
-      description:
-        "Update multiple form fields at once. Use nested paths as keys.",
-      inputSchema: setMultipleFieldsSchema,
-    }),
-
-    // NOTE: set_column_mappings has been removed - use set_form_field with fieldName="typeCoercions" instead
-
-    // =========================================================================
-    // Tab Management Tools (client-side - for creating/listing flow tabs)
-    // =========================================================================
-
-    create_flow_tab: tool({
-      description:
-        "Create a new database sync flow tab in the editor. Use this when the user wants to create a new sync flow from scratch. Returns the new tab ID.",
-      inputSchema: createFlowTabSchema,
-    }),
-
-    list_flow_tabs: tool({
-      description:
-        "List all open flow editor tabs. Returns tab ID, title, flow type, and whether it's the active tab. Use this to see existing flow configurations.",
-      inputSchema: listFlowTabsSchema,
-    }),
+    ...clientFlowTools,
   };
 }
 

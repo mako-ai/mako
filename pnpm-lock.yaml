@@ -129,6 +129,9 @@ importers:
       '@logtape/logtape':
         specifier: ^1.0.4
         version: 1.0.4
+      '@mako/agent-tools':
+        specifier: workspace:*
+        version: link:../packages/agent-tools
       '@mako/schemas':
         specifier: workspace:*
         version: link:../packages/schemas
@@ -316,6 +319,9 @@ importers:
       '@emotion/styled':
         specifier: ^11.11.0
         version: 11.14.0(@emotion/react@11.14.0(@types/react@18.3.23)(react@18.3.1))(@types/react@18.3.23)(react@18.3.1)
+      '@mako/agent-tools':
+        specifier: workspace:*
+        version: link:../packages/agent-tools
       '@mako/schemas':
         specifier: workspace:*
         version: link:../packages/schemas
@@ -485,6 +491,22 @@ importers:
       sharp:
         specifier: ^0.34.2
         version: 0.34.5
+
+  packages/agent-tools:
+    dependencies:
+      '@mako/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      ai:
+        specifier: 6.0.196
+        version: 6.0.196(zod@4.2.1)
+      zod:
+        specifier: ^4.2.1
+        version: 4.2.1
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.8.3
 
   packages/schemas:
     dependencies:

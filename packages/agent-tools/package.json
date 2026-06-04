@@ -1,0 +1,26 @@
+{
+  "name": "@mako/agent-tools",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "if command -v tsc >/dev/null 2>&1; then tsc; fi"
+  },
+  "dependencies": {
+    "@mako/schemas": "workspace:*",
+    "ai": "6.0.196",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

@@ -11,7 +11,7 @@ import {
   DASHBOARD_SYSTEM_PROMPT,
   buildDashboardRuntimeContext,
 } from "./prompt";
-import { clientDashboardTools } from "../../agent-lib/tools/dashboard-tools-client";
+import { clientDashboardTools } from "@mako/agent-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
