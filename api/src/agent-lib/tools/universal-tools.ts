@@ -6,6 +6,7 @@
  * client via the onToolCall callback.
  */
 
+import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
@@ -188,7 +189,7 @@ export const createUniversalTools = (
     ...clientChartTools,
 
     // Cross-database connection discovery (server-side)
-    list_connections: {
+    list_connections: tool({
       description:
         "List all database connections in this workspace (MongoDB, PostgreSQL, Redshift, BigQuery, SQLite, Cloudflare D1). Use this to discover available databases before running queries.",
       inputSchema: emptySchema,
@@ -205,7 +206,7 @@ export const createUniversalTools = (
           };
         }
       },
-    },
+    }),
 
     // MongoDB tools (namespaced with mongo_ prefix) - server-side
     mongo_list_connections: mongoListConnections,

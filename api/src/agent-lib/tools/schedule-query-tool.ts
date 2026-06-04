@@ -1,4 +1,5 @@
 import { Types } from "mongoose";
+import { tool } from "ai";
 import { z } from "zod";
 import { SavedConsole } from "../../database/workspace-schema";
 import {
@@ -26,11 +27,11 @@ export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
   const wsOid = new Types.ObjectId(workspaceId);
 
   return {
-    schedule_query: {
+    schedule_query: tool({
       description:
         "Schedule an existing saved console to run automatically on a cron (standard 5-field expression) in an IANA timezone. Replaces any existing schedule on that console. Requires a saved console id (from open tabs or search); the console must have a database connection. Only call after the user explicitly confirms they want this schedule.",
       inputSchema: scheduleQueryInputSchema,
-      execute: async (input: z.infer<typeof scheduleQueryInputSchema>) => {
+      execute: async input => {
         try {
           if (!canManageScheduledQueries) {
             return {
@@ -52,7 +53,10 @@ export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
           const savedConsole = await SavedConsole.findOne({
             _id: new Types.ObjectId(consoleId),
             workspaceId: wsOid,
-            $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
+            $or: [
+              { is_deleted: { $ne: true } },
+              { is_deleted: { $exists: false } },
+            ],
           });
 
           if (!savedConsole) {
@@ -110,6 +114,6 @@ export function createScheduleQueryTool(options: ScheduleQueryToolOptions) {
           };
         }
       },
-    },
+    }),
   };
 }

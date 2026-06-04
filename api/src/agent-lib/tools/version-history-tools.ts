@@ -1,3 +1,4 @@
+import { tool } from "ai";
 import { z } from "zod";
 import {
   listVersions,
@@ -5,7 +6,7 @@ import {
 } from "../../services/entity-version.service";
 
 export const createVersionHistoryTools = (workspaceId: string) => ({
-  browse_version_history: {
+  browse_version_history: tool({
     description:
       "Browse the version history of a saved console or dashboard. " +
       "Returns a list of past versions with who saved them, when, and their commit comment. " +
@@ -23,15 +24,7 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
         .default(10)
         .describe("Max versions to return (default 10)"),
     }),
-    execute: async ({
-      entityType,
-      entityId,
-      limit,
-    }: {
-      entityType: "console" | "dashboard";
-      entityId: string;
-      limit?: number;
-    }) => {
+    execute: async ({ entityType, entityId, limit }) => {
       try {
         const result = await listVersions(entityId, entityType, {
           limit: limit || 10,
@@ -61,9 +54,9 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
         };
       }
     },
-  },
+  }),
 
-  get_version_snapshot: {
+  get_version_snapshot: tool({
     description:
       "Get the full snapshot of a specific version of a console or dashboard. " +
       "Use this to show the user what a past version looked like, or to compare " +
@@ -76,15 +69,7 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
       entityId: z.string().describe("The ID of the console or dashboard"),
       version: z.number().describe("The version number to retrieve"),
     }),
-    execute: async ({
-      entityType,
-      entityId,
-      version,
-    }: {
-      entityType: "console" | "dashboard";
-      entityId: string;
-      version: number;
-    }) => {
+    execute: async ({ entityType, entityId, version }) => {
       try {
         const v = await getVersion(entityId, entityType, version, workspaceId);
         if (!v) {
@@ -114,5 +99,5 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
         };
       }
     },
-  },
+  }),
 });

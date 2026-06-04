@@ -3,6 +3,7 @@
  * Supports PostgreSQL, MySQL, BigQuery, SQLite, and Cloudflare D1 with a single tool surface.
  */
 
+import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
@@ -1002,7 +1003,7 @@ export const createSqlToolsV2 = (
   return {
     ...clientConsoleTools,
 
-    sql_list_connections: {
+    sql_list_connections: tool({
       description:
         "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
       inputSchema: emptySchema,
@@ -1019,16 +1020,16 @@ export const createSqlToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    sql_list_databases: {
+    sql_list_databases: tool({
       description:
         "List databases (PostgreSQL/MySQL), datasets (BigQuery), or database files (SQLite/D1) within a SQL connection. Returns array with 'name' and 'sqlDialect'. IMPORTANT for Cloudflare D1: returns 'id' (UUID) and 'name' (human-readable). Use the 'id' field (not 'name') for subsequent D1 tool calls.",
       inputSchema: connectionIdSchema,
-      execute: async (params: { connectionId: string }) => {
+      execute: async ({ connectionId }) => {
         try {
           return await listDatabasesImpl(
-            params.connectionId,
+            connectionId,
             workspaceId,
             toolExecutionContext,
           );
@@ -1043,17 +1044,17 @@ export const createSqlToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    sql_list_tables: {
+    sql_list_tables: tool({
       description:
         "List tables and views in a database. For PostgreSQL with multiple schemas, returns schema-prefixed names (e.g., 'analytics.events'). Returns table names with type and sqlDialect. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: connectionAndDbSchema,
-      execute: async (params: { connectionId: string; database: string }) => {
+      execute: async ({ connectionId, database }) => {
         try {
           return await listTablesImpl(
-            params.connectionId,
-            params.database,
+            connectionId,
+            database,
             workspaceId,
             toolExecutionContext,
           );
@@ -1068,22 +1069,18 @@ export const createSqlToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    sql_inspect_table: {
+    sql_inspect_table: tool({
       description:
         "Get table/view schema (columns, types, nullability) plus up to 25 sample rows. Returns sqlDialect to guide query syntax. For PostgreSQL, use 'schema.table' format if not in public schema. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: inspectTableSchema,
-      execute: async (params: {
-        connectionId: string;
-        database: string;
-        table: string;
-      }) => {
+      execute: async ({ connectionId, database, table }) => {
         try {
           return await inspectTableImpl(
-            params.connectionId,
-            params.database,
-            params.table,
+            connectionId,
+            database,
+            table,
             workspaceId,
             toolExecutionContext,
           );
@@ -1102,22 +1099,18 @@ export const createSqlToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    sql_execute_query: {
+    sql_execute_query: tool({
       description:
         "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
-      execute: async (params: {
-        connectionId: string;
-        database: string;
-        query: string;
-      }) => {
+      execute: async ({ connectionId, database, query }) => {
         try {
           return await executeQueryImpl(
-            params.connectionId,
-            params.database,
-            params.query,
+            connectionId,
+            database,
+            query,
             workspaceId,
             userId,
             toolExecutionContext,
@@ -1133,6 +1126,6 @@ export const createSqlToolsV2 = (
           };
         }
       },
-    },
+    }),
   };
 };

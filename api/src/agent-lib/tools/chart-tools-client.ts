@@ -13,6 +13,7 @@
  * 5. Call addToolOutput to provide the result
  */
 
+import { tool } from "ai";
 import { z } from "zod";
 import { MakoChartSpecBase } from "./chart-spec-schema";
 
@@ -26,7 +27,7 @@ export const modifyChartSpecSchema = z.object({
 export type ModifyChartSpecInput = z.infer<typeof modifyChartSpecSchema>;
 
 export const clientChartTools = {
-  modify_chart_spec: {
+  modify_chart_spec: tool({
     description:
       "Modify the chart visualization for the current query results. " +
       "Produces a Vega-Lite spec that will be rendered in the chart view of the results panel. " +
@@ -35,8 +36,8 @@ export const clientChartTools = {
       "Available mark types: bar, line, area, point, arc, boxplot, rect, rule, text, tick, trail. " +
       "Use fold transforms to unpivot multiple numeric columns into a single series for multi-line charts.",
     inputSchema: modifyChartSpecSchema,
-  },
-  get_chart_template: {
+  }),
+  get_chart_template: tool({
     description:
       "Get a best-practice chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
       "Use for complex patterns (e.g. multi-series hover rule, stacked bar, donut) instead of inventing specs from scratch. " +
@@ -46,5 +47,5 @@ export const clientChartTools = {
         .string()
         .describe("Template ID (e.g. 'multi-series-line-hover', 'donut')"),
     }),
-  },
+  }),
 };

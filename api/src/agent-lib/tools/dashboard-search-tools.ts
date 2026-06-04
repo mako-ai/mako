@@ -1,3 +1,4 @@
+import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import type { AgentToolExecutionContext } from "../../agents/types";
@@ -52,7 +53,7 @@ export const createDashboardSearchTools = (
   workspaceId: string,
   toolExecutionContext?: AgentToolExecutionContext,
 ) => ({
-  search_dashboards: {
+  search_dashboards: tool({
     description:
       "Search saved dashboards across the workspace by title, description, or data source name. " +
       "Returns matching dashboards ranked by recency. Use this to find dashboards the user mentions " +
@@ -67,7 +68,7 @@ export const createDashboardSearchTools = (
         .default(5)
         .describe("Max results to return (default 5)"),
     }),
-    execute: async ({ query, limit }: { query: string; limit?: number }) => {
+    execute: async ({ query, limit }) => {
       const { signal, release } = registerAgentExecution(
         toolExecutionContext,
         "agent-search-dashboards",
@@ -98,5 +99,5 @@ export const createDashboardSearchTools = (
         release();
       }
     },
-  },
+  }),
 });
