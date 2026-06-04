@@ -87,7 +87,6 @@ import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
-  LONG_RUNNING_DASHBOARD_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
@@ -1596,88 +1595,59 @@ const Chat: React.FC<ChatProps> = ({
 
         // --- Dashboard tools (client-side) ---
         if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
-          const isLongRunningDashboardTool =
-            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName);
+          const activeDashboardTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
 
-          if (isLongRunningDashboardTool) {
-            const activeDashboardTool = registerActiveClientToolCall(
-              toolName,
-              toolCall.toolCallId,
-            );
+          // Fire-and-forget for ALL dashboard client work, never await it here.
+          // The AI SDK awaits onToolCall while reading the SSE stream, and only
+          // sends the follow-up request with the tool output once the stream
+          // reaches its finish chunk. Awaiting any client work inside
+          // onToolCall blocks the reader from processing that finish chunk, so
+          // the continuation hangs until the HTTP/proxy stream times out — even
+          // for tools that resolve in milliseconds (e.g. remove_widget,
+          // get_dashboard_state). Settling asynchronously lets the finish chunk
+          // be read immediately and the stream close cleanly.
+          void (async () => {
+            try {
+              const dashboardToolOutput = await executeDashboardAgentTool(
+                toolName,
+                input,
+                {
+                  executionId: activeDashboardTool.executionId,
+                  signal: activeDashboardTool.abortController.signal,
+                },
+              );
 
-            // Fire-and-forget for long-running dashboard work. The AI SDK
-            // awaits onToolCall while reading the SSE stream; awaiting here can
-            // prevent the finish chunk from being processed, which delays the
-            // automatic continuation until the HTTP stream times out.
-            void (async () => {
-              try {
-                const dashboardToolOutput = await executeDashboardAgentTool(
-                  toolName,
-                  input,
-                  {
-                    executionId: activeDashboardTool.executionId,
-                    signal: activeDashboardTool.abortController.signal,
-                  },
-                );
-
-                if (activeDashboardTool.abortController.signal.aborted) {
-                  return;
-                }
-
-                settleActiveClientToolCall(
-                  toolName,
-                  toolCall.toolCallId,
-                  dashboardToolOutput ?? {
-                    success: false,
-                    error: `Dashboard tool "${toolName}" did not return a result.`,
-                  },
-                );
-              } catch (dashboardError) {
-                if (
-                  manualStopRequestedRef.current ||
-                  activeDashboardTool.abortController.signal.aborted
-                ) {
-                  return;
-                }
-                settleActiveClientToolCall(toolName, toolCall.toolCallId, {
-                  success: false,
-                  error:
-                    dashboardError instanceof Error
-                      ? dashboardError.message
-                      : "Dashboard tool execution failed",
-                });
+              if (activeDashboardTool.abortController.signal.aborted) {
+                return;
               }
-            })();
-            return;
-          }
 
-          try {
-            const dashboardToolOutput = await executeDashboardAgentTool(
-              toolName,
-              input,
-            );
-
-            addToolOutput({
-              tool: toolName,
-              toolCallId: toolCall.toolCallId,
-              output: dashboardToolOutput ?? {
-                success: false,
-                error: `Dashboard tool "${toolName}" did not return a result.`,
-              },
-            });
-          } catch (dashboardError) {
-            addToolOutput({
-              tool: toolName,
-              toolCallId: toolCall.toolCallId,
-              output: {
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                dashboardToolOutput ?? {
+                  success: false,
+                  error: `Dashboard tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dashboardError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDashboardTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
                 success: false,
                 error:
                   dashboardError instanceof Error
                     ? dashboardError.message
                     : "Dashboard tool execution failed",
-              },
-            });
-          }
+              });
+            }
+          })();
           return;
         }
 
