@@ -12,21 +12,10 @@
 import { describe, it, expect } from "vitest";
 import {
   computeReasoningGroups,
-  getLastReasoningGroupStart,
+  getStreamingReasoningGroupStart,
 } from "../reasoning-groups";
 
 type Part = Record<string, unknown>;
-
-// Mirrors the streaming-group selection in ChatMessageRow: only the most
-// recent reasoning group is flagged as streaming when the message's last part
-// is a reasoning part.
-function streamingGroupStart(parts: Part[]): number {
-  const groups = computeReasoningGroups(parts);
-  const lastPart = parts.at(-1);
-  const isLastPartReasoning = lastPart?.type === "reasoning";
-  if (!isLastPartReasoning) return -1;
-  return getLastReasoningGroupStart(groups);
-}
 
 describe("computeReasoningGroups", () => {
   it("merges consecutive reasoning parts into one block", () => {
@@ -71,7 +60,7 @@ describe("computeReasoningGroups", () => {
   });
 });
 
-describe("streaming group selection (re-expand regression)", () => {
+describe("getStreamingReasoningGroupStart (re-expand regression)", () => {
   it("flags the NEW empty block as streaming, not the old collapsed one", () => {
     const parts: Part[] = [
       { type: "reasoning", text: "done thinking about plan" },
@@ -80,8 +69,10 @@ describe("streaming group selection (re-expand regression)", () => {
       { type: "reasoning", text: "" }, // new block just started, no text yet
     ];
     // The streaming flag must point at the new block (index 3), NOT the old
-    // collapsed block (index 0).
-    expect(streamingGroupStart(parts)).toBe(3);
+    // collapsed block (index 0). This is the core re-expand bug: with the new
+    // block's first chunk empty, the old block must stay collapsed AND the new
+    // block must show its "Thinking…" indicator immediately.
+    expect(getStreamingReasoningGroupStart(parts)).toBe(3);
   });
 
   it("keeps flagging the new block as it accrues text", () => {
@@ -91,12 +82,22 @@ describe("streaming group selection (re-expand regression)", () => {
       { type: "text", text: "Running a query..." },
       { type: "reasoning", text: "now reconsidering" },
     ];
-    expect(streamingGroupStart(parts)).toBe(3);
+    expect(getStreamingReasoningGroupStart(parts)).toBe(3);
+  });
+
+  it("keeps a contiguous reasoning group streaming through an empty trailing part", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "Still thinking" },
+      { type: "reasoning", text: "" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect(groups.get(0)).toEqual({ text: "Still thinking", lastIndex: 1 });
+    expect(getStreamingReasoningGroupStart(parts, groups)).toBe(0);
   });
 
   it("flags the only block while the first one is still streaming", () => {
     const parts: Part[] = [{ type: "reasoning", text: "thinking..." }];
-    expect(streamingGroupStart(parts)).toBe(0);
+    expect(getStreamingReasoningGroupStart(parts)).toBe(0);
   });
 
   it("flags no block when the last part is not reasoning", () => {
@@ -104,6 +105,6 @@ describe("streaming group selection (re-expand regression)", () => {
       { type: "reasoning", text: "block A" },
       { type: "text", text: "final answer" },
     ];
-    expect(streamingGroupStart(parts)).toBe(-1);
+    expect(getStreamingReasoningGroupStart(parts)).toBeNull();
   });
 });

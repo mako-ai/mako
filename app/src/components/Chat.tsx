@@ -77,7 +77,7 @@ import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import {
   computeReasoningGroups,
-  getLastReasoningGroupStart,
+  getStreamingReasoningGroupStart,
 } from "./reasoning-groups";
 import {
   chatMessageRowArePropsEqual,
@@ -747,12 +747,16 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
 
   const lastPartIndex = parts.length - 1;
   const lastPart = parts.at(-1);
-  const isLastPartReasoning =
-    isLastMessage && isStreamingNow && lastPart?.type === "reasoning";
   const isLastPartText =
     isLastMessage && isStreamingNow && lastPart?.type === "text";
 
-  const lastGroupStart = getLastReasoningGroupStart(reasoningGroups);
+  // The single reasoning group (if any) that should stay expanded because it
+  // owns the streaming last part. `null` when not streaming or the last part
+  // isn't reasoning, so previously-collapsed blocks are never re-opened.
+  const streamingReasoningGroupStart =
+    isLastMessage && isStreamingNow
+      ? getStreamingReasoningGroupStart(parts, reasoningGroups)
+      : null;
 
   return (
     <ListItem alignItems="flex-start" sx={listItemSx}>
@@ -834,8 +838,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
           if (partType === "reasoning") {
             const group = reasoningGroups.get(partIndex);
             if (!group) return null;
-            const isGroupStreaming =
-              isLastPartReasoning && partIndex === lastGroupStart;
+            const isGroupStreaming = partIndex === streamingReasoningGroupStart;
             // Skip empty reasoning groups unless they're the block currently
             // streaming (a brand-new thinking block whose text hasn't arrived
             // yet). This avoids rendering blank "Thinking process" blocks for

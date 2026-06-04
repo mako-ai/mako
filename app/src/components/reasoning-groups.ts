@@ -57,15 +57,28 @@ export function computeReasoningGroups(
   return groups;
 }
 
-// The start index of the most recent reasoning group, i.e. the one that is
-// currently streaming when the message's last part is a reasoning part.
-// Returns -1 when there are no reasoning groups.
-export function getLastReasoningGroupStart(
-  groups: Map<number, ReasoningGroup>,
-): number {
-  let lastGroupStart = -1;
-  for (const [start] of groups) {
-    if (start > lastGroupStart) lastGroupStart = start;
+// The start index of the reasoning group that is currently streaming, i.e. the
+// group that owns the message's last part. Returns null when the last part is
+// not a reasoning part (so no block should be force-expanded), or when the last
+// part somehow belongs to no group.
+//
+// Selecting by `lastIndex === lastPartIndex` (rather than "the highest group
+// start") ties the streaming flag to the group the trailing part actually
+// belongs to. Combined with contiguous-run grouping above, a just-started empty
+// block forms its own group whose lastIndex is the last part — so it's selected
+// here and shows its "Thinking…" indicator immediately, while every earlier,
+// already-collapsed block stays closed.
+export function getStreamingReasoningGroupStart(
+  parts: Array<Record<string, unknown>>,
+  groups: Map<number, ReasoningGroup> = computeReasoningGroups(parts),
+): number | null {
+  const lastPartIndex = parts.length - 1;
+  const lastPart = parts[lastPartIndex];
+  if (lastPart?.type !== "reasoning") return null;
+
+  for (const [start, group] of groups) {
+    if (group.lastIndex === lastPartIndex) return start;
   }
-  return lastGroupStart;
+
+  return null;
 }
