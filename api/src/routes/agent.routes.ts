@@ -51,6 +51,7 @@ import {
   renderSkillsPromptBlock,
 } from "../services/skills.service";
 import { sanitizeMessagesForModel } from "../utils/message-sanitizer";
+import { resolveChatAttachmentsForModel } from "../services/chat-attachment.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { checkBillingLimits } from "../billing/usage-limit.middleware";
 import { getEffectiveBillingPlan } from "../billing/config";
@@ -602,9 +603,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const modelDef = await getModelById(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
 
+  // Resolve object-storage-backed image attachments (from reopened chats) back
+  // into inline data URLs the model provider can read. Freshly attached images
+  // in the current turn already arrive as data URLs and pass through untouched.
+  // Runs before sanitization so its empty-parts guard covers any message left
+  // with no parts after a missing attachment is dropped.
+  const messagesWithAttachments = await resolveChatAttachmentsForModel(
+    messages,
+    workspaceId,
+  );
+
   // Sanitize messages to remove incomplete tool calls from interrupted streams
   // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
-  const sanitizedMessages = sanitizeMessagesForModel(messages);
+  const sanitizedMessages = sanitizeMessagesForModel(messagesWithAttachments);
 
   // Convert UI messages (from useChat) to model messages (for streamText)
   const modelMessages = await convertToModelMessages(sanitizedMessages);

@@ -516,6 +516,12 @@ export interface IMessagePart {
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
   output?: unknown; // Tool result (named 'output' for AI SDK v6 compat, was 'result')
   state?: string; // Tool state: "input-streaming", "input-available", "output-streaming", "output-available", "error"
+  // File parts (AI SDK FileUIPart). Without these fields, persisted attachments
+  // are reduced to `{ type: "file", _id }` and break `convertToModelMessages`
+  // with "The messages do not match the ModelMessage[] schema."
+  url?: string; // Data URL or remote URL of the attachment
+  mediaType?: string; // MIME type, e.g. "image/png"
+  filename?: string; // Optional original file name
 }
 
 /**
@@ -580,6 +586,29 @@ export interface IChat extends Document {
   systemPrompt?: string; // System prompt used for this conversation
   workspacePrompt?: string; // Workspace custom prompt appended to system prompt
   usage?: IChatUsage; // Token usage tracking for billing
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Chat attachment model interface.
+ *
+ * Chat image attachments are uploaded to object storage (filesystem / GCS / S3)
+ * instead of being inlined as base64 data URLs in the chat document. This keeps
+ * chat documents well under the 16 MB BSON limit (the previous behaviour caused
+ * silent save failures and "lost" images on reload) and lets the browser fetch
+ * each image lazily through an authenticated proxy.
+ */
+export interface IChatAttachment extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  chatId: string; // Chat _id this attachment belongs to (string ObjectId hex)
+  createdBy: string; // User id that owns the attachment (matches Chat.createdBy)
+  storageKey: string; // Key within the object store
+  mediaType: string; // MIME type, e.g. "image/png"
+  filename?: string; // Optional original file name
+  size: number; // Byte size of the stored object
+  sha256: string; // Content hash, used to deduplicate re-uploads within a chat
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1598,6 +1627,12 @@ const ChatSchema = new Schema<IChat>(
             input: Schema.Types.Mixed,
             output: Schema.Types.Mixed,
             state: String,
+            // File parts (AI SDK FileUIPart). Persisting these keeps attachments
+            // round-trippable; without them Mongoose strict mode strips the
+            // fields and breaks convertToModelMessages on the next turn.
+            url: String,
+            mediaType: String,
+            filename: String,
           },
         ],
         // Legacy fields - kept for backward compatibility with existing chats
@@ -1749,6 +1784,61 @@ const ChatSchema = new Schema<IChat>(
 ChatSchema.index({ workspaceId: 1 });
 ChatSchema.index({ workspaceId: 1, title: 1 });
 ChatSchema.index({ workspaceId: 1, createdBy: 1 }); // For user-specific chat queries
+
+/**
+ * Chat Attachment Schema
+ *
+ * Stores metadata for chat image attachments whose bytes live in object
+ * storage. The proxy route streams these back to the browser, and the agent
+ * route resolves them to data URLs when replaying history to the model.
+ */
+const ChatAttachmentSchema = new Schema<IChatAttachment>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    chatId: {
+      type: String,
+      required: true,
+    },
+    createdBy: {
+      type: String,
+      ref: "User",
+      required: true,
+    },
+    storageKey: {
+      type: String,
+      required: true,
+    },
+    mediaType: {
+      type: String,
+      required: true,
+    },
+    filename: {
+      type: String,
+      required: false,
+    },
+    size: {
+      type: Number,
+      required: true,
+    },
+    sha256: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    timestamps: true,
+  },
+);
+
+// Dedupe re-uploads of the same image within a chat (same bytes -> same doc).
+ChatAttachmentSchema.index(
+  { workspaceId: 1, chatId: 1, sha256: 1 },
+  { unique: true },
+);
 
 /**
  * Flow Schema (data sync flow configuration)
@@ -3066,6 +3156,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           sm: {
             x: { type: Number },
@@ -3074,6 +3165,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
           xs: {
             x: { type: Number },
@@ -3082,6 +3174,7 @@ const DashboardSchema = new Schema<IDashboard>(
             h: { type: Number },
             minW: { type: Number },
             minH: { type: Number },
+            custom: { type: Boolean },
           },
         },
       },
@@ -3328,6 +3421,10 @@ export const SavedConsole = mongoose.model<ISavedConsole>(
   SavedConsoleSchema,
 );
 export const Chat = mongoose.model<IChat>("Chat", ChatSchema);
+export const ChatAttachment = mongoose.model<IChatAttachment>(
+  "ChatAttachment",
+  ChatAttachmentSchema,
+);
 export const Flow = mongoose.model<IFlow>("Flow", FlowSchema);
 export const FlowExecution = mongoose.model<IFlowExecution>(
   "FlowExecution",

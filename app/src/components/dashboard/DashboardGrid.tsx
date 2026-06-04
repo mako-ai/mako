@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
 import { Box, Typography, IconButton, Tooltip } from "@mui/material";
 import { Database, Plus } from "lucide-react";
 import { ResponsiveGridLayout } from "react-grid-layout";
@@ -14,7 +14,8 @@ import type {
   Dashboard,
   DashboardSessionRuntimeState,
 } from "../../dashboard-runtime/types";
-import { getWidgetSizeDefaults, deriveResponsiveLayouts } from "@mako/schemas";
+import { getWidgetSizeDefaults } from "@mako/schemas";
+import { buildResponsiveGridLayouts } from "./buildResponsiveLayouts";
 import WidgetContainer from "../widgets/WidgetContainer";
 import MosaicChart from "../widgets/MosaicChart";
 import MosaicKpiCard from "../widgets/MosaicKpiCard";
@@ -86,46 +87,65 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   const crossFilterResolution =
     dashboard?.crossFilter.resolution ?? "intersect";
   const isCrossFilterEnabled = dashboard?.crossFilter.enabled ?? false;
+  const lgCols = dashboard?.layout?.columns || 12;
 
-  const handleLayoutChange = useCallback(
-    (_layout: any, allLayouts: Record<string, any>) => {
-      if (!dashboard || !dashboardId || !allLayouts || !isEditMode) return;
+  // Track the active breakpoint so a drag/resize only mutates the layout the
+  // user is actually looking at — `lg` is the authored source of truth, and
+  // editing a smaller breakpoint marks it `custom` so the auto-reflow backs off.
+  const currentBreakpointRef = useRef<string>("lg");
+  const handleBreakpointChange = useCallback((bp: string) => {
+    currentBreakpointRef.current = bp;
+  }, []);
+
+  const persistActiveLayout = useCallback(
+    (
+      layout: ReadonlyArray<{
+        i: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+      }>,
+    ) => {
+      if (!dashboard || !dashboardId || !isEditMode || !Array.isArray(layout)) {
+        return;
+      }
+      const bp = currentBreakpointRef.current || "lg";
+      const isBase = bp === "lg";
 
       for (const widget of dashboard.widgets) {
-        const currentLayouts =
-          widget.layouts ??
+        const item = layout.find(i => i.i === widget.id);
+        if (!item) continue;
+
+        const existing = (widget.layouts ??
           ((widget as any).layout
             ? { lg: (widget as any).layout }
-            : { lg: { x: 0, y: 0, w: 6, h: 4 } });
-        const updatedLayouts: Record<
-          string,
-          { x: number; y: number; w: number; h: number }
-        > = {};
-        let changed = false;
+            : { lg: { x: 0, y: 0, w: 6, h: 4 } })) as Record<string, any>;
+        const prev = existing[bp] ?? existing.lg;
 
-        for (const [bp, items] of Object.entries(allLayouts)) {
-          if (!Array.isArray(items)) continue;
-          const item = items.find((i: any) => i.i === widget.id);
-          if (!item) continue;
-          const newPos = { x: item.x, y: item.y, w: item.w, h: item.h };
-          const existing = (currentLayouts as any)[bp];
-          if (
-            !existing ||
-            existing.x !== newPos.x ||
-            existing.y !== newPos.y ||
-            existing.w !== newPos.w ||
-            existing.h !== newPos.h
-          ) {
-            updatedLayouts[bp] = newPos;
-            changed = true;
-          }
-        }
+        const next: Record<string, number | boolean> = {
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+        };
+        if (typeof prev?.minW === "number") next.minW = prev.minW;
+        if (typeof prev?.minH === "number") next.minH = prev.minH;
+        if (!isBase) next.custom = true;
 
-        if (changed) {
-          modifyWidgetAction(dashboardId, widget.id, {
-            layouts: { ...currentLayouts, ...updatedLayouts },
-          } as any);
-        }
+        const cur = existing[bp];
+        const unchanged =
+          cur &&
+          cur.x === next.x &&
+          cur.y === next.y &&
+          cur.w === next.w &&
+          cur.h === next.h &&
+          (isBase || cur.custom === true);
+        if (unchanged) continue;
+
+        modifyWidgetAction(dashboardId, widget.id, {
+          layouts: { ...existing, [bp]: next },
+        } as any);
       }
     },
     [dashboard, dashboardId, isEditMode],
@@ -150,70 +170,10 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
     [dashboardId],
   );
 
-  const allGridLayouts = useMemo(() => {
-    const breakpoints = ["lg", "md", "sm", "xs"] as const;
-    type GridItem = {
-      i: string;
-      x: number;
-      y: number;
-      w: number;
-      h: number;
-      minW: number;
-      minH: number;
-    };
-    const result: Record<string, GridItem[]> = {};
-    for (const bp of breakpoints) {
-      const items: GridItem[] = [];
-      for (const w of widgets) {
-        const wAny = w as any;
-        const vegaMark =
-          typeof w.vegaLiteSpec?.mark === "string"
-            ? w.vegaLiteSpec.mark
-            : ((w.vegaLiteSpec?.mark as Record<string, unknown> | undefined)
-                ?.type as string | undefined);
-        const sizeDefaults = getWidgetSizeDefaults(w.type, vegaMark);
-
-        let bpLayout =
-          w.layouts?.[bp] ?? (bp === "lg" ? wAny.layout : undefined);
-
-        if (!bpLayout && w.layouts?.lg) {
-          const lgWithMins = {
-            ...w.layouts.lg,
-            minW: w.layouts.lg.minW ?? sizeDefaults.minW,
-            minH: w.layouts.lg.minH ?? sizeDefaults.minH,
-          };
-          bpLayout = deriveResponsiveLayouts(lgWithMins)[bp];
-        }
-
-        if (!bpLayout) continue;
-        items.push({
-          i: w.id,
-          x: bpLayout.x ?? 0,
-          y: bpLayout.y ?? 0,
-          w: bpLayout.w ?? sizeDefaults.w,
-          h: bpLayout.h ?? sizeDefaults.h,
-          minW: bpLayout.minW ?? sizeDefaults.minW,
-          minH: bpLayout.minH ?? sizeDefaults.minH,
-        });
-      }
-      if (items.length > 0) result[bp] = items;
-    }
-    if (!result.lg) {
-      result.lg = widgets.map(w => {
-        const sd = getWidgetSizeDefaults(w.type);
-        return {
-          i: w.id,
-          x: 0,
-          y: 0,
-          w: sd.w,
-          h: sd.h,
-          minW: sd.minW,
-          minH: sd.minH,
-        };
-      });
-    }
-    return result;
-  }, [widgets]);
+  const allGridLayouts = useMemo(
+    () => buildResponsiveGridLayouts(widgets, lgCols),
+    [widgets, lgCols],
+  );
 
   const renderWidget = (widget: DashboardWidget) => {
     const snapshot = dashboard.snapshots?.[widget.id];
@@ -352,9 +312,11 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
         width={gridWidth || 800}
         layouts={allGridLayouts}
         breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480 }}
-        cols={{ lg: 12, md: 10, sm: 6, xs: 4 }}
+        cols={{ lg: lgCols, md: 10, sm: 6, xs: 4 }}
         rowHeight={dashboard.layout?.rowHeight || 80}
-        onLayoutChange={handleLayoutChange}
+        onBreakpointChange={handleBreakpointChange}
+        onDragStop={layout => persistActiveLayout(layout)}
+        onResizeStop={layout => persistActiveLayout(layout)}
         dragConfig={{ handle: ".drag-handle", enabled: isEditMode }}
         resizeConfig={{ enabled: isEditMode }}
       >

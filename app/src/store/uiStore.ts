@@ -16,6 +16,16 @@ export const SIDE_PANEL_MIN_DEFAULT_WIDTH_PX = 150;
 export const SIDE_PANEL_MAX_DEFAULT_WIDTH_PX = 300;
 export const SIDE_PANEL_COLLAPSE_THRESHOLD_PX = 120;
 
+// Fixed pixel widths for the side panes. The side panes keep a constant pixel
+// width (Slack/Cursor style) and only the center pane flexes with the window.
+export const DEFAULT_LEFT_PANE_WIDTH_PX = 260;
+export const DEFAULT_RIGHT_PANE_WIDTH_PX = 360;
+// Hard limits for manual drag-resizing of a side pane.
+export const SIDE_PANEL_MIN_WIDTH_PX = 150;
+export const SIDE_PANEL_MAX_WIDTH_PX = 600;
+// Keep the center (main content) pane at least this wide when resizing a side.
+export const CENTER_PANE_MIN_WIDTH_PX = 320;
+
 interface ActiveEditorContent {
   content: string;
   fileName?: string;

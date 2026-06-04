@@ -93,7 +93,11 @@ Tabular display of query results. Supports column sorting, formatting, and pagin
 
 ### Responsive Layouts
 
-Widgets use a grid layout system with responsive breakpoints (`lg`, `md`, `sm`, `xs`). Each widget has position (`x`, `y`) and size (`w`, `h`) per breakpoint, with automatic derivation from `lg` to smaller sizes.
+Widgets use a grid layout system with responsive breakpoints. The `lg` breakpoint (12 columns) is the **authored source of truth** — the only one you (or the AI agent) need to set. The smaller breakpoints `md` (10 cols), `sm` (6 cols), and `xs` (4 cols) are **deterministically reflowed** from `lg`: rows of widgets wrap and tile cleanly so the board stays balanced on narrower screens.
+
+Each widget carries position (`x`, `y`) and size (`w`, `h`) per breakpoint. To keep the reflow balanced, use grid-friendly widths that evenly tile a row (e.g. four KPIs at `w: 3`, three cards at `w: 4`, two charts at `w: 6`, or one full-width widget at `w: 12`).
+
+Reflow is skipped per breakpoint when a user manually arranges that breakpoint: the affected widgets carry `layouts[bp].custom === true`, and Mako keeps the stored arrangement instead of recomputing it. Minimum widget sizes are enforced — widgets smaller than their type minimum are automatically enlarged.
 
 ## Cross-Filtering
 

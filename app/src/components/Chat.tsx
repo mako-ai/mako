@@ -86,7 +86,9 @@ import {
 import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
+  DASHBOARD_EXECUTOR_TOOL_NAMES,
   LONG_RUNNING_DASHBOARD_TOOL_NAMES,
+  getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
 import { UpgradePrompt } from "./UpgradePrompt";
@@ -560,15 +562,11 @@ const userMessagePaperSx = {
   backgroundColor: "background.paper",
   overflow: "hidden",
 } as const;
-const userMessageBoxSx = {
+const userMessageTextSx = {
   maxWidth: "100%",
-  "& .MuiListItemText-primary": {
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    overflowWrap: "break-word",
-    overflow: "visible",
-    textOverflow: "unset",
-  },
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  overflowWrap: "break-word",
 } as const;
 const assistantMessageSx = {
   flex: 1,
@@ -619,6 +617,69 @@ function computeReasoningGroups(parts: Array<Record<string, unknown>>) {
   return groups;
 }
 
+/**
+ * Lightweight, dependency-free image lightbox. Shows the full (uncropped) image
+ * centered over a dimmed backdrop; closes on backdrop click, the X button, or
+ * Escape (handled by MUI Dialog).
+ */
+function ImagePreviewDialog({
+  src,
+  onClose,
+}: {
+  src: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open={Boolean(src)}
+      onClose={onClose}
+      maxWidth="lg"
+      slotProps={{
+        paper: {
+          sx: {
+            backgroundColor: "transparent",
+            boxShadow: "none",
+            m: 2,
+            overflow: "visible",
+          },
+        },
+      }}
+    >
+      <Box sx={{ position: "relative", display: "flex" }}>
+        <IconButton
+          onClick={onClose}
+          aria-label="Close preview"
+          size="small"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            color: "common.white",
+            backgroundColor: "rgba(0, 0, 0, 0.6)",
+            "&:hover": { backgroundColor: "rgba(0, 0, 0, 0.8)" },
+          }}
+        >
+          <X size={18} />
+        </IconButton>
+        {src && (
+          <Box
+            component="img"
+            src={src}
+            alt="Image preview"
+            sx={{
+              maxWidth: "90vw",
+              maxHeight: "85vh",
+              borderRadius: 1,
+              objectFit: "contain",
+              display: "block",
+            }}
+          />
+        )}
+      </Box>
+    </Dialog>
+  );
+}
+
 const ChatMessageRow = React.memo(function ChatMessageRow({
   message,
   isLastMessage,
@@ -644,6 +705,9 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
     connectionIconById,
     paletteMode,
   });
+
+  // Lightbox state for clicking an attached image to preview it full-size.
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   if (message.role === "user") {
     const fileParts = (message.parts || []).filter(
@@ -678,29 +742,38 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                     component="img"
                     src={fp.url}
                     alt="Attached image"
+                    loading="lazy"
+                    decoding="async"
+                    onClick={() => setPreviewSrc(fp.url)}
                     sx={{
-                      maxWidth: 200,
-                      maxHeight: 200,
-                      borderRadius: 1,
-                      objectFit: "contain",
+                      width: 56,
+                      height: 56,
+                      borderRadius: 1.5,
+                      objectFit: "cover",
+                      cursor: "pointer",
+                      border: 1,
+                      borderColor: "divider",
+                      display: "block",
                     }}
                   />
                 ))}
               </Box>
             )}
             {textContent && (
-              <Box sx={userMessageBoxSx}>
-                <ListItemText
-                  primary={textContent}
-                  primaryTypographyProps={{
-                    variant: "body2",
-                    color: "text.primary",
-                  }}
-                />
-              </Box>
+              <Typography
+                variant="body2"
+                color="text.primary"
+                sx={userMessageTextSx}
+              >
+                {textContent}
+              </Typography>
             )}
           </Paper>
         </Box>
+        <ImagePreviewDialog
+          src={previewSrc}
+          onClose={() => setPreviewSrc(null)}
+        />
       </ListItem>
     );
   }
@@ -878,6 +951,7 @@ const ChatInputArea = React.memo(
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
+    const [previewSrc, setPreviewSrc] = useState<string | null>(null);
     const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1022,7 +1096,7 @@ const ChatInputArea = React.memo(
                     width: 56,
                     height: 56,
                     borderRadius: 1.5,
-                    overflow: "visible",
+                    overflow: "hidden",
                     flexShrink: 0,
                     "&:hover .remove-btn": {
                       opacity: 1,
@@ -1033,44 +1107,55 @@ const ChatInputArea = React.memo(
                     component="img"
                     src={img.previewUrl}
                     alt="Attachment"
+                    onClick={() => setPreviewSrc(img.previewUrl)}
                     sx={{
                       width: 56,
                       height: 56,
                       borderRadius: 1.5,
                       objectFit: "cover",
+                      cursor: "pointer",
                       border: 1,
                       borderColor: "divider",
+                      display: "block",
                     }}
                   />
                   <IconButton
                     type="button"
                     className="remove-btn"
-                    onClick={() => removeImage(img.id)}
+                    aria-label="Remove image"
+                    onClick={e => {
+                      e.stopPropagation();
+                      removeImage(img.id);
+                    }}
                     size="small"
                     disabled={isPreparingSubmission}
                     sx={{
                       position: "absolute",
-                      top: -6,
-                      right: -6,
+                      top: 4,
+                      right: 4,
                       width: 18,
                       height: 18,
                       p: 0,
                       opacity: 0,
                       transition: "opacity 0.15s",
-                      backgroundColor: "background.paper",
-                      border: 1,
-                      borderColor: "divider",
+                      color: "common.white",
+                      backgroundColor: "rgba(0, 0, 0, 0.6)",
                       "&:hover": {
-                        backgroundColor: "action.hover",
+                        backgroundColor: "rgba(0, 0, 0, 0.8)",
                       },
                     }}
                   >
-                    <X size={10} />
+                    <X size={11} />
                   </IconButton>
                 </Box>
               ))}
             </Box>
           )}
+
+          <ImagePreviewDialog
+            src={previewSrc}
+            onClose={() => setPreviewSrc(null)}
+          />
 
           <TextField
             fullWidth
@@ -1370,9 +1455,23 @@ const Chat: React.FC<ChatProps> = ({
   const activeClientToolCallsRef = useRef(
     new Map<string, ActiveClientToolCall>(),
   );
+  const cancelledClientToolCallIdsRef = useRef(new Set<string>());
+  const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
   workspaceIdRef.current = currentWorkspace?.id;
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
+
+  const cancelActiveClientToolCalls = useCallback((reason: string): void => {
+    for (const activeToolCall of activeClientToolCallsRef.current.values()) {
+      cancelledClientToolCallIdsRef.current.add(activeToolCall.toolCallId);
+      activeToolCall.abortController.abort(reason);
+      activeToolCall.settled = true;
+      void Promise.resolve(activeToolCall.cancel()).catch(() => undefined);
+    }
+
+    activeClientToolCallsRef.current.clear();
+    setActiveClientToolCallCount(0);
+  }, []);
 
   const autoSendWhenComplete = useCallback((options: AutoSendPredicateArgs) => {
     if (manualStopRequestedRef.current) {
@@ -1496,55 +1595,77 @@ const Chat: React.FC<ChatProps> = ({
         }
 
         // --- Dashboard tools (client-side) ---
-        try {
-          const activeDashboardTool = LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(
-            toolName as AgentToolName,
-          )
-            ? registerActiveClientToolCall(toolName, toolCall.toolCallId)
-            : null;
+        if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const isLongRunningDashboardTool =
+            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName);
 
-          const dashboardToolOutput = await executeDashboardAgentTool(
-            toolName,
-            input,
-            activeDashboardTool
-              ? {
-                  executionId: activeDashboardTool.executionId,
-                  signal: activeDashboardTool.abortController.signal,
+          if (isLongRunningDashboardTool) {
+            const activeDashboardTool = registerActiveClientToolCall(
+              toolName,
+              toolCall.toolCallId,
+            );
+
+            // Fire-and-forget for long-running dashboard work. The AI SDK
+            // awaits onToolCall while reading the SSE stream; awaiting here can
+            // prevent the finish chunk from being processed, which delays the
+            // automatic continuation until the HTTP stream times out.
+            void (async () => {
+              try {
+                const dashboardToolOutput = await executeDashboardAgentTool(
+                  toolName,
+                  input,
+                  {
+                    executionId: activeDashboardTool.executionId,
+                    signal: activeDashboardTool.abortController.signal,
+                  },
+                );
+
+                if (activeDashboardTool.abortController.signal.aborted) {
+                  return;
                 }
-              : undefined,
-          );
 
-          if (dashboardToolOutput !== null) {
-            if (activeDashboardTool) {
-              settleActiveClientToolCall(
-                toolName,
-                toolCall.toolCallId,
-                dashboardToolOutput,
-              );
-            } else {
-              addToolOutput({
-                tool: toolName,
-                toolCallId: toolCall.toolCallId,
-                output: dashboardToolOutput,
-              });
-            }
+                settleActiveClientToolCall(
+                  toolName,
+                  toolCall.toolCallId,
+                  dashboardToolOutput ?? {
+                    success: false,
+                    error: `Dashboard tool "${toolName}" did not return a result.`,
+                  },
+                );
+              } catch (dashboardError) {
+                if (
+                  manualStopRequestedRef.current ||
+                  activeDashboardTool.abortController.signal.aborted
+                ) {
+                  return;
+                }
+                settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                  success: false,
+                  error:
+                    dashboardError instanceof Error
+                      ? dashboardError.message
+                      : "Dashboard tool execution failed",
+                });
+              }
+            })();
             return;
           }
-        } catch (dashboardError) {
-          if (
-            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName)
-          ) {
-            if (manualStopRequestedRef.current) {
-              return;
-            }
-            settleActiveClientToolCall(toolName, toolCall.toolCallId, {
-              success: false,
-              error:
-                dashboardError instanceof Error
-                  ? dashboardError.message
-                  : "Dashboard tool execution failed",
+
+          try {
+            const dashboardToolOutput = await executeDashboardAgentTool(
+              toolName,
+              input,
+            );
+
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output: dashboardToolOutput ?? {
+                success: false,
+                error: `Dashboard tool "${toolName}" did not return a result.`,
+              },
             });
-          } else {
+          } catch (dashboardError) {
             addToolOutput({
               tool: toolName,
               toolCallId: toolCall.toolCallId,
@@ -1718,6 +1839,19 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
+        const manifestEntry = getAgentToolManifestEntry(toolName);
+        if (manifestEntry?.execution === "client") {
+          addToolOutput({
+            tool: toolName,
+            toolCallId: toolCall.toolCallId,
+            output: {
+              success: false,
+              error: `Client-side tool "${toolName}" is registered but has no browser handler.`,
+            },
+          });
+          return;
+        }
+
         // Unknown tool - not a client-side tool, let it be handled server-side
       } catch (toolError) {
         // Safety net: if any client-side tool throws an uncaught error,
@@ -1738,6 +1872,7 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
+      cancelActiveClientToolCalls("stream-error");
       // When the stream disconnects (e.g. 524 timeout), tool calls may be
       // stuck in "input-available" state. The AI SDK blocks sendMessage until
       // all tool calls are settled. Patch them to "error" so the chat remains
@@ -1801,6 +1936,7 @@ const Chat: React.FC<ChatProps> = ({
       const executionId =
         options?.executionId ?? `chat-tool-${generateObjectId()}`;
 
+      cancelledClientToolCallIdsRef.current.delete(toolCallId);
       activeClientToolCallsRef.current.set(toolCallId, {
         toolCallId,
         toolName,
@@ -1811,6 +1947,7 @@ const Chat: React.FC<ChatProps> = ({
           options?.cancellationOutput ?? createCancellationOutput(toolName),
         settled: false,
       });
+      setActiveClientToolCallCount(activeClientToolCallsRef.current.size);
 
       return { abortController, executionId };
     },
@@ -1823,6 +1960,10 @@ const Chat: React.FC<ChatProps> = ({
       toolCallId: string,
       output: Record<string, unknown>,
     ): void => {
+      if (cancelledClientToolCallIdsRef.current.delete(toolCallId)) {
+        return;
+      }
+
       const activeToolCall = activeClientToolCallsRef.current.get(toolCallId);
       if (!activeToolCall) {
         if (!manualStopRequestedRef.current) {
@@ -1841,6 +1982,7 @@ const Chat: React.FC<ChatProps> = ({
       }
 
       activeClientToolCallsRef.current.delete(toolCallId);
+      setActiveClientToolCallCount(activeClientToolCallsRef.current.size);
     },
     [addToolOutput],
   );
@@ -1849,8 +1991,9 @@ const Chat: React.FC<ChatProps> = ({
     manualStopRequestedRef.current = true;
 
     for (const activeToolCall of activeClientToolCallsRef.current.values()) {
+      cancelledClientToolCallIdsRef.current.add(activeToolCall.toolCallId);
       activeToolCall.abortController.abort("chat-stop");
-      void activeToolCall.cancel();
+      void Promise.resolve(activeToolCall.cancel()).catch(() => undefined);
 
       if (!activeToolCall.settled) {
         activeToolCall.settled = true;
@@ -1863,10 +2006,14 @@ const Chat: React.FC<ChatProps> = ({
     }
 
     activeClientToolCallsRef.current.clear();
+    setActiveClientToolCallCount(0);
     stop();
   }, [addToolOutput, stop]);
 
-  const isLoading = status === "streaming" || status === "submitted";
+  const isLoading =
+    status === "streaming" ||
+    status === "submitted" ||
+    activeClientToolCallCount > 0;
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
   useRenderCount("Chat", {
@@ -2080,6 +2227,7 @@ const Chat: React.FC<ChatProps> = ({
 
   // Create new chat session - just generate a new ID locally (no API call needed)
   const createNewSession = () => {
+    cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     setChatId(generateObjectId());
     setMessages([]);
@@ -2095,6 +2243,7 @@ const Chat: React.FC<ChatProps> = ({
   };
 
   const handleSelectSession = (id: string) => {
+    cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
     setChatId(id);
     setMessages([]);

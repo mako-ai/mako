@@ -14,6 +14,17 @@ export interface DashboardArtifactStore {
     key: string,
     metadata?: Record<string, string>,
   ): Promise<void>;
+  /**
+   * Store an in-memory buffer at `key` with an explicit content type. Used for
+   * non-Parquet artifacts (e.g. chat image attachments) where the bytes never
+   * touch a temp file on disk.
+   */
+  putBuffer(
+    buffer: Buffer | Uint8Array,
+    key: string,
+    contentType: string,
+    metadata?: Record<string, string>,
+  ): Promise<void>;
   getSignedUrl(key: string, ttlSeconds?: number): Promise<string | null>;
   openReadStream(key: string): Promise<NodeJS.ReadableStream | null>;
   getSize(key: string): Promise<number | null>;
@@ -102,6 +113,30 @@ class FilesystemDashboardArtifactStore implements DashboardArtifactStore {
     });
   }
 
+  async putBuffer(
+    buffer: Buffer | Uint8Array,
+    key: string,
+    contentType: string,
+    metadata?: Record<string, string>,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const targetPath = this.resolvePath(key);
+    await fsPromises.mkdir(path.dirname(targetPath), { recursive: true });
+    await fsPromises.writeFile(targetPath, buffer);
+    await fsPromises.writeFile(
+      `${targetPath}.meta.json`,
+      JSON.stringify({ contentType, ...(metadata || {}) }, null, 2),
+      "utf8",
+    );
+    logger.info("Stored buffer artifact in filesystem", {
+      key,
+      bytes: buffer.byteLength,
+      contentType,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
+  }
+
   async getSignedUrl(): Promise<string | null> {
     return null;
   }
@@ -172,6 +207,27 @@ class GcsDashboardArtifactStore implements DashboardArtifactStore {
     logger.info("Stored dashboard artifact in GCS", {
       key,
       bytes: Number(metadataResult.size || 0),
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
+  }
+
+  async putBuffer(
+    buffer: Buffer | Uint8Array,
+    key: string,
+    contentType: string,
+    metadata?: Record<string, string>,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    await this.file(key).save(Buffer.from(buffer), {
+      contentType,
+      resumable: false,
+      metadata: metadata ? { metadata } : undefined,
+    });
+    logger.info("Stored buffer artifact in GCS", {
+      key,
+      bytes: buffer.byteLength,
+      contentType,
       durationMs: Date.now() - startedAt,
       storeType: this.type,
     });
@@ -451,6 +507,31 @@ class S3DashboardArtifactStore implements DashboardArtifactStore {
       storeType: this.type,
     });
     void metadata;
+  }
+
+  async putBuffer(
+    buffer: Buffer | Uint8Array,
+    key: string,
+    contentType: string,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const body = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const response = await this.signedRequest("PUT", key, {
+      body,
+      contentType,
+    });
+    if (!response.ok) {
+      throw new Error(
+        `S3 PUT failed with ${response.status} ${response.statusText}`,
+      );
+    }
+    logger.info("Stored buffer artifact in S3", {
+      key,
+      bytes: body.byteLength,
+      contentType,
+      durationMs: Date.now() - startedAt,
+      storeType: this.type,
+    });
   }
 
   async getSignedUrl(key: string): Promise<string | null> {
