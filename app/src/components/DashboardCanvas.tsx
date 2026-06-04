@@ -30,6 +30,7 @@ import {
   Pencil,
   Eye,
   History,
+  Share2,
 } from "lucide-react";
 import {
   useDashboardStore,
@@ -53,6 +54,8 @@ import DashboardCodeEditor from "./dashboard/DashboardCodeEditor";
 import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
+import DashboardShareDialog from "./dashboard/DashboardShareDialog";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
@@ -109,6 +112,8 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     resolveConflictAction,
   } = useDashboardEditSession({ dashboardId, workspaceId });
 
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
+
   const tabId = useConsoleStore(state =>
     Object.keys(state.tabs).find(id => {
       const tab = state.tabs[id];
@@ -131,6 +136,7 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
   const [dataSourcePanelOpen, setDataSourcePanelOpen] = useState(false);
   const [addWidgetOpen, setAddWidgetOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [showEventLog, setShowEventLog] = useState(false);
   const [inspectedWidget, setInspectedWidget] =
     useState<DashboardWidget | null>(null);
@@ -261,6 +267,10 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       </Box>
     );
   }
+
+  const isDashboardOwner =
+    !!user?.id && (dashboard.owner_id ?? dashboard.createdBy) === user.id;
+  const canManageShare = isDashboardOwner || isWorkspaceAdmin;
 
   return (
     <Box
@@ -413,6 +423,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
           </IconButton>
         </Tooltip>
 
+        {canManageShare && (
+          <Tooltip title="Share dashboard">
+            <IconButton size="small" onClick={() => setShareOpen(true)}>
+              <Share2 size={16} />
+            </IconButton>
+          </Tooltip>
+        )}
+
         {isEditMode && (
           <>
             <Tooltip
@@ -551,6 +569,11 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
       <DashboardSettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
+        dashboardId={dashboardId}
+      />
+      <DashboardShareDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
         dashboardId={dashboardId}
       />
       <Dialog open={!!conflict} maxWidth="sm" fullWidth>

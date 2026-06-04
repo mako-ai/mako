@@ -32,6 +32,7 @@ export interface DashboardTreeNode {
  * - `owner_id` tracks the dashboard creator (backfilled from `createdBy`)
  * - Private dashboards are only visible/editable by the owner
  * - Workspace dashboards are visible to all members; editable by owner + admins
+ * - `sharedWith` grants explicit per-user edit access regardless of `access`
  */
 export class DashboardManager {
   static getOwnerId(dashboard: IDashboard): string {
@@ -42,8 +43,17 @@ export class DashboardManager {
     return DashboardManager.getOwnerId(dashboard) === userId;
   }
 
+  /**
+   * Whether `userId` is an explicit collaborator on the dashboard.
+   * All collaborators currently have the "editor" role (read + write).
+   */
+  static isCollaborator(dashboard: IDashboard, userId: string): boolean {
+    return (dashboard.sharedWith || []).some(s => s.userId === userId);
+  }
+
   static canRead(dashboard: IDashboard, userId: string): boolean {
     if (DashboardManager.isOwner(dashboard, userId)) return true;
+    if (DashboardManager.isCollaborator(dashboard, userId)) return true;
     return dashboard.access === "workspace";
   }
 
@@ -53,6 +63,7 @@ export class DashboardManager {
     isAdmin: boolean = false,
   ): boolean {
     if (DashboardManager.isOwner(dashboard, userId)) return true;
+    if (DashboardManager.isCollaborator(dashboard, userId)) return true;
     if (dashboard.access === "private") return false;
     return isAdmin;
   }
@@ -63,6 +74,7 @@ export class DashboardManager {
   ): "my" | "workspace" | null {
     if (DashboardManager.isOwner(dashboard, userId)) return "my";
     if (dashboard.access === "workspace") return "workspace";
+    if (DashboardManager.isCollaborator(dashboard, userId)) return "workspace";
     return null;
   }
 
@@ -185,6 +197,7 @@ export class DashboardManager {
             { access: "workspace" },
             { access: "private", createdBy: userId },
             { access: "private", owner_id: userId },
+            { "sharedWith.userId": userId },
           ],
         }).sort({ title: 1 }),
       ]);
@@ -225,7 +238,12 @@ export class DashboardManager {
 
       for (const d of dashboards) {
         const ownerId = (d.owner_id || d.createdBy)?.toString();
-        const section = classify(d.access || "private", ownerId, d.folderId);
+        let section = classify(d.access || "private", ownerId, d.folderId);
+        // Private dashboards shared explicitly with this user surface under
+        // the "Workspace" (shared) section so collaborators can find them.
+        if (section === null && DashboardManager.isCollaborator(d, userId)) {
+          section = "workspace";
+        }
         if (section === "my") myDashboardsRaw.push(d);
         else if (section === "workspace") sharedDashboardsRaw.push(d);
       }

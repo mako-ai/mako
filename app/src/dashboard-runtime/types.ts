@@ -69,6 +69,12 @@ export interface Dashboard
   /** false = draft (auto-save enabled), true = saved (no auto-save) */
   isSaved?: boolean;
   access: "private" | "workspace";
+  /** Per-user collaborators with explicit edit access. */
+  sharedWith?: Array<{
+    userId: string;
+    role: "editor";
+    addedAt?: string;
+  }>;
   owner_id?: string;
   createdBy: string;
   readOnly?: boolean;
