@@ -117,18 +117,21 @@ adminRoutes.put("/catalog/models/:modelId", async c => {
 
 // ---------------------------------------------------------------------------
 // PUT /api/admin/catalog/defaults
-// Body: { defaultChatModelId?: string | null, defaultFreeChatModelId?: string | null }
+// Body: { defaultChatModelId?, defaultFreeChatModelId?, utilityModelId? }
+//   (each string | null)
 // ---------------------------------------------------------------------------
 adminRoutes.put("/catalog/defaults", async c => {
   try {
     const body = (await c.req.json()) as {
       defaultChatModelId?: unknown;
       defaultFreeChatModelId?: unknown;
+      utilityModelId?: unknown;
     };
 
     const update: {
       defaultChatModelId?: string | null;
       defaultFreeChatModelId?: string | null;
+      utilityModelId?: string | null;
     } = {};
 
     if (body.defaultChatModelId !== undefined) {
@@ -145,6 +148,14 @@ adminRoutes.put("/catalog/defaults", async c => {
           ? null
           : typeof body.defaultFreeChatModelId === "string"
             ? body.defaultFreeChatModelId
+            : null;
+    }
+    if (body.utilityModelId !== undefined) {
+      update.utilityModelId =
+        body.utilityModelId === null
+          ? null
+          : typeof body.utilityModelId === "string"
+            ? body.utilityModelId
             : null;
     }
 
