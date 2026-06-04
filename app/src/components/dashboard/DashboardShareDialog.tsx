@@ -17,7 +17,7 @@ import {
   Alert,
   Tooltip,
 } from "@mui/material";
-import { Trash2, UserPlus } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { useDashboardStore } from "../../store/dashboardStore";
 import { useWorkspace } from "../../contexts/workspace-context";
 import { useAuth } from "../../contexts/auth-context";
@@ -43,14 +43,12 @@ export default function DashboardShareDialog({
   const shareDashboard = useDashboardStore(s => s.shareDashboard);
   const unshareDashboard = useDashboardStore(s => s.unshareDashboard);
 
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setError(null);
-      setSelectedUserId(null);
       void loadMembers();
     }
   }, [open, loadMembers]);
@@ -75,21 +73,15 @@ export default function DashboardShareDialog({
 
   const collaborators = dashboard?.sharedWith || [];
 
-  const handleAdd = async () => {
-    if (!workspaceId || !dashboardId || !selectedUserId) return;
+  const handleAdd = async (targetUserId: string) => {
+    if (!workspaceId || !dashboardId || !targetUserId) return;
     setBusy(true);
     setError(null);
-    const result = await shareDashboard(
-      workspaceId,
-      dashboardId,
-      selectedUserId,
-    );
+    const result = await shareDashboard(workspaceId, dashboardId, targetUserId);
     setBusy(false);
     if (!result.ok) {
       setError(result.error || "Failed to share dashboard");
-      return;
     }
-    setSelectedUserId(null);
   };
 
   const handleRemove = async (targetUserId: string) => {
@@ -125,15 +117,16 @@ export default function DashboardShareDialog({
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
           Add people
         </Typography>
-        <Box sx={{ display: "flex", gap: 1, alignItems: "center", mb: 3 }}>
+        <Box sx={{ mb: 3 }}>
           <Autocomplete
-            sx={{ flex: 1 }}
             options={addableMembers}
             getOptionLabel={option => option.email || option.userId}
-            value={
-              addableMembers.find(m => m.userId === selectedUserId) ?? null
-            }
-            onChange={(_, value) => setSelectedUserId(value?.userId ?? null)}
+            value={null}
+            blurOnSelect
+            clearOnBlur
+            onChange={(_, value) => {
+              if (value) void handleAdd(value.userId);
+            }}
             isOptionEqualToValue={(option, value) =>
               option.userId === value.userId
             }
@@ -146,14 +139,6 @@ export default function DashboardShareDialog({
             )}
             disabled={busy}
           />
-          <Button
-            variant="contained"
-            startIcon={<UserPlus size={16} />}
-            onClick={handleAdd}
-            disabled={!selectedUserId || busy}
-          >
-            Add
-          </Button>
         </Box>
 
         <Typography variant="subtitle2" sx={{ mb: 1 }}>

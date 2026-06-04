@@ -499,19 +499,17 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         defaultProps: {
           size: "small",
           autoComplete: "off",
-          // Forward HTML input attributes to the underlying <input /> element
+          // Forward HTML input attributes to the underlying <input /> element.
+          // NOTE: do NOT also set `slotProps.input` here. In MUI v7 a
+          // `slotProps.input` (the modern replacement for `InputProps`) injected
+          // via defaultProps takes precedence over and DISCARDS the legacy
+          // `InputProps` that components like Autocomplete pass through
+          // `renderInput` — which silently drops the Autocomplete end adornment
+          // and its `anchorEl` ref, so the dropdown popup never mounts.
           inputProps: {
             autoComplete: "off",
             autoCorrect: "off",
             autoCapitalize: "off",
-          },
-          // For the new slot-based API (v5+)
-          slotProps: {
-            input: {
-              autoComplete: "off",
-              autoCorrect: "off",
-              autoCapitalize: "off",
-            },
           },
         },
       },
