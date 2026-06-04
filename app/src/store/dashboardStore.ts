@@ -179,6 +179,11 @@ interface DashboardStoreState {
     dashboardId: string,
     comment?: string,
   ) => Promise<{ ok: boolean; error?: string }>;
+  generateSaveComment: (
+    workspaceId: string,
+    dashboardId: string,
+    signal?: AbortSignal,
+  ) => Promise<{ comment: string | null; diff: string | null }>;
   resolveConflict: (
     resolution: "discard" | "overwrite",
     workspaceId: string,
@@ -562,6 +567,32 @@ export const useDashboardStore = create<DashboardStoreState>()(
             err?.message ??
             "Failed to save dashboard";
           return { ok: false, error: msg };
+        }
+      },
+
+      generateSaveComment: async (
+        workspaceId: string,
+        dashboardId: string,
+        signal?: AbortSignal,
+      ) => {
+        const dashboard = get().openDashboards[dashboardId];
+        if (!dashboard) return { comment: null, diff: null };
+        try {
+          const definition = sanitizeEditableDashboardDefinition(dashboard);
+          const res = await apiClient.post<{
+            success: boolean;
+            comment: string | null;
+            diff: string | null;
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/version-comment`,
+            { definition },
+            { signal },
+          );
+          return res.success
+            ? { comment: res.comment ?? null, diff: res.diff ?? null }
+            : { comment: null, diff: null };
+        } catch {
+          return { comment: null, diff: null };
         }
       },
 

@@ -3,6 +3,7 @@ import {
   Dashboard,
   DashboardFolder,
   DatabaseConnection,
+  EntityVersion,
   type IDashboard,
 } from "../database/workspace-schema";
 import { Types } from "mongoose";
@@ -32,6 +33,8 @@ import {
   getVersion,
   getUserDisplayName,
 } from "../services/entity-version.service";
+import { generateDashboardVersionComment } from "../services/version-comment.service";
+import { getDashboardChatPrompts } from "../services/dashboard-version-context.service";
 
 const logger = loggers.api("dashboards");
 
@@ -910,6 +913,72 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
       },
+      500,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/dashboards/:id/version-comment
+// Generate an AI-suggested commit message for the dashboard changes about to
+// be saved. Diffs the pending definition against the latest saved version and
+// folds in any chat prompts that drove the changes.
+app.post("/:id/version-comment", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const dashboardId = c.req.param("id");
+    const userId = c.get("user")?.id;
+
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    if (!Types.ObjectId.isValid(dashboardId)) {
+      return c.json(
+        { success: false, error: "Invalid dashboard ID format" },
+        400,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const definition =
+      body && typeof body.definition === "object" && body.definition !== null
+        ? (body.definition as Record<string, unknown>)
+        : (body as Record<string, unknown>);
+
+    const newSnapshot = buildDashboardSnapshot(definition);
+
+    const latestVersion = await EntityVersion.findOne(
+      {
+        entityId: new Types.ObjectId(dashboardId),
+        entityType: "dashboard",
+      },
+      { snapshot: 1, version: 1 },
+    )
+      .sort({ version: -1 })
+      .lean();
+
+    const previousSnapshot =
+      (latestVersion?.snapshot as Record<string, unknown> | undefined) ?? null;
+
+    const chatPrompts = await getDashboardChatPrompts(
+      workspaceId,
+      userId,
+      dashboardId,
+    );
+
+    const result = await generateDashboardVersionComment(
+      { previousSnapshot, newSnapshot, chatPrompts },
+      { workspaceId, userId },
+    );
+
+    return c.json({
+      success: true,
+      comment: result.comment,
+      diff: result.diff,
+    });
+  } catch (error) {
+    logger.error("Error generating dashboard version comment", { error });
+    return c.json(
+      { success: false, error: "Failed to generate version comment" },
       500,
     );
   }

@@ -2490,7 +2490,7 @@ function Editor({
         open={commentDialogOpen}
         onSave={handleCommentSaveConfirm}
         onCancel={handleCommentSaveCancel}
-        title="Name Console Version"
+        title="Save console version"
         defaultComment={suggestedComment}
         loading={suggestedCommentLoading}
         diff={saveCommentDiff}

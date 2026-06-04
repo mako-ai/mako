@@ -28,7 +28,7 @@ export function SaveCommentDialog({
   open,
   onSave,
   onCancel,
-  title = "Name Version",
+  title = "Save version",
   defaultComment,
   loading,
   diff,
@@ -77,9 +77,9 @@ export function SaveCommentDialog({
           multiline
           minRows={3}
           maxRows={4}
-          label="Version name"
+          label="Commit message"
           placeholder="Describe what changed in this version"
-          helperText="This labels the saved version, not the console itself."
+          helperText="This labels the saved version in its history."
           value={comment}
           onChange={e => {
             setComment(e.target.value);
