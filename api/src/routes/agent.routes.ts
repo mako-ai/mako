@@ -675,220 +675,228 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     // Forward reasoning tokens from models that support extended thinking
     // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
     sendReasoning: true,
-    onFinish: async ({ messages: allMessages }) => {
-      if (requestExecutionIds.size > 0) {
-        await cancelRegisteredExecutions();
-        requestExecutionIds.clear();
-      }
-      const durationMs = Date.now() - startTime;
-
-      // Extract detailed per-step usage from result.steps
-      let steps: Array<Record<string, unknown>> = [];
-      try {
-        steps = (await result.steps) as unknown as Array<
-          Record<string, unknown>
-        >;
-      } catch (err) {
-        logger.warn("Failed to get steps from result", { error: err });
-      }
-
-      // Aggregate detailed token usage across all steps
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let cacheReadTokens = 0;
-      let cacheWriteTokens = 0;
-      let reasoningTokens = 0;
-
-      let stepDetails: Array<{
-        modelId: string;
-        inputTokens: number;
-        outputTokens: number;
-        cacheReadTokens: number;
-        cacheWriteTokens: number;
-        reasoningTokens: number;
-        costUsd: number;
-      }> = [];
-
-      for (const step of steps) {
-        const usage = step.usage as Record<string, unknown> | undefined;
-        if (!usage) continue;
-
-        const { inputTokens: sInput, outputTokens: sOutput } =
-          extractTokenCounts(usage);
-
-        const details = usage.inputTokenDetails as
-          | Record<string, unknown>
-          | undefined;
-        const outDetails = usage.outputTokenDetails as
-          | Record<string, unknown>
-          | undefined;
-
-        const sCacheRead = toNum(details?.cacheReadTokens);
-        const sCacheWrite = toNum(details?.cacheWriteTokens);
-        const sReasoning = toNum(outDetails?.reasoningTokens);
-
-        inputTokens += sInput;
-        outputTokens += sOutput;
-        cacheReadTokens += sCacheRead;
-        cacheWriteTokens += sCacheWrite;
-        reasoningTokens += sReasoning;
-
-        const stepModelId = (
-          step.response as Record<string, unknown> | undefined
-        )?.modelId as string | undefined;
-
-        stepDetails.push({
-          modelId: stepModelId || resolvedModelId,
-          inputTokens: sInput,
-          outputTokens: sOutput,
-          cacheReadTokens: sCacheRead,
-          cacheWriteTokens: sCacheWrite,
-          reasoningTokens: sReasoning,
-          costUsd: 0, // filled in by cost calculator
-        });
-      }
-
-      // Fallback to top-level usage if no steps produced usage data
-      if (stepDetails.length === 0) {
-        try {
-          const usage = (await result.usage) as unknown as Record<
-            string,
-            unknown
-          >;
-          const extracted = extractTokenCounts(usage ?? {});
-          inputTokens = extracted.inputTokens;
-          outputTokens = extracted.outputTokens;
-
-          const details = usage?.inputTokenDetails as
-            | Record<string, unknown>
-            | undefined;
-          const outDetails = usage?.outputTokenDetails as
-            | Record<string, unknown>
-            | undefined;
-          cacheReadTokens = toNum(details?.cacheReadTokens);
-          cacheWriteTokens = toNum(details?.cacheWriteTokens);
-          reasoningTokens = toNum(outDetails?.reasoningTokens);
-        } catch (err) {
-          logger.warn("Failed to get usage from model", { error: err });
+    onFinish: ({ messages: allMessages }) => {
+      // AI SDK awaits toUIMessageStreamResponse.onFinish before it fully closes
+      // the stream. Keep heavy persistence and accounting off that critical
+      // path so instant client-side tools can continue immediately and the chat
+      // returns to ready state as soon as the visible stream ends.
+      void (async () => {
+        if (requestExecutionIds.size > 0) {
+          await cancelRegisteredExecutions();
+          requestExecutionIds.clear();
         }
-      }
+        const durationMs = Date.now() - startTime;
 
-      const totalTokens = inputTokens + outputTokens;
+        // Extract detailed per-step usage from result.steps
+        let steps: Array<Record<string, unknown>> = [];
+        try {
+          steps = (await result.steps) as unknown as Array<
+            Record<string, unknown>
+          >;
+        } catch (err) {
+          logger.warn("Failed to get steps from result", { error: err });
+        }
 
-      logger.info("Stream finished, saving chat", {
-        chatId,
-        messageCount: allMessages.length,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        totalTokens,
-        durationMs,
-      });
+        // Aggregate detailed token usage across all steps
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let cacheReadTokens = 0;
+        let cacheWriteTokens = 0;
+        let reasoningTokens = 0;
 
-      // Compute cost before saving so both trackUsage and saveChat receive it
-      let costUsd: number | undefined;
-      try {
-        const costResult = await computeInvocationCost({
+        let stepDetails: Array<{
+          modelId: string;
+          inputTokens: number;
+          outputTokens: number;
+          cacheReadTokens: number;
+          cacheWriteTokens: number;
+          reasoningTokens: number;
+          costUsd: number;
+        }> = [];
+
+        for (const step of steps) {
+          const usage = step.usage as Record<string, unknown> | undefined;
+          if (!usage) continue;
+
+          const { inputTokens: sInput, outputTokens: sOutput } =
+            extractTokenCounts(usage);
+
+          const details = usage.inputTokenDetails as
+            | Record<string, unknown>
+            | undefined;
+          const outDetails = usage.outputTokenDetails as
+            | Record<string, unknown>
+            | undefined;
+
+          const sCacheRead = toNum(details?.cacheReadTokens);
+          const sCacheWrite = toNum(details?.cacheWriteTokens);
+          const sReasoning = toNum(outDetails?.reasoningTokens);
+
+          inputTokens += sInput;
+          outputTokens += sOutput;
+          cacheReadTokens += sCacheRead;
+          cacheWriteTokens += sCacheWrite;
+          reasoningTokens += sReasoning;
+
+          const stepModelId = (
+            step.response as Record<string, unknown> | undefined
+          )?.modelId as string | undefined;
+
+          stepDetails.push({
+            modelId: stepModelId || resolvedModelId,
+            inputTokens: sInput,
+            outputTokens: sOutput,
+            cacheReadTokens: sCacheRead,
+            cacheWriteTokens: sCacheWrite,
+            reasoningTokens: sReasoning,
+            costUsd: 0, // filled in by cost calculator
+          });
+        }
+
+        // Fallback to top-level usage if no steps produced usage data
+        if (stepDetails.length === 0) {
+          try {
+            const usage = (await result.usage) as unknown as Record<
+              string,
+              unknown
+            >;
+            const extracted = extractTokenCounts(usage ?? {});
+            inputTokens = extracted.inputTokens;
+            outputTokens = extracted.outputTokens;
+
+            const details = usage?.inputTokenDetails as
+              | Record<string, unknown>
+              | undefined;
+            const outDetails = usage?.outputTokenDetails as
+              | Record<string, unknown>
+              | undefined;
+            cacheReadTokens = toNum(details?.cacheReadTokens);
+            cacheWriteTokens = toNum(details?.cacheWriteTokens);
+            reasoningTokens = toNum(outDetails?.reasoningTokens);
+          } catch (err) {
+            logger.warn("Failed to get usage from model", { error: err });
+          }
+        }
+
+        const totalTokens = inputTokens + outputTokens;
+
+        logger.info("Stream finished, saving chat", {
+          chatId,
+          messageCount: allMessages.length,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          totalTokens,
+          durationMs,
+        });
+
+        // Compute cost before saving so both trackUsage and saveChat receive it
+        let costUsd: number | undefined;
+        try {
+          const costResult = await computeInvocationCost({
+            modelId: resolvedModelId,
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            reasoningTokens,
+            steps: stepDetails,
+          });
+          costUsd = costResult.totalCostUsd;
+          if (costResult.steps) {
+            stepDetails = costResult.steps;
+          }
+        } catch (err) {
+          logger.warn("Failed to compute invocation cost", { error: err });
+        }
+
+        // Track usage (fire-and-forget)
+        void trackUsage({
+          workspaceId,
+          userId: actorId,
+          chatId,
+          invocationType: "chat",
           modelId: resolvedModelId,
           inputTokens,
           outputTokens,
           cacheReadTokens,
           cacheWriteTokens,
           reasoningTokens,
-          steps: stepDetails,
-        });
-        costUsd = costResult.totalCostUsd;
-        if (costResult.steps) {
-          stepDetails = costResult.steps;
-        }
-      } catch (err) {
-        logger.warn("Failed to compute invocation cost", { error: err });
-      }
-
-      // Track usage (fire-and-forget)
-      void trackUsage({
-        workspaceId,
-        userId: actorId,
-        chatId,
-        invocationType: "chat",
-        modelId: resolvedModelId,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheWriteTokens,
-        reasoningTokens,
-        totalTokens,
-        steps: stepDetails,
-        agentId: resolvedAgentId,
-        durationMs,
-        costUsd,
-      }).catch(err => logger.warn("Failed to track LLM usage", { error: err }));
-
-      try {
-        await saveChat(chatId, workspaceId, actorId, allMessages, {
-          promptTokens: inputTokens,
-          completionTokens: outputTokens,
           totalTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-          reasoningTokens,
+          steps: stepDetails,
+          agentId: resolvedAgentId,
+          durationMs,
           costUsd,
-          model: resolvedModelId,
-        });
-      } catch (error) {
-        logger.error("Error saving chat", { error });
-      }
+        }).catch(err =>
+          logger.warn("Failed to track LLM usage", { error: err }),
+        );
 
-      if (isDescriptionGenAvailable()) {
-        void (async () => {
-          try {
-            const consoleContexts =
-              extractConsoleContextFromMessages(allMessages);
-            for (const [consoleId, ctx] of consoleContexts) {
-              const console = await SavedConsole.findById(consoleId).select(
-                "code name connectionId databaseName language",
-              );
-              if (!console) continue;
+        try {
+          await saveChat(chatId, workspaceId, actorId, allMessages, {
+            promptTokens: inputTokens,
+            completionTokens: outputTokens,
+            totalTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            reasoningTokens,
+            costUsd,
+            model: resolvedModelId,
+          });
+        } catch (error) {
+          logger.error("Error saving chat", { error });
+        }
 
-              const connDoc = console.connectionId
-                ? await DatabaseConnection.findById(console.connectionId)
-                : null;
-
-              const { description, embedding, embeddingModel } =
-                await generateDescriptionAndEmbedding(
-                  {
-                    code: console.code,
-                    title: console.name,
-                    connectionName: connDoc?.name,
-                    databaseType: connDoc?.type,
-                    databaseName: console.databaseName,
-                    language: console.language,
-                    conversationExcerpt: ctx.conversationExcerpt,
-                    resultSample: ctx.resultSample,
-                  },
-                  { workspaceId, userId: actorId },
+        if (isDescriptionGenAvailable()) {
+          void (async () => {
+            try {
+              const consoleContexts =
+                extractConsoleContextFromMessages(allMessages);
+              for (const [consoleId, ctx] of consoleContexts) {
+                const console = await SavedConsole.findById(consoleId).select(
+                  "code name connectionId databaseName language",
                 );
+                if (!console) continue;
 
-              const $set: Record<string, any> = {
-                descriptionGeneratedAt: new Date(),
-              };
-              if (description) $set.description = description;
-              if (embedding) {
-                $set.descriptionEmbedding = embedding;
-                $set.embeddingModel = embeddingModel;
+                const connDoc = console.connectionId
+                  ? await DatabaseConnection.findById(console.connectionId)
+                  : null;
+
+                const { description, embedding, embeddingModel } =
+                  await generateDescriptionAndEmbedding(
+                    {
+                      code: console.code,
+                      title: console.name,
+                      connectionName: connDoc?.name,
+                      databaseType: connDoc?.type,
+                      databaseName: console.databaseName,
+                      language: console.language,
+                      conversationExcerpt: ctx.conversationExcerpt,
+                      resultSample: ctx.resultSample,
+                    },
+                    { workspaceId, userId: actorId },
+                  );
+
+                const $set: Record<string, any> = {
+                  descriptionGeneratedAt: new Date(),
+                };
+                if (description) $set.description = description;
+                if (embedding) {
+                  $set.descriptionEmbedding = embedding;
+                  $set.embeddingModel = embeddingModel;
+                }
+                await SavedConsole.updateOne(
+                  { _id: new ObjectId(consoleId) },
+                  { $set },
+                );
               }
-              await SavedConsole.updateOne(
-                { _id: new ObjectId(consoleId) },
-                { $set },
-              );
+            } catch (err) {
+              logger.error("Background description generation failed", {
+                error: err,
+              });
             }
-          } catch (err) {
-            logger.error("Background description generation failed", {
-              error: err,
-            });
-          }
-        })();
-      }
+          })();
+        }
+      })();
     },
   });
 });
