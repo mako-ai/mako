@@ -617,6 +617,69 @@ function computeReasoningGroups(parts: Array<Record<string, unknown>>) {
   return groups;
 }
 
+/**
+ * Lightweight, dependency-free image lightbox. Shows the full (uncropped) image
+ * centered over a dimmed backdrop; closes on backdrop click, the X button, or
+ * Escape (handled by MUI Dialog).
+ */
+function ImagePreviewDialog({
+  src,
+  onClose,
+}: {
+  src: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open={Boolean(src)}
+      onClose={onClose}
+      maxWidth="lg"
+      slotProps={{
+        paper: {
+          sx: {
+            backgroundColor: "transparent",
+            boxShadow: "none",
+            m: 2,
+            overflow: "visible",
+          },
+        },
+      }}
+    >
+      <Box sx={{ position: "relative", display: "flex" }}>
+        <IconButton
+          onClick={onClose}
+          aria-label="Close preview"
+          size="small"
+          sx={{
+            position: "absolute",
+            top: 8,
+            right: 8,
+            color: "common.white",
+            backgroundColor: "rgba(0, 0, 0, 0.6)",
+            "&:hover": { backgroundColor: "rgba(0, 0, 0, 0.8)" },
+          }}
+        >
+          <X size={18} />
+        </IconButton>
+        {src && (
+          <Box
+            component="img"
+            src={src}
+            alt="Image preview"
+            sx={{
+              maxWidth: "90vw",
+              maxHeight: "85vh",
+              borderRadius: 1,
+              objectFit: "contain",
+              display: "block",
+            }}
+          />
+        )}
+      </Box>
+    </Dialog>
+  );
+}
+
 const ChatMessageRow = React.memo(function ChatMessageRow({
   message,
   isLastMessage,
@@ -642,6 +705,9 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
     connectionIconById,
     paletteMode,
   });
+
+  // Lightbox state for clicking an attached image to preview it full-size.
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   if (message.role === "user") {
     const fileParts = (message.parts || []).filter(
@@ -676,11 +742,18 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                     component="img"
                     src={fp.url}
                     alt="Attached image"
+                    loading="lazy"
+                    decoding="async"
+                    onClick={() => setPreviewSrc(fp.url)}
                     sx={{
-                      maxWidth: 200,
-                      maxHeight: 200,
-                      borderRadius: 1,
-                      objectFit: "contain",
+                      width: 56,
+                      height: 56,
+                      borderRadius: 1.5,
+                      objectFit: "cover",
+                      cursor: "pointer",
+                      border: 1,
+                      borderColor: "divider",
+                      display: "block",
                     }}
                   />
                 ))}
@@ -697,6 +770,10 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             )}
           </Paper>
         </Box>
+        <ImagePreviewDialog
+          src={previewSrc}
+          onClose={() => setPreviewSrc(null)}
+        />
       </ListItem>
     );
   }
@@ -874,6 +951,7 @@ const ChatInputArea = React.memo(
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
+    const [previewSrc, setPreviewSrc] = useState<string | null>(null);
     const [isPreparingSubmission, setIsPreparingSubmission] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1018,7 +1096,7 @@ const ChatInputArea = React.memo(
                     width: 56,
                     height: 56,
                     borderRadius: 1.5,
-                    overflow: "visible",
+                    overflow: "hidden",
                     flexShrink: 0,
                     "&:hover .remove-btn": {
                       opacity: 1,
@@ -1029,44 +1107,55 @@ const ChatInputArea = React.memo(
                     component="img"
                     src={img.previewUrl}
                     alt="Attachment"
+                    onClick={() => setPreviewSrc(img.previewUrl)}
                     sx={{
                       width: 56,
                       height: 56,
                       borderRadius: 1.5,
                       objectFit: "cover",
+                      cursor: "pointer",
                       border: 1,
                       borderColor: "divider",
+                      display: "block",
                     }}
                   />
                   <IconButton
                     type="button"
                     className="remove-btn"
-                    onClick={() => removeImage(img.id)}
+                    aria-label="Remove image"
+                    onClick={e => {
+                      e.stopPropagation();
+                      removeImage(img.id);
+                    }}
                     size="small"
                     disabled={isPreparingSubmission}
                     sx={{
                       position: "absolute",
-                      top: -6,
-                      right: -6,
+                      top: 4,
+                      right: 4,
                       width: 18,
                       height: 18,
                       p: 0,
                       opacity: 0,
                       transition: "opacity 0.15s",
-                      backgroundColor: "background.paper",
-                      border: 1,
-                      borderColor: "divider",
+                      color: "common.white",
+                      backgroundColor: "rgba(0, 0, 0, 0.6)",
                       "&:hover": {
-                        backgroundColor: "action.hover",
+                        backgroundColor: "rgba(0, 0, 0, 0.8)",
                       },
                     }}
                   >
-                    <X size={10} />
+                    <X size={11} />
                   </IconButton>
                 </Box>
               ))}
             </Box>
           )}
+
+          <ImagePreviewDialog
+            src={previewSrc}
+            onClose={() => setPreviewSrc(null)}
+          />
 
           <TextField
             fullWidth

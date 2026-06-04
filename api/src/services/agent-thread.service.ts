@@ -5,6 +5,7 @@ import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
 import { isModelReadyFilePart } from "../utils/message-sanitizer";
+import { externalizeChatAttachments } from "./chat-attachment.service";
 
 const logger = loggers.agent();
 
@@ -661,13 +662,32 @@ export const saveChat = async (
 ): Promise<typeof Chat.prototype | null> => {
   const now = new Date();
 
+  // Move inline base64 image attachments out to object storage and replace them
+  // with authenticated proxy URLs. This keeps the chat document small (the old
+  // inline-base64 approach could blow past MongoDB's 16 MB BSON limit, silently
+  // failing the save so images "disappeared" on reload) and lets images be
+  // fetched lazily. Best-effort: on failure the original part is kept inline.
+  let messagesToPersist = messages;
+  try {
+    messagesToPersist = await externalizeChatAttachments(messages, {
+      workspaceId,
+      chatId,
+      userId,
+    });
+  } catch (error) {
+    logger.error("Failed to externalize chat attachments; saving inline", {
+      error,
+      chatId,
+    });
+  }
+
   // Drop assistant messages that arrived with no parts. This happens when a
   // stream is aborted before any delta is emitted: `toUIMessageStreamResponse`
   // has already minted an assistant message id, so `onFinish` hands us a
   // zero-parts message. Persisting it would poison the chat — on the next
   // turn `convertToModelMessages` would reject the history with
   // "Invalid prompt: The messages do not match the ModelMessage[] schema."
-  const persistableMessages = messages.filter(
+  const persistableMessages = messagesToPersist.filter(
     m => m.role !== "assistant" || (m.parts && m.parts.length > 0),
   );
   if (persistableMessages.length !== messages.length) {
