@@ -84,7 +84,7 @@ export function resolveAnthropicThinkingMode(
 export function buildAnthropicThinkingConfig(
   mode: AnthropicThinkingMode,
   budgetTokens: number,
-): Record<string, unknown> | null {
+) {
   if (mode === "adaptive") {
     // `display: "summarized"` restores visible reasoning on Opus 4.7, which
     // defaults to `"omitted"` (streams arrive empty → long pause before text).

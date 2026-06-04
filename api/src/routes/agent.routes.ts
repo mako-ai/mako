@@ -648,7 +648,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     messages: modelMessages,
     tools,
     stopWhen: stepCountIs(MAX_STEPS),
-    providerOptions: providerOptions as Record<string, unknown>,
+    providerOptions,
     abortSignal: requestSignal,
     onStepFinish({ toolCalls }: { toolCalls?: Array<unknown> }) {
       stepsCompleted += 1;
@@ -665,9 +665,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         });
       }
     },
-    // Cast covers `providerOptions` (gateway/anthropic option bag), not `tools`,
-    // which is already a typed `ToolSet` from the agent config.
-  } as Parameters<typeof streamText>[0]);
+  });
 
   // Return native AI SDK UI message stream response (for useChat compatibility)
   // Using AI SDK best practice: save once at the end with all messages
