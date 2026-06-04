@@ -122,7 +122,10 @@ export default function DashboardShareDialog({
           </Alert>
         )}
 
-        <Box sx={{ display: "flex", gap: 1, alignItems: "flex-start", mb: 2 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Add people
+        </Typography>
+        <Box sx={{ display: "flex", gap: 1, alignItems: "center", mb: 3 }}>
           <Autocomplete
             sx={{ flex: 1 }}
             options={addableMembers}
@@ -137,7 +140,6 @@ export default function DashboardShareDialog({
             renderInput={params => (
               <TextField
                 {...params}
-                label="Add people"
                 placeholder="Search members by email"
                 size="small"
               />
@@ -149,7 +151,6 @@ export default function DashboardShareDialog({
             startIcon={<UserPlus size={16} />}
             onClick={handleAdd}
             disabled={!selectedUserId || busy}
-            sx={{ mt: 0.25 }}
           >
             Add
           </Button>
