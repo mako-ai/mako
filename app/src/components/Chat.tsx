@@ -87,10 +87,10 @@ import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
+  LONG_RUNNING_DASHBOARD_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
-import { shouldDetachDashboardToolExecution } from "../agent-runtime/client-tool-execution";
 import { UpgradePrompt } from "./UpgradePrompt";
 import {
   onRenderDebug,
@@ -1596,18 +1596,19 @@ const Chat: React.FC<ChatProps> = ({
 
         // --- Dashboard tools (client-side) ---
         if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
-          if (shouldDetachDashboardToolExecution(toolName)) {
+          const isLongRunningDashboardTool =
+            LONG_RUNNING_DASHBOARD_TOOL_NAMES.has(toolName as AgentToolName);
+
+          if (isLongRunningDashboardTool) {
             const activeDashboardTool = registerActiveClientToolCall(
               toolName,
               toolCall.toolCallId,
             );
 
-            // Fire-and-forget for dashboard tools. Even "instant" client-side
-            // dashboard calls can be emitted near the end of a step, and the
-            // AI SDK awaits onToolCall while reading the SSE stream. Awaiting
-            // here can block the reader from processing the finish chunk,
-            // delaying follow-up turns and stream completion until the HTTP
-            // connection times out.
+            // Fire-and-forget for long-running dashboard work. The AI SDK
+            // awaits onToolCall while reading the SSE stream; awaiting here can
+            // prevent the finish chunk from being processed, which delays the
+            // automatic continuation until the HTTP stream times out.
             void (async () => {
               try {
                 const dashboardToolOutput = await executeDashboardAgentTool(
@@ -1648,6 +1649,34 @@ const Chat: React.FC<ChatProps> = ({
               }
             })();
             return;
+          }
+
+          try {
+            const dashboardToolOutput = await executeDashboardAgentTool(
+              toolName,
+              input,
+            );
+
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output: dashboardToolOutput ?? {
+                success: false,
+                error: `Dashboard tool "${toolName}" did not return a result.`,
+              },
+            });
+          } catch (dashboardError) {
+            addToolOutput({
+              tool: toolName,
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  dashboardError instanceof Error
+                    ? dashboardError.message
+                    : "Dashboard tool execution failed",
+              },
+            });
           }
           return;
         }
