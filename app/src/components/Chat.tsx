@@ -746,13 +746,14 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                     decoding="async"
                     onClick={() => setPreviewSrc(fp.url)}
                     sx={{
-                      width: 120,
-                      height: 120,
-                      borderRadius: 1,
+                      width: 56,
+                      height: 56,
+                      borderRadius: 1.5,
                       objectFit: "cover",
                       cursor: "pointer",
                       border: 1,
                       borderColor: "divider",
+                      display: "block",
                     }}
                   />
                 ))}
