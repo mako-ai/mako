@@ -266,6 +266,56 @@ async function withRetry<T>(
 }
 
 /**
+ * Extract a human-readable message from a Google/BigQuery API error.
+ *
+ * Handles the two distinct error-body shapes Google returns, both of which the
+ * old `error?.response?.data?.error?.message` chain silently dropped:
+ *
+ * - BigQuery / Google REST API:  `{ error: { code, message, errors: [...] } }`
+ *     → `data.error.message` (object shape)
+ * - OAuth2 token endpoint:       `{ error: "invalid_grant", error_description }`
+ *     → `data.error` is a STRING, so `.message` is `undefined` and the real
+ *       reason (e.g. a rotated/disabled service-account key) gets masked as a
+ *       generic "Request failed with status code 400".
+ *
+ * Always includes the HTTP status code so the caller sees 400/401/403 etc.
+ */
+function describeGoogleApiError(error: any, fallback: string): string {
+  const status: number | undefined = error?.response?.status;
+  const data = error?.response?.data;
+  let detail: string | undefined;
+
+  if (data && typeof data === "object") {
+    const errField = (data as any).error;
+    if (
+      errField &&
+      typeof errField === "object" &&
+      typeof errField.message === "string"
+    ) {
+      // BigQuery / Google REST API shape
+      detail = errField.message;
+    } else if (typeof errField === "string") {
+      // OAuth2 token endpoint shape: { error, error_description }
+      const description = (data as any).error_description;
+      detail =
+        typeof description === "string" && description.trim()
+          ? `${errField}: ${description}`
+          : errField;
+    }
+  } else if (typeof data === "string" && data.trim()) {
+    detail = data.trim();
+  }
+
+  const message =
+    detail ||
+    (typeof error?.message === "string" && error.message.trim()
+      ? error.message
+      : fallback);
+
+  return status ? `${message} (HTTP ${status})` : message;
+}
+
+/**
  * Enhanced Database Connection Service
  *
  * Provides unified connection management for all database types with:
@@ -1348,10 +1398,7 @@ export class DatabaseConnectionService {
     } catch (error: any) {
       return {
         success: false,
-        error:
-          (error?.response?.data?.error?.message as string) ||
-          (error?.message as string) ||
-          "BigQuery connection failed",
+        error: describeGoogleApiError(error, "BigQuery connection failed"),
       };
     }
   }
@@ -1516,10 +1563,7 @@ export class DatabaseConnectionService {
       }
       return {
         success: false,
-        error:
-          (error?.response?.data?.error?.message as string) ||
-          (error?.message as string) ||
-          "BigQuery query failed",
+        error: describeGoogleApiError(error, "BigQuery query failed"),
       };
     } finally {
       if (executionId) this.runningBigQueryJobs.delete(executionId);
@@ -1710,10 +1754,7 @@ export class DatabaseConnectionService {
       }
       return {
         success: false,
-        error:
-          (error?.response?.data?.error?.message as string) ||
-          (error?.message as string) ||
-          "BigQuery preview query failed",
+        error: describeGoogleApiError(error, "BigQuery preview query failed"),
       };
     } finally {
       if (executionId) {
@@ -1880,10 +1921,7 @@ export class DatabaseConnectionService {
       return {
         success: false,
         totalRows,
-        error:
-          (error?.response?.data?.error?.message as string) ||
-          (error?.message as string) ||
-          "BigQuery streaming query failed",
+        error: describeGoogleApiError(error, "BigQuery streaming query failed"),
       };
     } finally {
       if (executionId) {
@@ -1916,10 +1954,7 @@ export class DatabaseConnectionService {
     } catch (error: any) {
       return {
         success: false,
-        error:
-          error?.response?.data?.error?.message ||
-          error?.message ||
-          "Failed to cancel job",
+        error: describeGoogleApiError(error, "Failed to cancel job"),
       };
     }
   }
@@ -1990,10 +2025,7 @@ export class DatabaseConnectionService {
     } catch (error: any) {
       return {
         success: false,
-        error:
-          error?.response?.data?.error?.message ||
-          error?.message ||
-          "Failed to get query schema",
+        error: describeGoogleApiError(error, "Failed to get query schema"),
       };
     }
   }
@@ -2374,14 +2406,35 @@ export class DatabaseConnectionService {
     signer.end();
     const signature = signer.sign(sa.private_key);
     const assertion = `${signingInput}.${base64url(signature)}`;
-    const res = await axios.post(
-      sa.token_uri,
-      new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion,
-      }),
-      { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
-    );
+    let res;
+    try {
+      res = await axios.post(
+        sa.token_uri,
+        new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion,
+        }),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
+      );
+    } catch (error: any) {
+      const detail = describeGoogleApiError(
+        error,
+        "Failed to obtain Google access token",
+      );
+      logger.error("Google access token request failed", {
+        clientEmail: sa.client_email,
+        tokenUri: sa.token_uri,
+        status: error?.response?.status,
+        detail,
+      });
+      // invalid_grant / invalid_client almost always means the service-account
+      // key was rotated, disabled, or deleted. Surface that explicitly instead
+      // of the opaque "Request failed with status code 400".
+      throw new Error(
+        `Google authentication failed for service account "${sa.client_email}": ${detail}. ` +
+          `The service-account key may have been rotated, disabled, or deleted — update this connection's service_account_json with a current key.`,
+      );
+    }
     const token = res.data.access_token as string;
     const expiresInSec = Number(res.data.expires_in || 3600);
     // Refresh a bit early by setting the stored expiry slightly before real expiry
