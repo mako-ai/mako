@@ -12,10 +12,38 @@ import {
   Save as SaveIcon,
   FileCode as FileIcon,
 } from "lucide-react";
-import MonacoEditor from "@monaco-editor/react";
+import MonacoEditor, { type Monaco } from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
+
+// Configure Monaco's TS/JS language services so .tsx files parse as JSX. We
+// don't load type definitions for react / npm deps into Monaco, so semantic
+// (type/module-resolution) validation is disabled to avoid false "cannot find
+// module" errors — syntax errors are still reported. Real type checking happens
+// at preview build time via Babel.
+function configureMonacoForJsx(monaco: Monaco) {
+  const ts = monaco.languages.typescript;
+  const compilerOptions = {
+    jsx: ts.JsxEmit.React,
+    jsxFactory: "React.createElement",
+    allowJs: true,
+    allowNonTsExtensions: true,
+    esModuleInterop: true,
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeJs,
+    noEmit: true,
+  };
+  ts.typescriptDefaults.setCompilerOptions(compilerOptions);
+  ts.javascriptDefaults.setCompilerOptions(compilerOptions);
+  const diagnosticsOptions = {
+    noSemanticValidation: true,
+    noSyntaxValidation: false,
+  };
+  ts.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+  ts.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
+}
 
 function languageForPath(path: string): string {
   if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
@@ -235,6 +263,7 @@ export default function AppRenderer({ appId }: { appId: string }) {
               path={selectedFile.path}
               language={languageForPath(selectedFile.path)}
               value={selectedFile.contents}
+              beforeMount={configureMonacoForJsx}
               onChange={handleEditorChange}
               options={{
                 minimap: { enabled: false },
