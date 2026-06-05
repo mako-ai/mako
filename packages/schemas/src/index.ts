@@ -36,4 +36,20 @@ export {
 
 export { sanitizeTableRef, buildTableRef } from "./table-ref";
 
+export {
+  AppFileSchema,
+  AppDataBindingLanguageSchema,
+  AppDataBindingSchema,
+  AppRuntimeSchema,
+  AppDefinitionSchema,
+  normalizeAppFiles,
+  type AppFile,
+  type AppDataBindingLanguage,
+  type AppDataBinding,
+  type AppRuntime,
+  type AppDefinition,
+} from "./app.schema";
+
+export { DEFAULT_APP_SCAFFOLD, createAppScaffold } from "./app-scaffold";
+
 export * from "./db-flow-form.schema";
