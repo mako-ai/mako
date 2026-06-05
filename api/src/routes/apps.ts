@@ -298,13 +298,18 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     if (typeof body.title === "string" && body.title.trim()) {
       doc.title = body.title.trim();
     }
-    if (typeof body.description === "string")
+    if (typeof body.description === "string") {
       doc.description = body.description;
-    if (typeof body.template === "string") doc.template = body.template;
+    }
+    if (typeof body.template === "string") {
+      doc.template = body.template;
+    }
     if (body.runtime === "cdn" || body.runtime === "webcontainer") {
       doc.runtime = body.runtime;
     }
-    if (typeof body.entrypoint === "string") doc.entrypoint = body.entrypoint;
+    if (typeof body.entrypoint === "string") {
+      doc.entrypoint = body.entrypoint;
+    }
     if (Array.isArray(body.files)) {
       doc.files = normalizeAppFiles(
         body.files as { path: string; contents: string }[],
