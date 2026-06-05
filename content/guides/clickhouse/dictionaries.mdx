@@ -1,0 +1,126 @@
+---
+title: "ClickHouse Dictionaries: A Practical Guide"
+description: "How dictionaries work in ClickHouse: creating them with CREATE DICTIONARY, the dictGet family of lookup functions, choosing a layout (flat, hashed, complex_key_hashed, range_hashed, cache, direct), and using a dictionary as a fast alternative to JOIN."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "dictionaries", "dictget", "joins", "olap"]
+date: "2026-06-05"
+---
+
+# ClickHouse Dictionaries
+
+A dictionary in ClickHouse is an in-memory key-value lookup table, kept loaded and refreshed from a source you define. The point is latency: looking up an attribute by key with `dictGet` avoids the cost of a `JOIN` against a regular table, because the data is already indexed in memory by the key. Dictionaries are most useful for enriching wide fact tables with reference data (currency names, country codes, product attributes) and for replacing repeated lookup joins.
+
+## Creating a Dictionary
+
+You declare a dictionary with `CREATE DICTIONARY`, specifying its columns, the primary key, a source, a layout, and a lifetime (refresh interval).
+
+```sql
+CREATE DICTIONARY currencies_dict
+(
+    currency_id UInt64,
+    code        String,
+    name        String,
+    country     String
+)
+PRIMARY KEY currency_id
+SOURCE(CLICKHOUSE(TABLE 'currencies' DB 'reference'))
+LAYOUT(FLAT())
+LIFETIME(MIN 300 MAX 600);
+```
+
+The `SOURCE` can be another ClickHouse table, an external relational database (MySQL, PostgreSQL, MS SQL), a file, an HTTP endpoint, MongoDB, Redis, and more. `LIFETIME` controls how often the dictionary reloads from its source; a range like `MIN 300 MAX 600` reloads somewhere between 5 and 10 minutes to spread out reload load across replicas. Set `LIFETIME(0)` to disable automatic updates.
+
+## Looking Up Values with dictGet
+
+`dictGet` is the core function: give it the dictionary name, the attribute you want, and the key.
+
+```sql
+SELECT
+    order_id,
+    dictGet('currencies_dict', 'code', currency_id)    AS code,
+    dictGet('currencies_dict', 'name', currency_id)    AS name
+FROM orders;
+```
+
+There is a family of related functions:
+
+- `dictGetOrDefault('dict', 'attr', key, default)` returns a fallback when the key is missing, instead of the attribute's type default.
+- `dictGetOrNull('dict', 'attr', key)` returns `NULL` for a missing key.
+- `dictHas('dict', key)` tests whether a key exists.
+- `dictGetHierarchy`, `dictIsIn` work with hierarchical dictionaries (parent-child keys).
+
+Typed variants like `dictGetString` or `dictGetUInt64` exist, but the generic `dictGet` infers the return type from the dictionary definition and is the form to prefer.
+
+For composite keys, pass a tuple as the key:
+
+```sql
+SELECT dictGet('geo_dict', 'region', (country_code, city_id))
+FROM visits;
+```
+
+## Choosing a Layout
+
+The layout decides how the dictionary is stored in memory, trading RAM against lookup speed and key flexibility. The common choices:
+
+- **flat** -- data in flat arrays indexed by the key. Fastest lookups, but the key must be `UInt64` and stay below a bounded maximum. Best for small-to-medium integer-keyed reference tables.
+- **hashed** -- a hash table. No practical key-size limit, supports large numbers of elements, slightly slower than flat. The general-purpose default for single integer keys.
+- **sparse_hashed** -- like `hashed` but trades CPU for lower memory. Use when memory is tight and the dictionary is large.
+- **complex_key_hashed** -- `hashed` for composite (tuple) keys, e.g. `(country, city)`.
+- **range_hashed** -- supports lookups by key plus a date or numeric range, for slowly-changing reference data such as exchange rates valid over date ranges.
+- **hashed_array** -- attributes in arrays with a hash table mapping keys to indices. Memory-efficient when a dictionary has many attributes.
+- **cache / ssd_cache** -- a fixed-size cache that holds only recently used keys and fetches misses from the source. Useful for very large sources where loading everything is impractical, but the official docs note caching layouts can give inconsistent results and are not recommended unless you specifically need them.
+- **direct** -- no in-memory storage at all; every lookup queries the source. Only sensible for sources that are themselves fast and rarely queried.
+
+The recommendation in the ClickHouse docs is to reach for `flat`, `hashed`, or `complex_key_hashed` first; they give the best query performance for most cases.
+
+## Dictionary as a JOIN Replacement
+
+The classic use is turning a lookup join into a function call. Instead of:
+
+```sql
+SELECT o.order_id, c.name
+FROM orders AS o
+LEFT JOIN currencies AS c ON o.currency_id = c.currency_id;
+```
+
+you write:
+
+```sql
+SELECT order_id, dictGet('currencies_dict', 'name', currency_id) AS name
+FROM orders;
+```
+
+The second form skips building a hash table for the join on every query, because the dictionary is already in memory and indexed by key. ClickHouse can also use a dictionary to accelerate an actual `LEFT ANY JOIN` when the join key matches the dictionary key, via its Direct Join path, but the `dictGet` form is the more explicit and common pattern.
+
+## Inspecting and Refreshing Dictionaries
+
+```sql
+-- list dictionaries and their status
+SELECT name, status, element_count, load_factor
+FROM system.dictionaries;
+
+-- force a reload from source
+SYSTEM RELOAD DICTIONARY currencies_dict;
+```
+
+`status` tells you whether the dictionary is loaded; a dictionary is loaded lazily on first use unless you reload it explicitly.
+
+## Common Mistakes
+
+- **Picking a cache layout by default.** Cache layouts can return stale or inconsistent results when keys age out, and the docs advise against them unless the source is too large to load fully. Start with `flat` or `hashed`.
+- **Using `flat` with non-`UInt64` or unbounded keys.** `flat` requires a `UInt64` key under a size bound; large or string keys need `hashed` or `complex_key_hashed`.
+- **Forgetting `LIFETIME`.** Without a sensible refresh interval the dictionary can serve outdated reference data. Match the lifetime to how often the source changes.
+- **Expecting `dictGet` to return `NULL` for missing keys.** Plain `dictGet` returns the attribute type's default (empty string, 0). Use `dictGetOrDefault` or `dictGetOrNull` when you need to distinguish a real miss.
+
+Mako is a read and query tool: it connects to ClickHouse and runs `dictGet` lookups and `system.dictionaries` inspections, but it does not manage dictionary definitions or source configuration for you. When you are composing a `dictGet` against an unfamiliar dictionary, Mako's AI autocomplete can suggest the attribute names and key shape as you type.
+
+## Related Guides
+
+- [ClickHouse Joins Guide](/guides/clickhouse/joins-guide) for when a real join beats a dictionary lookup.
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions) for enriching grouped results with dictionary attributes.
+- [PostgreSQL vs ClickHouse](/guides/postgresql-vs-clickhouse) if you are deciding where reference data should live.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).
