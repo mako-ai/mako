@@ -76,6 +76,10 @@ import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import {
+  computeReasoningGroups,
+  getStreamingReasoningGroupStart,
+} from "./reasoning-groups";
+import {
   chatMessageRowArePropsEqual,
   type ChatMessageRowProps,
 } from "./chat-message-comparator";
@@ -576,46 +580,6 @@ const assistantMessageSx = {
 } as const;
 const listItemSx = { p: 0 } as const;
 
-function computeReasoningGroups(parts: Array<Record<string, unknown>>) {
-  const groups = new Map<number, { text: string; lastIndex: number }>();
-
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    if (p.type !== "reasoning") continue;
-    const text = typeof p.text === "string" ? p.text.trim() : "";
-    if (!text) {
-      for (const [, group] of groups) {
-        if (group.lastIndex === i - 1) {
-          group.lastIndex = i;
-          break;
-        }
-      }
-      continue;
-    }
-
-    const prevIndex = i - 1;
-    let groupStart = i;
-    for (const [start, group] of groups) {
-      if (group.lastIndex === prevIndex) {
-        groupStart = start;
-        break;
-      }
-    }
-
-    if (groupStart === i) {
-      groups.set(i, { text: (p.text as string).trim(), lastIndex: i });
-    } else {
-      const existing = groups.get(groupStart);
-      if (existing) {
-        existing.text += "\n\n" + (p.text as string).trim();
-        existing.lastIndex = i;
-      }
-    }
-  }
-
-  return groups;
-}
-
 /**
  * Lightweight, dependency-free image lightbox. Shows the full (uncropped) image
  * centered over a dimmed backdrop; closes on backdrop click, the X button, or
@@ -783,15 +747,16 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
 
   const lastPartIndex = parts.length - 1;
   const lastPart = parts.at(-1);
-  const isLastPartReasoning =
-    isLastMessage && isStreamingNow && lastPart?.type === "reasoning";
   const isLastPartText =
     isLastMessage && isStreamingNow && lastPart?.type === "text";
 
-  let lastGroupStart = -1;
-  for (const [start] of reasoningGroups) {
-    if (start > lastGroupStart) lastGroupStart = start;
-  }
+  // The single reasoning group (if any) that should stay expanded because it
+  // owns the streaming last part. `null` when not streaming or the last part
+  // isn't reasoning, so previously-collapsed blocks are never re-opened.
+  const streamingReasoningGroupStart =
+    isLastMessage && isStreamingNow
+      ? getStreamingReasoningGroupStart(parts, reasoningGroups)
+      : null;
 
   return (
     <ListItem alignItems="flex-start" sx={listItemSx}>
@@ -873,8 +838,12 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
           if (partType === "reasoning") {
             const group = reasoningGroups.get(partIndex);
             if (!group) return null;
-            const isGroupStreaming =
-              isLastPartReasoning && partIndex === lastGroupStart;
+            const isGroupStreaming = partIndex === streamingReasoningGroupStart;
+            // Skip empty reasoning groups unless they're the block currently
+            // streaming (a brand-new thinking block whose text hasn't arrived
+            // yet). This avoids rendering blank "Thinking process" blocks for
+            // empty reasoning parts loaded from history.
+            if (!group.text && !isGroupStreaming) return null;
             return (
               <ReasoningDisplay
                 key={`reasoning-${partIndex}`}
