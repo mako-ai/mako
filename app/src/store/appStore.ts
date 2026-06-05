@@ -68,8 +68,6 @@ interface AppState {
   /** Bumping the nonce forces the renderer to rebuild that app's preview. */
   previewNonce: Record<string, number>;
   previewErrors: Record<string, AppPreviewError[]>;
-  /** File the explorer asked the renderer to open (per app). */
-  focusedFile: Record<string, string>;
 }
 
 interface AppActions {
@@ -94,7 +92,6 @@ interface AppActions {
 
   bumpPreview: (appId: string) => void;
   setPreviewErrors: (appId: string, errors: AppPreviewError[]) => void;
-  setFocusedFile: (appId: string, path: string) => void;
 
   runBinding: (
     workspaceId: string,
@@ -116,7 +113,6 @@ const initialState: AppState = {
   activeAppId: null,
   previewNonce: {},
   previewErrors: {},
-  focusedFile: {},
 };
 
 function genId(): string {
@@ -348,11 +344,6 @@ export const useAppStore = create<AppStore>()(
     setPreviewErrors: (appId, errors) =>
       set(state => {
         state.previewErrors[appId] = errors;
-      }),
-
-    setFocusedFile: (appId, path) =>
-      set(state => {
-        state.focusedFile[appId] = path;
       }),
 
     runBinding: async (workspaceId, appId, bindingName) => {

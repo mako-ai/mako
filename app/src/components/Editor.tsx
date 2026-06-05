@@ -44,6 +44,7 @@ import {
   CirclePause as PauseIcon,
   ChartPie as DashboardIcon,
   AppWindow as AppIcon,
+  FileCode as AppFileIcon,
   ChevronRight as BreadcrumbChevronIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -56,6 +57,7 @@ import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
 import AppRenderer from "./AppRenderer";
+import AppFileEditor from "./AppFileEditor";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
 import type { DbFlowFormRef } from "./DbFlowForm";
@@ -1944,6 +1946,8 @@ function Editor({
                               <DashboardIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "app" ? (
                               <AppIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app-file" ? (
+                              <AppFileIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
                               <Box
                                 component="img"
@@ -2134,6 +2138,11 @@ function Editor({
                   />
                 ) : tab.kind === "app" ? (
                   <AppRenderer appId={tab.metadata?.appId as string} />
+                ) : tab.kind === "app-file" ? (
+                  <AppFileEditor
+                    appId={tab.metadata?.appId as string}
+                    path={tab.metadata?.path as string}
+                  />
                 ) : (
                   /* Console tab: editor + results split */
                   <React.Profiler

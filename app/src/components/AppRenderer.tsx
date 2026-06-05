@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   Box,
   IconButton,
@@ -7,56 +7,16 @@ import {
   Chip,
   Alert,
 } from "@mui/material";
-import {
-  RefreshCw as RefreshIcon,
-  Save as SaveIcon,
-  FileCode as FileIcon,
-} from "lucide-react";
-import MonacoEditor, { type Monaco } from "@monaco-editor/react";
+import { RefreshCw as RefreshIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 
-// Configure Monaco's TS/JS language services so .tsx files parse as JSX. We
-// don't load type definitions for react / npm deps into Monaco, so semantic
-// (type/module-resolution) validation is disabled to avoid false "cannot find
-// module" errors — syntax errors are still reported. Real type checking happens
-// at preview build time via Babel.
-function configureMonacoForJsx(monaco: Monaco) {
-  const ts = monaco.languages.typescript;
-  const compilerOptions = {
-    jsx: ts.JsxEmit.React,
-    jsxFactory: "React.createElement",
-    allowJs: true,
-    allowNonTsExtensions: true,
-    esModuleInterop: true,
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeJs,
-    noEmit: true,
-  };
-  ts.typescriptDefaults.setCompilerOptions(compilerOptions);
-  ts.javascriptDefaults.setCompilerOptions(compilerOptions);
-  const diagnosticsOptions = {
-    noSemanticValidation: true,
-    noSyntaxValidation: false,
-  };
-  ts.typescriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
-  ts.javascriptDefaults.setDiagnosticsOptions(diagnosticsOptions);
-}
-
-function languageForPath(path: string): string {
-  if (path.endsWith(".tsx") || path.endsWith(".ts")) return "typescript";
-  if (path.endsWith(".jsx") || path.endsWith(".js") || path.endsWith(".mjs")) {
-    return "javascript";
-  }
-  if (path.endsWith(".json")) return "json";
-  if (path.endsWith(".css")) return "css";
-  if (path.endsWith(".html")) return "html";
-  if (path.endsWith(".md")) return "markdown";
-  return "plaintext";
-}
-
+/**
+ * Full-screen live preview of a React app. File editing happens in dedicated
+ * `app-file` tabs (opened from the sidebar explorer); this tab only renders the
+ * sandboxed preview and bridges data-binding requests to the workspace.
+ */
 export default function AppRenderer({ appId }: { appId: string }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
@@ -64,38 +24,16 @@ export default function AppRenderer({ appId }: { appId: string }) {
   const appEntity = useAppStore(s => s.openApps[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
   const previewErrors = useAppStore(s => s.previewErrors[appId]);
-  const focusedFile = useAppStore(s => s.focusedFile[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
-  const writeFile = useAppStore(s => s.writeFile);
-  const persistApp = useAppStore(s => s.persistApp);
   const bumpPreview = useAppStore(s => s.bumpPreview);
   const setPreviewErrors = useAppStore(s => s.setPreviewErrors);
   const runBinding = useAppStore(s => s.runBinding);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
   }, [appEntity, workspaceId, appId, fetchApp]);
-
-  // Select the focused file (from explorer), else entrypoint, else first file.
-  useEffect(() => {
-    if (!appEntity) return;
-    if (focusedFile && appEntity.files.some(f => f.path === focusedFile)) {
-      setSelectedPath(focusedFile);
-      return;
-    }
-    setSelectedPath(prev => {
-      if (prev && appEntity.files.some(f => f.path === prev)) return prev;
-      return (
-        appEntity.files.find(f => f.path === appEntity.entrypoint)?.path ??
-        appEntity.files[0]?.path ??
-        null
-      );
-    });
-  }, [appEntity, focusedFile]);
 
   // Bridge: respond to data-binding requests from the sandboxed iframe.
   useEffect(() => {
@@ -139,24 +77,6 @@ export default function AppRenderer({ appId }: { appId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appEntity?._id, previewNonce]);
 
-  const handleEditorChange = useCallback(
-    (value: string | undefined) => {
-      if (!selectedPath) return;
-      writeFile(appId, selectedPath, value ?? "");
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (workspaceId) {
-        saveTimer.current = setTimeout(() => {
-          void persistApp(workspaceId, appId);
-        }, 1200);
-      }
-    },
-    [appId, selectedPath, workspaceId, writeFile, persistApp],
-  );
-
-  const handleSave = useCallback(() => {
-    if (workspaceId) void persistApp(workspaceId, appId);
-  }, [workspaceId, appId, persistApp]);
-
   if (!appEntity) {
     return (
       <Box sx={{ p: 3, color: "text.secondary" }}>
@@ -165,12 +85,11 @@ export default function AppRenderer({ appId }: { appId: string }) {
     );
   }
 
-  const selectedFile = appEntity.files.find(f => f.path === selectedPath);
   const errors = previewErrors || [];
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Toolbar */}
+      {/* Slim toolbar */}
       <Box
         sx={{
           display: "flex",
@@ -191,11 +110,6 @@ export default function AppRenderer({ appId }: { appId: string }) {
           label={appEntity.runtime === "cdn" ? "CDN preview" : "WebContainer"}
         />
         <Box sx={{ flex: 1 }} />
-        <Tooltip title="Save">
-          <IconButton size="small" onClick={handleSave}>
-            <SaveIcon size={18} strokeWidth={1.5} />
-          </IconButton>
-        </Tooltip>
         <Tooltip title="Rebuild preview">
           <IconButton size="small" onClick={() => bumpPreview(appId)}>
             <RefreshIcon size={18} strokeWidth={1.5} />
@@ -203,111 +117,26 @@ export default function AppRenderer({ appId }: { appId: string }) {
         </Tooltip>
       </Box>
 
-      <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>
-        {/* File list */}
-        <Box
-          sx={{
-            width: 200,
-            flexShrink: 0,
-            borderRight: "1px solid",
-            borderColor: "divider",
-            overflowY: "auto",
-          }}
-        >
-          {appEntity.files.map(file => (
-            <Box
-              key={file.path}
-              onClick={() => setSelectedPath(file.path)}
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.5,
-                px: 1,
-                py: 0.5,
-                cursor: "pointer",
-                fontSize: "0.8rem",
-                backgroundColor:
-                  selectedPath === file.path
-                    ? "action.selected"
-                    : "transparent",
-                "&:hover": { backgroundColor: "action.hover" },
-              }}
-            >
-              <FileIcon size={14} strokeWidth={1.5} />
-              <Typography
-                variant="caption"
-                sx={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {file.path}
-              </Typography>
-            </Box>
-          ))}
-        </Box>
+      {errors.length > 0 && (
+        <Alert severity="error" sx={{ borderRadius: 0, py: 0.25 }}>
+          <Typography
+            variant="caption"
+            sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+          >
+            {errors[0].message}
+          </Typography>
+        </Alert>
+      )}
 
-        {/* Editor */}
-        <Box
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            borderRight: "1px solid",
-            borderColor: "divider",
-          }}
-        >
-          {selectedFile ? (
-            <MonacoEditor
-              height="100%"
-              path={selectedFile.path}
-              language={languageForPath(selectedFile.path)}
-              value={selectedFile.contents}
-              beforeMount={configureMonacoForJsx}
-              onChange={handleEditorChange}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 13,
-                automaticLayout: true,
-                scrollBeyondLastLine: false,
-              }}
-            />
-          ) : (
-            <Box sx={{ p: 2, color: "text.secondary" }}>
-              <Typography variant="body2">No file selected</Typography>
-            </Box>
-          )}
-        </Box>
-
-        {/* Preview */}
-        <Box
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          {errors.length > 0 && (
-            <Alert severity="error" sx={{ borderRadius: 0, py: 0.25 }}>
-              <Typography
-                variant="caption"
-                sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-              >
-                {errors[0].message}
-              </Typography>
-            </Alert>
-          )}
-          <Box sx={{ flex: 1, minHeight: 0, bgcolor: "#fff" }}>
-            <iframe
-              ref={iframeRef}
-              title={`app-preview-${appId}`}
-              srcDoc={srcDoc}
-              sandbox="allow-scripts"
-              style={{ width: "100%", height: "100%", border: "none" }}
-            />
-          </Box>
-        </Box>
+      {/* Full-screen preview */}
+      <Box sx={{ flex: 1, minHeight: 0, bgcolor: "#fff" }}>
+        <iframe
+          ref={iframeRef}
+          title={`app-preview-${appId}`}
+          srcDoc={srcDoc}
+          sandbox="allow-scripts"
+          style={{ width: "100%", height: "100%", border: "none" }}
+        />
       </Box>
     </Box>
   );

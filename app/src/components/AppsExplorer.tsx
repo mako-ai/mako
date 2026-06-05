@@ -26,7 +26,7 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
-import { focusAppTab } from "../app-runtime/shell";
+import { focusAppTab, focusAppFileTab } from "../app-runtime/shell";
 import type { AppFile } from "@mako/schemas";
 import ExplorerShell from "./ExplorerShell";
 
@@ -70,10 +70,12 @@ function buildFileTree(files: AppFile[]): TreeNode[] {
 function FileTree({
   nodes,
   depth,
+  activeFilePath,
   onFileClick,
 }: {
   nodes: TreeNode[];
   depth: number;
+  activeFilePath?: string;
   onFileClick: (path: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -81,6 +83,7 @@ function FileTree({
     <>
       {nodes.map(node => {
         const isOpen = expanded[node.path] ?? depth < 1;
+        const isActive = !node.isDir && node.path === activeFilePath;
         return (
           <Box key={node.path}>
             <Box
@@ -99,7 +102,12 @@ function FileTree({
                 cursor: "pointer",
                 fontSize: "0.8rem",
                 color: "text.secondary",
-                "&:hover": { backgroundColor: "action.hover" },
+                backgroundColor: isActive ? "action.selected" : "transparent",
+                "&:hover": {
+                  backgroundColor: isActive
+                    ? "action.selected"
+                    : "action.hover",
+                },
               }}
             >
               {node.isDir ? (
@@ -133,6 +141,7 @@ function FileTree({
               <FileTree
                 nodes={node.children}
                 depth={depth + 1}
+                activeFilePath={activeFilePath}
                 onFileClick={onFileClick}
               />
             )}
@@ -147,11 +156,13 @@ function AppRow({
   item,
   workspaceId,
   isActive,
+  activeFilePath,
   onDelete,
 }: {
   item: AppListItem;
   workspaceId: string;
   isActive: boolean;
+  activeFilePath?: string;
   onDelete: (item: AppListItem) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -196,7 +207,6 @@ function AppRow({
         </Box>
         <Box
           onClick={() => focusAppTab(item.id, item.name)}
-          onDoubleClick={() => setExpanded(true)}
           sx={{
             display: "flex",
             alignItems: "center",
@@ -234,7 +244,8 @@ function AppRow({
             <FileTree
               nodes={tree}
               depth={0}
-              onFileClick={path => focusAppTab(item.id, item.name, path)}
+              activeFilePath={activeFilePath}
+              onFileClick={path => focusAppFileTab(item.id, path)}
             />
           ) : (
             <Typography
@@ -278,9 +289,20 @@ export function AppsExplorer() {
 
   const activeTabId = useConsoleStore(s => s.activeTabId);
   const tabs = useConsoleStore(s => s.tabs);
+  const activeTab = activeTabId ? tabs[activeTabId] : undefined;
+  // The app whose preview tab is active (highlights the app row).
   const activeAppId =
-    activeTabId && tabs[activeTabId]?.kind === "app"
-      ? (tabs[activeTabId]?.metadata?.appId as string | undefined)
+    activeTab?.kind === "app"
+      ? (activeTab.metadata?.appId as string | undefined)
+      : undefined;
+  // The app + file whose file-editor tab is active (highlights the file node).
+  const activeFileAppId =
+    activeTab?.kind === "app-file"
+      ? (activeTab.metadata?.appId as string | undefined)
+      : undefined;
+  const activeFilePath =
+    activeTab?.kind === "app-file"
+      ? (activeTab.metadata?.path as string | undefined)
       : undefined;
 
   const [deleteTarget, setDeleteTarget] = useState<AppListItem | null>(null);
@@ -359,6 +381,9 @@ export function AppsExplorer() {
               item={item}
               workspaceId={workspaceId}
               isActive={activeAppId === item.id}
+              activeFilePath={
+                activeFileAppId === item.id ? activeFilePath : undefined
+              }
               onDelete={setDeleteTarget}
             />
           ) : null,

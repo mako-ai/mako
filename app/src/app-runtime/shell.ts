@@ -6,15 +6,8 @@ export function getCurrentWorkspaceId(): string | null {
   return useUIStore.getState().currentWorkspaceId ?? null;
 }
 
-/**
- * Open (or focus) a tab for a React app. Optionally focus a specific file in
- * the renderer. Returns the tab id.
- */
-export function focusAppTab(
-  appId: string,
-  title: string,
-  filePath?: string,
-): string {
+/** Open (or focus) the full-screen preview tab for a React app. */
+export function focusAppTab(appId: string, title: string): string {
   const consoleStore = useConsoleStore.getState();
   const existingTab = Object.values(consoleStore.tabs).find(
     (tab: { kind?: string; metadata?: { appId?: string } }) =>
@@ -32,8 +25,33 @@ export function focusAppTab(
 
   consoleStore.setActiveTab(tabId);
   useAppStore.getState().setActiveApp(appId);
-  if (filePath) {
-    useAppStore.getState().setFocusedFile(appId, filePath);
-  }
+  return tabId;
+}
+
+function basename(path: string): string {
+  return path.split("/").filter(Boolean).pop() || path;
+}
+
+/** Open (or focus) a full-screen editor tab for a single file within an app. */
+export function focusAppFileTab(appId: string, path: string): string {
+  const consoleStore = useConsoleStore.getState();
+  const existingTab = Object.values(consoleStore.tabs).find(
+    (tab: { kind?: string; metadata?: { appId?: string; path?: string } }) =>
+      tab.kind === "app-file" &&
+      tab.metadata?.appId === appId &&
+      tab.metadata?.path === path,
+  );
+
+  const tabId =
+    existingTab?.id ??
+    consoleStore.openTab({
+      title: basename(path),
+      content: "",
+      kind: "app-file",
+      metadata: { appId, path },
+    });
+
+  consoleStore.setActiveTab(tabId);
+  useAppStore.getState().setActiveApp(appId);
   return tabId;
 }
