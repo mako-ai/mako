@@ -65,6 +65,84 @@ const logger = loggers.agent();
 
 export const agentRoutes = new Hono();
 
+interface ScreenshotVisionAttachment {
+  renderer?: string;
+  filename?: string;
+  mediaType?: string;
+  dataUrl?: string;
+  outputBytes?: number;
+  targetLabel?: string;
+}
+
+const MAX_SCREENSHOT_VISION_ATTACHMENTS = 6;
+const MAX_SCREENSHOT_VISION_BYTES = 2_000_000;
+
+function estimateDataUrlBytes(dataUrl: string): number {
+  const commaIndex = dataUrl.indexOf(",");
+  if (commaIndex === -1) return dataUrl.length;
+  return Math.floor(((dataUrl.length - commaIndex - 1) * 3) / 4);
+}
+
+function buildScreenshotVisionModelMessage(
+  attachments: ScreenshotVisionAttachment[] | undefined,
+) {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return null;
+  }
+
+  const accepted = attachments
+    .filter(attachment => {
+      if (
+        typeof attachment.dataUrl !== "string" ||
+        !attachment.dataUrl.startsWith("data:image/")
+      ) {
+        return false;
+      }
+      const byteCount =
+        typeof attachment.outputBytes === "number"
+          ? attachment.outputBytes
+          : estimateDataUrlBytes(attachment.dataUrl);
+      return byteCount <= MAX_SCREENSHOT_VISION_BYTES;
+    })
+    .slice(0, MAX_SCREENSHOT_VISION_ATTACHMENTS);
+
+  if (accepted.length === 0) {
+    return null;
+  }
+
+  const content: Array<
+    | { type: "text"; text: string }
+    | { type: "file"; mediaType: string; filename?: string; data: string }
+  > = [
+    {
+      type: "text",
+      text:
+        "The previous screenshot tool call captured these PNG images for visual inspection. " +
+        "Look at the actual images, describe what is visible, and use them as visual evidence when answering.",
+    },
+  ];
+
+  accepted.forEach((attachment, index) => {
+    const renderer = attachment.renderer || `renderer-${index + 1}`;
+    const filename = attachment.filename || `${renderer}.png`;
+    content.push({
+      type: "text",
+      text: `Screenshot ${index + 1}: ${renderer} (${filename})`,
+    });
+    content.push({
+      type: "file",
+      mediaType: attachment.mediaType || "image/png",
+      filename,
+      data: attachment.dataUrl as string,
+    });
+  });
+
+  return {
+    role: "user" as const,
+    content,
+  };
+}
+
 // Apply unified auth middleware to all routes
 agentRoutes.use("*", unifiedAuthMiddleware);
 
@@ -248,6 +326,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     flowType,
     flowFormState,
     activeDashboardContext,
+    screenshotVisionAttachments,
   } = body as {
     messages?: UIMessage[];
     chatId?: string;
@@ -270,6 +349,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     tabKind?: string;
     flowType?: string;
     flowFormState?: Record<string, unknown>;
+    screenshotVisionAttachments?: ScreenshotVisionAttachment[];
     activeDashboardContext?: {
       dashboardId: string;
       title: string;
@@ -619,6 +699,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   // Convert UI messages (from useChat) to model messages (for streamText)
   const modelMessages = await convertToModelMessages(sanitizedMessages);
+  const screenshotVisionMessage = buildScreenshotVisionModelMessage(
+    screenshotVisionAttachments,
+  );
+  if (screenshotVisionMessage) {
+    modelMessages.push(
+      screenshotVisionMessage as (typeof modelMessages)[number],
+    );
+    logger.info("Attached screenshot images to model request", {
+      chatId,
+      workspaceId,
+      count: screenshotVisionAttachments?.length ?? 0,
+    });
+  }
 
   const MAX_STEPS = 256;
   let stepsCompleted = 0;

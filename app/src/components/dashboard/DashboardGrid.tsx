@@ -305,6 +305,8 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
   return (
     <Box
       ref={gridContainerRef}
+      data-mako-dashboard-id={dashboard._id}
+      data-mako-dashboard-canvas="true"
       sx={{ height: "100%", pb: isEditMode ? "120px" : 0 }}
     >
       <ResponsiveGridLayout
@@ -321,7 +323,11 @@ const DashboardGrid: React.FC<DashboardGridProps> = ({
         resizeConfig={{ enabled: isEditMode }}
       >
         {dashboard.widgets.map(widget => (
-          <div key={widget.id}>
+          <div
+            key={widget.id}
+            data-mako-dashboard-widget-id={widget.id}
+            data-mako-dashboard-id={dashboard._id}
+          >
             {(() => {
               const widgetRuntime = runtimeSession?.widgets[widget.id];
               const widgetError =

@@ -15,6 +15,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { MakoChartSpecBase } from "./chart-spec-schema";
+import { clientScreenshotTools } from "./screenshot-tools";
 
 const addWidgetSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
@@ -250,6 +251,9 @@ const previewDataSourceSchema = z.object({
 });
 
 export const clientDashboardTools = {
+  // Client-side visual inspection tool (capture_screenshot)
+  ...clientScreenshotTools,
+
   list_open_dashboards: tool({
     description:
       "List all open dashboard tabs. Returns each dashboard's id, title, description, " +

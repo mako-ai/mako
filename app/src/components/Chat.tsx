@@ -88,6 +88,7 @@ import {
   type ActiveConsoleResultsContext,
 } from "../agent-runtime/request-context";
 import { executeConsoleAgentTool } from "../agent-runtime/console-agent-tools";
+import { consumePendingScreenshotVisionAttachments } from "../agent-runtime/screenshot-agent-tools";
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
@@ -1484,24 +1485,33 @@ const Chat: React.FC<ChatProps> = ({
                 }
               : undefined;
 
+          const screenshotVisionAttachments =
+            consumePendingScreenshotVisionAttachments();
+          const requestBody = buildChatRequestBody({
+            messages,
+            workspaceId,
+            modelId: modelIdRef.current,
+            chatId: chatIdRef.current,
+            tabs,
+            activeTabId: store.activeTabId,
+            activeTab,
+            activeView: computedActiveView,
+            activeExplorer: selectActiveExplorer(useUIStore.getState()),
+            activeConsoleId: activeConsoleIdRef.current,
+            activeConsoleResults,
+            flowFormState,
+            workspaceConnections: workspaceConnectionsForRequest,
+            pinnedDashboardId: capturedDashboardIdRef.current,
+          });
+
           return {
             body: toJsonSafe(
-              buildChatRequestBody({
-                messages,
-                workspaceId,
-                modelId: modelIdRef.current,
-                chatId: chatIdRef.current,
-                tabs,
-                activeTabId: store.activeTabId,
-                activeTab,
-                activeView: computedActiveView,
-                activeExplorer: selectActiveExplorer(useUIStore.getState()),
-                activeConsoleId: activeConsoleIdRef.current,
-                activeConsoleResults,
-                flowFormState,
-                workspaceConnections: workspaceConnectionsForRequest,
-                pinnedDashboardId: capturedDashboardIdRef.current,
-              }),
+              screenshotVisionAttachments.length > 0
+                ? {
+                    ...requestBody,
+                    screenshotVisionAttachments,
+                  }
+                : requestBody,
             ) as Record<string, unknown>,
           };
         },

@@ -53,6 +53,7 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\` with
 * \`run_data_source_query\` — Execute a data source query and stream fresh draft data into DuckDB. Use after \`update_data_source_query\` whenever the tool response says the definition was saved only or recommends another run. Automatically recovers if DuckDB crashes. Requires \`dashboardId\`.
 * \`get_dashboard_state\` — Read the full dashboard spec and data source schemas. Requires \`dashboardId\`.
 * \`preview_data_source\` — Run a SQL query against local DuckDB data. Requires \`dashboardId\`.
+* \`capture_screenshot\` — Capture the dashboard, widget, active tab, or full app shell with modern-screenshot and pass the PNG to your next model step as an actual image. Use this for normal visual debugging and when the user asks what you see.
 
 **Console Discovery:**
 * \`search_consoles\` — Search saved consoles by name or content to find their IDs for use as data sources

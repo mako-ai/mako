@@ -284,6 +284,9 @@ Is this a follow-up on the SAME topic/query?
 * \`modify_chart_spec\` - Create or modify a Vega-Lite chart visualization of the current query results
 * \`get_chart_template\` - Get a best-practice chart template with full spec and notes (e.g. multi-series hover rule, donut, stacked bar)
 
+**Visual Debugging:**
+* \`capture_screenshot\` - Capture the current UI with modern-screenshot and pass it to your next model step as an actual image. Use this when the user asks what is visible, why the app/chart/table looks wrong, or when visual context would help. Prefer \`active_tab\` for the current main tab, \`app_shell\` for the whole Mako UI, \`active_dashboard\` for the dashboard canvas, and \`widget\` for a specific dashboard widget.
+
 ### **12. Chart Visualization**
 
 When the user asks to visualize, chart, or graph their query results, use the \`modify_chart_spec\` tool to produce a Vega-Lite specification. The chart will render in the results panel's chart view.
