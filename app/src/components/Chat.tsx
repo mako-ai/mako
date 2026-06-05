@@ -286,6 +286,26 @@ type AutoSendPredicateArgs = Parameters<
   typeof lastAssistantMessageIsCompleteWithToolCalls
 >[0];
 
+function hasPendingAssistantToolCalls(
+  messages: AutoSendPredicateArgs["messages"],
+): boolean {
+  const last = messages.at(-1);
+  if (!last?.parts || last.role !== "assistant") return false;
+
+  return last.parts.some(part => {
+    const partType = part.type as string;
+    if (!partType.startsWith("tool-") && partType !== "dynamic-tool") {
+      return false;
+    }
+    const state = (part as { state?: string }).state;
+    return (
+      state !== "output-available" &&
+      state !== "output-error" &&
+      state !== "error"
+    );
+  });
+}
+
 interface ActiveClientToolCall {
   toolCallId: string;
   toolName: string;
@@ -890,6 +910,106 @@ interface ImageAttachment {
   previewUrl: string;
 }
 
+interface QueuedPrompt {
+  id: string;
+  text: string;
+  files?: FileUIPart[];
+  consoleId: string | null;
+  dashboardId: string | null;
+}
+
+interface QueuedPromptListProps {
+  prompts: QueuedPrompt[];
+  onRemove: (id: string) => void;
+}
+
+const QueuedPromptList = React.memo(
+  ({ prompts, onRemove }: QueuedPromptListProps) => {
+    if (prompts.length === 0) return null;
+
+    return (
+      <Box
+        sx={{
+          mx: 1,
+          mb: 0.5,
+          display: "flex",
+          flexDirection: "column",
+          gap: 0.5,
+        }}
+      >
+        {prompts.map((prompt, index) => {
+          const truncated =
+            prompt.text.length > 120
+              ? `${prompt.text.slice(0, 120)}…`
+              : prompt.text;
+          const imageCount = prompt.files?.length ?? 0;
+
+          return (
+            <Box
+              key={prompt.id}
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                px: 1,
+                py: 0.75,
+                borderRadius: 1.5,
+                border: 1,
+                borderColor: "divider",
+                backgroundColor: "action.hover",
+              }}
+            >
+              <Typography
+                variant="caption"
+                sx={{ color: "text.secondary", flexShrink: 0 }}
+              >
+                {index + 1}
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontSize: 13,
+                }}
+              >
+                {truncated || (imageCount > 0 ? "Image attachment" : "")}
+              </Typography>
+              {imageCount > 0 && (
+                <Typography
+                  variant="caption"
+                  sx={{ color: "text.secondary", flexShrink: 0 }}
+                >
+                  {imageCount} {imageCount === 1 ? "image" : "images"}
+                </Typography>
+              )}
+              <IconButton
+                type="button"
+                aria-label="Remove queued prompt"
+                onClick={() => onRemove(prompt.id)}
+                size="small"
+                sx={{
+                  width: 20,
+                  height: 20,
+                  flexShrink: 0,
+                  color: "text.secondary",
+                  "&:hover": { color: "text.primary" },
+                }}
+              >
+                <X size={12} />
+              </IconButton>
+            </Box>
+          );
+        })}
+      </Box>
+    );
+  },
+);
+QueuedPromptList.displayName = "QueuedPromptList";
+
 interface ChatInputAreaProps {
   onSubmit: (text: string, files?: FileUIPart[]) => void;
   onStop: () => void;
@@ -995,7 +1115,7 @@ const ChatInputArea = React.memo(
       const currentImages = images;
       const hasText = trimmedInput.length > 0;
       const hasImages = currentImages.length > 0;
-      if ((!hasText && !hasImages) || isLoading || isPreparingSubmission) {
+      if ((!hasText && !hasImages) || isPreparingSubmission) {
         return;
       }
 
@@ -1019,11 +1139,10 @@ const ChatInputArea = React.memo(
       } finally {
         setIsPreparingSubmission(false);
       }
-    }, [images, input, isLoading, isPreparingSubmission, onSubmit]);
+    }, [images, input, isPreparingSubmission, onSubmit]);
 
     const hasContent = input.trim() || images.length > 0;
-    const isSubmitDisabled =
-      !hasContent || disabled || isLoading || isPreparingSubmission;
+    const isSubmitDisabled = !hasContent || disabled || isPreparingSubmission;
 
     return (
       <Paper
@@ -1420,11 +1539,16 @@ const Chat: React.FC<ChatProps> = ({
   const modelIdRef = useRef(selectedModelId);
   const chatIdRef = useRef(chatId);
   const manualStopRequestedRef = useRef(false);
+  const drainQueuedPromptAfterTurnRef = useRef<(() => void) | null>(null);
   const activeClientToolCallsRef = useRef(
     new Map<string, ActiveClientToolCall>(),
   );
   const cancelledClientToolCallIdsRef = useRef(new Set<string>());
   const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const queuedPromptsRef = useRef(queuedPrompts);
+  const isLoadingRef = useRef(false);
+  queuedPromptsRef.current = queuedPrompts;
   workspaceIdRef.current = currentWorkspace?.id;
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
@@ -1847,6 +1971,9 @@ const Chat: React.FC<ChatProps> = ({
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }
+      // Runs after makeRequest's synchronous sendAutomaticallyWhen check so
+      // queued prompts are not drained between agent auto-continuation steps.
+      queueMicrotask(() => drainQueuedPromptAfterTurnRef.current?.());
     },
   });
 
@@ -1894,11 +2021,11 @@ const Chat: React.FC<ChatProps> = ({
   );
 
   const settleActiveClientToolCall = useCallback(
-    (
+    async (
       toolName: string,
       toolCallId: string,
       output: Record<string, unknown>,
-    ): void => {
+    ): Promise<void> => {
       if (cancelledClientToolCallIdsRef.current.delete(toolCallId)) {
         return;
       }
@@ -1906,22 +2033,24 @@ const Chat: React.FC<ChatProps> = ({
       const activeToolCall = activeClientToolCallsRef.current.get(toolCallId);
       if (!activeToolCall) {
         if (!manualStopRequestedRef.current) {
-          addToolOutput({ tool: toolName, toolCallId, output });
+          await addToolOutput({ tool: toolName, toolCallId, output });
         }
         return;
       }
 
-      if (!activeToolCall.settled) {
-        activeToolCall.settled = true;
-        addToolOutput({
-          tool: activeToolCall.toolName,
-          toolCallId,
-          output,
-        });
+      try {
+        if (!activeToolCall.settled) {
+          activeToolCall.settled = true;
+          await addToolOutput({
+            tool: activeToolCall.toolName,
+            toolCallId,
+            output,
+          });
+        }
+      } finally {
+        activeClientToolCallsRef.current.delete(toolCallId);
+        setActiveClientToolCallCount(activeClientToolCallsRef.current.size);
       }
-
-      activeClientToolCallsRef.current.delete(toolCallId);
-      setActiveClientToolCallCount(activeClientToolCallsRef.current.size);
     },
     [addToolOutput],
   );
@@ -1946,6 +2075,7 @@ const Chat: React.FC<ChatProps> = ({
 
     activeClientToolCallsRef.current.clear();
     setActiveClientToolCallCount(0);
+    setQueuedPrompts([]);
     stop();
   }, [addToolOutput, stop]);
 
@@ -1953,6 +2083,7 @@ const Chat: React.FC<ChatProps> = ({
     status === "streaming" ||
     status === "submitted" ||
     activeClientToolCallCount > 0;
+  isLoadingRef.current = isLoading;
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
   useRenderCount("Chat", {
@@ -2168,6 +2299,7 @@ const Chat: React.FC<ChatProps> = ({
   const createNewSession = () => {
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
+    setQueuedPrompts([]);
     setChatId(generateObjectId());
     setMessages([]);
     setIsExistingChat(false);
@@ -2184,6 +2316,7 @@ const Chat: React.FC<ChatProps> = ({
   const handleSelectSession = (id: string) => {
     cancelActiveClientToolCalls("session-change");
     manualStopRequestedRef.current = false;
+    setQueuedPrompts([]);
     setChatId(id);
     setMessages([]);
     setIsExistingChat(true);
@@ -2258,17 +2391,72 @@ const Chat: React.FC<ChatProps> = ({
   // to keep the callback identity stable during streaming.
   const sendMessageRef = useRef(sendMessage);
   sendMessageRef.current = sendMessage;
-  const handleChatSubmit = useCallback((text: string, files?: FileUIPart[]) => {
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  const tryDrainQueuedPromptRef = useRef<() => void>(() => {});
+  tryDrainQueuedPromptRef.current = () => {
+    if (
+      isLoadingRef.current ||
+      manualStopRequestedRef.current ||
+      // Don't auto-fire the next queued prompt into a failed turn. The error
+      // (e.g. usage_limit_exceeded) stays on screen; dismissing it via
+      // clearError flips status back to "ready" and re-triggers this drain.
+      status === "error" ||
+      queuedPromptsRef.current.length === 0 ||
+      autoSendWhenComplete({ messages: messagesRef.current }) ||
+      hasPendingAssistantToolCalls(messagesRef.current)
+    ) {
+      return;
+    }
+
+    const [next, ...rest] = queuedPromptsRef.current;
+    setQueuedPrompts(rest);
+    capturedConsoleIdRef.current = next.consoleId;
+    capturedDashboardIdRef.current = next.dashboardId;
     manualStopRequestedRef.current = false;
+    trackEvent("ai_chat_message_sent", {
+      model: modelIdRef.current,
+      has_context: false,
+      has_images: (next.files?.length ?? 0) > 0,
+    });
+    sendMessageRef.current({ text: next.text, files: next.files });
+  };
+  drainQueuedPromptAfterTurnRef.current = () =>
+    tryDrainQueuedPromptRef.current();
+
+  const handleChatSubmit = useCallback((text: string, files?: FileUIPart[]) => {
     capturedConsoleIdRef.current = activeConsoleIdRef.current;
     const store = useConsoleStore.getState();
     const currentTab = store.tabs[store.activeTabId || ""] as
       | (ConsoleTab & { metadata?: Record<string, unknown> })
       | undefined;
-    capturedDashboardIdRef.current =
+    const dashboardId =
       currentTab?.kind === "dashboard"
         ? ((currentTab.metadata?.dashboardId as string | undefined) ?? null)
         : null;
+    capturedDashboardIdRef.current = dashboardId;
+    const consoleId = capturedConsoleIdRef.current;
+
+    if (isLoadingRef.current) {
+      trackEvent("ai_chat_message_queued", {
+        model: modelIdRef.current,
+        has_images: (files?.length ?? 0) > 0,
+      });
+      setQueuedPrompts(prev => [
+        ...prev,
+        {
+          id: generateObjectId(),
+          text,
+          files,
+          consoleId,
+          dashboardId,
+        },
+      ]);
+      return;
+    }
+
+    manualStopRequestedRef.current = false;
     const activeConsole = store.tabs[store.activeTabId || ""];
     trackEvent("ai_chat_message_sent", {
       model: modelIdRef.current,
@@ -2276,6 +2464,19 @@ const Chat: React.FC<ChatProps> = ({
       has_images: (files?.length ?? 0) > 0,
     });
     sendMessageRef.current({ text, files });
+  }, []);
+
+  useEffect(() => {
+    tryDrainQueuedPromptRef.current();
+  }, [isLoading, status, activeClientToolCallCount]);
+
+  // Belt-and-suspenders: useChat `id` resets hook state on chatId change.
+  useEffect(() => {
+    setQueuedPrompts([]);
+  }, [chatId]);
+
+  const handleRemoveQueuedPrompt = useCallback((id: string) => {
+    setQueuedPrompts(prev => prev.filter(prompt => prompt.id !== id));
   }, []);
 
   // Copy chat history handler
@@ -2551,6 +2752,11 @@ const Chat: React.FC<ChatProps> = ({
           </IconButton>
         )}
       </Box>
+
+      <QueuedPromptList
+        prompts={queuedPrompts}
+        onRemove={handleRemoveQueuedPrompt}
+      />
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea
