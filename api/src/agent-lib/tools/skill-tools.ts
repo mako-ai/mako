@@ -14,6 +14,7 @@
  * a direct search if the index hint didn't fire.
  */
 
+import { tool } from "ai";
 import { z } from "zod";
 import {
   deleteSkill,
@@ -85,16 +86,11 @@ const searchSkillsSchema = z.object({
     .describe("Max results (default 5)."),
 });
 
-type SaveInput = z.infer<typeof saveSkillSchema>;
-type DeleteInput = z.infer<typeof deleteSkillSchema>;
-type LoadInput = z.infer<typeof loadSkillSchema>;
-type SearchInput = z.infer<typeof searchSkillsSchema>;
-
 export function createSkillTools(workspaceId: string, userId?: string) {
   const authorId = userId && userId.length > 0 ? userId : "agent";
 
   return {
-    save_skill: {
+    save_skill: tool({
       description: [
         "Save or overwrite a workspace-scoped skill — a named playbook that",
         "will be auto-injected into future sessions when its `loadWhen`",
@@ -108,31 +104,31 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         "Keep `body` compact and structured.",
       ].join("\n"),
       inputSchema: saveSkillSchema,
-      execute: async (input: SaveInput) => {
+      execute: async input => {
         return saveSkill(workspaceId, input, authorId);
       },
-    },
-    delete_skill: {
+    }),
+    delete_skill: tool({
       description:
         "Delete a workspace skill by name. Use this to retract a skill that turned out to be wrong — without deletion, bad skills poison every future query. Deletion is permanent.",
       inputSchema: deleteSkillSchema,
-      execute: async ({ name }: DeleteInput) => {
+      execute: async ({ name }) => {
         return deleteSkill(workspaceId, name);
       },
-    },
-    load_skill: {
+    }),
+    load_skill: tool({
       description:
         "Explicitly load a skill by name from the index. Use this when you spot a skill in the injected index whose `loadWhen` matches what you're about to do, but it wasn't auto-loaded. Bumps the skill's useCount so retrieval can reinforce it later.",
       inputSchema: loadSkillSchema,
-      execute: async ({ name }: LoadInput) => {
+      execute: async ({ name }) => {
         return loadSkill(workspaceId, name);
       },
-    },
-    search_skills: {
+    }),
+    search_skills: tool({
       description:
         "Search workspace skills by free-text query. Fallback for when the injected skills index doesn't surface something you know should exist. Returns ranked full bodies.",
       inputSchema: searchSkillsSchema,
-      execute: async ({ query, limit }: SearchInput) => {
+      execute: async ({ query, limit }) => {
         const hits = await searchSkills(workspaceId, query, limit ?? 5);
         return {
           success: true,
@@ -145,6 +141,6 @@ export function createSkillTools(workspaceId: string, userId?: string) {
           })),
         };
       },
-    },
+    }),
   };
 }

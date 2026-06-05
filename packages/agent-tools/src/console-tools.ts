@@ -14,6 +14,7 @@
  * actual current state of the consoles.
  */
 
+import { tool } from "ai";
 import { z } from "zod";
 
 // Schema definitions for client-side console tools
@@ -130,54 +131,54 @@ export const setConsoleConnectionSchema = z.object({
  * Client-side console tools (no execute function = client-side execution)
  */
 export const clientConsoleTools = {
-  read_console: {
+  read_console: tool({
     description:
       "Read the contents of a specific console by ID. Returns content with line numbers prefixed (e.g., '  1| code here'), totalLines, and database connection info. Line numbers are for REFERENCE ONLY to help identify patch ranges. Use list_open_consoles first to get available console IDs. Reading is allowed for any access level (private or workspace) as long as the console is visible to you.",
     inputSchema: readConsoleSchema,
     // No execute function - this is a client-side tool
-  },
+  }),
 
-  modify_console: {
+  modify_console: tool({
     description:
       "Modify a specific console's content by ID. Actions: 'replace' (full content), 'patch' (specific lines - preferred for small edits, requires startLine/endLine), 'insert' (at position), 'append' (to end). IMPORTANT for 'patch': (1) Line numbers are 1-indexed and inclusive. (2) Your patch content must NOT include line number prefixes - only the actual code. (3) Include ALL lines being replaced in your content, including braces and structural elements. Get consoleId from list_open_consoles or create_console. ACCESS NOTE: If the console is read-only (workspace console you don't own and you're not an admin), modification will be rejected — create a copy with create_console instead.",
     inputSchema: modifyConsoleSchema,
     // No execute function - this is a client-side tool
-  },
+  }),
 
-  create_console: {
+  create_console: tool({
     description:
       "Create a new console editor tab with the specified content. Returns a consoleId that you MUST pass to modify_console when writing to this new console. The new console will be owned by the current user with private access by default.",
     inputSchema: createConsoleSchema,
     // No execute function - this is a client-side tool
-  },
+  }),
 
-  list_open_consoles: {
+  list_open_consoles: tool({
     description:
       "List all open console tabs in the UI. Returns each console's id, title, connectionId, databaseName, content preview, isActive flag, access level, and readOnly status. Call this FIRST to get console IDs before using read_console or modify_console.",
     inputSchema: listOpenConsolesSchema,
     // No execute function - this is a client-side tool
-  },
+  }),
 
-  set_console_connection: {
+  set_console_connection: tool({
     description:
       "Attach a console to a database connection, or change its current attachment. Use this when you need to run queries against a different database than what the console is currently attached to. After setting the connection, you can use the console to execute queries against that database.",
     inputSchema: setConsoleConnectionSchema,
     // No execute function - this is a client-side tool
-  },
+  }),
 
-  open_console: {
+  open_console: tool({
     description:
       "Open a saved or draft console in the editor by its ID. Use after search_consoles to let the user see and interact with a found console. The console will be loaded into a new tab.",
     inputSchema: openConsoleSchema,
     // No execute function - this is a client-side tool
-  },
+  }),
 
-  run_console: {
+  run_console: tool({
     description:
       "Execute the query currently in a console tab. Triggers the 'Run' action in the UI and returns the results or error back to you. Use this AFTER modify_console to show results immediately. The console must be connected to a database.",
     inputSchema: runConsoleSchema,
     // No execute function - client-side tool
-  },
+  }),
 };
 
 // Export schema types for client-side use

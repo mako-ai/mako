@@ -9,10 +9,7 @@
  * field definitions and prevents documentation drift.
  */
 
-import {
-  generateFieldDocs,
-  FIELD_PATHS,
-} from "../../schemas/db-flow-form.schema";
+import { generateFieldDocs, FIELD_PATHS } from "@mako/schemas";
 
 /**
  * Build the flow prompt with auto-generated field documentation

@@ -2,7 +2,7 @@
  * MakoChartSpec — Zod schema for Vega-Lite chart specifications.
  *
  * This is the frontend copy of the chart spec schema.
- * The source of truth lives in api/src/agent-lib/tools/chart-spec-schema.ts.
+ * The source of truth lives in @mako/agent-tools (src/chart-spec-schema.ts).
  * Keep both files in sync when making changes.
  *
  * Used by:

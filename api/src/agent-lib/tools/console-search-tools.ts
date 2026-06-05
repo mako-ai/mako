@@ -1,3 +1,4 @@
+import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import type { AgentToolExecutionContext } from "../../agents/types";
@@ -298,7 +299,7 @@ export const createConsoleSearchTools = (
   workspaceId: string,
   toolExecutionContext?: AgentToolExecutionContext,
 ) => ({
-  search_consoles: {
+  search_consoles: tool({
     description:
       "Search saved consoles across the workspace by semantic meaning or keywords. Returns matching consoles ranked by relevance and recency. Use this to find past queries, discover existing work, or locate a console the user mentions. Results include id, title, description, connection info, and language.",
     inputSchema: z.object({
@@ -313,7 +314,7 @@ export const createConsoleSearchTools = (
         .default(5)
         .describe("Max results to return (default 5)"),
     }),
-    execute: async ({ query, limit }: { query: string; limit?: number }) => {
+    execute: async ({ query, limit }) => {
       const { signal, release } = registerAgentExecution(
         toolExecutionContext,
         "agent-search-consoles",
@@ -334,5 +335,5 @@ export const createConsoleSearchTools = (
         release();
       }
     },
-  },
+  }),
 });

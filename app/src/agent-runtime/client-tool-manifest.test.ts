@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import {
+  clientChartTools,
+  clientConsoleTools,
+  clientDashboardTools,
+} from "@mako/agent-tools";
 import { UNIVERSAL_PROMPT_V2 } from "../../../api/src/agent-lib/prompts/universal";
-import { clientChartTools } from "../../../api/src/agent-lib/tools/chart-tools-client";
-import { clientConsoleTools } from "../../../api/src/agent-lib/tools/console-tools-client";
-import { clientDashboardTools } from "../../../api/src/agent-lib/tools/dashboard-tools-client";
 import { buildCurrentScreenContext } from "../../../api/src/agents/unified/prompt";
 import {
   AGENT_TOOL_MANIFEST,

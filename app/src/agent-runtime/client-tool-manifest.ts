@@ -1,3 +1,5 @@
+import type { MakoUITools } from "@mako/agent-tools";
+
 export type ToolIconKey =
   | "pencil"
   | "plus"
@@ -536,6 +538,23 @@ export const AGENT_TOOL_MANIFEST = {
 } as const satisfies Record<string, AgentToolManifestEntry>;
 
 export type AgentToolName = keyof typeof AGENT_TOOL_MANIFEST;
+
+/** Names of the client-side agent tools, inferred from @mako/agent-tools. */
+export type ClientAgentToolName = keyof MakoUITools;
+
+/**
+ * Compile-time drift guard. Every client-side tool defined in the shared
+ * `@mako/agent-tools` package must have a manifest entry here, since this
+ * manifest drives the chat tool cards and the `onToolCall` client dispatch.
+ * If a client tool is added to the package without a manifest entry, the
+ * `Assert<...>` below fails to satisfy its `extends true` constraint and the
+ * build breaks until the entry is added. (The companion unit test checks the
+ * reverse direction — that manifest client entries match the tool schemas.)
+ */
+type Assert<T extends true> = T;
+export type _AssertManifestCoversClientTools = Assert<
+  ClientAgentToolName extends AgentToolName ? true : false
+>;
 
 function createToolNameSet(
   predicate: (entry: AgentToolManifestEntry) => boolean,

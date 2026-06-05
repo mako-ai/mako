@@ -6,7 +6,7 @@
  * based on runtime context.
  */
 
-import type { SystemModelMessage } from "ai";
+import type { SystemModelMessage, ToolSet } from "ai";
 import type { ConsoleDataV2 } from "../agent-lib/types";
 
 export interface AgentToolExecutionContext {
@@ -164,15 +164,16 @@ export interface AgentContext {
 /**
  * Configuration returned by agent factory
  *
- * Tools can be either:
- * - Server-side tools (created with `tool()` from AI SDK, has execute function)
- * - Client-side tools (plain objects with description and inputSchema, no execute)
+ * Tools are all defined with the AI SDK `tool()` helper and can be either:
+ * - Server-side tools (have an `execute` function that runs on the API)
+ * - Client-side tools (no `execute` — the SDK forwards the call to the browser,
+ *   which runs it via the `onToolCall` handler and returns the output)
  */
 export interface AgentConfig {
   /** System prompt — plain string or structured array with provider options (e.g. Anthropic cacheControl) */
   systemPrompt: string | SystemModelMessage | SystemModelMessage[];
   /** Tools available to the agent - mix of server and client tools */
-  tools: Record<string, unknown>;
+  tools: ToolSet;
 }
 
 /**

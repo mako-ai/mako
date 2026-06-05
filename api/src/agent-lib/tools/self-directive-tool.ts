@@ -1,3 +1,4 @@
+import { tool } from "ai";
 import { z } from "zod";
 import { Workspace } from "../../database/workspace-schema";
 
@@ -106,11 +107,9 @@ const updateSelfDirectiveSchema = z
 
 const readSelfDirectiveSchema = z.object({});
 
-type UpdateInput = z.infer<typeof updateSelfDirectiveSchema>;
-
 export function createSelfDirectiveTools(workspaceId: string) {
   return {
-    read_self_directive: {
+    read_self_directive: tool({
       description:
         "Read the current self-directive -- the workspace-specific rules and knowledge you've learned. Check this before updating to avoid duplicates.",
       inputSchema: readSelfDirectiveSchema,
@@ -132,8 +131,8 @@ export function createSelfDirectiveTools(workspaceId: string) {
           };
         }
       },
-    },
-    update_self_directive: {
+    }),
+    update_self_directive: tool({
       description: [
         "Update the self-directive (persistent workspace-scoped memory). Operations:",
         "- set: Overwrite entire content. Use for initial setup or full rewrites.",
@@ -146,7 +145,7 @@ export function createSelfDirectiveTools(workspaceId: string) {
         "Always read_self_directive first to see what exists before modifying.",
       ].join("\n"),
       inputSchema: updateSelfDirectiveSchema,
-      execute: async (input: UpdateInput) => {
+      execute: async input => {
         try {
           const { operation, content, find, replace, after } = input;
 
@@ -268,6 +267,6 @@ export function createSelfDirectiveTools(workspaceId: string) {
           };
         }
       },
-    },
+    }),
   };
 }

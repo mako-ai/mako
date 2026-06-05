@@ -3,6 +3,7 @@
  * Using plain tool definitions to avoid complex type inference
  */
 
+import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
@@ -10,7 +11,7 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools } from "./console-tools-client";
+import { clientConsoleTools } from "@mako/agent-tools";
 import {
   inferBsonType,
   truncateSamples,
@@ -425,7 +426,7 @@ export const createMongoToolsV2 = (
   return {
     ...clientConsoleTools,
 
-    list_connections: {
+    list_connections: tool({
       description:
         "List all MongoDB connections available in this workspace. Returns connection ID, name, and database name.",
       inputSchema: emptySchema,
@@ -442,16 +443,16 @@ export const createMongoToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    list_databases: {
+    list_databases: tool({
       description:
         "List databases available on the MongoDB server for a specific connection.",
       inputSchema: connectionIdSchema,
-      execute: async (params: { connectionId: string }) => {
+      execute: async ({ connectionId }) => {
         try {
           return await listMongoDatabasesImpl(
-            params.connectionId,
+            connectionId,
             workspaceId,
             toolExecutionContext,
           );
@@ -466,19 +467,16 @@ export const createMongoToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    list_collections: {
+    list_collections: tool({
       description: "List collections in a MongoDB database.",
       inputSchema: connectionAndDbSchema,
-      execute: async (params: {
-        connectionId: string;
-        databaseName: string;
-      }) => {
+      execute: async ({ connectionId, databaseName }) => {
         try {
           return await listCollectionsImpl(
-            params.connectionId,
-            params.databaseName,
+            connectionId,
+            databaseName,
             workspaceId,
             toolExecutionContext,
           );
@@ -493,22 +491,18 @@ export const createMongoToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    inspect_collection: {
+    inspect_collection: tool({
       description:
         "Get collection schema (field names and BSON types) plus up to 25 sample documents. Use this to understand data structure before writing queries.",
       inputSchema: inspectCollectionSchema,
-      execute: async (params: {
-        connectionId: string;
-        collectionName: string;
-        databaseName: string;
-      }) => {
+      execute: async ({ connectionId, collectionName, databaseName }) => {
         try {
           return await inspectCollectionImpl(
-            params.connectionId,
-            params.collectionName,
-            params.databaseName,
+            connectionId,
+            collectionName,
+            databaseName,
             workspaceId,
             toolExecutionContext,
           );
@@ -527,22 +521,18 @@ export const createMongoToolsV2 = (
           };
         }
       },
-    },
+    }),
 
-    execute_query: {
+    execute_query: tool({
       description:
         "Execute a MongoDB query and return results. Write queries in JavaScript using MongoDB Node.js driver syntax (e.g., db.collection('users').find({}).limit(10).toArray()).",
       inputSchema: executeQuerySchema,
-      execute: async (params: {
-        query: string;
-        connectionId: string;
-        databaseName: string;
-      }) => {
+      execute: async ({ query, connectionId, databaseName }) => {
         try {
           return await executeQueryImpl(
-            params.query,
-            params.connectionId,
-            params.databaseName,
+            query,
+            connectionId,
+            databaseName,
             workspaceId,
             userId,
             toolExecutionContext,
@@ -558,6 +548,6 @@ export const createMongoToolsV2 = (
           };
         }
       },
-    },
+    }),
   };
 };
