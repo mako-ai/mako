@@ -38,6 +38,8 @@ import { FlowsExplorer } from "./components/FlowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
+const loadAppsExplorer = () => import("./components/AppsExplorer");
+const AppsExplorer = lazy(loadAppsExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -485,6 +487,8 @@ function MainApp() {
         return <FlowsExplorer />;
       case "dashboards":
         return <DashboardsExplorer />;
+      case "apps":
+        return <AppsExplorer />;
       case "settings":
         return <SettingsExplorer />;
       default:

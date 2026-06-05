@@ -14,7 +14,8 @@ export type TabKind =
   | "connectors"
   | "members"
   | "flow-editor"
-  | "dashboard";
+  | "dashboard"
+  | "app";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
@@ -125,6 +126,7 @@ export type LeftPaneView =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "apps"
   | "settings";
 
 /**
