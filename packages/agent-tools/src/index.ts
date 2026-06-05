@@ -17,6 +17,7 @@ import { clientConsoleTools } from "./console-tools";
 import { clientChartTools } from "./chart-tools";
 import { clientDashboardTools } from "./dashboard-tools";
 import { clientFlowTools } from "./flow-tools";
+import { clientScreenshotTools } from "./screenshot-tools";
 
 export { clientConsoleTools } from "./console-tools";
 export type {
@@ -34,6 +35,9 @@ export type { ModifyChartSpecInput } from "./chart-tools";
 
 export { clientDashboardTools } from "./dashboard-tools";
 export { clientFlowTools } from "./flow-tools";
+
+export { clientScreenshotTools } from "./screenshot-tools";
+export type { CaptureScreenshotInput } from "./screenshot-tools";
 
 export {
   MakoChartSpecBase,

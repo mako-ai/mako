@@ -2069,6 +2069,11 @@ function Editor({
             {consoleTabs.map(tab => (
               <Box
                 key={tab.id}
+                data-mako-tab-id={tab.id}
+                data-mako-tab-kind={tab.kind}
+                data-mako-active-tab-content={
+                  activeConsoleId === tab.id ? "true" : undefined
+                }
                 sx={{
                   height: "100%",
                   display: activeConsoleId === tab.id ? "block" : "none",

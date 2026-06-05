@@ -195,14 +195,14 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
     const gridEl = document.querySelector(".layout") as HTMLElement;
     if (!gridEl) return;
     try {
-      const { default: html2canvas } = await import("html2canvas");
-      const canvas = await html2canvas(gridEl, {
+      const { domToPng } = await import("modern-screenshot");
+      const dataUrl = await domToPng(gridEl, {
         backgroundColor: null,
         scale: 2,
       });
       const link = document.createElement("a");
       link.download = `${dashboard?.title || "dashboard"}.png`;
-      link.href = canvas.toDataURL("image/png");
+      link.href = dataUrl;
       link.click();
     } catch {
       // silent

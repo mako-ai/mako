@@ -326,6 +326,19 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading dashboard state",
     icon: "eye",
   },
+  capture_screenshot: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const target = (input as Record<string, unknown>)?.target;
+      return target
+        ? `Capturing screenshot (${target})`
+        : "Capturing screenshot";
+    },
+    icon: "eye",
+  },
   preview_data_source: {
     domain: "dashboard",
     execution: "client",

@@ -18,6 +18,7 @@ import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
+import { captureScreenshot } from "../agent-runtime/screenshot-agent-tools";
 import { focusDashboardTab, getCurrentWorkspaceId } from "./shell";
 import {
   validateCrossFilterWidgetSql,
@@ -177,6 +178,10 @@ export async function executeDashboardAgentTool(
         error instanceof Error ? error.message : "Failed to open dashboard";
       return { success: false, error: message };
     }
+  }
+
+  if (toolName === "capture_screenshot") {
+    return captureScreenshot(input, { signal });
   }
 
   if (toolName === "create_dashboard") {

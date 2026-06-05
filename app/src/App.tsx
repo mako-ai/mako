@@ -528,6 +528,7 @@ function MainApp() {
     <AuthWrapper>
       <UrlSync />
       <Box
+        data-mako-app-shell="true"
         sx={{
           display: "flex",
           height: "100vh",
@@ -584,7 +585,10 @@ function MainApp() {
           )}
 
           {/* Center (main content) — flexes to fill remaining space */}
-          <Box sx={{ flex: "1 1 0", minWidth: 0, height: "100%" }}>
+          <Box
+            data-mako-main-content="true"
+            sx={{ flex: "1 1 0", minWidth: 0, height: "100%" }}
+          >
             <Editor
               dbFlowFormRef={dbFlowFormRef}
               onChartSpecChangeRef={onChartSpecChangeRef}

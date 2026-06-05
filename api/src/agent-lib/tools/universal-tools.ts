@@ -12,7 +12,11 @@ import { Types } from "mongoose";
 import { DatabaseConnection } from "../../database/workspace-schema";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools, clientChartTools } from "@mako/agent-tools";
+import {
+  clientConsoleTools,
+  clientChartTools,
+  clientScreenshotTools,
+} from "@mako/agent-tools";
 import { createMongoToolsV2 } from "./mongodb-tools";
 import { createSqlToolsV2 } from "./sql-tools";
 
@@ -186,6 +190,9 @@ export const createUniversalTools = (
 
     // Client-side chart tools (no execute function - handled by frontend)
     ...clientChartTools,
+
+    // Client-side visual inspection tool (no execute function - handled by frontend)
+    ...clientScreenshotTools,
 
     // Cross-database connection discovery (server-side)
     list_connections: tool({
