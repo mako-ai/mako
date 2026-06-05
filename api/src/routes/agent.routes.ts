@@ -667,6 +667,18 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     },
   });
 
+  // Drain the stream server-side so generation runs to completion and the
+  // onFinish handler below always fires — even when the client disconnects
+  // (network drop, tab close) or aborts via the Stop button. Without this the
+  // HTTP response stops being pulled on disconnect, onFinish never runs, and
+  // the entire assistant turn (and any tool work) is lost. With abortSignal
+  // wired to the request signal, Stop still halts the LLM; we persist whatever
+  // was generated up to that point.
+  void result.consumeStream({
+    onError: error =>
+      logger.warn("Error draining chat stream", { error, chatId }),
+  });
+
   // Return native AI SDK UI message stream response (for useChat compatibility)
   // Using AI SDK best practice: save once at the end with all messages
   return result.toUIMessageStreamResponse({
@@ -675,7 +687,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     // Forward reasoning tokens from models that support extended thinking
     // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
     sendReasoning: true,
-    onFinish: async ({ messages: allMessages }) => {
+    onFinish: async ({ messages: allMessages, isAborted }) => {
       if (requestExecutionIds.size > 0) {
         await cancelRegisteredExecutions();
         requestExecutionIds.clear();
@@ -775,15 +787,21 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
       const totalTokens = inputTokens + outputTokens;
 
-      logger.info("Stream finished, saving chat", {
-        chatId,
-        messageCount: allMessages.length,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        totalTokens,
-        durationMs,
-      });
+      logger.info(
+        isAborted
+          ? "Stream aborted, saving partial chat"
+          : "Stream finished, saving chat",
+        {
+          chatId,
+          isAborted,
+          messageCount: allMessages.length,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          totalTokens,
+          durationMs,
+        },
+      );
 
       // Compute cost before saving so both trackUsage and saveChat receive it
       let costUsd: number | undefined;
