@@ -4,23 +4,25 @@ import {
   IconButton,
   Tooltip,
   Typography,
+  MenuItem,
+  ListItemIcon,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogContentText,
   DialogActions,
+  TextField,
   Button,
 } from "@mui/material";
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
-  ChevronRight as ChevronRightIcon,
-  ChevronDown as ChevronDownIcon,
   AppWindow as AppIcon,
-  Folder as FolderIcon,
   FileCode as FileIcon,
   Globe as GlobeIcon,
   User as UserIcon,
+  ExternalLink as OpenIcon,
+  Pencil as RenameIcon,
   Trash2 as DeleteIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -28,243 +30,85 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
 import { focusAppTab, focusAppFileTab } from "../app-runtime/shell";
 import type { AppFile } from "@mako/schemas";
+import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 
 const EMPTY_LIST: AppListItem[] = [];
 
-interface TreeNode {
-  name: string;
-  path: string;
-  isDir: boolean;
-  children: TreeNode[];
+// Node id encoding so the flat ResourceTree ids stay unique and parseable.
+// App node:    "<appId>"
+// Folder node: "<appId>::dir::<dirPath>"
+// File node:   "<appId>::file::<filePath>"
+const FILE_SEP = "::file::";
+const DIR_SEP = "::dir::";
+
+function dirname(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
 }
 
-/** Build a nested folder/file tree from a flat list of file paths. */
-function buildFileTree(files: AppFile[]): TreeNode[] {
-  const root: TreeNode = { name: "", path: "", isDir: true, children: [] };
+interface ParsedNode {
+  kind: "app" | "dir" | "file";
+  appId: string;
+  path: string;
+}
+function parseNodeId(id: string): ParsedNode {
+  if (id.includes(FILE_SEP)) {
+    const [appId, path] = id.split(FILE_SEP);
+    return { kind: "file", appId, path };
+  }
+  if (id.includes(DIR_SEP)) {
+    const [appId, path] = id.split(DIR_SEP);
+    return { kind: "dir", appId, path };
+  }
+  return { kind: "app", appId: id, path: "" };
+}
+
+/** Build nested ResourceTree nodes (folders + files) for one app's files. */
+function buildAppFileNodes(
+  appId: string,
+  files: AppFile[],
+): ResourceTreeNode[] {
+  const root: ResourceTreeNode = {
+    id: `${appId}${DIR_SEP}`,
+    name: "",
+    path: "",
+    isDirectory: true,
+    children: [],
+  };
   for (const file of files) {
     const segments = file.path.split("/").filter(Boolean);
     let cursor = root;
     segments.forEach((segment, index) => {
       const isLeaf = index === segments.length - 1;
       const path = segments.slice(0, index + 1).join("/");
-      let child = cursor.children.find(c => c.name === segment);
+      const id = isLeaf
+        ? `${appId}${FILE_SEP}${path}`
+        : `${appId}${DIR_SEP}${path}`;
+      let child = cursor.children?.find(c => c.id === id);
       if (!child) {
-        child = { name: segment, path, isDir: !isLeaf, children: [] };
-        cursor.children.push(child);
+        child = {
+          id,
+          name: segment,
+          path,
+          isDirectory: !isLeaf,
+          children: isLeaf ? undefined : [],
+        };
+        cursor.children?.push(child);
       }
       cursor = child;
     });
   }
-  const sort = (nodes: TreeNode[]) => {
+  const sort = (nodes: ResourceTreeNode[]) => {
     nodes.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-    nodes.forEach(n => sort(n.children));
+    nodes.forEach(n => n.children && sort(n.children));
   };
-  sort(root.children);
-  return root.children;
-}
-
-function FileTree({
-  nodes,
-  depth,
-  activeFilePath,
-  onFileClick,
-}: {
-  nodes: TreeNode[];
-  depth: number;
-  activeFilePath?: string;
-  onFileClick: (path: string) => void;
-}) {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  return (
-    <>
-      {nodes.map(node => {
-        const isOpen = expanded[node.path] ?? depth < 1;
-        const isActive = !node.isDir && node.path === activeFilePath;
-        return (
-          <Box key={node.path}>
-            <Box
-              onClick={() =>
-                node.isDir
-                  ? setExpanded(prev => ({ ...prev, [node.path]: !isOpen }))
-                  : onFileClick(node.path)
-              }
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.5,
-                pl: `${depth * 12 + 28}px`,
-                pr: 1,
-                py: 0.25,
-                cursor: "pointer",
-                fontSize: "0.8rem",
-                color: "text.secondary",
-                backgroundColor: isActive ? "action.selected" : "transparent",
-                "&:hover": {
-                  backgroundColor: isActive
-                    ? "action.selected"
-                    : "action.hover",
-                },
-              }}
-            >
-              {node.isDir ? (
-                <>
-                  {isOpen ? (
-                    <ChevronDownIcon size={14} strokeWidth={1.5} />
-                  ) : (
-                    <ChevronRightIcon size={14} strokeWidth={1.5} />
-                  )}
-                  <FolderIcon size={14} strokeWidth={1.5} />
-                </>
-              ) : (
-                <FileIcon
-                  size={14}
-                  strokeWidth={1.5}
-                  style={{ marginLeft: 14 }}
-                />
-              )}
-              <Typography
-                variant="caption"
-                sx={{
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {node.name}
-              </Typography>
-            </Box>
-            {node.isDir && isOpen && (
-              <FileTree
-                nodes={node.children}
-                depth={depth + 1}
-                activeFilePath={activeFilePath}
-                onFileClick={onFileClick}
-              />
-            )}
-          </Box>
-        );
-      })}
-    </>
-  );
-}
-
-function AppRow({
-  item,
-  workspaceId,
-  isActive,
-  activeFilePath,
-  onDelete,
-}: {
-  item: AppListItem;
-  workspaceId: string;
-  isActive: boolean;
-  activeFilePath?: string;
-  onDelete: (item: AppListItem) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const fetchApp = useAppStore(s => s.fetchApp);
-  const openApp = useAppStore(s => s.openApps[item.id]);
-
-  useEffect(() => {
-    if (expanded && !openApp) {
-      void fetchApp(workspaceId, item.id);
-    }
-  }, [expanded, openApp, fetchApp, workspaceId, item.id]);
-
-  const tree = useMemo(
-    () => (openApp ? buildFileTree(openApp.files) : []),
-    [openApp],
-  );
-
-  return (
-    <Box>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 0.5,
-          px: 1,
-          py: 0.5,
-          cursor: "pointer",
-          backgroundColor: isActive ? "action.selected" : "transparent",
-          "&:hover": { backgroundColor: "action.hover" },
-          "&:hover .app-row-actions": { opacity: 1 },
-        }}
-      >
-        <Box
-          onClick={() => setExpanded(e => !e)}
-          sx={{ display: "flex", alignItems: "center" }}
-        >
-          {expanded ? (
-            <ChevronDownIcon size={16} strokeWidth={1.5} />
-          ) : (
-            <ChevronRightIcon size={16} strokeWidth={1.5} />
-          )}
-        </Box>
-        <Box
-          onClick={() => focusAppTab(item.id, item.name)}
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 0.75,
-            flex: 1,
-            minWidth: 0,
-          }}
-        >
-          <AppIcon size={16} strokeWidth={1.5} />
-          <Typography
-            variant="body2"
-            sx={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {item.name}
-          </Typography>
-        </Box>
-        <Box
-          className="app-row-actions"
-          sx={{ opacity: 0, transition: "opacity 0.15s" }}
-        >
-          <Tooltip title="Delete app">
-            <IconButton size="small" onClick={() => onDelete(item)}>
-              <DeleteIcon size={14} strokeWidth={1.5} />
-            </IconButton>
-          </Tooltip>
-        </Box>
-      </Box>
-      {expanded &&
-        (openApp ? (
-          tree.length > 0 ? (
-            <FileTree
-              nodes={tree}
-              depth={0}
-              activeFilePath={activeFilePath}
-              onFileClick={path => focusAppFileTab(item.id, path)}
-            />
-          ) : (
-            <Typography
-              variant="caption"
-              sx={{ pl: 4, py: 0.5, display: "block", color: "text.disabled" }}
-            >
-              No files
-            </Typography>
-          )
-        ) : (
-          <Typography
-            variant="caption"
-            sx={{ pl: 4, py: 0.5, display: "block", color: "text.disabled" }}
-          >
-            Loading…
-          </Typography>
-        ))}
-    </Box>
-  );
+  sort(root.children || []);
+  return root.children || [];
 }
 
 export function AppsExplorer() {
@@ -277,39 +121,88 @@ export function AppsExplorer() {
   const workspaceApps = useAppStore(
     s => (workspaceId ? s.workspaceApps[workspaceId] : undefined) || EMPTY_LIST,
   );
+  const openApps = useAppStore(s => s.openApps);
   const loading = useAppStore(s =>
     workspaceId ? !!s.loading[workspaceId] : false,
   );
-  const error = useAppStore(s =>
-    workspaceId ? s.error[workspaceId] || null : null,
-  );
+  const error = useAppStore(s => (workspaceId ? s.error[workspaceId] : null));
   const fetchList = useAppStore(s => s.fetchList);
+  const fetchApp = useAppStore(s => s.fetchApp);
   const createApp = useAppStore(s => s.createApp);
   const deleteApp = useAppStore(s => s.deleteApp);
+  const renameApp = useAppStore(s => s.renameApp);
+  const renameFile = useAppStore(s => s.renameFile);
+  const deleteFile = useAppStore(s => s.deleteFile);
+  const persistApp = useAppStore(s => s.persistApp);
 
   const activeTabId = useConsoleStore(s => s.activeTabId);
   const tabs = useConsoleStore(s => s.tabs);
   const activeTab = activeTabId ? tabs[activeTabId] : undefined;
-  // The app whose preview tab is active (highlights the app row).
-  const activeAppId =
-    activeTab?.kind === "app"
-      ? (activeTab.metadata?.appId as string | undefined)
-      : undefined;
-  // The app + file whose file-editor tab is active (highlights the file node).
-  const activeFileAppId =
-    activeTab?.kind === "app-file"
-      ? (activeTab.metadata?.appId as string | undefined)
-      : undefined;
-  const activeFilePath =
-    activeTab?.kind === "app-file"
-      ? (activeTab.metadata?.path as string | undefined)
-      : undefined;
+  const activeItemId = useMemo(() => {
+    if (activeTab?.kind === "app") return activeTab.metadata?.appId as string;
+    if (activeTab?.kind === "app-file") {
+      return `${activeTab.metadata?.appId}${FILE_SEP}${activeTab.metadata?.path}`;
+    }
+    return null;
+  }, [activeTab]);
 
-  const [deleteTarget, setDeleteTarget] = useState<AppListItem | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [loadingApps, setLoadingApps] = useState<Record<string, boolean>>({});
+  const [renameTarget, setRenameTarget] = useState<{
+    parsed: ParsedNode;
+    name: string;
+  } | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<{
+    parsed: ParsedNode;
+    name: string;
+  } | null>(null);
 
   useEffect(() => {
     if (workspaceId) void fetchList(workspaceId);
   }, [workspaceId, fetchList]);
+
+  // Build the section node trees. App nodes are directories whose children are
+  // the file tree (undefined until the app is fetched, so ResourceTree shows a
+  // loading skeleton and fires onLoadChildren).
+  const buildSectionNodes = useCallback(
+    (items: AppListItem[]): ResourceTreeNode[] =>
+      items.map(item => {
+        const loaded = openApps[item.id];
+        return {
+          id: item.id,
+          name: item.name,
+          path: item.id,
+          isDirectory: true,
+          access: item.access,
+          owner_id: item.owner_id,
+          children: loaded
+            ? buildAppFileNodes(item.id, loaded.files)
+            : undefined,
+        };
+      }),
+    [openApps],
+  );
+
+  const sections = useMemo(
+    () => [
+      {
+        key: "my",
+        label: "My Apps",
+        icon: <UserIcon size={16} strokeWidth={1.5} />,
+        nodes: buildSectionNodes(myApps),
+        defaultAccess: "private" as const,
+      },
+      {
+        key: "workspace",
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: buildSectionNodes(workspaceApps),
+        defaultAccess: "workspace" as const,
+      },
+    ],
+    [myApps, workspaceApps, buildSectionNodes],
+  );
 
   const handleCreate = useCallback(async () => {
     if (!workspaceId) return;
@@ -321,11 +214,138 @@ export function AppsExplorer() {
     if (workspaceId) void fetchList(workspaceId);
   }, [workspaceId, fetchList]);
 
+  const handleLoadChildren = useCallback(
+    async (node: ResourceTreeNode) => {
+      const parsed = parseNodeId(node.id);
+      if (parsed.kind !== "app" || !workspaceId || openApps[parsed.appId]) {
+        return;
+      }
+      setLoadingApps(prev => ({ ...prev, [parsed.appId]: true }));
+      await fetchApp(workspaceId, parsed.appId);
+      setLoadingApps(prev => ({ ...prev, [parsed.appId]: false }));
+    },
+    [workspaceId, openApps, fetchApp],
+  );
+
+  const handleItemClick = useCallback((node: ResourceTreeNode) => {
+    const parsed = parseNodeId(node.id);
+    if (parsed.kind === "file") focusAppFileTab(parsed.appId, parsed.path);
+  }, []);
+
+  const getItemIcon = useCallback((node: ResourceTreeNode) => {
+    const parsed = parseNodeId(node.id);
+    if (parsed.kind === "app") {
+      return <AppIcon size={16} strokeWidth={1.5} />;
+    }
+    if (parsed.kind === "file") {
+      return <FileIcon size={16} strokeWidth={1.5} />;
+    }
+    return undefined; // folders use the default folder icon
+  }, []);
+
+  const getContextMenuItems = useCallback(
+    (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
+      const parsed = parseNodeId(node.id);
+      if (parsed.kind === "dir") return []; // virtual folders: no actions
+      const items = [];
+      if (parsed.kind === "app") {
+        items.push(
+          <MenuItem
+            key="open"
+            onClick={() => {
+              focusAppTab(parsed.appId, node.name);
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <OpenIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Open
+          </MenuItem>,
+        );
+      } else {
+        items.push(
+          <MenuItem
+            key="open"
+            onClick={() => {
+              focusAppFileTab(parsed.appId, parsed.path);
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <OpenIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Open
+          </MenuItem>,
+        );
+      }
+      items.push(
+        <MenuItem
+          key="rename"
+          onClick={() => {
+            setRenameTarget({ parsed, name: node.name });
+            setRenameValue(node.name);
+            helpers.closeMenu();
+          }}
+        >
+          <ListItemIcon>
+            <RenameIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Rename
+        </MenuItem>,
+        <MenuItem
+          key="delete"
+          onClick={() => {
+            setDeleteTarget({ parsed, name: node.name });
+            helpers.closeMenu();
+          }}
+        >
+          <ListItemIcon>
+            <DeleteIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Delete
+        </MenuItem>,
+      );
+      return items;
+    },
+    [],
+  );
+
+  const handleRenameConfirm = useCallback(async () => {
+    if (!renameTarget || !workspaceId) return;
+    const next = renameValue.trim();
+    const { parsed } = renameTarget;
+    if (next && next !== renameTarget.name) {
+      if (parsed.kind === "app") {
+        await renameApp(workspaceId, parsed.appId, next);
+      } else if (parsed.kind === "file") {
+        const dir = dirname(parsed.path);
+        const newPath = dir ? `${dir}/${next}` : next;
+        renameFile(parsed.appId, parsed.path, newPath);
+        await persistApp(workspaceId, parsed.appId);
+      }
+    }
+    setRenameTarget(null);
+  }, [
+    renameTarget,
+    renameValue,
+    workspaceId,
+    renameApp,
+    renameFile,
+    persistApp,
+  ]);
+
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget || !workspaceId) return;
-    await deleteApp(workspaceId, deleteTarget.id);
+    const { parsed } = deleteTarget;
+    if (parsed.kind === "app") {
+      await deleteApp(workspaceId, parsed.appId);
+    } else if (parsed.kind === "file") {
+      deleteFile(parsed.appId, parsed.path);
+      await persistApp(workspaceId, parsed.appId);
+    }
     setDeleteTarget(null);
-  }, [deleteTarget, workspaceId, deleteApp]);
+  }, [deleteTarget, workspaceId, deleteApp, deleteFile, persistApp]);
 
   const actions = (
     <>
@@ -342,55 +362,8 @@ export function AppsExplorer() {
     </>
   );
 
-  const renderSection = (
-    label: string,
-    icon: React.ReactNode,
-    items: AppListItem[],
-  ) => (
-    <Box sx={{ mb: 1 }}>
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 0.75,
-          px: 1,
-          py: 0.5,
-          color: "text.secondary",
-        }}
-      >
-        {icon}
-        <Typography
-          variant="caption"
-          sx={{ fontWeight: 600, letterSpacing: 0.3 }}
-        >
-          {label}
-        </Typography>
-      </Box>
-      {items.length === 0 ? (
-        <Typography
-          variant="caption"
-          sx={{ pl: 3, py: 0.25, display: "block", color: "text.disabled" }}
-        >
-          No apps
-        </Typography>
-      ) : (
-        items.map(item =>
-          workspaceId ? (
-            <AppRow
-              key={item.id}
-              item={item}
-              workspaceId={workspaceId}
-              isActive={activeAppId === item.id}
-              activeFilePath={
-                activeFileAppId === item.id ? activeFilePath : undefined
-              }
-              onDelete={setDeleteTarget}
-            />
-          ) : null,
-        )
-      )}
-    </Box>
-  );
+  const isApp = renameTarget?.parsed.kind === "app";
+  const deleteIsApp = deleteTarget?.parsed.kind === "app";
 
   return (
     <>
@@ -413,28 +386,71 @@ export function AppsExplorer() {
           </Box>
         }
       >
-        {() => (
-          <Box sx={{ py: 0.5 }}>
-            {renderSection(
-              "My Apps",
-              <UserIcon size={14} strokeWidth={1.5} />,
-              myApps,
-            )}
-            {renderSection(
-              "Workspace",
-              <GlobeIcon size={14} strokeWidth={1.5} />,
-              workspaceApps,
-            )}
-          </Box>
+        {({ searchQuery }) => (
+          <ResourceTree
+            sections={sections}
+            mode="sidebar"
+            searchQuery={searchQuery}
+            activeItemId={activeItemId}
+            getItemIcon={getItemIcon}
+            getContextMenuItems={getContextMenuItems}
+            onItemClick={handleItemClick}
+            onLoadChildren={handleLoadChildren}
+            isLoadingChildren={node => {
+              const parsed = parseNodeId(node.id);
+              return parsed.kind === "app" && !!loadingApps[parsed.appId];
+            }}
+            enableDragDrop={false}
+            enableRename={false}
+            enableDelete={false}
+            enableNewFolder={false}
+            isFolderExpanded={key => !!expanded[key]}
+            onToggleFolder={key =>
+              setExpanded(prev => ({ ...prev, [key]: !prev[key] }))
+            }
+            onExpandFolder={key =>
+              setExpanded(prev => ({ ...prev, [key]: true }))
+            }
+            getFolderExpansionKey={node => node.id}
+          />
         )}
       </ExplorerShell>
 
+      {/* Rename dialog */}
+      <Dialog
+        open={!!renameTarget}
+        onClose={() => setRenameTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Rename {isApp ? "App" : "File"}</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleRenameConfirm();
+            }}
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
+          <Button onClick={handleRenameConfirm}>Rename</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete confirmation */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete App</DialogTitle>
+        <DialogTitle>Delete {deleteIsApp ? "App" : "File"}</DialogTitle>
         <DialogContent>
           <DialogContentText>
             Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
-            This action cannot be undone.
+            {deleteIsApp ? " This deletes the entire app." : ""} This action
+            cannot be undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>

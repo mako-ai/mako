@@ -76,6 +76,11 @@ interface AppActions {
   createApp: (workspaceId: string, title: string) => Promise<AppEntity | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
   persistApp: (workspaceId: string, appId: string) => Promise<void>;
+  renameApp: (
+    workspaceId: string,
+    appId: string,
+    title: string,
+  ) => Promise<void>;
 
   setActiveApp: (appId: string | null) => void;
 
@@ -236,6 +241,20 @@ export const useAppStore = create<AppStore>()(
           ];
         });
       }
+    },
+
+    renameApp: async (workspaceId, appId, title) => {
+      let appEntity: AppEntity | undefined = get().openApps[appId];
+      if (!appEntity) {
+        appEntity = (await get().fetchApp(workspaceId, appId)) ?? undefined;
+      }
+      if (!appEntity) return;
+      set(state => {
+        const current = state.openApps[appId];
+        if (current) current.title = title;
+      });
+      await get().persistApp(workspaceId, appId);
+      void get().fetchList(workspaceId);
     },
 
     setActiveApp: appId =>
