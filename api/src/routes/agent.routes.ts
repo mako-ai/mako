@@ -41,10 +41,6 @@ import {
   extractConsoleContextFromMessages,
   generateDescriptionAndEmbedding,
 } from "../services/console-description.service";
-import {
-  isEmbeddingAvailable,
-  isVectorSearchAvailable,
-} from "../services/embedding.service";
 import { searchConsoles } from "../agent-lib/tools/console-search-tools";
 import {
   retrieveRelevantSkills,
@@ -517,15 +513,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       .map(p => p.text)
       .join("") ?? "";
 
-  // Auto-discover relevant consoles via embedding search (parallel with other setup)
+  // Auto-discover relevant consoles (parallel with other setup).
+  // `searchConsoles` internally prefers vector search but falls back to
+  // MongoDB $text and regex-name search, so we run it regardless of whether
+  // Atlas vector search / embeddings are available — otherwise self-hosted /
+  // local Mongo deployments would get zero hints and the agent would recreate
+  // consoles it could have found by name.
   let consoleHints = "";
   if (
     (resolvedAgentId === "console" || resolvedAgentId === "unified") &&
-    isEmbeddingAvailable() &&
     messages.length > 0
   ) {
     try {
-      if (lastUserText.length >= 5 && (await isVectorSearchAvailable())) {
+      if (lastUserText.length >= 5) {
         const hints = await searchConsoles(lastUserText, workspaceId, 3);
         if (hints.length > 0) {
           consoleHints =
