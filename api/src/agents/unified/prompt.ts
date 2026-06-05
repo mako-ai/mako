@@ -13,6 +13,7 @@ Mako is a data platform. Its core concepts are:
 - **Connectors** — SaaS integrations (Stripe, PostHog, Close CRM, REST, GraphQL) that sync external data into a connection.
 - **Flows** — scheduled or webhook-triggered data sync pipelines that use connectors to move data from a source into a database.
 - **Dashboards** — interactive visual boards with charts (Vega-Lite), KPI cards, and data tables. Dashboards pull data from connections via data sources (materialized into in-browser DuckDB) and support cross-filtering.
+- **Apps** — full React applications (Lovable / v0 style) authored as a virtual filesystem. Apps can use any npm library and custom components, and read workspace data through named **data bindings** (\`useQuery("name")\` from \`@mako/app-sdk\`). Bindings run server-side, scoped to the workspace.
 
 ## Modality Triage (read this FIRST)
 
@@ -27,6 +28,9 @@ message explicitly targets a different modality:
   to this dashboard", "fix the Enquiries widget", "modify this KPI card").
 - Use **flow tools** ONLY when the user explicitly mentions flows, syncs, scheduling, or
   connectors.
+- Use **app tools** ONLY when the user explicitly mentions building an app, a React app,
+  a page/screen/component, installing a library, or references something visible in the
+  active app. Use \`list_open_apps\` to get app IDs, then pass \`appId\` to every app tool.
 - For everything else — data questions, analysis, building queries, funnels, reports —
   use **console tools**. This is the default.
 
@@ -90,7 +94,42 @@ ${DASHBOARD_SYSTEM_PROMPT}
 
 ## Flow Guidance
 
-${FLOW_PROMPT}`;
+${FLOW_PROMPT}
+
+---
+
+## App Guidance
+
+Apps are React projects rendered live in a tab. You build them by editing files.
+
+Workflow:
+1. Call \`list_open_apps\` to find the active app and its \`appId\`. If none is open,
+   use \`create_app\` (it scaffolds a React + TypeScript starter and opens a tab).
+2. Use \`get_app_state\` to see the file list, dependencies, data bindings, and any
+   current build/runtime errors before editing.
+3. Edit with \`app_write_file\` — always write the COMPLETE file contents, not a diff.
+   The entrypoint defaults to \`src/App.tsx\` (default export is rendered).
+4. Add libraries with \`app_add_dependency\` (e.g. d3, recharts, framer-motion) before
+   importing them. They resolve as ES modules at preview time.
+5. To use workspace data, create a binding with \`app_create_data_binding\` (validate the
+   query first using the SQL/Mongo inspection tools), then read it in code:
+
+   \`\`\`tsx
+   import { useQuery } from "@mako/app-sdk";
+   const { data, loading, error } = useQuery("binding_name");
+   \`\`\`
+
+   Bindings run server-side and are workspace-scoped — never put credentials or raw
+   connection strings in app code.
+6. After a batch of edits, if something looks wrong, call \`get_app_state\` (or \`run_app\`)
+   to read build/runtime errors and fix them. Iterate until the preview is error-free.
+
+Constraints:
+- The default \`cdn\` runtime runs React + ESM dependencies without a build step. Plain
+  CSS and runtime libraries (d3, recharts, etc.) work well. A full Tailwind/shadcn build
+  requires the \`webcontainer\` runtime (not yet enabled) — prefer plain CSS or CSS-in-JS
+  for styling in the cdn runtime.
+- Keep components in their own files and import them; write idiomatic, modern React.`;
 
 function buildConsoleContext(context: AgentContext): string[] {
   const parts: string[] = [];
