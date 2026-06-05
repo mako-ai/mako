@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
-import { Box, Typography } from "@mui/material";
+import { Box, Typography, useTheme } from "@mui/material";
 import MonacoEditor from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
@@ -22,6 +22,7 @@ export default function AppFileEditor({
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
+  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
 
   const appEntity = useAppStore(s => s.openApps[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
@@ -90,6 +91,7 @@ export default function AppFileEditor({
           path={`${appId}/${path}`}
           language={languageForPath(path)}
           value={file.contents}
+          theme={monacoTheme}
           beforeMount={configureMonacoForJsx}
           onChange={handleChange}
           options={{
