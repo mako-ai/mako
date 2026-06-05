@@ -3501,6 +3501,107 @@ export const Dashboard = mongoose.model<IDashboard>(
 );
 
 /**
+ * MakoApp — a workspace-scoped React app (Lovable / v0 style) that runs inside
+ * Mako with first-class access to workspace database connections via data
+ * bindings. The app body is a virtual filesystem (`files`) + npm dependency
+ * manifest (`dependencies`) + `dataBindings`. See `@mako/schemas` AppDefinition.
+ */
+export interface IMakoAppFile {
+  path: string;
+  contents: string;
+}
+
+export interface IMakoAppDataBinding {
+  id: string;
+  name: string;
+  connectionId: string;
+  language: "sql" | "javascript" | "mongodb";
+  code: string;
+  databaseId?: string;
+  databaseName?: string;
+}
+
+export interface IMakoApp extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  description?: string;
+  template: string;
+  runtime: "cdn" | "webcontainer";
+  entrypoint: string;
+  files: IMakoAppFile[];
+  dependencies: Record<string, string>;
+  dataBindings: IMakoAppDataBinding[];
+  version: number;
+  access: "private" | "workspace";
+  owner_id?: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MakoAppFileSchema = new Schema<IMakoAppFile>(
+  {
+    path: { type: String, required: true },
+    contents: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
+  {
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    connectionId: { type: String, required: true },
+    language: {
+      type: String,
+      enum: ["sql", "javascript", "mongodb"],
+      default: "sql",
+    },
+    code: { type: String, default: "" },
+    databaseId: { type: String },
+    databaseName: { type: String },
+  },
+  { _id: false },
+);
+
+const MakoAppSchema = new Schema<IMakoApp>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+      index: true,
+    },
+    title: { type: String, required: true },
+    description: { type: String },
+    template: { type: String, default: "react-ts" },
+    runtime: {
+      type: String,
+      enum: ["cdn", "webcontainer"],
+      default: "cdn",
+    },
+    entrypoint: { type: String, default: "src/App.tsx" },
+    files: { type: [MakoAppFileSchema], default: [] },
+    dependencies: { type: Schema.Types.Mixed, default: {} },
+    dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
+    version: { type: Number, default: 1 },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    owner_id: { type: String, index: true },
+    createdBy: { type: String, required: true },
+  },
+  { timestamps: true },
+);
+
+MakoAppSchema.index({ workspaceId: 1, updatedAt: -1 });
+
+export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
+
+/**
  * Skill — workspace-scoped knowledge + procedure primitive.
  *
  * See GitHub issue #365. A skill is a named, conditional playbook with:

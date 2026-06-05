@@ -39,6 +39,7 @@ import { usageRoutes } from "./routes/usage";
 import { billingRoutes } from "./routes/billing";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook";
 import { dashboardRoutes } from "./routes/dashboards";
+import { appRoutes } from "./routes/apps";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
@@ -138,6 +139,7 @@ if (process.env.NODE_ENV !== "production") {
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
+app.route("/api/workspaces/:workspaceId/apps", appRoutes);
 app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
   dashboardMaterializationRoutes,
