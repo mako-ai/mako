@@ -618,6 +618,17 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       }
     }
     if (body.access !== undefined) {
+      // Changing visibility is owner/admin-only — collaborators can edit
+      // content but must not be able to re-scope who can see the dashboard.
+      if (!DashboardManager.isOwner(dashboard, userId) && !isAdmin) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can change dashboard visibility",
+          },
+          403,
+        );
+      }
       updateFields.access = body.access;
     }
 
@@ -1103,6 +1114,10 @@ app.post("/:id/duplicate", async (c: AuthenticatedContext) => {
     const spec: any = dashboard.toObject();
     delete spec._id;
     delete spec.__v;
+    // A duplicate is a fresh, owner-only private copy: never inherit the
+    // original's collaborators or a stale edit lock.
+    delete spec.sharedWith;
+    delete spec.editLock;
     spec.title = `${spec.title} (copy)`;
     spec.createdBy = userId;
     spec.owner_id = userId;
@@ -1618,6 +1633,16 @@ app.patch("/:id/move", async (c: AuthenticatedContext) => {
       dashboard.folderId = folderId ? new Types.ObjectId(folderId) : undefined;
     }
     if (access !== undefined) {
+      // Visibility changes are owner/admin-only (see PUT handler).
+      if (!DashboardManager.isOwner(dashboard, userId) && !isAdmin) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can change dashboard visibility",
+          },
+          403,
+        );
+      }
       dashboard.access = access;
     }
     await dashboard.save();
@@ -1817,6 +1842,181 @@ app.post("/:id/versions/:version/restore", async (c: AuthenticatedContext) => {
   } catch (error) {
     logger.error("Error restoring dashboard version", { error });
     return c.json({ success: false, error: "Failed to restore version" }, 500);
+  }
+});
+
+// ── Collaborators (per-user editor access) ──
+
+async function loadDashboardForCollaborators(c: AuthenticatedContext) {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!Types.ObjectId.isValid(id)) {
+    return {
+      error: c.json({ success: false, error: "Invalid dashboard ID" }, 400),
+    };
+  }
+  const dashboard = await Dashboard.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+  if (!dashboard) {
+    return {
+      error: c.json({ success: false, error: "Dashboard not found" }, 404),
+    };
+  }
+  return { dashboard, workspaceId };
+}
+
+/**
+ * Only the owner or a workspace admin/owner may manage collaborators.
+ */
+function canManageCollaborators(
+  dashboard: IDashboard,
+  userId: string,
+  memberRole?: string,
+): boolean {
+  if (DashboardManager.isOwner(dashboard, userId)) return true;
+  return memberRole === "owner" || memberRole === "admin";
+}
+
+// GET collaborators - anyone who can read the dashboard can see the list
+app.get("/:id/collaborators", async (c: AuthenticatedContext) => {
+  try {
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const result = await loadDashboardForCollaborators(c);
+    if (result.error) return result.error;
+    const { dashboard, workspaceId } = result;
+
+    if (!DashboardManager.canRead(dashboard, userId)) {
+      return c.json({ success: false, error: "Access denied" }, 403);
+    }
+
+    const members = await workspaceService.getMembers(workspaceId);
+    const emailByUserId = new Map<string, string>(
+      members.map((m: any) => [
+        (m.userId?._id || m.userId)?.toString(),
+        m.userId?.email || "",
+      ]),
+    );
+
+    const collaborators = (dashboard.sharedWith || []).map(s => ({
+      userId: s.userId,
+      role: s.role,
+      email: emailByUserId.get(s.userId) || "",
+      addedAt: s.addedAt,
+    }));
+
+    return c.json({ success: true, data: collaborators });
+  } catch (error) {
+    logger.error("Error listing dashboard collaborators", { error });
+    return c.json(
+      { success: false, error: "Failed to list collaborators" },
+      500,
+    );
+  }
+});
+
+// POST collaborator - add an editor (owner/admin only)
+app.post("/:id/collaborators", async (c: AuthenticatedContext) => {
+  try {
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const result = await loadDashboardForCollaborators(c);
+    if (result.error) return result.error;
+    const { dashboard, workspaceId } = result;
+
+    const memberRole = c.get("memberRole");
+    if (!canManageCollaborators(dashboard, userId, memberRole)) {
+      return c.json(
+        { success: false, error: "Only the owner or an admin can share" },
+        403,
+      );
+    }
+
+    const body = await c.req.json().catch(() => ({}));
+    const targetUserId = String(body?.userId || "").trim();
+    if (!targetUserId) {
+      return c.json({ success: false, error: "userId is required" }, 400);
+    }
+
+    if (DashboardManager.isOwner(dashboard, targetUserId)) {
+      return c.json(
+        { success: false, error: "Owner already has full access" },
+        400,
+      );
+    }
+
+    const members = await workspaceService.getMembers(workspaceId);
+    const isMember = members.some(
+      (m: any) => (m.userId?._id || m.userId)?.toString() === targetUserId,
+    );
+    if (!isMember) {
+      return c.json(
+        { success: false, error: "User is not a member of this workspace" },
+        400,
+      );
+    }
+
+    const alreadyShared = (dashboard.sharedWith || []).some(
+      s => s.userId === targetUserId,
+    );
+    if (!alreadyShared) {
+      dashboard.sharedWith = [
+        ...(dashboard.sharedWith || []),
+        {
+          userId: targetUserId,
+          role: "editor",
+          addedAt: new Date(),
+          addedBy: userId,
+        },
+      ];
+      await dashboard.save();
+    }
+
+    return c.json({ success: true, data: dashboard.sharedWith });
+  } catch (error) {
+    logger.error("Error adding dashboard collaborator", { error });
+    return c.json({ success: false, error: "Failed to add collaborator" }, 500);
+  }
+});
+
+// DELETE collaborator - revoke access (owner/admin only)
+app.delete("/:id/collaborators/:userId", async (c: AuthenticatedContext) => {
+  try {
+    const userId = c.get("user")?.id;
+    if (!userId) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    const result = await loadDashboardForCollaborators(c);
+    if (result.error) return result.error;
+    const { dashboard } = result;
+
+    const memberRole = c.get("memberRole");
+    if (!canManageCollaborators(dashboard, userId, memberRole)) {
+      return c.json(
+        { success: false, error: "Only the owner or an admin can share" },
+        403,
+      );
+    }
+
+    const targetUserId = c.req.param("userId");
+    dashboard.sharedWith = (dashboard.sharedWith || []).filter(
+      s => s.userId !== targetUserId,
+    );
+    await dashboard.save();
+
+    return c.json({ success: true, data: dashboard.sharedWith });
+  } catch (error) {
+    logger.error("Error removing dashboard collaborator", { error });
+    return c.json(
+      { success: false, error: "Failed to remove collaborator" },
+      500,
+    );
   }
 });
 

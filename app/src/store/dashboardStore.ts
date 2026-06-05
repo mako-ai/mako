@@ -163,6 +163,16 @@ interface DashboardStoreState {
     workspaceId: string,
     id: string,
   ) => Promise<Dashboard | null>;
+  shareDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+    userId: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
+  unshareDashboard: (
+    workspaceId: string,
+    dashboardId: string,
+    userId: string,
+  ) => Promise<{ ok: boolean; error?: string }>;
   openDashboard: (
     workspaceId: string,
     dashboardId: string,
@@ -977,6 +987,57 @@ export const useDashboardStore = create<DashboardStoreState>()(
             await get().reloadDashboard(workspaceId, dashboardId);
           }
           return false;
+        }
+      },
+
+      shareDashboard: async (
+        workspaceId: string,
+        dashboardId: string,
+        userId: string,
+      ) => {
+        try {
+          const response = await apiClient.post<{
+            success: boolean;
+            data: Dashboard["sharedWith"];
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/collaborators`,
+            { userId },
+          );
+          set(state => {
+            const d = state.openDashboards[dashboardId];
+            if (d) d.sharedWith = response.data ?? [];
+          });
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : "Failed to share",
+          };
+        }
+      },
+
+      unshareDashboard: async (
+        workspaceId: string,
+        dashboardId: string,
+        userId: string,
+      ) => {
+        try {
+          const response = await apiClient.delete<{
+            success: boolean;
+            data: Dashboard["sharedWith"];
+          }>(
+            `/workspaces/${workspaceId}/dashboards/${dashboardId}/collaborators/${userId}`,
+          );
+          set(state => {
+            const d = state.openDashboards[dashboardId];
+            if (d) d.sharedWith = response?.data ?? [];
+          });
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : "Failed to remove",
+          };
         }
       },
 

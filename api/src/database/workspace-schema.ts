@@ -2929,6 +2929,16 @@ export interface IDashboard extends Document {
 
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
+  /**
+   * Per-user collaborators granted explicit edit access, independent of the
+   * `access` level. Anyone listed here can read + write the dashboard.
+   */
+  sharedWith?: Array<{
+    userId: string;
+    role: "editor";
+    addedAt: Date;
+    addedBy?: string;
+  }>;
   owner_id?: string;
   createdBy: string;
   createdAt: Date;
@@ -3258,6 +3268,17 @@ const DashboardSchema = new Schema<IDashboard>(
       enum: ["private", "workspace"],
       default: "private",
     },
+    sharedWith: {
+      type: [
+        {
+          userId: { type: String, required: true },
+          role: { type: String, enum: ["editor"], default: "editor" },
+          addedAt: { type: Date, default: Date.now },
+          addedBy: { type: String },
+        },
+      ],
+      default: [],
+    },
     owner_id: { type: String },
     createdBy: { type: String, required: true },
   },
@@ -3270,6 +3291,7 @@ const DashboardSchema = new Schema<IDashboard>(
 DashboardSchema.index({ workspaceId: 1 });
 DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
 DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
+DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 
 /**
  * DashboardFolder Schema
