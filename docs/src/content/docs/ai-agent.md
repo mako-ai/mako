@@ -137,6 +137,12 @@ Models tagged with `reasoning` in the Gateway catalog automatically enable exten
 
 Users pick their preferred model in the chat UI. The model is persisted per-user in workspace settings. If a user's saved model becomes unavailable (e.g. billing downgrade), Mako falls back to the best available model for their plan.
 
+### Utility / Fast Model
+
+Cheap, high-volume tasks — AI-suggested version commit messages, summaries, and other internal helpers — run on a dedicated **utility model** instead of the user's chosen chat model. By default Mako auto-selects the cheapest capable tool-use model, cheapest first.
+
+A super admin can pin an explicit utility model from **Settings → Admin → Model curation** (`PUT /api/admin/catalog/defaults` with `utilityModelId`). The pinned model is promoted to the front of the ranking as long as it stays visible in the catalog; if it disappears, Mako falls back to the cheapest available model. Set it to `null` to return to automatic selection.
+
 ## Safety
 
 - SELECT queries are auto-limited to 500 rows unless you explicitly override

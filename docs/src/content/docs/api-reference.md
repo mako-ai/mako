@@ -220,6 +220,7 @@ The response is a **Server-Sent Events (SSE)** stream:
 | `GET`    | `/api/workspaces/:wid/chats/:id` | Get chat details   |
 | `PUT`    | `/api/workspaces/:wid/chats/:id` | Update chat title  |
 | `DELETE` | `/api/workspaces/:wid/chats/:id` | Delete a chat      |
+| `GET`    | `/api/workspaces/:wid/chat-images/:attachmentId` | Fetch a stored chat image attachment (authenticated proxy) |
 
 
 ## Skills
@@ -266,6 +267,7 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 | `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
 | `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
 | `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/version-comment`           | AI-suggested commit message for pending changes |
 
 ### Dashboard Folders
 

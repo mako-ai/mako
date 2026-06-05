@@ -135,6 +135,18 @@ Dashboards use an edit lock to prevent concurrent editing conflicts:
 
 If another user holds the lock, a confirmation dialog offers to take over.
 
+## Versioning & Commit Messages
+
+Saving a dashboard creates a version snapshot in its history. When you save, the **Save version** dialog asks for a **Commit message** describing what changed — this labels the saved version in its history, not the dashboard itself.
+
+Mako can suggest the commit message for you. On save, it diffs the pending dashboard definition against the latest saved snapshot (volatile cache state stripped) and folds in the chat prompts that drove the changes, then drafts a message with the cheap [utility model](/ai-agent/#utility--fast-model). This mirrors how console versions work.
+
+```
+POST /api/workspaces/:wid/dashboards/:did/version-comment
+```
+
+Returns `{ "comment": "..." }` — the suggested message for the changes about to be saved. You can accept it as-is or edit before confirming the save.
+
 ## Scheduled Refresh
 
 Data sources can be refreshed on a schedule using cron expressions:
