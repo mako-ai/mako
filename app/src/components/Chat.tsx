@@ -40,10 +40,12 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Circle,
   Copy,
   Check,
   History,
   ImagePlus,
+  Pencil,
   Plus,
   MessageSquare,
   Trash2,
@@ -920,90 +922,225 @@ interface QueuedPrompt {
 
 interface QueuedPromptListProps {
   prompts: QueuedPrompt[];
+  onEdit: (id: string, text: string) => void;
+  onPromote: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
-const QueuedPromptList = React.memo(
-  ({ prompts, onRemove }: QueuedPromptListProps) => {
-    if (prompts.length === 0) return null;
+interface QueuedPromptRowProps {
+  prompt: QueuedPrompt;
+  onEdit: (id: string, text: string) => void;
+  onPromote: (id: string) => void;
+  onRemove: (id: string) => void;
+}
+
+const QUEUED_ROW_ACTION_BTN_SX = {
+  width: 22,
+  height: 22,
+  flexShrink: 0,
+  color: "text.secondary",
+  "&:hover": { color: "text.primary" },
+} as const;
+
+// One queued prompt. Owns its own inline-edit state so editing a single row
+// doesn't re-render its siblings.
+const QueuedPromptRow = React.memo(
+  ({ prompt, onEdit, onPromote, onRemove }: QueuedPromptRowProps) => {
+    const [isEditing, setIsEditing] = useState(false);
+    const [draft, setDraft] = useState(prompt.text);
+
+    const imageCount = prompt.files?.length ?? 0;
+    const display = prompt.text || (imageCount > 0 ? "Image attachment" : "");
+
+    const startEdit = useCallback(() => {
+      setDraft(prompt.text);
+      setIsEditing(true);
+    }, [prompt.text]);
+
+    const commit = useCallback(() => {
+      setIsEditing(false);
+      const next = draft.trim();
+      if (next && next !== prompt.text) onEdit(prompt.id, next);
+    }, [draft, prompt.id, prompt.text, onEdit]);
+
+    const cancel = useCallback(() => {
+      setDraft(prompt.text);
+      setIsEditing(false);
+    }, [prompt.text]);
 
     return (
       <Box
         sx={{
-          mx: 1,
-          mb: 0.5,
           display: "flex",
-          flexDirection: "column",
-          gap: 0.5,
+          alignItems: "center",
+          gap: 1,
+          px: 1,
+          py: 0.5,
+          borderRadius: 1,
+          minHeight: 32,
+          "&:hover": { backgroundColor: "action.hover" },
+          "&:hover .queued-prompt-actions": { opacity: 1 },
         }}
       >
-        {prompts.map((prompt, index) => {
-          const truncated =
-            prompt.text.length > 120
-              ? `${prompt.text.slice(0, 120)}…`
-              : prompt.text;
-          const imageCount = prompt.files?.length ?? 0;
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            color: "text.secondary",
+            flexShrink: 0,
+          }}
+        >
+          <Circle size={10} />
+        </Box>
 
-          return (
-            <Box
-              key={prompt.id}
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
-                px: 1,
-                py: 0.75,
-                borderRadius: 1.5,
-                border: 1,
-                borderColor: "divider",
-                backgroundColor: "action.hover",
-              }}
-            >
-              <Typography
-                variant="caption"
-                sx={{ color: "text.secondary", flexShrink: 0 }}
-              >
-                {index + 1}
-              </Typography>
-              <Typography
-                variant="body2"
-                sx={{
-                  flex: 1,
-                  minWidth: 0,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  fontSize: 13,
-                }}
-              >
-                {truncated || (imageCount > 0 ? "Image attachment" : "")}
-              </Typography>
-              {imageCount > 0 && (
-                <Typography
-                  variant="caption"
-                  sx={{ color: "text.secondary", flexShrink: 0 }}
-                >
-                  {imageCount} {imageCount === 1 ? "image" : "images"}
-                </Typography>
-              )}
-              <IconButton
-                type="button"
-                aria-label="Remove queued prompt"
-                onClick={() => onRemove(prompt.id)}
-                size="small"
-                sx={{
-                  width: 20,
-                  height: 20,
-                  flexShrink: 0,
-                  color: "text.secondary",
-                  "&:hover": { color: "text.primary" },
-                }}
-              >
-                <X size={12} />
-              </IconButton>
-            </Box>
-          );
-        })}
+        {isEditing ? (
+          <TextField
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancel();
+              }
+            }}
+            autoFocus
+            size="small"
+            variant="standard"
+            fullWidth
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              "& .MuiInputBase-input": { fontSize: 13, py: 0.25 },
+            }}
+          />
+        ) : (
+          <Typography
+            variant="body2"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontSize: 13,
+              color: "text.primary",
+            }}
+          >
+            {display}
+          </Typography>
+        )}
+
+        {imageCount > 0 && !isEditing && (
+          <Typography
+            variant="caption"
+            sx={{ color: "text.secondary", flexShrink: 0 }}
+          >
+            {imageCount} {imageCount === 1 ? "image" : "images"}
+          </Typography>
+        )}
+
+        <Box
+          className="queued-prompt-actions"
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.25,
+            flexShrink: 0,
+            opacity: 0,
+            transition: "opacity 120ms ease",
+          }}
+        >
+          <IconButton
+            type="button"
+            aria-label="Edit queued prompt"
+            onClick={startEdit}
+            size="small"
+            sx={QUEUED_ROW_ACTION_BTN_SX}
+          >
+            <Pencil size={14} />
+          </IconButton>
+          <IconButton
+            type="button"
+            aria-label="Send queued prompt next"
+            onClick={() => onPromote(prompt.id)}
+            size="small"
+            sx={QUEUED_ROW_ACTION_BTN_SX}
+          >
+            <ArrowUp size={14} />
+          </IconButton>
+          <IconButton
+            type="button"
+            aria-label="Remove queued prompt"
+            onClick={() => onRemove(prompt.id)}
+            size="small"
+            sx={QUEUED_ROW_ACTION_BTN_SX}
+          >
+            <Trash2 size={14} />
+          </IconButton>
+        </Box>
+      </Box>
+    );
+  },
+);
+QueuedPromptRow.displayName = "QueuedPromptRow";
+
+const QueuedPromptList = React.memo(
+  ({ prompts, onEdit, onPromote, onRemove }: QueuedPromptListProps) => {
+    const [expanded, setExpanded] = useState(true);
+
+    if (prompts.length === 0) return null;
+
+    return (
+      <Box sx={{ mx: 1, mb: 0.5 }}>
+        <Box
+          role="button"
+          tabIndex={0}
+          aria-expanded={expanded}
+          onClick={() => setExpanded(prev => !prev)}
+          onKeyDown={e => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setExpanded(prev => !prev);
+            }
+          }}
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.5,
+            px: 1,
+            py: 0.5,
+            cursor: "pointer",
+            color: "text.secondary",
+            borderRadius: 1,
+            "&:hover": { color: "text.primary" },
+          }}
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Typography
+            variant="caption"
+            sx={{ fontWeight: 600, letterSpacing: 0.2 }}
+          >
+            {prompts.length} Queued
+          </Typography>
+        </Box>
+
+        {expanded && (
+          <Box sx={{ display: "flex", flexDirection: "column" }}>
+            {prompts.map(prompt => (
+              <QueuedPromptRow
+                key={prompt.id}
+                prompt={prompt}
+                onEdit={onEdit}
+                onPromote={onPromote}
+                onRemove={onRemove}
+              />
+            ))}
+          </Box>
+        )}
       </Box>
     );
   },
@@ -2479,6 +2616,26 @@ const Chat: React.FC<ChatProps> = ({
     setQueuedPrompts(prev => prev.filter(prompt => prompt.id !== id));
   }, []);
 
+  const handleEditQueuedPrompt = useCallback((id: string, text: string) => {
+    setQueuedPrompts(prev =>
+      prev.map(prompt => (prompt.id === id ? { ...prompt, text } : prompt)),
+    );
+  }, []);
+
+  // Promote = move to front of the queue so it drains next. While the agent is
+  // busy this only reorders; the existing drain effect sends the front item when
+  // the agent next goes idle (we don't bypass the busy guard).
+  const handlePromoteQueuedPrompt = useCallback((id: string) => {
+    setQueuedPrompts(prev => {
+      const index = prev.findIndex(prompt => prompt.id === id);
+      if (index <= 0) return prev;
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.unshift(item);
+      return next;
+    });
+  }, []);
+
   // Copy chat history handler
   const [copiedChat, setCopiedChat] = useState(false);
   const handleCopyChatHistory = async () => {
@@ -2755,6 +2912,8 @@ const Chat: React.FC<ChatProps> = ({
 
       <QueuedPromptList
         prompts={queuedPrompts}
+        onEdit={handleEditQueuedPrompt}
+        onPromote={handlePromoteQueuedPrompt}
         onRemove={handleRemoveQueuedPrompt}
       />
 
