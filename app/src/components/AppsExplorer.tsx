@@ -394,6 +394,7 @@ export function AppsExplorer() {
             activeItemId={activeItemId}
             getItemIcon={getItemIcon}
             getContextMenuItems={getContextMenuItems}
+            hideFolderIcon
             onItemClick={handleItemClick}
             onLoadChildren={handleLoadChildren}
             isLoadingChildren={node => {
