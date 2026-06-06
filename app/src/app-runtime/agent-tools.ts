@@ -175,6 +175,8 @@ export async function executeAppAgentTool(
     case "app_create_data_binding": {
       if (!appId) return fail("appId is required");
       await ensureApp(appId);
+      const materialization =
+        input.materialization === "parquet" ? "parquet" : "live";
       const binding = store.addDataBinding(appId, {
         name: input.name as string,
         connectionId: input.connectionId as string,
@@ -182,13 +184,39 @@ export async function executeAppAgentTool(
         code: input.code as string,
         databaseId: input.databaseId as string | undefined,
         databaseName: input.databaseName as string | undefined,
+        materialization,
       });
       if (!binding) return fail("Failed to create data binding");
       await persist();
       return {
         success: true,
+        binding: { name: binding.name, materialization },
+        hint:
+          materialization === "parquet"
+            ? `Call materialize_binding for "${binding.name}", then read it with useQuery("${binding.name}") or run analytics with useDuckDB(sql) from '@mako/app-sdk'.`
+            : `Read it in app code with useQuery("${binding.name}") from '@mako/app-sdk'.`,
+      };
+    }
+
+    case "materialize_binding": {
+      if (!appId || !workspaceId) {
+        return fail("appId and workspace are required");
+      }
+      const appEntity = await ensureApp(appId);
+      const binding = appEntity?.dataBindings.find(b => b.name === input.name);
+      if (!binding) return fail(`No data binding named "${input.name}"`);
+      const result = await store.materializeBinding(
+        workspaceId,
+        appId,
+        binding.id,
+      );
+      if (!result.success) {
+        return fail(result.error || "Materialization failed");
+      }
+      return {
+        success: true,
         binding: { name: binding.name },
-        hint: `Read it in app code with useQuery("${binding.name}") from '@mako/app-sdk'.`,
+        hint: `Materialized. Read it with useQuery("${binding.name}") or useDuckDB(sql).`,
       };
     }
 

@@ -66,6 +66,21 @@ const createDataBindingSchema = z.object({
   code: z.string().describe("Query text/code to execute server-side"),
   databaseId: z.string().optional(),
   databaseName: z.string().optional(),
+  materialization: z
+    .enum(["live", "parquet"])
+    .default("live")
+    .describe(
+      "'live' runs the query server-side on every read. 'parquet' materializes " +
+        "the query to a Parquet artifact loaded into DuckDB-WASM in the browser, " +
+        "enabling fast client-side analytical SQL via useDuckDB(sql). " +
+        "Use 'parquet' for analytics/aggregation over larger result sets; after " +
+        "creating a parquet binding, call materialize_binding to build it.",
+    ),
+});
+
+const materializeBindingSchema = z.object({
+  appId: appIdField,
+  name: z.string().describe("Name of the parquet binding to (re)materialize"),
 });
 
 const createAppSchema = z.object({
@@ -134,9 +149,17 @@ export const clientAppTools = {
     description:
       "Create a named data binding that the app can read via useQuery(name) " +
       "from '@mako/app-sdk'. The query runs server-side, scoped to the " +
-      "workspace — the app never sees credentials. Use the SQL connections/tools " +
-      "to inspect schema and validate the query before binding.",
+      "workspace — the app never sees credentials. Set materialization to " +
+      "'parquet' for DuckDB-WASM-backed analytics (then call materialize_binding). " +
+      "Use the SQL connections/tools to inspect schema and validate the query first.",
     inputSchema: createDataBindingSchema,
+  }),
+  materialize_binding: tool({
+    description:
+      "Build (or rebuild) the Parquet artifact for a 'parquet' data binding and " +
+      "load it into the app's DuckDB-WASM instance. Run this after creating or " +
+      "editing a parquet binding so useQuery/useDuckDB return fresh data.",
+    inputSchema: materializeBindingSchema,
   }),
   run_app: tool({
     description:

@@ -121,6 +121,20 @@ Workflow:
 
    Bindings run server-side and are workspace-scoped — never put credentials or raw
    connection strings in app code.
+
+   **Materialized bindings (DuckDB):** set \`materialization: "parquet"\` to materialize
+   the query into a Parquet artifact (same pipeline as dashboards) that is loaded into
+   DuckDB-WASM in the browser. After creating/editing a parquet binding, call
+   \`materialize_binding\`. Then the app can run fast analytical SQL client-side:
+
+   \`\`\`tsx
+   import { useDuckDB } from "@mako/app-sdk";
+   // table names are the binding names
+   const { data } = useDuckDB('SELECT category, SUM(amount) AS total FROM "orders" GROUP BY 1');
+   \`\`\`
+
+   Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
+   live useQuery for small, always-fresh lookups.
 6. After a batch of edits, if something looks wrong, call \`get_app_state\` (or \`run_app\`)
    to read build/runtime errors and fix them. Iterate until the preview is error-free.
 

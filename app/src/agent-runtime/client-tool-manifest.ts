@@ -508,6 +508,17 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "database",
     preview: { field: "code", language: "sql" },
   },
+  materialize_binding: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Materializing "${name}"` : "Materializing binding";
+    },
+    icon: "database",
+  },
   run_app: {
     domain: "app",
     execution: "client",
