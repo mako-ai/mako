@@ -23,6 +23,7 @@ import {
   Menu,
   ListItemIcon,
   Alert,
+  Collapse,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -546,6 +547,12 @@ const pulseAnimation = keyframes`
   50% { opacity: 1; transform: scale(1.35); }
 `;
 
+// Queue card slides up from behind the chat input as it reveals
+const queueSlideUp = keyframes`
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
+`;
+
 // Stable style objects to prevent re-renders
 const streamingIndicatorContainerSx = {
   display: "flex",
@@ -922,14 +929,16 @@ interface QueuedPrompt {
 
 interface QueuedPromptListProps {
   prompts: QueuedPrompt[];
-  onEdit: (id: string, text: string) => void;
+  editingId: string | null;
+  onStartEdit: (id: string) => void;
   onPromote: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
 interface QueuedPromptRowProps {
   prompt: QueuedPrompt;
-  onEdit: (id: string, text: string) => void;
+  isEditing: boolean;
+  onStartEdit: (id: string) => void;
   onPromote: (id: string) => void;
   onRemove: (id: string) => void;
 }
@@ -942,31 +951,18 @@ const QUEUED_ROW_ACTION_BTN_SX = {
   "&:hover": { color: "text.primary" },
 } as const;
 
-// One queued prompt. Owns its own inline-edit state so editing a single row
-// doesn't re-render its siblings.
+// One queued prompt. Editing happens in the main composer (Cursor-style), so
+// the row itself only renders the prompt + hover actions.
 const QueuedPromptRow = React.memo(
-  ({ prompt, onEdit, onPromote, onRemove }: QueuedPromptRowProps) => {
-    const [isEditing, setIsEditing] = useState(false);
-    const [draft, setDraft] = useState(prompt.text);
-
+  ({
+    prompt,
+    isEditing,
+    onStartEdit,
+    onPromote,
+    onRemove,
+  }: QueuedPromptRowProps) => {
     const imageCount = prompt.files?.length ?? 0;
     const display = prompt.text || (imageCount > 0 ? "Image attachment" : "");
-
-    const startEdit = useCallback(() => {
-      setDraft(prompt.text);
-      setIsEditing(true);
-    }, [prompt.text]);
-
-    const commit = useCallback(() => {
-      setIsEditing(false);
-      const next = draft.trim();
-      if (next && next !== prompt.text) onEdit(prompt.id, next);
-    }, [draft, prompt.id, prompt.text, onEdit]);
-
-    const cancel = useCallback(() => {
-      setDraft(prompt.text);
-      setIsEditing(false);
-    }, [prompt.text]);
 
     return (
       <Box
@@ -978,7 +974,10 @@ const QueuedPromptRow = React.memo(
           py: 0.5,
           borderRadius: 1,
           minHeight: 32,
-          "&:hover": { backgroundColor: "action.hover" },
+          backgroundColor: isEditing ? "action.selected" : "transparent",
+          "&:hover": {
+            backgroundColor: isEditing ? "action.selected" : "action.hover",
+          },
           "&:hover .queued-prompt-actions": { opacity: 1 },
         }}
       >
@@ -993,48 +992,22 @@ const QueuedPromptRow = React.memo(
           <Circle size={10} />
         </Box>
 
-        {isEditing ? (
-          <TextField
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onBlur={commit}
-            onKeyDown={e => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                cancel();
-              }
-            }}
-            autoFocus
-            size="small"
-            variant="standard"
-            fullWidth
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              "& .MuiInputBase-input": { fontSize: 13, py: 0.25 },
-            }}
-          />
-        ) : (
-          <Typography
-            variant="body2"
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontSize: 13,
-              color: "text.primary",
-            }}
-          >
-            {display}
-          </Typography>
-        )}
+        <Typography
+          variant="body2"
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            fontSize: 13,
+            color: "text.primary",
+          }}
+        >
+          {display}
+        </Typography>
 
-        {imageCount > 0 && !isEditing && (
+        {imageCount > 0 && (
           <Typography
             variant="caption"
             sx={{ color: "text.secondary", flexShrink: 0 }}
@@ -1057,7 +1030,7 @@ const QueuedPromptRow = React.memo(
           <IconButton
             type="button"
             aria-label="Edit queued prompt"
-            onClick={startEdit}
+            onClick={() => onStartEdit(prompt.id)}
             size="small"
             sx={QUEUED_ROW_ACTION_BTN_SX}
           >
@@ -1089,7 +1062,13 @@ const QueuedPromptRow = React.memo(
 QueuedPromptRow.displayName = "QueuedPromptRow";
 
 const QueuedPromptList = React.memo(
-  ({ prompts, onEdit, onPromote, onRemove }: QueuedPromptListProps) => {
+  ({
+    prompts,
+    editingId,
+    onStartEdit,
+    onPromote,
+    onRemove,
+  }: QueuedPromptListProps) => {
     const [expanded, setExpanded] = useState(true);
 
     if (prompts.length === 0) return null;
@@ -1097,12 +1076,17 @@ const QueuedPromptList = React.memo(
     return (
       <Box
         sx={{
-          mx: 1,
-          mb: 0.5,
+          mx: 2.25,
+          mb: 0,
           border: 1,
+          borderBottom: 0,
           borderColor: "divider",
           borderRadius: 2.5,
+          borderBottomLeftRadius: 0,
+          borderBottomRightRadius: 0,
           p: 0.5,
+          transformOrigin: "bottom",
+          animation: `${queueSlideUp} 220ms cubic-bezier(0.4, 0, 0.2, 1)`,
         }}
       >
         <Box
@@ -1143,7 +1127,8 @@ const QueuedPromptList = React.memo(
               <QueuedPromptRow
                 key={prompt.id}
                 prompt={prompt}
-                onEdit={onEdit}
+                isEditing={prompt.id === editingId}
+                onStartEdit={onStartEdit}
                 onPromote={onPromote}
                 onRemove={onRemove}
               />
@@ -1163,6 +1148,8 @@ interface ChatInputAreaProps {
   disabled: boolean;
   focusKey: string | number;
   paletteMode: "light" | "dark";
+  editingPrompt: QueuedPrompt | null;
+  onCancelEdit: () => void;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -1182,6 +1169,8 @@ const ChatInputArea = React.memo(
     disabled,
     focusKey,
     paletteMode: _paletteMode,
+    editingPrompt,
+    onCancelEdit,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -1190,6 +1179,12 @@ const ChatInputArea = React.memo(
     const inputRef = useRef<HTMLInputElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const imagesRef = useRef<ImageAttachment[]>([]);
+    // When entering edit mode, load the queued prompt's text into the composer
+    // and stash whatever the user was drafting so Cancel/commit can restore it.
+    const inputValueRef = useRef(input);
+    inputValueRef.current = input;
+    const preEditDraftRef = useRef("");
+    const prevEditingIdRef = useRef<string | null>(null);
     useRenderCount("ChatInputArea", {
       isLoading,
       disabled,
@@ -1209,6 +1204,21 @@ const ChatInputArea = React.memo(
       const timer = setTimeout(() => inputRef.current?.focus(), 100);
       return () => clearTimeout(timer);
     }, [focusKey]);
+
+    useEffect(() => {
+      const prevId = prevEditingIdRef.current;
+      const currId = editingPrompt?.id ?? null;
+      if (currId === prevId) return;
+      if (currId) {
+        if (!prevId) preEditDraftRef.current = inputValueRef.current;
+        setInput(editingPrompt?.text ?? "");
+        setTimeout(() => inputRef.current?.focus(), 0);
+      } else {
+        setInput(preEditDraftRef.current);
+        preEditDraftRef.current = "";
+      }
+      prevEditingIdRef.current = currId;
+    }, [editingPrompt]);
 
     useEffect(() => {
       return () => {
@@ -1304,6 +1314,45 @@ const ChatInputArea = React.memo(
           gap: 1,
         }}
       >
+        {editingPrompt && (
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              px: 0.5,
+              pb: 0.5,
+              mb: 0.5,
+              borderBottom: 1,
+              borderColor: "divider",
+            }}
+          >
+            <Typography
+              variant="caption"
+              sx={{ fontWeight: 600, color: "text.secondary" }}
+            >
+              Editing queued message
+            </Typography>
+            <Typography
+              component="button"
+              type="button"
+              onClick={onCancelEdit}
+              variant="caption"
+              sx={{
+                border: "none",
+                background: "none",
+                cursor: "pointer",
+                color: "primary.main",
+                fontWeight: 600,
+                p: 0,
+                "&:hover": { textDecoration: "underline" },
+              }}
+            >
+              Cancel
+            </Typography>
+          </Box>
+        )}
+
         <form
           onSubmit={e => {
             e.preventDefault();
@@ -1396,13 +1445,19 @@ const ChatInputArea = React.memo(
             multiline
             minRows={1}
             maxRows={6}
-            placeholder="Ask Chat..."
+            placeholder={
+              editingPrompt ? "Edit queued message..." : "Ask Chat..."
+            }
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 submitMessage();
+              }
+              if (e.key === "Escape" && editingPrompt) {
+                e.preventDefault();
+                onCancelEdit();
               }
               if (e.key === "Backspace" && !input && images.length > 0) {
                 e.preventDefault();
@@ -1695,6 +1750,14 @@ const Chat: React.FC<ChatProps> = ({
   const queuedPromptsRef = useRef(queuedPrompts);
   const isLoadingRef = useRef(false);
   queuedPromptsRef.current = queuedPrompts;
+  // Id of the queued prompt currently being edited in the composer (Cursor-style).
+  const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
+  const editingPromptIdRef = useRef<string | null>(null);
+  editingPromptIdRef.current = editingPromptId;
+  const editingPrompt = useMemo(
+    () => queuedPrompts.find(prompt => prompt.id === editingPromptId) ?? null,
+    [queuedPrompts, editingPromptId],
+  );
   workspaceIdRef.current = currentWorkspace?.id;
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
@@ -2550,6 +2613,8 @@ const Chat: React.FC<ChatProps> = ({
       // clearError flips status back to "ready" and re-triggers this drain.
       status === "error" ||
       queuedPromptsRef.current.length === 0 ||
+      // Don't drain the head item while the user is editing it in the composer.
+      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current ||
       autoSendWhenComplete({ messages: messagesRef.current }) ||
       hasPendingAssistantToolCalls(messagesRef.current)
     ) {
@@ -2557,6 +2622,12 @@ const Chat: React.FC<ChatProps> = ({
     }
 
     const [next, ...rest] = queuedPromptsRef.current;
+    // Synchronously advance the queue and mark loading BEFORE sending so a
+    // second drain trigger firing in the same tick (the [isLoading,status]
+    // effect and the onFinish microtask can both run before React re-renders)
+    // bails out at the guards above instead of re-sending the same prompt.
+    queuedPromptsRef.current = rest;
+    isLoadingRef.current = true;
     setQueuedPrompts(rest);
     capturedConsoleIdRef.current = next.consoleId;
     capturedDashboardIdRef.current = next.dashboardId;
@@ -2572,6 +2643,22 @@ const Chat: React.FC<ChatProps> = ({
     tryDrainQueuedPromptRef.current();
 
   const handleChatSubmit = useCallback((text: string, files?: FileUIPart[]) => {
+    // Committing an edit of a queued prompt: update the queue entry in place
+    // instead of sending/queuing a new message.
+    if (editingPromptIdRef.current) {
+      const id = editingPromptIdRef.current;
+      const trimmed = text.trim();
+      setEditingPromptId(null);
+      if (trimmed) {
+        setQueuedPrompts(prev =>
+          prev.map(prompt =>
+            prompt.id === id ? { ...prompt, text: trimmed } : prompt,
+          ),
+        );
+      }
+      return;
+    }
+
     capturedConsoleIdRef.current = activeConsoleIdRef.current;
     const store = useConsoleStore.getState();
     const currentTab = store.tabs[store.activeTabId || ""] as
@@ -2625,11 +2712,24 @@ const Chat: React.FC<ChatProps> = ({
     setQueuedPrompts(prev => prev.filter(prompt => prompt.id !== id));
   }, []);
 
-  const handleEditQueuedPrompt = useCallback((id: string, text: string) => {
-    setQueuedPrompts(prev =>
-      prev.map(prompt => (prompt.id === id ? { ...prompt, text } : prompt)),
-    );
+  const handleStartEditQueuedPrompt = useCallback((id: string) => {
+    setEditingPromptId(id);
   }, []);
+
+  const handleCancelEditQueuedPrompt = useCallback(() => {
+    setEditingPromptId(null);
+  }, []);
+
+  // If the edited prompt leaves the queue (drained, removed, or cleared), exit
+  // edit mode so a stale id can't swallow the next real submit.
+  useEffect(() => {
+    if (
+      editingPromptId &&
+      !queuedPrompts.some(prompt => prompt.id === editingPromptId)
+    ) {
+      setEditingPromptId(null);
+    }
+  }, [queuedPrompts, editingPromptId]);
 
   // Promote = move to front of the queue so it drains next. While the agent is
   // busy this only reorders; the existing drain effect sends the front item when
@@ -2919,12 +3019,21 @@ const Chat: React.FC<ChatProps> = ({
         )}
       </Box>
 
-      <QueuedPromptList
-        prompts={queuedPrompts}
-        onEdit={handleEditQueuedPrompt}
-        onPromote={handlePromoteQueuedPrompt}
-        onRemove={handleRemoveQueuedPrompt}
-      />
+      <Collapse
+        in={queuedPrompts.length > 0}
+        timeout={220}
+        easing="cubic-bezier(0.4, 0, 0.2, 1)"
+        unmountOnExit
+        sx={{ mb: -1 }}
+      >
+        <QueuedPromptList
+          prompts={queuedPrompts}
+          editingId={editingPromptId}
+          onStartEdit={handleStartEditQueuedPrompt}
+          onPromote={handlePromoteQueuedPrompt}
+          onRemove={handleRemoveQueuedPrompt}
+        />
+      </Collapse>
 
       {/* Input — isolated component so keystrokes don't re-render messages */}
       <ChatInputArea
@@ -2934,6 +3043,8 @@ const Chat: React.FC<ChatProps> = ({
         disabled={!currentWorkspace}
         focusKey={`${chatId}-${messages.length}`}
         paletteMode={paletteMode}
+        editingPrompt={editingPrompt}
+        onCancelEdit={handleCancelEditQueuedPrompt}
       />
 
       {/* Tool Debug Dialog */}
