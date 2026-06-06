@@ -26,6 +26,10 @@ import {
   scheduledQuerySchedulerFunction,
 } from "./functions/scheduled-query";
 import {
+  reverseEtlExecutorFunction,
+  reverseEtlSchedulerFunction,
+} from "./functions/reverse-etl";
+import {
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
 } from "./functions/flow-run-notifications";
@@ -42,6 +46,7 @@ const baseFunctions = [
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
+  reverseEtlExecutorFunction,
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
 ];
@@ -79,6 +84,7 @@ export function getFunctions() {
         flowSchedulerFunction,
         dashboardSchedulerFunction,
         scheduledQuerySchedulerFunction,
+        reverseEtlSchedulerFunction,
       ];
 
   return _functions;
@@ -130,4 +136,6 @@ export {
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
   scheduledQuerySchedulerFunction,
+  reverseEtlExecutorFunction,
+  reverseEtlSchedulerFunction,
 };

@@ -1,5 +1,6 @@
 import { IConnector } from "../../database/workspace-schema";
 import type { NormalizedCdcEvent } from "../../sync-cdc/events";
+import type { OutboundConnector } from "./OutboundConnector";
 
 export interface SyncLogger {
   log(
@@ -158,6 +159,13 @@ export abstract class BaseConnector {
    * including dynamically discovered custom fields.
    */
   async resolveSchema(_entity: string): Promise<ConnectorEntitySchema | null> {
+    return null;
+  }
+
+  /**
+   * Optional outbound/write capability for Reverse ETL destinations.
+   */
+  getOutboundCapability(): OutboundConnector | null {
     return null;
   }
 

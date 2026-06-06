@@ -76,6 +76,7 @@ import type {
 } from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
+import type { ReverseFlowFormRef } from "./ReverseFlowEditor";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import {
@@ -1615,6 +1616,7 @@ ChatInputArea.displayName = "ChatInputArea";
 interface ChatProps {
   onConsoleModification?: (modification: ConsoleModificationPayload) => void;
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
+  reverseFlowFormRef?: React.RefObject<ReverseFlowFormRef | null>;
   onChartSpecChangeRef?: React.MutableRefObject<
     ((payload: import("./Editor").ChartSpecChangePayload) => void) | undefined
   >;
@@ -1623,10 +1625,18 @@ interface ChatProps {
   >;
 }
 
-type ChatActiveView = "dashboard" | "flow-editor" | "console" | "empty";
+type ChatActiveView =
+  | "dashboard"
+  | "flow-editor"
+  | "reverse-flow-editor"
+  | "console"
+  | "empty";
 
 function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
-  return kind === "dashboard" || kind === "flow-editor" || kind === "console"
+  return kind === "dashboard" ||
+    kind === "flow-editor" ||
+    kind === "reverse-flow-editor" ||
+    kind === "console"
     ? kind
     : "empty";
 }
@@ -1634,6 +1644,7 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
 const Chat: React.FC<ChatProps> = ({
   onConsoleModification,
   dbFlowFormRef,
+  reverseFlowFormRef,
   onChartSpecChangeRef,
   resultsContextRef,
 }) => {
@@ -1644,6 +1655,8 @@ const Chat: React.FC<ChatProps> = ({
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
   const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
   dbFlowFormRefCurrent.current = dbFlowFormRef;
+  const reverseFlowFormRefCurrent = useRef(reverseFlowFormRef);
+  reverseFlowFormRefCurrent.current = reverseFlowFormRef;
 
   // Connection metadata is only needed to decorate completed console tool cards.
   const connections = useSchemaStore(s => s.connections);
@@ -1800,9 +1813,16 @@ const Chat: React.FC<ChatProps> = ({
             ? useSchemaStore.getState().connections[workspaceId] || []
             : [];
 
-          const flowFormState = dbFlowFormRefCurrent.current?.current
-            ? dbFlowFormRefCurrent.current.current.getFormState()
-            : undefined;
+          const flowFormState =
+            activeTab?.kind === "flow-editor" &&
+            dbFlowFormRefCurrent.current?.current
+              ? dbFlowFormRefCurrent.current.current.getFormState()
+              : undefined;
+          const reverseFlowFormState =
+            activeTab?.kind === "reverse-flow-editor" &&
+            reverseFlowFormRefCurrent.current?.current
+              ? reverseFlowFormRefCurrent.current.current.getFormState()
+              : undefined;
 
           // Read results context from Editor at request time
           const resultsCtx = resultsContextRef?.current ?? null;
@@ -1833,6 +1853,7 @@ const Chat: React.FC<ChatProps> = ({
             activeConsoleId: activeConsoleIdRef.current,
             activeConsoleResults,
             flowFormState,
+            reverseFlowFormState,
             workspaceConnections: workspaceConnectionsForRequest,
             pinnedDashboardId: capturedDashboardIdRef.current,
           });
@@ -2062,6 +2083,113 @@ const Chat: React.FC<ChatProps> = ({
 
         // NOTE: set_column_mappings has been removed
         // Use set_form_field with fieldName="typeCoercions" instead
+
+        if (toolName === "get_reverse_etl_form_state") {
+          const formRef = reverseFlowFormRefCurrent.current?.current;
+          addToolOutput({
+            tool: "get_reverse_etl_form_state",
+            toolCallId: toolCall.toolCallId,
+            output: formRef
+              ? { success: true, formState: formRef.getFormState() }
+              : {
+                  success: false,
+                  error:
+                    "Reverse ETL form is not available. Open a ReverseFlow editor.",
+                },
+          });
+          return;
+        }
+
+        if (toolName === "set_reverse_etl_form_field") {
+          const formRef = reverseFlowFormRefCurrent.current?.current;
+          const { fieldName, value } = input as {
+            fieldName: string;
+            value: unknown;
+          };
+          if (!formRef) {
+            addToolOutput({
+              tool: "set_reverse_etl_form_field",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Reverse ETL form is not available. Open a ReverseFlow editor.",
+              },
+            });
+            return;
+          }
+          formRef.setField(fieldName, value);
+          addToolOutput({
+            tool: "set_reverse_etl_form_field",
+            toolCallId: toolCall.toolCallId,
+            output: { success: true, fieldName, value },
+          });
+          return;
+        }
+
+        if (toolName === "set_reverse_etl_multiple_fields") {
+          const formRef = reverseFlowFormRefCurrent.current?.current;
+          const { fields } = input as { fields: Record<string, unknown> };
+          if (!formRef) {
+            addToolOutput({
+              tool: "set_reverse_etl_multiple_fields",
+              toolCallId: toolCall.toolCallId,
+              output: {
+                success: false,
+                error:
+                  "Reverse ETL form is not available. Open a ReverseFlow editor.",
+              },
+            });
+            return;
+          }
+          formRef.setMultipleFields(fields);
+          addToolOutput({
+            tool: "set_reverse_etl_multiple_fields",
+            toolCallId: toolCall.toolCallId,
+            output: { success: true, fields: Object.keys(fields) },
+          });
+          return;
+        }
+
+        if (toolName === "create_reverse_etl_tab") {
+          const currentStore = useConsoleStore.getState();
+          const title = (input.title as string) || "New Reverse ETL";
+          const newTabId = generateObjectId();
+          currentStore.openTab({
+            id: newTabId,
+            title,
+            content: "",
+            kind: "reverse-flow-editor",
+            metadata: { isNew: true },
+          });
+          currentStore.setActiveTab(newTabId);
+          addToolOutput({
+            tool: "create_reverse_etl_tab",
+            toolCallId: toolCall.toolCallId,
+            output: { success: true, tabId: newTabId, title },
+          });
+          return;
+        }
+
+        if (toolName === "list_reverse_etl_tabs") {
+          const currentStore = useConsoleStore.getState();
+          const currentTabs = Object.values(currentStore.tabs);
+          const reverseFlowTabs = currentTabs
+            .filter((tab: any) => tab?.kind === "reverse-flow-editor")
+            .map((tab: any) => ({
+              id: tab.id,
+              title: tab.title || "Untitled Reverse ETL",
+              reverseFlowId: tab.metadata?.reverseFlowId,
+              isNew: tab.metadata?.isNew || false,
+              isActive: tab.id === currentStore.activeTabId,
+            }));
+          addToolOutput({
+            tool: "list_reverse_etl_tabs",
+            toolCallId: toolCall.toolCallId,
+            output: { success: true, reverseFlowTabs },
+          });
+          return;
+        }
 
         // create_flow_tab - Create a new db-scheduled flow tab
         if (toolName === "create_flow_tab") {

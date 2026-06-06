@@ -4,7 +4,12 @@ import type { ActiveExplorer } from "../store/uiStore";
 import { getDashboardStateSnapshot } from "../dashboard-runtime/commands";
 import { useDashboardStore } from "../store/dashboardStore";
 
-export type ChatActiveView = "console" | "dashboard" | "flow-editor" | "empty";
+export type ChatActiveView =
+  | "console"
+  | "dashboard"
+  | "flow-editor"
+  | "reverse-flow-editor"
+  | "empty";
 
 export interface ActiveConsoleResultsContext {
   viewMode: "table" | "json" | "chart";
@@ -35,6 +40,7 @@ interface BuildChatRequestBodyOptions {
   activeConsoleId?: string | null;
   activeConsoleResults?: ActiveConsoleResultsContext;
   flowFormState?: Record<string, unknown>;
+  reverseFlowFormState?: Record<string, unknown>;
   workspaceConnections: Connection[];
   pinnedDashboardId?: string | null;
 }
@@ -77,6 +83,10 @@ function buildOpenTabs(tabs: ConsoleTab[], activeTabId?: string | null) {
     flowId:
       tab.kind === "flow-editor"
         ? (tab.metadata?.flowId as string | undefined)
+        : undefined,
+    reverseFlowId:
+      tab.kind === "reverse-flow-editor"
+        ? (tab.metadata?.reverseFlowId as string | undefined)
         : undefined,
     connectionId:
       tab.kind === "console" || !tab.kind ? tab.connectionId : undefined,
@@ -185,6 +195,7 @@ export function buildChatRequestBody({
   activeConsoleId,
   activeConsoleResults,
   flowFormState,
+  reverseFlowFormState,
   workspaceConnections,
   pinnedDashboardId,
 }: BuildChatRequestBodyOptions) {
@@ -203,6 +214,7 @@ export function buildChatRequestBody({
     tabKind: activeTab?.kind,
     flowType: activeTab?.metadata?.flowType,
     flowFormState,
+    reverseFlowFormState,
     ...buildDashboardRequestContext({
       activeView,
       pinnedDashboardId,

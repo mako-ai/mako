@@ -1,17 +1,24 @@
 import { Types } from "mongoose";
-import { Flow, ScheduledQueryRun } from "../database/workspace-schema";
+import {
+  Flow,
+  ReverseFlowRun,
+  ScheduledQueryRun,
+} from "../database/workspace-schema";
 import { inngest } from "../inngest/client";
 import type { FlowRunTerminalEventData } from "./flow-run-notification.types";
 
 export async function emitScheduledQueryTerminalEvent(params: {
-    workspaceId: string;
-    consoleId: string;
-    runId: string;
-    triggerType: "schedule" | "manual";
-  },
-): Promise<void> {
+  workspaceId: string;
+  consoleId: string;
+  runId: string;
+  triggerType: "schedule" | "manual";
+}): Promise<void> {
   const run = await ScheduledQueryRun.findById(params.runId).lean();
-  if (!run?.completedAt || run.status === "queued" || run.status === "running") {
+  if (
+    !run?.completedAt ||
+    run.status === "queued" ||
+    run.status === "running"
+  ) {
     return;
   }
   const success = run.status === "success";
@@ -32,12 +39,11 @@ export async function emitScheduledQueryTerminalEvent(params: {
 }
 
 export async function emitFlowExecutionTerminalEvent(params: {
-    workspaceId: string;
-    flowId: string;
-    executionId: string;
-    triggerType: "schedule" | "manual";
-  },
-): Promise<void> {
+  workspaceId: string;
+  flowId: string;
+  executionId: string;
+  triggerType: "schedule" | "manual";
+}): Promise<void> {
   const collection = Flow.db.collection("flow_executions");
   const execution = await collection.findOne({
     _id: new Types.ObjectId(params.executionId),
@@ -67,6 +73,37 @@ export async function emitFlowExecutionTerminalEvent(params: {
     durationMs:
       typeof execution.duration === "number" ? execution.duration : undefined,
     errorMessage: err?.message,
+  };
+  await inngest.send({ name: "flow.run.terminal", data });
+}
+
+export async function emitReverseEtlTerminalEvent(params: {
+  workspaceId: string;
+  reverseFlowId: string;
+  runId: string;
+  triggerType: "schedule" | "manual";
+}): Promise<void> {
+  const run = await ReverseFlowRun.findById(params.runId).lean();
+  if (
+    !run?.completedAt ||
+    run.status === "queued" ||
+    run.status === "running"
+  ) {
+    return;
+  }
+
+  const data: FlowRunTerminalEventData = {
+    workspaceId: params.workspaceId,
+    resourceType: "reverse_etl",
+    resourceId: params.reverseFlowId,
+    runId: params.runId,
+    status: run.status,
+    success: run.status === "success",
+    triggerType: params.triggerType,
+    completedAt: run.completedAt.toISOString(),
+    durationMs: run.durationMs,
+    rowCount: run.rowsRead,
+    errorMessage: run.error?.message,
   };
   await inngest.send({ name: "flow.run.terminal", data });
 }

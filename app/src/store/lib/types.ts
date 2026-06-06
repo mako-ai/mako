@@ -14,6 +14,7 @@ export type TabKind =
   | "connectors"
   | "members"
   | "flow-editor"
+  | "reverse-flow-editor"
   | "dashboard";
 
 /**

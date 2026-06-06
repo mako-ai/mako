@@ -9,6 +9,7 @@ import {
   Flow,
   NotificationDelivery,
   NotificationRule,
+  ReverseFlow,
   SavedConsole,
   decrypt,
   type INotificationRuleChannel,
@@ -72,6 +73,13 @@ async function assertResourceInWorkspace(
     }).lean();
     return !!doc;
   }
+  if (resourceType === "reverse_etl") {
+    const doc = await ReverseFlow.findOne({
+      _id: rid,
+      workspaceId: ws,
+    }).lean();
+    return !!doc;
+  }
   const doc = await Flow.findOne({
     _id: rid,
     workspaceId: ws,
@@ -114,8 +122,9 @@ function parseChannelFromBody(body: Record<string, unknown>): {
       typeof body.signingSecret === "string" && body.signingSecret.trim()
         ? body.signingSecret.trim()
         : generateWebhookSigningSecret();
-    const generatedNewSecret =
-      !(typeof body.signingSecret === "string" && body.signingSecret.trim());
+    const generatedNewSecret = !(
+      typeof body.signingSecret === "string" && body.signingSecret.trim()
+    );
     return {
       channel: {
         type: "webhook",
@@ -155,7 +164,9 @@ notificationRulesRoutes.get("/", async (c: AuthenticatedContext) => {
 
     if (
       !resourceType ||
-      (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+      (resourceType !== "flow" &&
+        resourceType !== "scheduled_query" &&
+        resourceType !== "reverse_etl") ||
       !resourceId ||
       !Types.ObjectId.isValid(resourceId)
     ) {
@@ -214,7 +225,9 @@ notificationRulesRoutes.get("/deliveries", async (c: AuthenticatedContext) => {
 
     if (
       !resourceType ||
-      (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+      (resourceType !== "flow" &&
+        resourceType !== "scheduled_query" &&
+        resourceType !== "reverse_etl") ||
       !resourceId ||
       !Types.ObjectId.isValid(resourceId)
     ) {
@@ -265,9 +278,7 @@ notificationRulesRoutes.get("/deliveries", async (c: AuthenticatedContext) => {
       {
         success: false,
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to list deliveries",
+          error instanceof Error ? error.message : "Failed to list deliveries",
       },
       500,
     );
@@ -284,13 +295,14 @@ notificationRulesRoutes.post("/", async (c: AuthenticatedContext) => {
 
     const resourceType = body.resourceType as NotificationResourceType;
     const resourceId = body.resourceId as string;
-    const enabled =
-      typeof body.enabled === "boolean" ? body.enabled : true;
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : true;
     const triggers = parseTriggers(body.triggers);
 
     if (
       !resourceType ||
-      (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+      (resourceType !== "flow" &&
+        resourceType !== "scheduled_query" &&
+        resourceType !== "reverse_etl") ||
       !resourceId ||
       !Types.ObjectId.isValid(resourceId) ||
       !triggers
@@ -312,7 +324,10 @@ notificationRulesRoutes.post("/", async (c: AuthenticatedContext) => {
 
     const parsed = parseChannelFromBody(body);
     if (!parsed) {
-      return c.json({ success: false, error: "Invalid channel configuration" }, 400);
+      return c.json(
+        { success: false, error: "Invalid channel configuration" },
+        400,
+      );
     }
 
     const channel = encryptNotificationChannel(parsed.channel);
@@ -480,7 +495,9 @@ notificationRulesRoutes.patch("/:ruleId", async (c: AuthenticatedContext) => {
     return c.json({
       success: true,
       rule: sanitizeRuleForClient(existing),
-      ...(signingSecretOnceOut ? { signingSecretOnce: signingSecretOnceOut } : {}),
+      ...(signingSecretOnceOut
+        ? { signingSecretOnce: signingSecretOnceOut }
+        : {}),
     });
   } catch (error) {
     logger.error("Update notification rule failed", { error });
@@ -542,14 +559,13 @@ notificationRulesRoutes.post("/test", async (c: AuthenticatedContext) => {
 
     if (
       !resourceType ||
-      (resourceType !== "flow" && resourceType !== "scheduled_query") ||
+      (resourceType !== "flow" &&
+        resourceType !== "scheduled_query" &&
+        resourceType !== "reverse_etl") ||
       !resourceId ||
       !Types.ObjectId.isValid(resourceId)
     ) {
-      return c.json(
-        { success: false, error: "Invalid resource" },
-        400,
-      );
+      return c.json({ success: false, error: "Invalid resource" }, 400);
     }
 
     const ok = await assertResourceInWorkspace(

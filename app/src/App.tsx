@@ -44,6 +44,7 @@ import { WorkspaceProvider } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import { ConsoleModificationPayload } from "./hooks/useMonacoConsole";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
+import type { ReverseFlowFormRef } from "./components/ReverseFlowEditor";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
 import { RegisterPage } from "./components/RegisterPage";
@@ -244,6 +245,7 @@ function MainApp() {
 
   // Ref for DbFlowForm - allows AI agent to manipulate form state
   const dbFlowFormRef = useRef<DbFlowFormRef | null>(null);
+  const reverseFlowFormRef = useRef<ReverseFlowFormRef | null>(null);
 
   // Ref for chart spec changes - allows AI agent to set chart specs on the active console tab
   const onChartSpecChangeRef = useRef<
@@ -591,6 +593,7 @@ function MainApp() {
           >
             <Editor
               dbFlowFormRef={dbFlowFormRef}
+              reverseFlowFormRef={reverseFlowFormRef}
               onChartSpecChangeRef={onChartSpecChangeRef}
               resultsContextRef={resultsContextRef}
             />
@@ -615,6 +618,7 @@ function MainApp() {
                 <Chat
                   onConsoleModification={handleConsoleModification}
                   dbFlowFormRef={dbFlowFormRef}
+                  reverseFlowFormRef={reverseFlowFormRef}
                   onChartSpecChangeRef={onChartSpecChangeRef}
                   resultsContextRef={resultsContextRef}
                 />

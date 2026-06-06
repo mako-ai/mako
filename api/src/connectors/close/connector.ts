@@ -13,6 +13,12 @@ import {
   ProvisionWebhookResult,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
+import type {
+  OutboundConnector,
+  OutboundEntitySchema,
+  OutboundFieldDiff,
+  OutboundWriteOutcome,
+} from "../base/OutboundConnector";
 import { resolveCloseEntitySchema, type CloseCustomField } from "./schema";
 import axios, { AxiosInstance } from "axios";
 import * as crypto from "crypto";
@@ -283,6 +289,421 @@ export class CloseConnector extends BaseConnector {
   async resolveSchema(entity: string): Promise<ConnectorEntitySchema | null> {
     const customFields = await this.fetchCustomFieldsForEntity(entity);
     return resolveCloseEntitySchema(entity, customFields);
+  }
+
+  getOutboundCapability(): OutboundConnector | null {
+    return this;
+  }
+
+  supportsOutbound(): boolean {
+    return true;
+  }
+
+  async resolveOutboundSchema(entity: string): Promise<OutboundEntitySchema> {
+    if (entity !== "leads") {
+      throw new Error("Close outbound writes currently support leads only");
+    }
+
+    const inboundSchema = await this.resolveSchema(entity);
+    if (!inboundSchema) {
+      throw new Error(`Unable to resolve Close schema for ${entity}`);
+    }
+
+    const readOnlyFields = new Set([
+      "id",
+      "display_name",
+      "date_created",
+      "date_updated",
+      "created_by",
+      "created_by_name",
+      "updated_by",
+      "updated_by_name",
+      "organization_id",
+      "html_url",
+      "contact_ids",
+      "opportunities",
+      "tasks",
+      "integration_links",
+      "primary_email",
+      "primary_phone",
+      "_mako_deleted_at",
+      "deleted_at",
+      "is_deleted",
+      "_mako_source_ts",
+      "_mako_ingest_seq",
+      "_dataSourceId",
+      "_dataSourceName",
+      "_syncedAt",
+    ]);
+    const fields: OutboundEntitySchema["fields"] = {};
+
+    for (const [field, schema] of Object.entries(inboundSchema.fields)) {
+      fields[field] = {
+        type: schema.type,
+        required: schema.required,
+        writable: !readOnlyFields.has(field),
+        label: field,
+      };
+    }
+
+    try {
+      const api = this.getCloseClient();
+      const response = await api.get("/status/lead/");
+      const statuses = Array.isArray(response.data?.data)
+        ? response.data.data
+        : [];
+      fields.status_id = {
+        ...(fields.status_id || { type: "string", writable: true }),
+        writable: true,
+        enumValues: statuses
+          .map((status: any) => ({
+            value: String(status.id || ""),
+            label: String(status.label || status.id || ""),
+          }))
+          .filter((status: { value: string }) => status.value),
+      };
+    } catch (error) {
+      logger.warn("Unable to resolve Close lead status enum values", { error });
+    }
+
+    return {
+      entity,
+      fields,
+      matchableFields: ["email", "primary_email", "contacts.emails.email"],
+    };
+  }
+
+  async writeBatch(params: {
+    entity: string;
+    records: {
+      sourcePk: string;
+      payload: Record<string, unknown>;
+      remoteId?: string;
+    }[];
+    writeMode: "create" | "update" | "upsert";
+    updateFieldStrategy: "overwrite" | "fill_empty" | "ignore";
+    match: {
+      lookupColumn: string;
+      remoteField: string;
+      onMultiple: "skip" | "update_first" | "fail";
+    };
+    dryRun: boolean;
+  }): Promise<{ results: OutboundWriteOutcome[] }> {
+    if (params.entity !== "leads") {
+      return {
+        results: params.records.map(record => ({
+          sourcePk: record.sourcePk,
+          status: "failed",
+          error: "Close outbound writes currently support leads only",
+          retryable: false,
+        })),
+      };
+    }
+
+    const results: OutboundWriteOutcome[] = [];
+    for (const record of params.records) {
+      results.push(await this.writeLeadRecord(params, record));
+    }
+    return { results };
+  }
+
+  private async writeLeadRecord(
+    params: {
+      writeMode: "create" | "update" | "upsert";
+      updateFieldStrategy: "overwrite" | "fill_empty" | "ignore";
+      match: {
+        lookupColumn: string;
+        remoteField: string;
+        onMultiple: "skip" | "update_first" | "fail";
+      };
+      dryRun: boolean;
+    },
+    record: {
+      sourcePk: string;
+      payload: Record<string, unknown>;
+      remoteId?: string;
+    },
+  ): Promise<OutboundWriteOutcome> {
+    const api = this.getCloseClient();
+    const normalizedPayload = this.normalizeLeadWritePayload(record.payload);
+
+    try {
+      const existingMatches = record.remoteId
+        ? [await this.fetchLeadById(record.remoteId)]
+        : await this.findLeadsForOutboundMatch(
+            params.match.remoteField,
+            this.getPathValue(
+              normalizedPayload,
+              params.match.remoteField || params.match.lookupColumn,
+            ) ??
+              this.getPathValue(normalizedPayload, params.match.lookupColumn),
+          );
+
+      const matches = existingMatches.filter(Boolean) as Record<
+        string,
+        unknown
+      >[];
+      if (matches.length > 1 && params.match.onMultiple !== "update_first") {
+        return {
+          sourcePk: record.sourcePk,
+          status: params.match.onMultiple === "fail" ? "failed" : "ambiguous",
+          matchCount: matches.length,
+          retryable: false,
+          error: "Multiple Close leads matched the configured key",
+        };
+      }
+
+      const existing = matches[0];
+      if (!existing && params.writeMode === "update") {
+        return {
+          sourcePk: record.sourcePk,
+          status: "failed",
+          retryable: false,
+          error: "No existing Close lead matched update-only write",
+        };
+      }
+
+      if (existing) {
+        const remoteId = String(existing.id || record.remoteId || "");
+        const { payload, fieldDiffs } = this.applyUpdateStrategy(
+          normalizedPayload,
+          existing,
+          params.updateFieldStrategy,
+        );
+
+        if (
+          params.updateFieldStrategy === "ignore" ||
+          Object.keys(payload).length === 0
+        ) {
+          return {
+            sourcePk: record.sourcePk,
+            status: "skipped",
+            remoteId,
+            fieldDiffs,
+            matchCount: matches.length,
+          };
+        }
+
+        if (!params.dryRun) {
+          await api.put(`/lead/${remoteId}/`, payload);
+        }
+
+        return {
+          sourcePk: record.sourcePk,
+          status: "updated",
+          remoteId,
+          fieldDiffs,
+          matchCount: matches.length,
+        };
+      }
+
+      if (params.writeMode === "update") {
+        return {
+          sourcePk: record.sourcePk,
+          status: "failed",
+          retryable: false,
+          error: "No existing Close lead matched update-only write",
+        };
+      }
+
+      if (params.dryRun) {
+        return {
+          sourcePk: record.sourcePk,
+          status: "created",
+          fieldDiffs: Object.keys(normalizedPayload).map(field => ({
+            field,
+            before: undefined,
+            after: normalizedPayload[field],
+            willOverwrite: false,
+          })),
+          matchCount: 0,
+        };
+      }
+
+      const response = await api.post("/lead/", normalizedPayload);
+      return {
+        sourcePk: record.sourcePk,
+        status: "created",
+        remoteId: String(response.data?.id || ""),
+        matchCount: 0,
+      };
+    } catch (error) {
+      return {
+        sourcePk: record.sourcePk,
+        status: "failed",
+        retryable: this.isRetryableCloseError(error),
+        error: axios.isAxiosError(error)
+          ? error.response?.data?.error || error.message
+          : error instanceof Error
+            ? error.message
+            : "Close write failed",
+      };
+    }
+  }
+
+  private normalizeLeadWritePayload(
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === "custom" && this.isRecord(value)) {
+        for (const [customKey, customValue] of Object.entries(value)) {
+          out[`custom.${customKey}`] = customValue;
+        }
+        continue;
+      }
+      if (key.startsWith("custom_")) {
+        out[`custom.${key.slice("custom_".length)}`] = value;
+        continue;
+      }
+      out[key] = value;
+    }
+
+    return out;
+  }
+
+  private applyUpdateStrategy(
+    payload: Record<string, unknown>,
+    existing: Record<string, unknown>,
+    strategy: "overwrite" | "fill_empty" | "ignore",
+  ): { payload: Record<string, unknown>; fieldDiffs: OutboundFieldDiff[] } {
+    if (strategy === "ignore") {
+      return {
+        payload: {},
+        fieldDiffs: Object.keys(payload).map(field => ({
+          field,
+          before: this.getPathValue(existing, field),
+          after: payload[field],
+          willOverwrite: false,
+        })),
+      };
+    }
+
+    const updatePayload: Record<string, unknown> = {};
+    const fieldDiffs: OutboundFieldDiff[] = [];
+    for (const [field, after] of Object.entries(payload)) {
+      const before = this.getPathValue(existing, field);
+      const beforeEmpty = this.isEmptyValue(before);
+      const changed = !this.valuesEqual(before, after);
+      const willOverwrite = changed && !beforeEmpty && strategy === "overwrite";
+
+      if (!changed) continue;
+      fieldDiffs.push({ field, before, after, willOverwrite });
+
+      if (strategy === "fill_empty" && !beforeEmpty) {
+        continue;
+      }
+      updatePayload[field] = after;
+    }
+
+    return { payload: updatePayload, fieldDiffs };
+  }
+
+  private async fetchLeadById(
+    remoteId: string,
+  ): Promise<Record<string, unknown> | null> {
+    const api = this.getCloseClient();
+    const response = await api.get(`/lead/${remoteId}/`, {
+      params: { _fields: "_all,custom" },
+    });
+    return this.isRecord(response.data) ? response.data : null;
+  }
+
+  private async findLeadsForOutboundMatch(
+    remoteField: string,
+    value: unknown,
+  ): Promise<Record<string, unknown>[]> {
+    if (value === undefined || value === null || value === "") {
+      return [];
+    }
+
+    const api = this.getCloseClient();
+    const matchValue = String(value).trim();
+    const fieldName =
+      remoteField === "primary_email" || remoteField === "contacts.emails.email"
+        ? "email"
+        : remoteField;
+    const response = await api.post("/data/search/", {
+      query: {
+        negate: false,
+        type: "and",
+        queries: [
+          {
+            negate: false,
+            object_type: "lead",
+            type: "field_condition",
+            field: {
+              type: "regular_field",
+              object_type: "lead",
+              field_name: fieldName,
+            },
+            condition: {
+              type: "text",
+              mode: "full_words",
+              value: matchValue,
+            },
+          },
+        ],
+      },
+      results_limit: 10,
+      _fields: "_all,custom",
+    });
+
+    const data = response.data?.data;
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((item: any) => (this.isRecord(item?.lead) ? item.lead : item))
+      .filter((item: unknown): item is Record<string, unknown> =>
+        this.isRecord(item),
+      );
+  }
+
+  private getPathValue(source: unknown, path: string): unknown {
+    if (!path || !this.isRecord(source)) return undefined;
+    if (path in source) return source[path];
+
+    const normalized = path.replace(/\[(\d+)\]/g, ".$1");
+    const parts = normalized.split(".").filter(Boolean);
+    let cursor: unknown = source;
+    for (let index = 0; index < parts.length; index++) {
+      if (cursor === undefined || cursor === null) return undefined;
+      if (this.isRecord(cursor)) {
+        const remaining = parts.slice(index).join(".");
+        if (remaining in cursor) return cursor[remaining];
+        cursor = cursor[parts[index]];
+        continue;
+      }
+      if (Array.isArray(cursor)) {
+        cursor = cursor[Number(parts[index])];
+        continue;
+      }
+      return undefined;
+    }
+    return cursor;
+  }
+
+  private isEmptyValue(value: unknown): boolean {
+    return (
+      value === undefined ||
+      value === null ||
+      value === "" ||
+      (Array.isArray(value) && value.length === 0)
+    );
+  }
+
+  private valuesEqual(left: unknown, right: unknown): boolean {
+    return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+
+  private isRetryableCloseError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) return false;
+    const status = error.response?.status;
+    return status === 429 || (typeof status === "number" && status >= 500);
   }
 
   private static readonly LEAD_FIELDS = [

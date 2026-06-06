@@ -47,7 +47,12 @@ export interface AgentContext {
   /** Current workspace ID */
   workspaceId: string;
   /** What the user is currently looking at (the active editor tab's kind) */
-  activeView?: "console" | "dashboard" | "flow-editor" | "empty";
+  activeView?:
+    | "console"
+    | "dashboard"
+    | "flow-editor"
+    | "reverse-flow-editor"
+    | "empty";
   /**
    * Which left-pane explorer is currently open and visible, or `null` if the
    * left pane is collapsed. Use this when guiding the user to a specific
@@ -75,6 +80,7 @@ export interface AgentContext {
     isActive: boolean;
     dashboardId?: string;
     flowId?: string;
+    reverseFlowId?: string;
     connectionId?: string;
     databaseName?: string;
   }>;
@@ -93,6 +99,8 @@ export interface AgentContext {
   }>;
   /** Flow form state (for flow agent) - read-only snapshot */
   flowFormState?: Record<string, unknown>;
+  /** Reverse ETL form state - read-only snapshot */
+  reverseFlowFormState?: Record<string, unknown>;
   /** Custom workspace prompt */
   workspaceCustomPrompt?: string;
   /** Agent-editable self-directive (persisted workspace knowledge) */

@@ -135,7 +135,10 @@ export interface ScheduledQueryListResponse {
 
 // ==================== Flow run notifications ====================
 
-export type NotificationResourceTypeApi = "scheduled_query" | "flow";
+export type NotificationResourceTypeApi =
+  | "scheduled_query"
+  | "flow"
+  | "reverse_etl";
 
 export type NotificationTriggerApi = "success" | "failure";
 

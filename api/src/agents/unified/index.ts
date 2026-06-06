@@ -6,6 +6,7 @@ import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
+import { createReverseEtlTools } from "../reverse-etl";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
@@ -28,6 +29,10 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     context.toolExecutionContext,
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
+  const reverseEtlTools = createReverseEtlTools(
+    workspaceId,
+    context.toolExecutionContext,
+  );
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, userId);
   const consoleSearchTools = createConsoleSearchTools(
@@ -47,7 +52,6 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     inspect_table: _flowInspectTable,
     ...flowUniqueTools
   } = flowTools;
-
   return {
     systemPrompt: [
       {
@@ -66,6 +70,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...universalTools,
       ...clientDashboardTools,
       ...flowUniqueTools,
+      ...reverseEtlTools,
       ...selfDirectiveTools,
       ...skillTools,
       ...consoleSearchTools,

@@ -3,6 +3,7 @@ import {
   Connector as DataSource,
   DatabaseConnection,
   Flow,
+  ReverseFlow,
   SavedConsole,
   NotificationRule,
   NotificationDelivery,
@@ -47,6 +48,10 @@ export async function resolveResourceDisplayName(params: {
   const id = params.resourceId;
   if (params.resourceType === "scheduled_query") {
     const doc = await SavedConsole.findById(id).select("name").lean();
+    return doc?.name || id;
+  }
+  if (params.resourceType === "reverse_etl") {
+    const doc = await ReverseFlow.findById(id).select("name").lean();
     return doc?.name || id;
   }
   const flowDoc = await Flow.findById(id);
@@ -100,9 +105,13 @@ export function buildOutboundPayload(params: {
       ? base
         ? `${base}/workspace/${params.event.workspaceId}/flows/${params.event.resourceId}`
         : undefined
-      : base
-        ? `${base}/workspace/${params.event.workspaceId}/console/${params.event.resourceId}`
-        : undefined;
+      : params.event.resourceType === "reverse_etl"
+        ? base
+          ? `${base}/workspace/${params.event.workspaceId}/reverse-flows/${params.event.resourceId}`
+          : undefined
+        : base
+          ? `${base}/workspace/${params.event.workspaceId}/console/${params.event.resourceId}`
+          : undefined;
 
   return {
     version: 1,
@@ -162,7 +171,9 @@ export async function fanOutTerminalRunNotifications(
       ruleId,
     });
 
-    const existing = await NotificationDelivery.findOne({ idempotencyKey }).lean();
+    const existing = await NotificationDelivery.findOne({
+      idempotencyKey,
+    }).lean();
     if (existing) {
       continue;
     }
@@ -336,7 +347,9 @@ async function deliverWebhook(
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Webhook HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
+    throw new Error(
+      `Webhook HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ""}`,
+    );
   }
 }
 
@@ -374,7 +387,9 @@ async function deliverSlack(
   });
   if (!response.ok) {
     const t = await response.text().catch(() => "");
-    throw new Error(`Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`);
+    throw new Error(
+      `Slack webhook HTTP ${response.status}${t ? `: ${t.slice(0, 200)}` : ""}`,
+    );
   }
 }
 
@@ -400,7 +415,9 @@ export function encryptNotificationChannel(
 }
 
 /** Strip secrets for API responses */
-export function sanitizeRuleForClient(rule: INotificationRule): Record<string, unknown> {
+export function sanitizeRuleForClient(
+  rule: INotificationRule,
+): Record<string, unknown> {
   const base = {
     id: rule._id.toString(),
     workspaceId: rule.workspaceId.toString(),

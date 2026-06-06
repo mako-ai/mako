@@ -113,8 +113,25 @@ export function FlowsExplorer() {
   };
 
   const handleCreateNew = (
-    flowType: "scheduled" | "webhook" | "db-scheduled" | "scheduled-query",
+    flowType:
+      | "scheduled"
+      | "webhook"
+      | "db-scheduled"
+      | "scheduled-query"
+      | "reverse-etl",
   ) => {
+    if (flowType === "reverse-etl") {
+      const id = openTab({
+        title: "New Reverse ETL",
+        content: "",
+        kind: "reverse-flow-editor",
+        metadata: { isNew: true },
+      });
+      setActiveTab(id);
+      setAnchorEl(null);
+      return;
+    }
+
     if (flowType === "scheduled-query") {
       const id = openTab({
         title: "New Scheduled Query",
@@ -389,6 +406,9 @@ export function FlowsExplorer() {
       >
         <MenuItem onClick={() => handleCreateNew("db-scheduled")}>
           Database Sync
+        </MenuItem>
+        <MenuItem onClick={() => handleCreateNew("reverse-etl")}>
+          Reverse ETL
         </MenuItem>
         <MenuItem onClick={() => handleCreateNew("scheduled")}>
           Connector Sync

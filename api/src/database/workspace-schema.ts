@@ -2,6 +2,7 @@ import mongoose, { Schema, Document, Types } from "mongoose";
 import { v4 as uuidv4 } from "uuid";
 import * as crypto from "crypto";
 import { loggers } from "../logging";
+import type { ReverseFlowSpec } from "../schemas/reverse-flow.schema";
 
 // Encryption helper functions
 let _encryptionKey: string | null = null;
@@ -433,7 +434,92 @@ export interface IScheduledQueryRun extends Document {
   inngestRunId?: string;
 }
 
-export type NotificationResourceType = "scheduled_query" | "flow";
+export interface IReverseFlowVersion {
+  version: number;
+  spec: ReverseFlowSpec;
+  authoredBy: string;
+  reason?: string;
+  createdAt: Date;
+}
+
+export interface IReverseFlow extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  createdBy: string;
+  status: "draft" | "active" | "paused";
+  spec: ReverseFlowSpec;
+  version: number;
+  versions: IReverseFlowVersion[];
+  lastDryRun?: {
+    at: Date;
+    sampleSize: number;
+    accepted: number;
+    rejected: number;
+    ambiguous: number;
+    rejectedFields: { field: string; reason: string }[];
+    passed: boolean;
+  };
+  scheduledRun?: {
+    nextAt?: Date;
+    lastAt?: Date;
+    lastStatus?: "success" | "partial" | "error";
+    lastError?: string;
+    runCount: number;
+    consecutiveFailures: number;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IReverseFlowRowOutcome {
+  sourcePk: string;
+  status: "created" | "updated" | "skipped" | "failed" | "ambiguous";
+  remoteId?: string;
+  error?: string;
+}
+
+export interface IReverseFlowRun extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  reverseFlowId: Types.ObjectId;
+  specVersion: number;
+  status: "queued" | "running" | "success" | "partial" | "error";
+  triggerType: "schedule" | "manual";
+  triggeredBy?: string;
+  triggeredAt: Date;
+  startedAt?: Date;
+  completedAt?: Date;
+  durationMs?: number;
+  inngestRunId?: string;
+  rowsRead: number;
+  rowsCreated: number;
+  rowsUpdated: number;
+  rowsSkipped: number;
+  rowsFailed: number;
+  ambiguous: number;
+  rowOutcomes: IReverseFlowRowOutcome[];
+  error?: {
+    message: string;
+    code?: string;
+  };
+}
+
+export interface IOutboundLedger extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  reverseFlowId: Types.ObjectId;
+  sourcePk: string;
+  remoteId?: string;
+  contentHash: string;
+  lastSyncedAt: Date;
+  lastRunId: Types.ObjectId;
+}
+
+export type NotificationResourceType =
+  | "scheduled_query"
+  | "flow"
+  | "reverse_etl";
 
 export type NotificationTrigger = "success" | "failure";
 
@@ -2580,6 +2666,168 @@ ScheduledQueryRunSchema.index(
   { sparse: true, expireAfterSeconds: 7776000 },
 );
 
+const ReverseFlowSchema = new Schema<IReverseFlow>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true },
+    createdBy: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ["draft", "active", "paused"],
+      default: "draft",
+      required: true,
+    },
+    spec: { type: Schema.Types.Mixed, required: true },
+    version: { type: Number, default: 1 },
+    versions: {
+      type: [
+        {
+          version: Number,
+          spec: Schema.Types.Mixed,
+          authoredBy: String,
+          reason: String,
+          createdAt: Date,
+        },
+      ],
+      default: [],
+    },
+    lastDryRun: {
+      at: Date,
+      sampleSize: Number,
+      accepted: Number,
+      rejected: Number,
+      ambiguous: Number,
+      rejectedFields: [
+        {
+          field: String,
+          reason: String,
+        },
+      ],
+      passed: Boolean,
+    },
+    scheduledRun: {
+      nextAt: Date,
+      lastAt: Date,
+      lastStatus: {
+        type: String,
+        enum: ["success", "partial", "error"],
+      },
+      lastError: String,
+      runCount: { type: Number, default: 0 },
+      consecutiveFailures: { type: Number, default: 0 },
+    },
+  },
+  {
+    collection: "reverse_flows",
+    timestamps: true,
+  },
+);
+
+ReverseFlowSchema.index({ workspaceId: 1, status: 1 });
+ReverseFlowSchema.index({ "scheduledRun.nextAt": 1 }, { sparse: true });
+
+const ReverseFlowRunSchema = new Schema<IReverseFlowRun>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    reverseFlowId: {
+      type: Schema.Types.ObjectId,
+      ref: "ReverseFlow",
+      required: true,
+    },
+    specVersion: { type: Number, required: true },
+    status: {
+      type: String,
+      enum: ["queued", "running", "success", "partial", "error"],
+      required: true,
+    },
+    triggerType: {
+      type: String,
+      enum: ["schedule", "manual"],
+      required: true,
+    },
+    triggeredBy: String,
+    triggeredAt: { type: Date, required: true },
+    startedAt: Date,
+    completedAt: Date,
+    durationMs: Number,
+    inngestRunId: String,
+    rowsRead: { type: Number, default: 0 },
+    rowsCreated: { type: Number, default: 0 },
+    rowsUpdated: { type: Number, default: 0 },
+    rowsSkipped: { type: Number, default: 0 },
+    rowsFailed: { type: Number, default: 0 },
+    ambiguous: { type: Number, default: 0 },
+    rowOutcomes: {
+      type: [
+        {
+          sourcePk: String,
+          status: String,
+          remoteId: String,
+          error: String,
+        },
+      ],
+      default: [],
+    },
+    error: {
+      message: String,
+      code: String,
+    },
+  },
+  {
+    collection: "reverse_flow_runs",
+    timestamps: false,
+  },
+);
+
+ReverseFlowRunSchema.index({
+  workspaceId: 1,
+  reverseFlowId: 1,
+  triggeredAt: -1,
+});
+ReverseFlowRunSchema.index(
+  { completedAt: 1 },
+  { sparse: true, expireAfterSeconds: 7776000 },
+);
+
+const OutboundLedgerSchema = new Schema<IOutboundLedger>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    reverseFlowId: {
+      type: Schema.Types.ObjectId,
+      ref: "ReverseFlow",
+      required: true,
+    },
+    sourcePk: { type: String, required: true },
+    remoteId: String,
+    contentHash: { type: String, required: true },
+    lastSyncedAt: { type: Date, required: true },
+    lastRunId: {
+      type: Schema.Types.ObjectId,
+      ref: "ReverseFlowRun",
+      required: true,
+    },
+  },
+  {
+    collection: "reverse_flow_ledger",
+    timestamps: false,
+  },
+);
+
+OutboundLedgerSchema.index({ reverseFlowId: 1, sourcePk: 1 }, { unique: true });
+OutboundLedgerSchema.index({ workspaceId: 1, reverseFlowId: 1 });
+
 const NotificationRuleSchema = new Schema<INotificationRule>(
   {
     workspaceId: {
@@ -2589,7 +2837,7 @@ const NotificationRuleSchema = new Schema<INotificationRule>(
     },
     resourceType: {
       type: String,
-      enum: ["scheduled_query", "flow"],
+      enum: ["scheduled_query", "flow", "reverse_etl"],
       required: true,
     },
     resourceId: {
@@ -2648,7 +2896,7 @@ const NotificationDeliverySchema = new Schema<INotificationDelivery>(
     },
     resourceType: {
       type: String,
-      enum: ["scheduled_query", "flow"],
+      enum: ["scheduled_query", "flow", "reverse_etl"],
       required: true,
     },
     resourceId: {
@@ -3478,6 +3726,18 @@ export const QueryExecution = mongoose.model<IQueryExecution>(
 export const ScheduledQueryRun = mongoose.model<IScheduledQueryRun>(
   "ScheduledQueryRun",
   ScheduledQueryRunSchema,
+);
+export const ReverseFlow = mongoose.model<IReverseFlow>(
+  "ReverseFlow",
+  ReverseFlowSchema,
+);
+export const ReverseFlowRun = mongoose.model<IReverseFlowRun>(
+  "ReverseFlowRun",
+  ReverseFlowRunSchema,
+);
+export const OutboundLedger = mongoose.model<IOutboundLedger>(
+  "OutboundLedger",
+  OutboundLedgerSchema,
 );
 export const NotificationRule = mongoose.model<INotificationRule>(
   "NotificationRule",

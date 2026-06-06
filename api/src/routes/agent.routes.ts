@@ -325,6 +325,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     tabKind,
     flowType,
     flowFormState,
+    reverseFlowFormState,
     activeDashboardContext,
     screenshotVisionAttachments,
   } = body as {
@@ -338,7 +339,12 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     modelId?: string;
     activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
-    activeView?: "console" | "dashboard" | "flow-editor" | "empty";
+    activeView?:
+      | "console"
+      | "dashboard"
+      | "flow-editor"
+      | "reverse-flow-editor"
+      | "empty";
     activeExplorer?:
       | "databases"
       | "consoles"
@@ -349,6 +355,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     tabKind?: string;
     flowType?: string;
     flowFormState?: Record<string, unknown>;
+    reverseFlowFormState?: Record<string, unknown>;
     screenshotVisionAttachments?: ScreenshotVisionAttachment[];
     activeDashboardContext?: {
       dashboardId: string;
@@ -665,6 +672,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       sqlDialect: (db as any).sqlDialect || undefined,
     })),
     flowFormState,
+    reverseFlowFormState,
     workspaceCustomPrompt,
     selfDirective,
     consoleHints,

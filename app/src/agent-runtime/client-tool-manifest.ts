@@ -502,6 +502,53 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Listing flow tabs",
     icon: "list",
   },
+  get_reverse_etl_form_state: {
+    domain: "flow",
+    execution: "client",
+    clientExecutor: "flow",
+    getLabel: () => "Reading Reverse ETL form",
+    icon: "eye",
+  },
+  set_reverse_etl_form_field: {
+    domain: "flow",
+    execution: "client",
+    clientExecutor: "flow",
+    getLabel: input => {
+      const field = (input as Record<string, unknown>)?.fieldName;
+      return field
+        ? `Setting Reverse ETL ${field}`
+        : "Setting Reverse ETL field";
+    },
+    icon: "pencil",
+  },
+  set_reverse_etl_multiple_fields: {
+    domain: "flow",
+    execution: "client",
+    clientExecutor: "flow",
+    getLabel: input => {
+      const fields = (input as Record<string, unknown>)?.fields;
+      const count =
+        fields && typeof fields === "object" ? Object.keys(fields).length : 0;
+      return count > 0
+        ? `Setting ${count} Reverse ETL fields`
+        : "Setting Reverse ETL fields";
+    },
+    icon: "pencil",
+  },
+  create_reverse_etl_tab: {
+    domain: "flow",
+    execution: "client",
+    clientExecutor: "flow",
+    getLabel: () => "Creating Reverse ETL tab",
+    icon: "plus",
+  },
+  list_reverse_etl_tabs: {
+    domain: "flow",
+    execution: "client",
+    clientExecutor: "flow",
+    getLabel: () => "Listing Reverse ETL tabs",
+    icon: "list",
+  },
   list_databases: {
     domain: "flow",
     execution: "server",

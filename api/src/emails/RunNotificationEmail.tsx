@@ -10,7 +10,9 @@ export type RunNotificationEmailProps = NotificationOutboundPayload;
 function resourceKindLabel(
   resourceType: NotificationOutboundPayload["resourceType"],
 ): string {
-  return resourceType === "scheduled_query" ? "Scheduled query" : "Flow";
+  if (resourceType === "scheduled_query") return "Scheduled query";
+  if (resourceType === "reverse_etl") return "Reverse ETL";
+  return "Flow";
 }
 
 function formatDuration(ms: number | undefined): string {

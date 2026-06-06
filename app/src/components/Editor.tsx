@@ -53,6 +53,10 @@ import Settings from "../pages/Settings";
 import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
+import {
+  ReverseFlowEditor,
+  type ReverseFlowFormRef,
+} from "./ReverseFlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
@@ -145,6 +149,7 @@ export interface ConsoleResultsContext {
 
 interface EditorProps {
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
+  reverseFlowFormRef?: React.RefObject<ReverseFlowFormRef | null>;
   onChartSpecChangeRef?: React.MutableRefObject<
     ((payload: ChartSpecChangePayload) => void) | undefined
   >;
@@ -269,6 +274,7 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
 
 function Editor({
   dbFlowFormRef,
+  reverseFlowFormRef,
   onChartSpecChangeRef,
   resultsContextRef,
 }: EditorProps = {}) {
@@ -1938,6 +1944,8 @@ function Editor({
                               ) : (
                                 <ScheduleIcon size={18} strokeWidth={1.5} />
                               )
+                            ) : tab.kind === "reverse-flow-editor" ? (
+                              <DataSourceIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "dashboard" ? (
                               <DashboardIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
@@ -2109,6 +2117,21 @@ function Editor({
                       closeConsole(tab.id);
                     }}
                     dbFlowFormRef={dbFlowFormRef}
+                  />
+                ) : tab.kind === "reverse-flow-editor" ? (
+                  <ReverseFlowEditor
+                    ref={
+                      reverseFlowFormRef as
+                        | React.Ref<ReverseFlowFormRef>
+                        | undefined
+                    }
+                    reverseFlowId={
+                      tab.metadata?.reverseFlowId as string | undefined
+                    }
+                    isNew={tab.metadata?.isNew as boolean | undefined}
+                    onCancel={() => {
+                      closeConsole(tab.id);
+                    }}
                   />
                 ) : tab.kind === "dashboard" ? (
                   <DashboardCanvas

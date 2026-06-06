@@ -42,6 +42,7 @@ import { dashboardRoutes } from "./routes/dashboards";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
+import { reverseFlowRoutes } from "./routes/reverse-flows";
 import { devEmailPreviewRoutes } from "./routes/dev-email-preview.routes";
 import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
@@ -122,6 +123,7 @@ app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
+app.route("/api/workspaces/:workspaceId/reverse-flows", reverseFlowRoutes);
 app.route(
   "/api/workspaces/:workspaceId/scheduled-queries",
   scheduledQueryRoutes,

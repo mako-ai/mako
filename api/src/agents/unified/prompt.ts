@@ -27,6 +27,9 @@ message explicitly targets a different modality:
   to this dashboard", "fix the Enquiries widget", "modify this KPI card").
 - Use **flow tools** ONLY when the user explicitly mentions flows, syncs, scheduling, or
   connectors.
+- Use **Reverse ETL tools** when the user mentions CRM write-back, outbound sync,
+  pushing query results into SaaS tools, Close leads, or mapping rows into
+  production systems.
 - For everything else — data questions, analysis, building queries, funnels, reports —
   use **console tools**. This is the default.
 
@@ -90,7 +93,19 @@ ${DASHBOARD_SYSTEM_PROMPT}
 
 ## Flow Guidance
 
-${FLOW_PROMPT}`;
+${FLOW_PROMPT}
+
+---
+
+## Reverse ETL Guidance
+
+Reverse ETL writes query results into production systems of record. Use
+\`inspect_destination\` before choosing destination fields,
+\`reverse_etl_validate_query\` before mapping columns, and \`dry_run_mapping\`
+before recommending activation. Prefer \`fill_empty\` for CRM updates unless the
+user explicitly wants overwrite semantics. Use the dedicated Reverse ETL client
+tools (\`create_reverse_etl_tab\`, \`set_reverse_etl_form_field\`, etc.) for the
+ReverseFlow editor.`;
 
 function buildConsoleContext(context: AgentContext): string[] {
   const parts: string[] = [];
@@ -297,6 +312,22 @@ function buildFlowContext(context: AgentContext): string[] {
   return parts;
 }
 
+function buildReverseFlowContext(context: AgentContext): string[] {
+  const parts: string[] = [];
+
+  parts.push("### Active Reverse ETL Flow");
+  if (
+    !context.reverseFlowFormState ||
+    Object.keys(context.reverseFlowFormState).length === 0
+  ) {
+    parts.push("No active Reverse ETL form state is available.");
+    return parts;
+  }
+
+  parts.push(JSON.stringify(context.reverseFlowFormState, null, 2));
+  return parts;
+}
+
 function buildTabSummary(context: AgentContext): string[] {
   const parts: string[] = [];
   const tabs = context.openTabs || [];
@@ -319,11 +350,15 @@ function buildTabSummary(context: AgentContext): string[] {
       detail = ` (id: ${tab.dashboardId})`;
     } else if (tab.kind === "flow-editor" && tab.flowId) {
       detail = ` (flow: ${tab.flowId})`;
+    } else if (tab.kind === "reverse-flow-editor" && tab.reverseFlowId) {
+      detail = ` (reverse flow: ${tab.reverseFlowId})`;
     }
     const kindLabel =
       tab.kind === "flow-editor"
         ? "Flow"
-        : tab.kind.charAt(0).toUpperCase() + tab.kind.slice(1);
+        : tab.kind === "reverse-flow-editor"
+          ? "Reverse ETL"
+          : tab.kind.charAt(0).toUpperCase() + tab.kind.slice(1);
     parts.push(
       `${index + 1}. ${activeMarker}${kindLabel} "${tab.title}"${detail}`,
     );
@@ -334,7 +369,9 @@ function buildTabSummary(context: AgentContext): string[] {
     const kindLabel =
       activeTab.kind === "flow-editor"
         ? "Flow"
-        : activeTab.kind.charAt(0).toUpperCase() + activeTab.kind.slice(1);
+        : activeTab.kind === "reverse-flow-editor"
+          ? "Reverse ETL"
+          : activeTab.kind.charAt(0).toUpperCase() + activeTab.kind.slice(1);
     parts.push("");
     parts.push(
       `The user is currently viewing: ${kindLabel} "${activeTab.title}".`,
@@ -380,6 +417,14 @@ export function buildCurrentScreenContext(context: AgentContext): string {
 
   if (context.flowFormState && Object.keys(context.flowFormState).length > 0) {
     sections.push(...buildFlowContext(context));
+    sections.push("");
+  }
+
+  if (
+    context.reverseFlowFormState &&
+    Object.keys(context.reverseFlowFormState).length > 0
+  ) {
+    sections.push(...buildReverseFlowContext(context));
     sections.push("");
   }
 
