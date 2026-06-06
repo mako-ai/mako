@@ -104,6 +104,12 @@ interface AppActions {
     bindingName: string,
   ) => Promise<{ success: boolean; rows?: unknown[]; error?: string }>;
 
+  materializeBinding: (
+    workspaceId: string,
+    appId: string,
+    bindingId: string,
+  ) => Promise<{ success: boolean; error?: string }>;
+
   reset: () => void;
 }
 
@@ -331,6 +337,8 @@ export const useAppStore = create<AppStore>()(
         code: binding.code,
         databaseId: binding.databaseId,
         databaseName: binding.databaseName,
+        materialization: binding.materialization || "live",
+        cache: binding.cache,
       };
       let ok = false;
       set(state => {
@@ -396,6 +404,37 @@ export const useAppStore = create<AppStore>()(
         return {
           success: false,
           error: e instanceof Error ? e.message : "Query failed",
+        };
+      }
+    },
+
+    materializeBinding: async (workspaceId, appId, bindingId) => {
+      try {
+        const res = await apiClient.post<{
+          success: boolean;
+          status?: { status: string; error?: string };
+          app?: AppEntity;
+          error?: string;
+        }>(
+          `/workspaces/${workspaceId}/apps/${appId}/bindings/${bindingId}/materialize`,
+        );
+        if (res.app) {
+          set(state => {
+            state.openApps[appId] = res.app as AppEntity;
+          });
+          get().bumpPreview(appId);
+        }
+        if (!res.success) {
+          return {
+            success: false,
+            error: res.status?.error || res.error || "Materialization failed",
+          };
+        }
+        return { success: true };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Materialization failed",
         };
       }
     },

@@ -27,6 +27,8 @@ export const PREVIEW_MESSAGE = {
   ready: "mako-app:ready",
   runBinding: "mako-app:run-binding",
   bindingResult: "mako-app:binding-result",
+  runDuckDb: "mako-app:run-duckdb",
+  duckDbResult: "mako-app:duckdb-result",
   error: "mako-app:error",
 } as const;
 
@@ -143,7 +145,11 @@ const pending = new Map();
 let reqSeq = 0;
 window.addEventListener("message", (event) => {
   const data = event.data || {};
-  if (data.type === "mako-app:binding-result" && pending.has(data.requestId)) {
+  if (
+    (data.type === "mako-app:binding-result" ||
+      data.type === "mako-app:duckdb-result") &&
+    pending.has(data.requestId)
+  ) {
     const resolve = pending.get(data.requestId);
     pending.delete(data.requestId);
     resolve(data);
@@ -154,6 +160,13 @@ function runBinding(name) {
     const requestId = "req_" + ++reqSeq;
     pending.set(requestId, resolve);
     POST({ type: "mako-app:run-binding", requestId, binding: name });
+  });
+}
+function runDuckDb(sql) {
+  return new Promise((resolve) => {
+    const requestId = "duck_" + ++reqSeq;
+    pending.set(requestId, resolve);
+    POST({ type: "mako-app:run-duckdb", requestId, sql: sql });
   });
 }
 
@@ -176,6 +189,8 @@ async function main() {
 
   // Injected SDK module.
   const makoSdk = {
+    // Read a named binding. Live bindings run server-side; parquet bindings
+    // return the materialized table rows from DuckDB-WASM (parent decides).
     useQuery(name) {
       const [state, setState] = React.useState({ data: null, error: null, loading: true });
       React.useEffect(() => {
@@ -188,6 +203,22 @@ async function main() {
         });
         return () => { active = false; };
       }, [name]);
+      return state;
+    },
+    // Run analytical SQL over the app's materialized (parquet) tables in
+    // DuckDB-WASM. Table names are the binding names. Returns { data, fields }.
+    useDuckDB(sql) {
+      const [state, setState] = React.useState({ data: null, fields: null, error: null, loading: true });
+      React.useEffect(() => {
+        let active = true;
+        setState({ data: null, fields: null, error: null, loading: true });
+        runDuckDb(sql).then((res) => {
+          if (!active) return;
+          if (res.success) setState({ data: res.rows, fields: res.fields, error: null, loading: false });
+          else setState({ data: null, fields: null, error: res.error || "DuckDB query failed", loading: false });
+        });
+        return () => { active = false; };
+      }, [sql]);
       return state;
     },
   };

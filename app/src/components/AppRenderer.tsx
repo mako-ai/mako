@@ -11,6 +11,12 @@ import { RefreshCw as RefreshIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
+import {
+  ensureBindingLoaded,
+  queryAppDuckDB,
+  disposeAppDuckDB,
+  bindingTableName,
+} from "../app-runtime/duckdb";
 
 /**
  * Full-screen live preview of a React app. File editing happens in dedicated
@@ -35,8 +41,30 @@ export default function AppRenderer({ appId }: { appId: string }) {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
   }, [appEntity, workspaceId, appId, fetchApp]);
 
-  // Bridge: respond to data-binding requests from the sandboxed iframe.
+  // Preload materialized (parquet) bindings into the app's DuckDB instance.
   useEffect(() => {
+    if (!appEntity) return;
+    for (const binding of appEntity.dataBindings) {
+      if (binding.materialization === "parquet") {
+        void ensureBindingLoaded(appId, binding).catch(() => {
+          /* surfaced when the app actually queries it */
+        });
+      }
+    }
+  }, [appId, appEntity]);
+
+  // Dispose the DuckDB instance when the tab unmounts.
+  useEffect(() => {
+    return () => {
+      void disposeAppDuckDB(appId);
+    };
+  }, [appId]);
+
+  // Bridge: respond to data + DuckDB requests from the sandboxed iframe.
+  useEffect(() => {
+    const post = (message: Record<string, unknown>) =>
+      iframeRef.current?.contentWindow?.postMessage(message, "*");
+
     const handler = (event: MessageEvent) => {
       if (
         iframeRef.current &&
@@ -45,19 +73,76 @@ export default function AppRenderer({ appId }: { appId: string }) {
         return;
       }
       const data = event.data || {};
+
       if (data.type === PREVIEW_MESSAGE.runBinding && workspaceId) {
-        void runBinding(workspaceId, appId, data.binding).then(result => {
-          iframeRef.current?.contentWindow?.postMessage(
-            {
-              type: PREVIEW_MESSAGE.bindingResult,
+        const binding = appEntity?.dataBindings.find(
+          b => b.name === data.binding,
+        );
+        // Materialized binding -> read its table from DuckDB-WASM.
+        if (binding?.materialization === "parquet") {
+          void ensureBindingLoaded(appId, binding)
+            .then(() =>
+              queryAppDuckDB(
+                appId,
+                `SELECT * FROM "${bindingTableName(binding.name)}"`,
+              ),
+            )
+            .then(result =>
+              post({
+                type: PREVIEW_MESSAGE.bindingResult,
+                requestId: data.requestId,
+                success: true,
+                rows: result.rows,
+              }),
+            )
+            .catch(err =>
+              post({
+                type: PREVIEW_MESSAGE.bindingResult,
+                requestId: data.requestId,
+                success: false,
+                error:
+                  err instanceof Error ? err.message : "DuckDB read failed",
+              }),
+            );
+          return;
+        }
+        // Live binding -> server execute.
+        void runBinding(workspaceId, appId, data.binding).then(result =>
+          post({
+            type: PREVIEW_MESSAGE.bindingResult,
+            requestId: data.requestId,
+            success: result.success,
+            rows: result.rows,
+            error: result.error,
+          }),
+        );
+      } else if (data.type === PREVIEW_MESSAGE.runDuckDb) {
+        const parquetBindings = (appEntity?.dataBindings || []).filter(
+          b => b.materialization === "parquet",
+        );
+        void Promise.all(
+          parquetBindings.map(b =>
+            ensureBindingLoaded(appId, b).catch(() => false),
+          ),
+        )
+          .then(() => queryAppDuckDB(appId, data.sql))
+          .then(result =>
+            post({
+              type: PREVIEW_MESSAGE.duckDbResult,
               requestId: data.requestId,
-              success: result.success,
+              success: true,
               rows: result.rows,
-              error: result.error,
-            },
-            "*",
+              fields: result.fields,
+            }),
+          )
+          .catch(err =>
+            post({
+              type: PREVIEW_MESSAGE.duckDbResult,
+              requestId: data.requestId,
+              success: false,
+              error: err instanceof Error ? err.message : "DuckDB query failed",
+            }),
           );
-        });
       } else if (data.type === PREVIEW_MESSAGE.error) {
         setPreviewErrors(appId, [
           { message: data.message, source: data.source, at: Date.now() },
@@ -68,7 +153,7 @@ export default function AppRenderer({ appId }: { appId: string }) {
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [appId, workspaceId, runBinding, setPreviewErrors]);
+  }, [appId, workspaceId, appEntity, runBinding, setPreviewErrors]);
 
   // Rebuild the preview document whenever files/deps change (nonce bumps).
   const srcDoc = useMemo(() => {
