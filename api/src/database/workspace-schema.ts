@@ -3511,6 +3511,24 @@ export interface IMakoAppFile {
   contents: string;
 }
 
+export interface IMakoAppBindingCache {
+  parquetArtifactKey?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
+  parquetBuildStatus?:
+    | "missing"
+    | "queued"
+    | "building"
+    | "ready"
+    | "error"
+    | null;
+  parquetLastError?: string | null;
+  rowCount?: number;
+  byteSize?: number;
+  lastRefreshedAt?: Date;
+  parquetBuiltAt?: Date;
+}
+
 export interface IMakoAppDataBinding {
   id: string;
   name: string;
@@ -3519,6 +3537,8 @@ export interface IMakoAppDataBinding {
   code: string;
   databaseId?: string;
   databaseName?: string;
+  materialization: "live" | "parquet";
+  cache?: IMakoAppBindingCache;
 }
 
 export interface IMakoApp extends Document {
@@ -3548,6 +3568,25 @@ const MakoAppFileSchema = new Schema<IMakoAppFile>(
   { _id: false },
 );
 
+const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
+  {
+    parquetArtifactKey: { type: String },
+    definitionHash: { type: String },
+    artifactRevision: { type: String },
+    parquetBuildStatus: {
+      type: String,
+      enum: ["missing", "queued", "building", "ready", "error", null],
+      default: null,
+    },
+    parquetLastError: { type: String, default: null },
+    rowCount: { type: Number },
+    byteSize: { type: Number },
+    lastRefreshedAt: { type: Date },
+    parquetBuiltAt: { type: Date },
+  },
+  { _id: false },
+);
+
 const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
   {
     id: { type: String, required: true },
@@ -3561,6 +3600,12 @@ const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
     code: { type: String, default: "" },
     databaseId: { type: String },
     databaseName: { type: String },
+    materialization: {
+      type: String,
+      enum: ["live", "parquet"],
+      default: "live",
+    },
+    cache: { type: MakoAppBindingCacheSchema, default: undefined },
   },
   { _id: false },
 );

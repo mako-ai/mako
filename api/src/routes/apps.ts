@@ -11,6 +11,7 @@
 
 import { Hono } from "hono";
 import { Types } from "mongoose";
+import { Readable } from "node:stream";
 import { nanoid } from "nanoid";
 import {
   MakoApp,
@@ -22,6 +23,12 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AppDefinitionSchema, normalizeAppFiles } from "@mako/schemas";
+import {
+  materializeAppBinding,
+  hydrateAppBindingUrls,
+  getBindingArtifactInfo,
+} from "../services/app-binding-materialization.service";
+import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 
 const logger = loggers.api("apps");
 
@@ -50,7 +57,7 @@ function toListItem(doc: IMakoApp): AppListItem {
 }
 
 function serializeApp(doc: IMakoApp) {
-  return {
+  const app = {
     _id: doc._id.toString(),
     workspaceId: doc.workspaceId.toString(),
     title: doc.title,
@@ -58,9 +65,31 @@ function serializeApp(doc: IMakoApp) {
     template: doc.template,
     runtime: doc.runtime,
     entrypoint: doc.entrypoint,
-    files: doc.files ?? [],
+    files: (doc.files ?? []).map(f => ({ path: f.path, contents: f.contents })),
     dependencies: doc.dependencies ?? {},
-    dataBindings: doc.dataBindings ?? [],
+    dataBindings: (doc.dataBindings ?? []).map(b => ({
+      id: b.id,
+      name: b.name,
+      connectionId: b.connectionId,
+      language: b.language,
+      code: b.code,
+      databaseId: b.databaseId,
+      databaseName: b.databaseName,
+      materialization: b.materialization ?? "live",
+      cache: b.cache
+        ? {
+            parquetArtifactKey: b.cache.parquetArtifactKey,
+            definitionHash: b.cache.definitionHash,
+            artifactRevision: b.cache.artifactRevision,
+            parquetBuildStatus: b.cache.parquetBuildStatus,
+            parquetLastError: b.cache.parquetLastError,
+            rowCount: b.cache.rowCount,
+            byteSize: b.cache.byteSize,
+            lastRefreshedAt: b.cache.lastRefreshedAt,
+            parquetBuiltAt: b.cache.parquetBuiltAt,
+          }
+        : undefined,
+    })) as Array<Record<string, any>>,
     version: doc.version,
     access: doc.access,
     owner_id: doc.owner_id,
@@ -68,6 +97,7 @@ function serializeApp(doc: IMakoApp) {
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
   };
+  return hydrateAppBindingUrls(app);
 }
 
 app.use("*", unifiedAuthMiddleware);
@@ -319,16 +349,29 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       doc.dependencies = body.dependencies as Record<string, string>;
     }
     if (Array.isArray(body.dataBindings)) {
-      const bindings = body.dataBindings as Array<{ connectionId?: string }>;
+      const bindings = body.dataBindings as Array<Record<string, any>>;
       const bindingCheck = await validateDataBindings(workspaceId, bindings);
       if (!bindingCheck.ok) {
         return c.json({ success: false, error: bindingCheck.error }, 400);
       }
-      // Ensure every binding has an id.
-      doc.dataBindings = (bindings as IMakoApp["dataBindings"]).map(b => ({
-        ...b,
-        id: b.id || nanoid(10),
-      }));
+      // Cache is server-owned: preserve the existing materialized cache by id;
+      // never trust client-provided cache. Take only the query definition.
+      const existingById = new Map(doc.dataBindings.map(b => [b.id, b]));
+      doc.dataBindings = bindings.map(b => {
+        const id = b.id || nanoid(10);
+        const prior = existingById.get(id);
+        return {
+          id,
+          name: b.name,
+          connectionId: b.connectionId,
+          language: b.language || "sql",
+          code: b.code ?? "",
+          databaseId: b.databaseId,
+          databaseName: b.databaseName,
+          materialization: b.materialization === "parquet" ? "parquet" : "live",
+          cache: prior?.cache,
+        };
+      }) as IMakoApp["dataBindings"];
     }
     if (body.access === "private" || body.access === "workspace") {
       doc.access = body.access;
@@ -372,6 +415,115 @@ app.delete("/:id", async (c: AuthenticatedContext) => {
     return c.json({ success: false, error: "Failed to delete app" }, 500);
   }
 });
+
+// POST /:id/bindings/:bindingId/materialize — build the Parquet artifact
+app.post(
+  "/:id/bindings/:bindingId/materialize",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      const bindingId = c.req.param("bindingId");
+      const userId = c.get("user")?.id;
+      const memberRole = c.get("memberRole");
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, memberRole)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const body = (await c.req.json().catch(() => ({}))) as {
+        force?: boolean;
+      };
+      const status = await materializeAppBinding({
+        workspaceId,
+        appId: id,
+        bindingId,
+        force: body.force === true,
+      });
+
+      // Return the refreshed app so the client gets the hydrated parquetUrl.
+      const refreshed = await MakoApp.findById(doc._id);
+      return c.json({
+        success: status.status === "ready",
+        status,
+        app: refreshed ? serializeApp(refreshed) : undefined,
+      });
+    } catch (error) {
+      logger.error("Error materializing app binding", { error });
+      return c.json(
+        { success: false, error: "Failed to materialize binding" },
+        500,
+      );
+    }
+  },
+);
+
+// GET /:id/bindings/:bindingId/materialization/artifact — stream the Parquet
+app.get(
+  "/:id/bindings/:bindingId/materialization/artifact",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      const bindingId = c.req.param("bindingId");
+      const userId = c.get("user")?.id;
+      const memberRole = c.get("memberRole");
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, memberRole)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const info = getBindingArtifactInfo(doc, bindingId);
+      if (!info) {
+        return c.json({ success: false, error: "Artifact not found" }, 404);
+      }
+
+      const store = getDashboardArtifactStore();
+      const stream = await store.openReadStream(info.artifactKey);
+      if (!stream) {
+        return c.json({ success: false, error: "Artifact not found" }, 404);
+      }
+
+      const rev = c.req.query("rev");
+      const cacheControl =
+        rev && info.revision && rev === info.revision
+          ? "private, max-age=86400, immutable"
+          : "private, no-store";
+
+      return new Response(
+        Readable.toWeb(stream as Readable) as ReadableStream,
+        {
+          headers: {
+            "Content-Type": "application/vnd.apache.parquet",
+            "X-Row-Count": String(info.rowCount ?? 0),
+            "Cache-Control": cacheControl,
+          },
+        },
+      );
+    } catch (error) {
+      logger.error("Error serving app binding artifact", { error });
+      return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
 
 export const appRoutes = app;
 export default app;
