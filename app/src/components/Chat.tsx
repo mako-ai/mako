@@ -1095,7 +1095,16 @@ const QueuedPromptList = React.memo(
     if (prompts.length === 0) return null;
 
     return (
-      <Box sx={{ mx: 1, mb: 0.5 }}>
+      <Box
+        sx={{
+          mx: 1,
+          mb: 0.5,
+          border: 1,
+          borderColor: "divider",
+          borderRadius: 2.5,
+          p: 0.5,
+        }}
+      >
         <Box
           role="button"
           tabIndex={0}
