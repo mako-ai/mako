@@ -52,7 +52,7 @@ interface ExecuteConsoleAgentToolOptions {
     toolName: string,
     toolCallId: string,
     output: Record<string, unknown>,
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 function emitToolOutput(
