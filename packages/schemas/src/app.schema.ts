@@ -39,9 +39,49 @@ export type AppDataBindingLanguage = z.infer<
 >;
 
 /**
+ * How a binding's data reaches the app:
+ * - `live`: the query runs server-side on every read through Mako's execute API.
+ * - `parquet`: the query is materialized server-side into a Parquet artifact
+ *   (stored on filesystem/GCS/S3, same pipeline as dashboards) and loaded into
+ *   DuckDB-WASM in the browser, where the app can run analytical SQL over it.
+ */
+export const AppBindingMaterializationSchema = z.enum(["live", "parquet"]);
+export type AppBindingMaterialization = z.infer<
+  typeof AppBindingMaterializationSchema
+>;
+
+export const AppBindingParquetStatusSchema = z.enum([
+  "missing",
+  "queued",
+  "building",
+  "ready",
+  "error",
+]);
+
+/**
+ * Materialized-artifact cache metadata for a binding. Mirrors the dashboard
+ * data source `cache` shape so the same artifact store + serve pipeline applies.
+ * `parquetUrl` is hydrated on read (a proxied API path), never persisted.
+ */
+export const AppBindingCacheSchema = z.object({
+  parquetArtifactKey: z.string().optional(),
+  definitionHash: z.string().optional(),
+  artifactRevision: z.string().optional(),
+  parquetBuildStatus: AppBindingParquetStatusSchema.nullish(),
+  parquetLastError: z.string().nullish(),
+  rowCount: z.number().optional(),
+  byteSize: z.number().optional(),
+  lastRefreshedAt: z.string().optional(),
+  parquetBuiltAt: z.string().optional(),
+  parquetUrl: z.string().optional(),
+});
+export type AppBindingCache = z.infer<typeof AppBindingCacheSchema>;
+
+/**
  * A named data binding. The generated app reads bindings by `name` through the
- * injected `@mako/app-sdk` runtime; the query itself runs server-side, scoped
- * to the workspace, through Mako's execute API.
+ * injected `@mako/app-sdk` runtime. For `live` bindings the query runs
+ * server-side, scoped to the workspace; for `parquet` bindings the data is
+ * materialized to Parquet and queried client-side via DuckDB-WASM.
  */
 export const AppDataBindingSchema = z.object({
   id: z.string().describe("Stable binding id"),
@@ -56,6 +96,8 @@ export const AppDataBindingSchema = z.object({
   code: z.string().describe("Query text/code to execute"),
   databaseId: z.string().optional().describe("Optional sub-database id"),
   databaseName: z.string().optional().describe("Optional database name"),
+  materialization: AppBindingMaterializationSchema.default("live"),
+  cache: AppBindingCacheSchema.optional(),
 });
 export type AppDataBinding = z.infer<typeof AppDataBindingSchema>;
 
