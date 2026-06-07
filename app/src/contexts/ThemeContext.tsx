@@ -576,8 +576,11 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       MuiToggleButton: {
         styleOverrides: {
           root: {
-            padding: 2,
-            fontSize: "2rem",
+            padding: "4px 10px",
+            // Match button/body text. (Was mistakenly "2rem", which blew up
+            // every text-based segmented control across the app.)
+            fontSize: "0.8125rem",
+            lineHeight: 1.4,
             borderRadius: 3,
             textTransform: "none",
             ...truncateTextStyles,
