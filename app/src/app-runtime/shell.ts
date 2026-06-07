@@ -55,6 +55,9 @@ export function focusAppBindingTab(
       title,
       content: "",
       kind: "app-binding",
+      // Mark saved so the reused Console component never auto-saves this tab
+      // to the console API — its query is owned by the app binding.
+      isSaved: true,
       metadata: { appId, bindingId },
     });
 

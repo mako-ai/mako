@@ -1,142 +1,120 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Box,
   Typography,
-  Chip,
   Button,
   ToggleButtonGroup,
   ToggleButton,
+  Chip,
   Tooltip,
-  useTheme,
 } from "@mui/material";
-import { Play as RunIcon, Database as MaterializeIcon } from "lucide-react";
-import MonacoEditor from "@monaco-editor/react";
-import { useWorkspace } from "../contexts/workspace-context";
-import { useSchemaStore } from "../store/schemaStore";
-import { useAppStore } from "../store/appStore";
 import {
-  ensureBindingLoaded,
-  queryAppDuckDB,
-  bindingTableName,
-} from "../app-runtime/duckdb";
-import { ConnectionSelector } from "./ConnectionSelector";
+  ChevronRight as BreadcrumbChevronIcon,
+  Database as MaterializeIcon,
+} from "lucide-react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useWorkspace } from "../contexts/workspace-context";
+import { useAppStore } from "../store/appStore";
+import { useConsoleStore } from "../store/consoleStore";
+import Console from "./Console";
+import ResultsTable from "./ResultsTable";
 
-const PREVIEW_LIMIT = 200;
-
-function monacoLanguage(language: string): string {
-  if (language === "mongodb" || language === "javascript") return "javascript";
-  return "sql";
+interface PreviewResult {
+  results: Record<string, unknown>[];
+  executedAt: string;
+  resultCount: number;
+  executionTime?: number;
+  fields?: Array<{ name?: string; originalName?: string } | string>;
 }
 
-interface PreviewState {
-  rows: Record<string, unknown>[];
-  columns: string[];
-  error: string | null;
-  loading: boolean;
+function bindingFilePath(name: string, language: string): string {
+  const ext = language === "sql" ? "sql" : "js";
+  return `${name.replace(/[^a-zA-Z0-9_-]/g, "_")}.${ext}`;
 }
 
+/**
+ * Data source inspector. Reuses the polished `Console` component (run / save /
+ * connection / editor) so app + dashboard data sources look and behave exactly
+ * like a saved console, with a small set of data-source-specific controls
+ * (materialization) injected into the toolbar.
+ */
 export default function AppBindingEditor({
+  tabId,
   appId,
   bindingId,
 }: {
+  tabId: string;
   appId: string;
   bindingId: string;
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
 
   const appEntity = useAppStore(s => s.openApps[appId]);
   const fetchApp = useAppStore(s => s.fetchApp);
   const updateBinding = useAppStore(s => s.updateBinding);
   const persistApp = useAppStore(s => s.persistApp);
-  const runBinding = useAppStore(s => s.runBinding);
   const materializeBinding = useAppStore(s => s.materializeBinding);
-  const ensureConnections = useSchemaStore(s => s.ensureConnections);
+  const executeQuery = useConsoleStore(s => s.executeQuery);
 
-  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [viewMode, setViewMode] = useState<"table" | "json" | "chart">("table");
+  const [running, setRunning] = useState(false);
   const [materializing, setMaterializing] = useState(false);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
   }, [appEntity, workspaceId, appId, fetchApp]);
 
-  useEffect(() => {
-    if (workspaceId) void ensureConnections(workspaceId);
-  }, [workspaceId, ensureConnections]);
-
   const binding = appEntity?.dataBindings.find(b => b.id === bindingId);
 
-  const persistSoon = useCallback(() => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    if (workspaceId) {
-      saveTimer.current = setTimeout(() => {
-        void persistApp(workspaceId, appId);
-      }, 1000);
-    }
-  }, [workspaceId, appId, persistApp]);
-
-  const handleCodeChange = useCallback(
-    (value: string | undefined) => {
-      updateBinding(appId, bindingId, { code: value ?? "" });
-      persistSoon();
+  const handleExecute = useCallback(
+    async (content: string, connectionId?: string, databaseId?: string) => {
+      if (!workspaceId || !connectionId) return;
+      setRunning(true);
+      try {
+        const res = await executeQuery(workspaceId, connectionId, content, {
+          databaseId,
+          databaseName: binding?.databaseName,
+        });
+        if (res.success) {
+          setPreview({
+            results: res.rows || [],
+            executedAt: new Date().toISOString(),
+            resultCount: res.rows?.length ?? 0,
+            executionTime: res.executionTime,
+            fields: res.fields,
+          });
+        } else {
+          setPreview({
+            results: [{ error: res.error || "Query failed" }],
+            executedAt: new Date().toISOString(),
+            resultCount: 0,
+          });
+        }
+      } finally {
+        setRunning(false);
+      }
     },
-    [appId, bindingId, updateBinding, persistSoon],
+    [workspaceId, executeQuery, binding?.databaseName],
   );
 
-  const handleRun = useCallback(async () => {
-    if (!binding || !workspaceId) return;
-    setPreview({ rows: [], columns: [], error: null, loading: true });
-    try {
-      if (binding.materialization === "parquet") {
-        const loaded = await ensureBindingLoaded(appId, binding);
-        if (!loaded) {
-          setPreview({
-            rows: [],
-            columns: [],
-            error: "Not materialized yet — click Materialize first.",
-            loading: false,
-          });
-          return;
-        }
-        const result = await queryAppDuckDB(
-          appId,
-          `SELECT * FROM "${bindingTableName(binding.name)}" LIMIT ${PREVIEW_LIMIT}`,
-        );
-        setPreview({
-          rows: result.rows,
-          columns: result.fields.map(f => f.name),
-          error: null,
-          loading: false,
-        });
-      } else {
-        const result = await runBinding(workspaceId, appId, binding.name);
-        const rows = (result.rows as Record<string, unknown>[]) || [];
-        setPreview({
-          rows: rows.slice(0, PREVIEW_LIMIT),
-          columns: rows.length > 0 ? Object.keys(rows[0]) : [],
-          error: result.success ? null : result.error || "Query failed",
-          loading: false,
-        });
-      }
-    } catch (e) {
-      setPreview({
-        rows: [],
-        columns: [],
-        error: e instanceof Error ? e.message : "Query failed",
-        loading: false,
-      });
-    }
-  }, [binding, workspaceId, appId, runBinding]);
+  const handleSave = useCallback(
+    async (content: string) => {
+      if (!workspaceId) return false;
+      updateBinding(appId, bindingId, { code: content });
+      await persistApp(workspaceId, appId);
+      return true;
+    },
+    [workspaceId, appId, bindingId, updateBinding, persistApp],
+  );
 
   const handleMaterialize = useCallback(async () => {
     if (!workspaceId) return;
     setMaterializing(true);
     await materializeBinding(workspaceId, appId, bindingId);
     setMaterializing(false);
-    void handleRun();
-  }, [workspaceId, appId, bindingId, materializeBinding, handleRun]);
+  }, [workspaceId, appId, bindingId, materializeBinding]);
 
   if (!appEntity) {
     return (
@@ -156,53 +134,30 @@ export default function AppBindingEditor({
   }
 
   const cache = binding.cache;
+  const breadcrumb = ["Apps", appEntity.title, "Data sources", binding.name];
 
-  return (
-    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Toolbar */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          px: 1.5,
-          py: 0.75,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-          flexWrap: "wrap",
+  const headerExtras = (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: 1 }}>
+      <ToggleButtonGroup
+        size="small"
+        exclusive
+        value={binding.materialization}
+        onChange={(_e, value) => {
+          if (value && workspaceId) {
+            updateBinding(appId, bindingId, { materialization: value });
+            void persistApp(workspaceId, appId);
+          }
         }}
       >
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {binding.name}
-        </Typography>
-        <ConnectionSelector
-          value={binding.connectionId}
-          onChange={connectionId => {
-            updateBinding(appId, bindingId, { connectionId });
-            persistSoon();
-          }}
-          size="compact"
-          showLabel={false}
-          width={220}
-        />
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={binding.materialization}
-          onChange={(_e, value) => {
-            if (value) {
-              updateBinding(appId, bindingId, { materialization: value });
-              persistSoon();
-            }
-          }}
-        >
-          <ToggleButton value="live">Live</ToggleButton>
-          <ToggleButton value="parquet">Parquet · DuckDB</ToggleButton>
-        </ToggleButtonGroup>
-
-        <Box sx={{ flex: 1 }} />
-
-        {binding.materialization === "parquet" && (
+        <ToggleButton value="live" sx={{ textTransform: "none", py: 0.25 }}>
+          Live
+        </ToggleButton>
+        <ToggleButton value="parquet" sx={{ textTransform: "none", py: 0.25 }}>
+          Parquet · DuckDB
+        </ToggleButton>
+      </ToggleButtonGroup>
+      {binding.materialization === "parquet" && (
+        <>
           <Tooltip title="Materialize to Parquet and load into DuckDB">
             <span>
               <Button
@@ -216,187 +171,123 @@ export default function AppBindingEditor({
               </Button>
             </span>
           </Tooltip>
-        )}
-        <Button
-          size="small"
-          variant="contained"
-          startIcon={<RunIcon size={16} strokeWidth={1.5} />}
-          onClick={handleRun}
-          disabled={preview?.loading}
-        >
-          Run
-        </Button>
-      </Box>
-
-      {/* Materialization status */}
-      {binding.materialization === "parquet" && (
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            px: 1.5,
-            py: 0.5,
-            borderBottom: "1px solid",
-            borderColor: "divider",
-            fontSize: "0.75rem",
-            color: "text.secondary",
-            flexWrap: "wrap",
-          }}
-        >
-          <Chip
-            size="small"
-            variant="outlined"
-            color={
-              cache?.parquetBuildStatus === "ready"
-                ? "success"
-                : cache?.parquetBuildStatus === "error"
-                  ? "error"
-                  : "default"
-            }
-            label={`status: ${cache?.parquetBuildStatus ?? "missing"}`}
-          />
-          <Typography variant="caption">
-            table: <code>{bindingTableName(binding.name)}</code>
-          </Typography>
-          {cache?.rowCount != null && (
-            <Typography variant="caption">
-              {cache.rowCount.toLocaleString()} rows
-            </Typography>
+          {cache?.parquetBuildStatus && (
+            <Chip
+              size="small"
+              variant="outlined"
+              color={
+                cache.parquetBuildStatus === "ready"
+                  ? "success"
+                  : cache.parquetBuildStatus === "error"
+                    ? "error"
+                    : "default"
+              }
+              label={
+                cache.parquetBuildStatus === "ready" && cache.rowCount != null
+                  ? `${cache.rowCount.toLocaleString()} rows`
+                  : cache.parquetBuildStatus
+              }
+            />
           )}
-          {cache?.lastRefreshedAt && (
-            <Typography variant="caption">
-              refreshed {new Date(cache.lastRefreshedAt).toLocaleString()}
-            </Typography>
-          )}
-          {cache?.parquetLastError && (
-            <Typography variant="caption" color="error">
-              {cache.parquetLastError}
-            </Typography>
-          )}
-        </Box>
+        </>
       )}
+    </Box>
+  );
 
-      {/* Query editor + results split */}
+  return (
+    <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      {/* Breadcrumb — matches the console breadcrumb style */}
       <Box
-        sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          minHeight: 22,
+          px: 1.5,
+          py: 0.25,
+          backgroundColor: "background.paper",
+          color: "text.secondary",
+          fontSize: "0.75rem",
+          gap: 0.25,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+        }}
       >
-        <Box sx={{ flex: 1, minHeight: 0 }}>
-          <MonacoEditor
-            height="100%"
-            path={`${appId}/binding/${bindingId}`}
-            language={monacoLanguage(binding.language)}
-            value={binding.code}
-            theme={monacoTheme}
-            onChange={handleCodeChange}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 13,
-              automaticLayout: true,
-              scrollBeyondLastLine: false,
+        {breadcrumb.map((segment, index) => (
+          <Box
+            key={`${index}-${segment}`}
+            component="span"
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.25,
+              minWidth: 0,
             }}
-          />
-        </Box>
-
-        {/* Results */}
-        <Box
-          sx={{
-            height: "45%",
-            minHeight: 0,
-            borderTop: "1px solid",
-            borderColor: "divider",
-            overflow: "auto",
-            bgcolor: "background.paper",
-          }}
-        >
-          {!preview ? (
-            <Box sx={{ p: 2, color: "text.secondary" }}>
-              <Typography variant="caption">
-                Run the query to preview its data.
-              </Typography>
-            </Box>
-          ) : preview.loading ? (
-            <Box sx={{ p: 2, color: "text.secondary" }}>
-              <Typography variant="caption">Running…</Typography>
-            </Box>
-          ) : preview.error ? (
-            <Box sx={{ p: 2 }}>
-              <Typography
-                variant="caption"
-                color="error"
-                sx={{ whiteSpace: "pre-wrap" }}
-              >
-                {preview.error}
-              </Typography>
-            </Box>
-          ) : (
+          >
+            {index > 0 && (
+              <BreadcrumbChevronIcon
+                size={12}
+                strokeWidth={2}
+                style={{ flexShrink: 0, opacity: 0.6 }}
+              />
+            )}
             <Box
-              component="table"
+              component="span"
               sx={{
-                borderCollapse: "collapse",
-                fontSize: "0.78rem",
-                width: "max-content",
-                minWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
             >
-              <Box component="thead">
-                <Box component="tr">
-                  {preview.columns.map(col => (
-                    <Box
-                      key={col}
-                      component="th"
-                      sx={{
-                        textAlign: "left",
-                        px: 1,
-                        py: 0.5,
-                        borderBottom: "1px solid",
-                        borderColor: "divider",
-                        position: "sticky",
-                        top: 0,
-                        bgcolor: "background.paper",
-                        fontWeight: 600,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {col}
-                    </Box>
-                  ))}
-                </Box>
-              </Box>
-              <Box component="tbody">
-                {preview.rows.map((row, i) => (
-                  <Box component="tr" key={i}>
-                    {preview.columns.map(col => (
-                      <Box
-                        key={col}
-                        component="td"
-                        sx={{
-                          px: 1,
-                          py: 0.25,
-                          borderBottom: "1px solid",
-                          borderColor: "divider",
-                          whiteSpace: "nowrap",
-                          maxWidth: 360,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {formatCell(row[col])}
-                      </Box>
-                    ))}
-                  </Box>
-                ))}
-              </Box>
+              {segment}
             </Box>
-          )}
-        </Box>
+          </Box>
+        ))}
+      </Box>
+
+      <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+        <PanelGroup direction="vertical" style={{ height: "100%" }}>
+          <Panel defaultSize={55} minSize={20}>
+            <Console
+              variant="data-source"
+              consoleId={tabId}
+              initialContent={binding.code}
+              filePath={bindingFilePath(binding.name, binding.language)}
+              onExecute={handleExecute}
+              onSave={handleSave}
+              isExecuting={running}
+              connectionId={binding.connectionId}
+              onDatabaseChange={connectionId => {
+                if (workspaceId) {
+                  updateBinding(appId, bindingId, { connectionId });
+                  void persistApp(workspaceId, appId);
+                }
+              }}
+              onDatabaseNameChange={(databaseId, databaseName) => {
+                if (workspaceId) {
+                  updateBinding(appId, bindingId, { databaseId, databaseName });
+                  void persistApp(workspaceId, appId);
+                }
+              }}
+              databaseId={binding.databaseId}
+              databaseName={binding.databaseName}
+              headerExtras={headerExtras}
+            />
+          </Panel>
+          <PanelResizeHandle
+            style={{
+              height: 4,
+              background: "var(--mui-palette-divider, #ddd)",
+            }}
+          />
+          <Panel defaultSize={45} minSize={10}>
+            <ResultsTable
+              results={preview}
+              viewMode={viewMode}
+              onViewModeChange={setViewMode}
+            />
+          </Panel>
+        </PanelGroup>
       </Box>
     </Box>
   );
-}
-
-function formatCell(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
 }

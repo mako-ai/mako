@@ -2149,6 +2149,7 @@ function Editor({
                   />
                 ) : tab.kind === "app-binding" ? (
                   <AppBindingEditor
+                    tabId={tab.id}
                     appId={tab.metadata?.appId as string}
                     bindingId={tab.metadata?.bindingId as string}
                   />
