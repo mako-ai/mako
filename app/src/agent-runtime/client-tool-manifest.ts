@@ -30,7 +30,12 @@ export type AgentToolDomain =
   | "memory"
   | "database";
 
-export type ClientToolExecutor = "console" | "dashboard" | "flow" | "app";
+export type ClientToolExecutor =
+  | "console"
+  | "dashboard"
+  | "flow"
+  | "app"
+  | "data";
 
 export interface ToolUiConfig {
   getLabel: (input?: unknown) => string;
@@ -340,24 +345,6 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
-  preview_data_source: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Previewing data",
-    icon: "eye",
-    preview: { field: "sql", language: "sql" },
-  },
-  get_data_preview: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Previewing data",
-    icon: "eye",
-    preview: { field: "sql", language: "sql" },
-  },
   add_global_filter: {
     domain: "dashboard",
     execution: "client",
@@ -519,28 +506,28 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "database",
   },
-  list_app_data_sources: {
-    domain: "app",
+  list_data_sources: {
+    domain: "database",
     execution: "client",
-    clientExecutor: "app",
+    clientExecutor: "data",
     getLabel: () => "Listing data sources",
     icon: "list",
   },
-  inspect_app_data_source: {
-    domain: "app",
+  inspect_data_source: {
+    domain: "database",
     execution: "client",
-    clientExecutor: "app",
+    clientExecutor: "data",
     longRunning: true,
     getLabel: input => {
-      const name = (input as Record<string, unknown>)?.name;
-      return name ? `Inspecting "${name}"` : "Inspecting data source";
+      const ds = (input as Record<string, unknown>)?.dataSource;
+      return ds ? `Inspecting "${ds}"` : "Inspecting data source";
     },
     icon: "search",
   },
-  run_app_duckdb: {
-    domain: "app",
+  query_duckdb: {
+    domain: "database",
     execution: "client",
-    clientExecutor: "app",
+    clientExecutor: "data",
     longRunning: true,
     getLabel: () => "Running DuckDB query",
     icon: "play",
@@ -745,6 +732,10 @@ export const CONSOLE_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const APP_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "app",
+);
+
+export const DATA_SOURCE_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "data",
 );
 
 export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(

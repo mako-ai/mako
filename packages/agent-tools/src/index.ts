@@ -18,6 +18,7 @@ import { clientChartTools } from "./chart-tools";
 import { clientDashboardTools } from "./dashboard-tools";
 import { clientFlowTools } from "./flow-tools";
 import { clientAppTools } from "./app-tools";
+import { clientDataSourceTools } from "./data-source-tools";
 import { clientScreenshotTools } from "./screenshot-tools";
 
 export { clientConsoleTools } from "./console-tools";
@@ -40,6 +41,8 @@ export { clientFlowTools } from "./flow-tools";
 export { clientAppTools } from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 
+export { clientDataSourceTools } from "./data-source-tools";
+
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";
 
@@ -60,6 +63,7 @@ export const clientAgentTools = {
   ...clientDashboardTools,
   ...clientFlowTools,
   ...clientAppTools,
+  ...clientDataSourceTools,
 };
 
 /** Map of client tool name -> inferred input/output types. */

@@ -93,10 +93,12 @@ import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   APP_EXECUTOR_TOOL_NAMES,
+  DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
 import { executeAppAgentTool } from "../app-runtime/agent-tools";
+import { executeDataSourceTool } from "../agent-runtime/data-source-tools";
 import { UpgradePrompt } from "./UpgradePrompt";
 import {
   onRenderDebug,
@@ -1671,6 +1673,43 @@ const Chat: React.FC<ChatProps> = ({
                   appError instanceof Error
                     ? appError.message
                     : "App tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- Shared data source tools (apps + dashboards) ---
+        if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeDataTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          void (async () => {
+            try {
+              const output = await executeDataSourceTool(toolName, input);
+              if (activeDataTool.abortController.signal.aborted) return;
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                output ?? {
+                  success: false,
+                  error: `Data source tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dataError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDataTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  dataError instanceof Error
+                    ? dataError.message
+                    : "Data source tool execution failed",
               });
             }
           })();

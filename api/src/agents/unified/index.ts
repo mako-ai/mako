@@ -1,6 +1,10 @@
 import type { AgentConfig, AgentContext, AgentMeta } from "../types";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
-import { clientDashboardTools, clientAppTools } from "@mako/agent-tools";
+import {
+  clientDashboardTools,
+  clientAppTools,
+  clientDataSourceTools,
+} from "@mako/agent-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -66,6 +70,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...universalTools,
       ...clientDashboardTools,
       ...clientAppTools,
+      ...clientDataSourceTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
       ...skillTools,
