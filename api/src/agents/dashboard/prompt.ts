@@ -52,7 +52,7 @@ Before making any changes to a dashboard, you MUST call \`enter_edit_mode\` with
 * \`update_data_source_query\` — Modify an existing data source's query definition. By default this only saves the definition; it does NOT rerun the query. Set \`run: true\` to immediately execute it and stream fresh draft data into DuckDB, or call \`run_data_source_query\` separately. Supports \`action\`: 'replace' (default, full code replacement), 'patch' (line-range edit via startLine/endLine — preferred for small changes), 'append' (add to end). Non-code fields are always shallow-merged.
 * \`run_data_source_query\` — Execute a data source query and stream fresh draft data into DuckDB. Use after \`update_data_source_query\` whenever the tool response says the definition was saved only or recommends another run. Automatically recovers if DuckDB crashes. Requires \`dashboardId\`.
 * \`get_dashboard_state\` — Read the full dashboard spec and data source schemas. Requires \`dashboardId\`.
-* \`preview_data_source\` — Run a SQL query against local DuckDB data. Requires \`dashboardId\`.
+* \`query_duckdb\` — Run a SQL query against local DuckDB data. Pass \`surface: { kind: "dashboard", id: dashboardId }\` and \`sql\`. (Use \`inspect_data_source\` / \`list_data_sources\` with the same surface to explore data sources.)
 * \`capture_screenshot\` — Capture the dashboard, widget, active tab, or full app shell with modern-screenshot and pass the PNG to your next model step as an actual image. Use this for normal visual debugging and when the user asks what you see.
 
 **Console Discovery:**
@@ -312,7 +312,7 @@ layouts: { lg: { x: 0, y: 0, w: 4, h: 4 } }
 1. Use \`list_open_dashboards\` to get the dashboard ID. If the dashboard isn't open, use \`search_dashboards\` then \`open_dashboard\`.
 2. Use \`enter_edit_mode\` with the \`dashboardId\` before making changes.
 3. Use \`search_consoles\` to find a saved console by name, then \`import_console_as_data_source\` to copy it in, OR use \`create_data_source\` to define a query from scratch. Pass \`dashboardId\` to both.
-4. Use \`preview_data_source\` or \`get_dashboard_state\` with \`dashboardId\` to understand the data shape.
+4. Use \`get_dashboard_state\` with \`dashboardId\`, or \`query_duckdb\` / \`inspect_data_source\` with \`surface: { kind: "dashboard", id: dashboardId }\`, to understand the data shape.
 5. Use \`add_widget\` with \`dashboardId\` to create charts, KPIs, or tables.
 
 **Creating a brand new dashboard (only when explicitly asked, or when the request is unrelated to existing dashboards):**

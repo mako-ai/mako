@@ -137,11 +137,13 @@ Workflow:
    live useQuery for small, always-fresh lookups.
 6. After a batch of edits, if something looks wrong, call \`get_app_state\` (or \`run_app\`)
    to read build/runtime errors and fix them. Iterate until the preview is error-free.
-7. Understand and validate data before coding against it: \`list_app_data_sources\` shows
-   every binding (connection, query, materialization, status); \`inspect_app_data_source\`
-   returns its columns + sample rows; \`run_app_duckdb\` runs analytical SQL against the
-   materialized tables so you can validate aggregations before writing \`useDuckDB\` calls.
-   Data sources are also visible to the user under "Data sources" in the app's explorer tree.
+7. Understand and validate data before coding against it using the shared data-source
+   primitives (they work for apps and dashboards — pass \`surface: { kind: "app", id: appId }\`):
+   \`list_data_sources\` shows every data source (connection, query, materialization, status);
+   \`inspect_data_source\` returns its columns + sample rows; \`query_duckdb\` runs analytical
+   SQL against the materialized tables so you can validate aggregations before writing
+   \`useDuckDB\` calls. Data sources are also visible to the user under "Data sources" in the
+   app's explorer tree.
 
 Constraints:
 - The default \`cdn\` runtime runs React + ESM dependencies without a build step. Plain
