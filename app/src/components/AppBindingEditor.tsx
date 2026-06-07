@@ -7,10 +7,17 @@ import {
   ToggleButton,
   Chip,
   Tooltip,
+  IconButton,
+  Popover,
+  Divider,
 } from "@mui/material";
 import {
   ChevronRight as BreadcrumbChevronIcon,
   Database as MaterializeIcon,
+  Info as InfoIcon,
+  History as HistoryIcon,
+  CheckCircle2 as SuccessIcon,
+  XCircle as ErrorIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -61,6 +68,7 @@ export default function AppBindingEditor({
   const [viewMode, setViewMode] = useState<"table" | "json" | "chart">("table");
   const [running, setRunning] = useState(false);
   const [materializing, setMaterializing] = useState(false);
+  const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
@@ -136,8 +144,13 @@ export default function AppBindingEditor({
   const cache = binding.cache;
   const breadcrumb = ["Apps", appEntity.title, "Data sources", binding.name];
 
+  const history = cache?.history ?? [];
+
   const headerExtras = (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 1, ml: 1 }}>
+    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, ml: 1 }}>
+      <Typography variant="caption" color="text.secondary">
+        Data
+      </Typography>
       <ToggleButtonGroup
         size="small"
         exclusive
@@ -149,28 +162,43 @@ export default function AppBindingEditor({
           }
         }}
       >
-        <ToggleButton value="live" sx={{ textTransform: "none", py: 0.25 }}>
-          Live
-        </ToggleButton>
-        <ToggleButton value="parquet" sx={{ textTransform: "none", py: 0.25 }}>
-          Parquet · DuckDB
-        </ToggleButton>
+        <ToggleButton value="live">Live</ToggleButton>
+        <ToggleButton value="parquet">Materialized</ToggleButton>
       </ToggleButtonGroup>
+      <Tooltip
+        title={
+          <Box sx={{ p: 0.5 }}>
+            <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
+              <b>Live</b> — the query runs against the connection on every read.
+              Best for small, always-fresh lookups.
+            </Typography>
+            <Typography variant="caption" display="block">
+              <b>Materialized</b> — the query is snapshotted to a Parquet file
+              (stored like dashboards) and loaded into DuckDB in the browser, so
+              the app can run fast analytical SQL. Click <b>Materialize</b> to
+              build/refresh the snapshot.
+            </Typography>
+          </Box>
+        }
+      >
+        <InfoIcon
+          size={15}
+          strokeWidth={1.5}
+          style={{ opacity: 0.6, cursor: "help" }}
+        />
+      </Tooltip>
+
       {binding.materialization === "parquet" && (
         <>
-          <Tooltip title="Materialize to Parquet and load into DuckDB">
-            <span>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
-                onClick={handleMaterialize}
-                disabled={materializing}
-              >
-                {materializing ? "Materializing…" : "Materialize"}
-              </Button>
-            </span>
-          </Tooltip>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
+            onClick={handleMaterialize}
+            disabled={materializing}
+          >
+            {materializing ? "Materializing…" : "Materialize"}
+          </Button>
           {cache?.parquetBuildStatus && (
             <Chip
               size="small"
@@ -189,6 +217,17 @@ export default function AppBindingEditor({
               }
             />
           )}
+          <Tooltip title="Materialization history">
+            <span>
+              <IconButton
+                size="small"
+                onClick={e => setHistoryAnchor(e.currentTarget)}
+                disabled={history.length === 0}
+              >
+                <HistoryIcon size={18} strokeWidth={1.5} />
+              </IconButton>
+            </span>
+          </Tooltip>
         </>
       )}
     </Box>
@@ -288,6 +327,72 @@ export default function AppBindingEditor({
           </Panel>
         </PanelGroup>
       </Box>
+
+      {/* Materialization history */}
+      <Popover
+        open={Boolean(historyAnchor)}
+        anchorEl={historyAnchor}
+        onClose={() => setHistoryAnchor(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Box sx={{ p: 1.5, minWidth: 320, maxWidth: 460 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Materialization history
+          </Typography>
+          {history.length === 0 ? (
+            <Typography variant="caption" color="text.secondary">
+              No runs yet.
+            </Typography>
+          ) : (
+            history.map((run, i) => (
+              <Box key={i}>
+                {i > 0 && <Divider sx={{ my: 0.5 }} />}
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                  {run.status === "ready" ? (
+                    <SuccessIcon
+                      size={16}
+                      strokeWidth={1.5}
+                      style={{
+                        color: "var(--mui-palette-success-main, green)",
+                      }}
+                    />
+                  ) : (
+                    <ErrorIcon
+                      size={16}
+                      strokeWidth={1.5}
+                      style={{
+                        color: "var(--mui-palette-error-main, crimson)",
+                      }}
+                    />
+                  )}
+                  <Typography variant="caption" sx={{ flex: 1 }}>
+                    {new Date(run.at).toLocaleString()}
+                  </Typography>
+                  {run.status === "ready" && run.rowCount != null && (
+                    <Typography variant="caption" color="text.secondary">
+                      {run.rowCount.toLocaleString()} rows
+                    </Typography>
+                  )}
+                  {run.durationMs != null && (
+                    <Typography variant="caption" color="text.secondary">
+                      {(run.durationMs / 1000).toFixed(1)}s
+                    </Typography>
+                  )}
+                </Box>
+                {run.error && (
+                  <Typography
+                    variant="caption"
+                    color="error"
+                    sx={{ display: "block", pl: 3, whiteSpace: "pre-wrap" }}
+                  >
+                    {run.error}
+                  </Typography>
+                )}
+              </Box>
+            ))
+          )}
+        </Box>
+      </Popover>
     </Box>
   );
 }
