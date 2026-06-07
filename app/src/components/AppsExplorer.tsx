@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
+import { useExplorerStore } from "../store/explorerStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
 import {
   focusAppTab,
@@ -164,7 +165,9 @@ export function AppsExplorer() {
     return null;
   }, [activeTab]);
 
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const expandedFolders = useExplorerStore(s => s.app.expandedFolders);
+  const toggleAppFolder = useExplorerStore(s => s.toggleAppFolder);
+  const expandAppFolder = useExplorerStore(s => s.expandAppFolder);
   const [loadingApps, setLoadingApps] = useState<Record<string, boolean>>({});
   const [renameTarget, setRenameTarget] = useState<{
     parsed: ParsedNode;
@@ -477,13 +480,9 @@ export function AppsExplorer() {
             enableRename={false}
             enableDelete={false}
             enableNewFolder={false}
-            isFolderExpanded={key => !!expanded[key]}
-            onToggleFolder={key =>
-              setExpanded(prev => ({ ...prev, [key]: !prev[key] }))
-            }
-            onExpandFolder={key =>
-              setExpanded(prev => ({ ...prev, [key]: true }))
-            }
+            isFolderExpanded={key => !!expandedFolders[key]}
+            onToggleFolder={toggleAppFolder}
+            onExpandFolder={expandAppFolder}
             getFolderExpansionKey={node => node.id}
           />
         )}
