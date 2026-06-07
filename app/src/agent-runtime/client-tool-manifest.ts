@@ -519,6 +519,33 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "database",
   },
+  list_app_data_sources: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: () => "Listing data sources",
+    icon: "list",
+  },
+  inspect_app_data_source: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Inspecting "${name}"` : "Inspecting data source";
+    },
+    icon: "search",
+  },
+  run_app_duckdb: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: () => "Running DuckDB query",
+    icon: "play",
+    preview: { field: "sql", language: "sql" },
+  },
   run_app: {
     domain: "app",
     execution: "client",

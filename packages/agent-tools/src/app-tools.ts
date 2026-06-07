@@ -83,6 +83,21 @@ const materializeBindingSchema = z.object({
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
 });
 
+const inspectDataSourceSchema = z.object({
+  appId: appIdField,
+  name: z.string().describe("Data source (binding) name to inspect"),
+});
+
+const runAppDuckDbSchema = z.object({
+  appId: appIdField,
+  sql: z
+    .string()
+    .describe(
+      "DuckDB SQL to run against the app's materialized (parquet) tables. " +
+        "Table names are the binding names.",
+    ),
+});
+
 const createAppSchema = z.object({
   title: z.string().describe("App title"),
   description: z.string().optional().describe("Brief description"),
@@ -160,6 +175,27 @@ export const clientAppTools = {
       "load it into the app's DuckDB-WASM instance. Run this after creating or " +
       "editing a parquet binding so useQuery/useDuckDB return fresh data.",
     inputSchema: materializeBindingSchema,
+  }),
+  list_app_data_sources: tool({
+    description:
+      "List an app's data sources (bindings): name, connection, language, " +
+      "materialization mode, query code, and parquet build status/row count. " +
+      "Use this to understand what data the app has and how it was built.",
+    inputSchema: z.object({ appId: appIdField }),
+  }),
+  inspect_app_data_source: tool({
+    description:
+      "Inspect one data source: its connection, query, materialization status, " +
+      "column schema, and a few sample rows (from DuckDB for parquet bindings, " +
+      "or a live preview for live bindings). Like the dashboard data-source inspector.",
+    inputSchema: inspectDataSourceSchema,
+  }),
+  run_app_duckdb: tool({
+    description:
+      "Run analytical DuckDB SQL against the app's materialized (parquet) tables " +
+      "in the browser and return the rows. Table names are the binding names. " +
+      "Use this to validate aggregation SQL before putting it in the app's useDuckDB calls.",
+    inputSchema: runAppDuckDbSchema,
   }),
   run_app: tool({
     description:

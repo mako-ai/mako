@@ -10,6 +10,11 @@
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, type AppEntity } from "../store/appStore";
 import { focusAppTab, getCurrentWorkspaceId } from "./shell";
+import {
+  ensureBindingLoaded,
+  queryAppDuckDB,
+  bindingTableName,
+} from "./duckdb";
 
 type ToolResult = Record<string, unknown>;
 
@@ -218,6 +223,109 @@ export async function executeAppAgentTool(
         binding: { name: binding.name },
         hint: `Materialized. Read it with useQuery("${binding.name}") or useDuckDB(sql).`,
       };
+    }
+
+    case "list_app_data_sources": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      return {
+        success: true,
+        dataSources: appEntity.dataBindings.map(b => ({
+          name: b.name,
+          connectionId: b.connectionId,
+          language: b.language,
+          materialization: b.materialization,
+          code: b.code,
+          status: b.cache?.parquetBuildStatus ?? null,
+          rowCount: b.cache?.rowCount ?? null,
+          table:
+            b.materialization === "parquet"
+              ? bindingTableName(b.name)
+              : undefined,
+        })),
+      };
+    }
+
+    case "inspect_app_data_source": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      const binding = appEntity?.dataBindings.find(b => b.name === input.name);
+      if (!binding) return fail(`No data source named "${input.name}"`);
+
+      let columns: string[] = [];
+      let sampleRows: Record<string, unknown>[] = [];
+      let note: string | undefined;
+
+      try {
+        if (binding.materialization === "parquet") {
+          const loaded = await ensureBindingLoaded(appId, binding);
+          if (loaded) {
+            const result = await queryAppDuckDB(
+              appId,
+              `SELECT * FROM "${bindingTableName(binding.name)}" LIMIT 5`,
+            );
+            columns = result.fields.map(f => f.name);
+            sampleRows = result.rows;
+          } else {
+            note = "Parquet not built yet — call materialize_binding first.";
+          }
+        } else if (workspaceId) {
+          const result = await store.runBinding(
+            workspaceId,
+            appId,
+            binding.name,
+          );
+          const rows = (result.rows as Record<string, unknown>[]) || [];
+          sampleRows = rows.slice(0, 5);
+          columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+          if (!result.success) note = result.error;
+        }
+      } catch (e) {
+        note = e instanceof Error ? e.message : "Inspect failed";
+      }
+
+      return {
+        success: true,
+        dataSource: {
+          name: binding.name,
+          connectionId: binding.connectionId,
+          language: binding.language,
+          materialization: binding.materialization,
+          code: binding.code,
+          table:
+            binding.materialization === "parquet"
+              ? bindingTableName(binding.name)
+              : undefined,
+          status: binding.cache?.parquetBuildStatus ?? null,
+          rowCount: binding.cache?.rowCount ?? null,
+          columns,
+          sampleRows,
+        },
+        note,
+      };
+    }
+
+    case "run_app_duckdb": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      try {
+        await Promise.all(
+          appEntity.dataBindings
+            .filter(b => b.materialization === "parquet")
+            .map(b => ensureBindingLoaded(appId, b).catch(() => false)),
+        );
+        const result = await queryAppDuckDB(appId, input.sql as string);
+        return {
+          success: true,
+          rows: result.rows.slice(0, 100),
+          fields: result.fields,
+          rowCount: result.rowCount,
+        };
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : "DuckDB query failed");
+      }
     }
 
     case "run_app": {
