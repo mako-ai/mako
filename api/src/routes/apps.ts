@@ -87,6 +87,14 @@ function serializeApp(doc: IMakoApp) {
             byteSize: b.cache.byteSize,
             lastRefreshedAt: b.cache.lastRefreshedAt,
             parquetBuiltAt: b.cache.parquetBuiltAt,
+            history: (b.cache.history ?? []).map(run => ({
+              at: run.at,
+              status: run.status,
+              rowCount: run.rowCount,
+              byteSize: run.byteSize,
+              durationMs: run.durationMs,
+              error: run.error,
+            })),
           }
         : undefined,
     })) as Array<Record<string, any>>,

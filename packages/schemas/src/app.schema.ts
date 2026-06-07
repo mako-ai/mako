@@ -58,6 +58,19 @@ export const AppBindingParquetStatusSchema = z.enum([
   "error",
 ]);
 
+/** A single materialization run, recorded for history. */
+export const AppBindingMaterializationRunSchema = z.object({
+  at: z.string().describe("ISO timestamp the run finished"),
+  status: z.enum(["ready", "error"]),
+  rowCount: z.number().optional(),
+  byteSize: z.number().optional(),
+  durationMs: z.number().optional(),
+  error: z.string().optional(),
+});
+export type AppBindingMaterializationRun = z.infer<
+  typeof AppBindingMaterializationRunSchema
+>;
+
 /**
  * Materialized-artifact cache metadata for a binding. Mirrors the dashboard
  * data source `cache` shape so the same artifact store + serve pipeline applies.
@@ -74,6 +87,8 @@ export const AppBindingCacheSchema = z.object({
   lastRefreshedAt: z.string().optional(),
   parquetBuiltAt: z.string().optional(),
   parquetUrl: z.string().optional(),
+  /** Most-recent materialization runs (newest first, bounded). */
+  history: z.array(AppBindingMaterializationRunSchema).optional(),
 });
 export type AppBindingCache = z.infer<typeof AppBindingCacheSchema>;
 

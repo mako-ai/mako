@@ -199,6 +199,30 @@ export async function materializeAppBinding(input: {
       },
     );
 
+    const startedAt = Date.now();
+    const recordRun = async (run: {
+      status: "ready" | "error";
+      rowCount?: number;
+      byteSize?: number;
+      error?: string;
+    }) => {
+      // Newest first, keep the last 20 runs.
+      await MakoApp.updateOne(
+        { _id: appDoc._id, "dataBindings.id": bindingId },
+        {
+          $push: {
+            "dataBindings.$.cache.history": {
+              $each: [
+                { ...run, at: new Date(), durationMs: Date.now() - startedAt },
+              ],
+              $position: 0,
+              $slice: 20,
+            },
+          },
+        },
+      );
+    };
+
     try {
       const connection = await DatabaseConnection.findById(
         binding.connectionId,
@@ -261,6 +285,12 @@ export async function materializeAppBinding(input: {
         },
       );
 
+      await recordRun({
+        status: "ready",
+        rowCount: parquet.rowCount,
+        byteSize: parquet.byteSize,
+      });
+
       logger.info("Materialized app binding", {
         workspaceId,
         appId,
@@ -288,6 +318,7 @@ export async function materializeAppBinding(input: {
           },
         },
       );
+      await recordRun({ status: "error", error: message });
       logger.error("Failed to materialize app binding", {
         workspaceId,
         appId,

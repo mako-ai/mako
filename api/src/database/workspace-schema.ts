@@ -3511,6 +3511,15 @@ export interface IMakoAppFile {
   contents: string;
 }
 
+export interface IMakoAppBindingMaterializationRun {
+  at: Date;
+  status: "ready" | "error";
+  rowCount?: number;
+  byteSize?: number;
+  durationMs?: number;
+  error?: string;
+}
+
 export interface IMakoAppBindingCache {
   parquetArtifactKey?: string;
   definitionHash?: string;
@@ -3527,6 +3536,7 @@ export interface IMakoAppBindingCache {
   byteSize?: number;
   lastRefreshedAt?: Date;
   parquetBuiltAt?: Date;
+  history?: IMakoAppBindingMaterializationRun[];
 }
 
 export interface IMakoAppDataBinding {
@@ -3568,6 +3578,19 @@ const MakoAppFileSchema = new Schema<IMakoAppFile>(
   { _id: false },
 );
 
+const MakoAppBindingMaterializationRunSchema =
+  new Schema<IMakoAppBindingMaterializationRun>(
+    {
+      at: { type: Date, required: true },
+      status: { type: String, enum: ["ready", "error"], required: true },
+      rowCount: { type: Number },
+      byteSize: { type: Number },
+      durationMs: { type: Number },
+      error: { type: String },
+    },
+    { _id: false },
+  );
+
 const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
   {
     parquetArtifactKey: { type: String },
@@ -3583,6 +3606,10 @@ const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
     byteSize: { type: Number },
     lastRefreshedAt: { type: Date },
     parquetBuiltAt: { type: Date },
+    history: {
+      type: [MakoAppBindingMaterializationRunSchema],
+      default: undefined,
+    },
   },
   { _id: false },
 );
