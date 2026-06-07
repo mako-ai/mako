@@ -16,7 +16,8 @@ export type TabKind =
   | "flow-editor"
   | "dashboard"
   | "app"
-  | "app-file";
+  | "app-file"
+  | "app-binding";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its

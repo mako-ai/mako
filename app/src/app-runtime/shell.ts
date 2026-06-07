@@ -32,6 +32,37 @@ function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() || path;
 }
 
+/** Open (or focus) a data-source inspector tab for a binding within an app. */
+export function focusAppBindingTab(
+  appId: string,
+  bindingId: string,
+  title: string,
+): string {
+  const consoleStore = useConsoleStore.getState();
+  const existingTab = Object.values(consoleStore.tabs).find(
+    (tab: {
+      kind?: string;
+      metadata?: { appId?: string; bindingId?: string };
+    }) =>
+      tab.kind === "app-binding" &&
+      tab.metadata?.appId === appId &&
+      tab.metadata?.bindingId === bindingId,
+  );
+
+  const tabId =
+    existingTab?.id ??
+    consoleStore.openTab({
+      title,
+      content: "",
+      kind: "app-binding",
+      metadata: { appId, bindingId },
+    });
+
+  consoleStore.setActiveTab(tabId);
+  useAppStore.getState().setActiveApp(appId);
+  return tabId;
+}
+
 /** Open (or focus) a full-screen editor tab for a single file within an app. */
 export function focusAppFileTab(appId: string, path: string): string {
   const consoleStore = useConsoleStore.getState();

@@ -93,6 +93,12 @@ interface AppActions {
     appId: string,
     binding: Omit<AppDataBinding, "id"> & { id?: string },
   ) => AppDataBinding | null;
+  updateBinding: (
+    appId: string,
+    bindingId: string,
+    patch: Partial<Omit<AppDataBinding, "id" | "cache">>,
+  ) => void;
+  removeDataBinding: (appId: string, bindingId: string) => void;
   setRuntime: (appId: string, runtime: "cdn" | "webcontainer") => void;
 
   bumpPreview: (appId: string) => void;
@@ -323,6 +329,28 @@ export const useAppStore = create<AppStore>()(
         const next = { ...appEntity.dependencies };
         delete next[name];
         appEntity.dependencies = next;
+      });
+      get().bumpPreview(appId);
+    },
+
+    removeDataBinding: (appId, bindingId) => {
+      set(state => {
+        const appEntity = state.openApps[appId];
+        if (!appEntity) return;
+        appEntity.dataBindings = appEntity.dataBindings.filter(
+          b => b.id !== bindingId,
+        );
+      });
+      get().bumpPreview(appId);
+    },
+
+    updateBinding: (appId, bindingId, patch) => {
+      set(state => {
+        const appEntity = state.openApps[appId];
+        if (!appEntity) return;
+        const binding = appEntity.dataBindings.find(b => b.id === bindingId);
+        if (!binding) return;
+        Object.assign(binding, patch);
       });
       get().bumpPreview(appId);
     },

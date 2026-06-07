@@ -19,16 +19,22 @@ import {
   RefreshCw as RefreshIcon,
   AppWindow as AppIcon,
   FileCode as FileIcon,
+  Database as BindingIcon,
   Globe as GlobeIcon,
   User as UserIcon,
   ExternalLink as OpenIcon,
   Pencil as RenameIcon,
   Trash2 as DeleteIcon,
+  Database as MaterializeIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
-import { focusAppTab, focusAppFileTab } from "../app-runtime/shell";
+import {
+  focusAppTab,
+  focusAppFileTab,
+  focusAppBindingTab,
+} from "../app-runtime/shell";
 import type { AppFile } from "@mako/schemas";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
@@ -36,11 +42,14 @@ import ExplorerShell from "./ExplorerShell";
 const EMPTY_LIST: AppListItem[] = [];
 
 // Node id encoding so the flat ResourceTree ids stay unique and parseable.
-// App node:    "<appId>"
-// Folder node: "<appId>::dir::<dirPath>"
-// File node:   "<appId>::file::<filePath>"
+// App node:     "<appId>"
+// Folder node:  "<appId>::dir::<dirPath>"
+// File node:    "<appId>::file::<filePath>"
+// Binding node: "<appId>::binding::<bindingId>"
 const FILE_SEP = "::file::";
 const DIR_SEP = "::dir::";
+const BINDING_SEP = "::binding::";
+const DATA_SOURCES_DIR = "__datasources";
 
 function dirname(path: string): string {
   const parts = path.split("/").filter(Boolean);
@@ -49,11 +58,15 @@ function dirname(path: string): string {
 }
 
 interface ParsedNode {
-  kind: "app" | "dir" | "file";
+  kind: "app" | "dir" | "file" | "binding";
   appId: string;
   path: string;
 }
 function parseNodeId(id: string): ParsedNode {
+  if (id.includes(BINDING_SEP)) {
+    const [appId, path] = id.split(BINDING_SEP);
+    return { kind: "binding", appId, path };
+  }
   if (id.includes(FILE_SEP)) {
     const [appId, path] = id.split(FILE_SEP);
     return { kind: "file", appId, path };
@@ -133,6 +146,8 @@ export function AppsExplorer() {
   const renameApp = useAppStore(s => s.renameApp);
   const renameFile = useAppStore(s => s.renameFile);
   const deleteFile = useAppStore(s => s.deleteFile);
+  const removeDataBinding = useAppStore(s => s.removeDataBinding);
+  const materializeBinding = useAppStore(s => s.materializeBinding);
   const persistApp = useAppStore(s => s.persistApp);
 
   const activeTabId = useConsoleStore(s => s.activeTabId);
@@ -142,6 +157,9 @@ export function AppsExplorer() {
     if (activeTab?.kind === "app") return activeTab.metadata?.appId as string;
     if (activeTab?.kind === "app-file") {
       return `${activeTab.metadata?.appId}${FILE_SEP}${activeTab.metadata?.path}`;
+    }
+    if (activeTab?.kind === "app-binding") {
+      return `${activeTab.metadata?.appId}${BINDING_SEP}${activeTab.metadata?.bindingId}`;
     }
     return null;
   }, [activeTab]);
@@ -169,6 +187,24 @@ export function AppsExplorer() {
     (items: AppListItem[]): ResourceTreeNode[] =>
       items.map(item => {
         const loaded = openApps[item.id];
+        let children: ResourceTreeNode[] | undefined;
+        if (loaded) {
+          children = buildAppFileNodes(item.id, loaded.files);
+          if (loaded.dataBindings.length > 0) {
+            children.push({
+              id: `${item.id}${DIR_SEP}${DATA_SOURCES_DIR}`,
+              name: "Data sources",
+              path: DATA_SOURCES_DIR,
+              isDirectory: true,
+              children: loaded.dataBindings.map(b => ({
+                id: `${item.id}${BINDING_SEP}${b.id}`,
+                name: b.name,
+                path: `binding/${b.id}`,
+                isDirectory: false,
+              })),
+            });
+          }
+        }
         return {
           id: item.id,
           name: item.name,
@@ -176,9 +212,7 @@ export function AppsExplorer() {
           isDirectory: true,
           access: item.access,
           owner_id: item.owner_id,
-          children: loaded
-            ? buildAppFileNodes(item.id, loaded.files)
-            : undefined,
+          children,
         };
       }),
     [openApps],
@@ -230,6 +264,9 @@ export function AppsExplorer() {
   const handleItemClick = useCallback((node: ResourceTreeNode) => {
     const parsed = parseNodeId(node.id);
     if (parsed.kind === "file") focusAppFileTab(parsed.appId, parsed.path);
+    else if (parsed.kind === "binding") {
+      focusAppBindingTab(parsed.appId, parsed.path, node.name);
+    }
   }, []);
 
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
@@ -240,6 +277,9 @@ export function AppsExplorer() {
     if (parsed.kind === "file") {
       return <FileIcon size={16} strokeWidth={1.5} />;
     }
+    if (parsed.kind === "binding") {
+      return <BindingIcon size={16} strokeWidth={1.5} />;
+    }
     return undefined; // folders use the default folder icon
   }, []);
 
@@ -248,51 +288,68 @@ export function AppsExplorer() {
       const parsed = parseNodeId(node.id);
       if (parsed.kind === "dir") return []; // virtual folders: no actions
       const items = [];
-      if (parsed.kind === "app") {
-        items.push(
-          <MenuItem
-            key="open"
-            onClick={() => {
-              focusAppTab(parsed.appId, node.name);
-              helpers.closeMenu();
-            }}
-          >
-            <ListItemIcon>
-              <OpenIcon size={16} strokeWidth={1.5} />
-            </ListItemIcon>
-            Open
-          </MenuItem>,
-        );
-      } else {
-        items.push(
-          <MenuItem
-            key="open"
-            onClick={() => {
-              focusAppFileTab(parsed.appId, parsed.path);
-              helpers.closeMenu();
-            }}
-          >
-            <ListItemIcon>
-              <OpenIcon size={16} strokeWidth={1.5} />
-            </ListItemIcon>
-            Open
-          </MenuItem>,
-        );
-      }
+      const open = () => {
+        if (parsed.kind === "app") focusAppTab(parsed.appId, node.name);
+        else if (parsed.kind === "binding") {
+          focusAppBindingTab(parsed.appId, parsed.path, node.name);
+        } else focusAppFileTab(parsed.appId, parsed.path);
+      };
       items.push(
         <MenuItem
-          key="rename"
+          key="open"
           onClick={() => {
-            setRenameTarget({ parsed, name: node.name });
-            setRenameValue(node.name);
+            open();
             helpers.closeMenu();
           }}
         >
           <ListItemIcon>
-            <RenameIcon size={16} strokeWidth={1.5} />
+            <OpenIcon size={16} strokeWidth={1.5} />
           </ListItemIcon>
-          Rename
+          Open
         </MenuItem>,
+      );
+
+      // Materialize action for parquet bindings.
+      if (parsed.kind === "binding" && workspaceId) {
+        const appEntity = openApps[parsed.appId];
+        const binding = appEntity?.dataBindings.find(b => b.id === parsed.path);
+        if (binding?.materialization === "parquet") {
+          items.push(
+            <MenuItem
+              key="materialize"
+              onClick={() => {
+                void materializeBinding(workspaceId, parsed.appId, parsed.path);
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <MaterializeIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Materialize
+            </MenuItem>,
+          );
+        }
+      }
+
+      // Bindings can be renamed via the inspector; only apps/files rename here.
+      if (parsed.kind !== "binding") {
+        items.push(
+          <MenuItem
+            key="rename"
+            onClick={() => {
+              setRenameTarget({ parsed, name: node.name });
+              setRenameValue(node.name);
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <RenameIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Rename
+          </MenuItem>,
+        );
+      }
+      items.push(
         <MenuItem
           key="delete"
           onClick={() => {
@@ -308,7 +365,7 @@ export function AppsExplorer() {
       );
       return items;
     },
-    [],
+    [workspaceId, openApps, materializeBinding],
   );
 
   const handleRenameConfirm = useCallback(async () => {
@@ -343,9 +400,19 @@ export function AppsExplorer() {
     } else if (parsed.kind === "file") {
       deleteFile(parsed.appId, parsed.path);
       await persistApp(workspaceId, parsed.appId);
+    } else if (parsed.kind === "binding") {
+      removeDataBinding(parsed.appId, parsed.path);
+      await persistApp(workspaceId, parsed.appId);
     }
     setDeleteTarget(null);
-  }, [deleteTarget, workspaceId, deleteApp, deleteFile, persistApp]);
+  }, [
+    deleteTarget,
+    workspaceId,
+    deleteApp,
+    deleteFile,
+    removeDataBinding,
+    persistApp,
+  ]);
 
   const actions = (
     <>
@@ -363,7 +430,12 @@ export function AppsExplorer() {
   );
 
   const isApp = renameTarget?.parsed.kind === "app";
-  const deleteIsApp = deleteTarget?.parsed.kind === "app";
+  const deleteKindLabel =
+    deleteTarget?.parsed.kind === "app"
+      ? "App"
+      : deleteTarget?.parsed.kind === "binding"
+        ? "Data source"
+        : "File";
 
   return (
     <>
@@ -446,12 +518,14 @@ export function AppsExplorer() {
 
       {/* Delete confirmation */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>Delete {deleteIsApp ? "App" : "File"}</DialogTitle>
+        <DialogTitle>Delete {deleteKindLabel}</DialogTitle>
         <DialogContent>
           <DialogContentText>
             Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
-            {deleteIsApp ? " This deletes the entire app." : ""} This action
-            cannot be undone.
+            {deleteTarget?.parsed.kind === "app"
+              ? " This deletes the entire app."
+              : ""}{" "}
+            This action cannot be undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
