@@ -5,6 +5,7 @@
  *   - save_skill     upsert a named playbook (auto-extracts entities)
  *   - delete_skill   retract a skill by name
  *   - load_skill     explicit load; appears in trace, forces commitment
+ *   - read_skill_resource load a system skill reference file
  *   - search_skills  fallback when the injected index misses
  *
  * The main retrieval happens *before* the agent runs — the system prompt
@@ -19,6 +20,7 @@ import { z } from "zod";
 import {
   deleteSkill,
   loadSkill,
+  readSkillResource,
   saveSkill,
   searchSkills,
 } from "../../services/skills.service";
@@ -86,6 +88,19 @@ const searchSkillsSchema = z.object({
     .describe("Max results (default 5)."),
 });
 
+const readSkillResourceSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe("System skill name that owns the resource, e.g. `dashboards`."),
+  path: z
+    .string()
+    .min(1)
+    .describe(
+      "Relative markdown path under the skill's references/ directory, e.g. `references/widget-sql-and-chart-specs.md`.",
+    ),
+});
+
 export function createSkillTools(workspaceId: string, userId?: string) {
   const authorId = userId && userId.length > 0 ? userId : "agent";
 
@@ -122,6 +137,14 @@ export function createSkillTools(workspaceId: string, userId?: string) {
       inputSchema: loadSkillSchema,
       execute: async ({ name }) => {
         return loadSkill(workspaceId, name);
+      },
+    }),
+    read_skill_resource: tool({
+      description:
+        "Read a markdown reference file for a system skill. Use this only after a loaded system skill points to a specific `references/*.md` path and the task needs that tier-3 detail.",
+      inputSchema: readSkillResourceSchema,
+      execute: async ({ name, path }) => {
+        return readSkillResource(name, path);
       },
     }),
     search_skills: tool({

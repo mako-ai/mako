@@ -51,6 +51,7 @@ import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { warmCatalog } from "./services/model-catalog.service";
+import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 import {
@@ -73,6 +74,17 @@ initLangfuseTracing();
 // Logger - LogTape initialization starts automatically when the logging module
 // is imported. By the time request handlers execute, initialization will be complete.
 const logger = loggers.app();
+
+const REQUIRED_SYSTEM_SKILLS = [
+  "dialect-postgresql",
+  "dialect-bigquery",
+  "dialect-clickhouse",
+  "dialect-mysql",
+  "dialect-sqlite",
+  "mongodb-queries",
+  "dashboards",
+  "flows",
+];
 
 const app = new Hono();
 
@@ -253,6 +265,20 @@ async function main(): Promise<void> {
       { path: envPath },
     );
   }
+
+  const systemSkillRegistry = discoverSystemSkills();
+  const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(
+    name => !systemSkillRegistry.skills.has(name),
+  );
+  if (missingSystemSkills.length > 0) {
+    throw new Error(
+      `Missing required system skills: ${missingSystemSkills.join(", ")}`,
+    );
+  }
+  logger.info("System skills discovered", {
+    count: systemSkillRegistry.skills.size,
+    skillsDir: systemSkillRegistry.skillsDir,
+  });
 
   // Connect to MongoDB
   try {
