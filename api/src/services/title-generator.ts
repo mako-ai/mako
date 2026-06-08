@@ -27,6 +27,8 @@ Return only the title, nothing else.`;
 export interface TitleGenerationContext {
   workspaceId: string;
   userId: string;
+  /** User email, used as the Langfuse user identifier when present. */
+  userEmail?: string;
 }
 
 /**
@@ -45,7 +47,7 @@ export const generateChatTitle = async (
     const { text, usage } = await propagateAttributes(
       {
         traceName: "title-generation",
-        userId: ctx?.userId,
+        userId: ctx?.userEmail ?? ctx?.userId,
         tags: ["type:title_generation"],
         metadata: ctx ? { workspaceId: ctx.workspaceId } : undefined,
       },

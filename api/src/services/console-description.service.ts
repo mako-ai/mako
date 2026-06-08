@@ -75,6 +75,8 @@ export interface ConsoleDescriptionContext {
 export interface DescriptionTrackingContext {
   workspaceId: string;
   userId: string;
+  /** User email, used as the Langfuse user identifier when present. */
+  userEmail?: string;
 }
 
 export async function generateConsoleDescription(
@@ -131,7 +133,7 @@ export async function generateConsoleDescription(
     const { text, usage, response } = await propagateAttributes(
       {
         traceName: "console-description",
-        userId: trackingCtx?.userId,
+        userId: trackingCtx?.userEmail ?? trackingCtx?.userId,
         tags: ["type:description_generation"],
         metadata: trackingCtx
           ? { workspaceId: trackingCtx.workspaceId }

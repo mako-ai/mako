@@ -259,6 +259,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   if (!actorId) {
     return c.json({ error: "Unauthorized" }, 401);
   }
+  // Email is the human-friendly identifier surfaced in Langfuse; falls back to
+  // actorId for API-key access where no user email is available.
+  const actorEmail = user?.email;
 
   let body: Record<string, unknown> = {};
   try {
@@ -483,6 +486,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           const title = await generateChatTitle(userContent, {
             workspaceId,
             userId: actorId,
+            userEmail: actorEmail,
           });
           await Chat.updateOne(
             { _id: new ObjectId(chatId), titleGenerated: false },
@@ -745,7 +749,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     {
       traceName: "agent-chat",
       sessionId: chatId,
-      userId: actorId,
+      userId: actorEmail ?? actorId,
       tags: [
         `agent:${resolvedAgentId}`,
         `model:${resolvedModelId}`,
@@ -1008,7 +1012,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
                         conversationExcerpt: ctx.conversationExcerpt,
                         resultSample: ctx.resultSample,
                       },
-                      { workspaceId, userId: actorId },
+                      { workspaceId, userId: actorId, userEmail: actorEmail },
                     );
 
                   const $set: Record<string, any> = {

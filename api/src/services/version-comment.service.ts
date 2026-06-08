@@ -42,6 +42,8 @@ export interface VersionCommentContext {
 export interface VersionCommentTrackingContext {
   workspaceId: string;
   userId: string;
+  /** User email, used as the Langfuse user identifier when present. */
+  userEmail?: string;
 }
 
 function computeUnifiedDiff(a: string, b: string): string {
@@ -111,7 +113,7 @@ async function generateCommitMessage(
   const { text, usage, response } = await propagateAttributes(
     {
       traceName: "version-comment",
-      userId: trackingCtx?.userId,
+      userId: trackingCtx?.userEmail ?? trackingCtx?.userId,
       tags: ["type:version_comment"],
       metadata: trackingCtx
         ? { workspaceId: trackingCtx.workspaceId }
