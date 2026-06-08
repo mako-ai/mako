@@ -1,0 +1,13 @@
+{
+  "name": "Mako dev (App + API + Inngest)",
+  "install": "bash .cursor/setup/install.sh",
+  "start": "bash .cursor/setup/start.sh",
+  "terminals": [
+    {
+      "name": "dev",
+      "command": "pnpm dev",
+      "description": "App (5173) + API (8080) + Inngest dev UI (8288)"
+    }
+  ],
+  "ports": [5173, 8080, 8288, 27017]
+}

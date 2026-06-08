@@ -4,6 +4,8 @@ Guidance for cloud agents and automated development environments working in the 
 
 ## Cursor Cloud specific instructions
 
+> **Automated provisioning.** Cursor Cloud now builds this environment from [`.cursor/environment.json`](.cursor/environment.json): `install` runs [`.cursor/setup/install.sh`](.cursor/setup/install.sh) (`.env` bootstrap + `pnpm install`) and `start` runs [`.cursor/setup/start.sh`](.cursor/setup/start.sh) (Docker daemon + MongoDB replica set + migrations), then the `dev` terminal runs `pnpm dev`. The sections below document the equivalent manual steps and the rationale behind them.
+
 ### Product scope (default dev setup)
 
 The primary product is **App + API** (AI-native SQL client). Full local dev also starts **Inngest dev** via `pnpm dev`. `website` and `docs` are optional standalone packages.
