@@ -18,6 +18,13 @@ Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM
 - **Website**: Next.js 14 marketing site with Tailwind CSS
 - **Docs**: Astro-based documentation site
 
+## Agent prompts & skills
+
+Keep base agent prompts lean. Durable vendor/database/dashboard/flow guidance
+belongs in git-versioned system skills under `api/src/agent-skills/**`, not in
+always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
+`api/src/agent-skills/README.md` before changing prompt content.
+
 ## Essential Commands
 
 ### Development

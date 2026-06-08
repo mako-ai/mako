@@ -1,6 +1,4 @@
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
-import { DASHBOARD_SYSTEM_PROMPT } from "../dashboard/prompt";
-import { FLOW_PROMPT } from "../flow/prompt";
 import type { AgentContext } from "../types";
 
 export const UNIFIED_SYSTEM_PROMPT = `You are Mako's unified workspace assistant.
@@ -84,13 +82,13 @@ ${UNIVERSAL_PROMPT_V2}
 
 ## Dashboard Guidance
 
-${DASHBOARD_SYSTEM_PROMPT}
+For dashboard creation, editing, widget SQL, Vega-Lite specs, layout, and cross-filtering guidance, load the \`dashboards\` system skill. If that skill points to a needed \`references/*.md\` file, use \`read_skill_resource\`.
 
 ---
 
 ## Flow Guidance
 
-${FLOW_PROMPT}`;
+For sync-flow setup, query templates, pagination, destination requirements, schema mapping, and form fields, load the \`flows\` system skill.`;
 
 function buildConsoleContext(context: AgentContext): string[] {
   const parts: string[] = [];
