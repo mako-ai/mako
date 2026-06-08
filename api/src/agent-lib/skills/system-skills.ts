@@ -56,9 +56,7 @@ function parseFrontmatter(content: string): {
 
   return {
     data:
-      parsed && typeof parsed === "object"
-        ? (parsed as ParsedFrontmatter)
-        : {},
+      parsed && typeof parsed === "object" ? (parsed as ParsedFrontmatter) : {},
     body: body.trim(),
   };
 }
@@ -164,7 +162,10 @@ export function readSystemSkillResource(
     normalizedRelPath.startsWith("..") ||
     normalizedRelPath.includes(`${path.sep}..${path.sep}`)
   ) {
-    return { success: false, error: "resource path must stay within skill dir" };
+    return {
+      success: false,
+      error: "resource path must stay within skill dir",
+    };
   }
   if (!normalizedRelPath.startsWith(`references${path.sep}`)) {
     return {
@@ -179,12 +180,35 @@ export function readSystemSkillResource(
   const resolved = path.resolve(skill.dir, normalizedRelPath);
   const root = path.resolve(skill.dir) + path.sep;
   if (!resolved.startsWith(root)) {
-    return { success: false, error: "resource path must stay within skill dir" };
+    return {
+      success: false,
+      error: "resource path must stay within skill dir",
+    };
   }
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+  if (!fs.existsSync(resolved)) {
     return {
       success: false,
       error: `resource "${relPath}" not found for system skill "${name}"`,
+    };
+  }
+
+  const resourceStat = fs.lstatSync(resolved);
+  if (resourceStat.isSymbolicLink()) {
+    return { success: false, error: "symbolic links are not readable" };
+  }
+  if (!resourceStat.isFile()) {
+    return {
+      success: false,
+      error: `resource "${relPath}" not found for system skill "${name}"`,
+    };
+  }
+
+  const realSkillDir = fs.realpathSync(skill.dir) + path.sep;
+  const realResourcePath = fs.realpathSync(resolved);
+  if (!realResourcePath.startsWith(realSkillDir)) {
+    return {
+      success: false,
+      error: "resource path must stay within skill dir",
     };
   }
 
