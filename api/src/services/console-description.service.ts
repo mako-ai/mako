@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { propagateAttributes } from "@langfuse/tracing";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { getUtilityModelIds } from "./model-catalog.service";
@@ -127,20 +128,39 @@ export async function generateConsoleDescription(
         })
       : {};
     const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
-    const { text, usage, response } = await generateText({
-      model: getModel(utilityModel),
-      system: DESCRIPTION_SYSTEM_PROMPT,
-      prompt,
-      providerOptions: {
-        gateway: {
-          ...gatewayBase,
-          models: [
-            utilityModel,
-            ...failoverModels.filter(id => id !== utilityModel),
-          ],
-        } satisfies GatewayLanguageModelOptions,
+    const { text, usage, response } = await propagateAttributes(
+      {
+        traceName: "console-description",
+        userId: trackingCtx?.userId,
+        tags: ["type:description_generation"],
+        metadata: trackingCtx
+          ? { workspaceId: trackingCtx.workspaceId }
+          : undefined,
       },
-    });
+      () =>
+        generateText({
+          model: getModel(utilityModel),
+          system: DESCRIPTION_SYSTEM_PROMPT,
+          prompt,
+          providerOptions: {
+            gateway: {
+              ...gatewayBase,
+              models: [
+                utilityModel,
+                ...failoverModels.filter(id => id !== utilityModel),
+              ],
+            } satisfies GatewayLanguageModelOptions,
+          },
+          experimental_telemetry: {
+            isEnabled: true,
+            functionId: "console-description",
+            metadata: {
+              workspaceId: trackingCtx?.workspaceId ?? "unknown",
+              invocationType: "description_generation",
+            },
+          },
+        }),
+    );
 
     const actualModelId = (response as Record<string, unknown>)?.modelId as
       | string

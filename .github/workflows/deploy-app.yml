@@ -172,6 +172,10 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      LANGFUSE_TRACING_ENVIRONMENT: pr-${{ needs.detect-changes.outputs.pr_number }}
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
@@ -547,6 +551,10 @@ jobs:
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
+            --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
+            --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
+            --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
+            --set-env-vars LANGFUSE_TRACING_ENVIRONMENT=${LANGFUSE_TRACING_ENVIRONMENT} \
             --set-env-vars SYNC_BULK_FLUSH_BATCH_SIZE=2000 \
             --set-env-vars SYNC_BULK_MONGO_TO_PARQUET_CHUNK=100 \
             --set-env-vars SYNC_PARQUET_DUCKDB_MEMORY_LIMIT_MB=512 \
@@ -763,6 +771,10 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      LANGFUSE_TRACING_ENVIRONMENT: production
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
@@ -906,6 +918,10 @@ jobs:
             --set-env-vars ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} \
             --set-env-vars GOOGLE_GENERATIVE_AI_API_KEY=${GOOGLE_GENERATIVE_AI_API_KEY} \
             --set-env-vars OPENAI_API_KEY=${OPENAI_API_KEY} \
+            --set-env-vars LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY} \
+            --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
+            --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
+            --set-env-vars LANGFUSE_TRACING_ENVIRONMENT=${LANGFUSE_TRACING_ENVIRONMENT} \
             --set-env-vars WEBHOOK_SQL_PROCESS_CONCURRENCY=3 \
             --set-env-vars WEBHOOK_CDC_PROCESS_CONCURRENCY=10 \
             --set-env-vars CDC_MATERIALIZE_CONCURRENCY=8 \

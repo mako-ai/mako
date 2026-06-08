@@ -53,6 +53,10 @@ import { warmPricingCache } from "./services/gateway-pricing.service";
 import { warmCatalog } from "./services/model-catalog.service";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
+import {
+  initLangfuseTracing,
+  shutdownLangfuse,
+} from "./observability/langfuse";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -60,6 +64,11 @@ const envPath = path.resolve(__dirname, "../../.env");
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
+
+// Initialize Langfuse tracing AFTER env vars are loaded but before the server
+// handles any request. Registers the OpenTelemetry provider that the Vercel AI
+// SDK emits GenAI spans into. No-op when Langfuse keys are absent.
+initLangfuseTracing();
 
 // Logger - LogTape initialization starts automatically when the logging module
 // is imported. By the time request handlers execute, initialization will be complete.
@@ -337,6 +346,10 @@ async function gracefulShutdown(
 
   let exitCode = forcedExitCode ?? 0;
   try {
+    // Flush buffered Langfuse spans before the process exits
+    logger.info("Flushing Langfuse traces");
+    await shutdownLangfuse();
+
     // Close SSH tunnels
     logger.info("Closing SSH tunnels");
     await sshTunnelManager.closeAll();

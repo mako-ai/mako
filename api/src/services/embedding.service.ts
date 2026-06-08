@@ -1,75 +1,58 @@
-import OpenAI from "openai";
+import { embed, embedMany } from "ai";
+import { getEmbeddingModel } from "../agent-lib/ai-gateway";
 import { loggers } from "../logging";
 import { databaseConnectionService } from "./database-connection.service";
 
 const logger = loggers.app();
 
-type EmbeddingProvider = "openai" | "google";
-
-export function getEmbeddingProvider(): EmbeddingProvider | null {
-  if (process.env.OPENAI_API_KEY) return "openai";
-  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) return "google";
-  return null;
-}
+/**
+ * Stored model label (kept stable so existing `embeddingModel` records and the
+ * 1536-dim `console_embeddings` Atlas index remain compatible).
+ */
+const EMBEDDING_MODEL_LABEL = "text-embedding-3-small";
+/** Gateway model ID routed through the Vercel AI Gateway. */
+const GATEWAY_EMBEDDING_MODEL_ID = "openai/text-embedding-3-small";
 
 export function isEmbeddingAvailable(): boolean {
-  return getEmbeddingProvider() !== null;
+  return Boolean(process.env.AI_GATEWAY_API_KEY);
 }
 
 export function getEmbeddingModelName(): string | null {
-  const provider = getEmbeddingProvider();
-  if (provider === "openai") return "text-embedding-3-small";
-  if (provider === "google") return "text-embedding-004";
-  return null;
-}
-
-let openaiClient: OpenAI | null = null;
-
-function getOpenAIClient(): OpenAI {
-  if (!openaiClient) {
-    openaiClient = new OpenAI();
-  }
-  return openaiClient;
+  return isEmbeddingAvailable() ? EMBEDDING_MODEL_LABEL : null;
 }
 
 export async function embedText(text: string): Promise<number[] | null> {
-  const provider = getEmbeddingProvider();
-  if (!provider) return null;
+  if (!isEmbeddingAvailable()) return null;
 
-  if (provider === "openai") {
-    const client = getOpenAIClient();
-    const response = await client.embeddings.create({
-      model: "text-embedding-3-small",
-      input: text,
-    });
-    return response.data[0].embedding;
-  }
-
-  if (provider === "google") {
-    // TODO: implement Google text-embedding-004 when needed
-    logger.warn("Google embedding provider not yet implemented");
-    return null;
-  }
-
-  return null;
+  const { embedding } = await embed({
+    model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
+    value: text,
+    experimental_telemetry: {
+      isEnabled: true,
+      functionId: "embed-text",
+      metadata: { model: EMBEDDING_MODEL_LABEL },
+    },
+  });
+  return embedding;
 }
 
 export async function embedTexts(
   texts: string[],
 ): Promise<(number[] | null)[]> {
-  const provider = getEmbeddingProvider();
-  if (!provider || texts.length === 0) return texts.map(() => null);
-
-  if (provider === "openai") {
-    const client = getOpenAIClient();
-    const response = await client.embeddings.create({
-      model: "text-embedding-3-small",
-      input: texts,
-    });
-    return response.data.map(d => d.embedding);
+  if (!isEmbeddingAvailable() || texts.length === 0) {
+    return texts.map(() => null);
   }
 
-  return texts.map(() => null);
+  const { embeddings } = await embedMany({
+    model: getEmbeddingModel(GATEWAY_EMBEDDING_MODEL_ID),
+    values: texts,
+    experimental_telemetry: {
+      isEnabled: true,
+      functionId: "embed-texts",
+      metadata: { model: EMBEDDING_MODEL_LABEL, count: texts.length },
+    },
+  });
+  return embeddings;
 }
 
 let _vectorSearchAvailable: boolean | null = null;
