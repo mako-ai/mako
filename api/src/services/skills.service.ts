@@ -531,14 +531,22 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  const candidates: SkillRetrievalHit[] = indexDocs.map(s => {
+  const entityScoreFor = (entities: string[] | undefined): number =>
+    hasEntities
+      ? Math.min(
+          1,
+          entityOverlap(queryEntities, entities ?? []) /
+            Math.max(3, queryEntities.length / 2),
+        )
+      : 0;
+
+  const workspaceCandidates: SkillRetrievalHit[] = indexDocs.map(s => {
     const id = (s._id as Types.ObjectId).toString();
     const overlap = entityOverlap(queryEntities, s.entities ?? []);
-    const entityScore = hasEntities
-      ? Math.min(1, overlap / Math.max(3, queryEntities.length / 2))
-      : 0;
     const semanticScore = semanticScoreById.get(id) ?? 0;
-    const score = entityScore * ENTITY_WEIGHT + semanticScore * SEMANTIC_WEIGHT;
+    const score =
+      entityScoreFor(s.entities) * ENTITY_WEIGHT +
+      semanticScore * SEMANTIC_WEIGHT;
     return {
       id,
       name: s.name,
@@ -552,39 +560,34 @@ export async function retrieveRelevantSkills(
     };
   });
 
-  for (const s of systemSkills) {
-    const overlap = entityOverlap(queryEntities, s.entities);
-    const entityScore = hasEntities
-      ? Math.min(1, overlap / Math.max(3, queryEntities.length / 2))
-      : 0;
-    // System skills do not have embeddings, so entity overlap is the complete
-    // signal. Use the full score so an explicit dialect/capability mention can
-    // cross the auto-injection threshold.
-    const score = entityScore;
-    candidates.push({
-      id: s.id,
-      name: s.name,
-      loadWhen: s.description,
-      body: "",
-      score,
-      entityOverlap: overlap,
-      semanticScore: 0,
-      injected: false,
-      scope: "system",
-    });
-  }
+  // System skills do not have embeddings, so entity overlap is the complete
+  // signal. Use the full score so an explicit dialect/capability mention can
+  // cross the auto-injection threshold.
+  const systemCandidates: SkillRetrievalHit[] = systemSkills.map(s => ({
+    id: s.id,
+    name: s.name,
+    loadWhen: s.description,
+    body: "",
+    score: entityScoreFor(s.entities),
+    entityOverlap: entityOverlap(queryEntities, s.entities),
+    semanticScore: 0,
+    injected: false,
+    scope: "system",
+  }));
 
+  const candidates = [...workspaceCandidates, ...systemCandidates];
   candidates.sort((a, b) => b.score - a.score);
 
-  const toInjectIds = candidates
+  const toInject = candidates
     .filter(c => c.score >= AUTO_INJECT_THRESHOLD)
-    .slice(0, AUTO_INJECT_LIMIT)
-    .map(c => c.id);
+    .slice(0, AUTO_INJECT_LIMIT);
+  const toInjectIds = new Set(toInject.map(c => c.id));
 
-  // Fetch bodies only for the ones we'll inject.
-  const workspaceToInjectIds = toInjectIds.filter(
-    id => !id.startsWith("system:"),
-  );
+  // Fetch bodies only for the workspace skills we'll inject; system skill
+  // bodies come from the in-memory registry.
+  const workspaceToInjectIds = toInject
+    .filter(c => c.scope === "workspace")
+    .map(c => new Types.ObjectId(c.id));
   const bodies: Array<{ _id: Types.ObjectId; body: string }> =
     workspaceToInjectIds.length
       ? ((await Skill.find({ _id: { $in: workspaceToInjectIds } })
@@ -599,7 +602,7 @@ export async function retrieveRelevantSkills(
   const considered: SkillRetrievalHit[] = [];
   for (const c of candidates) {
     if (c.score <= 0 && !hasEntities) continue;
-    if (toInjectIds.includes(c.id)) {
+    if (toInjectIds.has(c.id)) {
       injected.push({
         ...c,
         body:
@@ -613,19 +616,18 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  // Fire-and-forget: bump useCount + lastUsedAt for skills we injected.
-  if (injected.length > 0) {
-    const workspaceInjectedIds = injected
-      .filter(i => i.scope === "workspace")
-      .map(i => new Types.ObjectId(i.id));
-    if (workspaceInjectedIds.length > 0) {
-      void Skill.updateMany(
-        { _id: { $in: workspaceInjectedIds } },
-        { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
-      ).catch(err => {
-        logger.debug("Skill useCount bump failed", { error: err });
-      });
-    }
+  // Fire-and-forget: bump useCount + lastUsedAt for workspace skills we
+  // injected. System skills have no Mongo row, so skip them.
+  const workspaceInjectedIds = injected
+    .filter(i => i.scope === "workspace")
+    .map(i => new Types.ObjectId(i.id));
+  if (workspaceInjectedIds.length > 0) {
+    void Skill.updateMany(
+      { _id: { $in: workspaceInjectedIds } },
+      { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
+    ).catch(err => {
+      logger.debug("Skill useCount bump failed", { error: err });
+    });
   }
 
   return {

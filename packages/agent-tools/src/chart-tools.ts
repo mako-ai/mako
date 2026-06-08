@@ -17,6 +17,10 @@ import { tool } from "ai";
 import { z } from "zod";
 
 export const modifyChartSpecSchema = z.object({
+  // A loose record instead of the full ~98 KB Vega-Lite JSON Schema: the model
+  // already knows Vega-Lite, so we describe only the Mako-specific constraints
+  // and rely on the client-side `MakoChartSpec` schema (app/src/lib/chart-spec.ts)
+  // to validate and feed errors back for self-correction.
   vegaLiteSpec: z
     .record(z.string(), z.unknown())
     .describe(

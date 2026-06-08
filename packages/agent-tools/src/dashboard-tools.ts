@@ -16,6 +16,19 @@ import { tool } from "ai";
 import { z } from "zod";
 import { clientScreenshotTools } from "./screenshot-tools";
 
+// A loose record instead of the full ~98 KB Vega-Lite JSON Schema. The model
+// already knows Vega-Lite; we describe only the Mako-specific constraints and
+// rely on the client-side `MakoChartSpec` schema + `validateVegaSpec` render
+// check (app/src/dashboard-runtime/validation.ts) to validate and feed errors
+// back for self-correction.
+const vegaLiteSpecField = z
+  .record(z.string(), z.unknown())
+  .optional()
+  .describe(
+    "Vega-Lite spec for chart widgets. Omit the `data` property — the widget binds to the local DuckDB table. " +
+      "If the spec is invalid or fails to render, the tool returns the error/hint so you can fix it with modify_widget.",
+  );
+
 const addWidgetSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   type: z.enum(["chart", "kpi", "table"]).describe("Widget type"),
@@ -24,13 +37,7 @@ const addWidgetSchema = z.object({
     .string()
     .describe("ID of the data source within the dashboard"),
   localSql: z.string().describe("SQL query against the local DuckDB table"),
-  vegaLiteSpec: z
-    .record(z.string(), z.unknown())
-    .optional()
-    .describe(
-      "Vega-Lite spec for chart widgets. Omit the `data` property — the widget binds to the local DuckDB table. " +
-        "If the spec is invalid or fails to render, the tool returns the error/hint so you can fix it with modify_widget.",
-    ),
+  vegaLiteSpec: vegaLiteSpecField,
   kpiConfig: z
     .object({
       valueField: z.string(),
@@ -66,13 +73,7 @@ const modifyWidgetSchema = z.object({
   widgetId: z.string().describe("Widget ID to modify"),
   title: z.string().optional(),
   localSql: z.string().optional(),
-  vegaLiteSpec: z
-    .record(z.string(), z.unknown())
-    .optional()
-    .describe(
-      "Vega-Lite spec for chart widgets. Omit the `data` property — the widget binds to the local DuckDB table. " +
-        "If the spec is invalid or fails to render, the tool returns the error/hint so you can fix it with modify_widget.",
-    ),
+  vegaLiteSpec: vegaLiteSpecField,
   kpiConfig: z
     .object({
       valueField: z.string(),
