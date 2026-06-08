@@ -163,19 +163,16 @@ export function createSkillTools(workspaceId: string, userId?: string) {
         "Read a tier-3 reference file from a `[system]` skill package (e.g. the `dashboards` skill's `references/cross-filtering.md`). Use this when a loaded system skill points you at a reference for deeper detail. The skill index lists which references each skill exposes.",
       inputSchema: readSkillResourceSchema,
       execute: async ({ name, path }) => {
-        const result = readSystemSkillResource(name, path);
-        if (!result) {
-          return {
-            success: false as const,
-            error: `resource "${path}" not found for skill "${name}"`,
-          };
+        const res = readSystemSkillResource(name, path);
+        if (!res.success) {
+          return { success: false as const, error: res.error };
         }
         return {
           success: true as const,
           name,
-          path,
-          content: result.content,
-          availableReferences: result.references,
+          path: res.result.path,
+          content: res.result.content,
+          availableReferences: res.result.references,
         };
       },
     }),

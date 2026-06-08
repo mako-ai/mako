@@ -75,6 +75,18 @@ initLangfuseTracing();
 // is imported. By the time request handlers execute, initialization will be complete.
 const logger = loggers.app();
 
+// System skills the agents depend on. Asserted present at boot (see main()).
+const REQUIRED_SYSTEM_SKILLS = [
+  "dialect-postgresql",
+  "dialect-bigquery",
+  "dialect-clickhouse",
+  "dialect-mysql",
+  "dialect-sqlite",
+  "mongodb-queries",
+  "dashboards",
+  "flows",
+];
+
 const app = new Hono();
 
 // CORS middleware
@@ -266,10 +278,20 @@ async function main(): Promise<void> {
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
 
-  // Discover filesystem-backed system skills (logs the count + names). Done at
-  // boot so a missing/empty skills directory is visible immediately rather than
-  // on first chat request.
-  discoverSystemSkills();
+  // Discover filesystem-backed system skills at boot and assert the packages
+  // that the agents depend on are present, so a missing/mis-bundled skill fails
+  // loudly here rather than silently degrading a chat request.
+  const systemSkillRegistry = discoverSystemSkills();
+  const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(
+    name => !systemSkillRegistry.has(name),
+  );
+  if (missingSystemSkills.length > 0) {
+    throw new Error(
+      `Missing required system skills: ${missingSystemSkills.join(", ")}. ` +
+        "Ensure api/src/agent-skills/**/*.md is bundled into dist (copyfiles).",
+    );
+  }
+  logger.info("System skills ready", { count: systemSkillRegistry.size });
 
   // Log server startup info
   const cdcEventStore = getCdcEventStoreConfig();
