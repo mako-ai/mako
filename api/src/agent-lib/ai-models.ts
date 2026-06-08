@@ -28,6 +28,12 @@ export interface AIModel {
   supportsThinking?: boolean;
   thinkingMode?: AnthropicThinkingMode;
   thinkingBudgetTokens?: number;
+  /**
+   * Maximum context window in tokens, sourced from the gateway catalog. Used by
+   * prompt compaction to derive per-model budgets. Null when the gateway did
+   * not report a window for the model.
+   */
+  contextWindow?: number | null;
 }
 
 function catalogToAIModel(cm: CatalogModel): AIModel {
@@ -40,6 +46,7 @@ function catalogToAIModel(cm: CatalogModel): AIModel {
     supportsThinking: cm.supportsThinking,
     thinkingMode: cm.thinkingMode,
     thinkingBudgetTokens: cm.thinkingBudgetTokens,
+    contextWindow: cm.contextWindow,
   };
 }
 
