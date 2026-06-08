@@ -1,6 +1,17 @@
 ---
 name: dashboards
 description: Load when creating, modifying, debugging, or explaining Mako dashboards, dashboard widgets, data sources, local DuckDB SQL, Vega-Lite chart specs, layouts, and cross-filtering.
+entities:
+  - dashboard
+  - dashboards
+  - widget
+  - widgets
+  - kpi
+  - chart
+  - duckdb
+  - cross-filter
+  - cross-filtering
+  - vega-lite
 ---
 
 When working with dashboards, you help users create interactive data dashboards from their saved queries (consoles).

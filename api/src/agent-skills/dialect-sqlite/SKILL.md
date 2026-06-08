@@ -1,6 +1,14 @@
 ---
 name: dialect-sqlite
 description: Load when writing or debugging SQLite or Cloudflare D1 SQL, including no-schema table names, dynamic typing, date/time functions, strftime, boolean values, UPSERT, and LIMIT syntax.
+entities:
+  - sqlite
+  - cloudflare d1
+  - d1
+  - sql
+  - strftime
+  - datetime
+  - upsert
 ---
 
 # SQLite and Cloudflare D1 SQL dialect

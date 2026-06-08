@@ -60,6 +60,7 @@ export interface SkillIndexEntry {
   scope: "workspace" | "system";
   suppressed: boolean;
   useCount: number;
+  references?: string[];
 }
 
 export interface SkillRetrievalHit {
@@ -288,8 +289,17 @@ export async function loadSkill(
   };
 }
 
-export function readSkillResource(name: string, relPath: string):
-  | { success: true; skill: string; path: string; content: string }
+export function readSkillResource(
+  name: string,
+  relPath: string,
+):
+  | {
+      success: true;
+      skill: string;
+      path: string;
+      content: string;
+      references: string[];
+    }
   | { success: false; error: string } {
   return readSystemSkillResource(name, relPath);
 }
@@ -486,6 +496,7 @@ export async function retrieveRelevantSkills(
       scope: "system",
       suppressed: false,
       useCount: 0,
+      references: skill.references,
     });
   }
 
@@ -546,7 +557,10 @@ export async function retrieveRelevantSkills(
     const entityScore = hasEntities
       ? Math.min(1, overlap / Math.max(3, queryEntities.length / 2))
       : 0;
-    const score = entityScore * ENTITY_WEIGHT;
+    // System skills do not have embeddings, so entity overlap is the complete
+    // signal. Use the full score so an explicit dialect/capability mention can
+    // cross the auto-injection threshold.
+    const score = entityScore;
     candidates.push({
       id: s.id,
       name: s.name,
@@ -644,7 +658,11 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
   lines.push("");
   lines.push("#### Available skills (index)");
   for (const s of result.index) {
-    lines.push(`- [${s.scope}] \`${s.name}\`: ${s.loadWhen}`);
+    const references =
+      s.scope === "system" && s.references && s.references.length > 0
+        ? ` (references: ${s.references.join(", ")})`
+        : "";
+    lines.push(`- [${s.scope}] \`${s.name}\`: ${s.loadWhen}${references}`);
   }
 
   if (result.injected.length > 0) {

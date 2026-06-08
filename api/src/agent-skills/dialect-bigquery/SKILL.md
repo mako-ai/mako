@@ -1,6 +1,14 @@
 ---
 name: dialect-bigquery
 description: Load when writing or debugging BigQuery SQL, including project.dataset.table names, backtick identifiers, date formatting, casts, regex functions, and BigQuery-specific query limits.
+entities:
+  - bigquery
+  - google bigquery
+  - sql
+  - dataset
+  - project.dataset
+  - safe_cast
+  - regexp_contains
 ---
 
 # BigQuery SQL dialect

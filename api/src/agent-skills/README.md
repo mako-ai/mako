@@ -20,6 +20,10 @@ api/src/agent-skills/
 ---
 name: dialect-postgresql
 description: Load when writing or debugging PostgreSQL SQL queries.
+entities:
+  - postgres
+  - postgresql
+  - cloudsql-postgres
 ---
 
 # PostgreSQL SQL dialect
@@ -30,6 +34,8 @@ description: Load when writing or debugging PostgreSQL SQL queries.
 - `name` is the stable identifier used by `load_skill(name)`.
 - `description` is the retrieval trigger. Write it as a sentence describing
   when the skill should load.
+- `entities` is optional. Use it for synonyms, vendor names, function names, or
+  other trigger tokens that may not appear naturally in the description.
 - The body should stay focused and generally remain under about 500 lines.
 - Long examples, vendor manuals, chart specifications, and debugging playbooks
   belong in `references/*.md`.
@@ -48,7 +54,12 @@ Their bodies are auto-injected only when the current user request overlaps the
 skill trigger strongly enough, or when the agent explicitly calls
 `load_skill(name)`. Dashboard references are tier-3 material: the agent should
 call `read_skill_resource(name, "references/file.md")` only when the core skill
-points to a needed detail.
+points to a needed detail. The catalog lists available `references/*.md` paths
+for each system skill.
+
+Standalone agents that still need a complete guide should call
+`getSystemSkillFullText(name)` from the registry instead of hard-coding each
+reference filename or duplicating a prompt literal.
 
 ## Authoring rules
 

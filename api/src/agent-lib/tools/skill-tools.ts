@@ -92,12 +92,14 @@ const readSkillResourceSchema = z.object({
   name: z
     .string()
     .min(1)
-    .describe("System skill name that owns the resource, e.g. `dashboards`."),
+    .describe(
+      "Name of the `[system]` skill that owns the resource, e.g. `dashboards`.",
+    ),
   path: z
     .string()
     .min(1)
     .describe(
-      "Relative markdown path under the skill's references/ directory, e.g. `references/widget-sql-and-chart-specs.md`.",
+      "Relative markdown path under the skill's references/ directory. The skill index lists available references.",
     ),
 });
 
@@ -141,7 +143,7 @@ export function createSkillTools(workspaceId: string, userId?: string) {
     }),
     read_skill_resource: tool({
       description:
-        "Read a markdown reference file for a system skill. Use this only after a loaded system skill points to a specific `references/*.md` path and the task needs that tier-3 detail.",
+        "Read a tier-3 markdown reference file for a system skill. Use this only after the skill index or a loaded system skill points to a specific `references/*.md` path and the task needs that deeper detail.",
       inputSchema: readSkillResourceSchema,
       execute: async ({ name, path }) => {
         return readSkillResource(name, path);

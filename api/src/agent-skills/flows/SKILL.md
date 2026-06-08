@@ -1,6 +1,16 @@
 ---
 name: flows
 description: Load when creating, editing, configuring, validating, or debugging database sync flows, connector flows, pagination, incremental sync, destination mappings, and flow form fields.
+entities:
+  - flow
+  - flows
+  - sync
+  - connector
+  - pagination
+  - incremental
+  - typeCoercions
+  - schema mapping
+  - destination
 ---
 
 When configuring flows, you help users set up database-to-database sync pipelines. Your role is to help write queries, configure sync settings, and ensure the flow is properly set up.

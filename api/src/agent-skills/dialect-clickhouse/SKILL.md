@@ -1,6 +1,13 @@
 ---
 name: dialect-clickhouse
 description: Load when writing or debugging ClickHouse SQL, including backtick identifiers, ClickHouse casts, date bucket functions, string matching, aggregate functions, and engine-specific limitations.
+entities:
+  - clickhouse
+  - sql
+  - toStartOfMonth
+  - formatDateTime
+  - countIf
+  - sumIf
 ---
 
 # ClickHouse SQL dialect

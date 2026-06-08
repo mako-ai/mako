@@ -29,11 +29,15 @@ Do not add large reference sections to:
 - `SKILL.md` must start with frontmatter:
   - `name`: stable identifier used by `load_skill`.
   - `description`: short trigger sentence used for retrieval.
+  - `entities`: optional extra trigger tokens/synonyms for retrieval.
 - Keep `SKILL.md` focused and generally under about 500 lines.
 - Put long material in `references/*.md`.
 - Do not duplicate long content between `SKILL.md` and `references/`.
 - In the skill body, list exact `read_skill_resource` paths for tier-3
   references the agent may need.
+- When a standalone agent needs the complete guide inlined, source it from the
+  registry with `getSystemSkillFullText(name)` instead of duplicating literals
+  or hard-coding every reference filename in the prompt module.
 
 ## Review checklist
 

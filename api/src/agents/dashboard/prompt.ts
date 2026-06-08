@@ -6,43 +6,18 @@
  * SQL queries and Vega-Lite for chart rendering.
  */
 
-import {
-  getSystemSkill,
-  readSystemSkillResource,
-} from "../../agent-lib/skills/system-skills";
+import { getSystemSkillFullText } from "../../agent-lib/skills/system-skills";
 import type { AgentContext } from "../types";
 
-function requireSystemSkillBody(name: string): string {
-  const skill = getSystemSkill(name);
-  if (!skill) {
+function requireSystemSkillFullText(name: string): string {
+  const body = getSystemSkillFullText(name);
+  if (!body) {
     throw new Error(`Required system skill "${name}" was not discovered`);
   }
-  return skill.body;
+  return body;
 }
 
-function requireSystemSkillResource(name: string, relPath: string): string {
-  const resource = readSystemSkillResource(name, relPath);
-  if (!resource.success) {
-    throw new Error(resource.error);
-  }
-  return resource.content.trim();
-}
-
-export const DASHBOARD_SYSTEM_PROMPT = [
-  requireSystemSkillBody("dashboards"),
-  requireSystemSkillResource(
-    "dashboards",
-    "references/widget-sql-and-chart-specs.md",
-  ),
-  requireSystemSkillResource(
-    "dashboards",
-    "references/cross-filtering-debugging.md",
-  ),
-  requireSystemSkillResource(
-    "dashboards",
-    "references/widget-examples-and-layout.md",
-  ),
-].join("\n\n");
+export const DASHBOARD_SYSTEM_PROMPT = requireSystemSkillFullText("dashboards");
 
 /**
  * Build runtime context string describing the current dashboard state.

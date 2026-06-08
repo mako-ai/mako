@@ -1,6 +1,13 @@
 ---
 name: dialect-mysql
 description: Load when writing or debugging MySQL SQL, including backtick identifiers, casts, date arithmetic, CONCAT, REGEXP, LIMIT/OFFSET, and MySQL-specific query syntax.
+entities:
+  - mysql
+  - sql
+  - date_format
+  - date_sub
+  - regexp
+  - concat
 ---
 
 # MySQL SQL dialect

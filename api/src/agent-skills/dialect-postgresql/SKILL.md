@@ -1,6 +1,15 @@
 ---
 name: dialect-postgresql
 description: Load when writing or debugging PostgreSQL or Cloud SQL PostgreSQL SQL queries, including schema-qualified tables, date intervals, casts, JSON, arrays, pattern matching, and LIMIT syntax.
+entities:
+  - postgres
+  - postgresql
+  - cloudsql-postgres
+  - cloud sql
+  - sql
+  - jsonb
+  - array
+  - interval
 ---
 
 # PostgreSQL SQL dialect

@@ -1,6 +1,15 @@
 ---
 name: mongodb-queries
 description: Load when writing or debugging MongoDB find or aggregate queries, especially table-friendly output, pivots, dotted keys, date bucketing, projections, limits, and aggregation pipelines.
+entities:
+  - mongodb
+  - mongo
+  - aggregate
+  - aggregation
+  - pipeline
+  - pivot
+  - dotted keys
+  - dateToString
 ---
 
 # MongoDB query requirements
