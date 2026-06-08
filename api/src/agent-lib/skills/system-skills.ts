@@ -317,8 +317,9 @@ function readReference(raw: RawSystemSkill, relPath: string): string | null {
   const base = path.resolve(raw.dir) + path.sep;
   if (!resolved.startsWith(base)) return null;
   try {
-    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile())
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
       return null;
+    }
     return fs.readFileSync(resolved, "utf8");
   } catch (err) {
     logger.warn("Failed to read system skill resource", {
