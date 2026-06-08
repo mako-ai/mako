@@ -61,6 +61,12 @@ import {
 import { databaseConnectionService } from "../services/database-connection.service";
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
+import {
+  getCompactionConfig,
+  resolveCompactionBudget,
+  compactModelMessages,
+  estimateTokensFromText,
+} from "../agent-lib/compaction";
 
 const logger = loggers.agent();
 
@@ -718,6 +724,51 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     });
   }
 
+  // Prompt compaction (Phase 1): provider-agnostic, application-level context
+  // shrinking applied to what we *send* the model. The full transcript is still
+  // persisted via onFinish below — this is a read-time transform only.
+  //
+  // - Cross-turn: clear/mask stale tool results once the conversation crosses
+  //   the clear trigger (a fraction of the model context window).
+  // - In-loop: the `prepareStep` hook on streamText re-runs the clearer between
+  //   tool steps, which is where a single run can balloon (large query dumps).
+  const compactionConfig = getCompactionConfig();
+  const compactionBudget = resolveCompactionBudget(
+    modelDef?.contextWindow,
+    compactionConfig,
+  );
+  const systemPromptTokens = estimateTokensFromText(
+    typeof systemPrompt === "string" ? systemPrompt : JSON.stringify(systemPrompt),
+  );
+
+  if (compactionConfig.enabled) {
+    const { messages: compacted, stats } = compactModelMessages(modelMessages, {
+      budget: compactionBudget,
+      config: compactionConfig,
+      systemTokens: systemPromptTokens,
+    });
+    if (stats.applied) {
+      // Replace contents in place so the (typed) array reference passed to
+      // streamText carries the masked results.
+      modelMessages.length = 0;
+      modelMessages.push(...(compacted as typeof modelMessages));
+      logger.info("Compaction cleared stale tool results (cross-turn)", {
+        chatId,
+        workspaceId,
+        modelId: resolvedModelId,
+        contextWindow: compactionBudget.contextWindow,
+        ...stats,
+      });
+    } else {
+      logger.debug("Compaction skipped (cross-turn)", {
+        chatId,
+        reason: stats.reason,
+        signalTokens: stats.signalTokens,
+        clearTriggerTokens: stats.clearTriggerTokens,
+      });
+    }
+  }
+
   const MAX_STEPS = 256;
   let stepsCompleted = 0;
 
@@ -765,6 +816,41 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         stopWhen: stepCountIs(MAX_STEPS),
         providerOptions,
         abortSignal: requestSignal,
+        // In-loop compaction: this is the real source of single-run growth
+        // (160k -> 180k within one streamText call as tool dumps accumulate).
+        // We prefer the provider's reported input tokens from the prior step as
+        // the size signal, falling back to the char/4 estimate on the first
+        // step. Returning undefined leaves the outer messages untouched.
+        prepareStep: ({ steps, messages: stepMessages }) => {
+          if (!compactionConfig.enabled) return undefined;
+          const last = steps[steps.length - 1] as
+            | { usage?: Record<string, unknown> }
+            | undefined;
+          const usage = last?.usage;
+          const priorInputTokens = usage
+            ? (toNum(usage.totalTokens) ||
+              toNum(usage.inputTokens) + toNum(usage.outputTokens))
+            : undefined;
+          const { messages: compacted, stats } = compactModelMessages(
+            stepMessages,
+            {
+              budget: compactionBudget,
+              config: compactionConfig,
+              currentTokens: priorInputTokens,
+              signalSource: priorInputTokens ? "usage" : "estimate",
+              systemTokens: systemPromptTokens,
+            },
+          );
+          if (!stats.applied) return undefined;
+          logger.info("Compaction cleared stale tool results (in-loop)", {
+            chatId,
+            workspaceId,
+            modelId: resolvedModelId,
+            stepNumber: steps.length,
+            ...stats,
+          });
+          return { messages: compacted };
+        },
         experimental_telemetry: {
           isEnabled: true,
           functionId: `agent-chat:${resolvedAgentId}`,
