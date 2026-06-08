@@ -4,6 +4,25 @@ Guidance for AI agents working in the Mako monorepo.
 
 ## Cursor Cloud specific instructions
 
+### Dependency install (runs before verification)
+
+Cloud agents run the `install` script from [`.cursor/environment.json`](.cursor/environment.json) on every VM startup (after `git pull`). It must finish before lint/build verification:
+
+```bash
+pnpm install
+pnpm --filter @mako/schemas run build
+pnpm --filter @mako/agent-tools run build
+```
+
+`pnpm install` alone is **not sufficient** for `pnpm --filter api run build` — the API depends on compiled `@mako/agent-tools` (`dist/`), and the api build script only recompiles `@mako/schemas`.
+
+After the install script completes, these should work immediately (no MongoDB required):
+
+```bash
+pnpm --filter api run lint
+pnpm --filter api run build
+```
+
 ### Services (core product)
 
 | Service | Port | Notes |
