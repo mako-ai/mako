@@ -697,7 +697,7 @@ consoleRoutes.post("/", async (c: Context) => {
               databaseName,
               language: savedConsole.language,
             },
-            { workspaceId, userId: user.id },
+            { workspaceId, userId: user.id, userEmail: user.email },
           );
           if (genDesc || embedding) {
             const update: Record<string, unknown> = {};
@@ -1001,7 +1001,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
                   databaseName: body.databaseName,
                   language: result.language,
                 },
-                { workspaceId, userId: user.id },
+                { workspaceId, userId: user.id, userEmail: user.email },
               );
               if (genDesc || embedding) {
                 const descUpdate: Record<string, unknown> = {};
@@ -1142,7 +1142,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
               databaseName: body.databaseName,
               language: savedConsole.language,
             },
-            { workspaceId, userId: user.id },
+            { workspaceId, userId: user.id, userEmail: user.email },
           );
           if (genDesc || embedding) {
             const update: Record<string, unknown> = {};
@@ -1807,7 +1807,7 @@ consoleRoutes.post("/:id/version-comment", async (c: Context) => {
         source: source === "ai" ? "ai" : "user",
         aiPrompt: typeof aiPrompt === "string" ? aiPrompt : undefined,
       },
-      { workspaceId, userId: user.id },
+      { workspaceId, userId: user.id, userEmail: user.email },
     );
 
     return c.json({
