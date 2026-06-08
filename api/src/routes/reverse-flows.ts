@@ -129,14 +129,16 @@ reverseFlowRoutes.get("/connectors/:connectorId/outbound-schema", async c => {
 reverseFlowRoutes.get("/:id", async c => {
   const workspaceId = c.req.param("workspaceId");
   const id = objectId(c.req.param("id"));
-  if (!id)
+  if (!id) {
     return c.json({ success: false, error: "Invalid reverse flow ID" }, 400);
+  }
   const flow = await ReverseFlow.findOne({
     _id: id,
     workspaceId: new Types.ObjectId(workspaceId),
   });
-  if (!flow)
+  if (!flow) {
     return c.json({ success: false, error: "Reverse flow not found" }, 404);
+  }
   return c.json({ success: true, data: serializeFlow(flow) });
 });
 
@@ -144,8 +146,9 @@ reverseFlowRoutes.put("/:id", async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId");
   const id = objectId(c.req.param("id"));
   const user = c.get("user");
-  if (!id)
+  if (!id) {
     return c.json({ success: false, error: "Invalid reverse flow ID" }, 400);
+  }
 
   try {
     const body = (await c.req.json()) as Record<string, unknown>;
@@ -210,8 +213,9 @@ reverseFlowRoutes.post("/:id/dry-run", async c => {
   if (!workspaceId) {
     return c.json({ success: false, error: "Workspace ID is required" }, 400);
   }
-  if (!id)
+  if (!id) {
     return c.json({ success: false, error: "Invalid reverse flow ID" }, 400);
+  }
   try {
     const body = (await c.req.json().catch(() => ({}))) as {
       sampleSize?: number;
@@ -300,15 +304,17 @@ reverseFlowRoutes.post(
 reverseFlowRoutes.post("/:id/pause", async c => {
   const workspaceId = c.req.param("workspaceId");
   const id = objectId(c.req.param("id"));
-  if (!id)
+  if (!id) {
     return c.json({ success: false, error: "Invalid reverse flow ID" }, 400);
+  }
   const flow = await ReverseFlow.findOneAndUpdate(
     { _id: id, workspaceId: new Types.ObjectId(workspaceId) },
     { $set: { status: "paused", "scheduledRun.nextAt": undefined } },
     { new: true },
   );
-  if (!flow)
+  if (!flow) {
     return c.json({ success: false, error: "Reverse flow not found" }, 404);
+  }
   return c.json({ success: true, data: serializeFlow(flow) });
 });
 
@@ -326,8 +332,9 @@ reverseFlowRoutes.post(
       _id: id,
       workspaceId: new Types.ObjectId(workspaceId),
     }).lean();
-    if (!flow)
+    if (!flow) {
       return c.json({ success: false, error: "Reverse flow not found" }, 404);
+    }
     if (flow.status !== "active") {
       return c.json(
         { success: false, error: "Reverse flow must be active" },
@@ -350,8 +357,9 @@ reverseFlowRoutes.post(
 reverseFlowRoutes.get("/:id/runs", async c => {
   const workspaceId = c.req.param("workspaceId");
   const id = objectId(c.req.param("id"));
-  if (!id)
+  if (!id) {
     return c.json({ success: false, error: "Invalid reverse flow ID" }, 400);
+  }
   const runs = await ReverseFlowRun.find({
     workspaceId: new Types.ObjectId(workspaceId),
     reverseFlowId: id,
@@ -365,15 +373,17 @@ reverseFlowRoutes.get("/:id/runs", async c => {
 reverseFlowRoutes.get("/:id/versions", async c => {
   const workspaceId = c.req.param("workspaceId");
   const id = objectId(c.req.param("id"));
-  if (!id)
+  if (!id) {
     return c.json({ success: false, error: "Invalid reverse flow ID" }, 400);
+  }
   const flow = await ReverseFlow.findOne({
     _id: id,
     workspaceId: new Types.ObjectId(workspaceId),
   })
     .select("versions")
     .lean();
-  if (!flow)
+  if (!flow) {
     return c.json({ success: false, error: "Reverse flow not found" }, 404);
+  }
   return c.json({ success: true, data: flow.versions || [] });
 });

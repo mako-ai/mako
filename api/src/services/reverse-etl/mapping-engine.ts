@@ -212,8 +212,9 @@ function resolveOutboundField(
   outboundSchema: OutboundEntitySchema,
   target: string,
 ) {
-  if (outboundSchema.fields[target]?.writable)
+  if (outboundSchema.fields[target]?.writable) {
     return outboundSchema.fields[target];
+  }
   if (target.startsWith("custom.")) {
     return outboundSchema.fields[`custom_${target.slice("custom.".length)}`];
   }

@@ -99,8 +99,9 @@ export function createReverseEtlTools(
             _id: new Types.ObjectId(connectionId),
             workspaceId: new Types.ObjectId(workspaceId),
           });
-          if (!connection)
+          if (!connection) {
             return { success: false, error: "Connection not found" };
+          }
           return await validateQueryService(
             connection.toObject({ getters: true }) as any,
             query,
