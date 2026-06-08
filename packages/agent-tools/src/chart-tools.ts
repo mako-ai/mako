@@ -15,10 +15,22 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { MakoChartSpecBase } from "./chart-spec-schema";
 
 export const modifyChartSpecSchema = z.object({
-  vegaLiteSpec: MakoChartSpecBase.describe("Vega-Lite chart specification"),
+  // A loose record instead of the full ~98 KB Vega-Lite JSON Schema: the model
+  // already knows Vega-Lite, so we describe only the Mako-specific constraints
+  // and rely on the client-side `MakoChartSpec` schema (app/src/lib/chart-spec.ts)
+  // to validate and feed errors back for self-correction.
+  vegaLiteSpec: z
+    .record(z.string(), z.unknown())
+    .describe(
+      "A Vega-Lite spec object (the model already knows Vega-Lite). " +
+        "Do NOT include a `data` property — data is injected from the query results at render time. " +
+        "Marks: bar | line | area | point | arc | boxplot | rect | rule | text | tick | trail. " +
+        "Use a `fold` transform to unpivot multiple numeric columns into one series for multi-line charts. " +
+        "For complex patterns (multi-series hover, donut, stacked bar) call get_chart_template first. " +
+        "Invalid specs are reported back with the exact validation error so you can fix and retry.",
+    ),
   reasoning: z
     .string()
     .describe("Brief explanation of the chart choice and why it fits the data"),
