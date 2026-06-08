@@ -274,6 +274,32 @@ export const truncateQueryResults = (results: unknown): unknown => {
 };
 
 /**
+ * Final safety clamp on already-truncated query result data.
+ *
+ * `truncateQueryResults` caps row count and per-value size, but a result with
+ * many medium-sized rows can still serialize past {@link MAX_TOTAL_OUTPUT_SIZE}.
+ * This is the last line of defense before a raw dump enters the conversation
+ * history (and the model context). Shared by the SQL and MongoDB query tools so
+ * every large-output path enforces the same ceiling.
+ *
+ * Returns the (possibly further-reduced) data plus an optional warning string
+ * the caller can surface to the model so it knows to add a `LIMIT`/`.limit()`.
+ */
+export const clampTruncatedResults = (
+  truncatedData: unknown,
+): { data: unknown; warning?: string } => {
+  const outputSize = JSON.stringify(truncatedData ?? null)?.length ?? 0;
+  if (outputSize <= MAX_TOTAL_OUTPUT_SIZE) {
+    return { data: truncatedData };
+  }
+  return {
+    data: Array.isArray(truncatedData) ? truncatedData.slice(0, 50) : truncatedData,
+    warning:
+      "Results truncated to fit context. Add a LIMIT / .limit() to your query for smaller result sets.",
+  };
+};
+
+/**
  * Truncate sample rows/documents for inspection output
  */
 export const truncateSamples = (

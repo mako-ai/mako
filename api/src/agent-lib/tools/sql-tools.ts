@@ -15,6 +15,7 @@ import { clientConsoleTools } from "@mako/agent-tools";
 import {
   truncateSamples,
   truncateQueryResults,
+  clampTruncatedResults,
   MAX_SAMPLE_ROWS,
   AGENT_QUERY_TIMEOUT_MS,
   registerAgentExecution,
@@ -949,7 +950,13 @@ async function executeQueryImpl(
 
     if (result && result.success && result.data) {
       const truncatedData = truncateQueryResults(result.data);
-      return { ...result, data: truncatedData, sqlDialect: dialect };
+      const { data: clampedData, warning } = clampTruncatedResults(truncatedData);
+      return {
+        ...result,
+        data: clampedData,
+        sqlDialect: dialect,
+        ...(warning ? { _warning: warning } : {}),
+      };
     }
 
     return { ...result, sqlDialect: dialect };

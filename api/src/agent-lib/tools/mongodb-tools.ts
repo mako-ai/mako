@@ -16,8 +16,8 @@ import {
   inferBsonType,
   truncateSamples,
   truncateQueryResults,
+  clampTruncatedResults,
   MAX_SAMPLE_ROWS,
-  MAX_TOTAL_OUTPUT_SIZE,
   AGENT_QUERY_TIMEOUT_MS,
   registerAgentExecution,
   throwIfAborted,
@@ -400,17 +400,12 @@ async function executeQueryImpl(
 
   if (result && result.success && result.data) {
     const truncatedData = truncateQueryResults(result.data);
-    const outputSize = JSON.stringify(truncatedData).length;
-    if (outputSize > MAX_TOTAL_OUTPUT_SIZE) {
-      return {
-        ...result,
-        data: Array.isArray(truncatedData)
-          ? truncatedData.slice(0, 50)
-          : truncatedData,
-        _warning: `Results truncated. Add .limit() to your query for smaller result sets.`,
-      };
-    }
-    return { ...result, data: truncatedData };
+    const { data: clampedData, warning } = clampTruncatedResults(truncatedData);
+    return {
+      ...result,
+      data: clampedData,
+      ...(warning ? { _warning: warning } : {}),
+    };
   }
 
   return result;
