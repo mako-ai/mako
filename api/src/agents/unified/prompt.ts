@@ -1,6 +1,4 @@
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
-import { DASHBOARD_SYSTEM_PROMPT } from "../dashboard/prompt";
-import { FLOW_PROMPT } from "../flow/prompt";
 import type { AgentContext } from "../types";
 
 export const UNIFIED_SYSTEM_PROMPT = `You are Mako's unified workspace assistant.
@@ -84,13 +82,25 @@ ${UNIVERSAL_PROMPT_V2}
 
 ## Dashboard Guidance
 
-${DASHBOARD_SYSTEM_PROMPT}
+When the request targets dashboards or widgets, load the \`dashboards\` skill
+(via \`load_skill\` or it auto-loads from the Skills index) for the full guide:
+data sources materialized into in-browser DuckDB, widgets (Vega-Lite charts, KPI
+cards, tables), cross-filtering, and the edit lifecycle. Always pass an explicit
+\`dashboardId\` to every dashboard tool, and call \`enter_edit_mode\` before any
+write. Deeper material (DuckDB SQL, chart specs, cross-filter debugging) is in
+that skill's \`references/\` — pull it with \`read_skill_resource\`.
 
 ---
 
 ## Flow Guidance
 
-${FLOW_PROMPT}`;
+When the request targets flows, syncs, or scheduled pipelines, load the
+\`flows\` skill for the full guide: query template placeholders
+(\`{{limit}}\`, \`{{offset}}\`, \`{{last_sync_value}}\`, \`{{keyset_value}}\`),
+pagination/sync/conflict modes, schema type mappings (\`typeCoercions\`),
+destination requirements per database, and the full form-field reference. Always
+\`validate_query\` before setting form fields, and \`inspect_table\` for
+authoritative source column types.`;
 
 function buildConsoleContext(context: AgentContext): string[] {
   const parts: string[] = [];

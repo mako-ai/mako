@@ -22,6 +22,7 @@ import {
   saveSkill,
   searchSkills,
 } from "../../services/skills.service";
+import { readSystemSkillResource } from "../skills/system-skills";
 
 const saveSkillSchema = z.object({
   name: z
@@ -86,6 +87,21 @@ const searchSkillsSchema = z.object({
     .describe("Max results (default 5)."),
 });
 
+const readSkillResourceSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .describe(
+      "Name of the `[system]` skill that owns the resource (e.g. `dashboards`).",
+    ),
+  path: z
+    .string()
+    .min(1)
+    .describe(
+      "Relative path of the reference file within the skill package, e.g. `references/cross-filtering.md`. The skill index lists each skill's available references.",
+    ),
+});
+
 export function createSkillTools(workspaceId: string, userId?: string) {
   const authorId = userId && userId.length > 0 ? userId : "agent";
 
@@ -139,6 +155,27 @@ export function createSkillTools(workspaceId: string, userId?: string) {
             score: Math.round(h.score * 100) / 100,
             entityOverlap: h.entityOverlap,
           })),
+        };
+      },
+    }),
+    read_skill_resource: tool({
+      description:
+        "Read a tier-3 reference file from a `[system]` skill package (e.g. the `dashboards` skill's `references/cross-filtering.md`). Use this when a loaded system skill points you at a reference for deeper detail. The skill index lists which references each skill exposes.",
+      inputSchema: readSkillResourceSchema,
+      execute: async ({ name, path }) => {
+        const result = readSystemSkillResource(name, path);
+        if (!result) {
+          return {
+            success: false as const,
+            error: `resource "${path}" not found for skill "${name}"`,
+          };
+        }
+        return {
+          success: true as const,
+          name,
+          path,
+          content: result.content,
+          availableReferences: result.references,
         };
       },
     }),

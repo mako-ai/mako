@@ -19,6 +19,10 @@ import {
 } from "./embedding.service";
 import { databaseConnectionService } from "./database-connection.service";
 import { extractEntities, entityOverlap } from "../agent-lib/entity-extraction";
+import {
+  getSystemSkill,
+  getSystemSkillIndex,
+} from "../agent-lib/skills/system-skills";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -54,6 +58,10 @@ export interface SkillIndexEntry {
   loadWhen: string;
   suppressed: boolean;
   useCount: number;
+  /** True for filesystem-backed system skills (always-available reference). */
+  system?: boolean;
+  /** Tier-3 reference files available via read_skill_resource (system only). */
+  references?: string[];
 }
 
 export interface SkillRetrievalHit {
@@ -65,6 +73,8 @@ export interface SkillRetrievalHit {
   entityOverlap: number;
   semanticScore: number;
   injected: boolean;
+  /** True for filesystem-backed system skills. */
+  system?: boolean;
 }
 
 export interface SkillRetrievalResult {
@@ -254,6 +264,21 @@ export async function loadSkill(
     { new: true },
   );
   if (!skill) {
+    // Fall back to a filesystem-backed system skill (always-available
+    // reference material extracted out of the base prompt).
+    const sys = getSystemSkill(name.trim());
+    if (sys) {
+      return {
+        success: true,
+        skill: {
+          id: `system:${sys.name}`,
+          name: sys.name,
+          loadWhen: sys.description,
+          body: sys.body,
+          suppressed: false,
+        },
+      };
+    }
     return { success: false, error: `skill "${name}" not found` };
   }
   return {
@@ -441,24 +466,54 @@ export async function retrieveRelevantSkills(
     .sort({ useCount: -1, updatedAt: -1 })
     .lean();
 
-  const index: SkillIndexEntry[] = indexDocs.map(s => ({
-    id: (s._id as Types.ObjectId).toString(),
-    name: s.name,
-    loadWhen: s.loadWhen,
-    suppressed: !!s.suppressed,
-    useCount: s.useCount ?? 0,
-  }));
+  // Filesystem-backed system skills are always part of the catalog. They are
+  // tagged so the prompt renderer can label them and so we don't try to bump
+  // a Mongo useCount for them.
+  const systemIndex = getSystemSkillIndex();
 
-  if (indexDocs.length === 0 || !queryText || queryText.trim().length === 0) {
+  const index: SkillIndexEntry[] = [
+    ...indexDocs.map(s => ({
+      id: (s._id as Types.ObjectId).toString(),
+      name: s.name,
+      loadWhen: s.loadWhen,
+      suppressed: !!s.suppressed,
+      useCount: s.useCount ?? 0,
+    })),
+    ...systemIndex.map(s => ({
+      id: `system:${s.name}`,
+      name: s.name,
+      loadWhen: s.description,
+      suppressed: false,
+      useCount: 0,
+      system: true,
+      references: s.references,
+    })),
+  ];
+
+  const noCandidates = indexDocs.length === 0 && systemIndex.length === 0;
+  if (noCandidates || !queryText || queryText.trim().length === 0) {
     return { index, injected: [], considered: [], queryEntities: [] };
   }
 
   const queryEntities = extractEntities(queryText);
   const hasEntities = queryEntities.length > 0;
 
-  // Semantic score (per-doc) when available.
+  const entityScoreFor = (entities: readonly string[] | undefined): number =>
+    hasEntities
+      ? Math.min(
+          1,
+          entityOverlap(queryEntities, entities ?? []) /
+            Math.max(3, queryEntities.length / 2),
+        )
+      : 0;
+
+  // Semantic score (per-doc) when available — workspace skills only (system
+  // skills have no embeddings; they score on entity overlap alone).
   let semanticScoreById = new Map<string, number>();
-  const canVector = isEmbeddingAvailable() && (await isVectorSearchAvailable());
+  const canVector =
+    indexDocs.length > 0 &&
+    isEmbeddingAvailable() &&
+    (await isVectorSearchAvailable());
   if (canVector) {
     try {
       const qEmbedding = await embedText(queryText);
@@ -480,12 +535,10 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  const candidates: SkillRetrievalHit[] = indexDocs.map(s => {
+  const workspaceCandidates: SkillRetrievalHit[] = indexDocs.map(s => {
     const id = (s._id as Types.ObjectId).toString();
     const overlap = entityOverlap(queryEntities, s.entities ?? []);
-    const entityScore = hasEntities
-      ? Math.min(1, overlap / Math.max(3, queryEntities.length / 2))
-      : 0;
+    const entityScore = entityScoreFor(s.entities);
     const semanticScore = semanticScoreById.get(id) ?? 0;
     const score = entityScore * ENTITY_WEIGHT + semanticScore * SEMANTIC_WEIGHT;
     return {
@@ -500,17 +553,39 @@ export async function retrieveRelevantSkills(
     };
   });
 
+  // System skills score on entity overlap at full weight (no semantic signal),
+  // so an explicit mention (e.g. "clickhouse") can auto-inject the dialect.
+  const systemCandidates: SkillRetrievalHit[] = systemIndex.map(s => {
+    const overlap = entityOverlap(queryEntities, s.entities ?? []);
+    const score = entityScoreFor(s.entities);
+    return {
+      id: `system:${s.name}`,
+      name: s.name,
+      loadWhen: s.description,
+      body: "",
+      score,
+      entityOverlap: overlap,
+      semanticScore: 0,
+      injected: false,
+      system: true,
+    };
+  });
+
+  const candidates = [...workspaceCandidates, ...systemCandidates];
   candidates.sort((a, b) => b.score - a.score);
 
-  const toInjectIds = candidates
+  const toInject = candidates
     .filter(c => c.score >= AUTO_INJECT_THRESHOLD)
-    .slice(0, AUTO_INJECT_LIMIT)
-    .map(c => c.id);
+    .slice(0, AUTO_INJECT_LIMIT);
+  const toInjectIds = new Set(toInject.map(c => c.id));
 
-  // Fetch bodies only for the ones we'll inject.
+  // Fetch bodies only for the workspace skills we'll inject.
+  const workspaceInjectIds = toInject
+    .filter(c => !c.system)
+    .map(c => new Types.ObjectId(c.id));
   const bodies: Array<{ _id: Types.ObjectId; body: string }> =
-    toInjectIds.length
-      ? ((await Skill.find({ _id: { $in: toInjectIds } })
+    workspaceInjectIds.length
+      ? ((await Skill.find({ _id: { $in: workspaceInjectIds } })
           .select("body")
           .lean()) as unknown as Array<{ _id: Types.ObjectId; body: string }>)
       : [];
@@ -518,14 +593,19 @@ export async function retrieveRelevantSkills(
     bodies.map(b => [b._id.toString(), b.body as string]),
   );
 
+  const resolveBody = (c: SkillRetrievalHit): string => {
+    if (c.system) return getSystemSkill(c.name)?.body ?? "";
+    return bodyById.get(c.id) ?? "";
+  };
+
   const injected: SkillRetrievalHit[] = [];
   const considered: SkillRetrievalHit[] = [];
   for (const c of candidates) {
     if (c.score <= 0 && !hasEntities) continue;
-    if (toInjectIds.includes(c.id)) {
+    if (toInjectIds.has(c.id)) {
       injected.push({
         ...c,
-        body: bodyById.get(c.id) ?? "",
+        body: resolveBody(c),
         injected: true,
       });
     } else if (c.score > 0) {
@@ -533,10 +613,14 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  // Fire-and-forget: bump useCount + lastUsedAt for skills we injected.
-  if (injected.length > 0) {
+  // Fire-and-forget: bump useCount + lastUsedAt for workspace skills we
+  // injected. System skills have no Mongo row, so skip them.
+  const injectedWorkspaceIds = injected
+    .filter(i => !i.system)
+    .map(i => new Types.ObjectId(i.id));
+  if (injectedWorkspaceIds.length > 0) {
     void Skill.updateMany(
-      { _id: { $in: injected.map(i => new Types.ObjectId(i.id)) } },
+      { _id: { $in: injectedWorkspaceIds } },
       { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
     ).catch(err => {
       logger.debug("Skill useCount bump failed", { error: err });
@@ -567,12 +651,19 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
       "If a skill conflicts with the directive, follow the directive. " +
       "Use `load_skill` to pull in any indexed skill on demand, `save_skill` " +
       "to record new workspace knowledge, `delete_skill` to retract, and " +
-      "`search_skills` as a fallback.",
+      "`search_skills` as a fallback. Skills tagged `[system]` are built-in " +
+      "reference packages; some expose deeper material under `references/` " +
+      "that you can pull with `read_skill_resource`.",
   );
   lines.push("");
   lines.push("#### Available skills (index)");
   for (const s of result.index) {
-    lines.push(`- \`${s.name}\`: ${s.loadWhen}`);
+    const tag = s.system ? " `[system]`" : "";
+    const refs =
+      s.system && s.references && s.references.length > 0
+        ? ` (references: ${s.references.join(", ")})`
+        : "";
+    lines.push(`- \`${s.name}\`${tag}: ${s.loadWhen}${refs}`);
   }
 
   if (result.injected.length > 0) {

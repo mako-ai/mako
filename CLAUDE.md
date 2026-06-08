@@ -156,6 +156,24 @@ MongoDB, PostgreSQL, BigQuery, ClickHouse, Cloud SQL (Postgres), Cloudflare D1, 
 8. Support query cancellation via AbortSignal in database drivers
 9. Add exponential backoff retry logic for external API calls
 
+## Agent prompts & skills
+
+The AI agent base system prompts are deliberately **lean**. Heavy, always-on
+reference material (SQL dialect syntax + examples, the dashboard guide, the flow
+guide) lives in **Agent Skills** under `api/src/agent-skills/<name>/SKILL.md` and
+loads on demand via the skills retrieval pipeline (progressive disclosure):
+
+- The skill **catalog** (name + description) is always injected; **bodies** load
+  only when a skill scores above threshold or the agent calls `load_skill`.
+  Deep `references/*.md` load via `read_skill_resource`.
+- Discovery: `api/src/agent-lib/skills/system-skills.ts` scans the directory at
+  boot (`copyfiles` bundles the markdown into `dist/agent-skills`).
+- Pipeline: `api/src/services/skills.service.ts` merges these "system skills"
+  with Mongo-backed per-workspace "skills" (learned memory).
+- **Do not re-inflate the base prompt.** Any new vendor/database/app/domain
+  guidance goes into a `SKILL.md` package. See `.cursor/rules/35-agent-prompts.mdc`
+  and `api/src/agent-skills/README.md`.
+
 ### Legacy Systems
 
 - **Legacy sync CLI** (`/sync/cli.ts`) — being replaced by Inngest workflows

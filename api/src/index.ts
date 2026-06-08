@@ -51,6 +51,7 @@ import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { warmCatalog } from "./services/model-catalog.service";
+import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
 import {
@@ -264,6 +265,11 @@ async function main(): Promise<void> {
 
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
+
+  // Discover filesystem-backed system skills (logs the count + names). Done at
+  // boot so a missing/empty skills directory is visible immediately rather than
+  // on first chat request.
+  discoverSystemSkills();
 
   // Log server startup info
   const cdcEventStore = getCdcEventStoreConfig();

@@ -1,0 +1,37 @@
+---
+globs: api/src/agent-lib/prompts/**/*.ts,api/src/agents/**/prompt.ts,api/src/agent-skills/**/*.md,api/src/agent-lib/skills/**/*.ts
+description: Keep base agent prompts lean; put vendor/database/app/domain guidance in Agent Skills (SKILL.md)
+---
+
+# Agent prompts & skills
+
+The base agent system prompts must stay **lean**. They carry only universal
+directives, workflow, discovery strategy, engine mapping, console management,
+the tool list, and pointers to skills. Everything that is vendor-, database-,
+app-, or domain-specific belongs in an **Agent Skill**, never the base prompt.
+
+## Where things live
+
+- Base prompts (lean): [api/src/agent-lib/prompts/universal.ts](mdc:api/src/agent-lib/prompts/universal.ts), [api/src/agents/unified/prompt.ts](mdc:api/src/agents/unified/prompt.ts).
+- System skills (heavy reference, loaded on demand): [api/src/agent-skills/](mdc:api/src/agent-skills/) — one `SKILL.md` package per capability. See [api/src/agent-skills/README.md](mdc:api/src/agent-skills/README.md).
+- Registry + discovery: [api/src/agent-lib/skills/system-skills.ts](mdc:api/src/agent-lib/skills/system-skills.ts).
+- Retrieval/injection pipeline (shared with workspace skills): [api/src/services/skills.service.ts](mdc:api/src/services/skills.service.ts).
+- Tools: `load_skill` and `read_skill_resource` in [api/src/agent-lib/tools/skill-tools.ts](mdc:api/src/agent-lib/tools/skill-tools.ts).
+
+## Rules
+
+- **Do not add new vendor/database/app/domain guidance to a base prompt.** Create or extend an `api/src/agent-skills/<name>/SKILL.md` package instead.
+- The skill's `description` frontmatter is the **retrieval trigger** ("when to load this skill"), written as a task/condition — not a summary.
+- Keep the `SKILL.md` **body under ~500 lines**. Push long-form material into `references/*.md` and reference it from the body.
+- **No duplication** between the body and references; each fact lives in one place.
+- **One skill per capability** — don't bundle unrelated topics into a single package.
+- When a standalone agent needs the full guide inlined, source it from the registry (`getSystemSkillFullText(name)`) rather than duplicating a literal, so there is one source of truth.
+- Dynamic content (e.g. auto-generated form-field docs) uses `{{PLACEHOLDER}}` tokens substituted via `registerSystemSkillTemplate(name, provider)` at module load.
+- A new skill is auto-discovered at boot — no registration code needed beyond creating the package directory and `SKILL.md`.
+
+## Why
+
+Always-on reference bloat made the base system prompt very large (every chat
+turn paid for every dialect, the full dashboard guide, and the full flow guide).
+Skills move that to progressive disclosure: the catalog (name + description) is
+always injected, but bodies and references load only when relevant.
