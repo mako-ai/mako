@@ -14,7 +14,6 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { MakoChartSpecBase } from "./chart-spec-schema";
 import { clientScreenshotTools } from "./screenshot-tools";
 
 const addWidgetSchema = z.object({
@@ -25,9 +24,13 @@ const addWidgetSchema = z.object({
     .string()
     .describe("ID of the data source within the dashboard"),
   localSql: z.string().describe("SQL query against the local DuckDB table"),
-  vegaLiteSpec: MakoChartSpecBase.optional().describe(
-    "Vega-Lite chart spec (for chart type). Do NOT include data property.",
-  ),
+  vegaLiteSpec: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Vega-Lite spec for chart widgets. Omit the `data` property — the widget binds to the local DuckDB table. " +
+        "If the spec is invalid or fails to render, the tool returns the error/hint so you can fix it with modify_widget.",
+    ),
   kpiConfig: z
     .object({
       valueField: z.string(),
@@ -63,7 +66,13 @@ const modifyWidgetSchema = z.object({
   widgetId: z.string().describe("Widget ID to modify"),
   title: z.string().optional(),
   localSql: z.string().optional(),
-  vegaLiteSpec: MakoChartSpecBase.optional(),
+  vegaLiteSpec: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Vega-Lite spec for chart widgets. Omit the `data` property — the widget binds to the local DuckDB table. " +
+        "If the spec is invalid or fails to render, the tool returns the error/hint so you can fix it with modify_widget.",
+    ),
   kpiConfig: z
     .object({
       valueField: z.string(),
