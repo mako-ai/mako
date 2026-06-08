@@ -54,7 +54,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
         role: "system" as const,
         content: UNIFIED_SYSTEM_PROMPT,
         providerOptions: {
-          anthropic: { cacheControl: { type: "ephemeral" } },
+          anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
         },
       },
       {

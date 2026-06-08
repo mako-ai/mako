@@ -232,7 +232,7 @@ export const consoleAgentFactory: AgentFactory = (
         role: "system" as const,
         content: UNIVERSAL_PROMPT_V2 + customPromptContext,
         providerOptions: {
-          anthropic: { cacheControl: { type: "ephemeral" } },
+          anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
         },
       },
       {

@@ -530,7 +530,7 @@ export const flowAgentFactory: AgentFactory = (
         role: "system" as const,
         content: FLOW_PROMPT,
         providerOptions: {
-          anthropic: { cacheControl: { type: "ephemeral" } },
+          anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
         },
       },
       {
