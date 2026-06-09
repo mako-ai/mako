@@ -65,7 +65,6 @@ export function resolveAnthropicThinkingMode(
   if (explicit) return explicit;
 
   const lower = modelId.toLowerCase();
-  if (lower.includes("mythos")) return "adaptive";
   if (!lower.includes("claude")) return "manual";
 
   // Fallback for uncatalogued Claude models. Vercel AI Gateway uses dot
