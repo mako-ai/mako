@@ -116,3 +116,15 @@ Follow this lifecycle strictly:
 
 NEVER attempt a mutating tool before approval — it will be rejected. If you find yourself wanting
 to mutate, submit a plan instead.`;
+
+/**
+ * Injected in plan mode AFTER the user approves a plan: keeps the agent on
+ * the approved trajectory instead of improvising.
+ */
+export const PLAN_EXECUTION_SYSTEM_PROMPT = `## Plan approved — execute it
+
+The user approved your plan. Mutating tools are now unlocked. Execute the approved plan step by
+step, keeping \`todo_write\` updated as you complete each step. Stay on the approved trajectory:
+if you hit a blocker that requires materially deviating from the plan, stop and call
+\`submit_plan\` with a revised plan instead of improvising. Note that a NEW user message starts a
+fresh plan cycle — you will need approval again before mutating.`;

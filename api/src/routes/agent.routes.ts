@@ -58,7 +58,10 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
-import { buildUnifiedModeRuntime } from "../agents/modes";
+import {
+  buildUnifiedModeRuntime,
+  type UnifiedModeRuntime,
+} from "../agents/modes";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
@@ -698,9 +701,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   let systemPrompt: ReturnType<typeof agentFactory>["systemPrompt"];
   let tools: ReturnType<typeof agentFactory>["tools"];
-  let prepareStep:
-    | ((options: { stepNumber: number }) => unknown | undefined)
-    | undefined;
+  let prepareStep: UnifiedModeRuntime["prepareStep"] | undefined;
 
   if (resolvedAgentId === "unified") {
     const runtime = buildUnifiedModeRuntime({

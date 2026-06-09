@@ -1,3 +1,4 @@
+import { PLAN_GATE_ALLOWED_TOOL_NAMES } from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import type { AgentMode, ExpertiseModeId } from "./types";
 import {
@@ -15,11 +16,8 @@ import {
  * `update_self_directive`) because they are not in `READ_ONLY_TOOL_NAMES`.
  */
 export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
-  // Lifecycle / mode-switching
-  "enable_mode",
-  "todo_write",
-  "ask_clarifying_questions",
-  "submit_plan",
+  // Lifecycle / mode-switching (shared with the plan-mode gate allowlist)
+  ...PLAN_GATE_ALLOWED_TOOL_NAMES,
   // Persistent memory
   "read_self_directive",
   "update_self_directive",
@@ -29,8 +27,9 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   "load_skill",
   "read_skill_resource",
   "search_skills",
-  // Cross-surface search
+  // Cross-surface search (parity: both are discovery, not modality work)
   "search_consoles",
+  "search_dashboards",
   // Version history
   "browse_version_history",
   "get_version_snapshot",

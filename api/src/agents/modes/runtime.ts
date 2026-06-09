@@ -8,7 +8,11 @@
  */
 
 import type { SystemModelMessage, ToolSet, UIMessage } from "ai";
-import { clientPlanTools, READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
+import {
+  clientPlanTools,
+  READ_ONLY_TOOL_NAMES,
+  PLAN_GATE_ALLOWED_TOOL_NAMES,
+} from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import { unifiedAgentFactory } from "../unified";
 import { buildCurrentScreenContext } from "../unified/prompt";
@@ -19,7 +23,11 @@ import {
   toolNamesForModes,
   isExpertiseModeId,
 } from "./registry";
-import { BASE_SYSTEM_PROMPT, PLAN_MODE_SYSTEM_PROMPT } from "./prompts";
+import {
+  BASE_SYSTEM_PROMPT,
+  PLAN_MODE_SYSTEM_PROMPT,
+  PLAN_EXECUTION_SYSTEM_PROMPT,
+} from "./prompts";
 import type { ExpertiseModeId, LifecycleMode, ModeState } from "./types";
 
 /** Tools only exposed while the chat is in the plan lifecycle. */
@@ -97,8 +105,13 @@ function buildModeSystem(
     if (mode?.systemPrompt) dynamicParts.push(mode.systemPrompt);
   }
 
-  const planGated = modeState.lifecycle === "plan" && !modeState.planApproved;
-  if (planGated) dynamicParts.push(PLAN_MODE_SYSTEM_PROMPT);
+  if (modeState.lifecycle === "plan") {
+    dynamicParts.push(
+      modeState.planApproved
+        ? PLAN_EXECUTION_SYSTEM_PROMPT
+        : PLAN_MODE_SYSTEM_PROMPT,
+    );
+  }
 
   dynamicParts.push(buildCurrentScreenContext(context));
 
@@ -142,12 +155,7 @@ export function computeActiveTools(
     for (const name of names) {
       if (READ_ONLY_TOOL_NAMES.has(name)) gated.add(name);
     }
-    for (const allowed of [
-      "enable_mode",
-      "todo_write",
-      "ask_clarifying_questions",
-      "submit_plan",
-    ]) {
+    for (const allowed of PLAN_GATE_ALLOWED_TOOL_NAMES) {
       if (allToolNames.has(allowed)) gated.add(allowed);
     }
     names = gated;
