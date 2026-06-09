@@ -20,7 +20,8 @@ interface PlanCardProps {
   input?: SubmitPlanInput;
   /** Present once the plan has been resolved (read-only summary view). */
   output?: SubmitPlanOutput;
-  onResolve: (output: SubmitPlanOutput) => void;
+  /** Required for the pending (interactive) card; unused for summaries. */
+  onResolve?: (output: SubmitPlanOutput) => void;
 }
 
 const DECISION_LABEL: Record<PlanDecision, string> = {
@@ -64,7 +65,7 @@ export const PlanCard: React.FC<PlanCardProps> = ({
       setShowFeedback(true);
       return;
     }
-    onResolve({
+    onResolve?.({
       success: true,
       decision,
       ...(decision === "request_changes" ? { feedback } : {}),

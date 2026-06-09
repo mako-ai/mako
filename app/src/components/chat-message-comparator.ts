@@ -16,15 +16,6 @@ export interface ChatMessageRowProps {
   onToolClick: (tool: any) => void;
   onConsoleTitleClick: (consoleId: string) => void;
   connectionIconById: ReadonlyMap<string, string>;
-  /**
-   * Resolve a deferred interactive tool call (clarifying questions / plan)
-   * with the user's answer. Stable identity (useCallback) so memo holds.
-   */
-  onResolveInteractiveTool?: (args: {
-    tool: string;
-    toolCallId: string;
-    output: Record<string, unknown>;
-  }) => void;
   /** Bust memo when MUI palette mode changes so row styles stay in sync */
   paletteMode: "light" | "dark";
 }
@@ -64,8 +55,5 @@ export function chatMessageRowArePropsEqual(
   if (prev.onToolClick !== next.onToolClick) return false;
   if (prev.onConsoleTitleClick !== next.onConsoleTitleClick) return false;
   if (prev.connectionIconById !== next.connectionIconById) return false;
-  if (prev.onResolveInteractiveTool !== next.onResolveInteractiveTool) {
-    return false;
-  }
   return prev.message === next.message;
 }

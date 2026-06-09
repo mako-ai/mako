@@ -688,7 +688,6 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
   onToolClick,
   onConsoleTitleClick,
   connectionIconById,
-  onResolveInteractiveTool,
   paletteMode,
 }: ChatMessageRowProps) {
   const parts = (message.parts || []) as Array<Record<string, unknown>>;
@@ -705,7 +704,6 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
     onToolClick,
     onConsoleTitleClick,
     connectionIconById,
-    onResolveInteractiveTool,
     paletteMode,
   });
 
@@ -836,52 +834,35 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
               ? `tool-${toolCallId}`
               : `tool-idx-${partIndex}`;
 
-            // Interactive plan-lifecycle tools render a dedicated card (form /
-            // editable plan) instead of the generic streaming tool card. They
-            // are interactive while awaiting input and show a read-only summary
-            // once resolved.
+            // Interactive plan-lifecycle tools: while pending they render in
+            // the docked panel above the composer (Cursor-style), NOT in the
+            // chat. Once resolved, a read-only summary appears inline here.
+            // Errors fall through to the generic tool card.
             if (
-              (toolName === "ask_clarifying_questions" ||
-                toolName === "submit_plan") &&
-              (rawState === "input-available" ||
-                rawState === "output-available")
+              toolName === "ask_clarifying_questions" ||
+              toolName === "submit_plan"
             ) {
-              const resolved =
-                rawState === "output-available"
-                  ? (part.output as Record<string, unknown> | undefined)
-                  : undefined;
-              const resolveOutput = (output: Record<string, unknown>) =>
-                onResolveInteractiveTool?.({
-                  tool: toolName,
-                  toolCallId,
-                  output,
-                });
-              if (toolName === "ask_clarifying_questions") {
+              if (rawState === "output-available") {
+                if (toolName === "ask_clarifying_questions") {
+                  return (
+                    <ClarifyingQuestionsCard
+                      key={key}
+                      input={part.input as AskClarifyingQuestionsInput}
+                      output={part.output as AskClarifyingQuestionsOutput}
+                    />
+                  );
+                }
                 return (
-                  <ClarifyingQuestionsCard
+                  <PlanCard
                     key={key}
-                    input={part.input as AskClarifyingQuestionsInput}
-                    output={
-                      resolved as AskClarifyingQuestionsOutput | undefined
-                    }
-                    onResolve={output =>
-                      resolveOutput(
-                        output as unknown as Record<string, unknown>,
-                      )
-                    }
+                    input={part.input as SubmitPlanInput}
+                    output={part.output as SubmitPlanOutput}
                   />
                 );
               }
-              return (
-                <PlanCard
-                  key={key}
-                  input={part.input as SubmitPlanInput}
-                  output={resolved as SubmitPlanOutput | undefined}
-                  onResolve={output =>
-                    resolveOutput(output as unknown as Record<string, unknown>)
-                  }
-                />
-              );
+              if (rawState !== "output-error") {
+                return null;
+              }
             }
             return (
               <StreamingToolCard
@@ -2639,7 +2620,7 @@ const Chat: React.FC<ChatProps> = ({
   }, []);
 
   // Resolve a deferred interactive tool (clarifying questions / plan) with the
-  // user's answer. Stable identity keeps the message-row memo intact.
+  // user's answer. Stable identity so the docked card doesn't remount.
   const handleResolveInteractiveTool = useCallback(
     (args: {
       tool: string;
@@ -2654,6 +2635,32 @@ const Chat: React.FC<ChatProps> = ({
     },
     [addToolOutput],
   );
+
+  // The deferred interactive tool call currently awaiting the user, if any.
+  // Rendered as a docked panel above the composer (Cursor-style) rather than
+  // inline in the chat; the inline summary only appears once resolved.
+  const pendingInteractiveTool = useMemo(() => {
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return null;
+    for (const part of (last.parts ?? []) as Array<Record<string, unknown>>) {
+      const partType = part.type as string | undefined;
+      if (
+        partType !== "tool-ask_clarifying_questions" &&
+        partType !== "tool-submit_plan"
+      ) {
+        continue;
+      }
+      if (part.state !== "input-available") continue;
+      return {
+        toolName: partType.slice("tool-".length) as
+          | "ask_clarifying_questions"
+          | "submit_plan",
+        toolCallId: (part.toolCallId as string) || "",
+        input: part.input,
+      };
+    }
+    return null;
+  }, [messages]);
 
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
@@ -3083,7 +3090,6 @@ const Chat: React.FC<ChatProps> = ({
                   onToolClick={handleToolClick}
                   onConsoleTitleClick={handleConsoleTitleClick}
                   connectionIconById={connectionIconById}
-                  onResolveInteractiveTool={handleResolveInteractiveTool}
                   paletteMode={paletteMode}
                 />
               ))}
@@ -3115,6 +3121,42 @@ const Chat: React.FC<ChatProps> = ({
           </IconButton>
         )}
       </Box>
+
+      {/* Pending interactive tool (clarifying questions / plan approval) —
+          docked above the composer like the prompt queue. The chat itself
+          only shows a read-only summary once the user has responded. */}
+      {pendingInteractiveTool && (
+        <Box
+          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          key={pendingInteractiveTool.toolCallId}
+        >
+          {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
+            <ClarifyingQuestionsCard
+              input={
+                pendingInteractiveTool.input as AskClarifyingQuestionsInput
+              }
+              onResolve={output =>
+                handleResolveInteractiveTool({
+                  tool: pendingInteractiveTool.toolName,
+                  toolCallId: pendingInteractiveTool.toolCallId,
+                  output: output as unknown as Record<string, unknown>,
+                })
+              }
+            />
+          ) : (
+            <PlanCard
+              input={pendingInteractiveTool.input as SubmitPlanInput}
+              onResolve={output =>
+                handleResolveInteractiveTool({
+                  tool: pendingInteractiveTool.toolName,
+                  toolCallId: pendingInteractiveTool.toolCallId,
+                  output: output as unknown as Record<string, unknown>,
+                })
+              }
+            />
+          )}
+        </Box>
+      )}
 
       <Collapse
         in={queuedPrompts.length > 0}

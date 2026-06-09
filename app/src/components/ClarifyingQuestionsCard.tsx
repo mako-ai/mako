@@ -11,7 +11,8 @@ interface ClarifyingQuestionsCardProps {
   input?: AskClarifyingQuestionsInput;
   /** Present once the tool has been resolved (read-only summary view). */
   output?: AskClarifyingQuestionsOutput;
-  onResolve: (output: AskClarifyingQuestionsOutput) => void;
+  /** Required for the pending (interactive) card; unused for summaries. */
+  onResolve?: (output: AskClarifyingQuestionsOutput) => void;
 }
 
 interface QuestionAnswer {
@@ -97,7 +98,7 @@ export const ClarifyingQuestionsCard: React.FC<
 
   const handleSubmit = () => {
     if (resolved) return;
-    onResolve({
+    onResolve?.({
       success: true,
       answers: questions.map(q => ({
         id: q.id,
@@ -109,7 +110,7 @@ export const ClarifyingQuestionsCard: React.FC<
 
   const handleSkip = () => {
     if (resolved) return;
-    onResolve({ success: true, skipped: true });
+    onResolve?.({ success: true, skipped: true });
   };
 
   return (
