@@ -2,8 +2,9 @@
  * PostHog Max-style mode-switching for the unified agent.
  *
  * - Expertise modes (dynamic) are loaded via the `enable_mode` tool.
- * - The `plan` lifecycle adds a clarify -> plan -> approve -> execute state
- *   machine with a hard mutation gate enforced in `prepareStep`.
+ * - The model-initiated plan gate: once the model calls `submit_plan` in the
+ *   current user turn, mutations are hard-gated in `prepareStep` until the
+ *   user approves the plan.
  */
 
 export * from "./types";
@@ -23,7 +24,7 @@ export {
 } from "./runtime";
 export {
   BASE_SYSTEM_PROMPT,
-  PLAN_MODE_SYSTEM_PROMPT,
+  PLAN_GATE_SYSTEM_PROMPT,
   PLAN_EXECUTION_SYSTEM_PROMPT,
   SQL_MODE_SYSTEM_PROMPT,
   DASHBOARD_MODE_SYSTEM_PROMPT,

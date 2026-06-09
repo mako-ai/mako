@@ -1,10 +1,14 @@
 /**
  * Unified-agent mode runtime.
  *
- * Wires the expertise-mode registry + plan lifecycle into a single `streamText`
- * loop via `prepareStep`: every step recomputes the active tool allowlist and
- * the (cached + dynamic) system blocks from a derived, then live-mutated,
- * `ModeState`.
+ * Wires the expertise-mode registry + the model-initiated plan gate into a
+ * single `streamText` loop via `prepareStep`: every step recomputes the active
+ * tool allowlist and the (cached + dynamic) system blocks from a derived, then
+ * live-mutated, `ModeState`.
+ *
+ * There is no user-facing plan/agent toggle. The model decides when planning
+ * makes sense; once it calls `submit_plan` in the current user turn, mutating
+ * tools are hard-gated until the user approves.
  */
 
 import type { SystemModelMessage, ToolSet, UIMessage } from "ai";
@@ -25,13 +29,15 @@ import {
 } from "./registry";
 import {
   BASE_SYSTEM_PROMPT,
-  PLAN_MODE_SYSTEM_PROMPT,
+  PLAN_GATE_SYSTEM_PROMPT,
   PLAN_EXECUTION_SYSTEM_PROMPT,
 } from "./prompts";
-import type { ExpertiseModeId, LifecycleMode, ModeState } from "./types";
+import type { ExpertiseModeId, ModeState } from "./types";
 
-/** Tools only exposed while the chat is in the plan lifecycle. */
-const PLAN_ONLY_TOOL_NAMES = new Set<string>(["submit_plan"]);
+/** The plan gate is engaged: a plan was submitted this turn but not approved. */
+function isPlanGateActive(modeState: ModeState): boolean {
+  return modeState.planSubmitted && !modeState.planApproved;
+}
 
 type UIMessagePart = {
   type?: string;
@@ -49,24 +55,25 @@ function partToolName(part: UIMessagePart): string | undefined {
 }
 
 /**
- * Statelessly derive the mode state from the full message history + the chat's
- * lifecycle mode. Consistent with the "full context" model: enabled expertise
- * modes are reconstructed from prior `enable_mode` calls, and plan approval
- * from the latest `submit_plan` decision.
+ * Statelessly derive the mode state from the full message history. Consistent
+ * with the "full context" model: enabled expertise modes are reconstructed
+ * from prior `enable_mode` calls, and the plan gate from `submit_plan` calls
+ * in the current user turn (latest decision wins).
  */
 export function deriveModeState(
   messages: UIMessage[],
-  chatMode: LifecycleMode,
   defaultMode: ExpertiseModeId,
 ): ModeState {
   const enabledModes = new Set<ExpertiseModeId>([defaultMode]);
+  let planSubmitted = false;
   let planApproved = false;
 
   for (const message of messages) {
-    // A new user turn invalidates any previous plan approval: the user must
-    // approve a fresh plan for the new request. Enabled expertise modes are
+    // A new user turn starts a fresh plan cycle: any previous submission or
+    // approval is stale for the new request. Enabled expertise modes are
     // intentionally NOT reset (they accumulate across the conversation).
     if (message.role === "user") {
+      planSubmitted = false;
       planApproved = false;
     }
 
@@ -79,19 +86,17 @@ export function deriveModeState(
         const mode = (part.input as { mode?: unknown } | undefined)?.mode;
         if (isExpertiseModeId(mode)) enabledModes.add(mode);
       } else if (toolName === "submit_plan") {
+        planSubmitted = true;
         const decision = (part.output as { decision?: unknown } | undefined)
           ?.decision;
         // The latest decision in this turn wins; only an explicit approval
-        // unlocks writes.
-        if (decision === "approve") planApproved = true;
-        else if (decision === "request_changes" || decision === "cancel") {
-          planApproved = false;
-        }
+        // unlocks writes. A pending submission (no output yet) stays gated.
+        planApproved = decision === "approve";
       }
     }
   }
 
-  return { enabledModes, planApproved, lifecycle: chatMode };
+  return { enabledModes, planSubmitted, planApproved };
 }
 
 function buildModeSystem(
@@ -105,11 +110,11 @@ function buildModeSystem(
     if (mode?.systemPrompt) dynamicParts.push(mode.systemPrompt);
   }
 
-  if (modeState.lifecycle === "plan") {
+  if (modeState.planSubmitted) {
     dynamicParts.push(
       modeState.planApproved
         ? PLAN_EXECUTION_SYSTEM_PROMPT
-        : PLAN_MODE_SYSTEM_PROMPT,
+        : PLAN_GATE_SYSTEM_PROMPT,
     );
   }
 
@@ -132,7 +137,9 @@ function buildModeSystem(
 
 /**
  * Compute the active tool allowlist for the current step from the live
- * `ModeState`. Implements the plan-mode hard gate.
+ * `ModeState`. Implements the plan hard gate: once the model has submitted a
+ * plan this turn and the user has not approved it, only read-only tools and
+ * the lifecycle tools (clarify / re-plan / switch modes / todos) remain.
  */
 export function computeActiveTools(
   modeState: ModeState,
@@ -143,14 +150,7 @@ export function computeActiveTools(
     if (allToolNames.has(name)) names.add(name);
   }
 
-  // submit_plan only exists in the plan lifecycle.
-  if (modeState.lifecycle !== "plan") {
-    for (const planOnly of PLAN_ONLY_TOOL_NAMES) names.delete(planOnly);
-  }
-
-  // Plan-mode hard gate: before approval, intersect with read-only tools and
-  // add back the lifecycle tools needed to clarify, plan, and switch modes.
-  if (modeState.lifecycle === "plan" && !modeState.planApproved) {
+  if (isPlanGateActive(modeState)) {
     const gated = new Set<string>();
     for (const name of names) {
       if (READ_ONLY_TOOL_NAMES.has(name)) gated.add(name);
@@ -180,13 +180,12 @@ export interface UnifiedModeRuntime {
 export function buildUnifiedModeRuntime(params: {
   context: AgentContext;
   messages: UIMessage[];
-  chatMode: LifecycleMode;
   tabKind?: string;
 }): UnifiedModeRuntime {
-  const { context, messages, chatMode, tabKind } = params;
+  const { context, messages, tabKind } = params;
 
   const defaultMode = defaultExpertiseMode(context, tabKind);
-  const modeState = deriveModeState(messages, chatMode, defaultMode);
+  const modeState = deriveModeState(messages, defaultMode);
 
   // Reuse the unified agent factory for the domain tool objects, then add the
   // core lifecycle tools (server `enable_mode`/`todo_write` + the deferred

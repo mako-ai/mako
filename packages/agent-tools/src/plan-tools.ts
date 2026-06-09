@@ -74,7 +74,7 @@ export const clientPlanTools = {
   ask_clarifying_questions: tool({
     description:
       "Pause and ask the user one or more targeted clarifying questions before planning or acting. " +
-      "Use this in plan mode whenever the request is ambiguous or you need a decision (which connection, " +
+      "Use this whenever the request is ambiguous or you need a decision (which connection, " +
       "which dashboard, scope, etc.). The user answers in an inline form; their answers are returned to you. " +
       "Only ask what you genuinely need — do not ask questions you can answer with read-only tools.",
     inputSchema: askClarifyingQuestionsSchema,
@@ -83,10 +83,11 @@ export const clientPlanTools = {
 
   submit_plan: tool({
     description:
-      "Present a concrete, reviewable plan to the user for approval. Use this in plan mode AFTER you have " +
-      "clarified the request and explored with read-only tools. The user can Approve (which unlocks mutating " +
+      "Present a concrete, reviewable plan to the user for approval BEFORE acting, when the work is " +
+      "large, destructive, or spans multiple artifacts (or the user asked for a plan). Clarify and explore " +
+      "with read-only tools first so the plan is concrete. The user can Approve (which unlocks mutating " +
       "tools so you can execute), Request changes (returns feedback for you to revise the plan), or Cancel. " +
-      "Do not perform any mutations before the plan is approved.",
+      "IMPORTANT: once you call this, mutating tools are blocked until the user approves.",
     inputSchema: submitPlanSchema,
     // No execute function - resolved by the client via the plan card.
   }),

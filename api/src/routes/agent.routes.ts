@@ -329,9 +329,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     activeConsoleResults,
     // Agent mode selection (new)
     agentId,
-    // Lifecycle mode for the unified agent: "plan" gates mutations behind an
-    // approved plan; "agent" (default) runs normally.
-    chatMode,
     activeView,
     activeExplorer,
     tabKind,
@@ -350,7 +347,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     modelId?: string;
     activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
-    chatMode?: "plan" | "agent";
     activeView?: "console" | "dashboard" | "flow-editor" | "empty";
     activeExplorer?:
       | "databases"
@@ -694,11 +690,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // The unified agent uses the PostHog-style mode-switching runtime: a single
   // ALL_TOOLS union plus a `prepareStep` that recomputes the active tool
   // allowlist + cached system blocks each step from a derived mode state. This
-  // is what enforces the plan-mode hard gate. Other agents keep the simpler
+  // is what enforces the plan hard gate (mutations blocked once the model has
+  // submitted a plan, until the user approves). Other agents keep the simpler
   // static system + tools path.
-  const lifecycleMode: "plan" | "agent" =
-    chatMode === "plan" ? "plan" : "agent";
-
   let systemPrompt: ReturnType<typeof agentFactory>["systemPrompt"];
   let tools: ReturnType<typeof agentFactory>["tools"];
   let prepareStep: UnifiedModeRuntime["prepareStep"] | undefined;
@@ -707,15 +701,14 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     const runtime = buildUnifiedModeRuntime({
       context: agentContext,
       messages,
-      chatMode: lifecycleMode,
       tabKind,
     });
     systemPrompt = runtime.system;
     tools = runtime.tools;
     prepareStep = runtime.prepareStep;
     logger.info("Unified mode runtime", {
-      chatMode: lifecycleMode,
       enabledModes: Array.from(runtime.modeState.enabledModes),
+      planSubmitted: runtime.modeState.planSubmitted,
       planApproved: runtime.modeState.planApproved,
     });
   } else {

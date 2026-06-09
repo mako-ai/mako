@@ -69,7 +69,6 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { ModelSelector } from "./ModelSelector";
-import { ChatModeSelector } from "./ChatModeSelector";
 import { generateObjectId } from "../utils/objectId";
 import type {
   ConsoleModification,
@@ -1515,11 +1514,6 @@ const ChatInputArea = React.memo(
                 e.preventDefault();
                 submitMessage();
               }
-              // Cursor-style Plan/Agent toggle.
-              if (e.key === "Tab" && e.shiftKey) {
-                e.preventDefault();
-                useSettingsStore.getState().toggleChatMode();
-              }
               if (e.key === "Escape" && editingPrompt) {
                 e.preventDefault();
                 onCancelEdit();
@@ -1589,7 +1583,6 @@ const ChatInputArea = React.memo(
               }}
             >
               <ModelSelector />
-              <ChatModeSelector />
             </Box>
 
             <Tooltip title="Attach image" placement="top">
@@ -1900,7 +1893,6 @@ const Chat: React.FC<ChatProps> = ({
             flowFormState,
             workspaceConnections: workspaceConnectionsForRequest,
             pinnedDashboardId: capturedDashboardIdRef.current,
-            chatMode: useSettingsStore.getState().chatMode,
           });
 
           return {

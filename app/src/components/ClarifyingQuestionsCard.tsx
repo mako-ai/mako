@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Box, Button, Chip, Stack, TextField, Typography } from "@mui/material";
-import { HelpCircle } from "lucide-react";
+import { HelpCircle, PenLine } from "lucide-react";
 import type {
   AskClarifyingQuestionsInput,
   AskClarifyingQuestionsOutput,
@@ -14,43 +14,86 @@ interface ClarifyingQuestionsCardProps {
   onResolve: (output: AskClarifyingQuestionsOutput) => void;
 }
 
-type AnswerMap = Record<string, string | string[]>;
+interface QuestionAnswer {
+  /** Selected predefined options (single choice keeps at most one). */
+  selected: string[];
+  /** Whether the "Other" option is selected. */
+  otherSelected: boolean;
+  /** Free text for the "Other" option. */
+  otherText: string;
+  /** Free text for `type: "text"` questions. */
+  text: string;
+}
 
-function initialAnswers(questions: ClarifyingQuestion[]): AnswerMap {
-  const map: AnswerMap = {};
-  for (const q of questions) {
-    map[q.id] = q.type === "choice" && q.allowMultiple ? [] : "";
+type AnswerMap = Record<string, QuestionAnswer>;
+
+const emptyAnswer = (): QuestionAnswer => ({
+  selected: [],
+  otherSelected: false,
+  otherText: "",
+  text: "",
+});
+
+function buildResponse(
+  question: ClarifyingQuestion,
+  answer: QuestionAnswer,
+): string | string[] {
+  if (question.type === "text") return answer.text;
+
+  const values = [...answer.selected];
+  if (answer.otherSelected && answer.otherText.trim()) {
+    values.push(answer.otherText.trim());
   }
-  return map;
+  return question.allowMultiple ? values : (values[0] ?? "");
 }
 
 /**
- * Inline form for the deferred `ask_clarifying_questions` tool. Renders
- * choice/text/multi questions and resolves the tool call via `onResolve` once
- * the user submits or skips.
+ * Inline form for the deferred `ask_clarifying_questions` tool. Choice
+ * questions render their options as selectable chips plus an "Other" option
+ * that reveals a free-text field. Resolves via `onResolve` on submit or skip.
  */
 export const ClarifyingQuestionsCard: React.FC<
   ClarifyingQuestionsCardProps
 > = ({ input, output, onResolve }) => {
   const questions = useMemo(() => input?.questions ?? [], [input]);
-  const [answers, setAnswers] = useState<AnswerMap>(() =>
-    initialAnswers(questions),
-  );
+  const [answers, setAnswers] = useState<AnswerMap>({});
   const resolved = Boolean(output);
 
-  const setSingle = (id: string, value: string) =>
-    setAnswers(prev => ({ ...prev, [id]: value }));
+  const getAnswer = (id: string): QuestionAnswer =>
+    answers[id] ?? emptyAnswer();
 
-  const toggleMulti = (id: string, value: string) =>
-    setAnswers(prev => {
-      const current = Array.isArray(prev[id]) ? (prev[id] as string[]) : [];
-      return {
-        ...prev,
-        [id]: current.includes(value)
-          ? current.filter(v => v !== value)
-          : [...current, value],
-      };
+  const updateAnswer = (id: string, patch: Partial<QuestionAnswer>) =>
+    setAnswers(prev => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? emptyAnswer()), ...patch },
+    }));
+
+  const toggleOption = (question: ClarifyingQuestion, option: string) => {
+    const answer = getAnswer(question.id);
+    if (question.allowMultiple) {
+      updateAnswer(question.id, {
+        selected: answer.selected.includes(option)
+          ? answer.selected.filter(v => v !== option)
+          : [...answer.selected, option],
+      });
+    } else {
+      // Single choice: picking an option deselects "Other" and vice versa.
+      updateAnswer(question.id, {
+        selected: answer.selected.includes(option) ? [] : [option],
+        otherSelected: false,
+      });
+    }
+  };
+
+  const toggleOther = (question: ClarifyingQuestion) => {
+    const answer = getAnswer(question.id);
+    updateAnswer(question.id, {
+      otherSelected: !answer.otherSelected,
+      ...(question.allowMultiple || answer.otherSelected
+        ? {}
+        : { selected: [] }),
     });
+  };
 
   const handleSubmit = () => {
     if (resolved) return;
@@ -59,7 +102,7 @@ export const ClarifyingQuestionsCard: React.FC<
       answers: questions.map(q => ({
         id: q.id,
         prompt: q.prompt,
-        response: answers[q.id] ?? "",
+        response: buildResponse(q, getAnswer(q.id)),
       })),
     });
   };
@@ -97,6 +140,7 @@ export const ClarifyingQuestionsCard: React.FC<
 
       <Stack spacing={1.5}>
         {questions.map(question => {
+          const answer = getAnswer(question.id);
           const resolvedAnswer = output?.answers?.find(
             a => a.id === question.id,
           )?.response;
@@ -114,33 +158,52 @@ export const ClarifyingQuestionsCard: React.FC<
                     : resolvedAnswer || (output?.skipped ? "Skipped" : "—")}
                 </Typography>
               ) : question.type === "choice" ? (
-                <Stack
-                  direction="row"
-                  spacing={0.75}
-                  flexWrap="wrap"
-                  useFlexGap
-                >
-                  {(question.options ?? []).map(option => {
-                    const selected = question.allowMultiple
-                      ? Array.isArray(answers[question.id]) &&
-                        (answers[question.id] as string[]).includes(option)
-                      : answers[question.id] === option;
-                    return (
-                      <Chip
-                        key={option}
-                        label={option}
-                        size="small"
-                        color={selected ? "primary" : "default"}
-                        variant={selected ? "filled" : "outlined"}
-                        onClick={() =>
-                          question.allowMultiple
-                            ? toggleMulti(question.id, option)
-                            : setSingle(question.id, option)
-                        }
-                      />
-                    );
-                  })}
-                </Stack>
+                <>
+                  <Stack
+                    direction="row"
+                    spacing={0.75}
+                    flexWrap="wrap"
+                    useFlexGap
+                  >
+                    {(question.options ?? []).map(option => {
+                      const selected = answer.selected.includes(option);
+                      return (
+                        <Chip
+                          key={option}
+                          label={option}
+                          size="small"
+                          color={selected ? "primary" : "default"}
+                          variant={selected ? "filled" : "outlined"}
+                          onClick={() => toggleOption(question, option)}
+                        />
+                      );
+                    })}
+                    <Chip
+                      icon={<PenLine size={12} />}
+                      label="Other"
+                      size="small"
+                      color={answer.otherSelected ? "primary" : "default"}
+                      variant={answer.otherSelected ? "filled" : "outlined"}
+                      onClick={() => toggleOther(question)}
+                    />
+                  </Stack>
+                  {answer.otherSelected && (
+                    <TextField
+                      size="small"
+                      fullWidth
+                      autoFocus
+                      multiline
+                      minRows={1}
+                      maxRows={4}
+                      placeholder="Type your answer…"
+                      value={answer.otherText}
+                      onChange={e =>
+                        updateAnswer(question.id, { otherText: e.target.value })
+                      }
+                      sx={{ mt: 0.75 }}
+                    />
+                  )}
+                </>
               ) : (
                 <TextField
                   size="small"
@@ -149,8 +212,10 @@ export const ClarifyingQuestionsCard: React.FC<
                   minRows={1}
                   maxRows={4}
                   placeholder="Type your answer…"
-                  value={(answers[question.id] as string) ?? ""}
-                  onChange={e => setSingle(question.id, e.target.value)}
+                  value={answer.text}
+                  onChange={e =>
+                    updateAnswer(question.id, { text: e.target.value })
+                  }
                 />
               )}
             </Box>

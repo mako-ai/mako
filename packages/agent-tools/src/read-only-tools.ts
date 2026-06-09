@@ -63,13 +63,17 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * Core lifecycle tools that are always allowed in plan mode even before the
- * plan is approved, so the model can clarify, plan, switch expertise modes,
- * and track todos while the mutation gate is closed.
+ * Core lifecycle tools that stay allowed while a submitted plan awaits the
+ * user's approval, so the model can clarify, revise the plan, switch
+ * expertise modes, and track todos while the mutation gate is closed.
  */
-export const PLAN_GATE_ALLOWED_TOOL_NAMES: ReadonlySet<string> = new Set<string>(
-  ["enable_mode", "todo_write", "ask_clarifying_questions", "submit_plan"],
-);
+export const PLAN_GATE_ALLOWED_TOOL_NAMES: ReadonlySet<string> =
+  new Set<string>([
+    "enable_mode",
+    "todo_write",
+    "ask_clarifying_questions",
+    "submit_plan",
+  ]);
 
 export function isReadOnlyToolName(toolName: string): boolean {
   return READ_ONLY_TOOL_NAMES.has(toolName);

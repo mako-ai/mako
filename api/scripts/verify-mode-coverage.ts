@@ -18,7 +18,6 @@ import { READ_ONLY_TOOL_NAMES } from "@mako/agent-tools";
 const runtime = buildUnifiedModeRuntime({
   context: { workspaceId: "000000000000000000000000" },
   messages: [],
-  chatMode: "agent",
 });
 
 const allToolNames = new Set(Object.keys(runtime.tools));
@@ -35,8 +34,8 @@ console.log("Dangling (referenced, not registered):", dangling);
 const gated = computeActiveTools(
   {
     enabledModes: new Set(EXPERTISE_MODE_IDS),
+    planSubmitted: true,
     planApproved: false,
-    lifecycle: "plan",
   },
   allToolNames,
 );
@@ -52,18 +51,35 @@ const leaks = gated.filter(
 console.log("Plan-gate active tools:", gated.length);
 console.log("Plan-gate mutation leaks:", leaks);
 
-// Agent mode with default sql: ensure mutating sql tools ARE active.
-const agentActive = new Set(
+// Default state (no plan submitted): mutating sql tools AND submit_plan are
+// both active — the model decides per request whether to plan first.
+const defaultActive = new Set(
   computeActiveTools(
-    { enabledModes: new Set(["sql"]), planApproved: false, lifecycle: "agent" },
+    {
+      enabledModes: new Set(["sql"]),
+      planSubmitted: false,
+      planApproved: false,
+    },
     allToolNames,
   ),
 );
 console.log(
-  "Agent/sql has sql_execute_query + modify_console + submit_plan?",
-  agentActive.has("sql_execute_query"),
-  agentActive.has("modify_console"),
-  agentActive.has("submit_plan"),
+  "Default/sql has sql_execute_query + modify_console + submit_plan?",
+  defaultActive.has("sql_execute_query"),
+  defaultActive.has("modify_console"),
+  defaultActive.has("submit_plan"),
+);
+
+// Approved plan: full tools again.
+const approvedActive = new Set(
+  computeActiveTools(
+    { enabledModes: new Set(["sql"]), planSubmitted: true, planApproved: true },
+    allToolNames,
+  ),
+);
+console.log(
+  "Approved/sql has sql_execute_query?",
+  approvedActive.has("sql_execute_query"),
 );
 
 const exitCode = unreachable.length || dangling.length || leaks.length ? 1 : 0;

@@ -37,7 +37,6 @@ interface BuildChatRequestBodyOptions {
   flowFormState?: Record<string, unknown>;
   workspaceConnections: Connection[];
   pinnedDashboardId?: string | null;
-  chatMode?: "agent" | "plan";
 }
 
 function buildOpenConsoles(tabs: ConsoleTab[]) {
@@ -188,7 +187,6 @@ export function buildChatRequestBody({
   flowFormState,
   workspaceConnections,
   pinnedDashboardId,
-  chatMode,
 }: BuildChatRequestBodyOptions) {
   return {
     messages,
@@ -200,7 +198,6 @@ export function buildChatRequestBody({
     consoleId: activeConsoleId,
     activeConsoleResults,
     agentId: "unified",
-    chatMode: chatMode ?? "agent",
     activeView,
     activeExplorer,
     tabKind: activeTab?.kind,

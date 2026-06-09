@@ -97,8 +97,8 @@ export function createModeTools(modeState: ModeState) {
           newlyAvailableTools: definition.toolNames,
           availableTools: availableToolNames,
           note:
-            modeState.lifecycle === "plan" && !modeState.planApproved
-              ? "Plan mode is active: only read-only tools from these modes are usable until the user approves your plan."
+            modeState.planSubmitted && !modeState.planApproved
+              ? "A plan is awaiting approval: only read-only tools from these modes are usable until the user approves it."
               : undefined,
         };
       },

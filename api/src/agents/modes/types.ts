@@ -4,15 +4,14 @@
  * Two orthogonal axes:
  * - Expertise mode (dynamic): which domain toolset + guidance is loaded. The
  *   model switches expertise modes mid-conversation via the `enable_mode` tool.
- * - Lifecycle mode (per chat): `agent` (default) vs `plan`. Plan mode adds the
- *   clarify -> plan -> approve -> execute state machine and the mutation gate.
+ * - Plan gate (model-initiated): there is no user-facing plan/agent toggle.
+ *   The model decides when planning makes sense; the moment it calls
+ *   `submit_plan` in the current user turn, mutating tools are hard-gated
+ *   until the user approves the plan.
  */
 
 /** Dynamic expertise modes the model can enable via `enable_mode`. */
 export type ExpertiseModeId = "sql" | "dashboard" | "flow" | "explore";
-
-/** Per-chat lifecycle mode selected by the user. */
-export type LifecycleMode = "agent" | "plan";
 
 /**
  * A registered expertise mode. Modes reference tools *by name* — the actual
@@ -45,8 +44,8 @@ export interface AgentMode {
 export interface ModeState {
   /** Currently-enabled expertise modes. */
   enabledModes: Set<ExpertiseModeId>;
-  /** Whether the user has approved a submitted plan (plan lifecycle only). */
+  /** Whether the model has submitted a plan in the current user turn. */
+  planSubmitted: boolean;
+  /** Whether the user has approved the submitted plan (latest decision). */
   planApproved: boolean;
-  /** The selected lifecycle mode for this chat. */
-  lifecycle: LifecycleMode;
 }
