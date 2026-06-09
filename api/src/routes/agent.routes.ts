@@ -61,54 +61,11 @@ import {
 import { databaseConnectionService } from "../services/database-connection.service";
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
+import { scheduleChatFinalization } from "./chat-finalization-queue";
 
 const logger = loggers.agent();
 
 export const agentRoutes = new Hono();
-
-/**
- * Per-chat finalization queue.
- *
- * The AI SDK keeps the UI message stream open until the `onFinish` callback of
- * `toUIMessageStreamResponse` resolves (it is awaited inside the stream's
- * `flush()`). On the client, `useChat` only fires the tool-result auto-resume
- * once that stream closes. So any slow work in `onFinish` (gateway pricing
- * lookups, `saveChat`, etc.) is serialized *into the user-perceived latency* of
- * every client-side tool round-trip — the assistant appears frozen even though
- * the tool itself (e.g. an instant `modify_console` patch) resolved in
- * milliseconds, and a stuck round-trip only unblocks when the held-open stream
- * hits its proxy/HTTP timeout.
- *
- * To keep tool round-trips snappy we run finalization in the background instead
- * of blocking stream close. We still serialize finalizations per chat so that
- * the full-thread `$set` writes in `saveChat` always apply in step order (the
- * blocking behavior previously guaranteed this for free).
- */
-const chatFinalizationChains = new Map<string, Promise<void>>();
-
-function scheduleChatFinalization(
-  chatId: string,
-  task: () => Promise<void>,
-): void {
-  const previous = chatFinalizationChains.get(chatId) ?? Promise.resolve();
-  const next = previous
-    // Isolate this task from a prior task's failure so the chain keeps running.
-    .catch(() => {})
-    .then(task)
-    .catch(err =>
-      logger.error("Chat finalization failed", { chatId, error: err }),
-    );
-
-  chatFinalizationChains.set(chatId, next);
-
-  // Drop the map entry once this task is the tail and has settled, to avoid
-  // leaking one promise per chat for the lifetime of the process.
-  void next.finally(() => {
-    if (chatFinalizationChains.get(chatId) === next) {
-      chatFinalizationChains.delete(chatId);
-    }
-  });
-}
 
 interface ScreenshotVisionAttachment {
   renderer?: string;
