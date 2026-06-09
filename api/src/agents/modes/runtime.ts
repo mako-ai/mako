@@ -55,6 +55,13 @@ export function deriveModeState(
   let planApproved = false;
 
   for (const message of messages) {
+    // A new user turn invalidates any previous plan approval: the user must
+    // approve a fresh plan for the new request. Enabled expertise modes are
+    // intentionally NOT reset (they accumulate across the conversation).
+    if (message.role === "user") {
+      planApproved = false;
+    }
+
     const parts = (message.parts ?? []) as UIMessagePart[];
     for (const part of parts) {
       const toolName = partToolName(part);
@@ -66,7 +73,8 @@ export function deriveModeState(
       } else if (toolName === "submit_plan") {
         const decision = (part.output as { decision?: unknown } | undefined)
           ?.decision;
-        // The latest decision wins; only an explicit approval unlocks writes.
+        // The latest decision in this turn wins; only an explicit approval
+        // unlocks writes.
         if (decision === "approve") planApproved = true;
         else if (decision === "request_changes" || decision === "cancel") {
           planApproved = false;

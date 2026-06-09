@@ -69,6 +69,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { ModelSelector } from "./ModelSelector";
+import { ChatModeSelector } from "./ChatModeSelector";
 import { generateObjectId } from "../utils/objectId";
 import type {
   ConsoleModification,
@@ -78,6 +79,14 @@ import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
+import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
+import { PlanCard } from "./PlanCard";
+import type {
+  AskClarifyingQuestionsInput,
+  AskClarifyingQuestionsOutput,
+  SubmitPlanInput,
+  SubmitPlanOutput,
+} from "@mako/agent-tools";
 import {
   computeReasoningGroups,
   getStreamingReasoningGroupStart,
@@ -680,6 +689,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
   onToolClick,
   onConsoleTitleClick,
   connectionIconById,
+  onResolveInteractiveTool,
   paletteMode,
 }: ChatMessageRowProps) {
   const parts = (message.parts || []) as Array<Record<string, unknown>>;
@@ -696,6 +706,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
     onToolClick,
     onConsoleTitleClick,
     connectionIconById,
+    onResolveInteractiveTool,
     paletteMode,
   });
 
@@ -825,6 +836,54 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             const key = toolCallId
               ? `tool-${toolCallId}`
               : `tool-idx-${partIndex}`;
+
+            // Interactive plan-lifecycle tools render a dedicated card (form /
+            // editable plan) instead of the generic streaming tool card. They
+            // are interactive while awaiting input and show a read-only summary
+            // once resolved.
+            if (
+              (toolName === "ask_clarifying_questions" ||
+                toolName === "submit_plan") &&
+              (rawState === "input-available" ||
+                rawState === "output-available")
+            ) {
+              const resolved =
+                rawState === "output-available"
+                  ? (part.output as Record<string, unknown> | undefined)
+                  : undefined;
+              const resolveOutput = (output: Record<string, unknown>) =>
+                onResolveInteractiveTool?.({
+                  tool: toolName,
+                  toolCallId,
+                  output,
+                });
+              if (toolName === "ask_clarifying_questions") {
+                return (
+                  <ClarifyingQuestionsCard
+                    key={key}
+                    input={part.input as AskClarifyingQuestionsInput}
+                    output={
+                      resolved as AskClarifyingQuestionsOutput | undefined
+                    }
+                    onResolve={output =>
+                      resolveOutput(
+                        output as unknown as Record<string, unknown>,
+                      )
+                    }
+                  />
+                );
+              }
+              return (
+                <PlanCard
+                  key={key}
+                  input={part.input as SubmitPlanInput}
+                  output={resolved as SubmitPlanOutput | undefined}
+                  onResolve={output =>
+                    resolveOutput(output as unknown as Record<string, unknown>)
+                  }
+                />
+              );
+            }
             return (
               <StreamingToolCard
                 key={key}
@@ -1456,6 +1515,11 @@ const ChatInputArea = React.memo(
                 e.preventDefault();
                 submitMessage();
               }
+              // Cursor-style Plan/Agent toggle.
+              if (e.key === "Tab" && e.shiftKey) {
+                e.preventDefault();
+                useSettingsStore.getState().toggleChatMode();
+              }
               if (e.key === "Escape" && editingPrompt) {
                 e.preventDefault();
                 onCancelEdit();
@@ -1525,6 +1589,7 @@ const ChatInputArea = React.memo(
               }}
             >
               <ModelSelector />
+              <ChatModeSelector />
             </Box>
 
             <Tooltip title="Attach image" placement="top">
@@ -1835,6 +1900,7 @@ const Chat: React.FC<ChatProps> = ({
             flowFormState,
             workspaceConnections: workspaceConnectionsForRequest,
             pinnedDashboardId: capturedDashboardIdRef.current,
+            chatMode: useSettingsStore.getState().chatMode,
           });
 
           return {
@@ -1884,6 +1950,17 @@ const Chat: React.FC<ChatProps> = ({
 
       const toolName = toolCall.toolName;
       const input = toolCall.input as Record<string, unknown>;
+
+      // Deferred plan-lifecycle tools: do NOT settle here. The interactive
+      // card rendered in the message list resolves them via addToolOutput once
+      // the user answers / approves. Returning without output keeps the tool
+      // call pending (human-in-the-loop) until then.
+      if (
+        toolName === "ask_clarifying_questions" ||
+        toolName === "submit_plan"
+      ) {
+        return;
+      }
 
       try {
         if (
@@ -2569,6 +2646,23 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(true);
   }, []);
 
+  // Resolve a deferred interactive tool (clarifying questions / plan) with the
+  // user's answer. Stable identity keeps the message-row memo intact.
+  const handleResolveInteractiveTool = useCallback(
+    (args: {
+      tool: string;
+      toolCallId: string;
+      output: Record<string, unknown>;
+    }) => {
+      void addToolOutput({
+        tool: args.tool,
+        toolCallId: args.toolCallId,
+        output: args.output,
+      });
+    },
+    [addToolOutput],
+  );
+
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
     const existingTab = store.tabs[consoleId];
@@ -2997,6 +3091,7 @@ const Chat: React.FC<ChatProps> = ({
                   onToolClick={handleToolClick}
                   onConsoleTitleClick={handleConsoleTitleClick}
                   connectionIconById={connectionIconById}
+                  onResolveInteractiveTool={handleResolveInteractiveTool}
                   paletteMode={paletteMode}
                 />
               ))}

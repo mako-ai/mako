@@ -21,10 +21,17 @@ const MODELS_RETRY_DELAYS = [2_000, 5_000, 10_000];
 let modelsRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let gatewayModelsInFlight: Promise<void> | null = null;
 
+export type ChatLifecycleMode = "agent" | "plan";
+
 interface SettingsState {
   // AI Model selection
   selectedModelId: string;
   setSelectedModelId: (modelId: string) => void;
+
+  // Chat lifecycle mode: "plan" gates mutations behind an approved plan.
+  chatMode: ChatLifecycleMode;
+  setChatMode: (mode: ChatLifecycleMode) => void;
+  toggleChatMode: () => void;
 
   // Available models (workspace-filtered, used by chat)
   models: AIModel[];
@@ -60,6 +67,14 @@ export const useSettingsStore = create<SettingsState>()(
       // Default model — empty string means "use the first available model"
       selectedModelId: "",
       setSelectedModelId: modelId => set({ selectedModelId: modelId }),
+
+      // Chat lifecycle mode (defaults to standard agent mode)
+      chatMode: "agent",
+      setChatMode: mode => set({ chatMode: mode }),
+      toggleChatMode: () =>
+        set(state => ({
+          chatMode: state.chatMode === "plan" ? "agent" : "plan",
+        })),
 
       // Models list
       models: [],
@@ -217,6 +232,7 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: state => ({
         selectedModelId: state.selectedModelId,
         theme: state.theme,
+        chatMode: state.chatMode,
       }),
     },
   ),
