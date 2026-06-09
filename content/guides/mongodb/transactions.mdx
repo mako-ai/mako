@@ -1,0 +1,106 @@
+---
+title: "MongoDB Transactions: Multi-Document ACID Explained"
+description: "When you need multi-document transactions in MongoDB, when you do not, and how to use them correctly: sessions, startTransaction, the 60-second limit, retryable errors, and why a good schema needs them less often than you think."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "transactions", "acid", "data-modeling"]
+date: "2026-06-09"
+---
+
+In MongoDB, a write to a single document is always atomic. Because you can model related data as embedded documents and arrays inside one document, many operations that would require a transaction in a relational database need none in MongoDB: the whole change lands in one atomic write. That fact shapes the right mental model for transactions here. They exist, they provide full ACID guarantees, and you should reach for them only when a single-document write genuinely cannot express the change.
+
+This guide covers when transactions are necessary, how to write one correctly, the constraints to plan around, and why your schema is the first thing to examine when you find yourself needing them often.
+
+## Single-document atomicity first
+
+Before reaching for a transaction, ask whether the data can live in one document. Consider transferring an item between two arrays on the same order document, or incrementing a counter and appending to a log array on the same record. Both are single-document updates, and MongoDB applies them atomically without any transaction machinery:
+
+```javascript
+db.accounts.updateOne(
+  { _id: "a1" },
+  { $inc: { balance: -100 }, $push: { history: { type: "debit", amount: 100 } } }
+)
+```
+
+The balance change and the history entry either both apply or neither does, because they touch one document. No transaction needed. This is the pattern to prefer: when a relationship is captured inside a document, atomicity comes for free.
+
+## When you actually need a transaction
+
+Transactions earn their keep when an operation must be all-or-nothing across multiple documents, collections, or shards, and the data genuinely cannot be co-located in one document. The classic example is moving value between two separate account documents:
+
+```javascript
+// Debit one account and credit another; both must succeed or both must fail
+```
+
+If those accounts are independent documents (because each is queried and updated on its own), there is no single-document write that covers both. That is a real transaction case.
+
+Other genuine cases include writing a record and its entries in separate collections that must stay consistent, and any workflow where a partial result would leave the database in a state your application treats as invalid.
+
+## Availability requirements
+
+Multi-document transactions are not available on a standalone server. The history is worth knowing:
+
+- MongoDB 4.0 introduced multi-document transactions, scoped to a replica set.
+- MongoDB 4.2 extended them to sharded clusters (distributed transactions).
+
+So to use transactions at all you need a replica set, and to use them across shards you need a sharded cluster running 4.2 or later. A single `mongod` with no replica set cannot start a transaction. This is also why transaction support is a useful signal in schema design: needing them is fine, but it implies a deployment topology and a performance cost.
+
+## How to write one
+
+Transactions run inside a session. The reliable pattern is `withTransaction`, which starts the transaction, runs your callback, commits on success, and automatically retries on the specific transient errors that MongoDB marks as retryable:
+
+```javascript
+const session = db.getMongo().startSession();
+
+try {
+  session.withTransaction(() => {
+    const accounts = session.getDatabase("bank").accounts;
+
+    accounts.updateOne(
+      { _id: "a1" },
+      { $inc: { balance: -100 } },
+      { session }
+    );
+    accounts.updateOne(
+      { _id: "a2" },
+      { $inc: { balance: 100 } },
+      { session }
+    );
+  });
+} finally {
+  session.endSession();
+}
+```
+
+Two details matter. Every operation that should be part of the transaction must be passed the same `session`; an operation without the session runs outside the transaction and will not be rolled back. And `withTransaction` is preferred over manually calling `startTransaction`, `commitTransaction`, and `abortTransaction`, because the manual form puts the retry logic on you.
+
+If you do drive it manually, the shape is `session.startTransaction()`, your operations, then `session.commitTransaction()` in the success path and `session.abortTransaction()` in the catch.
+
+## Retryable errors
+
+Distributed systems produce transient failures: a primary steps down, a network blip interrupts a commit. MongoDB labels these errors with `TransientTransactionError` (retry the whole transaction) and `UnknownTransactionCommitResult` (retry the commit). `withTransaction` handles both for you. If you write the retry loop yourself, you must inspect the error labels and retry accordingly, or you will surface failures that would have succeeded on a second attempt.
+
+## Constraints to plan around
+
+Transactions are not free, and several limits shape how you should use them:
+
+- **Time limit.** A transaction has a default maximum runtime of 60 seconds (`transactionLifetimeLimitSeconds`). A transaction that runs long is aborted. Keep transactions short and focused; do not do slow application work or external calls inside one.
+- **Oplog and write conflicts.** Transactions use snapshot isolation. If two transactions modify the same document concurrently, one aborts with a write conflict and must retry. Design to minimize contention on hot documents.
+- **No DDL inside (with limits).** Some collection-management operations are restricted inside transactions. Create collections and indexes ahead of time rather than inside a transaction where possible.
+- **Performance overhead.** A transaction holds resources and coordinates a commit, which is heavier than a single-document write. On a sharded cluster, a distributed transaction coordinates across shards, adding latency. Use transactions where correctness requires them, not as a default.
+
+## Read concern and write concern
+
+For the strongest guarantees, run transactions with read concern `"snapshot"` and write concern `"majority"`. Snapshot reads give you a consistent view of the data as of a single point in time across the transaction, and majority write concern ensures the commit is durable on a majority of replica set members before it is acknowledged. These settings cost a little latency in exchange for the isolation and durability the transaction is meant to provide.
+
+## The schema-design connection
+
+If you find your application needs transactions constantly, treat that as a signal to revisit the data model rather than a fact to accept. Frequent multi-document transactions often mean data that is read and written together has been split across documents or collections when it could be embedded. Reworking the schema so related data lives in one document removes the need for the transaction entirely and is usually faster. Transactions are the right tool when data legitimately must be separate; they are a workaround when the real problem is normalization carried over from relational habits.
+
+## Testing transactions with Mako
+
+Reasoning about isolation and consistency is easier when you can inspect the data on both sides of an operation. Mako connects to MongoDB and offers AI-assisted query writing, which helps when you are verifying that the documents a transaction touched ended up in the expected state. Mako is a read and query tool, so it suits inspecting and analyzing your data rather than running or administering transactions in production.
+
+To load sample data and experiment, see our guides on importing [CSV](/guides/import-csv-to-mongodb), [JSON](/guides/import-json-to-mongodb), and [Excel](/guides/import-excel-to-mongodb) into MongoDB. For deciding when to embed instead of splitting data across documents, see the [schema design guide](/guides/mongodb/schema-design), and for the atomic update operators that often remove the need for a transaction, the [update operators guide](/guides/mongodb/update-operators).
+
+Mako connects to MongoDB, PostgreSQL, MySQL, and more with AI-powered autocomplete. Try it free at mako.ai.
