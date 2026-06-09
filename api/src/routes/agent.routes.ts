@@ -58,6 +58,7 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
+import { buildUnifiedModeRuntime } from "../agents/modes";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
@@ -325,6 +326,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     activeConsoleResults,
     // Agent mode selection (new)
     agentId,
+    // Lifecycle mode for the unified agent: "plan" gates mutations behind an
+    // approved plan; "agent" (default) runs normally.
+    chatMode,
     activeView,
     activeExplorer,
     tabKind,
@@ -343,6 +347,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     modelId?: string;
     activeConsoleResults?: ActiveConsoleResults;
     agentId?: string;
+    chatMode?: "plan" | "agent";
     activeView?: "console" | "dashboard" | "flow-editor" | "empty";
     activeExplorer?:
       | "databases"
@@ -681,9 +686,42 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     canManageScheduledQueries,
   };
 
-  // Create agent configuration
-  const agentConfig = agentFactory(agentContext);
-  const { systemPrompt, tools } = agentConfig;
+  // Create agent configuration.
+  //
+  // The unified agent uses the PostHog-style mode-switching runtime: a single
+  // ALL_TOOLS union plus a `prepareStep` that recomputes the active tool
+  // allowlist + cached system blocks each step from a derived mode state. This
+  // is what enforces the plan-mode hard gate. Other agents keep the simpler
+  // static system + tools path.
+  const lifecycleMode: "plan" | "agent" =
+    chatMode === "plan" ? "plan" : "agent";
+
+  let systemPrompt: ReturnType<typeof agentFactory>["systemPrompt"];
+  let tools: ReturnType<typeof agentFactory>["tools"];
+  let prepareStep:
+    | ((options: { stepNumber: number }) => unknown | undefined)
+    | undefined;
+
+  if (resolvedAgentId === "unified") {
+    const runtime = buildUnifiedModeRuntime({
+      context: agentContext,
+      messages,
+      chatMode: lifecycleMode,
+      tabKind,
+    });
+    systemPrompt = runtime.system;
+    tools = runtime.tools;
+    prepareStep = runtime.prepareStep;
+    logger.info("Unified mode runtime", {
+      chatMode: lifecycleMode,
+      enabledModes: Array.from(runtime.modeState.enabledModes),
+      planApproved: runtime.modeState.planApproved,
+    });
+  } else {
+    const agentConfig = agentFactory(agentContext);
+    systemPrompt = agentConfig.systemPrompt;
+    tools = agentConfig.tools;
+  }
 
   const model = getModel(resolvedModelId);
   const modelDef = await getModelById(resolvedModelId);
@@ -763,6 +801,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         system: systemPrompt,
         messages: modelMessages,
         tools,
+        ...(prepareStep
+          ? {
+              prepareStep: prepareStep as Parameters<
+                typeof streamText
+              >[0]["prepareStep"],
+            }
+          : {}),
         stopWhen: stepCountIs(MAX_STEPS),
         providerOptions,
         abortSignal: requestSignal,
