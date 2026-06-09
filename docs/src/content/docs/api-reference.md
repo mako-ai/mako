@@ -266,6 +266,9 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 | `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
 | `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
 | `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did/collaborators`             | List per-user collaborators                  |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/collaborators`             | Add a collaborator (`{ userId }`, `editor` role; owner/admin only) |
+| `DELETE` | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Remove a collaborator (owner/admin only)     |
 
 ### Dashboard Folders
 

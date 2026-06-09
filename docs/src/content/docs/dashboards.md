@@ -135,6 +135,16 @@ Dashboards use an edit lock to prevent concurrent editing conflicts:
 
 If another user holds the lock, a confirmation dialog offers to take over.
 
+## Sharing & Collaborators
+
+Beyond the workspace-level `access` setting, dashboards support **per-user collaborators** granted explicit edit access:
+
+- Each collaborator is added with the `editor` role, which allows them to read **and** write the dashboard regardless of the broader access level.
+- Collaborators are managed from the dashboard's **Share** dialog.
+- Only the dashboard **owner** or a workspace **owner/admin** can add or remove collaborators.
+
+Under the hood, collaborators are stored on the dashboard's `sharedWith` array (`{ userId, role: "editor", addedAt, addedBy }`), indexed for fast "shared with me" lookups.
+
 ## Scheduled Refresh
 
 Data sources can be refreshed on a schedule using cron expressions:
