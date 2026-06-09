@@ -14,6 +14,18 @@ function t(label: string, fn: () => void) {
 // resolve to the documented mode regardless of the version-regex fallback.
 // https://vercel.com/docs/ai-gateway/capabilities/reasoning/anthropic
 
+t("fable-5 (explicit) → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-fable-5", true),
+    "adaptive",
+  );
+});
+t("opus-4.8 (explicit) → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-opus-4.8", true),
+    "adaptive",
+  );
+});
 t("opus-4.7 (explicit) → adaptive", () => {
   assert.equal(
     resolveAnthropicThinkingMode("anthropic/claude-opus-4.7", true),
@@ -73,9 +85,15 @@ t("future opus-5.0 → adaptive", () => {
     "adaptive",
   );
 });
-t("mythos preview → adaptive", () => {
+t("mythos preview (unversioned codename) → adaptive", () => {
   assert.equal(
     resolveAnthropicThinkingMode("anthropic/claude-mythos-preview", true),
+    "adaptive",
+  );
+});
+t("uncatalogued future codename → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-saga-6", true),
     "adaptive",
   );
 });

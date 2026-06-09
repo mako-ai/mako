@@ -27,6 +27,8 @@ export type AnthropicThinkingMode = "adaptive" | "manual" | "none";
 // a fallback for models we haven't catalogued yet.
 const EXPLICIT_MODES: Record<string, AnthropicThinkingMode> = {
   // Adaptive — Claude 4.6+ (manual deprecated on 4.6, rejected on 4.7+)
+  "anthropic/claude-fable-5": "adaptive",
+  "anthropic/claude-opus-4.8": "adaptive",
   "anthropic/claude-opus-4.7": "adaptive",
   "anthropic/claude-opus-4.6": "adaptive",
   "anthropic/claude-sonnet-4.6": "adaptive",
@@ -54,7 +56,6 @@ export function resolveAnthropicThinkingMode(
   if (explicit) return explicit;
 
   const lower = modelId.toLowerCase();
-  if (lower.includes("mythos")) return "adaptive";
   if (!lower.includes("claude")) return "manual";
 
   // Fallback for uncatalogued Claude models. Vercel AI Gateway uses dot
@@ -73,8 +74,14 @@ export function resolveAnthropicThinkingMode(
     if (major > 4 || (major === 4 && minor >= 6)) return "adaptive";
     return "manual";
   }
-  // Unknown Claude model with reasoning tag: conservative default.
-  return "manual";
+
+  // Unknown Claude model with a reasoning tag. Every manual-mode model
+  // (Claude ≤ 4.5) follows the `claude-{opus|sonnet|haiku}-X.Y` naming and is
+  // caught above; IDs that reach this point are new family codenames
+  // ("mythos", "fable-5", ...) which are post-4.6 releases that reject
+  // `thinking.type: "enabled"`. Default to adaptive so new launches work
+  // without a code change.
+  return "adaptive";
 }
 
 /**
