@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   buildAnthropicThinkingConfig,
+  hasExplicitThinkingMode,
   resolveAnthropicThinkingMode,
+  thinkingErrorRequiresAdaptive,
 } from "./anthropic-thinking";
 
 function t(label: string, fn: () => void) {
@@ -14,6 +16,18 @@ function t(label: string, fn: () => void) {
 // resolve to the documented mode regardless of the version-regex fallback.
 // https://vercel.com/docs/ai-gateway/capabilities/reasoning/anthropic
 
+t("fable-5 (explicit) → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-fable-5", true),
+    "adaptive",
+  );
+});
+t("opus-4.8 (explicit) → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-opus-4.8", true),
+    "adaptive",
+  );
+});
 t("opus-4.7 (explicit) → adaptive", () => {
   assert.equal(
     resolveAnthropicThinkingMode("anthropic/claude-opus-4.7", true),
@@ -120,4 +134,55 @@ t("buildAnthropicThinkingConfig manual payload carries budgetTokens", () => {
 });
 t("buildAnthropicThinkingConfig none returns null", () => {
   assert.equal(buildAnthropicThinkingConfig("none", 10000), null);
+});
+
+// --- Unknown-Claude default flipped to adaptive ---------------------------
+// New Anthropic models have dropped the family-major.minor naming pattern
+// (claude-fable-5 was the first), so they never match the version regex.
+// Since every Claude model released since 4.6 is adaptive and `enabled` is
+// the deprecated path, the safe default for unmatched Claude IDs is adaptive.
+// All pre-4.6 manual models are pinned in EXPLICIT_MODES.
+
+t("unknown-naming claude model → adaptive (default flipped)", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-saga-6", true),
+    "adaptive",
+  );
+});
+t("fable is pinned explicitly", () => {
+  assert.equal(hasExplicitThinkingMode("anthropic/claude-fable-5"), true);
+});
+t("hypothetical future model is not pinned (probe candidate)", () => {
+  assert.equal(hasExplicitThinkingMode("anthropic/claude-saga-6"), false);
+});
+
+// --- Adaptive-only error predicate ----------------------------------------
+
+const ADAPTIVE_400 =
+  '"thinking.type.enabled" is not supported for this model. ' +
+  'Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.';
+
+t("detects adaptive-only 400 in message", () => {
+  assert.equal(thinkingErrorRequiresAdaptive(new Error(ADAPTIVE_400)), true);
+});
+t("detects adaptive-only 400 nested in cause", () => {
+  const err = new Error("Request failed", {
+    cause: new Error(ADAPTIVE_400),
+  });
+  assert.equal(thinkingErrorRequiresAdaptive(err), true);
+});
+t("detects adaptive-only 400 in AggregateError-style errors array", () => {
+  const err = new Error("fanout failed") as Error & { errors: unknown[] };
+  err.errors = [new Error("unrelated"), new Error(ADAPTIVE_400)];
+  assert.equal(thinkingErrorRequiresAdaptive(err), true);
+});
+t("ignores unrelated errors", () => {
+  assert.equal(
+    thinkingErrorRequiresAdaptive(new Error("rate limit exceeded")),
+    false,
+  );
+});
+t("handles non-Error values", () => {
+  assert.equal(thinkingErrorRequiresAdaptive(ADAPTIVE_400), true);
+  assert.equal(thinkingErrorRequiresAdaptive(null), false);
 });

@@ -15,9 +15,13 @@
  *     ("thinking.type.enabled is not supported for this model")
  *   - manual  payload against 4.6             → accepted today but deprecated
  *
- * We keep the mapping in one place, keyed off documented model IDs, with a
- * version-range fallback so future Claude releases that follow the pattern
- * (4.8, 5.x, …) work without a code change.
+ * This static map is the FIRST layer of a three-layer resolution:
+ *   1. probed capabilities persisted in the model catalog (authoritative,
+ *      written by the catalog-refresh probe and the runtime self-heal —
+ *      see model-catalog.service.ts and thinking-self-heal.ts)
+ *   2. this explicit map (documented model IDs)
+ *   3. the version-regex fallback below, defaulting to adaptive for any
+ *      uncatalogued Claude model
  */
 
 export type AnthropicThinkingMode = "adaptive" | "manual" | "none";
@@ -27,6 +31,8 @@ export type AnthropicThinkingMode = "adaptive" | "manual" | "none";
 // a fallback for models we haven't catalogued yet.
 const EXPLICIT_MODES: Record<string, AnthropicThinkingMode> = {
   // Adaptive — Claude 4.6+ (manual deprecated on 4.6, rejected on 4.7+)
+  "anthropic/claude-fable-5": "adaptive",
+  "anthropic/claude-opus-4.8": "adaptive",
   "anthropic/claude-opus-4.7": "adaptive",
   "anthropic/claude-opus-4.6": "adaptive",
   "anthropic/claude-sonnet-4.6": "adaptive",
@@ -39,10 +45,15 @@ const EXPLICIT_MODES: Record<string, AnthropicThinkingMode> = {
   "anthropic/claude-haiku-4.5": "manual",
 };
 
+/** Whether the mode for this model ID is pinned in the explicit map. */
+export function hasExplicitThinkingMode(modelId: string): boolean {
+  return modelId in EXPLICIT_MODES;
+}
+
 /**
  * Resolve the thinking mode for a given model + capability tags.
  *
- *   modelId:       the gateway ID, e.g. "anthropic/claude-opus-4.7"
+ *   modelId:          the gateway ID, e.g. "anthropic/claude-opus-4.7"
  *   supportsThinking: whether the gateway tagged the model with "reasoning"
  */
 export function resolveAnthropicThinkingMode(
@@ -73,8 +84,16 @@ export function resolveAnthropicThinkingMode(
     if (major > 4 || (major === 4 && minor >= 6)) return "adaptive";
     return "manual";
   }
-  // Unknown Claude model with reasoning tag: conservative default.
-  return "manual";
+  // Unknown Claude model with a reasoning tag: default to ADAPTIVE.
+  //
+  // This used to default to "manual" as the conservative choice, which
+  // became backwards once Anthropic deprecated `thinking.type.enabled`:
+  // every Claude model released since 4.6 is adaptive, and new models have
+  // dropped the family-major.minor naming entirely (e.g. claude-fable-5),
+  // so they never match the regex above. All pre-4.6 manual models are
+  // pinned in EXPLICIT_MODES. If this default is ever wrong, the catalog
+  // probe and the runtime self-heal correct and persist the real mode.
+  return "adaptive";
 }
 
 /**
@@ -94,4 +113,32 @@ export function buildAnthropicThinkingConfig(
     return { type: "enabled", budgetTokens };
   }
   return null;
+}
+
+/**
+ * Whether an error (possibly nested in `cause` / AggregateError `errors`)
+ * is the Anthropic 400 telling us the model only accepts adaptive thinking:
+ *   '"thinking.type.enabled" is not supported for this model. Use
+ *    "thinking.type.adaptive" and "output_config.effort" ...'
+ */
+export function thinkingErrorRequiresAdaptive(error: unknown): boolean {
+  return errorIncludes(error, '"thinking.type.enabled" is not supported');
+}
+
+function errorIncludes(error: unknown, needle: string): boolean {
+  if (error instanceof Error) {
+    if (error.message.includes(needle) || String(error).includes(needle)) {
+      return true;
+    }
+    const cause = (error as { cause?: unknown }).cause;
+    if (cause && errorIncludes(cause, needle)) {
+      return true;
+    }
+    const nested = (error as { errors?: unknown }).errors;
+    if (Array.isArray(nested)) {
+      return nested.some(item => errorIncludes(item, needle));
+    }
+    return false;
+  }
+  return String(error).includes(needle);
 }
