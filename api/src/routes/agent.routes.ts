@@ -15,6 +15,7 @@ import {
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
+import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -685,8 +686,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const agentConfig = agentFactory(agentContext);
   const { systemPrompt, tools } = agentConfig;
 
-  const model = getModel(resolvedModelId);
   const modelDef = await getModelById(resolvedModelId);
+  // Self-heal wrapper: if the catalog still classifies this model as manual
+  // thinking but Anthropic rejects the payload with the adaptive-only 400,
+  // persist the corrected mode and retry the call transparently.
+  const model = resolvedModelId.startsWith("anthropic/")
+    ? withThinkingSelfHeal(getModel(resolvedModelId), resolvedModelId)
+    : getModel(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
 
   // Resolve object-storage-backed image attachments (from reopened chats) back

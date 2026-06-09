@@ -19,7 +19,9 @@ import { z } from "zod";
 import { loggers } from "../logging";
 import { ModelCatalogSnapshot } from "../database/schema";
 import {
+  hasExplicitThinkingMode,
   resolveAnthropicThinkingMode,
+  thinkingErrorRequiresAdaptive,
   type AnthropicThinkingMode,
 } from "../agent-lib/anthropic-thinking";
 
@@ -167,6 +169,122 @@ interface PricingEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Probed thinking-mode capabilities (snapshot doc `_id: "capabilities"`)
+//
+// The static map in anthropic-thinking.ts can't know about models whose IDs
+// don't follow the family-major.minor pattern (e.g. claude-fable-5). For
+// those we PROBE: issue a tiny generateText with the manual payload and see
+// whether Anthropic rejects it with the "use thinking.type.adaptive" 400.
+// Results are persisted here and take precedence over the static resolver.
+// Written by probeAnthropicThinkingModes() (catalog refresh) and
+// saveProbedThinkingMode() (runtime self-heal, see thinking-self-heal.ts).
+// ---------------------------------------------------------------------------
+
+type ProbedThinkingModes = Record<
+  string,
+  Exclude<AnthropicThinkingMode, "none">
+>;
+
+async function loadProbedThinkingModes(): Promise<ProbedThinkingModes> {
+  const doc = await ModelCatalogSnapshot.findOne({
+    _id: "capabilities",
+  }).lean();
+  const data = doc?.data as { thinkingModes?: unknown } | undefined;
+  const raw = data?.thinkingModes;
+  if (!raw || typeof raw !== "object") return {};
+  const out: ProbedThinkingModes = {};
+  for (const [modelId, mode] of Object.entries(
+    raw as Record<string, unknown>,
+  )) {
+    if (mode === "adaptive" || mode === "manual") out[modelId] = mode;
+  }
+  return out;
+}
+
+export async function saveProbedThinkingMode(
+  modelId: string,
+  mode: Exclude<AnthropicThinkingMode, "none">,
+): Promise<void> {
+  const existing = await loadProbedThinkingModes();
+  if (existing[modelId] === mode) return;
+  const thinkingModes = { ...existing, [modelId]: mode };
+  await ModelCatalogSnapshot.findOneAndUpdate(
+    { _id: "capabilities" },
+    {
+      data: { thinkingModes },
+      fetchedAt: new Date(),
+      itemCount: Object.keys(thinkingModes).length,
+    },
+    { upsert: true },
+  );
+  invalidateCatalog();
+  logger.info("Persisted probed thinking mode", { modelId, mode });
+}
+
+async function probeThinkingMode(
+  modelId: string,
+): Promise<Exclude<AnthropicThinkingMode, "none"> | null> {
+  const [{ generateText }, { getModel }] = await Promise.all([
+    import("ai"),
+    import("../agent-lib/ai-gateway"),
+  ]);
+  try {
+    await generateText({
+      model: getModel(modelId),
+      prompt: "ok",
+      providerOptions: {
+        anthropic: { thinking: { type: "enabled", budgetTokens: 1024 } },
+      },
+      maxOutputTokens: 2048,
+    });
+    return "manual";
+  } catch (error) {
+    if (thinkingErrorRequiresAdaptive(error)) return "adaptive";
+    logger.warn("Thinking-mode probe inconclusive", {
+      modelId,
+      error: String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Probe Anthropic reasoning models whose thinking mode is neither pinned in
+ * the explicit map nor already probed. Runs after each gateway snapshot
+ * refresh; new models are classified once, before any user request can hit
+ * them with the wrong payload. Probe failures are logged, never thrown —
+ * the runtime self-heal is the safety net.
+ */
+async function probeAnthropicThinkingModes(
+  gatewayDocs: GatewayModelNormalized[],
+): Promise<number> {
+  const probed = await loadProbedThinkingModes();
+  const candidates = gatewayDocs.filter(
+    gm =>
+      gm.id.startsWith("anthropic/") &&
+      gm.tags.includes("reasoning") &&
+      !hasExplicitThinkingMode(gm.id) &&
+      probed[gm.id] === undefined,
+  );
+  let classified = 0;
+  for (const gm of candidates) {
+    try {
+      const mode = await probeThinkingMode(gm.id);
+      if (mode) {
+        await saveProbedThinkingMode(gm.id, mode);
+        classified += 1;
+      }
+    } catch (err) {
+      logger.warn("Thinking-mode probe failed", {
+        modelId: gm.id,
+        error: String(err),
+      });
+    }
+  }
+  return classified;
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot refresh: Gateway (models + pricing)
 // ---------------------------------------------------------------------------
 
@@ -240,6 +358,17 @@ export async function refreshGatewaySnapshot(): Promise<
     models: gatewayDocs.length,
     pricedModels: pricingDocs.length,
   });
+
+  try {
+    const classified = await probeAnthropicThinkingModes(gatewayDocs);
+    if (classified > 0) {
+      logger.info("Probed thinking modes for new Anthropic models", {
+        classified,
+      });
+    }
+  } catch (err) {
+    logger.warn("Thinking-mode probing skipped", { error: String(err) });
+  }
 
   return { models: gatewayDocs.length, pricedModels: pricingDocs.length };
 }
@@ -389,6 +518,7 @@ function mergeCatalog(
   gateway: GatewayModelNormalized[],
   pricing: PricingEntry[],
   curation: CurationDoc,
+  probedModes: ProbedThinkingModes = {},
 ): {
   models: CatalogModel[];
   freeTierIds: Set<string>;
@@ -417,7 +547,12 @@ function mergeCatalog(
     if (!cur || cur.visible === false) continue;
 
     const supportsThinking = gm.tags.includes("reasoning");
-    const thinkingMode = resolveAnthropicThinkingMode(gm.id, supportsThinking);
+    // Probed capabilities (catalog refresh / runtime self-heal) take
+    // precedence over the static resolver heuristic.
+    const thinkingMode: AnthropicThinkingMode = !supportsThinking
+      ? "none"
+      : (probedModes[gm.id] ??
+        resolveAnthropicThinkingMode(gm.id, supportsThinking));
     const p = pricingMap.get(gm.id);
     const blendedCostPerM = p ? (p.input + p.output) / 2 : null;
     const tier = cur.tier;
@@ -463,13 +598,27 @@ async function loadFromDb(): Promise<{
   };
 } | null> {
   const docs = await ModelCatalogSnapshot.find({
-    _id: { $in: ["gateway", "pricing", "curation"] },
+    _id: { $in: ["gateway", "pricing", "curation", "capabilities"] },
   }).lean();
   if (docs.length === 0) return null;
 
   const gatewayDoc = docs.find(d => d._id === "gateway");
   const pricingDoc = docs.find(d => d._id === "pricing");
   const curationDoc = docs.find(d => d._id === "curation");
+  const capabilitiesDoc = docs.find(d => d._id === "capabilities");
+
+  const probedModes: ProbedThinkingModes = {};
+  const rawModes = (capabilitiesDoc?.data as { thinkingModes?: unknown })
+    ?.thinkingModes;
+  if (rawModes && typeof rawModes === "object") {
+    for (const [modelId, mode] of Object.entries(
+      rawModes as Record<string, unknown>,
+    )) {
+      if (mode === "adaptive" || mode === "manual") {
+        probedModes[modelId] = mode;
+      }
+    }
+  }
 
   if (!gatewayDoc || !gatewayDoc.data || gatewayDoc.data.length === 0) {
     return null;
@@ -491,7 +640,7 @@ async function loadFromDb(): Promise<{
       }
     : { ...EMPTY_CURATION };
 
-  return mergeCatalog(gateway, pricing, curation);
+  return mergeCatalog(gateway, pricing, curation, probedModes);
 }
 
 async function ensureCatalog(): Promise<void> {

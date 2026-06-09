@@ -386,11 +386,15 @@ export const LlmUsage =
 // ---------------------------------------------------------------------------
 
 export interface IModelCatalogSnapshot extends Document {
-  _id: "gateway" | "arena" | "pricing" | "curation";
+  _id: "gateway" | "arena" | "pricing" | "curation" | "capabilities";
   /**
    * Free-form payload keyed by snapshot id:
    *  - gateway / pricing → array of normalized upstream records
    *  - curation          → `{ models, defaultChatModelId, defaultFreeChatModelId, lastRefreshError }`
+   *  - capabilities      → `{ thinkingModes: { [modelId]: "adaptive" | "manual" } }`
+   *                        probed overrides for Anthropic extended thinking,
+   *                        written by the catalog-refresh probe and the
+   *                        runtime self-heal (see anthropic-thinking.ts)
    *  - arena             → legacy, removed by the 2026-04-23 migration
    */
   data: any;
@@ -404,7 +408,7 @@ const ModelCatalogSnapshotSchema = new Schema(
     // the seed migration deletes them.
     _id: {
       type: String,
-      enum: ["gateway", "arena", "pricing", "curation"],
+      enum: ["gateway", "arena", "pricing", "curation", "capabilities"],
     },
     data: { type: Schema.Types.Mixed, default: [] },
     fetchedAt: { type: Date, required: true },
