@@ -17,7 +17,9 @@
  *
  * We keep the mapping in one place, keyed off documented model IDs, with a
  * version-range fallback so future Claude releases that follow the pattern
- * (4.8, 5.x, …) work without a code change.
+ * (4.8, 5.x, …) work without a code change. Non-versioned preview codenames
+ * (e.g. "mythos", "fable") and any other uncatalogued Claude reasoning model
+ * default to adaptive — the modern shape every 4.6+ model requires.
  */
 
 export type AnthropicThinkingMode = "adaptive" | "manual" | "none";
@@ -54,7 +56,14 @@ export function resolveAnthropicThinkingMode(
   if (explicit) return explicit;
 
   const lower = modelId.toLowerCase();
-  if (lower.includes("mythos")) return "adaptive";
+
+  // Anthropic ships unreleased models under non-versioned codenames (e.g.
+  // "mythos" → Opus 4.7 preview, "fable" → Claude 5 / Opus 4.8 generation).
+  // These previews always target the adaptive-thinking generation, so the
+  // legacy manual `{ type: "enabled" }` shape is rejected with a 400.
+  const ADAPTIVE_CODENAMES = ["mythos", "fable"];
+  if (ADAPTIVE_CODENAMES.some(name => lower.includes(name))) return "adaptive";
+
   if (!lower.includes("claude")) return "manual";
 
   // Fallback for uncatalogued Claude models. Vercel AI Gateway uses dot
@@ -73,8 +82,14 @@ export function resolveAnthropicThinkingMode(
     if (major > 4 || (major === 4 && minor >= 6)) return "adaptive";
     return "manual";
   }
-  // Unknown Claude model with reasoning tag: conservative default.
-  return "manual";
+
+  // Uncatalogued Claude model with a reasoning tag that matched none of the
+  // version patterns above (i.e. a new codename or naming scheme). Default to
+  // adaptive: manual `{ type: "enabled" }` is deprecated on 4.6 and rejected
+  // on 4.7+, and every pre-4.6 model that still needs manual is either listed
+  // in EXPLICIT_MODES or caught by the version regex. This prevents the next
+  // Anthropic codename from regressing with a 400 the way "fable" did.
+  return "adaptive";
 }
 
 /**

@@ -79,6 +79,24 @@ t("mythos preview → adaptive", () => {
     "adaptive",
   );
 });
+t("fable-5 codename → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-fable-5", true),
+    "adaptive",
+  );
+});
+t("fable-preview codename → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-fable-preview", true),
+    "adaptive",
+  );
+});
+t("uncatalogued non-versioned Claude codename → adaptive", () => {
+  assert.equal(
+    resolveAnthropicThinkingMode("anthropic/claude-newcodename", true),
+    "adaptive",
+  );
+});
 t("uncatalogued sonnet-4.0 → manual", () => {
   assert.equal(
     resolveAnthropicThinkingMode("anthropic/claude-sonnet-4.0", true),
