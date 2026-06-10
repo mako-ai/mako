@@ -105,12 +105,17 @@ jobs:
 
       # No signing certificates on CI: electron-builder falls back to ad-hoc
       # signing on macOS (required for arm64 binaries to be loadable at all).
+      # CSC_FOR_PULL_REQUEST is needed because electron-builder otherwise
+      # skips signing entirely for pull_request builds.
       - name: Package desktop app
         working-directory: packages/desktop
+        env:
+          CSC_FOR_PULL_REQUEST: "true"
         run: npx electron-builder --config electron-builder.yml ${{ matrix.args }}
 
       # One installer per artifact (~100MB each). Note: GitHub always wraps
-      # artifact downloads in a zip; the zip contains the single installer.
+      # artifact downloads in a zip; for raw installer files, use the
+      # desktop-canary prerelease updated by the canary job below.
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -121,3 +126,37 @@ jobs:
             packages/desktop/release/*.AppImage
           if-no-files-found: error
           retention-days: 14
+
+  # Publishes the PR builds to a rolling "desktop-canary" prerelease so the
+  # raw installers (.dmg/.exe/.AppImage, no zip wrapper) can be downloaded
+  # directly. Marked prerelease so it never becomes the "latest" release that
+  # the website's evergreen links point to.
+  canary:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Update desktop-canary prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Rolling canary build from ${GITHUB_SHA} (PR run ${GITHUB_RUN_ID}). Unsigned/ad-hoc signed — on macOS use: xattr -dr com.apple.quarantine /Applications/Mako.app"
+          if ! gh release view desktop-canary --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create desktop-canary \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --title "Mako Desktop Canary" \
+              --notes "$NOTES"
+          else
+            gh release edit desktop-canary --repo "$GITHUB_REPOSITORY" --notes "$NOTES"
+          fi
+          gh release upload desktop-canary dist/* --repo "$GITHUB_REPOSITORY" --clobber
