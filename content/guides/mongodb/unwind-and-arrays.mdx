@@ -1,0 +1,193 @@
+---
+title: "Working with Arrays in MongoDB Aggregations: $unwind, $filter, $map, and $reduce"
+description: "When to use $unwind versus the array expression operators $filter, $map, and $reduce in MongoDB aggregation pipelines, with worked examples and performance guidance."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "aggregation", "arrays", "unwind", "nosql"]
+date: "2026-06-10"
+---
+
+Arrays are the feature that makes MongoDB schemas different from relational ones, and they are also where aggregation pipelines get awkward. There are two fundamentally different ways to process an array inside a pipeline: explode it into separate documents with `$unwind`, or transform it in place with array expression operators like `$filter`, `$map`, and `$reduce`.
+
+Picking the wrong one is the most common source of slow, convoluted pipelines. The short version: `$unwind` is for when you need to group *across* documents by array elements; the expression operators are for when each document's array can be processed in isolation. This guide covers both, and how to decide.
+
+## $unwind: one document per array element
+
+`$unwind` deconstructs an array field, outputting one copy of the document for each element. The array field in each output document is replaced by a single element.
+
+```javascript
+// Input: one order with 3 items
+{ _id: 1, customer: "acme", items: [ { sku: "A", qty: 2 }, { sku: "B", qty: 1 }, { sku: "C", qty: 5 } ] }
+
+db.orders.aggregate([
+  { $unwind: "$items" }
+])
+
+// Output: 3 documents
+{ _id: 1, customer: "acme", items: { sku: "A", qty: 2 } }
+{ _id: 1, customer: "acme", items: { sku: "B", qty: 1 } }
+{ _id: 1, customer: "acme", items: { sku: "C", qty: 5 } }
+```
+
+Note the `_id` values repeat. After `$unwind`, `_id` no longer uniquely identifies a document in the pipeline, which matters if you `$group` on it later (often that is exactly the point).
+
+### The document form and its options
+
+The string form (`{ $unwind: "$items" }`) is shorthand. The document form exposes two options:
+
+```javascript
+{
+  $unwind: {
+    path: "$items",
+    includeArrayIndex: "itemIndex",        // adds the element's original position
+    preserveNullAndEmptyArrays: true        // keeps documents where the array is missing, null, or []
+  }
+}
+```
+
+Both options matter more than they look:
+
+- **`preserveNullAndEmptyArrays`**. By default, `$unwind` *drops* documents where the field is missing, `null`, or an empty array. If you unwind orders by `items` and some orders have no items, those orders silently vanish from your results. If the document should survive with the field absent, set this to `true`. This is the `$unwind` equivalent of accidentally turning a left join into an inner join.
+- **`includeArrayIndex`**. Stores each element's original zero-based position in a new field (as a long). Useful when position is meaningful, such as ranked lists, and you are about to lose the ordering through a `$group`.
+
+A non-array value is treated as a single-element array and passes through unchanged. That is convenient but can mask schema problems: if half your documents store `tags` as a string and half as an array, `$unwind` will not complain.
+
+### The canonical pattern: unwind, group
+
+`$unwind` earns its place when the question spans documents. "Top 10 SKUs by total quantity sold" requires gathering elements from every order's array into shared buckets:
+
+```javascript
+db.orders.aggregate([
+  { $unwind: "$items" },
+  { $group: { _id: "$items.sku", totalQty: { $sum: "$items.qty" } } },
+  { $sort: { totalQty: -1 } },
+  { $limit: 10 }
+])
+```
+
+No array operator can do this, because the answer requires regrouping elements across document boundaries.
+
+## The expression operators: transform arrays in place
+
+If the question is per-document ("which of *this order's* items cost more than 100?"), unwinding and regrouping is wasted work. You multiply the document count, force a `$group` that has to reassemble what you just exploded, and lose the rest of the document's fields unless you carry them through the group stage manually. The array expression operators do the work inside the document, usually in a `$set` (alias `$addFields`) or `$project` stage.
+
+### $filter: keep matching elements
+
+```javascript
+{
+  $set: {
+    bigItems: {
+      $filter: {
+        input: "$items",
+        as: "item",
+        cond: { $gt: [ "$$item.qty", 3 ] }
+      }
+    }
+  }
+}
+```
+
+`input` is the array, `as` names the per-element variable (referenced with `$$`, default `this`), and `cond` is a boolean expression evaluated per element. Since MongoDB 5.2 there is also an optional `limit` field to cap how many matches are returned.
+
+### $map: transform each element
+
+`$map` outputs a new array of the same length, with each element replaced by the result of the `in` expression:
+
+```javascript
+{
+  $set: {
+    lineTotals: {
+      $map: {
+        input: "$items",
+        as: "item",
+        in: { $multiply: [ "$$item.qty", "$$item.price" ] }
+      }
+    }
+  }
+}
+// items: [{qty: 2, price: 10}, {qty: 1, price: 99}]  ->  lineTotals: [20, 99]
+```
+
+### $reduce: fold an array to a single value
+
+`$reduce` walks the array left to right, carrying an accumulator (`$$value`) and exposing the current element (`$$this`):
+
+```javascript
+{
+  $set: {
+    orderTotal: {
+      $reduce: {
+        input: "$items",
+        initialValue: 0,
+        in: { $add: [ "$$value", { $multiply: [ "$$this.qty", "$$this.price" ] } ] }
+      }
+    }
+  }
+}
+```
+
+For plain sums and averages you do not need `$reduce`: `$sum` and `$avg` work directly on array expressions inside `$project`/`$set` (for example `{ $sum: "$lineTotals" }`). Reach for `$reduce` when the fold is genuinely custom, like concatenating strings or building an object incrementally.
+
+### Friends worth knowing
+
+A few smaller operators round out most per-document array work:
+
+- `$size` -- array length (errors on missing fields; guard with `$ifNull`).
+- `$slice` -- first/last N elements or a positional range.
+- `$arrayElemAt` (or `$first`/`$last`) -- single element by position.
+- `$in` -- membership test.
+- `$concatArrays` -- merge arrays.
+- `$sortArray` (MongoDB 5.2+) -- sort an array by a field or natural order without unwinding.
+- `$zip` -- pair up parallel arrays element-by-element.
+
+## Deciding: $unwind or expression operators?
+
+The decision rule is about scope:
+
+| Question scope | Use | Example |
+|---|---|---|
+| Across documents | `$unwind` + `$group` | "Total qty per SKU across all orders" |
+| Within one document | `$filter` / `$map` / `$reduce` | "This order's items over 100, summed" |
+| Within one document, then aggregate the results across documents | Expression operators first, then `$group` on the computed field | "Average order total" (compute total per order in place, then `$avg`) |
+
+The third row is the one people miss. A common anti-pattern is `$unwind` → `$group` back on `_id` just to compute something per-document:
+
+```javascript
+// Anti-pattern: explode and reassemble
+[
+  { $unwind: "$items" },
+  { $match: { "items.qty": { $gt: 3 } } },
+  { $group: { _id: "$_id", bigItems: { $push: "$items" } } }
+]
+
+// Better: one $set with $filter (same result, no document multiplication,
+// and the rest of the document's fields survive)
+[
+  { $set: { bigItems: { $filter: { input: "$items", as: "i", cond: { $gt: ["$$i.qty", 3] } } } } }
+]
+```
+
+The unwind version turns 10,000 orders averaging 20 items into 200,000 intermediate documents, then collapses them again. On large collections that is the difference between a pipeline that runs in milliseconds and one that hits the 100MB per-stage memory limit and needs `allowDiskUse`.
+
+## Performance notes
+
+- **`$unwind` multiplies your working set.** Document count after the stage is the sum of array lengths. Put `$match` and `$project` before `$unwind` whenever possible so you explode fewer, smaller documents.
+- **Indexes do not help after `$unwind`.** Only an initial `$match` (before any transformation stages) can use indexes. A `$match` on the unwound field afterwards is a scan of pipeline output.
+- **Long arrays amplify everything.** Unwinding a 5,000-element array per document is occasionally legitimate (it is how you regroup time-series-ish embedded data), but if you do it routinely, the schema may be wrong; see our [schema design guide](/guides/mongodb/schema-design) on unbounded arrays.
+- **Expression operators run per document, in memory, with no index involvement either way** -- but they avoid the explosion and the regrouping `$group`, which is where the real cost lives.
+
+To see what a pipeline is actually doing, run it with `explain()` and check the document counts flowing between stages -- the technique is covered in our [aggregation pipeline guide](/guides/mongodb/aggregation-pipeline).
+
+## Common mistakes
+
+1. **Losing documents with empty arrays.** Forgetting `preserveNullAndEmptyArrays: true` and wondering why totals are off. Symptom: counts drop after the `$unwind` stage.
+2. **Grouping on `_id` after unwind and dropping fields.** `$group` only keeps what you explicitly accumulate. Either `$push` the fields you need or use the expression-operator approach and skip the round trip.
+3. **`$$` vs `$` confusion.** Inside `$filter`/`$map`/`$reduce`, user-defined variables are `$$item`; document fields are still `$field`. Mixing them up usually produces `null`s rather than errors, which makes it worse.
+4. **Using `$reduce` where `$sum` suffices.** `{ $sum: { $map: ... } }` composes; the `$reduce` version is longer and easier to get wrong.
+5. **Unwinding multiple arrays in one pipeline.** Two `$unwind` stages produce a cartesian product per document (3 elements × 4 elements = 12 documents). Sometimes intended, usually not.
+
+For querying arrays in `find()` rather than aggregations (`$elemMatch`, `$all`, `$size` as a query operator), see our [query operators guide](/guides/mongodb/query-operators); for updating arrays in place (`$push`, `$pull`, positional operators), see the [update operators guide](/guides/mongodb/update-operators).
+
+---
+
+Mako connects to MongoDB with AI-powered autocomplete that helps you build and debug aggregation pipelines. Try it free at mako.ai.
