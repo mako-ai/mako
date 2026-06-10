@@ -272,6 +272,32 @@ export class AuthService {
   }
 
   /**
+   * Create a fresh session for an already-authenticated user id.
+   * Used by the desktop deep-link handoff (/api/auth/desktop/complete),
+   * where identity was established by redeeming a one-time desktop auth code.
+   */
+  async createSessionForUser(userId: string) {
+    const user = await User.findById(userId);
+    if (!user) {
+      throw new Error("User account not found");
+    }
+
+    // Only set activeWorkspaceId if user has exactly one workspace (auto-select)
+    // For 0 or 2+ workspaces, let frontend handle selection/creation
+    const workspaces = await workspaceService.getWorkspacesForUser(user._id);
+    const activeWorkspaceId =
+      workspaces.length === 1
+        ? workspaces[0].workspace._id.toString()
+        : undefined;
+
+    const session = await sessionManager.createSession(user._id, {
+      activeWorkspaceId,
+    });
+
+    return { user, session };
+  }
+
+  /**
    * Handle OAuth callback and create/login user
    */
   async handleOAuthCallback(
