@@ -522,9 +522,9 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=1Gi \
-            --concurrency=4 \
+            --concurrency=80 \
             --min-instances=0 \
-            --max-instances=2 \
+            --max-instances=3 \
             --allow-unauthenticated \
             --network=mako-vpc \
             --subnet=mako-subnet \
@@ -894,7 +894,7 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=4Gi \
-            --concurrency=10 \
+            --concurrency=80 \
             --min-instances=1 \
             --max-instances=15 \
             --network=mako-vpc \
