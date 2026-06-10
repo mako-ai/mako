@@ -712,6 +712,7 @@ export class CloseConnector extends BaseConnector {
       "custom_objects",
       "lead_statuses",
       "opportunity_statuses",
+      "outcomes",
     ];
 
     const activitySubEntities = CLOSE_ACTIVITY_TYPES.map(
@@ -1128,6 +1129,9 @@ export class CloseConnector extends BaseConnector {
       "voicemail_url",
       "voicemail_duration",
       "outcome_id",
+      "outcome_reason",
+      "outcome_autofill_confidence",
+      "outcome_autofill_reasoning",
       "transferred_from",
       "transferred_to",
       "source",
@@ -1831,6 +1835,7 @@ export class CloseConnector extends BaseConnector {
     opportunity_statuses: "/status/opportunity/",
     custom_activity_types: "/custom_activity/",
     custom_object_types: "/custom_object_type/",
+    outcomes: "/outcome/",
   };
 
   private async fetchSimpleEntityChunk(
