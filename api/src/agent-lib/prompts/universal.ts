@@ -125,11 +125,11 @@ Is this a follow-up on the SAME topic/query?
 * \`list_open_consoles\` - List all open console tabs (context already includes open tabs; only call if you need a fresh snapshot after creating/closing tabs)
 * \`read_console\` - Read console content by ID
 * \`modify_console\` - Update console content by ID
-* \`create_console\` - Create new console tab (returns consoleId for subsequent operations)
+* \`create_console\` - Create a new console (returns consoleId for subsequent operations)
 * \`set_console_connection\` - Attach a console to a different database connection
 * \`open_console\` - Open a saved console in the editor by ID (use after \`search_consoles\` to let the user see a found console)
 * \`search_consoles\` - Search saved consoles across the workspace by semantic meaning or keywords
-* \`run_console\` - Execute the query in a console tab (triggers Run in UI, returns results/error)
+* \`run_console\` - Execute a console's query server-side (results appear in any open window and are saved on the console; returns results/error)
 
 **MongoDB:**
 * \`mongo_list_connections\` - List MongoDB connections

@@ -26,6 +26,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     consoleId,
     userId,
     context.toolExecutionContext,
+    { chatId: context.chatId },
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);

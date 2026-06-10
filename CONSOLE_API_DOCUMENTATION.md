@@ -115,6 +115,61 @@ Execute a saved console and get the results.
 }
 ```
 
+### Realtime Sync (drafts, revisions, run artifacts)
+
+Console drafts are **server-authoritative** with a monotonic `draftRevision`
+counter bumped on every content-bearing write (user autosave, explicit save,
+agent `modify_console`, run artifacts). Open browser windows stay live via
+the workspace realtime channel.
+
+**Realtime channel (SSE, session auth only):**
+`GET /api/workspaces/{workspaceId}/realtime?clientId={perTabId}`
+
+Server→client events (poke-then-pull — events carry hints; clients pull
+authoritative data over HTTP when stale):
+
+| Event | Payload |
+| --- | --- |
+| `console.updated` | `{ consoleId, draftRevision, name?, updatedBy, clientId?, origin: "draft" \| "save" \| "agent" }` |
+| `console.deleted` | `{ consoleId }` |
+| `console.run.completed` | `{ consoleId, status, rowCount?, durationMs?, error? }` |
+| `chat.ui-intent` | `{ chatId, intent: "open_console", consoleId }` |
+| `chat.activity` | `{ chatId, state: "streaming" \| "idle" }` |
+
+**Revision-checked draft writes:**
+`PUT /api/workspaces/{workspaceId}/consoles/{consoleId}` accepts optional
+`clientId` (echo suppression) and `expectedDraftRevision`. A stale draft
+write returns `409` with:
+
+```json
+{
+  "success": false,
+  "error": "draft_conflict",
+  "draftConflict": {
+    "currentDraftRevision": 7,
+    "content": "…server copy…",
+    "name": "Console Name",
+    "updatedAt": "2026-06-10T00:00:00Z"
+  }
+}
+```
+
+Successful saves return `draftRevision` alongside the existing `version`
+(explicit-save snapshot counter, unchanged).
+
+**Bulk reconciliation (reconnect / tab focus):**
+`POST /api/workspaces/{workspaceId}/consoles/revisions-sync` with body
+`{ "revisions": { "<consoleId>": <clientDraftRevision> } }` (max 100). The
+response returns full payloads for consoles whose server revision differs
+(`changed: [{ id, draftRevision, name, content, connectionId, databaseId,
+databaseName, version, lastRun }]`) and ids no longer readable (`deleted`).
+
+**Run artifacts:** server-side executions (agent `run_console`) persist the
+latest result on the console as `lastRun` (`status`, `rowCount`,
+`durationMs`, capped `sampleRows`, `fields`, `runBy`, `source`) — returned by
+`GET /consoles/content` and `revisions-sync` so reopened consoles render
+results without re-running.
+
 ### Create or Update Console Schedule
 
 Schedule a saved console to run automatically. Requires workspace admin access.

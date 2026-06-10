@@ -1,0 +1,165 @@
+/**
+ * Shared pub/sub backend
+ *
+ * Single place that selects and constructs the pub/sub backend used by
+ * features needing cross-instance fan-out:
+ *
+ *   - Resumable chat streams (resumable-stream.service.ts)
+ *   - The workspace realtime channel (realtime.service.ts)
+ *
+ * Backend selection:
+ *
+ *   - REDIS_URL set: Redis pub/sub. Required when running more than one API
+ *     instance, because a subscriber may be connected to a different
+ *     instance than the one producing an event.
+ *   - REDIS_URL unset: in-process pub/sub with identical semantics. Zero
+ *     extra infrastructure for local dev and single-instance self-hosting.
+ *
+ * The Publisher/Subscriber interfaces come from `resumable-stream/generic`
+ * so the same backend plugs directly into the resumable-stream context.
+ *
+ * Connection semantics:
+ *   - Redis mode: every call to createPubSubPublisher/createPubSubSubscriber
+ *     returns a fresh connection. A Redis connection in subscriber mode
+ *     cannot issue regular commands, so consumers must never share a
+ *     publisher and a subscriber connection.
+ *   - Memory mode: all handles share one process-wide InMemoryPubSub so
+ *     publishers and subscribers can see each other.
+ */
+import { EventEmitter } from "node:events";
+import { Redis } from "ioredis";
+import type { Publisher, Subscriber } from "resumable-stream/generic";
+
+export type { Publisher, Subscriber } from "resumable-stream/generic";
+
+// Mirrors the 24h TTL resumable-stream applies to its own keys; only used
+// for keys the library creates via INCR (no explicit expiry).
+const DEFAULT_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 60 * 1000;
+
+interface InMemoryEntry {
+  value: string;
+  expiresAt: number;
+}
+
+/**
+ * In-process implementation of resumable-stream's Publisher/Subscriber
+ * interfaces: an EventEmitter stands in for Redis pub/sub channels and a
+ * Map with TTLs stands in for the key/value state.
+ */
+class InMemoryPubSub {
+  private readonly emitter = new EventEmitter();
+  private readonly store = new Map<string, InMemoryEntry>();
+
+  constructor() {
+    // Pub/sub fan-out scales with concurrent streams + viewers, not a bug.
+    this.emitter.setMaxListeners(0);
+    setInterval(() => this.sweepExpired(), SWEEP_INTERVAL_MS).unref();
+  }
+
+  private sweepExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.store) {
+      if (entry.expiresAt <= now) this.store.delete(key);
+    }
+  }
+
+  private read(key: string): string | null {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  createPublisher(): Publisher {
+    return {
+      connect: async () => undefined,
+      publish: async (channel: string, message: string) => {
+        return this.emitter.emit(channel, message) ? 1 : 0;
+      },
+      set: async (key: string, value: string, options?: { EX?: number }) => {
+        const ttlMs = options?.EX ? options.EX * 1000 : DEFAULT_KEY_TTL_MS;
+        this.store.set(key, { value, expiresAt: Date.now() + ttlMs });
+        return "OK";
+      },
+      get: async (key: string) => this.read(key),
+      incr: async (key: string) => {
+        const next = Number(this.read(key) ?? "0") + 1;
+        this.store.set(key, {
+          value: String(next),
+          expiresAt: Date.now() + DEFAULT_KEY_TTL_MS,
+        });
+        return next;
+      },
+    };
+  }
+
+  createSubscriber(): Subscriber {
+    // Each subscriber tracks its own listeners so unsubscribe(channel) only
+    // detaches itself, matching Redis client semantics.
+    const listeners = new Map<string, (message: string) => void>();
+    return {
+      connect: async () => undefined,
+      subscribe: async (
+        channel: string,
+        callback: (message: string) => void,
+      ) => {
+        const existing = listeners.get(channel);
+        if (existing) this.emitter.off(channel, existing);
+        listeners.set(channel, callback);
+        this.emitter.on(channel, callback);
+      },
+      unsubscribe: async (channel: string) => {
+        const listener = listeners.get(channel);
+        if (listener) {
+          this.emitter.off(channel, listener);
+          listeners.delete(channel);
+        }
+      },
+    };
+  }
+}
+
+// Process-wide singleton for the in-memory backend so that publishers and
+// subscribers created by different consumers can reach each other.
+let inMemoryPubSub: InMemoryPubSub | null = null;
+
+function getInMemoryPubSub(): InMemoryPubSub {
+  if (!inMemoryPubSub) {
+    inMemoryPubSub = new InMemoryPubSub();
+  }
+  return inMemoryPubSub;
+}
+
+/** Which backend the process is using ("redis" when REDIS_URL is set). */
+export function getPubSubBackendKind(): "redis" | "memory" {
+  return process.env.REDIS_URL ? "redis" : "memory";
+}
+
+/**
+ * Create a publisher handle. Redis mode: a fresh connection the caller owns.
+ * Memory mode: a handle onto the shared in-process backend.
+ */
+export function createPubSubPublisher(): Publisher {
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    return new Redis(redisUrl) as unknown as Publisher;
+  }
+  return getInMemoryPubSub().createPublisher();
+}
+
+/**
+ * Create a subscriber handle. Redis mode: a fresh connection the caller owns
+ * (a subscriber-mode connection cannot issue regular commands — never reuse
+ * it as a publisher). Memory mode: a handle onto the shared backend.
+ */
+export function createPubSubSubscriber(): Subscriber {
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    return new Redis(redisUrl) as unknown as Subscriber;
+  }
+  return getInMemoryPubSub().createSubscriber();
+}

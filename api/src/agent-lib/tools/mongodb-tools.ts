@@ -11,7 +11,6 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools } from "@mako/agent-tools";
 import {
   inferBsonType,
   truncateSamples,
@@ -424,8 +423,6 @@ export const createMongoToolsV2 = (
   toolExecutionContext?: AgentToolExecutionContext,
 ) => {
   return {
-    ...clientConsoleTools,
-
     list_connections: tool({
       description:
         "List all MongoDB connections available in this workspace. Returns connection ID, name, and database name.",

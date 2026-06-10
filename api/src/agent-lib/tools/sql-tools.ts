@@ -11,7 +11,6 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools } from "@mako/agent-tools";
 import {
   truncateSamples,
   truncateQueryResults,
@@ -1040,8 +1039,6 @@ export const createSqlToolsV2 = (
   toolExecutionContext?: AgentToolExecutionContext,
 ) => {
   return {
-    ...clientConsoleTools,
-
     sql_list_connections: tool({
       description:
         "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",

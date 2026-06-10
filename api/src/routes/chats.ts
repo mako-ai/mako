@@ -10,9 +10,19 @@ import { workspaceService } from "../services/workspace.service";
 const logger = loggers.api("chats");
 
 /**
- * Extract unique console IDs from modify_console and create_console tool calls in chat messages.
- * This is used to determine which consoles should be restored when opening a chat.
+ * Extract unique console IDs the agent worked on (modify/create/open/run
+ * tool calls) from chat messages. This is the reattach replay for UI
+ * intents: reopening a chat restores the consoles the agent created, edited,
+ * opened or ran — including work done while no window was attached.
  */
+const CONSOLE_RESTORE_TOOL_NAMES = new Set([
+  "modify_console",
+  "create_console",
+  "open_console",
+  "run_console",
+  "set_console_connection",
+]);
+
 function extractModifiedConsoleIds(
   messages: Array<{
     toolCalls?: Array<{ toolName: string; input?: any; result?: any }>;
@@ -23,14 +33,11 @@ function extractModifiedConsoleIds(
   for (const msg of messages) {
     if (!msg.toolCalls) continue;
     for (const tc of msg.toolCalls) {
-      // modify_console: consoleId is in the input
-      if (tc.toolName === "modify_console" && tc.input?.consoleId) {
-        consoleIds.add(tc.input.consoleId);
-      }
-      // create_console: consoleId is in the result (output)
-      if (tc.toolName === "create_console" && tc.result?.consoleId) {
-        consoleIds.add(tc.result.consoleId);
-      }
+      if (!CONSOLE_RESTORE_TOOL_NAMES.has(tc.toolName)) continue;
+      // consoleId is in the input for tools targeting an existing console,
+      // and in the result for create_console (the server mints the id).
+      if (tc.input?.consoleId) consoleIds.add(tc.input.consoleId);
+      if (tc.result?.consoleId) consoleIds.add(tc.result.consoleId);
     }
   }
 

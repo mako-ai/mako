@@ -42,7 +42,6 @@ import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
-import { ConsoleModificationPayload } from "./hooks/useMonacoConsole";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
@@ -256,90 +255,9 @@ function MainApp() {
     import("./components/Editor").ConsoleResultsContext | null
   >(null);
 
-  // Handle console modification from AI
-  const handleConsoleModification = useCallback(
-    async (modification: ConsoleModificationPayload) => {
-      // handleConsoleModification called
-
-      const { tabs, activeTabId, openTab, setActiveTab } =
-        useConsoleStore.getState();
-      const consoleTabs = Object.values(tabs);
-      const activeConsoleId = activeTabId;
-
-      const realConsoleTabs = (consoleTabs || []).filter(
-        (t: any) => t?.kind === undefined || t?.kind === "console",
-      );
-      const activeRealConsoleId = realConsoleTabs.some(
-        (t: any) => t.id === activeConsoleId,
-      )
-        ? activeConsoleId
-        : null;
-
-      // Handle console creation
-      if (modification.action === "create" && modification.title) {
-        const newConsoleId = openTab({
-          id: modification.consoleId,
-          title: modification.title,
-          content: modification.content || "",
-          connectionId: modification.connectionId,
-          databaseId: modification.databaseId,
-          databaseName: modification.databaseName,
-          kind: "console",
-          isDirty: modification.isDirty ?? true, // Agent-created consoles are dirty by default
-        });
-        setActiveTab(newConsoleId);
-        return;
-      }
-
-      // Use the provided consoleId if available, otherwise use the active console
-      let targetConsoleId = modification.consoleId || activeRealConsoleId;
-      let isNewConsole = false;
-
-      // If a consoleId was explicitly provided by the agent, trust it - the console was just created
-      // and may not be in realConsoleTabs yet due to React state update timing.
-      // Only fall back if no explicit consoleId was provided AND the resolved ID doesn't exist.
-      if (
-        !modification.consoleId &&
-        targetConsoleId &&
-        !realConsoleTabs.some((t: any) => t.id === targetConsoleId)
-      ) {
-        targetConsoleId = activeRealConsoleId;
-      }
-
-      if (!targetConsoleId) {
-        // If no active console, try to open one
-        if (realConsoleTabs.length > 0) {
-          // Focus the first available real console
-          targetConsoleId = realConsoleTabs[0].id;
-          setActiveTab(targetConsoleId);
-        } else {
-          // Create a new console if none exist
-          isNewConsole = true;
-          const id = openTab({
-            title: "AI Query",
-            content: "",
-          });
-          targetConsoleId = id;
-          setActiveTab(id);
-        }
-      }
-
-      // If we just created a new console, wait a bit for it to mount
-      if (isNewConsole) {
-        // wait for mount
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-
-      // using console ID
-
-      // Dispatch a custom event that the Editor component can listen to
-      const event = new CustomEvent("console-modification", {
-        detail: { consoleId: targetConsoleId, modification },
-      });
-      window.dispatchEvent(event);
-    },
-    [],
-  );
+  // NOTE: console modifications from the agent no longer flow through App —
+  // console tools execute server-side (issue #475) and open tabs follow
+  // along via the realtime channel (realtimeStore).
 
   const openOrFocusConsoleTab = useCallback(
     (
@@ -610,7 +528,6 @@ function MainApp() {
                 }}
               >
                 <Chat
-                  onConsoleModification={handleConsoleModification}
                   dbFlowFormRef={dbFlowFormRef}
                   onChartSpecChangeRef={onChartSpecChangeRef}
                   resultsContextRef={resultsContextRef}

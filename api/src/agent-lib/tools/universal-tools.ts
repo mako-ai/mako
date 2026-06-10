@@ -19,6 +19,7 @@ import {
 } from "@mako/agent-tools";
 import { createMongoToolsV2 } from "./mongodb-tools";
 import { createSqlToolsV2 } from "./sql-tools";
+import { createServerConsoleTools } from "./server-console-tools";
 
 const emptySchema = z.object({});
 
@@ -145,6 +146,7 @@ export const createUniversalTools = (
   preferredConsoleId?: string,
   userId?: string,
   toolExecutionContext?: AgentToolExecutionContext,
+  options?: { chatId?: string },
 ) => {
   // Get MongoDB tools and extract just the database-specific ones
   const mongoTools = createMongoToolsV2(
@@ -155,10 +157,6 @@ export const createUniversalTools = (
     toolExecutionContext,
   );
   const {
-    // Strip console tools (we use client-side versions)
-    modify_console: _mongoModify,
-    read_console: _mongoRead,
-    create_console: _mongoCreate,
     // MongoDB tools (to be namespaced)
     list_connections: mongoListConnections,
     list_databases: mongoListDatabases,
@@ -167,25 +165,28 @@ export const createUniversalTools = (
     execute_query: mongoExecuteQuery,
   } = mongoTools;
 
-  // Get SQL tools and extract just the database-specific ones
-  const sqlTools = createSqlToolsV2(
+  // SQL tools (already namespaced as sql_*)
+  const sqlOnlyTools = createSqlToolsV2(
     workspaceId,
     consoles,
     preferredConsoleId,
     userId,
     toolExecutionContext,
   );
-  const {
-    // Strip console tools
-    modify_console: _sqlModify,
-    read_console: _sqlRead,
-    create_console: _sqlCreate,
-    // SQL tools (already namespaced as sql_*)
-    ...sqlOnlyTools
-  } = sqlTools;
 
   return {
-    // Client-side console tools (no execute function - handled by frontend)
+    // Console tools — execute SERVER-SIDE against the authoritative draft
+    // (issue #475). Open windows follow along via the realtime channel, and
+    // detached chats keep working because the stream no longer splits.
+    ...createServerConsoleTools({
+      workspaceId,
+      userId,
+      executionContext: toolExecutionContext,
+      chatId: options?.chatId,
+    }),
+
+    // Remaining client-side console tool: listing OPEN TABS is inherently a
+    // browser question (the server source of truth is search_consoles).
     ...clientConsoleTools,
 
     // Client-side chart tools (no execute function - handled by frontend)

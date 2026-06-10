@@ -47,7 +47,7 @@ import {
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
-import { useConsoleStore } from "../store/consoleStore";
+import { useConsoleStore, markUserEditActivity } from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 import { ConnectionSelector } from "./ConnectionSelector";
@@ -127,6 +127,13 @@ export interface ConsoleRef {
     language?: string;
   };
   applyModification: (modification: ConsoleModification) => void;
+  /**
+   * Quietly replace the editor content with the server-authoritative copy
+   * (realtime sync). Unlike applyModification it does not fire
+   * onContentChange (no dirty flag, no autosave echo), does not flash and
+   * does not steal focus — the store is updated by the realtime layer.
+   */
+  setRemoteContent: (content: string) => void;
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -736,6 +743,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         return;
       }
 
+      // Realtime sync: record raw keystroke activity immediately. The store
+      // dirty flag below is debounced, so remote updates consult this to
+      // avoid replacing content typed within the last few seconds.
+      markUserEditActivity(consoleId);
+
       // Save user edit to version history if version control is enabled
       if (
         enableVersionControl &&
@@ -931,6 +943,31 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     [getExecutionContent],
   );
 
+  // Realtime sync: replace content as a single ranged edit (keeps the undo
+  // stack usable) behind the programmatic-update guard so handleEditorChange
+  // skips dirty-marking and autosave — otherwise two live tabs would
+  // ping-pong saves at each other forever.
+  const setRemoteContent = useCallback((content: string) => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    if (model.getValue() === content) return;
+
+    isProgrammaticUpdateRef.current = true;
+    try {
+      editor.executeEdits("remote-sync", [
+        {
+          range: model.getFullModelRange(),
+          text: content,
+          forceMoveMarkers: true,
+        },
+      ]);
+    } finally {
+      isProgrammaticUpdateRef.current = false;
+    }
+    lastInitialContentRef.current = content;
+  }, []);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -943,6 +980,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         };
       },
       applyModification,
+      setRemoteContent,
       undo,
       redo,
       canUndo,
@@ -960,6 +998,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       getFullEditorContent,
       title,
       applyModification,
+      setRemoteContent,
       undo,
       redo,
       canUndo,

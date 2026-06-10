@@ -68,12 +68,10 @@ import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
+import { useRealtimeStore } from "../store/realtimeStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
-import type {
-  ConsoleModification,
-  ConsoleModificationPayload,
-} from "../hooks/useMonacoConsole";
+import type { ConsoleModification } from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
@@ -1691,7 +1689,6 @@ ChatInputArea.displayName = "ChatInputArea";
 // DbFlowFormRef is imported from ./DbFlowForm
 
 interface ChatProps {
-  onConsoleModification?: (modification: ConsoleModificationPayload) => void;
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
   onChartSpecChangeRef?: React.MutableRefObject<
     ((payload: import("./Editor").ChartSpecChangePayload) => void) | undefined
@@ -1710,7 +1707,6 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
 }
 
 const Chat: React.FC<ChatProps> = ({
-  onConsoleModification,
   dbFlowFormRef,
   onChartSpecChangeRef,
   resultsContextRef,
@@ -1784,9 +1780,9 @@ const Chat: React.FC<ChatProps> = ({
   const isExistingChatRef = useRef(isExistingChat);
   isExistingChatRef.current = isExistingChat;
 
-  // Ref for onConsoleModification to avoid stale closure in onToolCall
-  const onConsoleModificationRef = useRef(onConsoleModification);
-  onConsoleModificationRef.current = onConsoleModification;
+  // NOTE: console tools execute server-side (issue #475); open tabs follow
+  // along via the realtime channel (realtimeStore), so Chat no longer
+  // applies console modifications itself.
 
   // Ref to capture the active console ID at the time the user submits a message
   // This prevents the race condition where user switches consoles while agent is thinking
@@ -2009,8 +2005,6 @@ const Chat: React.FC<ChatProps> = ({
             },
             input,
             workspaceId: workspaceIdRef.current,
-            capturedConsoleId: capturedConsoleIdRef.current,
-            onConsoleModification: onConsoleModificationRef.current,
             onChartSpecChange: onChartSpecChangeRef?.current,
             addToolOutput,
             registerActiveClientToolCall,
@@ -2476,6 +2470,13 @@ const Chat: React.FC<ChatProps> = ({
     const workspaceId = currentWorkspace?.id;
     if (!workspaceId) return;
     writeStoredChatSession({ chatId, workspaceId });
+    // Register the active chat with the realtime store so chat.ui-intent
+    // events (e.g. the agent opening a console) only act on the chat this
+    // window is actually viewing.
+    useRealtimeStore.getState().setActiveChatId(chatId);
+    return () => {
+      useRealtimeStore.getState().setActiveChatId(null);
+    };
   }, [chatId, currentWorkspace?.id]);
 
   // Load messages when selecting an existing chat from history
@@ -2689,6 +2690,21 @@ const Chat: React.FC<ChatProps> = ({
     setMessages([]);
     setIsExistingChat(false);
   };
+
+  // Live per-chat activity from the realtime channel. The server-fetched
+  // activeStreamId is the initial value (correct on cold open); chat.activity
+  // events keep it current while the menu is open — including turns started
+  // by other windows or continuing server-side after a detach.
+  const chatActivity = useRealtimeStore(s => s.chatActivity);
+  const isSessionStreaming = useCallback(
+    (session: ChatSessionMeta): boolean => {
+      const live = chatActivity[session._id];
+      if (live === "streaming") return true;
+      if (live === "idle") return false;
+      return Boolean(session.activeStreamId);
+    },
+    [chatActivity],
+  );
 
   const handleHistoryMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
     setHistoryMenuAnchor(event.currentTarget);
@@ -3091,7 +3107,7 @@ const Chat: React.FC<ChatProps> = ({
           .filter(
             session =>
               session._id === chatId ||
-              Boolean(session.activeStreamId) ||
+              isSessionStreaming(session) ||
               (session.title && session.title.length > 0),
           )
           .map(session => (
@@ -3103,7 +3119,7 @@ const Chat: React.FC<ChatProps> = ({
             >
               <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
                 <ListItemIcon>
-                  {session.activeStreamId ? (
+                  {isSessionStreaming(session) ? (
                     // Turn in flight server-side — pulsing indicator instead
                     // of the static chat icon.
                     <Box
