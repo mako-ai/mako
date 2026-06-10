@@ -39,11 +39,15 @@ export function DesktopAuthPage() {
   const [searchParams] = useSearchParams();
 
   // Prefer the challenge from the URL (fresh from the desktop app); fall back
-  // to the one stashed before a login round trip.
-  const queryChallenge = searchParams.get("challenge");
-  const challenge = isValidDesktopAuthChallenge(queryChallenge)
-    ? queryChallenge
-    : getPendingDesktopAuthChallenge();
+  // to the one stashed before a login round trip. Captured once on mount:
+  // minting clears the sessionStorage copy, and re-deriving on a later
+  // re-render would wrongly flip the page into the "missing challenge" state.
+  const [challenge] = useState<string | null>(() => {
+    const queryChallenge = searchParams.get("challenge");
+    return isValidDesktopAuthChallenge(queryChallenge)
+      ? queryChallenge
+      : getPendingDesktopAuthChallenge();
+  });
 
   const [handoff, setHandoff] = useState<HandoffState>({ status: "minting" });
   const mintInFlight = useRef(false);
