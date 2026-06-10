@@ -1848,6 +1848,11 @@ const Chat: React.FC<ChatProps> = ({
             ) as Record<string, unknown>,
           };
         },
+        // Where `resume: true` reattaches to an in-flight turn (page refresh,
+        // another device/viewer). 204 means nothing is streaming.
+        prepareReconnectToStreamRequest: ({ id }) => ({
+          api: `/api/agent/chat/${id}/stream`,
+        }),
       }),
     [resultsContextRef],
   );
@@ -1870,6 +1875,9 @@ const Chat: React.FC<ChatProps> = ({
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
     transport,
+    // Reattach to a still-generating turn on mount (refresh, reopened tab,
+    // second device). Server answers 204 when the chat is idle.
+    resume: true,
     experimental_throttle: 50,
 
     // Automatically submit when all tool results are available
@@ -2295,6 +2303,14 @@ const Chat: React.FC<ChatProps> = ({
     activeClientToolCallsRef.current.clear();
     setActiveClientToolCallCount(0);
     setQueuedPrompts([]);
+    // With resumable streams, disconnecting no longer cancels the turn — the
+    // server keeps generating for reconnecting clients. Stop must be explicit:
+    // this aborts the server-side generation and clears the resume pointer.
+    if (chatIdRef.current) {
+      void fetch(`/api/agent/chat/${chatIdRef.current}/stop`, {
+        method: "POST",
+      }).catch(() => undefined);
+    }
     stop();
   }, [addToolOutput, stop]);
 

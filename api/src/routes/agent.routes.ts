@@ -10,6 +10,7 @@ import {
   streamText,
   convertToModelMessages,
   stepCountIs,
+  UI_MESSAGE_STREAM_HEADERS,
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
@@ -63,6 +64,12 @@ import { databaseConnectionService } from "../services/database-connection.servi
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
 import { scheduleChatFinalization } from "./chat-finalization-queue";
+import {
+  getResumableStreamContext,
+  registerActiveGeneration,
+  stopActiveGeneration,
+  clearActiveGeneration,
+} from "../services/resumable-stream.service";
 
 const logger = loggers.agent();
 
@@ -551,13 +558,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   logger.info("Using agent", { agentId: resolvedAgentId, tabKind, flowType });
 
-  const requestSignal = c.req.raw.signal;
+  // The turn's lifetime is decoupled from the HTTP connection: the SSE
+  // response is buffered as a resumable stream (see consumeSseStream below),
+  // so a browser disconnect (refresh, tab close, network drop) must NOT abort
+  // generation — reconnecting clients pick the stream back up. Aborting is an
+  // explicit action via POST /chat/:chatId/stop, which fires this controller.
+  const turnAbortController = new AbortController();
+  const turnSignal = turnAbortController.signal;
   const requestExecutionIds = new Set<string>();
 
   // Cancel all currently-registered database executions.
   // Invariant: this only runs as a batch on abort. Any execution registered
   // *after* the abort fires is individually cancelled inside registerExecution
-  // (which checks requestSignal.aborted synchronously after adding the ID).
+  // (which checks turnSignal.aborted synchronously after adding the ID).
   const cancelRegisteredExecutions = async (): Promise<void> => {
     const executionIds = Array.from(requestExecutionIds);
     await Promise.allSettled(
@@ -566,7 +579,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       ),
     );
   };
-  requestSignal.addEventListener(
+  turnSignal.addEventListener(
     "abort",
     () => {
       void cancelRegisteredExecutions();
@@ -577,11 +590,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const toolExecutionContext: NonNullable<
     AgentContext["toolExecutionContext"]
   > = {
-    signal: requestSignal,
+    signal: turnSignal,
     createExecutionId: createAgentExecutionId,
     registerExecution: executionId => {
       requestExecutionIds.add(executionId);
-      if (requestSignal.aborted) {
+      if (turnSignal.aborted) {
         requestExecutionIds.delete(executionId);
         void databaseConnectionService.cancelQuery(executionId);
       }
@@ -589,7 +602,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     releaseExecution: executionId => {
       requestExecutionIds.delete(executionId);
     },
-    isAborted: () => requestSignal.aborted,
+    isAborted: () => turnSignal.aborted,
   };
 
   // Extract last user text once — used by both console hints and skills retrieval.
@@ -747,6 +760,10 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   const startTime = Date.now();
 
+  // Stream ID minted in consumeSseStream once the SSE stream starts; used by
+  // finalization to clear the resume pointer for exactly this turn.
+  let turnStreamId: string | null = null;
+
   // Group this turn into a single Langfuse trace. sessionId=chatId links the
   // messages of a conversation together in the Sessions view; userId enables
   // per-user cost/quality analysis; tags make traces filterable by
@@ -771,7 +788,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         tools,
         stopWhen: stepCountIs(MAX_STEPS),
         providerOptions,
-        abortSignal: requestSignal,
+        abortSignal: turnSignal,
         experimental_telemetry: {
           isEnabled: true,
           functionId: `agent-chat:${resolvedAgentId}`,
@@ -804,9 +821,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       // onFinish handler below always fires — even when the client disconnects
       // (network drop, tab close) or aborts via the Stop button. Without this the
       // HTTP response stops being pulled on disconnect, onFinish never runs, and
-      // the entire assistant turn (and any tool work) is lost. With abortSignal
-      // wired to the request signal, Stop still halts the LLM; we persist whatever
-      // was generated up to that point.
+      // the entire assistant turn (and any tool work) is lost. Disconnects no
+      // longer abort the turn (turnSignal only fires via the explicit stop
+      // endpoint); the resumable stream below lets clients reattach mid-turn.
       void result.consumeStream({
         onError: error =>
           logger.warn("Error draining chat stream", { error, chatId }),
@@ -820,6 +837,33 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         // Forward reasoning tokens from models that support extended thinking
         // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
         sendReasoning: true,
+        // Buffer a tee'd copy of the SSE stream so detached clients (refresh,
+        // other devices, additional viewers) can reattach via
+        // GET /chat/:chatId/stream while the turn is still generating. The
+        // chat's activeStreamId is the resume pointer; finalization clears it.
+        consumeSseStream: async ({ stream }) => {
+          const streamId = new ObjectId().toString();
+          turnStreamId = streamId;
+          try {
+            registerActiveGeneration(chatId, streamId, turnAbortController);
+            await getResumableStreamContext().createNewResumableStream(
+              streamId,
+              () => stream,
+            );
+            await Chat.updateOne(
+              { _id: new ObjectId(chatId) },
+              { $set: { activeStreamId: streamId } },
+            );
+          } catch (error) {
+            // Resumability is best-effort: the direct response stream to the
+            // originating client is unaffected by failures here.
+            logger.warn("Failed to set up resumable stream", {
+              error,
+              chatId,
+              streamId,
+            });
+          }
+        },
         onFinish: ({ messages: allMessages, isAborted }) => {
           // Run finalization in the background so it does not block the UI
           // message stream from closing. The AI SDK awaits onFinish inside the
@@ -1001,6 +1045,24 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
               logger.error("Error saving chat", { error });
             }
 
+            // Turn is finalized: drop the resume pointer so reconnecting
+            // clients load the saved chat instead of reattaching. Guarded on
+            // the streamId so a newer turn's pointer is never clobbered.
+            if (turnStreamId) {
+              clearActiveGeneration(chatId, turnStreamId);
+              try {
+                await Chat.updateOne(
+                  { _id: new ObjectId(chatId), activeStreamId: turnStreamId },
+                  { $set: { activeStreamId: null } },
+                );
+              } catch (error) {
+                logger.warn("Failed to clear activeStreamId", {
+                  error,
+                  chatId,
+                });
+              }
+            }
+
             if (isDescriptionGenAvailable()) {
               void (async () => {
                 try {
@@ -1056,4 +1118,129 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       });
     },
   );
+});
+
+/**
+ * Load a chat and verify the caller may access its workspace. Mirrors the
+ * auth model of POST /chat: session users need workspace membership, API
+ * keys must belong to the chat's workspace.
+ */
+async function authorizeChatStreamAccess(
+  c: AuthenticatedContext,
+  chatId: string,
+): Promise<
+  | { ok: true; chat: { activeStreamId?: string | null } }
+  | { ok: false; status: 400 | 401 | 403 | 404 }
+> {
+  const user = c.get("user");
+  const apiKeyWorkspace = c.get("workspace");
+
+  if (!ObjectId.isValid(chatId)) {
+    return { ok: false, status: 400 };
+  }
+
+  const chat = await Chat.findById(chatId).select("workspaceId activeStreamId");
+  if (!chat) {
+    return { ok: false, status: 404 };
+  }
+
+  const chatWorkspaceId = chat.workspaceId.toString();
+  if (apiKeyWorkspace) {
+    if (apiKeyWorkspace._id.toString() !== chatWorkspaceId) {
+      return { ok: false, status: 403 };
+    }
+  } else if (user) {
+    const hasAccess = await workspaceService.hasAccess(
+      chatWorkspaceId,
+      user.id,
+    );
+    if (!hasAccess) {
+      return { ok: false, status: 403 };
+    }
+  } else {
+    return { ok: false, status: 401 };
+  }
+
+  return {
+    ok: true,
+    chat: { activeStreamId: chat.activeStreamId },
+  };
+}
+
+/**
+ * GET /api/agent/chat/:chatId/stream
+ *
+ * Resume endpoint for useChat({ resume: true }). Reattaches the caller to
+ * the chat's in-flight turn: buffered chunks are replayed, then live chunks
+ * follow. Multiple clients may attach to the same stream concurrently.
+ * Responds 204 when nothing is streaming — the client then renders the chat
+ * persisted in MongoDB.
+ */
+agentRoutes.get("/chat/:chatId/stream", async (c: AuthenticatedContext) => {
+  const chatId = c.req.param("chatId");
+  const access = await authorizeChatStreamAccess(c, chatId);
+  if (!access.ok) {
+    // A not-yet-created chat (client-minted chatId, no turn sent) is a normal
+    // "nothing to resume" case, not an error.
+    if (access.status === 404) return c.body(null, 204);
+    return c.json({ error: "Cannot access chat stream" }, access.status);
+  }
+
+  const { activeStreamId } = access.chat;
+  if (!activeStreamId) {
+    return c.body(null, 204);
+  }
+
+  const stream =
+    await getResumableStreamContext().resumeExistingStream(activeStreamId);
+  if (!stream) {
+    // Stale pointer: stream expired or was lost (e.g. process restart with
+    // the in-memory backend). Clear it so future mounts short-circuit.
+    void Chat.updateOne(
+      { _id: new ObjectId(chatId), activeStreamId },
+      { $set: { activeStreamId: null } },
+    ).catch(error =>
+      logger.warn("Failed to clear stale activeStreamId", { error, chatId }),
+    );
+    return c.body(null, 204);
+  }
+
+  logger.info("Client reattached to chat stream", {
+    chatId,
+    streamId: activeStreamId,
+  });
+  return new Response(stream.pipeThrough(new TextEncoderStream()), {
+    headers: UI_MESSAGE_STREAM_HEADERS,
+  });
+});
+
+/**
+ * POST /api/agent/chat/:chatId/stop
+ *
+ * Explicitly aborts the chat's in-flight generation. With resumable streams a
+ * client disconnect (refresh, tab close) intentionally no longer cancels the
+ * turn, so the Stop button calls this endpoint. Aborting triggers the normal
+ * onFinish(isAborted) path, which persists the partial assistant message and
+ * clears the resume pointer.
+ */
+agentRoutes.post("/chat/:chatId/stop", async (c: AuthenticatedContext) => {
+  const chatId = c.req.param("chatId");
+  const access = await authorizeChatStreamAccess(c, chatId);
+  if (!access.ok) {
+    if (access.status === 404) return c.json({ stopped: false });
+    return c.json({ error: "Cannot access chat" }, access.status);
+  }
+
+  const stopped = stopActiveGeneration(chatId);
+
+  // Clear the pointer immediately so reconnecting clients don't reattach to
+  // the aborted stream. Finalization also clears it, but only on the
+  // instance that owns the generation.
+  await Chat.updateOne(
+    { _id: new ObjectId(chatId) },
+    { $set: { activeStreamId: null } },
+  );
+
+  logger.info("Chat generation stop requested", { chatId, stopped });
+  return c.json({ stopped });
 });
