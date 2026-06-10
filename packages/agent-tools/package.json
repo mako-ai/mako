@@ -13,7 +13,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepare": "if command -v tsc >/dev/null 2>&1; then tsc; fi"
+    "prepare": "node prepare.js"
   },
   "dependencies": {
     "@mako/schemas": "workspace:*",

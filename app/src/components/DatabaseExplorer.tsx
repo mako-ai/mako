@@ -37,6 +37,7 @@ import { useExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
 import CreateDatabaseDialog from "./CreateDatabaseDialog";
 import { useSchemaStore, Connection, TreeNode } from "../store/schemaStore";
+import { useLocalAgentStore } from "../store/localAgentStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useConsoleStore } from "../store/consoleStore";
 import ResourceTree, {
@@ -183,12 +184,18 @@ function DatabaseExplorer({
     string | undefined
   >(undefined);
 
+  const ensureAgentChecked = useLocalAgentStore(s => s.ensureChecked);
+
   useEffect(() => {
     if (currentWorkspace) {
-      ensureConnections(currentWorkspace.id);
+      // Detect the Mako Local Agent first so local connections are merged
+      // into the explorer; ensureConnections itself tolerates agent absence.
+      ensureAgentChecked()
+        .catch(() => undefined)
+        .finally(() => ensureConnections(currentWorkspace.id));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id, ensureConnections]);
+  }, [currentWorkspace?.id, ensureConnections, ensureAgentChecked]);
 
   useEffect(() => {
     if (!currentWorkspace) return;

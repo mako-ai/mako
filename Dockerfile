@@ -8,6 +8,10 @@ RUN npm install -g pnpm
 # Copy everything
 COPY . .
 
+# Skip the Electron binary download (only needed by packages/desktop on
+# developer machines, never in the server image)
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
 # Install all dependencies (workspace handles conflicts)
 RUN pnpm install
 
@@ -41,10 +45,12 @@ COPY --from=builder /app/api/package.json ./api/package.json
 
 # Copy compiled shared schemas package (runtime dependency of API)
 COPY --from=builder /app/packages/schemas/package.json ./packages/schemas/package.json
+COPY --from=builder /app/packages/schemas/prepare.js ./packages/schemas/prepare.js
 COPY --from=builder /app/packages/schemas/dist ./packages/schemas/dist
 
 # Copy compiled shared agent-tools package (runtime dependency of API)
 COPY --from=builder /app/packages/agent-tools/package.json ./packages/agent-tools/package.json
+COPY --from=builder /app/packages/agent-tools/prepare.js ./packages/agent-tools/prepare.js
 COPY --from=builder /app/packages/agent-tools/dist ./packages/agent-tools/dist
 
 # Install production dependencies

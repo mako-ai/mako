@@ -7,8 +7,8 @@ import {
 import { DatabaseConnection } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
-import { DatabaseDriver } from "../databases/driver";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { buildConsoleTemplate } from "../databases/console-template";
 import { loggers } from "../logging";
 
 export const databaseTreeRoutes = new Hono();
@@ -205,9 +205,7 @@ databaseTreeRoutes.get(
       return c.json({ success: false, error: "Database not found" }, 404);
     }
 
-    const driver = databaseRegistry.getDriver(database.type) as
-      | (DatabaseDriver & { getMetadata: () => { consoleLanguage?: string } })
-      | undefined;
+    const driver = databaseRegistry.getDriver(database.type);
     if (!driver) {
       return c.json({ success: false, error: "Driver not found" }, 404);
     }
@@ -218,52 +216,13 @@ databaseTreeRoutes.get(
     const metadataRaw = c.req.query("metadata");
     const metadata = metadataRaw ? JSON.parse(String(metadataRaw)) : undefined;
 
-    const dbType = database.type;
-    const language =
-      (driver.getMetadata().consoleLanguage as string) ||
-      (dbType === "mongodb" ? "mongodb" : "sql");
+    const data = buildConsoleTemplate(database, {
+      id: nodeId ? String(nodeId) : undefined,
+      kind: nodeKind ? String(nodeKind) : undefined,
+      metadata,
+    });
 
-    // Derive sensible default template by DB type and node info
-    let template = "";
-    if (dbType === "mongodb") {
-      const collectionName =
-        nodeId && String(nodeKind) === "collection"
-          ? String(nodeId)
-          : "collection";
-      template = `db.getCollection("${collectionName}").find({}).limit(500)`;
-    } else if (dbType === "bigquery") {
-      const projectId = (database.connection as any)?.project_id || "project";
-      const dataset =
-        metadata?.datasetId ||
-        (typeof nodeId === "string" && nodeId.includes(".")
-          ? nodeId.split(".")[0]
-          : "dataset");
-      const table =
-        typeof nodeId === "string" && nodeId.includes(".")
-          ? nodeId.split(".")[1]
-          : nodeId || "table_name";
-      template = `SELECT * FROM \`${projectId}.${dataset}.${table}\` LIMIT 500;`;
-    } else if (dbType === "cloudflare-d1") {
-      // D1 is SQLite-based
-      const table =
-        metadata?.table ||
-        (typeof nodeId === "string" && nodeId.includes(".")
-          ? nodeId.split(".")[1]
-          : nodeId || "table_name");
-      template = `SELECT * FROM ${table} LIMIT 500;`;
-    } else if (dbType === "cloudflare-kv") {
-      // KV uses JavaScript-like syntax mirroring Cloudflare Workers API
-      template = "kv.list({ limit: 100 })";
-    } else if (dbType === "clickhouse") {
-      // ClickHouse uses database.table format
-      const dbName = metadata?.databaseName || "default";
-      const table = metadata?.tableName || nodeId || "table_name";
-      template = `SELECT * FROM "${dbName}"."${table}" LIMIT 500;`;
-    }
-    // Postgres-family tables no longer use console templates: clicking a
-    // table in the explorer opens a paginated data tab instead.
-
-    return c.json({ success: true, data: { language, template } });
+    return c.json({ success: true, data });
   },
 );
 

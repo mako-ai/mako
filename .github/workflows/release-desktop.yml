@@ -1,0 +1,214 @@
+name: Desktop Release
+
+# Builds and publishes Mako Desktop when desktop-related code lands on master.
+#
+# Versioning model:
+# - packages/desktop/package.json `version` is the source of truth.
+# - A release is created only when that version has no release yet, so
+#   merging a PR that bumps the version is what ships a new build.
+# - Releases are tagged `desktop-vX.Y.Z` (separate from web deploys, which
+#   ship continuously from master).
+# - Asset names are stable (Mako-mac-arm64.dmg, Mako-win-x64.exe, ...) so
+#   https://github.com/<org>/<repo>/releases/latest/download/<asset> is an
+#   evergreen download link.
+#
+# Code signing: builds are unsigned until signing secrets are configured.
+# To enable, add the following repo secrets and uncomment the env lines in
+# the build step: MAC_CSC_LINK / MAC_CSC_KEY_PASSWORD (Developer ID .p12),
+# APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID (notarization),
+# WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (Authenticode).
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "packages/desktop/**"
+      - "packages/local-agent/**"
+      - "api/src/databases/**"
+      - "api/src/services/database-connection.service.ts"
+      - "api/src/services/ssh-tunnel.service.ts"
+      - "api/src/services/query-pagination.service.ts"
+      - ".github/workflows/release-desktop.yml"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and re-upload even if the release exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      should_release: ${{ steps.meta.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desktop version
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          VERSION=$(node -p "require('./packages/desktop/package.json').version")
+          TAG="desktop-v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 && [ "$FORCE" != "true" ]; then
+            echo "Release $TAG already exists; skipping build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac
+          - os: windows-latest
+            args: --win
+          - os: ubuntu-latest
+            args: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bundle Mako Local Agent
+        run: pnpm --filter @mako/local-agent build
+
+      - name: Build desktop main process
+        run: pnpm --filter @mako/desktop build
+
+      # macOS signing is automatic once the repo secrets exist:
+      # - MAC_CSC_LINK / MAC_CSC_KEY_PASSWORD: Developer ID Application .p12
+      #   (base64) and its password -> real codesigning
+      # - APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID -> notarization
+      # Without them, builds are ad-hoc signed (scripts/after-pack.js).
+      - name: Package desktop app
+        working-directory: packages/desktop
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MAC_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ runner.os }}" = "macOS" ] && [ -n "$MAC_CSC_LINK" ]; then
+            export CSC_LINK="$MAC_CSC_LINK"
+            export CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
+            echo "Developer ID certificate configured: signing enabled"
+            if [ -n "$MAC_APPLE_ID" ]; then
+              export APPLE_ID="$MAC_APPLE_ID"
+              export APPLE_APP_SPECIFIC_PASSWORD="$MAC_APPLE_APP_SPECIFIC_PASSWORD"
+              export APPLE_TEAM_ID="$MAC_APPLE_TEAM_ID"
+              EXTRA_ARGS="--config.mac.notarize=true"
+              echo "Apple ID configured: notarization enabled"
+            fi
+          fi
+          npx electron-builder --config electron-builder.yml ${{ matrix.args }} $EXTRA_ARGS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.AppImage
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ls -la dist
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Mako Desktop $VERSION" \
+              --generate-notes
+          fi
+          gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Updates Casks/mako.rb in mako-ai/homebrew-tap so users can
+  # `brew install --cask mako-ai/tap/mako`. Requires the HOMEBREW_TAP_TOKEN
+  # secret (a fine-grained PAT with contents:write on the tap repo); the job
+  # no-ops until that secret and the tap repository exist.
+  homebrew:
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not configured; skipping tap update."
+            exit 0
+          fi
+
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          curl -fsSL "$BASE/Mako-mac-arm64.dmg" -o arm64.dmg
+          curl -fsSL "$BASE/Mako-mac-x64.dmg" -o x64.dmg
+          SHA_ARM64=$(sha256sum arm64.dmg | cut -d' ' -f1)
+          SHA_X64=$(sha256sum x64.dmg | cut -d' ' -f1)
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/mako-ai/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/__VERSION__/${VERSION}/" \
+              -e "s/__SHA_ARM64__/${SHA_ARM64}/" \
+              -e "s/__SHA_X64__/${SHA_X64}/" \
+              packages/desktop/homebrew/mako.rb.tmpl > tap/Casks/mako.rb
+
+          cd tap
+          git config user.name "mako-release-bot"
+          git config user.email "releases@mako.ai"
+          git add Casks/mako.rb
+          git diff --cached --quiet && { echo "Cask unchanged"; exit 0; }
+          git commit -m "mako ${VERSION}"
+          git push origin HEAD
