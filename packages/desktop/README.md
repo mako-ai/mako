@@ -48,18 +48,63 @@ Releases are automated by `.github/workflows/release-desktop.yml`:
 The website download page (`website/app/download`) auto-detects the visitor's
 platform and points at these evergreen links.
 
-### Code signing (TODO before public distribution)
+### Code signing & notarization (macOS)
 
-Builds are currently unsigned. Configure these repo secrets and uncomment the
-env lines in the release workflow:
+Signing turns on automatically in `release-desktop.yml` once these GitHub
+repo secrets exist (Settings → Secrets and variables → Actions):
 
-- macOS: `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD` (Developer ID `.p12`), plus
-  `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` for notarization.
-- Windows: `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` (Authenticode).
+| Secret | What it is |
+| --- | --- |
+| `MAC_CSC_LINK` | base64 of the Developer ID Application `.p12` |
+| `MAC_CSC_KEY_PASSWORD` | password chosen when exporting the `.p12` |
+| `APPLE_ID` | Apple ID email of the developer account |
+| `APPLE_APP_SPECIFIC_PASSWORD` | app-specific password from account.apple.com |
+| `APPLE_TEAM_ID` | 10-char team id (developer.apple.com → Membership) |
 
-Unsigned macOS builds require right-click → Open (or
-`xattr -dr com.apple.quarantine /Applications/Mako.app`) on first launch.
-Signing is also a prerequisite for auto-update (electron-updater) later.
+How to obtain them:
+
+1. Enroll in the Apple Developer Program ($99/yr) at
+   developer.apple.com/programs — as a company you'll need a D-U-N-S number.
+2. Create a **Developer ID Application** certificate: Xcode → Settings →
+   Accounts → Manage Certificates → "+" (or developer.apple.com →
+   Certificates with a CSR from Keychain Access).
+3. Export it from Keychain Access as `.p12` with a password, then
+   `base64 -i certificate.p12 | pbcopy` → `MAC_CSC_LINK`.
+4. Create an app-specific password at account.apple.com → Sign-In and
+   Security → App-Specific Passwords → `APPLE_APP_SPECIFIC_PASSWORD`.
+
+With the first two secrets builds are signed; with all five they are also
+**notarized** (hardened runtime + `build/entitlements.mac.plist` are already
+configured), which removes all Gatekeeper friction. Until then, CI ad-hoc
+signs (`scripts/after-pack.js`) and users must allow the app via System
+Settings → Privacy & Security → Open Anyway, or
+`xattr -dr com.apple.quarantine /Applications/Mako.app`.
+
+Windows Authenticode signing (optional, removes SmartScreen warnings):
+`WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`, same pattern.
+
+### Homebrew
+
+The release workflow auto-publishes a cask to `mako-ai/homebrew-tap`
+(template: `homebrew/mako.rb.tmpl`) when the `HOMEBREW_TAP_TOKEN` secret is
+configured. Setup once:
+
+1. Create a public repo `mako-ai/homebrew-tap`.
+2. Create a fine-grained PAT with `contents: write` on that repo →
+   secret `HOMEBREW_TAP_TOKEN`.
+
+Users then install with `brew install --cask mako-ai/tap/mako`. Submission
+to the official `homebrew/cask` repo is possible later once the app is
+notarized and has traction (their reviewers check project notability).
+
+### Mac App Store (optional, not wired up)
+
+MAS distribution is a separate target (`mas`) with different signing
+("Apple Distribution" cert + provisioning profile) and requires the App
+Sandbox entitlements, an App Store Connect app record, and review. The
+bundled Local Agent gives the app the "native functionality" App Review
+expects from guideline 4.2 (no bare web wrappers). Recommended only after
+Developer ID + Homebrew distribution is established.
 
 ## OAuth note
 

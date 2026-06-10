@@ -22,6 +22,15 @@ extraResources:
 mac:
   category: public.app-category.developer-tools
   artifactName: Mako-mac-${arch}.${ext}
+  # Hardened runtime + entitlements are required for notarization. They only
+  # take effect when a Developer ID certificate is configured (CSC_LINK);
+  # unsigned CI builds fall back to ad-hoc signing via scripts/after-pack.js.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Enabled on CI with --config.mac.notarize=true when Apple secrets exist.
+  notarize: false
   # Note: when auto-update (electron-updater) ships, re-add a zip target per
   # arch — macOS auto-update consumes the zip, the dmg is for humans.
   target:
