@@ -8,6 +8,10 @@ RUN npm install -g pnpm
 # Copy everything
 COPY . .
 
+# Skip the Electron binary download (only needed by packages/desktop on
+# developer machines, never in the server image)
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
 # Install all dependencies (workspace handles conflicts)
 RUN pnpm install
 

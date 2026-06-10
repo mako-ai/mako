@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import {
+  isLocalConnectionId,
+  localAgentClient,
+} from "../lib/local-agent-client";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
@@ -193,6 +197,21 @@ const initialState: ConsoleState = {
 const versionManagers = new Map<string, ConsoleVersionManager>();
 const versionCommentControllers = new Map<string, AbortController>();
 const versionCommentTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Execution IDs routed to the Mako Local Agent, so cancelQuery (which only
+// receives the executionId) can target the right backend.
+const localExecutionIds = new Set<string>();
+
+/**
+ * Cloud consoles persist connectionId as a Mongo ObjectId reference, which
+ * cannot store Local Agent connection ids. Omit local ids from cloud save
+ * payloads; the local connection stays selected in the open tab.
+ */
+function cloudSafeConnectionId(
+  connectionId: string | undefined,
+): string | undefined {
+  return isLocalConnectionId(connectionId) ? undefined : connectionId;
+}
 
 // Debounce timers for draft console saves (per console ID)
 const draftSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -636,7 +655,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               body: JSON.stringify({
                 content,
                 path: cleanPath,
-                connectionId,
+                connectionId: cloudSafeConnectionId(connectionId),
                 databaseName,
                 databaseId,
                 isSaved: true,
@@ -704,12 +723,22 @@ export const useConsoleStore = create<ConsoleStore>()(
             ...(options?.confirmUnsafe ? { confirmUnsafe: true } : {}),
           };
 
-          const { status, body: res } =
-            await apiClient.postWithStatus<QueryExecuteResponse>(
-              `/workspaces/${workspaceId}/execute`,
-              payload,
-              { signal: options?.signal, alsoOk: [400, 403] },
-            );
+          const isLocal = isLocalConnectionId(connectionId);
+          if (isLocal && options?.executionId) {
+            localExecutionIds.add(options.executionId);
+          }
+
+          const { status, body: res } = isLocal
+            ? await localAgentClient.postWithStatus<QueryExecuteResponse>(
+                "/execute",
+                payload,
+                { signal: options?.signal, alsoOk: [400, 403] },
+              )
+            : await apiClient.postWithStatus<QueryExecuteResponse>(
+                `/workspaces/${workspaceId}/execute`,
+                payload,
+                { signal: options?.signal, alsoOk: [400, 403] },
+              );
 
           if (status === 400 || status === 403) {
             return {
@@ -735,6 +764,13 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       cancelQuery: async (workspaceId, executionId) => {
         try {
+          if (localExecutionIds.has(executionId)) {
+            localExecutionIds.delete(executionId);
+            return await localAgentClient.post<QueryCancelResponse>(
+              "/execute/cancel",
+              { executionId },
+            );
+          }
           return await apiClient.post<QueryCancelResponse>(
             `/workspaces/${workspaceId}/execute/cancel`,
             { executionId },
@@ -949,7 +985,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               {
                 content,
                 title,
-                connectionId,
+                connectionId: cloudSafeConnectionId(connectionId),
                 databaseId,
                 databaseName,
               },

@@ -1,0 +1,24 @@
+# Packaging configuration for Mako Desktop.
+#
+# Note: distributable builds additionally require bundling the Mako Local
+# Agent (and its node_modules) into extraResources/agent — that pipeline is
+# intentionally out of scope for the MVP, where `pnpm --filter @mako/desktop
+# dev` runs the agent from the monorepo.
+appId: ai.mako.desktop
+productName: Mako
+directories:
+  output: release
+files:
+  - dist/**
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+  category: Development

@@ -11,4 +11,6 @@ minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@3.0.124'
   - '@ai-sdk/react@3.0.198'
   - ai@6.0.196
-onlyBuiltDependencies: '["ssh2"]'
+onlyBuiltDependencies:
+  - ssh2
+  - electron
