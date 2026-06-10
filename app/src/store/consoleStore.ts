@@ -72,6 +72,8 @@ interface ConsoleActions {
     chartSpec: Record<string, unknown> | null,
   ) => void;
   updateResultsViewMode: (id: string, mode: "table" | "json" | "chart") => void;
+  /** Fast-forward the optimistic-concurrency base after conflict resolution. */
+  updateVersion: (id: string, version: number) => void;
 
   // Versioning
   getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
@@ -356,6 +358,14 @@ export const useConsoleStore = create<ConsoleStore>()(
           }
         }),
 
+      updateVersion: (id, version) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.version = version;
+          }
+        }),
+
       updateDirty: (id, isDirty) =>
         set(state => {
           const tab = state.tabs[id];
@@ -588,6 +598,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.readOnly = res.readOnly;
                 tab.schedule = res.schedule;
                 tab.scheduledRun = res.scheduledRun;
+                tab.version = res.version;
               }
             });
 
@@ -627,6 +638,10 @@ export const useConsoleStore = create<ConsoleStore>()(
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
+          // Optimistic concurrency: send the version this tab was loaded
+          // from so the server rejects (409) instead of overwriting a
+          // concurrent save by someone else.
+          const expectedVersion = get().tabs[tabId]?.version;
           const response = await fetch(
             `/api/workspaces/${workspaceId}/consoles/${tabId}`,
             {
@@ -646,6 +661,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 access,
                 isPrivate:
                   access === undefined ? undefined : access === "private",
+                expectedVersion,
               }),
             },
           );
@@ -660,12 +676,29 @@ export const useConsoleStore = create<ConsoleStore>()(
             };
           }
 
+          if (response.status === 409 && res.error === "version_conflict") {
+            return {
+              success: false,
+              error: "version_conflict",
+              versionConflict: res.versionConflict,
+            };
+          }
+
           if (!response.ok) {
             return { success: false, error: res.error || "Save failed" };
           }
 
           if (res.success) {
-            return { success: true, path: cleanPath };
+            const newVersion = res.version;
+            if (typeof newVersion === "number") {
+              set(state => {
+                const tab = state.tabs[tabId];
+                if (tab) {
+                  tab.version = newVersion;
+                }
+              });
+            }
+            return { success: true, path: cleanPath, version: newVersion };
           }
           return { success: false, error: res.error || "Save failed" };
         } catch (e) {

@@ -77,6 +77,12 @@ export interface ConsoleTab {
   owner_id?: string;
   /** True if the current user can only read (not edit) this console */
   readOnly?: boolean;
+  /**
+   * Server document version this tab was loaded from (optimistic
+   * concurrency). Sent as expectedVersion on explicit saves and
+   * fast-forwarded from each save response.
+   */
+  version?: number;
   schedule?: {
     cron: string;
     timezone: string;

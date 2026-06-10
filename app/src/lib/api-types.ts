@@ -23,6 +23,8 @@ export interface ConsoleContentResponse {
   access?: "private" | "workspace";
   owner_id?: string;
   readOnly?: boolean;
+  /** Optimistic-concurrency base; echoed back as expectedVersion on save. */
+  version?: number;
   schedule?: {
     cron: string;
     timezone: string;
@@ -40,10 +42,20 @@ export interface ConsoleContentResponse {
   };
 }
 
+export interface ConsoleVersionConflict {
+  currentVersion: number;
+  content: string;
+  name?: string;
+  updatedAt?: string;
+}
+
 export interface ConsoleSaveResponse {
   success: boolean;
   path?: string;
   error?: string;
+  /** New document version after a successful save. */
+  version?: number;
+  /** Path conflict: a different console already exists at the target path. */
   conflict?: {
     existingId: string;
     existingContent: string;
@@ -51,6 +63,8 @@ export interface ConsoleSaveResponse {
     existingLanguage?: "sql" | "javascript" | "mongodb";
     path: string;
   };
+  /** Concurrent-edit conflict: the console changed since this client loaded it. */
+  versionConflict?: ConsoleVersionConflict;
 }
 
 export interface ConsoleListItem {
