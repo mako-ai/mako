@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Box,
   Typography,
@@ -8,8 +14,13 @@ import {
   Tooltip,
   CircularProgress,
 } from "@mui/material";
-import { RotateCw as RefreshIcon, Table as TableIcon } from "lucide-react";
+import {
+  RotateCw as RefreshIcon,
+  Table as TableIcon,
+  ChevronRight as BreadcrumbChevronIcon,
+} from "lucide-react";
 import { useConsoleStore } from "../store/consoleStore";
+import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import ResultsTable from "./ResultsTable";
 
@@ -62,6 +73,22 @@ function TableDataView({ tabId }: TableDataViewProps) {
   const connectionId = tab?.connectionId;
   const databaseName = tab?.databaseName;
   const databaseId = tab?.databaseId;
+
+  const connections = useSchemaStore(s => s.connections);
+  const connectionName = useMemo(() => {
+    const list = currentWorkspace ? connections[currentWorkspace.id] || [] : [];
+    const conn = list.find(c => c.id === connectionId);
+    return conn?.displayName || conn?.name;
+  }, [connections, currentWorkspace, connectionId]);
+
+  // connection name > database > schema > table
+  const breadcrumbs = useMemo(
+    () =>
+      [connectionName, databaseName, schema, table].filter(
+        (part): part is string => !!part,
+      ),
+    [connectionName, databaseName, schema, table],
+  );
 
   const fetchPage = useCallback(
     async (cursor: string | null, page: number) => {
@@ -171,14 +198,42 @@ function TableDataView({ tabId }: TableDataViewProps) {
         }}
       >
         <TableIcon size={16} strokeWidth={1.5} />
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {schema}.{table}
-        </Typography>
-        {databaseName ? (
-          <Typography variant="caption" color="text.secondary">
-            {databaseName}
-          </Typography>
-        ) : null}
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.25,
+            minWidth: 0,
+            overflow: "hidden",
+          }}
+        >
+          {breadcrumbs.map((part, idx) => {
+            const isLast = idx === breadcrumbs.length - 1;
+            return (
+              <React.Fragment key={`${idx}-${part}`}>
+                {idx > 0 && (
+                  <BreadcrumbChevronIcon
+                    size={13}
+                    strokeWidth={1.75}
+                    style={{ flexShrink: 0, opacity: 0.45 }}
+                  />
+                )}
+                <Typography
+                  variant="body2"
+                  noWrap
+                  sx={{
+                    fontWeight: isLast ? 600 : 400,
+                    color: isLast ? "text.primary" : "text.secondary",
+                    flexShrink: isLast ? 0 : 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {part}
+                </Typography>
+              </React.Fragment>
+            );
+          })}
+        </Box>
         <Box sx={{ ml: "auto", display: "flex", alignItems: "center" }}>
           <Tooltip title="Refresh">
             <span>
