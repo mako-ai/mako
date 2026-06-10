@@ -74,6 +74,7 @@ import {
   stopActiveGeneration,
   clearActiveGeneration,
 } from "../services/resumable-stream.service";
+import { hasAttachedClients } from "../services/realtime-presence.service";
 
 const logger = loggers.agent();
 
@@ -741,38 +742,66 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     : getModel(resolvedModelId);
   logger.info("Using model", { model: resolvedModelId });
 
-  // Resolve object-storage-backed image attachments (from reopened chats) back
-  // into inline data URLs the model provider can read. Freshly attached images
-  // in the current turn already arrive as data URLs and pass through untouched.
-  // Runs before sanitization so its empty-parts guard covers any message left
-  // with no parts after a missing attachment is dropped.
-  const messagesWithAttachments = await resolveChatAttachmentsForModel(
-    messages,
-    workspaceId,
-  );
-
-  // Sanitize messages to remove incomplete tool calls from interrupted streams
-  // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
-  const sanitizedMessages = sanitizeMessagesForModel(messagesWithAttachments);
-
-  // Convert UI messages (from useChat) to model messages (for streamText)
-  const modelMessages = await convertToModelMessages(sanitizedMessages);
-  const screenshotVisionMessage = buildScreenshotVisionModelMessage(
-    screenshotVisionAttachments,
-  );
-  if (screenshotVisionMessage) {
-    modelMessages.push(
-      screenshotVisionMessage as (typeof modelMessages)[number],
-    );
-    logger.info("Attached screenshot images to model request", {
-      chatId,
+  /**
+   * Build the model messages for one generation segment.
+   *
+   * - Resolves object-storage-backed image attachments (from reopened chats)
+   *   back into inline data URLs the model provider can read. Runs before
+   *   sanitization so its empty-parts guard covers any message left with no
+   *   parts after a missing attachment is dropped.
+   * - Sanitizes messages to remove incomplete tool calls from interrupted
+   *   streams (prevents Anthropic "tool_use ids without tool_result" errors).
+   * - Screenshot vision attachments ride only on the FIRST segment (they are
+   *   consumed from the originating request).
+   */
+  const buildSegmentModelMessages = async (
+    segmentUiMessages: UIMessage[],
+    includeVisionAttachments: boolean,
+  ) => {
+    const messagesWithAttachments = await resolveChatAttachmentsForModel(
+      segmentUiMessages,
       workspaceId,
-      count: screenshotVisionAttachments?.length ?? 0,
-    });
-  }
+    );
+    const sanitizedMessages = sanitizeMessagesForModel(messagesWithAttachments);
+    const modelMessages = await convertToModelMessages(sanitizedMessages);
+    if (includeVisionAttachments) {
+      const screenshotVisionMessage = buildScreenshotVisionModelMessage(
+        screenshotVisionAttachments,
+      );
+      if (screenshotVisionMessage) {
+        modelMessages.push(
+          screenshotVisionMessage as (typeof modelMessages)[number],
+        );
+        logger.info("Attached screenshot images to model request", {
+          chatId,
+          workspaceId,
+          count: screenshotVisionAttachments?.length ?? 0,
+        });
+      }
+    }
+    return modelMessages;
+  };
 
   const MAX_STEPS = 256;
-  let stepsCompleted = 0;
+
+  // "No client attached" fallback (issue #475): when a turn dead-ends on
+  // client-only tools (e.g. capture_screenshot, dashboard tools) and no
+  // browser window is attached to the workspace, the server synthesizes the
+  // tool results and continues the turn itself so the model can adapt
+  // instead of the chat stalling until someone reattaches. Bounded so a
+  // model that keeps calling browser tools can't loop forever.
+  const MAX_NO_CLIENT_CONTINUATIONS = 3;
+  const STRANDED_GRACE_MS = 10_000;
+  const NO_CLIENT_TOOL_RESULT = {
+    success: false,
+    error:
+      "No client attached — this tool needs an open browser window in the workspace. Continue without it (use server-side tools) or summarize what you would have done.",
+  };
+  // Human-in-the-loop tools must stay pending until a person answers.
+  const HUMAN_IN_THE_LOOP_TOOLS = new Set([
+    "ask_clarifying_questions",
+    "submit_plan",
+  ]);
 
   const thinkingMode = modelDef?.thinkingMode ?? "none";
   const thinkingBudget = modelDef?.thinkingBudgetTokens ?? 10000;
@@ -791,12 +820,6 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     ...(thinkingPayload ? { anthropic: { thinking: thinkingPayload } } : {}),
   };
 
-  const startTime = Date.now();
-
-  // Stream ID minted in consumeSseStream once the SSE stream starts; used by
-  // finalization to clear the resume pointer for exactly this turn.
-  let turnStreamId: string | null = null;
-
   // Group this turn into a single Langfuse trace. sessionId=chatId links the
   // messages of a conversation together in the Sessions view; userId enables
   // per-user cost/quality analysis; tags make traces filterable by
@@ -814,7 +837,33 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       ],
     },
     async () => {
-      const result = streamText({
+      /**
+       * Run one generation segment of this turn.
+       *
+       * Segment 0 is the normal request-driven generation. Further segments
+       * exist only for the "no client attached" fallback: when a segment
+       * ends stranded on client-only tool calls with no browser attached,
+       * finalization synthesizes the tool results and starts the next
+       * segment server-side (the continuation's Response body has no HTTP
+       * consumer; the resumable stream still buffers it for reattaching
+       * clients).
+       */
+      const runSegment = async (
+        segmentUiMessages: UIMessage[],
+        continuationDepth: number,
+      ): Promise<Response> => {
+        const modelMessages = await buildSegmentModelMessages(
+          segmentUiMessages,
+          continuationDepth === 0,
+        );
+        const startTime = Date.now();
+        let stepsCompleted = 0;
+        // Stream ID minted in consumeSseStream once the SSE stream starts;
+        // used by finalization to clear the resume pointer for exactly this
+        // segment.
+        let turnStreamId: string | null = null;
+
+        const result = streamText({
         model,
         system: systemPrompt,
         messages: modelMessages,
@@ -855,7 +904,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
             });
           }
         },
-      });
+        });
 
       // Drain the stream server-side so generation runs to completion and the
       // onFinish handler below always fires — even when the client disconnects
@@ -872,7 +921,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       // Return native AI SDK UI message stream response (for useChat compatibility)
       // Using AI SDK best practice: save once at the end with all messages
       return result.toUIMessageStreamResponse({
-        originalMessages: messages,
+        originalMessages: segmentUiMessages,
         generateMessageId: () => new ObjectId().toString(),
         // Forward reasoning tokens from models that support extended thinking
         // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
@@ -892,7 +941,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           // message set) can never be overwritten by this earlier snapshot.
           scheduleChatFinalization(chatId, async () => {
             try {
-              await saveChat(chatId, workspaceId, actorId, messages);
+              await saveChat(chatId, workspaceId, actorId, segmentUiMessages);
             } catch (error) {
               logger.warn("Failed to persist turn-start messages", {
                 error,
@@ -1104,10 +1153,30 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
               logger.error("Error saving chat", { error });
             }
 
+            // "No client attached" fallback: if this segment dead-ended on
+            // client-only tool calls and no browser is attached, synthesize
+            // the tool results and continue the turn server-side. When a
+            // continuation starts it owns the resume pointer, so the clear
+            // below is skipped.
+            let continued = false;
+            try {
+              continued = await maybeContinueStrandedTurn(
+                allMessages,
+                isAborted,
+                continuationDepth,
+                turnStreamId,
+              );
+            } catch (error) {
+              logger.warn("Stranded-turn continuation failed", {
+                error,
+                chatId,
+              });
+            }
+
             // Turn is finalized: drop the resume pointer so reconnecting
             // clients load the saved chat instead of reattaching. Guarded on
             // the streamId so a newer turn's pointer is never clobbered.
-            if (turnStreamId) {
+            if (!continued && turnStreamId) {
               clearActiveGeneration(chatId, turnStreamId);
               try {
                 await Chat.updateOne(
@@ -1174,7 +1243,132 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
             }
           });
         },
-      });
+        });
+      };
+
+      /**
+       * Stranded-turn detection + continuation ("no client attached"
+       * fallback, issue #475).
+       *
+       * A segment is stranded when it finished waiting on tool calls that
+       * only a browser can execute, but no browser window is attached to
+       * the workspace (refresh mid-call, tab closed). In that case we patch
+       * the pending tool parts with an in-band "no client attached" result,
+       * persist, and run the next segment so the model can adapt and the
+       * turn survives end-to-end.
+       *
+       * Returns true when a continuation segment was started (the caller
+       * must then leave the resume pointer to the new segment).
+       */
+      const maybeContinueStrandedTurn = async (
+        allMessages: UIMessage[],
+        isAborted: boolean,
+        continuationDepth: number,
+        segmentStreamId: string | null,
+      ): Promise<boolean> => {
+        if (isAborted || turnSignal.aborted) return false;
+        if (continuationDepth >= MAX_NO_CLIENT_CONTINUATIONS) {
+          return false;
+        }
+
+        const lastMessage = allMessages[allMessages.length - 1];
+        if (!lastMessage || lastMessage.role !== "assistant") return false;
+
+        type ToolPart = {
+          type: string;
+          state?: string;
+          toolName?: string;
+          input?: unknown;
+        };
+        const pendingParts = ((lastMessage.parts ?? []) as ToolPart[]).filter(
+          part =>
+            (part.type?.startsWith("tool-") || part.type === "dynamic-tool") &&
+            part.state === "input-available",
+        );
+        if (pendingParts.length === 0) return false;
+
+        // Every pending tool must be a registered client-side tool (no
+        // execute function) and none may be human-in-the-loop.
+        for (const part of pendingParts) {
+          const toolName =
+            part.type === "dynamic-tool"
+              ? (part.toolName ?? "")
+              : part.type.slice("tool-".length);
+          if (HUMAN_IN_THE_LOOP_TOOLS.has(toolName)) return false;
+          const registered = (
+            tools as Record<string, { execute?: unknown } | undefined>
+          )[toolName];
+          if (!registered || typeof registered.execute === "function") {
+            return false;
+          }
+        }
+
+        // Grace period: a client that just refreshed gets a chance to
+        // reattach and run the tools itself (the normal client-driven loop).
+        await new Promise(resolve => setTimeout(resolve, STRANDED_GRACE_MS));
+        if (turnSignal.aborted) return false;
+        if (await hasAttachedClients(workspaceId)) return false;
+
+        // Confirm this segment still owns the turn (no newer turn or stop).
+        const freshChat = await Chat.findById(chatId).select("activeStreamId");
+        if (!freshChat || freshChat.activeStreamId !== segmentStreamId) {
+          return false;
+        }
+
+        const pendingSet = new Set(pendingParts);
+        const patchedLast = {
+          ...lastMessage,
+          parts: (lastMessage.parts ?? []).map(part =>
+            pendingSet.has(part as ToolPart)
+              ? {
+                  ...part,
+                  state: "output-available" as const,
+                  output: NO_CLIENT_TOOL_RESULT,
+                }
+              : part,
+          ),
+        } as UIMessage;
+        const patchedMessages = [...allMessages.slice(0, -1), patchedLast];
+
+        try {
+          await saveChat(chatId, workspaceId, actorId, patchedMessages);
+        } catch (error) {
+          logger.warn("Failed to persist synthesized tool results", {
+            error,
+            chatId,
+          });
+          return false;
+        }
+
+        logger.info("Continuing stranded turn without attached client", {
+          chatId,
+          continuationDepth: continuationDepth + 1,
+          pendingTools: pendingParts.map(p =>
+            p.type === "dynamic-tool" ? p.toolName : p.type.slice(5),
+          ),
+        });
+
+        // The continuation Response has no HTTP consumer — drain its body so
+        // nothing backs up; reattaching clients consume the resumable copy.
+        const response = await runSegment(
+          patchedMessages,
+          continuationDepth + 1,
+        );
+        if (response.body) {
+          void response.body
+            .pipeTo(
+              new WritableStream({
+                write() {
+                  /* discard */
+                },
+              }),
+            )
+            .catch(() => undefined);
+        }
+        return true;
+      };
+
+      return await runSegment(messages, 0);
     },
   );
 });
