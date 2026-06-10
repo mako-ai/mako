@@ -1,18 +1,50 @@
 /**
- * Detection for the Mako Desktop (Electron) shell. The desktop preload script
- * exposes `window.makoDesktop`; the Electron UA token is stripped for OAuth
- * compatibility, so user-agent sniffing does not work.
+ * Detection and bridge helpers for the Mako Desktop (Electron) shell.
+ *
+ * The desktop preload script (packages/desktop/src/preload.ts) exposes
+ * `window.makoDesktop`; the Electron UA token is stripped, so user-agent
+ * sniffing does not work. The web app uses the bridge to adapt UI — e.g.
+ * route OAuth logins through the system browser instead of the embedded
+ * Chromium window.
  */
+
+export interface MakoDesktopBridge {
+  version: string;
+  platform: string;
+  /**
+   * Ask the desktop main process to start the browser-based sign-in flow:
+   * it generates a PKCE pair and opens the system browser at
+   * /desktop-auth?challenge=<S256(verifier)>.
+   * Optional because older desktop builds may not expose it.
+   */
+  startBrowserAuth?: () => Promise<void>;
+}
 
 declare global {
   interface Window {
-    makoDesktop?: {
-      version: string;
-      platform: string;
-    };
+    makoDesktop?: MakoDesktopBridge;
   }
 }
 
+/** True when the web app is running inside the Mako Desktop Electron shell. */
 export function isMakoDesktop(): boolean {
   return typeof window !== "undefined" && Boolean(window.makoDesktop);
+}
+
+/**
+ * True when the desktop shell supports the browser-based sign-in handoff.
+ */
+export function supportsDesktopBrowserAuth(): boolean {
+  return (
+    isMakoDesktop() &&
+    typeof window.makoDesktop?.startBrowserAuth === "function"
+  );
+}
+
+/**
+ * Start the browser-based sign-in flow from inside the desktop shell.
+ * Resolves once the system browser has been opened.
+ */
+export async function startDesktopBrowserAuth(): Promise<void> {
+  await window.makoDesktop?.startBrowserAuth?.();
 }

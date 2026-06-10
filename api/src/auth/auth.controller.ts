@@ -16,6 +16,12 @@ import {
   createTransferToken,
   verifyTransferToken,
 } from "./oauth-proxy";
+import {
+  createDesktopAuthCode,
+  redeemDesktopAuthCode,
+  isValidChallenge,
+  DESKTOP_AUTH_CODE_TTL_MS,
+} from "./desktop-auth";
 import { loggers } from "../logging";
 
 const logger = loggers.auth();
@@ -660,6 +666,75 @@ authRoutes.get("/github/callback", async c => {
   } catch (error: any) {
     logger.error("GitHub OAuth error", { error });
     return c.redirect(`${process.env.CLIENT_URL}/login?error=oauth_error`);
+  }
+});
+
+// ── Desktop app authentication (browser → desktop deep-link handoff) ─────────
+// The desktop app opens the system browser at /desktop-auth?challenge=<S256>.
+// Once the user is signed in there, the page mints a one-time code bound to
+// the challenge (POST /desktop/code, session-cookie authenticated) and fires
+// a mako://auth?code=... deep link. The desktop app then loads
+// GET /desktop/complete?code&verifier inside its window, which redeems the
+// code and sets the session cookie for the Electron session.
+
+const desktopCodeRateLimiter = rateLimitMiddleware(60_000, 10);
+
+authRoutes.post("/desktop/code", authMiddleware, desktopCodeRateLimiter, async c => {
+  try {
+    const user = c.get("user");
+    const body = await c.req.json().catch(() => ({}));
+    const challenge = body?.challenge;
+
+    if (!isValidChallenge(challenge)) {
+      return c.json(
+        { success: false, error: "Missing or malformed challenge" },
+        400,
+      );
+    }
+
+    const code = await createDesktopAuthCode(user.id, challenge);
+
+    return c.json({
+      code,
+      expiresIn: Math.floor(DESKTOP_AUTH_CODE_TTL_MS / 1000),
+    });
+  } catch (error: any) {
+    logger.error("Desktop auth code creation failed", { error });
+    return c.json(
+      { success: false, error: "Failed to create desktop auth code" },
+      500,
+    );
+  }
+});
+
+// Public by design: identity is proven by the one-time code + PKCE verifier.
+// This URL is only ever loaded inside the Mako Desktop window so the session
+// cookie lands in the desktop app's browser session.
+authRoutes.get("/desktop/complete", async c => {
+  try {
+    const code = c.req.query("code");
+    const verifier = c.req.query("verifier");
+
+    const userId = await redeemDesktopAuthCode(code, verifier);
+    if (!userId) {
+      return c.redirect(`${process.env.CLIENT_URL}/login?error=desktop_auth`);
+    }
+
+    const { session } = await authService.createSessionForUser(userId);
+
+    const sessionCookie = sessionManager.createSessionCookie(session.id);
+    setCookie(
+      c,
+      sessionCookie.name,
+      sessionCookie.value,
+      convertCookieAttributes(sessionCookie.attributes),
+    );
+
+    logger.info("Desktop auth handoff completed", { userId });
+    return c.redirect(`${process.env.CLIENT_URL}/`);
+  } catch (error: any) {
+    logger.error("Desktop auth completion error", { error });
+    return c.redirect(`${process.env.CLIENT_URL}/login?error=desktop_auth`);
   }
 });
 
