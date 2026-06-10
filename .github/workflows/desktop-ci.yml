@@ -1,0 +1,60 @@
+name: Desktop CI
+
+# Smoke-builds the Mako Local Agent bundle and an unpacked desktop package on
+# PRs that touch desktop-related code, so packaging regressions are caught
+# before merge (releases only happen from master via release-desktop.yml).
+
+on:
+  pull_request:
+    paths:
+      - "packages/desktop/**"
+      - "packages/local-agent/**"
+      - "api/src/databases/**"
+      - "api/src/services/database-connection.service.ts"
+      - "api/src/services/ssh-tunnel.service.ts"
+      - "api/src/services/query-pagination.service.ts"
+      - ".github/workflows/desktop-ci.yml"
+      - ".github/workflows/release-desktop.yml"
+
+jobs:
+  smoke-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck agent and desktop
+        run: |
+          pnpm --filter @mako/local-agent typecheck
+          pnpm --filter @mako/desktop typecheck
+
+      - name: Bundle Mako Local Agent
+        run: pnpm --filter @mako/local-agent build
+
+      - name: Smoke test agent bundle
+        run: |
+          MAKO_AGENT_PORT=41799 node packages/local-agent/dist/index.js &
+          AGENT_PID=$!
+          sleep 3
+          curl --fail --silent http://127.0.0.1:41799/health
+          kill $AGENT_PID
+
+      - name: Package desktop app (unpacked)
+        working-directory: packages/desktop
+        run: |
+          pnpm run build
+          npx electron-builder --config electron-builder.yml --dir
+          test -f release/linux-unpacked/resources/agent/index.js

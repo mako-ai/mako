@@ -9,7 +9,8 @@
     "dev": "pnpm run build && electron dist/main.js",
     "start": "pnpm run dev",
     "typecheck": "tsc --noEmit",
-    "dist": "pnpm run build && electron-builder --config electron-builder.yml"
+    "dist": "pnpm --filter @mako/local-agent build && pnpm run build && electron-builder --config electron-builder.yml",
+    "pack:dir": "pnpm --filter @mako/local-agent build && pnpm run build && electron-builder --config electron-builder.yml --dir"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

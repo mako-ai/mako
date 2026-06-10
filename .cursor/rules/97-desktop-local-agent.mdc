@@ -1,0 +1,48 @@
+# Mako Desktop & Local Agent
+
+Scope: `packages/local-agent/**`, `packages/desktop/**`, local-connection
+routing in `app/src/lib/local-agent-client.ts`, `app/src/store/localAgentStore.ts`.
+
+## Architecture invariants
+
+- The Local Agent reuses the api driver layer (`api/src/databases/**`,
+  `api/src/services/database-connection.service.ts`) via relative imports.
+  Never fork/copy driver logic into the agent — extract shared helpers into
+  `api/src/databases/**` or `api/src/services/**` instead (see
+  `api/src/databases/console-template.ts` for the pattern).
+- Agent HTTP endpoints must mirror the cloud API request/response envelopes
+  (`{ success, data?, error? }`) so frontend stores can route by connection id
+  without response-shape branching.
+- Local connection ids are prefixed `local_`. Frontend routing decisions go
+  through `isLocalConnectionId()` — never string-match elsewhere.
+- Local connection credentials live encrypted under `~/.mako/agent/` and must
+  NEVER be sent to or stored in Mako Cloud. Cloud save payloads must strip
+  `local_` connection ids (see `cloudSafeConnectionId` in consoleStore).
+- The agent binds 127.0.0.1 only, with a strict CORS origin allowlist.
+  Never bind 0.0.0.0, never wildcard origins.
+- The desktop shell loads the remote web app; do not bundle app/ UI into the
+  Electron binary. Desktop-only behavior belongs in main.ts/preload.ts.
+
+## Build & release
+
+- Agent standalone bundle: `pnpm --filter @mako/local-agent build`
+  (esbuild single file, optional native modules stubbed — keep new
+  dependencies pure-JS or add fallback stubs in `build.mjs`).
+- Desktop packaging: `pnpm --filter @mako/desktop pack:dir` (smoke) or
+  `dist` (installers). The agent bundle ships as `resources/agent/index.js`.
+- Releases: bump `packages/desktop/package.json` version in the PR; merge to
+  master triggers `.github/workflows/release-desktop.yml`, which creates the
+  `desktop-vX.Y.Z` tag + GitHub Release. Keep electron-builder
+  `artifactName`s stable — the website's evergreen download links
+  (`releases/latest/download/<asset>`) depend on them.
+- PR smoke build: `.github/workflows/desktop-ci.yml`.
+
+## Testing checklist for agent/desktop changes
+
+1. `pnpm --filter @mako/local-agent typecheck && pnpm --filter @mako/desktop typecheck`
+2. Run the agent (`pnpm agent:dev`) and exercise `/health`, `/test-connection`,
+   `/execute` against a local database.
+3. Bundle (`pnpm --filter @mako/local-agent build`) and re-run with plain
+   `node dist/index.js` — catches esbuild/native-module regressions.
+4. `pnpm --filter @mako/desktop pack:dir` and launch
+   `release/linux-unpacked/mako` to verify the packaged agent spawn.
