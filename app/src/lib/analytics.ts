@@ -29,6 +29,7 @@ type ProductEvent =
   | "ai_chat_message_queued"
   | "api_key_created"
   | "password_reset_requested"
+  | "desktop_auth_handoff"
   | "logout";
 
 /**

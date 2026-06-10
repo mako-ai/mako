@@ -21,6 +21,10 @@ import { useAuth } from "../hooks/useAuth";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
 import { trackEvent } from "../lib/analytics";
+import {
+  supportsDesktopBrowserAuth,
+  startDesktopBrowserAuth,
+} from "../utils/desktop";
 
 interface RegisterPageProps {
   onSwitchToLogin: () => void;
@@ -35,9 +39,16 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  // True after the desktop shell opened the system browser for sign-in
+  const [browserAuthStarted, setBrowserAuthStarted] = useState(false);
 
   // Check if OAuth is enabled (disabled for PR preview deployments)
   const isOAuthEnabled = authClient.isOAuthEnabled();
+
+  // Inside Mako Desktop, third-party logins happen in the system browser
+  // (visible URL/certificates + the user's password manager), never in the
+  // embedded window.
+  const useBrowserAuth = supportsDesktopBrowserAuth();
 
   // Pre-fill email from URL params (e.g., from invite page)
   useEffect(() => {
@@ -90,7 +101,18 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
 
   const handleOAuthLogin = (provider: "google" | "github") => {
     clearError();
+    if (useBrowserAuth) {
+      void handleBrowserAuth();
+      return;
+    }
     loginWithOAuth(provider);
+  };
+
+  const handleBrowserAuth = async () => {
+    clearError();
+    trackEvent("desktop_auth_handoff", { step: "browser_opened" });
+    await startDesktopBrowserAuth();
+    setBrowserAuthStarted(true);
   };
 
   return (
@@ -103,6 +125,22 @@ export function RegisterPage({ onSwitchToLogin }: RegisterPageProps) {
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={clearError}>
           {error}
+        </Alert>
+      )}
+
+      {browserAuthStarted && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          Finish signing up using your browser. This window will log in
+          automatically once you&apos;re done.{" "}
+          <Link
+            component="button"
+            type="button"
+            variant="body2"
+            onClick={() => void handleBrowserAuth()}
+            sx={{ textDecoration: "none", verticalAlign: "baseline" }}
+          >
+            Reopen browser
+          </Link>
         </Alert>
       )}
 

@@ -45,6 +45,8 @@ import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
+import { DesktopAuthPage } from "./components/DesktopAuthPage";
+import { hasPendingDesktopAuth } from "./utils/desktop-auth-redirect";
 import { RegisterPage } from "./components/RegisterPage";
 import { VerifyEmailPage } from "./components/VerifyEmailPage";
 import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
@@ -563,8 +565,12 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
     return <LoadingScreen />;
   }
 
-  // If already authenticated, redirect to main app
+  // If already authenticated, resume a pending desktop sign-in handoff or
+  // redirect to the main app
   if (user) {
+    if (hasPendingDesktopAuth()) {
+      return <Navigate to="/desktop-auth" replace />;
+    }
     return <Navigate to="/" replace />;
   }
 
@@ -649,6 +655,21 @@ function OnboardingTestRoute() {
   );
 }
 
+// Resume a pending Mako Desktop sign-in handoff after the user authenticates
+// in the browser (any method — including the full-page OAuth round trip,
+// which lands back on "/"). The challenge is stashed in sessionStorage by
+// DesktopAuthPage before redirecting to /login.
+function DesktopAuthResume() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading || !user) return null;
+  if (location.pathname === "/desktop-auth") return null;
+  if (!hasPendingDesktopAuth()) return null;
+
+  return <Navigate to="/desktop-auth" replace />;
+}
+
 // Track page views on route changes for SPA
 function PageViewTracker() {
   const location = useLocation();
@@ -680,9 +701,13 @@ function App() {
   return (
     <>
       <PageViewTracker />
+      <DesktopAuthResume />
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
+        <Route path="/desktop-auth" element={<DesktopAuthPage />} />
 
         {/* Auth routes - redirect to "/" if already logged in */}
         <Route path="/login" element={<LoginRoute />} />

@@ -16,11 +16,16 @@ import {
   Google as GoogleIcon,
   GitHub as GitHubIcon,
 } from "@mui/icons-material";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { handleInviteRedirectIfPresent } from "../utils/invite-redirect";
 import { authClient } from "../lib/auth-client";
 import { AuthLayout } from "./AuthLayout";
 import { trackEvent } from "../lib/analytics";
+import {
+  supportsDesktopBrowserAuth,
+  startDesktopBrowserAuth,
+} from "../utils/desktop";
 
 interface LoginPageProps {
   onSwitchToRegister: () => void;
@@ -32,13 +37,25 @@ export function LoginPage({
   onForgotPassword,
 }: LoginPageProps) {
   const { login, loginWithOAuth, error, loading, clearError } = useAuth();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  // True after the desktop shell opened the system browser for sign-in
+  const [browserAuthStarted, setBrowserAuthStarted] = useState(false);
 
   // Check if OAuth is enabled (disabled for PR preview deployments)
   const isOAuthEnabled = authClient.isOAuthEnabled();
+
+  // Inside Mako Desktop, third-party logins happen in the system browser
+  // (visible URL/certificates + the user's password manager), never in the
+  // embedded window.
+  const useBrowserAuth = supportsDesktopBrowserAuth();
+
+  // Set by GET /api/auth/desktop/complete when a deep-link code is invalid,
+  // expired, or already used (this page renders inside the desktop window).
+  const desktopAuthFailed = searchParams.get("error") === "desktop_auth";
 
   const validateForm = () => {
     const errors: Record<string, string> = {};
@@ -74,7 +91,18 @@ export function LoginPage({
 
   const handleOAuthLogin = (provider: "google" | "github") => {
     clearError();
+    if (useBrowserAuth) {
+      void handleBrowserAuth();
+      return;
+    }
     loginWithOAuth(provider);
+  };
+
+  const handleBrowserAuth = async () => {
+    clearError();
+    trackEvent("desktop_auth_handoff", { step: "browser_opened" });
+    await startDesktopBrowserAuth();
+    setBrowserAuthStarted(true);
   };
 
   return (
@@ -87,6 +115,29 @@ export function LoginPage({
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={clearError}>
           {error}
+        </Alert>
+      )}
+
+      {desktopAuthFailed && !browserAuthStarted && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          That desktop sign-in link expired or was already used. Please try
+          again.
+        </Alert>
+      )}
+
+      {browserAuthStarted && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          Finish signing in using your browser. This window will log in
+          automatically once you&apos;re done.{" "}
+          <Link
+            component="button"
+            type="button"
+            variant="body2"
+            onClick={() => void handleBrowserAuth()}
+            sx={{ textDecoration: "none", verticalAlign: "baseline" }}
+          >
+            Reopen browser
+          </Link>
         </Alert>
       )}
 
@@ -234,6 +285,21 @@ export function LoginPage({
           {loading ? "Logging in..." : "Log in"}
         </Button>
       </form>
+
+      {useBrowserAuth && (
+        <Box sx={{ textAlign: "center", mt: 2 }}>
+          <Link
+            component="button"
+            type="button"
+            variant="body2"
+            onClick={() => void handleBrowserAuth()}
+            disabled={loading}
+            sx={{ textDecoration: "none" }}
+          >
+            Sign in using your browser instead
+          </Link>
+        </Box>
+      )}
 
       <Box sx={{ textAlign: "center", mt: 4 }}>
         <Typography variant="body2" color="text.secondary">
