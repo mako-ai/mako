@@ -25,7 +25,7 @@ import { trackEvent } from "../lib/analytics";
 import {
   supportsDesktopBrowserAuth,
   startDesktopBrowserAuth,
-} from "../utils/desktop";
+} from "../lib/desktop";
 
 interface LoginPageProps {
   onSwitchToRegister: () => void;
