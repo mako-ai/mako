@@ -10,6 +10,10 @@ directories:
   output: release
 files:
   - dist/**
+# Ad-hoc signs macOS builds when no Developer ID cert is configured (see
+# scripts/after-pack.js). Replace with real signing + notarization secrets
+# for public distribution.
+afterPack: ./scripts/after-pack.js
 extraResources:
   - from: ../local-agent/dist/index.js
     to: agent/index.js
