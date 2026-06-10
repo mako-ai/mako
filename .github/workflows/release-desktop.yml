@@ -133,6 +133,11 @@ jobs:
           fi
           npx electron-builder --config electron-builder.yml ${{ matrix.args }} $EXTRA_ARGS
 
+      # Besides the installers, upload the electron-updater feed files:
+      # latest*.yml (per-platform update manifests), the mac zips (what
+      # macOS auto-update actually downloads), and *.blockmap (differential
+      # downloads). They are uploaded to the GitHub release, where the
+      # evergreen releases/latest/download/ URL serves them as the update feed.
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -141,6 +146,9 @@ jobs:
             packages/desktop/release/*.dmg
             packages/desktop/release/*.exe
             packages/desktop/release/*.AppImage
+            packages/desktop/release/*.zip
+            packages/desktop/release/*.blockmap
+            packages/desktop/release/latest*.yml
           if-no-files-found: error
 
   release:

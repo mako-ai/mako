@@ -48,6 +48,27 @@ Releases are automated by `.github/workflows/release-desktop.yml`:
 The website download page (`website/app/download`) auto-detects the visitor's
 platform and points at these evergreen links.
 
+### Auto-update
+
+Installed apps update themselves via `electron-updater`:
+
+- The packaged app embeds a generic update feed pointing at
+  `https://github.com/mako-ai/mako/releases/latest/download` (see `publish`
+  in `electron-builder.yml`). Stable asset names make the feed evergreen, so
+  no tag parsing is involved — but it also means the repo's "latest"
+  (non-prerelease) release must always be a desktop release.
+- The release workflow uploads `latest*.yml`, the mac `.zip` archives (what
+  macOS auto-update actually downloads; the `.dmg` is for first installs)
+  and `*.blockmap` files (differential downloads) next to the installers.
+- Updates download in the background on launch and every 6 hours, then apply
+  on restart (or immediately via the "Restart Now" prompt).
+- **macOS requires a Developer ID–signed build to self-update** — Squirrel.Mac
+  rejects ad-hoc signatures. Until the signing secrets below are configured,
+  macOS users get a dialog pointing at the download page instead. Windows
+  (NSIS) and Linux (AppImage) self-update fine unsigned.
+- Installs older than the first auto-updating release have no updater and
+  need one final manual download.
+
 ### Code signing & notarization (macOS)
 
 Signing turns on automatically in `release-desktop.yml` once these GitHub
