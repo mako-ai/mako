@@ -78,6 +78,14 @@ import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
+import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
+import { PlanCard } from "./PlanCard";
+import type {
+  AskClarifyingQuestionsInput,
+  AskClarifyingQuestionsOutput,
+  SubmitPlanInput,
+  SubmitPlanOutput,
+} from "@mako/agent-tools";
 import {
   computeReasoningGroups,
   getStreamingReasoningGroupStart,
@@ -825,6 +833,37 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             const key = toolCallId
               ? `tool-${toolCallId}`
               : `tool-idx-${partIndex}`;
+
+            // Interactive plan-lifecycle tools: while pending they render in
+            // the docked panel above the composer (Cursor-style), NOT in the
+            // chat. Once resolved, a read-only summary appears inline here.
+            // Errors fall through to the generic tool card.
+            if (
+              toolName === "ask_clarifying_questions" ||
+              toolName === "submit_plan"
+            ) {
+              if (rawState === "output-available") {
+                if (toolName === "ask_clarifying_questions") {
+                  return (
+                    <ClarifyingQuestionsCard
+                      key={key}
+                      input={part.input as AskClarifyingQuestionsInput}
+                      output={part.output as AskClarifyingQuestionsOutput}
+                    />
+                  );
+                }
+                return (
+                  <PlanCard
+                    key={key}
+                    input={part.input as SubmitPlanInput}
+                    output={part.output as SubmitPlanOutput}
+                  />
+                );
+              }
+              if (rawState !== "output-error") {
+                return null;
+              }
+            }
             return (
               <StreamingToolCard
                 key={key}
@@ -1885,6 +1924,17 @@ const Chat: React.FC<ChatProps> = ({
       const toolName = toolCall.toolName;
       const input = toolCall.input as Record<string, unknown>;
 
+      // Deferred plan-lifecycle tools: do NOT settle here. The interactive
+      // card rendered in the message list resolves them via addToolOutput once
+      // the user answers / approves. Returning without output keeps the tool
+      // call pending (human-in-the-loop) until then.
+      if (
+        toolName === "ask_clarifying_questions" ||
+        toolName === "submit_plan"
+      ) {
+        return;
+      }
+
       try {
         if (
           await executeConsoleAgentTool({
@@ -2569,6 +2619,49 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(true);
   }, []);
 
+  // Resolve a deferred interactive tool (clarifying questions / plan) with the
+  // user's answer. Stable identity so the docked card doesn't remount.
+  const handleResolveInteractiveTool = useCallback(
+    (args: {
+      tool: string;
+      toolCallId: string;
+      output: Record<string, unknown>;
+    }) => {
+      void addToolOutput({
+        tool: args.tool,
+        toolCallId: args.toolCallId,
+        output: args.output,
+      });
+    },
+    [addToolOutput],
+  );
+
+  // The deferred interactive tool call currently awaiting the user, if any.
+  // Rendered as a docked panel above the composer (Cursor-style) rather than
+  // inline in the chat; the inline summary only appears once resolved.
+  const pendingInteractiveTool = useMemo(() => {
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return null;
+    for (const part of (last.parts ?? []) as Array<Record<string, unknown>>) {
+      const partType = part.type as string | undefined;
+      if (
+        partType !== "tool-ask_clarifying_questions" &&
+        partType !== "tool-submit_plan"
+      ) {
+        continue;
+      }
+      if (part.state !== "input-available") continue;
+      return {
+        toolName: partType.slice("tool-".length) as
+          | "ask_clarifying_questions"
+          | "submit_plan",
+        toolCallId: (part.toolCallId as string) || "",
+        input: part.input,
+      };
+    }
+    return null;
+  }, [messages]);
+
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
     const existingTab = store.tabs[consoleId];
@@ -3028,6 +3121,42 @@ const Chat: React.FC<ChatProps> = ({
           </IconButton>
         )}
       </Box>
+
+      {/* Pending interactive tool (clarifying questions / plan approval) —
+          docked above the composer like the prompt queue. The chat itself
+          only shows a read-only summary once the user has responded. */}
+      {pendingInteractiveTool && (
+        <Box
+          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          key={pendingInteractiveTool.toolCallId}
+        >
+          {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
+            <ClarifyingQuestionsCard
+              input={
+                pendingInteractiveTool.input as AskClarifyingQuestionsInput
+              }
+              onResolve={output =>
+                handleResolveInteractiveTool({
+                  tool: pendingInteractiveTool.toolName,
+                  toolCallId: pendingInteractiveTool.toolCallId,
+                  output: output as unknown as Record<string, unknown>,
+                })
+              }
+            />
+          ) : (
+            <PlanCard
+              input={pendingInteractiveTool.input as SubmitPlanInput}
+              onResolve={output =>
+                handleResolveInteractiveTool({
+                  tool: pendingInteractiveTool.toolName,
+                  toolCallId: pendingInteractiveTool.toolCallId,
+                  output: output as unknown as Record<string, unknown>,
+                })
+              }
+            />
+          )}
+        </Box>
+      )}
 
       <Collapse
         in={queuedPrompts.length > 0}

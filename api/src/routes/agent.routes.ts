@@ -59,6 +59,10 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
+import {
+  buildUnifiedModeRuntime,
+  type UnifiedModeRuntime,
+} from "../agents/modes";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
@@ -682,9 +686,37 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     canManageScheduledQueries,
   };
 
-  // Create agent configuration
-  const agentConfig = agentFactory(agentContext);
-  const { systemPrompt, tools } = agentConfig;
+  // Create agent configuration.
+  //
+  // The unified agent uses the PostHog-style mode-switching runtime: a single
+  // ALL_TOOLS union plus a `prepareStep` that recomputes the active tool
+  // allowlist + cached system blocks each step from a derived mode state. This
+  // is what enforces the plan hard gate (mutations blocked once the model has
+  // submitted a plan, until the user approves). Other agents keep the simpler
+  // static system + tools path.
+  let systemPrompt: ReturnType<typeof agentFactory>["systemPrompt"];
+  let tools: ReturnType<typeof agentFactory>["tools"];
+  let prepareStep: UnifiedModeRuntime["prepareStep"] | undefined;
+
+  if (resolvedAgentId === "unified") {
+    const runtime = buildUnifiedModeRuntime({
+      context: agentContext,
+      messages,
+      tabKind,
+    });
+    systemPrompt = runtime.system;
+    tools = runtime.tools;
+    prepareStep = runtime.prepareStep;
+    logger.info("Unified mode runtime", {
+      enabledModes: Array.from(runtime.modeState.enabledModes),
+      planSubmitted: runtime.modeState.planSubmitted,
+      planApproved: runtime.modeState.planApproved,
+    });
+  } else {
+    const agentConfig = agentFactory(agentContext);
+    systemPrompt = agentConfig.systemPrompt;
+    tools = agentConfig.tools;
+  }
 
   const modelDef = await getModelById(resolvedModelId);
   // Self-heal wrapper: if the catalog still classifies this model as manual
@@ -769,6 +801,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         system: systemPrompt,
         messages: modelMessages,
         tools,
+        ...(prepareStep
+          ? {
+              prepareStep: prepareStep as Parameters<
+                typeof streamText
+              >[0]["prepareStep"],
+            }
+          : {}),
         stopWhen: stepCountIs(MAX_STEPS),
         providerOptions,
         abortSignal: requestSignal,

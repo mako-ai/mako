@@ -27,7 +27,8 @@ export type AgentToolDomain =
   | "flow"
   | "search"
   | "memory"
-  | "database";
+  | "database"
+  | "plan";
 
 export type ClientToolExecutor = "console" | "dashboard" | "flow";
 
@@ -547,6 +548,36 @@ export const AGENT_TOOL_MANIFEST = {
         : "Explaining template";
     },
     icon: "help-circle",
+  },
+  enable_mode: {
+    domain: "plan",
+    execution: "server",
+    getLabel: input => {
+      const mode = (input as Record<string, unknown>)?.mode;
+      return mode ? `Switching to ${mode} mode` : "Switching mode";
+    },
+    icon: "filter",
+  },
+  todo_write: {
+    domain: "plan",
+    execution: "server",
+    getLabel: () => "Updating todos",
+    icon: "list",
+  },
+  ask_clarifying_questions: {
+    domain: "plan",
+    execution: "client",
+    getLabel: () => "Asking clarifying questions",
+    icon: "help-circle",
+  },
+  submit_plan: {
+    domain: "plan",
+    execution: "client",
+    getLabel: input => {
+      const title = (input as Record<string, unknown>)?.title;
+      return title ? `Plan: ${title}` : "Submitting plan";
+    },
+    icon: "shield-check",
   },
 } as const satisfies Record<string, AgentToolManifestEntry>;
 

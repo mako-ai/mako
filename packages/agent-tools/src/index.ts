@@ -18,6 +18,7 @@ import { clientChartTools } from "./chart-tools";
 import { clientDashboardTools } from "./dashboard-tools";
 import { clientFlowTools } from "./flow-tools";
 import { clientScreenshotTools } from "./screenshot-tools";
+import { clientPlanTools } from "./plan-tools";
 
 export { clientConsoleTools } from "./console-tools";
 export type {
@@ -39,6 +40,23 @@ export { clientFlowTools } from "./flow-tools";
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";
 
+export { clientPlanTools } from "./plan-tools";
+export type {
+  ClarifyingQuestion,
+  AskClarifyingQuestionsInput,
+  AskClarifyingQuestionsOutput,
+  PlanTodo,
+  SubmitPlanInput,
+  SubmitPlanOutput,
+  PlanDecision,
+} from "./plan-tools";
+
+export {
+  READ_ONLY_TOOL_NAMES,
+  PLAN_GATE_ALLOWED_TOOL_NAMES,
+  isReadOnlyToolName,
+} from "./read-only-tools";
+
 export {
   MakoChartSpecBase,
   MakoChartSpec,
@@ -55,6 +73,7 @@ export const clientAgentTools = {
   ...clientChartTools,
   ...clientDashboardTools,
   ...clientFlowTools,
+  ...clientPlanTools,
 };
 
 /** Map of client tool name -> inferred input/output types. */
