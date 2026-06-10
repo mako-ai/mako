@@ -12,11 +12,21 @@
  * Override the loaded URL with MAKO_DESKTOP_URL (e.g. http://localhost:5173
  * during development).
  */
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import { spawn, ChildProcess } from "child_process";
 import * as http from "http";
 import * as path from "path";
+import {
+  DEEP_LINK_SCHEME,
+  VERIFIER_TTL_MS,
+  generatePkcePair,
+  buildDesktopAuthUrl,
+  buildCompleteUrl,
+  parseDeepLinkAuthCode,
+  findDeepLinkInArgv,
+  isOAuthInitiationUrl,
+} from "./auth-handoff";
 
 const APP_URL = process.env.MAKO_DESKTOP_URL || "https://app.mako.ai";
 const AGENT_PORT = process.env.MAKO_AGENT_PORT
@@ -27,6 +37,51 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
 let agentProcess: ChildProcess | null = null;
+
+// ── Browser-based sign-in (deep-link handoff) ────────────────────────────────
+// Third-party logins (Google/GitHub) never render inside this window: the
+// user can't inspect the URL or certificate there, and the fresh Chromium
+// profile has no password manager. Instead the system browser handles login
+// at ${APP_URL}/desktop-auth and hands the session back via mako://auth.
+
+/** PKCE verifier awaiting its deep-link code. Never leaves this process. */
+let pendingAuth: { verifier: string; expiresAt: number } | null = null;
+
+/** Deep link received before the window existed (cold start via mako://). */
+let queuedDeepLink: string | null = null;
+
+function startBrowserAuth(): void {
+  const { verifier, challenge } = generatePkcePair();
+  pendingAuth = { verifier, expiresAt: Date.now() + VERIFIER_TTL_MS };
+  shell.openExternal(buildDesktopAuthUrl(APP_URL, challenge));
+}
+
+function handleDeepLink(rawUrl: string): void {
+  const code = parseDeepLinkAuthCode(rawUrl);
+  if (!code) return;
+
+  if (!mainWindow) {
+    // Window not ready yet (cold start): replay once it exists.
+    queuedDeepLink = rawUrl;
+    return;
+  }
+
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+
+  if (!pendingAuth || pendingAuth.expiresAt < Date.now()) {
+    // No matching sign-in attempt from this instance (expired, or the link
+    // was triggered without us initiating). The code is useless without the
+    // verifier, so just surface the login screen.
+    pendingAuth = null;
+    console.warn("Ignoring auth deep link without a pending sign-in attempt");
+    return;
+  }
+
+  const { verifier } = pendingAuth;
+  pendingAuth = null; // single use
+  mainWindow.loadURL(buildCompleteUrl(APP_URL, code, verifier));
+}
 
 function agentIsRunning(): Promise<boolean> {
   return new Promise(resolve => {
@@ -191,16 +246,33 @@ function createWindow(): void {
     return { action: "allow" };
   });
 
+  // Safety net: even if a (stale) frontend tries to start an OAuth login
+  // in-window, push it through the system-browser handoff instead. Google &
+  // GitHub login pages must never render inside this shell.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (isOAuthInitiationUrl(url, APP_URL)) {
+      event.preventDefault();
+      startBrowserAuth();
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 
   mainWindow.loadURL(APP_URL);
+
+  // Cold start via a mako:// link: complete the sign-in once the window exists.
+  if (queuedDeepLink) {
+    const link = queuedDeepLink;
+    queuedDeepLink = null;
+    handleDeepLink(link);
+  }
 }
 
-// Strip the Electron token from the user agent: some OAuth providers
-// (notably Google) block embedded browsers based on it. The shell behaves
-// like regular Chrome for the web app.
+// Strip the Electron token from the user agent so the web app sees a
+// regular Chrome UA. Third-party logins never happen in this window (they
+// go through the system browser via the mako:// handoff).
 app.userAgentFallback = app.userAgentFallback
   .replace(/ Electron\/[\d.]+/, "")
   .replace(/ mako-desktop\/[\d.]+/, "");
@@ -221,19 +293,49 @@ app.commandLine.appendSwitch(
   ].join(","),
 );
 
+// Register the mako:// scheme so "Open Mako" links reach this app.
+// Packaged builds also declare it statically (electron-builder `protocols`);
+// dev runs need the executable + entry script spelled out on Win/Linux.
+if (app.isPackaged || process.platform === "darwin") {
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+} else if (process.argv.length >= 2) {
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, process.execPath, [
+    path.resolve(process.argv[1]),
+  ]);
+}
+
+// macOS delivers deep links via open-url (register before app is ready).
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  // Windows/Linux deliver deep links as argv of a second instance.
+  app.on("second-instance", (_event, commandLine) => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+    const deepLink = findDeepLinkInArgv(commandLine);
+    if (deepLink) handleDeepLink(deepLink);
+  });
+
+  // Renderer → main: start the browser-based sign-in flow.
+  ipcMain.handle("mako:start-browser-auth", () => {
+    startBrowserAuth();
   });
 
   app.whenReady().then(async () => {
     setupAutoUpdater();
+
+    // Windows/Linux cold start via a mako:// link: the URL arrives in argv.
+    const coldStartLink = findDeepLinkInArgv(process.argv);
+    if (coldStartLink) queuedDeepLink = coldStartLink;
+
     await startAgent();
     createWindow();
 

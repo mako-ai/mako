@@ -127,8 +127,39 @@ bundled Local Agent gives the app the "native functionality" App Review
 expects from guideline 4.2 (no bare web wrappers). Recommended only after
 Developer ID + Homebrew distribution is established.
 
-## OAuth note
+## Sign-in (browser handoff via `mako://`)
 
-The shell strips the `Electron/x.y` token from the user agent so Google
-OAuth works in-window. If providers tighten embedded-browser detection, the
-fallback plan is system-browser OAuth with a `mako://` deep-link callback.
+Third-party logins (Google/GitHub) never render inside the shell — the user
+couldn't verify the domain or certificate there, and the fresh Chromium
+profile has no password manager. Instead:
+
+1. The login screen (web app detects `window.makoDesktop`) asks the main
+   process to start browser auth. The main process generates a PKCE pair —
+   the **verifier** stays in memory, the **challenge** goes into
+   `{APP_URL}/desktop-auth?challenge=...`, opened in the **system browser**.
+2. The user signs in there with any method (or is already signed in). The
+   page mints a one-time, 60-second auth code bound to the challenge
+   (`POST /api/auth/desktop/code`) and triggers `mako://auth?code=...`
+   ("Open Mako" button).
+3. The OS delivers the deep link (`open-url` on macOS; second-instance /
+   cold-start argv on Windows/Linux — the single-instance lock handles
+   focus). The shell loads
+   `{APP_URL}/api/auth/desktop/complete?code=...&verifier=...` in the main
+   window; the server verifies code + PKCE, sets the session cookie, and
+   redirects into the app.
+
+A `will-navigate` guard additionally rewrites any in-window navigation to
+`/api/auth/google|github` (e.g. from a stale cached frontend) into the same
+browser handoff.
+
+The `mako://` scheme is declared in `electron-builder.yml` (`protocols`),
+which covers macOS `CFBundleURLTypes`, Windows NSIS registry entries, and
+the Linux `.desktop` entry's `x-scheme-handler/mako` MimeType.
+`app.setAsDefaultProtocolClient` keeps dev runs working; note that protocol
+registration from non-packaged Linux dev shells is best-effort. To exercise
+the final hop manually in dev, paste the
+`/api/auth/desktop/complete?code=...&verifier=...` URL produced by the flow
+into the window via `MAKO_DESKTOP_URL`.
+
+The shell also strips the `Electron/x.y` token from the user agent so the
+web app sees a regular Chrome UA.

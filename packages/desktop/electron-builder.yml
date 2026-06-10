@@ -10,6 +10,13 @@ directories:
   output: release
 files:
   - dist/**
+# Deep-link scheme for the browser → app sign-in handoff (mako://auth).
+# electron-builder wires this per-OS: CFBundleURLTypes in Info.plist (macOS),
+# NSIS registry entries (Windows), and an x-scheme-handler/mako MimeType in
+# the generated .desktop entry (Linux).
+protocols:
+  - name: Mako
+    schemes: [mako]
 # Ad-hoc signs macOS builds when no Developer ID cert is configured (see
 # scripts/after-pack.js). Replace with real signing + notarization secrets
 # for public distribution.
