@@ -1,4 +1,10 @@
-import React, { useEffect, useState, useCallback, useRef } from "react";
+import React, {
+  useEffect,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import {
   Dialog,
   DialogTitle,
@@ -19,9 +25,6 @@ import {
   Avatar,
   IconButton,
   InputAdornment,
-  FormControlLabel,
-  Switch,
-  Tooltip,
 } from "@mui/material";
 import Accordion from "@mui/material/Accordion";
 import AccordionSummary from "@mui/material/AccordionSummary";
@@ -36,7 +39,11 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useLocalAgentStore } from "../store/localAgentStore";
-import { isLocalConnectionId } from "../lib/local-agent-client";
+import {
+  isLocalConnectionId,
+  connectionLooksLocal,
+} from "../lib/local-agent-client";
+import { isMakoDesktop } from "../lib/desktop";
 import { useForm, Controller } from "react-hook-form";
 import { trackEvent } from "../lib/analytics";
 import {
@@ -93,12 +100,17 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     error?: string;
   } | null>(null);
 
-  // Local connection (Mako Agent) state
+  // Local connection (Mako Agent) state. Local addresses are detected from
+  // the form values and routed through the agent automatically — no toggle.
   const isEditingLocal = isLocalConnectionId(databaseId);
-  const [storeLocally, setStoreLocally] = useState(false);
+  const isDesktop = isMakoDesktop();
   const agentStatus = useLocalAgentStore(s => s.status);
   const ensureAgentChecked = useLocalAgentStore(s => s.ensureChecked);
   const checkAgent = useLocalAgentStore(s => s.checkAgent);
+
+  const agentOfflineMessage = isDesktop
+    ? "The Mako Agent isn't reachable on this machine. Try restarting Mako Desktop."
+    : "This database is on your local network, which Mako Cloud can't reach. Install Mako Desktop or run the Mako Agent on this machine, then try again.";
 
   // Ref to prevent infinite loops in two-way binding
   const isUpdatingFromConnectionString = useRef(false);
@@ -150,15 +162,41 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setTestingConnection(true);
     setTestResult(null);
 
+    const looksLocal = connectionLooksLocal(values.connection);
+    // Existing connections keep their home (cloud or agent); new connections
+    // are routed by address detection.
+    const local = isEditingLocal || (!databaseId && looksLocal);
+
     try {
+      if (local) {
+        // Fresh probe: the agent may have been started since the last check.
+        const status = await checkAgent();
+        if (status !== "online") {
+          setTestResult({ success: false, error: agentOfflineMessage });
+          return;
+        }
+      }
+
       const res = await testConnection(
         currentWorkspace.id,
         {
           type: values.type,
           connection: values.connection,
         },
-        { local: storeLocally || isEditingLocal },
+        { local },
       );
+
+      if (!res.success && !local && looksLocal) {
+        // Editing a cloud connection pointed at a local address: the cloud
+        // server can never reach it, so explain instead of surfacing a bare
+        // ECONNREFUSED.
+        setTestResult({
+          success: false,
+          error: `${res.error || "Connection failed"} — this address points at your local network, which Mako Cloud can't reach. Create a new connection instead; local addresses connect through the Mako Agent automatically.`,
+        });
+        return;
+      }
+
       setTestResult(res);
     } catch (err) {
       setTestResult({
@@ -168,11 +206,34 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     } finally {
       setTestingConnection(false);
     }
-  }, [currentWorkspace, watch, testConnection, storeLocally, isEditingLocal]);
+  }, [
+    currentWorkspace,
+    watch,
+    testConnection,
+    isEditingLocal,
+    databaseId,
+    checkAgent,
+    agentOfflineMessage,
+  ]);
 
   // Watch PostgreSQL fields for two-way binding
   const watchedConnection = watch("connection");
   const watchedType = watch("type");
+
+  // Detect local addresses (localhost, 127.0.0.1, private LAN ranges, ...)
+  // to drive routing and the web-only informational banner.
+  const looksLocal = useMemo(
+    () => connectionLooksLocal(watchedConnection),
+    [watchedConnection],
+  );
+
+  // Probe the agent as soon as a local address is detected so the banner and
+  // routing reflect reality (cheap no-op while a probe is already in flight).
+  useEffect(() => {
+    if (looksLocal) {
+      checkAgent().catch(() => undefined);
+    }
+  }, [looksLocal, checkAgent]);
 
   const supportsConnectionStringType =
     watchedType === "postgresql" ||
@@ -326,11 +387,10 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
       reset({ name: "", type: "", connection: {} });
       setStep("select");
       setError(null);
-      setStoreLocally(false);
     }
 
-    // Detect the Mako Local Agent so the "local connection" toggle reflects
-    // availability when the dialog opens.
+    // Detect the Mako Local Agent early so local-address routing and the
+    // web banner are ready by the time the user fills in the form.
     ensureAgentChecked().catch(() => undefined);
   }, [
     open,
@@ -361,8 +421,19 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
     setError(null);
     setTestResult(null);
     try {
+      const local =
+        isEditingLocal ||
+        (!databaseId && connectionLooksLocal(values.connection));
+
+      if (local) {
+        const status = await checkAgent();
+        if (status !== "online") {
+          throw new Error(agentOfflineMessage);
+        }
+      }
+
       const res = await saveDatabase(currentWorkspace.id, values, databaseId, {
-        local: storeLocally || isEditingLocal,
+        local,
       });
 
       if (!res.success) {
@@ -540,53 +611,27 @@ const CreateDatabaseDialog: React.FC<CreateDatabaseDialogProps> = ({
                 autoComplete="off"
               />
 
-              {/* Local connection toggle (Mako Agent) */}
-              <Box sx={{ mt: 1 }}>
-                <Tooltip
-                  title={
-                    agentStatus === "online" || isEditingLocal
-                      ? ""
-                      : "The Mako Agent is not running on this machine. Start it with: pnpm --filter @mako/local-agent dev"
+              {/* Local-address banner: web only. Inside Mako Desktop the
+                  agent is bundled and routing is automatic, so nothing is
+                  shown. */}
+              {!isDesktop && looksLocal && (
+                <Alert
+                  severity={
+                    databaseId && !isEditingLocal
+                      ? "warning"
+                      : agentStatus === "online"
+                        ? "info"
+                        : "warning"
                   }
-                  placement="top-start"
+                  sx={{ mt: 2 }}
                 >
-                  <span>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={storeLocally || isEditingLocal}
-                          onChange={e => {
-                            if (e.target.checked && agentStatus !== "online") {
-                              // Re-probe in case the agent was just started.
-                              checkAgent().then(status => {
-                                if (status === "online") setStoreLocally(true);
-                              });
-                              return;
-                            }
-                            setStoreLocally(e.target.checked);
-                          }}
-                          disabled={
-                            isEditingLocal ||
-                            Boolean(databaseId) ||
-                            (agentStatus !== "online" && !storeLocally)
-                          }
-                          size="small"
-                        />
-                      }
-                      label="Local connection (via Mako Agent)"
-                    />
-                  </span>
-                </Tooltip>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  display="block"
-                >
-                  {agentStatus === "online" || isEditingLocal
-                    ? "Queries run through the Mako Agent on this machine. Credentials are stored locally and never sent to Mako Cloud."
-                    : "Connect to databases running on this machine (localhost). Requires the Mako Agent."}
-                </Typography>
-              </Box>
+                  {databaseId && !isEditingLocal
+                    ? "This address points at your local network, which Mako Cloud can't reach. Create a new connection instead — local addresses connect through the Mako Agent automatically."
+                    : agentStatus === "online"
+                      ? "Local database detected. It will connect through the Mako Agent on this machine — credentials stay local and are never sent to Mako Cloud."
+                      : "Local database detected, which Mako Cloud can't reach. Install Mako Desktop or run the Mako Agent on this machine to connect."}
+                </Alert>
+              )}
 
               {/* Hidden input to register 'type' as required for validation */}
               <input

@@ -131,6 +131,22 @@ app.userAgentFallback = app.userAgentFallback
   .replace(/ Electron\/[\d.]+/, "")
   .replace(/ mako-desktop\/[\d.]+/, "");
 
+// The HTTPS web app must call the plain-HTTP Local Agent on 127.0.0.1.
+// Chromium's Local/Private Network Access checks gate that behind a
+// permission prompt that Electron never renders, so the agent health probe
+// silently fails and the app believes the agent is offline. The shell only
+// loads the trusted Mako app, so disable those checks here. (Browsers keep
+// them; the web app handles the permission prompt there.)
+app.commandLine.appendSwitch(
+  "disable-features",
+  [
+    "LocalNetworkAccessChecks",
+    "PrivateNetworkAccessSendPreflights",
+    "PrivateNetworkAccessRespectPreflightResults",
+    "PrivateNetworkAccessPermissionPrompt",
+  ].join(","),
+);
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
