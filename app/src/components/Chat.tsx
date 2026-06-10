@@ -2691,6 +2691,21 @@ const Chat: React.FC<ChatProps> = ({
     setIsExistingChat(false);
   };
 
+  // Live per-chat activity from the realtime channel. The server-fetched
+  // activeStreamId is the initial value (correct on cold open); chat.activity
+  // events keep it current while the menu is open — including turns started
+  // by other windows or continuing server-side after a detach.
+  const chatActivity = useRealtimeStore(s => s.chatActivity);
+  const isSessionStreaming = useCallback(
+    (session: ChatSessionMeta): boolean => {
+      const live = chatActivity[session._id];
+      if (live === "streaming") return true;
+      if (live === "idle") return false;
+      return Boolean(session.activeStreamId);
+    },
+    [chatActivity],
+  );
+
   const handleHistoryMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
     setHistoryMenuAnchor(event.currentTarget);
     // The list goes stale the moment a new chat starts a turn (the doc is
@@ -3092,7 +3107,7 @@ const Chat: React.FC<ChatProps> = ({
           .filter(
             session =>
               session._id === chatId ||
-              Boolean(session.activeStreamId) ||
+              isSessionStreaming(session) ||
               (session.title && session.title.length > 0),
           )
           .map(session => (
@@ -3104,7 +3119,7 @@ const Chat: React.FC<ChatProps> = ({
             >
               <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
                 <ListItemIcon>
-                  {session.activeStreamId ? (
+                  {isSessionStreaming(session) ? (
                     // Turn in flight server-side — pulsing indicator instead
                     // of the static chat icon.
                     <Box

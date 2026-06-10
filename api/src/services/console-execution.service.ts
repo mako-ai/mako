@@ -240,7 +240,10 @@ export async function executeSavedConsole(
       { _id: savedConsole._id },
       {
         $set: { lastExecutedAt: new Date(), lastRun },
-        $inc: { executionCount: 1 },
+        // The run artifact is part of the replicated draft state: bumping
+        // the revision lets revisions-sync deliver it to windows that
+        // missed the console.run.completed event (reconnect, tab focus).
+        $inc: { executionCount: 1, draftRevision: 1 },
       },
     );
   } catch (error) {

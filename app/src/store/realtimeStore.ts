@@ -161,12 +161,23 @@ export const useRealtimeStore = create<RealtimeStore>()(
       event: Extract<RealtimeEvent, { type: "console.run.completed" }>,
     ) => {
       const workspaceId = get().workspaceId;
-      const consoleStore = useConsoleStore.getState();
-      if (!workspaceId || !consoleStore.tabs[event.consoleId]) return;
+      if (!workspaceId) return;
 
       // Pull the persisted run artifact and render it through the existing
       // results-panel pipeline (same events the client run_console used).
+      // The agent runs queries fast: this event often races the tab being
+      // opened by the create/open ui-intent, so wait briefly for the tab.
       void (async () => {
+        const consoleStore = useConsoleStore.getState();
+        for (
+          let attempt = 0;
+          attempt < 10 && !useConsoleStore.getState().tabs[event.consoleId];
+          attempt++
+        ) {
+          await new Promise(r => setTimeout(r, 500));
+        }
+        if (!useConsoleStore.getState().tabs[event.consoleId]) return;
+
         const res = await consoleStore.fetchConsoleContent(
           workspaceId,
           event.consoleId,

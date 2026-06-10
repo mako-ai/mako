@@ -75,6 +75,7 @@ import {
   clearActiveGeneration,
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
 const logger = loggers.agent();
 
@@ -962,6 +963,13 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
               { _id: new ObjectId(chatId) },
               { $set: { activeStreamId: streamId } },
             );
+            // Live activity indicators: open windows light up the chat in
+            // the history menu without polling.
+            publishRealtimeEvent(workspaceId, {
+              type: "chat.activity",
+              chatId,
+              state: "streaming",
+            });
           } catch (error) {
             // Resumability is best-effort: the direct response stream to the
             // originating client is unaffected by failures here.
@@ -1189,6 +1197,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
                   chatId,
                 });
               }
+              publishRealtimeEvent(workspaceId, {
+                type: "chat.activity",
+                chatId,
+                state: "idle",
+              });
             }
 
             if (isDescriptionGenAvailable()) {
@@ -1382,7 +1395,10 @@ async function authorizeChatStreamAccess(
   c: AuthenticatedContext,
   chatId: string,
 ): Promise<
-  | { ok: true; chat: { activeStreamId?: string | null } }
+  | {
+      ok: true;
+      chat: { activeStreamId?: string | null; workspaceId: string };
+    }
   | { ok: false; status: 400 | 401 | 403 | 404 }
 > {
   const user = c.get("user");
@@ -1416,7 +1432,7 @@ async function authorizeChatStreamAccess(
 
   return {
     ok: true,
-    chat: { activeStreamId: chat.activeStreamId },
+    chat: { activeStreamId: chat.activeStreamId, workspaceId: chatWorkspaceId },
   };
 }
 
@@ -1493,6 +1509,11 @@ agentRoutes.post("/chat/:chatId/stop", async (c: AuthenticatedContext) => {
     { _id: new ObjectId(chatId) },
     { $set: { activeStreamId: null } },
   );
+  publishRealtimeEvent(access.chat.workspaceId, {
+    type: "chat.activity",
+    chatId,
+    state: "idle",
+  });
 
   logger.info("Chat generation stop requested", { chatId, stopped });
   return c.json({ stopped });
