@@ -110,6 +110,45 @@ interface ChatSessionMeta {
   title: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Resume pointer set while a turn is generating server-side. */
+  activeStreamId?: string | null;
+}
+
+// ── Per-tab chat session persistence ─────────────────────────────
+// sessionStorage scopes the active chat to the browser tab: a refresh
+// restores (and reattaches to) the same chat, while new tabs start blank.
+
+const CHAT_SESSION_STORAGE_KEY = "mako:active-chat";
+
+interface StoredChatSession {
+  chatId: string;
+  workspaceId: string;
+}
+
+function readStoredChatSession(): StoredChatSession | null {
+  try {
+    const raw = sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredChatSession>;
+    if (
+      typeof parsed.chatId === "string" &&
+      /^[0-9a-fA-F]{24}$/.test(parsed.chatId) &&
+      typeof parsed.workspaceId === "string"
+    ) {
+      return { chatId: parsed.chatId, workspaceId: parsed.workspaceId };
+    }
+  } catch {
+    /* sessionStorage unavailable or corrupted entry */
+  }
+  return null;
+}
+
+function writeStoredChatSession(session: StoredChatSession): void {
+  try {
+    sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    /* ignore storage failures (private mode, quota) */
+  }
 }
 
 // CodeBlock component for syntax highlighting
@@ -1671,8 +1710,18 @@ const Chat: React.FC<ChatProps> = ({
   }, [dbTypes, workspaceConnections]);
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
+  // The chat persisted for this tab (if any), read once per mount. Restoring
+  // it means a page refresh reopens — and reattaches to — the same chat.
+  const initialStoredSessionRef = useRef<StoredChatSession | null | undefined>(
+    undefined,
+  );
+  if (initialStoredSessionRef.current === undefined) {
+    initialStoredSessionRef.current = readStoredChatSession();
+  }
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
-  const [chatId, setChatId] = useState<string>(() => generateObjectId());
+  const [chatId, setChatId] = useState<string>(
+    () => initialStoredSessionRef.current?.chatId ?? generateObjectId(),
+  );
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
@@ -1686,7 +1735,11 @@ const Chat: React.FC<ChatProps> = ({
 
   // Track if we're viewing an existing chat from history (vs a new chat)
   // Moved before useChat so onFinish callback can access it
-  const [isExistingChat, setIsExistingChat] = useState(false);
+  // A chat restored from sessionStorage is treated as existing so its
+  // persisted messages are loaded before reattaching to the live stream.
+  const [isExistingChat, setIsExistingChat] = useState(() =>
+    Boolean(initialStoredSessionRef.current),
+  );
 
   // Refs for accessing current values in callbacks (avoids stale closures)
   const isExistingChatRef = useRef(isExistingChat);
@@ -1872,12 +1925,16 @@ const Chat: React.FC<ChatProps> = ({
     stop,
     setMessages,
     addToolOutput,
+    resumeStream,
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
     transport,
-    // Reattach to a still-generating turn on mount (refresh, reopened tab,
-    // second device). Server answers 204 when the chat is idle.
-    resume: true,
+    // NOTE: we intentionally do NOT use `resume: true`. The hook's resume
+    // effect only fires on mount (its deps are [resume, chatRef] and chatRef
+    // is a stable ref), so it never reattaches when chatId changes (history
+    // selection). Instead `resumeStream()` is called explicitly at the end of
+    // loadSession, which also sequences it after setMessages so the replayed
+    // stream is never clobbered by the persisted-message load.
     experimental_throttle: 50,
 
     // Automatically submit when all tool results are available
@@ -2204,6 +2261,11 @@ const Chat: React.FC<ChatProps> = ({
     },
   });
 
+  // Latest resumeStream for use inside effects without dep churn — it is
+  // re-bound to a fresh Chat instance whenever chatId changes.
+  const resumeStreamRef = useRef(resumeStream);
+  resumeStreamRef.current = resumeStream;
+
   const createCancellationOutput = useCallback(
     (toolName: string): Record<string, unknown> => ({
       success: false,
@@ -2344,8 +2406,33 @@ const Chat: React.FC<ChatProps> = ({
     fetchSessionsRef.current?.();
   }, [currentWorkspace]);
 
+  // Validate the restored per-tab chat once the workspace resolves: a chat
+  // persisted for a different workspace must not leak into this one.
+  const sessionRestoreCheckedRef = useRef(false);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId || sessionRestoreCheckedRef.current) return;
+    sessionRestoreCheckedRef.current = true;
+    const stored = initialStoredSessionRef.current;
+    if (stored && stored.workspaceId !== workspaceId) {
+      setChatId(generateObjectId());
+      setMessages([]);
+      setIsExistingChat(false);
+    }
+  }, [currentWorkspace?.id, setMessages]);
+
+  // Keep the per-tab session pointer current so a refresh restores this chat.
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    writeStoredChatSession({ chatId, workspaceId });
+  }, [chatId, currentWorkspace?.id]);
+
   // Load messages when selecting an existing chat from history
   useEffect(() => {
+    // Flipped when this effect is superseded (chat switched / unmount) so a
+    // slow fetch can't clobber the next chat's state or resume the wrong one.
+    let cancelled = false;
     const loadSession = async () => {
       if (!isExistingChat || !currentWorkspace) {
         return;
@@ -2354,6 +2441,7 @@ const Chat: React.FC<ChatProps> = ({
         const res = await fetch(
           `/api/workspaces/${currentWorkspace.id}/chats/${chatId}`,
         );
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
           // Convert stored messages to AI SDK format with parts including tool calls
@@ -2526,8 +2614,20 @@ const Chat: React.FC<ChatProps> = ({
       } catch {
         /* ignore */
       }
+
+      // Reattach to a still-generating turn AFTER the persisted messages are
+      // in place: the resumable SSE replay only contains this turn's
+      // assistant chunks, so loading first yields the full conversation and
+      // avoids setMessages clobbering an in-flight replay. The server answers
+      // 204 when the chat is idle (or unknown), making this a cheap no-op.
+      if (!cancelled) {
+        void resumeStreamRef.current?.();
+      }
     };
     loadSession();
+    return () => {
+      cancelled = true;
+    };
   }, [chatId, isExistingChat, currentWorkspace, setMessages]);
 
   // Create new chat session - just generate a new ID locally (no API call needed)
@@ -2542,6 +2642,10 @@ const Chat: React.FC<ChatProps> = ({
 
   const handleHistoryMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
     setHistoryMenuAnchor(event.currentTarget);
+    // The list goes stale the moment a new chat starts a turn (the doc is
+    // created server-side at turn start) — refresh it on every open so
+    // in-flight chats appear immediately with their streaming indicator.
+    void fetchSessionsRef.current?.();
   };
 
   const handleHistoryMenuClose = () => {
@@ -2874,11 +2978,7 @@ const Chat: React.FC<ChatProps> = ({
             <IconButton size="small" onClick={createNewSession}>
               <Plus size={20} />
             </IconButton>
-            <IconButton
-              size="small"
-              onClick={handleHistoryMenuOpen}
-              disabled={sessions.length === 0}
-            >
+            <IconButton size="small" onClick={handleHistoryMenuOpen}>
               <History size={20} />
             </IconButton>
           </Box>
@@ -2898,6 +2998,7 @@ const Chat: React.FC<ChatProps> = ({
           .filter(
             session =>
               session._id === chatId ||
+              Boolean(session.activeStreamId) ||
               (session.title && session.title.length > 0),
           )
           .map(session => (
@@ -2909,7 +3010,23 @@ const Chat: React.FC<ChatProps> = ({
             >
               <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
                 <ListItemIcon>
-                  <MessageSquare size={18} />
+                  {session.activeStreamId ? (
+                    // Turn in flight server-side — pulsing indicator instead
+                    // of the static chat icon.
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 18,
+                        height: 18,
+                      }}
+                    >
+                      <Box sx={streamingIndicatorDotSx} />
+                    </Box>
+                  ) : (
+                    <MessageSquare size={18} />
+                  )}
                 </ListItemIcon>
                 <Box>
                   <ListItemText

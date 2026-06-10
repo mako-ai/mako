@@ -842,6 +842,25 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
         // GET /chat/:chatId/stream while the turn is still generating. The
         // chat's activeStreamId is the resume pointer; finalization clears it.
         consumeSseStream: async ({ stream }) => {
+          // Persist the conversation as of turn start (which includes this
+          // turn's user message — until now it only existed in the request
+          // body). A client that reloads mid-turn can then render the full
+          // history from MongoDB and layer the resumed SSE replay (assistant
+          // chunks only) on top. Also bumps updatedAt so the in-flight chat
+          // sorts to the top of the history list. Scheduled through the
+          // per-chat finalization queue so a fast turn's finalization (full
+          // message set) can never be overwritten by this earlier snapshot.
+          scheduleChatFinalization(chatId, async () => {
+            try {
+              await saveChat(chatId, workspaceId, actorId, messages);
+            } catch (error) {
+              logger.warn("Failed to persist turn-start messages", {
+                error,
+                chatId,
+              });
+            }
+          });
+
           const streamId = new ObjectId().toString();
           turnStreamId = streamId;
           try {
