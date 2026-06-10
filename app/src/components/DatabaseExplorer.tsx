@@ -20,6 +20,18 @@ import {
   Trash2 as DeleteIcon,
   Settings as SettingsIcon,
   Layers as LayersIcon,
+  Columns3 as ColumnIcon,
+  KeyRound as KeyIcon,
+  Type as StringIcon,
+  Hash as NumberIcon,
+  ToggleLeft as BooleanIcon,
+  Calendar as DateTimeIcon,
+  Braces as JsonIcon,
+  Brackets as ArrayIcon,
+  Fingerprint as UuidIcon,
+  Binary as BinaryIcon,
+  ListOrdered as IndexIcon,
+  Zap as TriggerIcon,
 } from "lucide-react";
 import { useExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -37,6 +49,34 @@ export interface CollectionInfo {
   name: string;
   type: string;
   options: unknown;
+}
+
+const PRIMARY_KEY_COLOR = "#d4a017";
+
+/** Connection types whose tables open the paginated data view on click. */
+const POSTGRES_FAMILY_TYPES = new Set([
+  "postgresql",
+  "cloudsql-postgres",
+  "redshift",
+]);
+
+/** Pick an icon for a column based on its (Postgres) data type. */
+function columnTypeIcon(columnType: unknown): React.ReactNode {
+  const t = String(columnType || "").toLowerCase();
+  const props = { size: 15, strokeWidth: 1.5 };
+  if (t.endsWith("[]")) return <ArrayIcon {...props} />;
+  if (t.includes("uuid")) return <UuidIcon {...props} />;
+  if (t.includes("bool")) return <BooleanIcon {...props} />;
+  if (t.includes("json")) return <JsonIcon {...props} />;
+  if (/timestamp|date|time|interval/.test(t)) {
+    return <DateTimeIcon {...props} />;
+  }
+  if (/int|serial|numeric|decimal|real|double|float|money/.test(t)) {
+    return <NumberIcon {...props} />;
+  }
+  if (/char|text|citext|name|string/.test(t)) return <StringIcon {...props} />;
+  if (/bytea|binary|blob/.test(t)) return <BinaryIcon {...props} />;
+  return <ColumnIcon {...props} />;
 }
 
 const IconImg = React.memo(
@@ -370,6 +410,32 @@ function DatabaseExplorer({
             return <CollectionIcon size={18} strokeWidth={1.5} />;
           case "view":
             return <ViewIcon size={18} strokeWidth={1.5} />;
+          case "column":
+            return info.node.metadata?.isPrimaryKey === true ? (
+              <KeyIcon
+                size={15}
+                strokeWidth={1.75}
+                style={{ color: PRIMARY_KEY_COLOR }}
+              />
+            ) : (
+              columnTypeIcon(info.node.metadata?.columnType)
+            );
+          case "key":
+            return (
+              <KeyIcon
+                size={15}
+                strokeWidth={1.75}
+                style={
+                  info.node.metadata?.keyType === "PRIMARY KEY"
+                    ? { color: PRIMARY_KEY_COLOR }
+                    : undefined
+                }
+              />
+            );
+          case "index":
+            return <IndexIcon size={15} strokeWidth={1.5} />;
+          case "trigger":
+            return <TriggerIcon size={15} strokeWidth={1.5} />;
           default:
             return null;
         }
@@ -377,6 +443,66 @@ function DatabaseExplorer({
       return iconEl;
     },
     [nodeInfoById, typeToIconUrl],
+  );
+
+  // Dimmed detail at the right edge of a row (DataGrip / TablePlus style):
+  // column types, group counts, key/index/trigger info.
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const info = nodeInfoById.get(node.id);
+      if (!info || info.type !== "node") return null;
+      const { kind, metadata } = info.node;
+
+      let text: string | null = null;
+      switch (kind) {
+        case "column":
+          text = metadata?.columnType ? String(metadata.columnType) : null;
+          break;
+        case "group":
+          text = metadata?.count !== undefined ? String(metadata.count) : null;
+          break;
+        case "key":
+          text = metadata?.keyType
+            ? String(metadata.keyType).toLowerCase()
+            : null;
+          break;
+        case "index": {
+          const parts = [
+            metadata?.isUnique ? "unique" : null,
+            metadata?.method ? String(metadata.method) : null,
+          ].filter(Boolean);
+          text = parts.length > 0 ? parts.join(" ") : null;
+          break;
+        }
+        case "trigger": {
+          const parts = [
+            metadata?.timing ? String(metadata.timing) : null,
+            metadata?.events ? String(metadata.events) : null,
+          ].filter(Boolean);
+          text = parts.length > 0 ? parts.join(" ").toLowerCase() : null;
+          break;
+        }
+        default:
+          return null;
+      }
+
+      if (!text) return null;
+      return (
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.disabled",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: 110,
+          }}
+        >
+          {text}
+        </Typography>
+      );
+    },
+    [nodeInfoById],
   );
 
   const getContextMenuItems = useCallback(
@@ -470,22 +596,99 @@ function DatabaseExplorer({
     [nodeInfoById, currentWorkspace, deleteConnection],
   );
 
+  const connectionTypeById = useMemo(() => {
+    const map = new Map<string, string>();
+    databases.forEach(db => map.set(db.id, db.type));
+    return map;
+  }, [databases]);
+
+  const openTableDataTab = useCallback(
+    (connectionId: string, treeNode: TreeNode) => {
+      const schema = (treeNode.metadata?.schema as string) || "public";
+      const table = (treeNode.metadata?.table as string) || treeNode.label;
+      const databaseName = treeNode.metadata?.databaseName as
+        | string
+        | undefined;
+      const databaseId = treeNode.metadata?.databaseId as string | undefined;
+
+      const { tabs, openTab, setActiveTab } = useConsoleStore.getState();
+      const existing = Object.values(tabs).find(
+        t =>
+          t.kind === "table-data" &&
+          t.connectionId === connectionId &&
+          t.metadata?.schema === schema &&
+          t.metadata?.table === table &&
+          (t.databaseName || undefined) === (databaseName || undefined),
+      );
+      if (existing) {
+        setActiveTab(existing.id);
+        return;
+      }
+
+      const id = openTab({
+        title: table,
+        content: "",
+        kind: "table-data",
+        connectionId,
+        databaseId,
+        databaseName,
+        metadata: { schema, table },
+      });
+      setActiveTab(id);
+    },
+    [],
+  );
+
   const handleItemClick = useCallback(
     (node: ResourceTreeNode) => {
       const info = nodeInfoById.get(node.id);
-      if (!info) return;
-      if (info.type === "node") {
-        const { node: treeNode, connectionId } = info;
-        if (!treeNode.hasChildren) {
-          handleCollectionClick(connectionId, {
-            name: treeNode.label,
-            type: treeNode.kind,
-            options: treeNode.metadata,
-          });
-        }
+      if (!info || info.type !== "node") return;
+      const { node: treeNode, connectionId } = info;
+
+      // Schema-object leaves (columns, keys, indexes, triggers) are
+      // informational only.
+      if (
+        treeNode.kind === "column" ||
+        treeNode.kind === "key" ||
+        treeNode.kind === "index" ||
+        treeNode.kind === "trigger"
+      ) {
+        return;
+      }
+
+      // Postgres-family tables/views open the paginated data view.
+      if (
+        (treeNode.kind === "table" || treeNode.kind === "view") &&
+        POSTGRES_FAMILY_TYPES.has(connectionTypeById.get(connectionId) || "")
+      ) {
+        openTableDataTab(connectionId, treeNode);
+        return;
+      }
+
+      if (!treeNode.hasChildren) {
+        handleCollectionClick(connectionId, {
+          name: treeNode.label,
+          type: treeNode.kind,
+          options: treeNode.metadata,
+        });
       }
     },
-    [nodeInfoById, handleCollectionClick],
+    [nodeInfoById, handleCollectionClick, connectionTypeById, openTableDataTab],
+  );
+
+  // Clicking a Postgres table/view *name* opens its data; the caret still
+  // expands the schema sub-tree (columns / keys / indexes / triggers).
+  const shouldFolderClickActivate = useCallback(
+    (node: ResourceTreeNode) => {
+      const info = nodeInfoById.get(node.id);
+      if (!info || info.type !== "node") return false;
+      const kind = info.node.kind;
+      if (kind !== "table" && kind !== "view") return false;
+      return POSTGRES_FAMILY_TYPES.has(
+        connectionTypeById.get(info.connectionId) || "",
+      );
+    },
+    [nodeInfoById, connectionTypeById],
   );
 
   const getFolderExpansionKey = useCallback(
@@ -564,6 +767,7 @@ function DatabaseExplorer({
               mode="sidebar"
               searchQuery={searchQuery}
               getItemIcon={getItemIcon}
+              getRightAdornment={getRightAdornment}
               isFolderExpanded={isFolderExpanded}
               onToggleFolder={onToggleFolder}
               onExpandFolder={onExpandFolder}
@@ -572,6 +776,7 @@ function DatabaseExplorer({
               isLoadingChildren={isLoadingChildren}
               getContextMenuItems={getContextMenuItems}
               onItemClick={handleItemClick}
+              shouldFolderClickActivate={shouldFolderClickActivate}
             />
           )
         }

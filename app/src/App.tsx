@@ -426,11 +426,8 @@ function MainApp() {
           if (tpl?.template) prefill = tpl.template;
         }
       } catch {
-        // If server call fails, fallback to type-based default
-        const kind = (collection.type || "").toLowerCase();
-        if (kind !== "collection" && kind !== "view") {
-          prefill = `SELECT * FROM ${collection.name} LIMIT 500;`;
-        }
+        // Server template unavailable; keep the collection default prefill.
+        // (SQL tables open a paginated data tab instead of a console now.)
       }
       openOrFocusConsoleTab(
         collection.name,

@@ -15,6 +15,7 @@ import {
   mapPostgresOidToType,
   stripTrailingSqlSemicolon,
 } from "./pg-type-utils";
+import { listPostgresTableLevelChildren } from "./introspection";
 
 const logger = loggers.db("postgresql");
 
@@ -171,6 +172,17 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       return this.listSchemas(database, dbName);
     }
 
+    if (
+      parent.kind === "table" ||
+      parent.kind === "view" ||
+      parent.kind === "group"
+    ) {
+      return listPostgresTableLevelChildren(
+        (query, options) => this.executeQuery(database, query, options),
+        parent,
+      );
+    }
+
     if (parent.kind !== "schema") return [];
 
     const schema = parent.metadata?.schema || parent.id;
@@ -190,7 +202,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       id: `${dbName ? dbName + "." : ""}${schema}.${r.table_name}`,
       label: r.table_name,
       kind: r.table_type === "VIEW" ? "view" : "table",
-      hasChildren: false,
+      hasChildren: true,
       metadata: {
         schema,
         table: r.table_name,

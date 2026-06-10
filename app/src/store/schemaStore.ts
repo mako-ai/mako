@@ -841,7 +841,10 @@ export const useSchemaStore = create<SchemaState>()(
     })),
     {
       name: "mako-schema-store",
-      version: 1,
+      // v3: Postgres tables now expand to grouped folders (columns / keys /
+      // indexes / triggers) instead of a flat column list; discard older
+      // cached trees so stale children don't linger.
+      version: 3,
       storage: createJSONStorage(() => indexedDBStorage),
       partialize: state => ({
         // Only persist the data, not loading/error states

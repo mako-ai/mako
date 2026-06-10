@@ -14,7 +14,8 @@ export type TabKind =
   | "connectors"
   | "members"
   | "flow-editor"
-  | "dashboard";
+  | "dashboard"
+  | "table-data";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
