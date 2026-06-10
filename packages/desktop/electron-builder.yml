@@ -31,10 +31,12 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   # Enabled on CI with --config.mac.notarize=true when Apple secrets exist.
   notarize: false
-  # Note: when auto-update (electron-updater) ships, re-add a zip target per
-  # arch — macOS auto-update consumes the zip, the dmg is for humans.
+  # The dmg is for humans; the zip feeds electron-updater (macOS auto-update
+  # consumes the zip referenced by latest-mac.yml).
   target:
     - target: dmg
+      arch: [arm64, x64]
+    - target: zip
       arch: [arm64, x64]
 win:
   artifactName: Mako-win-${arch}.${ext}
@@ -48,6 +50,13 @@ linux:
     - target: AppImage
       arch: [x64]
   category: Development
-# Disable publishing from electron-builder itself; the GitHub Actions
-# workflow uploads artifacts to the release explicitly.
-publish: null
+# Auto-update feed. The "generic" provider never publishes from
+# electron-builder itself (the GitHub Actions workflow uploads assets to the
+# release explicitly); it only embeds app-update.yml into the packaged app so
+# electron-updater knows where to look. The releases/latest/download URL
+# always resolves to the newest non-prerelease release, so stable asset names
+# (Mako-mac-arm64.zip, latest-mac.yml, ...) make the feed evergreen without
+# tag-name parsing.
+publish:
+  provider: generic
+  url: https://github.com/mako-ai/mako/releases/latest/download

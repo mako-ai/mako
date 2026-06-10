@@ -12,7 +12,8 @@
  * Override the loaded URL with MAKO_DESKTOP_URL (e.g. http://localhost:5173
  * during development).
  */
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, dialog, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 import { spawn, ChildProcess } from "child_process";
 import * as http from "http";
 import * as path from "path";
@@ -21,6 +22,8 @@ const APP_URL = process.env.MAKO_DESKTOP_URL || "https://app.mako.ai";
 const AGENT_PORT = process.env.MAKO_AGENT_PORT
   ? parseInt(process.env.MAKO_AGENT_PORT, 10)
   : 41720;
+const DOWNLOAD_PAGE_URL = "https://mako.ai/download";
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let mainWindow: BrowserWindow | null = null;
 let agentProcess: ChildProcess | null = null;
@@ -84,6 +87,77 @@ function stopAgent(): void {
     agentProcess.kill("SIGTERM");
   }
   agentProcess = null;
+}
+
+/**
+ * Keep the shell binary fresh: the web app self-updates with every cloud
+ * deploy, but the Electron shell and bundled Local Agent only change via new
+ * releases. Updates are downloaded in the background from the GitHub release
+ * feed (see publish config in electron-builder.yml) and applied on restart.
+ */
+function setupAutoUpdater(): void {
+  if (!app.isPackaged) return;
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  let availableVersion: string | null = null;
+  let fallbackShown = false;
+
+  autoUpdater.on("update-available", info => {
+    availableVersion = info.version;
+  });
+
+  autoUpdater.on("update-downloaded", info => {
+    void dialog
+      .showMessageBox({
+        type: "info",
+        message: `Mako ${info.version} is ready to install`,
+        detail:
+          "The update has been downloaded. Restart now to apply it, or it will be installed the next time Mako starts.",
+        buttons: ["Restart Now", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          autoUpdater.quitAndInstall();
+        }
+      });
+  });
+
+  // Unsigned/ad-hoc-signed macOS builds cannot self-update (Squirrel.Mac
+  // validates code signatures), and network hiccups land here too. If we know
+  // a newer version exists, point at the download page once instead of
+  // failing silently.
+  autoUpdater.on("error", err => {
+    console.error("Auto-update error:", err);
+    if (!availableVersion || fallbackShown) return;
+    fallbackShown = true;
+    void dialog
+      .showMessageBox({
+        type: "info",
+        message: `Mako ${availableVersion} is available`,
+        detail:
+          "This build can't update itself automatically. Download the latest version from the Mako website.",
+        buttons: ["Download", "Later"],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      .then(({ response }) => {
+        if (response === 0) {
+          void shell.openExternal(DOWNLOAD_PAGE_URL);
+        }
+      });
+  });
+
+  const check = () => {
+    autoUpdater.checkForUpdates().catch(err => {
+      console.error("Auto-update check failed:", err);
+    });
+  };
+  check();
+  setInterval(check, UPDATE_CHECK_INTERVAL_MS);
 }
 
 function createWindow(): void {
@@ -159,6 +233,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    setupAutoUpdater();
     await startAgent();
     createWindow();
 
