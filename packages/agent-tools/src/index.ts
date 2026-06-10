@@ -21,6 +21,17 @@ import { clientScreenshotTools } from "./screenshot-tools";
 import { clientPlanTools } from "./plan-tools";
 
 export { clientConsoleTools } from "./console-tools";
+export {
+  // Schemas for the server-executed console tools (registered with execute
+  // functions in api/src/agent-lib/tools/server-console-tools.ts).
+  modifyConsoleSchema,
+  readConsoleSchema,
+  createConsoleSchema,
+  listOpenConsolesSchema,
+  setConsoleConnectionSchema,
+  openConsoleSchema,
+  runConsoleSchema,
+} from "./console-tools";
 export type {
   ModifyConsoleInput,
   ReadConsoleInput,
@@ -56,6 +67,12 @@ export {
   PLAN_GATE_ALLOWED_TOOL_NAMES,
   isReadOnlyToolName,
 } from "./read-only-tools";
+
+export {
+  applyModification,
+  buildModificationDiff,
+  type ConsoleModification,
+} from "./console-modification";
 
 export {
   MakoChartSpecBase,

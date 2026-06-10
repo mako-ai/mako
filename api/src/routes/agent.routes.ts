@@ -675,6 +675,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Build agent context
   const agentContext: AgentContext = {
     workspaceId,
+    chatId,
     activeView,
     activeExplorer,
     userId: actorId,

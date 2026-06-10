@@ -70,10 +70,7 @@ import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
-import type {
-  ConsoleModification,
-  ConsoleModificationPayload,
-} from "../hooks/useMonacoConsole";
+import type { ConsoleModification } from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
@@ -1691,7 +1688,6 @@ ChatInputArea.displayName = "ChatInputArea";
 // DbFlowFormRef is imported from ./DbFlowForm
 
 interface ChatProps {
-  onConsoleModification?: (modification: ConsoleModificationPayload) => void;
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
   onChartSpecChangeRef?: React.MutableRefObject<
     ((payload: import("./Editor").ChartSpecChangePayload) => void) | undefined
@@ -1710,7 +1706,6 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
 }
 
 const Chat: React.FC<ChatProps> = ({
-  onConsoleModification,
   dbFlowFormRef,
   onChartSpecChangeRef,
   resultsContextRef,
@@ -1784,9 +1779,9 @@ const Chat: React.FC<ChatProps> = ({
   const isExistingChatRef = useRef(isExistingChat);
   isExistingChatRef.current = isExistingChat;
 
-  // Ref for onConsoleModification to avoid stale closure in onToolCall
-  const onConsoleModificationRef = useRef(onConsoleModification);
-  onConsoleModificationRef.current = onConsoleModification;
+  // NOTE: console tools execute server-side (issue #475); open tabs follow
+  // along via the realtime channel (realtimeStore), so Chat no longer
+  // applies console modifications itself.
 
   // Ref to capture the active console ID at the time the user submits a message
   // This prevents the race condition where user switches consoles while agent is thinking
@@ -2009,8 +2004,6 @@ const Chat: React.FC<ChatProps> = ({
             },
             input,
             workspaceId: workspaceIdRef.current,
-            capturedConsoleId: capturedConsoleIdRef.current,
-            onConsoleModification: onConsoleModificationRef.current,
             onChartSpecChange: onChartSpecChangeRef?.current,
             addToolOutput,
             registerActiveClientToolCall,

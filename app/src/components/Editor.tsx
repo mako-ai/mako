@@ -74,7 +74,6 @@ import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
-import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
@@ -748,48 +747,9 @@ function Editor({
     getConnectionType,
   });
 
-  // Listen for console modification events from AI
-  useEffect(() => {
-    const handleConsoleModification = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        consoleId: string;
-        modification: ConsoleModification;
-      }>;
-
-      const { consoleId: eventConsoleId, modification } = customEvent.detail;
-      const targetConsoleId = eventConsoleId || activeConsoleId;
-
-      if (!targetConsoleId) return;
-
-      const showDiffWithRetry = (retries = 10, delay = 100) => {
-        const consoleRef = consoleRefs.current[targetConsoleId]?.current;
-        if (consoleRef) {
-          consoleRef.showDiff(modification);
-        } else if (retries > 0) {
-          setTimeout(() => {
-            showDiffWithRetry(retries - 1, delay);
-          }, delay);
-        } else {
-          console.error(
-            "Console ref not found after retries. Target ID:",
-            targetConsoleId,
-            "Available IDs:",
-            Object.keys(consoleRefs.current),
-          );
-        }
-      };
-
-      showDiffWithRetry();
-    };
-
-    window.addEventListener("console-modification", handleConsoleModification);
-    return () => {
-      window.removeEventListener(
-        "console-modification",
-        handleConsoleModification,
-      );
-    };
-  }, [activeConsoleId, consoleTabs]);
+  // NOTE: the legacy "console-modification" event (agent diff preview) is
+  // gone — console tools execute server-side (issue #475) and edits arrive
+  // through the realtime channel as "console-remote-content" below.
 
   // Realtime sync: push server-authoritative content into the mounted Monaco
   // editor (store content is updated by consoleStore/realtimeStore before

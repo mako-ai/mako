@@ -213,6 +213,7 @@ export const consoleAgentFactory: AgentFactory = (
     consoleId,
     context.userId,
     context.toolExecutionContext,
+    { chatId: context.chatId },
   );
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
   const skillTools = createSkillTools(workspaceId, context.userId);
