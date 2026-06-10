@@ -20,6 +20,8 @@ import {
   Trash2 as DeleteIcon,
   Settings as SettingsIcon,
   Layers as LayersIcon,
+  Columns3 as ColumnIcon,
+  KeyRound as PrimaryKeyIcon,
 } from "lucide-react";
 import { useExplorerStore } from "../store";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -370,6 +372,16 @@ function DatabaseExplorer({
             return <CollectionIcon size={18} strokeWidth={1.5} />;
           case "view":
             return <ViewIcon size={18} strokeWidth={1.5} />;
+          case "column":
+            return info.node.metadata?.isPrimaryKey === true ? (
+              <PrimaryKeyIcon
+                size={15}
+                strokeWidth={1.75}
+                style={{ color: "#d4a017" }}
+              />
+            ) : (
+              <ColumnIcon size={15} strokeWidth={1.5} />
+            );
           default:
             return null;
         }
@@ -377,6 +389,34 @@ function DatabaseExplorer({
       return iconEl;
     },
     [nodeInfoById, typeToIconUrl],
+  );
+
+  // Show the column's data type dimmed at the right edge of the row
+  // (DataGrip / TablePlus style).
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const info = nodeInfoById.get(node.id);
+      if (!info || info.type !== "node" || info.node.kind !== "column") {
+        return null;
+      }
+      const columnType = info.node.metadata?.columnType;
+      if (!columnType) return null;
+      return (
+        <Typography
+          variant="caption"
+          sx={{
+            color: "text.disabled",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            maxWidth: 110,
+          }}
+        >
+          {String(columnType)}
+        </Typography>
+      );
+    },
+    [nodeInfoById],
   );
 
   const getContextMenuItems = useCallback(
@@ -476,6 +516,8 @@ function DatabaseExplorer({
       if (!info) return;
       if (info.type === "node") {
         const { node: treeNode, connectionId } = info;
+        // Column leaves are informational; don't open a console for them.
+        if (treeNode.kind === "column") return;
         if (!treeNode.hasChildren) {
           handleCollectionClick(connectionId, {
             name: treeNode.label,
@@ -564,6 +606,7 @@ function DatabaseExplorer({
               mode="sidebar"
               searchQuery={searchQuery}
               getItemIcon={getItemIcon}
+              getRightAdornment={getRightAdornment}
               isFolderExpanded={isFolderExpanded}
               onToggleFolder={onToggleFolder}
               onExpandFolder={onExpandFolder}

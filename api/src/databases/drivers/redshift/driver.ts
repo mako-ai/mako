@@ -48,8 +48,13 @@ export class RedshiftDatabaseDriver implements DatabaseDriver {
     database: IDatabaseConnection,
     parent: { kind: string; id: string; metadata?: any },
   ): Promise<DatabaseTreeNode[]> {
-    // Schema expansion: list tables (same as PostgreSQL)
-    if (parent.kind === "schema") {
+    // Schema expansion lists tables; table/view expansion lists columns
+    // (both same as PostgreSQL).
+    if (
+      parent.kind === "schema" ||
+      parent.kind === "table" ||
+      parent.kind === "view"
+    ) {
       return postgresDriver.getChildren(database, parent);
     }
     if (parent.kind !== "database") return [];
