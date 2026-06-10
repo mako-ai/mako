@@ -146,7 +146,14 @@ When billing is disabled (self-hosted default), all models are available to all 
 
 ### Thinking / Reasoning Models
 
-Models tagged with `reasoning` in the Gateway catalog automatically enable extended thinking. Budget tokens are set to 10,000 by default.
+Models tagged with `reasoning` in the Gateway catalog automatically enable extended thinking.
+
+For Anthropic models, Mako picks between two thinking payloads:
+
+- **Adaptive** (Claude 4.6 and newer, including models without version-numbered IDs like Fable 5) -- the model manages its own reasoning effort. Reasoning is streamed in summarized form.
+- **Manual** (pre-4.6 Claude models) -- a fixed `budget_tokens` allowance, 10,000 tokens by default.
+
+The mode is resolved in three layers: probed capabilities persisted in the model catalog (populated at catalog refresh), an explicit per-model map, and a fallback of adaptive for any uncatalogued Claude model. If the chosen mode is still wrong, the API returns a 400 -- Mako self-heals by persisting the corrected mode and retrying the call once, so users never see the error.
 
 ### Model Selection
 
