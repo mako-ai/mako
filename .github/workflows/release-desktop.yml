@@ -103,16 +103,12 @@ jobs:
       - name: Build desktop main process
         run: pnpm --filter @mako/desktop build
 
+      # Without signing secrets, electron-builder ad-hoc signs on macOS
+      # (mandatory for arm64). For real signing + notarization, add an env
+      # block with: CSC_LINK, CSC_KEY_PASSWORD (Developer ID .p12), APPLE_ID,
+      # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID from repo secrets.
       - name: Package desktop app
         working-directory: packages/desktop
-        env:
-          # Without signing secrets, electron-builder ad-hoc signs on macOS
-          # (mandatory for arm64). Uncomment for real signing + notarization:
-          # CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          # CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          # APPLE_ID: ${{ secrets.APPLE_ID }}
-          # APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          # APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --config electron-builder.yml ${{ matrix.args }}
 
       - name: Upload artifacts
