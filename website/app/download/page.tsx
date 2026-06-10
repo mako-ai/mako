@@ -73,7 +73,17 @@ export default function DownloadPage() {
           ))}
         </div>
 
-        <p className="mt-12 text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="mt-10 text-sm text-zinc-500 dark:text-zinc-400 max-w-2xl mx-auto">
+          <strong>macOS note:</strong> builds are not yet notarized by Apple. If
+          macOS reports the app as damaged, run{" "}
+          <code className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-white/10">
+            xattr -dr com.apple.quarantine /Applications/Mako.app
+          </code>{" "}
+          once after installing, or allow it under System Settings → Privacy &
+          Security.
+        </p>
+
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">
           Prefer the browser? Use{" "}
           <a
             href="https://app.mako.ai"

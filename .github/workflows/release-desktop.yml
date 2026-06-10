@@ -106,8 +106,8 @@ jobs:
       - name: Package desktop app
         working-directory: packages/desktop
         env:
-          # Unsigned builds until signing secrets are configured:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          # Without signing secrets, electron-builder ad-hoc signs on macOS
+          # (mandatory for arm64). Uncomment for real signing + notarization:
           # CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           # CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           # APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -121,7 +121,6 @@ jobs:
           name: desktop-${{ matrix.os }}
           path: |
             packages/desktop/release/*.dmg
-            packages/desktop/release/*.zip
             packages/desktop/release/*.exe
             packages/desktop/release/*.AppImage
           if-no-files-found: error

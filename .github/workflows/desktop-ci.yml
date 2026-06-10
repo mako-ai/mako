@@ -67,11 +67,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            args: --mac
-          - os: windows-latest
+          - name: mac-arm64
+            os: macos-latest
+            args: --mac dmg --arm64
+          - name: mac-x64
+            os: macos-latest
+            args: --mac dmg --x64
+          - name: win-x64
+            os: windows-latest
             args: --win
-          - os: ubuntu-latest
+          - name: linux-x64
+            os: ubuntu-latest
             args: --linux
     runs-on: ${{ matrix.os }}
     steps:
@@ -97,19 +103,20 @@ jobs:
       - name: Build desktop main process
         run: pnpm --filter @mako/desktop build
 
+      # No signing certificates on CI: electron-builder falls back to ad-hoc
+      # signing on macOS (required for arm64 binaries to be loadable at all).
       - name: Package desktop app
         working-directory: packages/desktop
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx electron-builder --config electron-builder.yml ${{ matrix.args }}
 
-      - name: Upload installers
+      # One installer per artifact (~100MB each). Note: GitHub always wraps
+      # artifact downloads in a zip; the zip contains the single installer.
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: mako-desktop-${{ matrix.os }}
+          name: mako-desktop-${{ matrix.name }}
           path: |
             packages/desktop/release/*.dmg
-            packages/desktop/release/*.zip
             packages/desktop/release/*.exe
             packages/desktop/release/*.AppImage
           if-no-files-found: error
