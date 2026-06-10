@@ -841,10 +841,10 @@ export const useSchemaStore = create<SchemaState>()(
     })),
     {
       name: "mako-schema-store",
-      // v2: table/view tree nodes became expandable (hasChildren) when column
-      // introspection was added; discard older cached trees so stale leaf
-      // nodes don't keep tables un-expandable.
-      version: 2,
+      // v3: Postgres tables now expand to grouped folders (columns / keys /
+      // indexes / triggers) instead of a flat column list; discard older
+      // cached trees so stale children don't linger.
+      version: 3,
       storage: createJSONStorage(() => indexedDBStorage),
       partialize: state => ({
         // Only persist the data, not loading/error states

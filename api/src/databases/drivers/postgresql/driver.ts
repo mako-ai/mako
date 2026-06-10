@@ -15,7 +15,7 @@ import {
   mapPostgresOidToType,
   stripTrailingSqlSemicolon,
 } from "./pg-type-utils";
-import { listPostgresTableColumns } from "./introspection";
+import { listPostgresTableLevelChildren } from "./introspection";
 
 const logger = loggers.db("postgresql");
 
@@ -172,8 +172,15 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
       return this.listSchemas(database, dbName);
     }
 
-    if (parent.kind === "table" || parent.kind === "view") {
-      return this.listColumns(database, parent);
+    if (
+      parent.kind === "table" ||
+      parent.kind === "view" ||
+      parent.kind === "group"
+    ) {
+      return listPostgresTableLevelChildren(
+        (query, options) => this.executeQuery(database, query, options),
+        parent,
+      );
     }
 
     if (parent.kind !== "schema") return [];
@@ -203,20 +210,6 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
         databaseName: dbName,
       },
     }));
-  }
-
-  /**
-   * List the columns of a table or view as tree leaf nodes, including data
-   * type, nullability, and primary-key membership.
-   */
-  private async listColumns(
-    database: IDatabaseConnection,
-    parent: { kind: string; id: string; metadata?: any },
-  ): Promise<DatabaseTreeNode[]> {
-    return listPostgresTableColumns(
-      (query, options) => this.executeQuery(database, query, options),
-      parent,
-    );
   }
 
   async getAutocompleteData(

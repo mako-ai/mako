@@ -43,6 +43,7 @@ import {
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
   ChartPie as DashboardIcon,
+  Table as TableDataIcon,
   ChevronRight as BreadcrumbChevronIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -54,6 +55,7 @@ import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
+import TableDataView from "./TableDataView";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
 import type { DbFlowFormRef } from "./DbFlowForm";
@@ -1940,6 +1942,8 @@ function Editor({
                               )
                             ) : tab.kind === "dashboard" ? (
                               <DashboardIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "table-data" ? (
+                              <TableDataIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
                               <Box
                                 component="img"
@@ -2110,6 +2114,8 @@ function Editor({
                     }}
                     dbFlowFormRef={dbFlowFormRef}
                   />
+                ) : tab.kind === "table-data" ? (
+                  <TableDataView tabId={tab.id} />
                 ) : tab.kind === "dashboard" ? (
                   <DashboardCanvas
                     dashboardId={tab.metadata?.dashboardId as string}

@@ -16,7 +16,7 @@ import {
   normalizePostgresFields,
   normalizePostgresRows,
 } from "../postgresql/pg-type-utils";
-import { listPostgresTableColumns } from "../postgresql/introspection";
+import { listPostgresTableLevelChildren } from "../postgresql/introspection";
 
 const logger = loggers.db("cloudsql-postgres");
 
@@ -131,8 +131,12 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
       return this.listSchemas(database, dbName);
     }
 
-    if (parent.kind === "table" || parent.kind === "view") {
-      return listPostgresTableColumns(
+    if (
+      parent.kind === "table" ||
+      parent.kind === "view" ||
+      parent.kind === "group"
+    ) {
+      return listPostgresTableLevelChildren(
         (query, options) => this.executeQuery(database, query, options),
         parent,
       );

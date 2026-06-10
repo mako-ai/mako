@@ -259,11 +259,9 @@ databaseTreeRoutes.get(
       const dbName = metadata?.databaseName || "default";
       const table = metadata?.tableName || nodeId || "table_name";
       template = `SELECT * FROM "${dbName}"."${table}" LIMIT 500;`;
-    } else {
-      // Fallback SQL-like template
-      const table = nodeId || "table_name";
-      template = `SELECT * FROM ${table} LIMIT 500;`;
     }
+    // Postgres-family tables no longer use console templates: clicking a
+    // table in the explorer opens a paginated data tab instead.
 
     return c.json({ success: true, data: { language, template } });
   },
