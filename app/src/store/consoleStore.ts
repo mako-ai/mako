@@ -452,6 +452,7 @@ export const useConsoleStore = create<ConsoleStore>()(
           t.draftRevision = entry.draftRevision;
           if (typeof entry.version === "number") t.version = entry.version;
           t.remoteUpdate = null;
+          t.lastRun = entry.lastRun ?? t.lastRun;
         });
         // Push into the mounted Monaco editor (Editor.tsx listens). The
         // store alone is not enough: Console is uncontrolled after mount.
@@ -713,6 +714,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.version = res.version;
                 tab.draftRevision = res.draftRevision ?? 1;
                 tab.remoteUpdate = null;
+                tab.lastRun = res.lastRun ?? tab.lastRun;
               }
             });
 

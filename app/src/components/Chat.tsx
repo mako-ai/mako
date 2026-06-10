@@ -68,6 +68,7 @@ import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
+import { useRealtimeStore } from "../store/realtimeStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import type { ConsoleModification } from "../hooks/useMonacoConsole";
@@ -2469,6 +2470,13 @@ const Chat: React.FC<ChatProps> = ({
     const workspaceId = currentWorkspace?.id;
     if (!workspaceId) return;
     writeStoredChatSession({ chatId, workspaceId });
+    // Register the active chat with the realtime store so chat.ui-intent
+    // events (e.g. the agent opening a console) only act on the chat this
+    // window is actually viewing.
+    useRealtimeStore.getState().setActiveChatId(chatId);
+    return () => {
+      useRealtimeStore.getState().setActiveChatId(null);
+    };
   }, [chatId, currentWorkspace?.id]);
 
   // Load messages when selecting an existing chat from history

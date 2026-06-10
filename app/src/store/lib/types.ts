@@ -101,6 +101,19 @@ export interface ConsoleTab {
     updatedBy?: string;
     kind: "updated" | "deleted";
   } | null;
+  /**
+   * Latest server-side run artifact (agent run_console). Lets a reopened
+   * console render results that were produced while no window was attached.
+   */
+  lastRun?: {
+    at: string;
+    status: "success" | "error";
+    rowCount?: number;
+    durationMs: number;
+    error?: string;
+    sampleRows?: Record<string, unknown>[];
+    fields?: unknown;
+  } | null;
   schedule?: {
     cron: string;
     timezone: string;

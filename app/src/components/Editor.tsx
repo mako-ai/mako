@@ -806,6 +806,36 @@ function Editor({
     };
   }, []);
 
+  // Detached-return path: a console opened with a persisted server-side run
+  // artifact (agent ran it while no window was attached) renders those
+  // results without re-running. In-memory results always win.
+  useEffect(() => {
+    for (const tab of consoleTabs) {
+      const lastRun = tab.lastRun;
+      if (!lastRun || lastRun.status !== "success" || !lastRun.sampleRows) {
+        continue;
+      }
+      if (tabResults[tab.id] !== undefined) continue;
+      setTabResults(prev =>
+        prev[tab.id] !== undefined
+          ? prev
+          : {
+              ...prev,
+              [tab.id]: {
+                results: lastRun.sampleRows ?? [],
+                executedAt: lastRun.at,
+                resultCount:
+                  lastRun.rowCount ?? lastRun.sampleRows?.length ?? 0,
+                executionTime: lastRun.durationMs,
+                fields: (lastRun.fields as QueryResult["fields"]) ?? null,
+                pageInfo: null,
+              } as QueryResult,
+            },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consoleTabs]);
+
   /* ------------------------ Console Actions ------------------------ */
   const handleTabChange = (_: React.SyntheticEvent, newValue: string) => {
     setActiveTab(newValue);
