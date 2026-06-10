@@ -18,6 +18,69 @@ export function isLocalConnectionId(id: string | undefined | null): boolean {
   return Boolean(id && id.startsWith(LOCAL_CONNECTION_ID_PREFIX));
 }
 
+/**
+ * Hostnames/IPs that are only reachable from the user's machine or local
+ * network — i.e. addresses Mako Cloud can never connect to, which must be
+ * routed through the Local Agent instead.
+ */
+export function isLocalHostname(value: string | undefined | null): boolean {
+  if (!value) return false;
+  const host = value.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  if (!host) return false;
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
+  if (host.endsWith(".local") || host.endsWith(".internal")) return true;
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  return (
+    a === 0 ||
+    a === 127 ||
+    a === 10 ||
+    (a === 192 && b === 168) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 169 && b === 254)
+  );
+}
+
+/** Extract hostnames from a URI-style connection string (handles multi-host
+ * lists like mongodb://h1:p1,h2:p2/db and bracketed IPv6 literals). */
+function extractHosts(connectionString: string): string[] {
+  const match = connectionString.match(
+    /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?([^/?#]+)/i,
+  );
+  if (!match) return [];
+  return match[1].split(",").map(part => {
+    const trimmed = part.trim();
+    const ipv6 = trimmed.match(/^\[([^\]]+)\]/);
+    return ipv6 ? ipv6[1] : trimmed.split(":")[0];
+  });
+}
+
+const HOST_FIELD_RE = /host|server|address|endpoint/i;
+const URL_FIELD_RE = /connectionstring|url|uri/i;
+
+/**
+ * True when a connection form's values point at a local address (localhost,
+ * 127.0.0.1, private LAN ranges, *.local, ...). Drives the automatic
+ * cloud-vs-agent routing decision so users never have to think about it.
+ */
+export function connectionLooksLocal(
+  connection: Record<string, unknown> | undefined | null,
+): boolean {
+  if (!connection) return false;
+  for (const [key, value] of Object.entries(connection)) {
+    if (typeof value !== "string" || !value) continue;
+    if (URL_FIELD_RE.test(key)) {
+      if (extractHosts(value).some(isLocalHostname)) return true;
+    } else if (HOST_FIELD_RE.test(key)) {
+      if (isLocalHostname(value)) return true;
+    }
+  }
+  return false;
+}
+
 interface AgentRequestOptions extends RequestInit {
   params?: Record<string, string>;
   timeoutMs?: number;
@@ -138,11 +201,19 @@ class LocalAgentClient {
     return this.request<T>(path, { method: "DELETE" });
   }
 
-  /** Quick liveness probe; resolves null when the agent is not running. */
+  /**
+   * Liveness probe; resolves null when the agent is not running.
+   *
+   * The timeout must outlive Chrome's Local Network Access permission prompt:
+   * the first probe from a browser blocks on the user accepting it, and a
+   * short timeout would abort the request (and mark the agent offline) before
+   * they can. When the agent is simply not running the socket is refused
+   * immediately, so the long timeout does not slow down that path.
+   */
   async ping(): Promise<AgentHealth | null> {
     try {
       return await this.get<AgentHealth>("/health", undefined, {
-        timeoutMs: 1500,
+        timeoutMs: 15000,
       });
     } catch {
       return null;
