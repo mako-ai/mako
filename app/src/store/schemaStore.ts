@@ -208,6 +208,13 @@ interface SchemaState {
     node?: { id: string; kind: string; metadata?: Record<string, unknown> },
   ) => Promise<{ language: string; template: string } | null>;
 
+  // === Table Definition (DDL) ===
+  fetchTableDefinition: (
+    workspaceId: string,
+    connectionId: string,
+    params: { schema: string; table: string; database?: string },
+  ) => Promise<{ definition?: string; error?: string }>;
+
   // === Table Existence Check ===
   checkTableExists: (
     workspaceId: string,
@@ -783,6 +790,41 @@ export const useSchemaStore = create<SchemaState>()(
           // Fallback handled by caller
         }
         return null;
+      },
+
+      fetchTableDefinition: async (
+        workspaceId: string,
+        connectionId: string,
+        params: { schema: string; table: string; database?: string },
+      ) => {
+        try {
+          const query: Record<string, string> = {
+            schema: params.schema,
+            table: params.table,
+          };
+          if (params.database) query.database = params.database;
+
+          const res = await apiClient.get<{
+            success: boolean;
+            data?: { definition: string };
+            error?: string;
+          }>(
+            `/workspaces/${workspaceId}/databases/${connectionId}/table-definition`,
+            query,
+          );
+
+          if (res.success && res.data?.definition) {
+            return { definition: res.data.definition };
+          }
+          return { error: res.error || "Failed to fetch table definition" };
+        } catch (error) {
+          return {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to fetch table definition",
+          };
+        }
       },
 
       checkTableExists: async (

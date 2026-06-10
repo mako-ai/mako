@@ -103,6 +103,15 @@ export interface DatabaseDriver {
   getAutocompleteData?(
     database: IDatabaseConnection,
   ): Promise<Record<string, any>>;
+
+  /**
+   * Optional: full SQL definition script for a table or view (DDL, comments,
+   * indexes, triggers). Currently implemented by the Postgres-family drivers.
+   */
+  getTableDefinition?(
+    database: IDatabaseConnection,
+    params: { schema: string; table: string; databaseName?: string },
+  ): Promise<{ success: boolean; definition?: string; error?: string }>;
   executeQuery(
     database: IDatabaseConnection,
     query: string,
