@@ -44,8 +44,6 @@ import { dashboardMaterializationRoutes } from "./routes/dashboard-materializati
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
 import { devEmailPreviewRoutes } from "./routes/dev-email-preview.routes";
-// TEMP (issue #475 manual testing) — removed before merge
-import { devAgentToolsTestRoutes } from "./routes/dev-agent-tools-test";
 import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
@@ -158,8 +156,6 @@ app.route(
 
 if (process.env.NODE_ENV !== "production") {
   app.route("/api/dev/email-preview", devEmailPreviewRoutes);
-  // TEMP (issue #475 manual testing) — removed before merge
-  app.route("/api/dev/agent-tools", devAgentToolsTestRoutes);
 }
 
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
