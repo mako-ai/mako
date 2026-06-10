@@ -82,7 +82,11 @@ import {
   computeConsoleStateHash,
   computeDashboardStateHash,
 } from "../utils/stateHash";
-import type { ScheduledQueryRunItem } from "../lib/api-types";
+import type {
+  ScheduledQueryRunItem,
+  ConsoleVersionConflict,
+} from "../lib/api-types";
+import VersionConflictDialog from "./VersionConflictDialog";
 import {
   logRenderDebug,
   onRenderDebug,
@@ -431,6 +435,10 @@ function Editor({
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [conflictData, setConflictData] = useState<ConflictData | null>(null);
 
+  // Concurrent-edit (optimistic concurrency) conflict state
+  const [versionConflictData, setVersionConflictData] =
+    useState<ConsoleVersionConflict | null>(null);
+
   const [pendingDashboardCloseTabId, setPendingDashboardCloseTabId] = useState<
     string | null
   >(null);
@@ -464,6 +472,7 @@ function Editor({
   const updateDirty = useConsoleStore(state => state.updateDirty);
   const updateSavedState = useConsoleStore(state => state.updateSavedState);
   const updateChartSpec = useConsoleStore(state => state.updateChartSpec);
+  const updateVersion = useConsoleStore(state => state.updateVersion);
   const updateResultsViewMode = useConsoleStore(
     state => state.updateResultsViewMode,
   );
@@ -1203,6 +1212,25 @@ function Editor({
         return false;
       }
 
+      // Handle concurrent-edit conflict — someone else saved this console
+      // since we loaded it. Show a diff so the user resolves it explicitly
+      // instead of silently overwriting the other person's save.
+      if (result.error === "version_conflict" && result.versionConflict) {
+        setPendingSaveData({
+          tabId,
+          content: contentToSave,
+          path: savePath,
+          connectionId,
+          databaseId,
+          databaseName,
+          comment,
+          access: currentTab?.access,
+        });
+        setVersionConflictData(result.versionConflict);
+        setIsSaving(false);
+        return false;
+      }
+
       if (result.success) {
         // Update file path and title
         updateFilePath(tabId, savePath);
@@ -1813,6 +1841,55 @@ function Editor({
   const handleConflictClose = () => {
     setConflictDialogOpen(false);
     setConflictData(null);
+    setPendingSaveData(null);
+  };
+
+  // ── Concurrent-edit (version) conflict resolution ──────────────────
+
+  const handleVersionConflictOverwrite = async () => {
+    if (!pendingSaveData || !versionConflictData) return;
+    const { tabId, content, path, comment } = pendingSaveData;
+    // Fast-forward to the server's version so the retried save passes the
+    // guard (unless someone saves yet again in the meantime).
+    updateVersion(tabId, versionConflictData.currentVersion);
+    setVersionConflictData(null);
+    const success = await executeConsoleSave(
+      tabId,
+      content,
+      path,
+      comment ?? "",
+    );
+    if (success) {
+      setPendingSaveData(null);
+    }
+  };
+
+  const handleVersionConflictLoadLatest = () => {
+    if (!pendingSaveData || !versionConflictData) return;
+    const { tabId } = pendingSaveData;
+    const serverContent = versionConflictData.content;
+    // Replace the editor buffer with the server copy (the previous local
+    // content stays reachable via Monaco undo) and reset the baseline.
+    consoleRefs.current[tabId]?.current?.applyModification({
+      action: "replace",
+      content: serverContent,
+    });
+    updateContent(tabId, serverContent);
+    updateVersion(tabId, versionConflictData.currentVersion);
+    const currentTab = tabs[tabId];
+    const newHash = computeConsoleStateHash(
+      serverContent,
+      currentTab?.connectionId,
+      currentTab?.databaseId,
+      currentTab?.databaseName,
+    );
+    updateSavedState(tabId, true, newHash);
+    setVersionConflictData(null);
+    setPendingSaveData(null);
+  };
+
+  const handleVersionConflictClose = () => {
+    setVersionConflictData(null);
     setPendingSaveData(null);
   };
 
@@ -2460,6 +2537,17 @@ function Editor({
         newContent={pendingSaveData?.content || ""}
         onOverwrite={handleConflictOverwrite}
         onSaveAsNew={handleConflictSaveAsNew}
+        isProcessing={isSaving}
+      />
+
+      {/* Concurrent-edit (version) Conflict Dialog */}
+      <VersionConflictDialog
+        open={Boolean(versionConflictData)}
+        onClose={handleVersionConflictClose}
+        conflict={versionConflictData}
+        newContent={pendingSaveData?.content || ""}
+        onOverwrite={handleVersionConflictOverwrite}
+        onLoadLatest={handleVersionConflictLoadLatest}
         isProcessing={isSaving}
       />
 

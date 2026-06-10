@@ -286,6 +286,9 @@ consoleRoutes.get("/content", async (c: Context) => {
       readOnly,
       schedule: fullConsole?.schedule,
       scheduledRun: fullConsole?.scheduledRun,
+      // Optimistic-concurrency base: the client echoes this back as
+      // expectedVersion on explicit saves.
+      version: fullConsole?.version ?? 1,
     });
   } catch (error) {
     logger.error("Error fetching console content", {
@@ -800,6 +803,51 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       const now = new Date();
       const isExplicitSave = body.isSaved === true;
 
+      // Optimistic concurrency (opt-in): when the client sends the version it
+      // loaded, explicit saves only apply while the document still has that
+      // version. On mismatch we return 409 version_conflict with the server
+      // copy so the user can resolve, instead of silently overwriting another
+      // user's save (previously last-write-wins).
+      const expectedVersion =
+        typeof body.expectedVersion === "number" &&
+        Number.isInteger(body.expectedVersion) &&
+        body.expectedVersion >= 1
+          ? (body.expectedVersion as number)
+          : undefined;
+      const useVersionGuard =
+        expectedVersion !== undefined && existingById !== null;
+      const idFilter = {
+        _id: new Types.ObjectId(pathOrId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      };
+      // The guard is applied atomically in the update filter (not as a
+      // read-then-write check). With the guard active we must not upsert:
+      // a version mismatch would otherwise insert a duplicate document.
+      const guardedFilter: Record<string, unknown> = useVersionGuard
+        ? {
+            ...idFilter,
+            // Legacy documents predating the version field count as version 1.
+            version:
+              expectedVersion === 1 ? { $in: [1, null] } : expectedVersion,
+          }
+        : idFilter;
+      const versionConflictResponse = async () => {
+        const current = await SavedConsole.findOne(idFilter);
+        return c.json(
+          {
+            success: false,
+            error: "version_conflict",
+            versionConflict: {
+              currentVersion: current?.version ?? 1,
+              content: current?.code ?? "",
+              name: current?.name,
+              updatedAt: current?.updatedAt,
+            },
+          },
+          409,
+        );
+      };
+
       // If this is an explicit save with a path, check for path conflicts
       if (isExplicitSave && body.path) {
         const consolePath = body.path;
@@ -876,17 +924,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         }
 
         const result = await SavedConsole.findOneAndUpdate(
-          {
-            _id: new Types.ObjectId(pathOrId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          },
+          guardedFilter,
           {
             $set: setFields,
             $inc: { version: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: true, new: true },
+          { upsert: !useVersionGuard, new: true },
         );
+        if (!result) {
+          return versionConflictResponse();
+        }
 
         // Create version record for the new state
         await createVersion({
@@ -902,6 +950,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         return c.json({
           success: true,
           message: "Console saved",
+          version: result.version,
           console: {
             id: result._id.toString(),
             name: result.name,
@@ -957,17 +1006,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         }
 
         const result = await SavedConsole.findOneAndUpdate(
-          {
-            _id: new Types.ObjectId(pathOrId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          },
+          guardedFilter,
           {
             $set: setFields,
             $inc: { version: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: true, new: true },
+          { upsert: !useVersionGuard, new: true },
         );
+        if (!result) {
+          return versionConflictResponse();
+        }
 
         // Create version record for the new state
         const displayNameExplicit = await getUserDisplayName(user.id);
@@ -1027,6 +1076,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         return c.json({
           success: true,
           message: "Console saved",
+          version: result.version,
           console: {
             id: result._id.toString(),
             name: result.name,
@@ -1034,7 +1084,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         });
       }
 
-      // Draft auto-save flow: Use upsert to create if doesn't exist
+      // Draft auto-save flow: Use upsert to create if doesn't exist.
+      // Intentionally NOT version-guarded: auto-saves are high-frequency,
+      // single-author draft writes; guarding them without realtime sync
+      // (Phase 5) would make a user's own autosaves trip the guard.
       const setOnInsertFields: Record<string, any> = {
         createdBy: user.id,
         owner_id: user.id,
@@ -1051,10 +1104,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       }
 
       const result = await SavedConsole.findOneAndUpdate(
-        {
-          _id: new Types.ObjectId(pathOrId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
+        idFilter,
         {
           $set: setFields,
           $setOnInsert: setOnInsertFields,
@@ -1065,6 +1115,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       return c.json({
         success: true,
         message: "Console saved",
+        version: result.version,
         console: {
           id: result._id.toString(),
           name: result.name,

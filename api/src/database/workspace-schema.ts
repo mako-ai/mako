@@ -583,6 +583,9 @@ export interface IChat extends Document {
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
   createdBy: string;
   titleGenerated: boolean;
+  // Resume pointer for in-flight turns: the resumable-stream ID clients can
+  // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
+  activeStreamId?: string | null;
   systemPrompt?: string; // System prompt used for this conversation
   workspacePrompt?: string; // Workspace custom prompt appended to system prompt
   usage?: IChatUsage; // Token usage tracking for billing
@@ -1691,6 +1694,10 @@ const ChatSchema = new Schema<IChat>(
     titleGenerated: {
       type: Boolean,
       default: false,
+    },
+    activeStreamId: {
+      type: String,
+      default: null,
     },
     systemPrompt: {
       type: String,
