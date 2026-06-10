@@ -1,8 +1,11 @@
 name: Desktop CI
 
-# Smoke-builds the Mako Local Agent bundle and an unpacked desktop package on
-# PRs that touch desktop-related code, so packaging regressions are caught
-# before merge (releases only happen from master via release-desktop.yml).
+# Runs on PRs that touch desktop-related code:
+# - smoke-build: fast agent bundle + health probe + unpacked package (linux).
+# - package: full unsigned installers for macOS/Windows/Linux, uploaded as
+#   workflow artifacts so the build can be downloaded and tried from the PR
+#   (Actions run page -> Artifacts). Releases still only happen from master
+#   via release-desktop.yml.
 
 on:
   pull_request:
@@ -58,3 +61,56 @@ jobs:
           pnpm run build
           npx electron-builder --config electron-builder.yml --dir
           test -f release/linux-unpacked/resources/agent/index.js
+
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac
+          - os: windows-latest
+            args: --win
+          - os: ubuntu-latest
+            args: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bundle Mako Local Agent
+        run: pnpm --filter @mako/local-agent build
+
+      - name: Build desktop main process
+        run: pnpm --filter @mako/desktop build
+
+      - name: Package desktop app
+        working-directory: packages/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --config electron-builder.yml ${{ matrix.args }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: mako-desktop-${{ matrix.os }}
+          path: |
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.zip
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
