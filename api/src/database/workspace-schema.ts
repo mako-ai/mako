@@ -1635,7 +1635,14 @@ SavedConsoleSchema.index(
 );
 SavedConsoleSchema.index(
   { name: "text", description: "text" },
-  { name: "console_text_search" },
+  {
+    name: "console_text_search",
+    // CRITICAL: without this, MongoDB interprets the console's `language`
+    // field ("sql" | "javascript" | "mongodb") as the text-index language
+    // override and rejects every insert/update with "language override
+    // unsupported: sql". Point the override at a field that never exists.
+    language_override: "_textSearchLanguage",
+  },
 );
 
 /**
