@@ -47,7 +47,10 @@ import {
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
-import { useConsoleStore } from "../store/consoleStore";
+import {
+  useConsoleStore,
+  markUserEditActivity,
+} from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 import { ConnectionSelector } from "./ConnectionSelector";
@@ -742,6 +745,11 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       if (isProgrammaticUpdateRef.current) {
         return;
       }
+
+      // Realtime sync: record raw keystroke activity immediately. The store
+      // dirty flag below is debounced, so remote updates consult this to
+      // avoid replacing content typed within the last few seconds.
+      markUserEditActivity(consoleId);
 
       // Save user edit to version history if version control is enabled
       if (

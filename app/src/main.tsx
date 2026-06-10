@@ -19,6 +19,20 @@ initializeStoreVersion();
 
 enableMapSet();
 
+// TEMP DEBUG (manual realtime testing): expose stores for automation.
+// Remove before merge.
+if (import.meta.env.DEV) {
+  void Promise.all([
+    import("./store/consoleStore"),
+    import("./store/realtimeStore"),
+  ]).then(([consoleStore, realtimeStore]) => {
+    (window as unknown as Record<string, unknown>).__consoleStore =
+      consoleStore.useConsoleStore;
+    (window as unknown as Record<string, unknown>).__realtimeStore =
+      realtimeStore.useRealtimeStore;
+  });
+}
+
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Root element not found");
 

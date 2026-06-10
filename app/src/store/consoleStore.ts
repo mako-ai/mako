@@ -242,6 +242,22 @@ const draftSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const lastSavedContentHash = new Map<string, string>();
 const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
 
+// Last user keystroke per console (module-level, non-reactive). The store's
+// isDirty flag lags typing by a debounce (~500ms in Console.tsx), so the
+// realtime layer uses this to avoid clobbering keystrokes that landed inside
+// that window when a remote update arrives.
+const lastUserEditAt = new Map<string, number>();
+const USER_EDIT_RECENCY_MS = 3000;
+
+export const markUserEditActivity = (consoleId: string): void => {
+  lastUserEditAt.set(consoleId, Date.now());
+};
+
+export const hasRecentUserEdit = (consoleId: string): boolean => {
+  const at = lastUserEditAt.get(consoleId);
+  return at !== undefined && Date.now() - at < USER_EDIT_RECENCY_MS;
+};
+
 const cancelAutoSave = (consoleId: string): void => {
   const timer = draftSaveTimers.get(consoleId);
   if (timer) {

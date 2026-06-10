@@ -17,7 +17,7 @@ import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
-import { useConsoleStore } from "./consoleStore";
+import { useConsoleStore, hasRecentUserEdit } from "./consoleStore";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
 
@@ -133,7 +133,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
 
       const tab = useConsoleStore.getState().tabs[event.consoleId];
       if (!tab) return; // not open in this window — nothing to update
-      if ((tab.draftRevision ?? 1) >= event.draftRevision) return; // stale poke
+      // A tab that never synced (no draftRevision) counts as revision 0 so
+      // even the server's first revision is pulled.
+      if ((tab.draftRevision ?? 0) >= event.draftRevision) return; // stale
 
       scheduleSync();
     };
@@ -376,7 +378,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
         for (const tab of Object.values(consoleStore.tabs)) {
           if (!isConsoleTabKind(tab.kind)) continue;
           if (!isObjectIdLike(tab.id)) continue;
-          revisions[tab.id] = tab.draftRevision ?? 1;
+          // Never-synced tabs claim revision 0 so the server's first
+          // revision (a fresh draft autosave is revision 1) is returned.
+          revisions[tab.id] = tab.draftRevision ?? 0;
         }
         if (Object.keys(revisions).length === 0) return;
 
@@ -391,8 +395,11 @@ export const useRealtimeStore = create<RealtimeStore>()(
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
             if (!tab) continue;
-            if ((tab.draftRevision ?? 1) >= entry.draftRevision) continue;
-            if (tab.isDirty) {
+            if ((tab.draftRevision ?? 0) >= entry.draftRevision) continue;
+            // isDirty lags raw typing by a debounce; hasRecentUserEdit
+            // covers keystrokes inside that window so they are never
+            // silently replaced.
+            if (tab.isDirty || hasRecentUserEdit(entry.id)) {
               // The one overlap case: remote update while this tab holds
               // unsaved keystrokes. Never merge silently — surface the
               // affordance; the next save's revision check backstops.
