@@ -23,8 +23,12 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import ResultsTable from "./ResultsTable";
+import TableStructureView from "./TableStructureView";
 
 const PAGE_SIZE = 100;
+
+/** Connection types that support the table Structure (DDL) view. */
+const STRUCTURE_SUPPORTED_TYPES = new Set(["postgresql", "cloudsql-postgres"]);
 
 /** Quote a Postgres identifier. */
 function quoteIdent(name: string): string {
@@ -75,11 +79,11 @@ function TableDataView({ tabId }: TableDataViewProps) {
   const databaseId = tab?.databaseId;
 
   const connections = useSchemaStore(s => s.connections);
-  const connectionName = useMemo(() => {
+  const connection = useMemo(() => {
     const list = currentWorkspace ? connections[currentWorkspace.id] || [] : [];
-    const conn = list.find(c => c.id === connectionId);
-    return conn?.displayName || conn?.name;
+    return list.find(c => c.id === connectionId);
   }, [connections, currentWorkspace, connectionId]);
+  const connectionName = connection?.displayName || connection?.name;
 
   // connection name > database > schema > table
   const breadcrumbs = useMemo(
@@ -283,6 +287,16 @@ function TableDataView({ tabId }: TableDataViewProps) {
             results={result}
             onNextPage={handleNextPage}
             onPreviousPage={handlePreviousPage}
+            structureView={
+              STRUCTURE_SUPPORTED_TYPES.has(connection?.type || "") ? (
+                <TableStructureView
+                  connectionId={connectionId}
+                  schema={schema}
+                  table={table}
+                  databaseName={databaseName}
+                />
+              ) : undefined
+            }
           />
         </Box>
       )}

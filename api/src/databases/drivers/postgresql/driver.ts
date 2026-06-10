@@ -16,6 +16,7 @@ import {
   stripTrailingSqlSemicolon,
 } from "./pg-type-utils";
 import { listPostgresTableLevelChildren } from "./introspection";
+import { buildPostgresTableDefinition } from "./table-definition";
 
 const logger = loggers.db("postgresql");
 
@@ -259,6 +260,16 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     options?: { databaseName?: string; databaseId?: string },
   ) {
     return databaseConnectionService.executeQuery(database, query, options);
+  }
+
+  async getTableDefinition(
+    database: IDatabaseConnection,
+    params: { schema: string; table: string; databaseName?: string },
+  ): Promise<{ success: boolean; definition?: string; error?: string }> {
+    return buildPostgresTableDefinition(
+      (query, options) => this.executeQuery(database, query, options),
+      params,
+    );
   }
 
   // ============ WRITE CAPABILITIES ============

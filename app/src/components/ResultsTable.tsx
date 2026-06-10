@@ -23,6 +23,7 @@ import {
   BarChart3 as ChartIcon,
   ClipboardCopy as CopyIcon,
   Download as DownloadIcon,
+  FileCode2 as StructureIcon,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
@@ -51,6 +52,10 @@ interface QueryResult {
 }
 
 type ViewMode = "table" | "json" | "chart";
+// "structure" is an extra, uncontrolled-only mode available when a
+// `structureView` slot is provided (table data tabs); it is intentionally not
+// part of the persisted console ViewMode.
+type ResultsViewMode = ViewMode | "structure";
 
 const PINNED_RESULT_COLUMNS = { left: ["__rowIndex"], right: [] };
 const RESULTS_TABLE_LOCALE_TEXT = { noRowsLabel: "No rows returned" };
@@ -66,6 +71,11 @@ interface ResultsTableProps {
   onNextPage?: () => void;
   onPreviousPage?: () => void;
   onDownload?: (format: "csv" | "ndjson") => void;
+  /**
+   * Optional content for an extra "Structure" view mode (e.g. table DDL).
+   * Only supported when viewMode is uncontrolled.
+   */
+  structureView?: React.ReactNode;
 }
 
 const ResultsTable: React.FC<ResultsTableProps> = ({
@@ -79,16 +89,26 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   onNextPage,
   onPreviousPage,
   onDownload,
+  structureView,
 }) => {
   const [snackbarOpen, setSnackbarOpen] = React.useState(false);
   const [internalViewMode, setInternalViewMode] =
-    React.useState<ViewMode>("table");
+    React.useState<ResultsViewMode>("table");
   const [downloadAnchorEl, setDownloadAnchorEl] =
     React.useState<HTMLElement | null>(null);
   const { effectiveMode } = useTheme();
 
-  const viewMode = controlledViewMode ?? internalViewMode;
-  const setViewMode = onViewModeChange ?? setInternalViewMode;
+  const viewMode: ResultsViewMode = controlledViewMode ?? internalViewMode;
+  const setViewMode = useCallback(
+    (mode: ResultsViewMode) => {
+      if (mode === "structure" || !onViewModeChange) {
+        setInternalViewMode(mode);
+      } else {
+        onViewModeChange(mode);
+      }
+    },
+    [onViewModeChange],
+  );
   const currentPage = results?.currentPage ?? 1;
   const canGoBack = currentPage > 1 && Boolean(onPreviousPage);
   const canGoForward = Boolean(results?.pageInfo?.hasMore && onNextPage);
@@ -455,7 +475,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   }, [results, columns]);
 
   const handleViewModeChange = useCallback(
-    (_event: React.MouseEvent<HTMLElement>, newViewMode: ViewMode) => {
+    (_event: React.MouseEvent<HTMLElement>, newViewMode: ResultsViewMode) => {
       if (newViewMode !== null) {
         setViewMode(newViewMode);
       }
@@ -588,22 +608,31 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
               <ChartIcon strokeWidth={1.5} size={22} />
             </ToggleButton>
           </Tooltip>
+          {structureView !== undefined && (
+            <Tooltip title="Structure">
+              <ToggleButton value="structure" aria-label="structure view">
+                <StructureIcon strokeWidth={1.5} size={22} />
+              </ToggleButton>
+            </Tooltip>
+          )}
         </ToggleButtonGroup>
-        <Tooltip title="Copy to clipboard">
-          <IconButton
-            size="small"
-            onClick={copyToClipboard}
-            sx={{
-              minWidth: "32px",
-              width: "32px",
-              height: "32px",
-              p: 0,
-            }}
-          >
-            <CopyIcon strokeWidth={1.5} size={22} />
-          </IconButton>
-        </Tooltip>
-        {onDownload && (
+        {viewMode !== "structure" && (
+          <Tooltip title="Copy to clipboard">
+            <IconButton
+              size="small"
+              onClick={copyToClipboard}
+              sx={{
+                minWidth: "32px",
+                width: "32px",
+                height: "32px",
+                p: 0,
+              }}
+            >
+              <CopyIcon strokeWidth={1.5} size={22} />
+            </IconButton>
+          </Tooltip>
+        )}
+        {onDownload && viewMode !== "structure" && (
           <>
             <Button
               size="small"
@@ -733,50 +762,53 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
             onRenderSuccess={onChartRenderSuccess}
           />
         )}
+        {viewMode === "structure" && structureView}
       </Box>
 
-      {/* Footer with results info */}
-      <Box
-        sx={{
-          p: 1,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          borderTop: "1px solid",
-          borderColor: "divider",
-          gap: 2,
-        }}
-      >
-        <Typography variant="body2" color="text.secondary">
-          {results.resultCount} result(s) •{" "}
-          {results.executionTime !== undefined &&
-            `executed in ${results.executionTime} ms at `}
-          {results.executionTime === undefined && "Executed at "}
-          {new Date(results.executedAt).toLocaleString()}
-          {results.pageInfo && ` • Page ${currentPage}`}
-          {results.pageInfo?.capApplied && " • capped at 500 rows/page"}
-        </Typography>
-        {results.pageInfo && (
-          <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={onPreviousPage}
-              disabled={!canGoBack}
-            >
-              Previous
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={onNextPage}
-              disabled={!canGoForward}
-            >
-              Next
-            </Button>
-          </Box>
-        )}
-      </Box>
+      {/* Footer with results info (data views only) */}
+      {viewMode !== "structure" && (
+        <Box
+          sx={{
+            p: 1,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            borderTop: "1px solid",
+            borderColor: "divider",
+            gap: 2,
+          }}
+        >
+          <Typography variant="body2" color="text.secondary">
+            {results.resultCount} result(s) •{" "}
+            {results.executionTime !== undefined &&
+              `executed in ${results.executionTime} ms at `}
+            {results.executionTime === undefined && "Executed at "}
+            {new Date(results.executedAt).toLocaleString()}
+            {results.pageInfo && ` • Page ${currentPage}`}
+            {results.pageInfo?.capApplied && " • capped at 500 rows/page"}
+          </Typography>
+          {results.pageInfo && (
+            <Box sx={{ display: "flex", gap: 1, alignItems: "center" }}>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={onPreviousPage}
+                disabled={!canGoBack}
+              >
+                Previous
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={onNextPage}
+                disabled={!canGoForward}
+              >
+                Next
+              </Button>
+            </Box>
+          )}
+        </Box>
+      )}
       <Snackbar
         open={snackbarOpen}
         autoHideDuration={3000}

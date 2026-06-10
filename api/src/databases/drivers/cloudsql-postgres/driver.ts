@@ -17,6 +17,7 @@ import {
   normalizePostgresRows,
 } from "../postgresql/pg-type-utils";
 import { listPostgresTableLevelChildren } from "../postgresql/introspection";
+import { buildPostgresTableDefinition } from "../postgresql/table-definition";
 
 const logger = loggers.db("cloudsql-postgres");
 
@@ -210,6 +211,16 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     }
 
     return schema;
+  }
+
+  async getTableDefinition(
+    database: IDatabaseConnection,
+    params: { schema: string; table: string; databaseName?: string },
+  ): Promise<{ success: boolean; definition?: string; error?: string }> {
+    return buildPostgresTableDefinition(
+      (query, options) => this.executeQuery(database, query, options),
+      params,
+    );
   }
 
   async executeQuery(

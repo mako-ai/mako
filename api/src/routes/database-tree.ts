@@ -267,6 +267,90 @@ databaseTreeRoutes.get(
   },
 );
 
+// GET /api/workspaces/:workspaceId/databases/:id/table-definition
+// Full SQL definition script (DDL, comments, indexes, triggers) for one
+// table or view. Currently Postgres-family only.
+databaseTreeRoutes.get(
+  "/:id/table-definition",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    const log = loggers.api("database-tree");
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
+    }
+
+    const table = c.req.query("table");
+    if (!table) {
+      return c.json({ success: false, error: "table is required" }, 400);
+    }
+    const schema = String(c.req.query("schema") || "public");
+    const databaseName = c.req.query("database");
+
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    });
+    if (!database) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+
+    const driver = databaseRegistry.getDriver(database.type);
+    if (!driver) {
+      return c.json({ success: false, error: "Driver not found" }, 404);
+    }
+    if (!driver.getTableDefinition) {
+      return c.json(
+        {
+          success: false,
+          error: `Table definition not supported for ${database.type}`,
+        },
+        400,
+      );
+    }
+
+    try {
+      const result = await driver.getTableDefinition(database as any, {
+        schema,
+        table: String(table),
+        databaseName: databaseName ? String(databaseName) : undefined,
+      });
+      if (!result.success) {
+        return c.json(
+          {
+            success: false,
+            error: result.error || "Failed to fetch table definition",
+          },
+          500,
+        );
+      }
+      return c.json({
+        success: true,
+        data: { definition: result.definition },
+      });
+    } catch (error) {
+      log.error("Error fetching table definition", {
+        error,
+        schema,
+        table,
+        databaseType: database.type,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch table definition",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // GET /api/workspaces/:workspaceId/databases/:id/table-exists
 // Check if a table exists and return its schema if it does
 databaseTreeRoutes.get(
