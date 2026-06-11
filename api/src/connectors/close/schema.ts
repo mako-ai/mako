@@ -478,6 +478,20 @@ export const OPPORTUNITY_STATUS_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...MAKO_SYSTEM_FIELDS,
 };
 
+export const OUTCOME_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  id: { type: "string", required: true },
+  name: s(),
+  description: s(),
+  type: s(),
+  organization_id: s(),
+  created_by: s(),
+  updated_by: s(),
+  date_created: ts(),
+  date_updated: ts(),
+  applies_to: j(),
+  ...MAKO_SYSTEM_FIELDS,
+};
+
 // ---------------------------------------------------------------------------
 // Schema maps for resolveSchema lookup
 // ---------------------------------------------------------------------------
@@ -512,6 +526,7 @@ export const CORE_ENTITY_SCHEMA_MAP: Record<
   custom_objects: CUSTOM_OBJECT_SCHEMA,
   lead_statuses: LEAD_STATUS_SCHEMA,
   opportunity_statuses: OPPORTUNITY_STATUS_SCHEMA,
+  outcomes: OUTCOME_SCHEMA,
 };
 
 // ---------------------------------------------------------------------------

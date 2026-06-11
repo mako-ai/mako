@@ -2,6 +2,10 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import {
+  isLocalConnectionId,
+  localAgentClient,
+} from "../lib/local-agent-client";
 import { generateObjectId } from "../utils/objectId";
 import { ConsoleVersionManager } from "../utils/ConsoleVersionManager";
 import { computeConsoleStateHash } from "../utils/stateHash";
@@ -10,12 +14,14 @@ import type { ConsoleTab, SettingsSection, TabKind } from "./lib/types";
 import type {
   ConsoleContentResponse,
   ConsoleDeleteResponse,
+  ConsoleRevisionSyncEntry,
   ConsoleSaveResponse,
   QueryCancelResponse,
   QueryExecuteResponse,
   ScheduledQueryRunsResponse,
   ScheduledQueryScheduleResponse,
 } from "../lib/api-types";
+import { realtimeClientId } from "../lib/realtime-client-id";
 
 export type QueryExecuteResult =
   | QueryExecuteResponse
@@ -72,6 +78,27 @@ interface ConsoleActions {
     chartSpec: Record<string, unknown> | null,
   ) => void;
   updateResultsViewMode: (id: string, mode: "table" | "json" | "chart") => void;
+  /** Fast-forward the optimistic-concurrency base after conflict resolution. */
+  updateVersion: (id: string, version: number) => void;
+  /** Fast-forward the realtime sync base (draft revision). */
+  updateDraftRevision: (id: string, draftRevision: number) => void;
+  /** Set/clear the "updated remotely while you have unsaved edits" flag. */
+  setRemoteUpdate: (id: string, info: ConsoleTab["remoteUpdate"]) => void;
+  /**
+   * Apply a server-authoritative console payload (from revisions-sync) to a
+   * CLEAN open tab: updates the store and pushes the content into the
+   * mounted Monaco editor via the "console-remote-content" event. Dirty tabs
+   * must go through setRemoteUpdate (affordance) instead — callers check.
+   */
+  applyRemoteConsoleEntry: (entry: ConsoleRevisionSyncEntry) => void;
+  /**
+   * Resolve the remote-update affordance: refetch the server copy, apply it
+   * (discarding local unsaved edits) and clear the dirty flag.
+   */
+  applyRemoteConsoleUpdate: (
+    workspaceId: string,
+    consoleId: string,
+  ) => Promise<void>;
 
   // Versioning
   getVersionManager: (consoleId: string) => ConsoleVersionManager | null;
@@ -194,11 +221,42 @@ const versionManagers = new Map<string, ConsoleVersionManager>();
 const versionCommentControllers = new Map<string, AbortController>();
 const versionCommentTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// Execution IDs routed to the Mako Local Agent, so cancelQuery (which only
+// receives the executionId) can target the right backend.
+const localExecutionIds = new Set<string>();
+
+/**
+ * Cloud consoles persist connectionId as a Mongo ObjectId reference, which
+ * cannot store Local Agent connection ids. Omit local ids from cloud save
+ * payloads; the local connection stays selected in the open tab.
+ */
+function cloudSafeConnectionId(
+  connectionId: string | undefined,
+): string | undefined {
+  return isLocalConnectionId(connectionId) ? undefined : connectionId;
+}
+
 // Debounce timers for draft console saves (per console ID)
 const draftSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Track last saved content hash to avoid redundant API calls
 const lastSavedContentHash = new Map<string, string>();
 const DRAFT_SAVE_DEBOUNCE_MS = 2000; // 2 seconds debounce
+
+// Last user keystroke per console (module-level, non-reactive). The store's
+// isDirty flag lags typing by a debounce (~500ms in Console.tsx), so the
+// realtime layer uses this to avoid clobbering keystrokes that landed inside
+// that window when a remote update arrives.
+const lastUserEditAt = new Map<string, number>();
+const USER_EDIT_RECENCY_MS = 3000;
+
+export const markUserEditActivity = (consoleId: string): void => {
+  lastUserEditAt.set(consoleId, Date.now());
+};
+
+export const hasRecentUserEdit = (consoleId: string): boolean => {
+  const at = lastUserEditAt.get(consoleId);
+  return at !== undefined && Date.now() - at < USER_EDIT_RECENCY_MS;
+};
 
 const cancelAutoSave = (consoleId: string): void => {
   const timer = draftSaveTimers.get(consoleId);
@@ -355,6 +413,71 @@ export const useConsoleStore = create<ConsoleStore>()(
             tab.title = title;
           }
         }),
+
+      updateVersion: (id, version) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.version = version;
+          }
+        }),
+
+      updateDraftRevision: (id, draftRevision) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.draftRevision = draftRevision;
+          }
+        }),
+
+      setRemoteUpdate: (id, info) =>
+        set(state => {
+          const tab = state.tabs[id];
+          if (tab) {
+            tab.remoteUpdate = info;
+          }
+        }),
+
+      applyRemoteConsoleEntry: entry => {
+        const tab = get().tabs[entry.id];
+        if (!tab) return;
+        set(state => {
+          const t = state.tabs[entry.id];
+          if (!t) return;
+          t.content = entry.content;
+          if (entry.name) t.title = entry.name;
+          t.connectionId = entry.connectionId;
+          t.databaseId = entry.databaseId;
+          t.databaseName = entry.databaseName;
+          t.draftRevision = entry.draftRevision;
+          if (typeof entry.version === "number") t.version = entry.version;
+          t.remoteUpdate = null;
+          t.lastRun = entry.lastRun ?? t.lastRun;
+        });
+        // Push into the mounted Monaco editor (Editor.tsx listens). The
+        // store alone is not enough: Console is uncontrolled after mount.
+        window.dispatchEvent(
+          new CustomEvent("console-remote-content", {
+            detail: { consoleId: entry.id, content: entry.content },
+          }),
+        );
+      },
+
+      applyRemoteConsoleUpdate: async (workspaceId, consoleId) => {
+        const res = await get().fetchConsoleContent(workspaceId, consoleId);
+        if (!res?.success) return;
+        set(state => {
+          const t = state.tabs[consoleId];
+          if (!t) return;
+          t.isDirty = false;
+          t.remoteUpdate = null;
+        });
+        window.dispatchEvent(
+          new CustomEvent("console-remote-content", {
+            detail: { consoleId, content: res.content || "" },
+          }),
+        );
+      },
 
       updateDirty: (id, isDirty) =>
         set(state => {
@@ -588,6 +711,10 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.readOnly = res.readOnly;
                 tab.schedule = res.schedule;
                 tab.scheduledRun = res.scheduledRun;
+                tab.version = res.version;
+                tab.draftRevision = res.draftRevision ?? 1;
+                tab.remoteUpdate = null;
+                tab.lastRun = res.lastRun ?? tab.lastRun;
               }
             });
 
@@ -627,6 +754,10 @@ export const useConsoleStore = create<ConsoleStore>()(
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
+          // Optimistic concurrency: send the version this tab was loaded
+          // from so the server rejects (409) instead of overwriting a
+          // concurrent save by someone else.
+          const expectedVersion = get().tabs[tabId]?.version;
           const response = await fetch(
             `/api/workspaces/${workspaceId}/consoles/${tabId}`,
             {
@@ -636,7 +767,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               body: JSON.stringify({
                 content,
                 path: cleanPath,
-                connectionId,
+                connectionId: cloudSafeConnectionId(connectionId),
                 databaseName,
                 databaseId,
                 isSaved: true,
@@ -646,6 +777,10 @@ export const useConsoleStore = create<ConsoleStore>()(
                 access,
                 isPrivate:
                   access === undefined ? undefined : access === "private",
+                expectedVersion,
+                // Realtime sync: identifies this tab so its own
+                // console.updated poke is suppressed.
+                clientId: realtimeClientId,
               }),
             },
           );
@@ -660,12 +795,31 @@ export const useConsoleStore = create<ConsoleStore>()(
             };
           }
 
+          if (response.status === 409 && res.error === "version_conflict") {
+            return {
+              success: false,
+              error: "version_conflict",
+              versionConflict: res.versionConflict,
+            };
+          }
+
           if (!response.ok) {
             return { success: false, error: res.error || "Save failed" };
           }
 
           if (res.success) {
-            return { success: true, path: cleanPath };
+            const newVersion = res.version;
+            const newDraftRevision = res.draftRevision;
+            set(state => {
+              const tab = state.tabs[tabId];
+              if (!tab) return;
+              if (typeof newVersion === "number") tab.version = newVersion;
+              if (typeof newDraftRevision === "number") {
+                tab.draftRevision = newDraftRevision;
+                tab.remoteUpdate = null;
+              }
+            });
+            return { success: true, path: cleanPath, version: newVersion };
           }
           return { success: false, error: res.error || "Save failed" };
         } catch (e) {
@@ -704,12 +858,22 @@ export const useConsoleStore = create<ConsoleStore>()(
             ...(options?.confirmUnsafe ? { confirmUnsafe: true } : {}),
           };
 
-          const { status, body: res } =
-            await apiClient.postWithStatus<QueryExecuteResponse>(
-              `/workspaces/${workspaceId}/execute`,
-              payload,
-              { signal: options?.signal, alsoOk: [400, 403] },
-            );
+          const isLocal = isLocalConnectionId(connectionId);
+          if (isLocal && options?.executionId) {
+            localExecutionIds.add(options.executionId);
+          }
+
+          const { status, body: res } = isLocal
+            ? await localAgentClient.postWithStatus<QueryExecuteResponse>(
+                "/execute",
+                payload,
+                { signal: options?.signal, alsoOk: [400, 403] },
+              )
+            : await apiClient.postWithStatus<QueryExecuteResponse>(
+                `/workspaces/${workspaceId}/execute`,
+                payload,
+                { signal: options?.signal, alsoOk: [400, 403] },
+              );
 
           if (status === 400 || status === 403) {
             return {
@@ -735,6 +899,13 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       cancelQuery: async (workspaceId, executionId) => {
         try {
+          if (localExecutionIds.has(executionId)) {
+            localExecutionIds.delete(executionId);
+            return await localAgentClient.post<QueryCancelResponse>(
+              "/execute/cancel",
+              { executionId },
+            );
+          }
           return await apiClient.post<QueryCancelResponse>(
             `/workspaces/${workspaceId}/execute/cancel`,
             { executionId },
@@ -944,17 +1115,42 @@ export const useConsoleStore = create<ConsoleStore>()(
           if (!shouldAutoSave(get, consoleId)) return;
 
           try {
-            await apiClient.put(
-              `/workspaces/${workspaceId}/consoles/${consoleId}`,
-              {
-                content,
-                title,
-                connectionId,
-                databaseId,
-                databaseName,
-              },
-            );
-            lastSavedContentHash.set(consoleId, stateHash);
+            // Revision-checked write (LWW with revision check): if the
+            // server draft moved past what this tab last synced, the save is
+            // rejected with 409 draft_conflict instead of silently
+            // overwriting another tab's / user's / the agent's work.
+            const expectedDraftRevision = get().tabs[consoleId]?.draftRevision;
+            const { status, body } =
+              await apiClient.putWithStatus<ConsoleSaveResponse>(
+                `/workspaces/${workspaceId}/consoles/${consoleId}`,
+                {
+                  content,
+                  title,
+                  connectionId: cloudSafeConnectionId(connectionId),
+                  databaseId,
+                  databaseName,
+                  clientId: realtimeClientId,
+                  expectedDraftRevision,
+                },
+                { alsoOk: [409] },
+              );
+
+            if (status === 409 && body.draftConflict) {
+              // Surface the non-blocking "updated remotely" affordance; the
+              // user decides whether to load the latest copy.
+              get().setRemoteUpdate(consoleId, {
+                draftRevision: body.draftConflict.currentDraftRevision,
+                kind: "updated",
+              });
+              return;
+            }
+
+            if (body.success) {
+              if (typeof body.draftRevision === "number") {
+                get().updateDraftRevision(consoleId, body.draftRevision);
+              }
+              lastSavedContentHash.set(consoleId, stateHash);
+            }
           } catch (_e) {
             // Auto-save failure - silently ignore as this is a best-effort operation
           }

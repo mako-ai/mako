@@ -4,6 +4,7 @@
  */
 
 import { generateText } from "ai";
+import { propagateAttributes } from "@langfuse/tracing";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { trackUsage } from "./llm-usage.service";
@@ -26,6 +27,8 @@ Return only the title, nothing else.`;
 export interface TitleGenerationContext {
   workspaceId: string;
   userId: string;
+  /** User email, used as the Langfuse user identifier when present. */
+  userEmail?: string;
 }
 
 /**
@@ -41,18 +44,35 @@ export const generateChatTitle = async (
       logger.warn("No AI provider configured, skipping title generation");
       return "New Conversation";
     }
-    const { text, usage } = await generateText({
-      model: getModel(modelId),
-      system: TITLE_SYSTEM_PROMPT,
-      prompt: userMessageContent.substring(0, 2000),
-      providerOptions: {
-        ...buildProviderOptions({
-          userId: ctx?.userId ?? "unknown",
-          workspaceId: ctx?.workspaceId ?? "unknown",
-          invocationType: "title_generation",
-        }),
+    const { text, usage } = await propagateAttributes(
+      {
+        traceName: "title-generation",
+        userId: ctx?.userEmail ?? ctx?.userId,
+        tags: ["type:title_generation"],
+        metadata: ctx ? { workspaceId: ctx.workspaceId } : undefined,
       },
-    });
+      () =>
+        generateText({
+          model: getModel(modelId),
+          system: TITLE_SYSTEM_PROMPT,
+          prompt: userMessageContent.substring(0, 2000),
+          providerOptions: {
+            ...buildProviderOptions({
+              userId: ctx?.userId ?? "unknown",
+              workspaceId: ctx?.workspaceId ?? "unknown",
+              invocationType: "title_generation",
+            }),
+          },
+          experimental_telemetry: {
+            isEnabled: true,
+            functionId: "title-generation",
+            metadata: {
+              workspaceId: ctx?.workspaceId ?? "unknown",
+              invocationType: "title_generation",
+            },
+          },
+        }),
+    );
 
     if (ctx) {
       const { inputTokens, outputTokens } = extractTokenCounts(

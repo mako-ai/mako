@@ -44,10 +44,11 @@ import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
-import { ConsoleModificationPayload } from "./hooks/useMonacoConsole";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
 import { LoginPage } from "./components/LoginPage";
+import { DesktopAuthPage } from "./components/DesktopAuthPage";
+import { hasPendingDesktopAuth } from "./utils/desktop-auth-redirect";
 import { RegisterPage } from "./components/RegisterPage";
 import { VerifyEmailPage } from "./components/VerifyEmailPage";
 import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
@@ -258,90 +259,9 @@ function MainApp() {
     import("./components/Editor").ConsoleResultsContext | null
   >(null);
 
-  // Handle console modification from AI
-  const handleConsoleModification = useCallback(
-    async (modification: ConsoleModificationPayload) => {
-      // handleConsoleModification called
-
-      const { tabs, activeTabId, openTab, setActiveTab } =
-        useConsoleStore.getState();
-      const consoleTabs = Object.values(tabs);
-      const activeConsoleId = activeTabId;
-
-      const realConsoleTabs = (consoleTabs || []).filter(
-        (t: any) => t?.kind === undefined || t?.kind === "console",
-      );
-      const activeRealConsoleId = realConsoleTabs.some(
-        (t: any) => t.id === activeConsoleId,
-      )
-        ? activeConsoleId
-        : null;
-
-      // Handle console creation
-      if (modification.action === "create" && modification.title) {
-        const newConsoleId = openTab({
-          id: modification.consoleId,
-          title: modification.title,
-          content: modification.content || "",
-          connectionId: modification.connectionId,
-          databaseId: modification.databaseId,
-          databaseName: modification.databaseName,
-          kind: "console",
-          isDirty: modification.isDirty ?? true, // Agent-created consoles are dirty by default
-        });
-        setActiveTab(newConsoleId);
-        return;
-      }
-
-      // Use the provided consoleId if available, otherwise use the active console
-      let targetConsoleId = modification.consoleId || activeRealConsoleId;
-      let isNewConsole = false;
-
-      // If a consoleId was explicitly provided by the agent, trust it - the console was just created
-      // and may not be in realConsoleTabs yet due to React state update timing.
-      // Only fall back if no explicit consoleId was provided AND the resolved ID doesn't exist.
-      if (
-        !modification.consoleId &&
-        targetConsoleId &&
-        !realConsoleTabs.some((t: any) => t.id === targetConsoleId)
-      ) {
-        targetConsoleId = activeRealConsoleId;
-      }
-
-      if (!targetConsoleId) {
-        // If no active console, try to open one
-        if (realConsoleTabs.length > 0) {
-          // Focus the first available real console
-          targetConsoleId = realConsoleTabs[0].id;
-          setActiveTab(targetConsoleId);
-        } else {
-          // Create a new console if none exist
-          isNewConsole = true;
-          const id = openTab({
-            title: "AI Query",
-            content: "",
-          });
-          targetConsoleId = id;
-          setActiveTab(id);
-        }
-      }
-
-      // If we just created a new console, wait a bit for it to mount
-      if (isNewConsole) {
-        // wait for mount
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-
-      // using console ID
-
-      // Dispatch a custom event that the Editor component can listen to
-      const event = new CustomEvent("console-modification", {
-        detail: { consoleId: targetConsoleId, modification },
-      });
-      window.dispatchEvent(event);
-    },
-    [],
-  );
+  // NOTE: console modifications from the agent no longer flow through App —
+  // console tools execute server-side (issue #475) and open tabs follow
+  // along via the realtime channel (realtimeStore).
 
   const openOrFocusConsoleTab = useCallback(
     (
@@ -428,11 +348,8 @@ function MainApp() {
           if (tpl?.template) prefill = tpl.template;
         }
       } catch {
-        // If server call fails, fallback to type-based default
-        const kind = (collection.type || "").toLowerCase();
-        if (kind !== "collection" && kind !== "view") {
-          prefill = `SELECT * FROM ${collection.name} LIMIT 500;`;
-        }
+        // Server template unavailable; keep the collection default prefill.
+        // (SQL tables open a paginated data tab instead of a console now.)
       }
       openOrFocusConsoleTab(
         collection.name,
@@ -617,7 +534,6 @@ function MainApp() {
                 }}
               >
                 <Chat
-                  onConsoleModification={handleConsoleModification}
                   dbFlowFormRef={dbFlowFormRef}
                   onChartSpecChangeRef={onChartSpecChangeRef}
                   resultsContextRef={resultsContextRef}
@@ -653,8 +569,12 @@ function AuthRoute({ children }: { children: React.ReactNode }) {
     return <LoadingScreen />;
   }
 
-  // If already authenticated, redirect to main app
+  // If already authenticated, resume a pending desktop sign-in handoff or
+  // redirect to the main app
   if (user) {
+    if (hasPendingDesktopAuth()) {
+      return <Navigate to="/desktop-auth" replace />;
+    }
     return <Navigate to="/" replace />;
   }
 
@@ -739,6 +659,21 @@ function OnboardingTestRoute() {
   );
 }
 
+// Resume a pending Mako Desktop sign-in handoff after the user authenticates
+// in the browser (any method — including the full-page OAuth round trip,
+// which lands back on "/"). The challenge is stashed in sessionStorage by
+// DesktopAuthPage before redirecting to /login.
+function DesktopAuthResume() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading || !user) return null;
+  if (location.pathname === "/desktop-auth") return null;
+  if (!hasPendingDesktopAuth()) return null;
+
+  return <Navigate to="/desktop-auth" replace />;
+}
+
 // Track page views on route changes for SPA
 function PageViewTracker() {
   const location = useLocation();
@@ -770,9 +705,13 @@ function App() {
   return (
     <>
       <PageViewTracker />
+      <DesktopAuthResume />
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
+        <Route path="/desktop-auth" element={<DesktopAuthPage />} />
 
         {/* Auth routes - redirect to "/" if already logged in */}
         <Route path="/login" element={<LoginRoute />} />

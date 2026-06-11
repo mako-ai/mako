@@ -28,7 +28,8 @@ export type AgentToolDomain =
   | "app"
   | "search"
   | "memory"
-  | "database";
+  | "database"
+  | "plan";
 
 export type ClientToolExecutor =
   | "console"
@@ -51,10 +52,12 @@ export interface AgentToolManifestEntry extends ToolUiConfig {
 }
 
 export const AGENT_TOOL_MANIFEST = {
+  // Console data tools execute SERVER-SIDE against the authoritative draft
+  // since issue #475 (open windows follow along via the realtime channel).
+  // Entries are kept for tool-card labels/icons/previews.
   modify_console: {
     domain: "console",
-    execution: "client",
-    clientExecutor: "console",
+    execution: "server",
     getLabel: input => {
       const action = (input as Record<string, unknown>)?.action;
       return action === "patch" ? "Patching console" : "Editing console";
@@ -64,8 +67,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   create_console: {
     domain: "console",
-    execution: "client",
-    clientExecutor: "console",
+    execution: "server",
     getLabel: input => {
       const title = (input as Record<string, unknown>)?.title;
       return title ? `Creating "${title}"` : "Creating console";
@@ -75,8 +77,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   read_console: {
     domain: "console",
-    execution: "client",
-    clientExecutor: "console",
+    execution: "server",
     getLabel: () => "Reading console",
     icon: "eye",
   },
@@ -89,24 +90,19 @@ export const AGENT_TOOL_MANIFEST = {
   },
   set_console_connection: {
     domain: "console",
-    execution: "client",
-    clientExecutor: "console",
+    execution: "server",
     getLabel: () => "Setting connection",
     icon: "link",
   },
   open_console: {
     domain: "console",
-    execution: "client",
-    clientExecutor: "console",
-    longRunning: true,
+    execution: "server",
     getLabel: () => "Opening console",
     icon: "external-link",
   },
   run_console: {
     domain: "console",
-    execution: "client",
-    clientExecutor: "console",
-    longRunning: true,
+    execution: "server",
     getLabel: () => "Executing console query",
     icon: "play",
   },
@@ -686,6 +682,36 @@ export const AGENT_TOOL_MANIFEST = {
         : "Explaining template";
     },
     icon: "help-circle",
+  },
+  enable_mode: {
+    domain: "plan",
+    execution: "server",
+    getLabel: input => {
+      const mode = (input as Record<string, unknown>)?.mode;
+      return mode ? `Switching to ${mode} mode` : "Switching mode";
+    },
+    icon: "filter",
+  },
+  todo_write: {
+    domain: "plan",
+    execution: "server",
+    getLabel: () => "Updating todos",
+    icon: "list",
+  },
+  ask_clarifying_questions: {
+    domain: "plan",
+    execution: "client",
+    getLabel: () => "Asking clarifying questions",
+    icon: "help-circle",
+  },
+  submit_plan: {
+    domain: "plan",
+    execution: "client",
+    getLabel: input => {
+      const title = (input as Record<string, unknown>)?.title;
+      return title ? `Plan: ${title}` : "Submitting plan";
+    },
+    icon: "shield-check",
   },
 } as const satisfies Record<string, AgentToolManifestEntry>;
 

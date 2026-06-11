@@ -978,7 +978,7 @@ app.post("/:id/version-comment", async (c: AuthenticatedContext) => {
 
     const result = await generateDashboardVersionComment(
       { previousSnapshot, newSnapshot, chatPrompts },
-      { workspaceId, userId },
+      { workspaceId, userId, userEmail: c.get("user")?.email },
     );
 
     return c.json({

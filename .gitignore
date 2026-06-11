@@ -138,3 +138,6 @@ dist
 .pnp.*
 dist/
 api/.data/
+
+# Electron build output
+packages/desktop/release/

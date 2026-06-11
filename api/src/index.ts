@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { consoleRoutes } from "./routes/consoles";
+import { realtimeRoutes } from "./routes/realtime";
 import { dataSourceRoutes } from "./routes/sources";
 import { customPromptRoutes } from "./routes/custom-prompt";
 import { skillsRoutes } from "./routes/skills";
@@ -52,8 +53,13 @@ import { sshTunnelManager } from "./services/ssh-tunnel.service";
 import { loggers, loggingMiddleware } from "./logging";
 import { warmPricingCache } from "./services/gateway-pricing.service";
 import { warmCatalog } from "./services/model-catalog.service";
+import { discoverSystemSkills } from "./agent-lib/skills/system-skills";
 
 import { getCdcEventStoreConfig } from "./sync-cdc/event-store";
+import {
+  initLangfuseTracing,
+  shutdownLangfuse,
+} from "./observability/langfuse";
 
 // Resolve the root‐level .env file regardless of the runtime working directory
 const envPath = path.resolve(__dirname, "../../.env");
@@ -62,9 +68,25 @@ if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
 
+// Initialize Langfuse tracing AFTER env vars are loaded but before the server
+// handles any request. Registers the OpenTelemetry provider that the Vercel AI
+// SDK emits GenAI spans into. No-op when Langfuse keys are absent.
+initLangfuseTracing();
+
 // Logger - LogTape initialization starts automatically when the logging module
 // is imported. By the time request handlers execute, initialization will be complete.
 const logger = loggers.app();
+
+const REQUIRED_SYSTEM_SKILLS = [
+  "dialect-postgresql",
+  "dialect-bigquery",
+  "dialect-clickhouse",
+  "dialect-mysql",
+  "dialect-sqlite",
+  "mongodb-queries",
+  "dashboards",
+  "flows",
+];
 
 const app = new Hono();
 
@@ -116,6 +138,7 @@ app.route("/api/workspaces", workspaceRoutes);
 app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
 app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
 app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
+app.route("/api/workspaces/:workspaceId/realtime", realtimeRoutes);
 app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
@@ -247,6 +270,21 @@ async function main(): Promise<void> {
     );
   }
 
+  const systemSkillRegistry = discoverSystemSkills();
+  const missingSystemSkills = REQUIRED_SYSTEM_SKILLS.filter(
+    name => !systemSkillRegistry.skills.has(name),
+  );
+  if (missingSystemSkills.length > 0) {
+    throw new Error(
+      `Missing required system skills: ${missingSystemSkills.join(", ")}. ` +
+        "Ensure api/src/agent-skills/**/*.md is bundled into dist (copyfiles).",
+    );
+  }
+  logger.info("System skills discovered", {
+    count: systemSkillRegistry.skills.size,
+    skillsDir: systemSkillRegistry.skillsDir,
+  });
+
   // Connect to MongoDB
   try {
     await connectDatabase();
@@ -339,6 +377,10 @@ async function gracefulShutdown(
 
   let exitCode = forcedExitCode ?? 0;
   try {
+    // Flush buffered Langfuse spans before the process exits
+    logger.info("Flushing Langfuse traces");
+    await shutdownLangfuse();
+
     // Close SSH tunnels
     logger.info("Closing SSH tunnels");
     await sshTunnelManager.closeAll();

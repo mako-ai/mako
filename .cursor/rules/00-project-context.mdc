@@ -26,6 +26,7 @@ description: Mako monorepo essentials — entry points, env, key directories, an
 | Database schemas | `api/src/database/schema.ts`, `workspace-schema.ts` |
 | Connections | `api/src/services/database-connection.service.ts` (always use this; never `new MongoClient`) |
 | Auth | `api/src/auth/**` — prefer `unifiedAuthMiddleware` |
+| Agent skills | `api/src/agent-skills/**` |
 | Inngest jobs | `api/src/inngest/functions/**` |
 | Migrations | `api/src/migrations/**` |
 | Frontend components | `app/src/components/**` |
@@ -40,4 +41,4 @@ description: Mako monorepo essentials — entry points, env, key directories, an
 ## Conventions
 
 - Never edit `dist/**`; edit sources and rebuild.
-- Scoped rules in this directory cover: [TypeScript style](mdc:.cursor/rules/10-typescript-style.mdc), [Connectors](mdc:.cursor/rules/15-connector-agnostic.mdc), [MUI theme](mdc:.cursor/rules/16-mui-theme.mdc), [API routing](mdc:.cursor/rules/20-api-routing.mdc), [Auth](mdc:.cursor/rules/30-auth.mdc), [Sync](mdc:.cursor/rules/40-sync.mdc), [Inngest](mdc:.cursor/rules/45-inngest.mdc), [MongoDB](mdc:.cursor/rules/50-mongodb.mdc), [CDC pipeline](mdc:.cursor/rules/55-sync-cdc.mdc), [Webhooks](mdc:.cursor/rules/60-webhooks.mdc), [Frontend](mdc:.cursor/rules/70-frontend.mdc), [Chat performance](mdc:.cursor/rules/75-chat-performance.mdc), [Engineering ops](mdc:.cursor/rules/80-engineering-ops.mdc), [Build/deploy](mdc:.cursor/rules/90-build-deploy.mdc), [Migrations](mdc:.cursor/rules/90-migrations.mdc).
+- Scoped rules in this directory cover: [TypeScript style](mdc:.cursor/rules/10-typescript-style.mdc), [Connectors](mdc:.cursor/rules/15-connector-agnostic.mdc), [MUI theme](mdc:.cursor/rules/16-mui-theme.mdc), [API routing](mdc:.cursor/rules/20-api-routing.mdc), [Auth](mdc:.cursor/rules/30-auth.mdc), [Agent prompts](mdc:.cursor/rules/35-agent-prompts.mdc), [Sync](mdc:.cursor/rules/40-sync.mdc), [Inngest](mdc:.cursor/rules/45-inngest.mdc), [MongoDB](mdc:.cursor/rules/50-mongodb.mdc), [CDC pipeline](mdc:.cursor/rules/55-sync-cdc.mdc), [Webhooks](mdc:.cursor/rules/60-webhooks.mdc), [Frontend](mdc:.cursor/rules/70-frontend.mdc), [Chat performance](mdc:.cursor/rules/75-chat-performance.mdc), [Engineering ops](mdc:.cursor/rules/80-engineering-ops.mdc), [Build/deploy](mdc:.cursor/rules/90-build-deploy.mdc), [Migrations](mdc:.cursor/rules/90-migrations.mdc), [Desktop & Local Agent](mdc:.cursor/rules/97-desktop-local-agent.mdc).

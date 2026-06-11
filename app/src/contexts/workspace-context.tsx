@@ -24,6 +24,7 @@ import { useChatStore } from "../store/chatStore";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useConsoleTreeStore } from "../store/consoleTreeStore";
+import { useRealtimeStore } from "../store/realtimeStore";
 
 interface WorkspaceContextState {
   // State
@@ -128,6 +129,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   useEffect(() => {
     if (currentWorkspace?.id) {
       useConsoleTreeStore.getState().fetchTree(currentWorkspace.id);
+    }
+  }, [currentWorkspace?.id]);
+
+  // Workspace realtime channel: keeps open console tabs live (other users,
+  // other tabs, server-side agent edits) and carries chat activity/intents.
+  useEffect(() => {
+    if (currentWorkspace?.id) {
+      useRealtimeStore.getState().connect(currentWorkspace.id);
+      return () => {
+        useRealtimeStore.getState().disconnect();
+      };
     }
   }, [currentWorkspace?.id]);
 

@@ -30,6 +30,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     consoleId,
     userId,
     context.toolExecutionContext,
+    { chatId: context.chatId },
   );
   const flowTools = createFlowTools(workspaceId, context.toolExecutionContext);
   const selfDirectiveTools = createSelfDirectiveTools(workspaceId);
@@ -58,7 +59,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
         role: "system" as const,
         content: UNIFIED_SYSTEM_PROMPT,
         providerOptions: {
-          anthropic: { cacheControl: { type: "ephemeral" } },
+          anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
         },
       },
       {

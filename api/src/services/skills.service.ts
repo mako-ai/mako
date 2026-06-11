@@ -20,6 +20,11 @@ import {
 import { databaseConnectionService } from "./database-connection.service";
 import { extractEntities, entityOverlap } from "../agent-lib/entity-extraction";
 import { loggers } from "../logging";
+import {
+  getSystemSkill,
+  getSystemSkillIndex,
+  readSystemSkillResource,
+} from "../agent-lib/skills/system-skills";
 
 const logger = loggers.app();
 
@@ -52,8 +57,10 @@ export interface SkillIndexEntry {
   id: string;
   name: string;
   loadWhen: string;
+  scope: "workspace" | "system";
   suppressed: boolean;
   useCount: number;
+  references?: string[];
 }
 
 export interface SkillRetrievalHit {
@@ -65,6 +72,7 @@ export interface SkillRetrievalHit {
   entityOverlap: number;
   semanticScore: number;
   injected: boolean;
+  scope: "workspace" | "system";
 }
 
 export interface SkillRetrievalResult {
@@ -254,7 +262,20 @@ export async function loadSkill(
     { new: true },
   );
   if (!skill) {
-    return { success: false, error: `skill "${name}" not found` };
+    const systemSkill = getSystemSkill(name.trim());
+    if (!systemSkill) {
+      return { success: false, error: `skill "${name}" not found` };
+    }
+    return {
+      success: true,
+      skill: {
+        id: systemSkill.id,
+        name: systemSkill.name,
+        loadWhen: systemSkill.description,
+        body: systemSkill.body,
+        suppressed: false,
+      },
+    };
   }
   return {
     success: true,
@@ -266,6 +287,21 @@ export async function loadSkill(
       suppressed: skill.suppressed,
     },
   };
+}
+
+export function readSkillResource(
+  name: string,
+  relPath: string,
+):
+  | {
+      success: true;
+      skill: string;
+      path: string;
+      content: string;
+      references: string[];
+    }
+  | { success: false; error: string } {
+  return readSystemSkillResource(name, relPath);
 }
 
 /**
@@ -409,6 +445,7 @@ export async function searchSkills(
       entityOverlap: overlap,
       semanticScore,
       injected: false,
+      scope: "workspace",
     };
   });
 
@@ -445,11 +482,25 @@ export async function retrieveRelevantSkills(
     id: (s._id as Types.ObjectId).toString(),
     name: s.name,
     loadWhen: s.loadWhen,
+    scope: "workspace",
     suppressed: !!s.suppressed,
     useCount: s.useCount ?? 0,
   }));
 
-  if (indexDocs.length === 0 || !queryText || queryText.trim().length === 0) {
+  const systemSkills = getSystemSkillIndex();
+  for (const skill of systemSkills) {
+    index.push({
+      id: skill.id,
+      name: skill.name,
+      loadWhen: skill.description,
+      scope: "system",
+      suppressed: false,
+      useCount: 0,
+      references: skill.references,
+    });
+  }
+
+  if (index.length === 0 || !queryText || queryText.trim().length === 0) {
     return { index, injected: [], considered: [], queryEntities: [] };
   }
 
@@ -480,14 +531,22 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  const candidates: SkillRetrievalHit[] = indexDocs.map(s => {
+  const entityScoreFor = (entities: string[] | undefined): number =>
+    hasEntities
+      ? Math.min(
+          1,
+          entityOverlap(queryEntities, entities ?? []) /
+            Math.max(3, queryEntities.length / 2),
+        )
+      : 0;
+
+  const workspaceCandidates: SkillRetrievalHit[] = indexDocs.map(s => {
     const id = (s._id as Types.ObjectId).toString();
     const overlap = entityOverlap(queryEntities, s.entities ?? []);
-    const entityScore = hasEntities
-      ? Math.min(1, overlap / Math.max(3, queryEntities.length / 2))
-      : 0;
     const semanticScore = semanticScoreById.get(id) ?? 0;
-    const score = entityScore * ENTITY_WEIGHT + semanticScore * SEMANTIC_WEIGHT;
+    const score =
+      entityScoreFor(s.entities) * ENTITY_WEIGHT +
+      semanticScore * SEMANTIC_WEIGHT;
     return {
       id,
       name: s.name,
@@ -497,20 +556,41 @@ export async function retrieveRelevantSkills(
       entityOverlap: overlap,
       semanticScore,
       injected: false,
+      scope: "workspace",
     };
   });
 
+  // System skills do not have embeddings, so entity overlap is the complete
+  // signal. Use the full score so an explicit dialect/capability mention can
+  // cross the auto-injection threshold.
+  const systemCandidates: SkillRetrievalHit[] = systemSkills.map(s => ({
+    id: s.id,
+    name: s.name,
+    loadWhen: s.description,
+    body: "",
+    score: entityScoreFor(s.entities),
+    entityOverlap: entityOverlap(queryEntities, s.entities),
+    semanticScore: 0,
+    injected: false,
+    scope: "system",
+  }));
+
+  const candidates = [...workspaceCandidates, ...systemCandidates];
   candidates.sort((a, b) => b.score - a.score);
 
-  const toInjectIds = candidates
+  const toInject = candidates
     .filter(c => c.score >= AUTO_INJECT_THRESHOLD)
-    .slice(0, AUTO_INJECT_LIMIT)
-    .map(c => c.id);
+    .slice(0, AUTO_INJECT_LIMIT);
+  const toInjectIds = new Set(toInject.map(c => c.id));
 
-  // Fetch bodies only for the ones we'll inject.
+  // Fetch bodies only for the workspace skills we'll inject; system skill
+  // bodies come from the in-memory registry.
+  const workspaceToInjectIds = toInject
+    .filter(c => c.scope === "workspace")
+    .map(c => new Types.ObjectId(c.id));
   const bodies: Array<{ _id: Types.ObjectId; body: string }> =
-    toInjectIds.length
-      ? ((await Skill.find({ _id: { $in: toInjectIds } })
+    workspaceToInjectIds.length
+      ? ((await Skill.find({ _id: { $in: workspaceToInjectIds } })
           .select("body")
           .lean()) as unknown as Array<{ _id: Types.ObjectId; body: string }>)
       : [];
@@ -522,10 +602,13 @@ export async function retrieveRelevantSkills(
   const considered: SkillRetrievalHit[] = [];
   for (const c of candidates) {
     if (c.score <= 0 && !hasEntities) continue;
-    if (toInjectIds.includes(c.id)) {
+    if (toInjectIds.has(c.id)) {
       injected.push({
         ...c,
-        body: bodyById.get(c.id) ?? "",
+        body:
+          c.scope === "system"
+            ? (getSystemSkill(c.name)?.body ?? "")
+            : (bodyById.get(c.id) ?? ""),
         injected: true,
       });
     } else if (c.score > 0) {
@@ -533,10 +616,14 @@ export async function retrieveRelevantSkills(
     }
   }
 
-  // Fire-and-forget: bump useCount + lastUsedAt for skills we injected.
-  if (injected.length > 0) {
+  // Fire-and-forget: bump useCount + lastUsedAt for workspace skills we
+  // injected. System skills have no Mongo row, so skip them.
+  const workspaceInjectedIds = injected
+    .filter(i => i.scope === "workspace")
+    .map(i => new Types.ObjectId(i.id));
+  if (workspaceInjectedIds.length > 0) {
     void Skill.updateMany(
-      { _id: { $in: injected.map(i => new Types.ObjectId(i.id)) } },
+      { _id: { $in: workspaceInjectedIds } },
       { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
     ).catch(err => {
       logger.debug("Skill useCount bump failed", { error: err });
@@ -561,18 +648,23 @@ export function renderSkillsPromptBlock(result: SkillRetrievalResult): string {
 
   const lines: string[] = [];
   lines.push("\n\n---\n");
-  lines.push("### Skills (workspace-scoped knowledge)");
+  lines.push("### Skills (workspace + system knowledge)");
   lines.push(
     "Skills extend or refine the self-directive for specific contexts. " +
       "If a skill conflicts with the directive, follow the directive. " +
       "Use `load_skill` to pull in any indexed skill on demand, `save_skill` " +
       "to record new workspace knowledge, `delete_skill` to retract, and " +
-      "`search_skills` as a fallback.",
+      "`search_skills` as a fallback. Use `read_skill_resource` only when a " +
+      "system skill points you to a `references/*.md` resource.",
   );
   lines.push("");
   lines.push("#### Available skills (index)");
   for (const s of result.index) {
-    lines.push(`- \`${s.name}\`: ${s.loadWhen}`);
+    const references =
+      s.scope === "system" && s.references && s.references.length > 0
+        ? ` (references: ${s.references.join(", ")})`
+        : "";
+    lines.push(`- [${s.scope}] \`${s.name}\`: ${s.loadWhen}${references}`);
   }
 
   if (result.injected.length > 0) {

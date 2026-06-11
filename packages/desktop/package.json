@@ -1,0 +1,23 @@
+{
+  "name": "@mako/desktop",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Mako Desktop: a thin Electron shell that loads the Mako web app and bundles the Mako Local Agent, enabling connections to databases on this machine.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "esbuild src/main.ts src/preload.ts --bundle --platform=node --external:electron --outdir=dist --format=cjs",
+    "dev": "pnpm run build && electron dist/main.js",
+    "start": "pnpm run dev",
+    "typecheck": "tsc --noEmit",
+    "dist": "pnpm --filter @mako/local-agent build && pnpm run build && electron-builder --config electron-builder.yml",
+    "pack:dir": "pnpm --filter @mako/local-agent build && pnpm run build && electron-builder --config electron-builder.yml --dir"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "^36.0.0",
+    "electron-builder": "^26.0.12",
+    "electron-updater": "^6.8.9",
+    "esbuild": "^0.25.5",
+    "typescript": "^5.8.3"
+  }
+}

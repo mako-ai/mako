@@ -10,10 +10,13 @@ import {
   streamText,
   convertToModelMessages,
   stepCountIs,
+  UI_MESSAGE_STREAM_HEADERS,
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
+import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -57,9 +60,22 @@ import {
   getAllAgentMeta,
   type AgentContext,
 } from "../agents";
+import {
+  buildUnifiedModeRuntime,
+  type UnifiedModeRuntime,
+} from "../agents/modes";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { createAgentExecutionId } from "../agent-lib/tools/shared/truncation";
 import { toNum, extractTokenCounts } from "../utils/safe-num";
+import { scheduleChatFinalization } from "./chat-finalization-queue";
+import {
+  getResumableStreamContext,
+  registerActiveGeneration,
+  stopActiveGeneration,
+  clearActiveGeneration,
+} from "../services/resumable-stream.service";
+import { hasAttachedClients } from "../services/realtime-presence.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
 const logger = loggers.agent();
 
@@ -258,6 +274,9 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   if (!actorId) {
     return c.json({ error: "Unauthorized" }, 401);
   }
+  // Email is the human-friendly identifier surfaced in Langfuse; falls back to
+  // actorId for API-key access where no user email is available.
+  const actorEmail = user?.email;
 
   let body: Record<string, unknown> = {};
   try {
@@ -482,6 +501,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           const title = await generateChatTitle(userContent, {
             workspaceId,
             userId: actorId,
+            userEmail: actorEmail,
           });
           await Chat.updateOne(
             { _id: new ObjectId(chatId), titleGenerated: false },
@@ -544,13 +564,19 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
   logger.info("Using agent", { agentId: resolvedAgentId, tabKind, flowType });
 
-  const requestSignal = c.req.raw.signal;
+  // The turn's lifetime is decoupled from the HTTP connection: the SSE
+  // response is buffered as a resumable stream (see consumeSseStream below),
+  // so a browser disconnect (refresh, tab close, network drop) must NOT abort
+  // generation — reconnecting clients pick the stream back up. Aborting is an
+  // explicit action via POST /chat/:chatId/stop, which fires this controller.
+  const turnAbortController = new AbortController();
+  const turnSignal = turnAbortController.signal;
   const requestExecutionIds = new Set<string>();
 
   // Cancel all currently-registered database executions.
   // Invariant: this only runs as a batch on abort. Any execution registered
   // *after* the abort fires is individually cancelled inside registerExecution
-  // (which checks requestSignal.aborted synchronously after adding the ID).
+  // (which checks turnSignal.aborted synchronously after adding the ID).
   const cancelRegisteredExecutions = async (): Promise<void> => {
     const executionIds = Array.from(requestExecutionIds);
     await Promise.allSettled(
@@ -559,7 +585,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
       ),
     );
   };
-  requestSignal.addEventListener(
+  turnSignal.addEventListener(
     "abort",
     () => {
       void cancelRegisteredExecutions();
@@ -570,11 +596,11 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   const toolExecutionContext: NonNullable<
     AgentContext["toolExecutionContext"]
   > = {
-    signal: requestSignal,
+    signal: turnSignal,
     createExecutionId: createAgentExecutionId,
     registerExecution: executionId => {
       requestExecutionIds.add(executionId);
-      if (requestSignal.aborted) {
+      if (turnSignal.aborted) {
         requestExecutionIds.delete(executionId);
         void databaseConnectionService.cancelQuery(executionId);
       }
@@ -582,7 +608,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     releaseExecution: executionId => {
       requestExecutionIds.delete(executionId);
     },
-    isAborted: () => requestSignal.aborted,
+    isAborted: () => turnSignal.aborted,
   };
 
   // Extract last user text once — used by both console hints and skills retrieval.
@@ -651,6 +677,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
   // Build agent context
   const agentContext: AgentContext = {
     workspaceId,
+    chatId,
     activeView,
     activeExplorer,
     userId: actorId,
@@ -675,46 +702,107 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     canManageScheduledQueries,
   };
 
-  // Create agent configuration
-  const agentConfig = agentFactory(agentContext);
-  const { systemPrompt, tools } = agentConfig;
+  // Create agent configuration.
+  //
+  // The unified agent uses the PostHog-style mode-switching runtime: a single
+  // ALL_TOOLS union plus a `prepareStep` that recomputes the active tool
+  // allowlist + cached system blocks each step from a derived mode state. This
+  // is what enforces the plan hard gate (mutations blocked once the model has
+  // submitted a plan, until the user approves). Other agents keep the simpler
+  // static system + tools path.
+  let systemPrompt: ReturnType<typeof agentFactory>["systemPrompt"];
+  let tools: ReturnType<typeof agentFactory>["tools"];
+  let prepareStep: UnifiedModeRuntime["prepareStep"] | undefined;
 
-  const model = getModel(resolvedModelId);
-  const modelDef = await getModelById(resolvedModelId);
-  logger.info("Using model", { model: resolvedModelId });
-
-  // Resolve object-storage-backed image attachments (from reopened chats) back
-  // into inline data URLs the model provider can read. Freshly attached images
-  // in the current turn already arrive as data URLs and pass through untouched.
-  // Runs before sanitization so its empty-parts guard covers any message left
-  // with no parts after a missing attachment is dropped.
-  const messagesWithAttachments = await resolveChatAttachmentsForModel(
-    messages,
-    workspaceId,
-  );
-
-  // Sanitize messages to remove incomplete tool calls from interrupted streams
-  // This prevents Anthropic API errors: "tool_use ids were found without tool_result blocks"
-  const sanitizedMessages = sanitizeMessagesForModel(messagesWithAttachments);
-
-  // Convert UI messages (from useChat) to model messages (for streamText)
-  const modelMessages = await convertToModelMessages(sanitizedMessages);
-  const screenshotVisionMessage = buildScreenshotVisionModelMessage(
-    screenshotVisionAttachments,
-  );
-  if (screenshotVisionMessage) {
-    modelMessages.push(
-      screenshotVisionMessage as (typeof modelMessages)[number],
-    );
-    logger.info("Attached screenshot images to model request", {
-      chatId,
-      workspaceId,
-      count: screenshotVisionAttachments?.length ?? 0,
+  if (resolvedAgentId === "unified") {
+    const runtime = buildUnifiedModeRuntime({
+      context: agentContext,
+      messages,
+      tabKind,
     });
+    systemPrompt = runtime.system;
+    tools = runtime.tools;
+    prepareStep = runtime.prepareStep;
+    logger.info("Unified mode runtime", {
+      enabledModes: Array.from(runtime.modeState.enabledModes),
+      planSubmitted: runtime.modeState.planSubmitted,
+      planApproved: runtime.modeState.planApproved,
+    });
+  } else {
+    const agentConfig = agentFactory(agentContext);
+    systemPrompt = agentConfig.systemPrompt;
+    tools = agentConfig.tools;
   }
 
+  const modelDef = await getModelById(resolvedModelId);
+  // Self-heal wrapper: if the catalog still classifies this model as manual
+  // thinking but Anthropic rejects the payload with the adaptive-only 400,
+  // persist the corrected mode and retry the call transparently.
+  const model = resolvedModelId.startsWith("anthropic/")
+    ? withThinkingSelfHeal(getModel(resolvedModelId), resolvedModelId)
+    : getModel(resolvedModelId);
+  logger.info("Using model", { model: resolvedModelId });
+
+  /**
+   * Build the model messages for one generation segment.
+   *
+   * - Resolves object-storage-backed image attachments (from reopened chats)
+   *   back into inline data URLs the model provider can read. Runs before
+   *   sanitization so its empty-parts guard covers any message left with no
+   *   parts after a missing attachment is dropped.
+   * - Sanitizes messages to remove incomplete tool calls from interrupted
+   *   streams (prevents Anthropic "tool_use ids without tool_result" errors).
+   * - Screenshot vision attachments ride only on the FIRST segment (they are
+   *   consumed from the originating request).
+   */
+  const buildSegmentModelMessages = async (
+    segmentUiMessages: UIMessage[],
+    includeVisionAttachments: boolean,
+  ) => {
+    const messagesWithAttachments = await resolveChatAttachmentsForModel(
+      segmentUiMessages,
+      workspaceId,
+    );
+    const sanitizedMessages = sanitizeMessagesForModel(messagesWithAttachments);
+    const modelMessages = await convertToModelMessages(sanitizedMessages);
+    if (includeVisionAttachments) {
+      const screenshotVisionMessage = buildScreenshotVisionModelMessage(
+        screenshotVisionAttachments,
+      );
+      if (screenshotVisionMessage) {
+        modelMessages.push(
+          screenshotVisionMessage as (typeof modelMessages)[number],
+        );
+        logger.info("Attached screenshot images to model request", {
+          chatId,
+          workspaceId,
+          count: screenshotVisionAttachments?.length ?? 0,
+        });
+      }
+    }
+    return modelMessages;
+  };
+
   const MAX_STEPS = 256;
-  let stepsCompleted = 0;
+
+  // "No client attached" fallback (issue #475): when a turn dead-ends on
+  // client-only tools (e.g. capture_screenshot, dashboard tools) and no
+  // browser window is attached to the workspace, the server synthesizes the
+  // tool results and continues the turn itself so the model can adapt
+  // instead of the chat stalling until someone reattaches. Bounded so a
+  // model that keeps calling browser tools can't loop forever.
+  const MAX_NO_CLIENT_CONTINUATIONS = 3;
+  const STRANDED_GRACE_MS = 10_000;
+  const NO_CLIENT_TOOL_RESULT = {
+    success: false,
+    error:
+      "No client attached — this tool needs an open browser window in the workspace. Continue without it (use server-side tools) or summarize what you would have done.",
+  };
+  // Human-in-the-loop tools must stay pending until a person answers.
+  const HUMAN_IN_THE_LOOP_TOOLS = new Set([
+    "ask_clarifying_questions",
+    "submit_plan",
+  ]);
 
   const thinkingMode = modelDef?.thinkingMode ?? "none";
   const thinkingBudget = modelDef?.thinkingBudgetTokens ?? 10000;
@@ -733,273 +821,700 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
     ...(thinkingPayload ? { anthropic: { thinking: thinkingPayload } } : {}),
   };
 
-  const startTime = Date.now();
-
-  const result = streamText({
-    model,
-    system: systemPrompt,
-    messages: modelMessages,
-    tools,
-    stopWhen: stepCountIs(MAX_STEPS),
-    providerOptions,
-    abortSignal: requestSignal,
-    onStepFinish({ toolCalls }: { toolCalls?: Array<unknown> }) {
-      stepsCompleted += 1;
-
-      logger.debug("Step finished", {
-        step: stepsCompleted,
-        maxSteps: MAX_STEPS,
-        toolCallCount: toolCalls?.length,
-      });
-
-      if (stepsCompleted >= MAX_STEPS) {
-        logger.warn("Step limit reached, terminating tool loop", {
-          maxSteps: MAX_STEPS,
-        });
-      }
+  // Group this turn into a single Langfuse trace. sessionId=chatId links the
+  // messages of a conversation together in the Sessions view; userId enables
+  // per-user cost/quality analysis; tags make traces filterable by
+  // agent/model/view. These attributes propagate to the AI SDK GenAI spans
+  // created synchronously within this callback.
+  return await propagateAttributes(
+    {
+      traceName: "agent-chat",
+      sessionId: chatId,
+      userId: actorEmail ?? actorId,
+      tags: [
+        `agent:${resolvedAgentId}`,
+        `model:${resolvedModelId}`,
+        `view:${activeView ?? "unknown"}`,
+      ],
     },
-  });
+    async () => {
+      /**
+       * Run one generation segment of this turn.
+       *
+       * Segment 0 is the normal request-driven generation. Further segments
+       * exist only for the "no client attached" fallback: when a segment
+       * ends stranded on client-only tool calls with no browser attached,
+       * finalization synthesizes the tool results and starts the next
+       * segment server-side (the continuation's Response body has no HTTP
+       * consumer; the resumable stream still buffers it for reattaching
+       * clients).
+       */
+      const runSegment = async (
+        segmentUiMessages: UIMessage[],
+        continuationDepth: number,
+      ): Promise<Response> => {
+        const modelMessages = await buildSegmentModelMessages(
+          segmentUiMessages,
+          continuationDepth === 0,
+        );
+        const startTime = Date.now();
+        let stepsCompleted = 0;
+        // Stream ID minted in consumeSseStream once the SSE stream starts;
+        // used by finalization to clear the resume pointer for exactly this
+        // segment.
+        let turnStreamId: string | null = null;
 
-  // Drain the stream server-side so generation runs to completion and the
-  // onFinish handler below always fires — even when the client disconnects
-  // (network drop, tab close) or aborts via the Stop button. Without this the
-  // HTTP response stops being pulled on disconnect, onFinish never runs, and
-  // the entire assistant turn (and any tool work) is lost. With abortSignal
-  // wired to the request signal, Stop still halts the LLM; we persist whatever
-  // was generated up to that point.
-  void result.consumeStream({
-    onError: error =>
-      logger.warn("Error draining chat stream", { error, chatId }),
-  });
-
-  // Return native AI SDK UI message stream response (for useChat compatibility)
-  // Using AI SDK best practice: save once at the end with all messages
-  return result.toUIMessageStreamResponse({
-    originalMessages: messages,
-    generateMessageId: () => new ObjectId().toString(),
-    // Forward reasoning tokens from models that support extended thinking
-    // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
-    sendReasoning: true,
-    onFinish: async ({ messages: allMessages, isAborted }) => {
-      if (requestExecutionIds.size > 0) {
-        await cancelRegisteredExecutions();
-        requestExecutionIds.clear();
-      }
-      const durationMs = Date.now() - startTime;
-
-      // Extract detailed per-step usage from result.steps
-      let steps: Array<Record<string, unknown>> = [];
-      try {
-        steps = (await result.steps) as unknown as Array<
-          Record<string, unknown>
-        >;
-      } catch (err) {
-        logger.warn("Failed to get steps from result", { error: err });
-      }
-
-      // Aggregate detailed token usage across all steps
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let cacheReadTokens = 0;
-      let cacheWriteTokens = 0;
-      let reasoningTokens = 0;
-
-      let stepDetails: Array<{
-        modelId: string;
-        inputTokens: number;
-        outputTokens: number;
-        cacheReadTokens: number;
-        cacheWriteTokens: number;
-        reasoningTokens: number;
-        costUsd: number;
-      }> = [];
-
-      for (const step of steps) {
-        const usage = step.usage as Record<string, unknown> | undefined;
-        if (!usage) continue;
-
-        const { inputTokens: sInput, outputTokens: sOutput } =
-          extractTokenCounts(usage);
-
-        const details = usage.inputTokenDetails as
-          | Record<string, unknown>
-          | undefined;
-        const outDetails = usage.outputTokenDetails as
-          | Record<string, unknown>
-          | undefined;
-
-        const sCacheRead = toNum(details?.cacheReadTokens);
-        const sCacheWrite = toNum(details?.cacheWriteTokens);
-        const sReasoning = toNum(outDetails?.reasoningTokens);
-
-        inputTokens += sInput;
-        outputTokens += sOutput;
-        cacheReadTokens += sCacheRead;
-        cacheWriteTokens += sCacheWrite;
-        reasoningTokens += sReasoning;
-
-        const stepModelId = (
-          step.response as Record<string, unknown> | undefined
-        )?.modelId as string | undefined;
-
-        stepDetails.push({
-          modelId: stepModelId || resolvedModelId,
-          inputTokens: sInput,
-          outputTokens: sOutput,
-          cacheReadTokens: sCacheRead,
-          cacheWriteTokens: sCacheWrite,
-          reasoningTokens: sReasoning,
-          costUsd: 0, // filled in by cost calculator
-        });
-      }
-
-      // Fallback to top-level usage if no steps produced usage data
-      if (stepDetails.length === 0) {
-        try {
-          const usage = (await result.usage) as unknown as Record<
-            string,
-            unknown
-          >;
-          const extracted = extractTokenCounts(usage ?? {});
-          inputTokens = extracted.inputTokens;
-          outputTokens = extracted.outputTokens;
-
-          const details = usage?.inputTokenDetails as
-            | Record<string, unknown>
-            | undefined;
-          const outDetails = usage?.outputTokenDetails as
-            | Record<string, unknown>
-            | undefined;
-          cacheReadTokens = toNum(details?.cacheReadTokens);
-          cacheWriteTokens = toNum(details?.cacheWriteTokens);
-          reasoningTokens = toNum(outDetails?.reasoningTokens);
-        } catch (err) {
-          logger.warn("Failed to get usage from model", { error: err });
-        }
-      }
-
-      const totalTokens = inputTokens + outputTokens;
-
-      logger.info(
-        isAborted
-          ? "Stream aborted, saving partial chat"
-          : "Stream finished, saving chat",
-        {
-          chatId,
-          isAborted,
-          messageCount: allMessages.length,
-          inputTokens,
-          outputTokens,
-          cacheReadTokens,
-          totalTokens,
-          durationMs,
-        },
-      );
-
-      // Compute cost before saving so both trackUsage and saveChat receive it
-      let costUsd: number | undefined;
-      try {
-        const costResult = await computeInvocationCost({
-          modelId: resolvedModelId,
-          inputTokens,
-          outputTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-          reasoningTokens,
-          steps: stepDetails,
-        });
-        costUsd = costResult.totalCostUsd;
-        if (costResult.steps) {
-          stepDetails = costResult.steps;
-        }
-      } catch (err) {
-        logger.warn("Failed to compute invocation cost", { error: err });
-      }
-
-      // Track usage (fire-and-forget)
-      void trackUsage({
-        workspaceId,
-        userId: actorId,
-        chatId,
-        invocationType: "chat",
-        modelId: resolvedModelId,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheWriteTokens,
-        reasoningTokens,
-        totalTokens,
-        steps: stepDetails,
-        agentId: resolvedAgentId,
-        durationMs,
-        costUsd,
-      }).catch(err => logger.warn("Failed to track LLM usage", { error: err }));
-
-      try {
-        await saveChat(chatId, workspaceId, actorId, allMessages, {
-          promptTokens: inputTokens,
-          completionTokens: outputTokens,
-          totalTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-          reasoningTokens,
-          costUsd,
-          model: resolvedModelId,
-        });
-      } catch (error) {
-        logger.error("Error saving chat", { error });
-      }
-
-      if (isDescriptionGenAvailable()) {
-        void (async () => {
-          try {
-            const consoleContexts =
-              extractConsoleContextFromMessages(allMessages);
-            for (const [consoleId, ctx] of consoleContexts) {
-              const console = await SavedConsole.findById(consoleId).select(
-                "code name connectionId databaseName language",
-              );
-              if (!console) continue;
-
-              const connDoc = console.connectionId
-                ? await DatabaseConnection.findById(console.connectionId)
-                : null;
-
-              const { description, embedding, embeddingModel } =
-                await generateDescriptionAndEmbedding(
-                  {
-                    code: console.code,
-                    title: console.name,
-                    connectionName: connDoc?.name,
-                    databaseType: connDoc?.type,
-                    databaseName: console.databaseName,
-                    language: console.language,
-                    conversationExcerpt: ctx.conversationExcerpt,
-                    resultSample: ctx.resultSample,
-                  },
-                  { workspaceId, userId: actorId },
-                );
-
-              const $set: Record<string, any> = {
-                descriptionGeneratedAt: new Date(),
-              };
-              if (description) $set.description = description;
-              if (embedding) {
-                $set.descriptionEmbedding = embedding;
-                $set.embeddingModel = embeddingModel;
-              }
-              await SavedConsole.updateOne(
-                { _id: new ObjectId(consoleId) },
-                { $set },
-              );
+        const result = streamText({
+        model,
+        system: systemPrompt,
+        messages: modelMessages,
+        tools,
+        ...(prepareStep
+          ? {
+              prepareStep: prepareStep as Parameters<
+                typeof streamText
+              >[0]["prepareStep"],
             }
-          } catch (err) {
-            logger.error("Background description generation failed", {
-              error: err,
+          : {}),
+        stopWhen: stepCountIs(MAX_STEPS),
+        providerOptions,
+        abortSignal: turnSignal,
+        experimental_telemetry: {
+          isEnabled: true,
+          functionId: `agent-chat:${resolvedAgentId}`,
+          metadata: {
+            workspaceId,
+            chatId,
+            agentId: resolvedAgentId,
+            modelId: resolvedModelId,
+            invocationType: "chat",
+          },
+        },
+        onStepFinish({ toolCalls }: { toolCalls?: Array<unknown> }) {
+          stepsCompleted += 1;
+
+          logger.debug("Step finished", {
+            step: stepsCompleted,
+            maxSteps: MAX_STEPS,
+            toolCallCount: toolCalls?.length,
+          });
+
+          if (stepsCompleted >= MAX_STEPS) {
+            logger.warn("Step limit reached, terminating tool loop", {
+              maxSteps: MAX_STEPS,
             });
           }
-        })();
-      }
+        },
+        });
+
+      // Drain the stream server-side so generation runs to completion and the
+      // onFinish handler below always fires — even when the client disconnects
+      // (network drop, tab close) or aborts via the Stop button. Without this the
+      // HTTP response stops being pulled on disconnect, onFinish never runs, and
+      // the entire assistant turn (and any tool work) is lost. Disconnects no
+      // longer abort the turn (turnSignal only fires via the explicit stop
+      // endpoint); the resumable stream below lets clients reattach mid-turn.
+      void result.consumeStream({
+        onError: error =>
+          logger.warn("Error draining chat stream", { error, chatId }),
+      });
+
+      // Return native AI SDK UI message stream response (for useChat compatibility)
+      // Using AI SDK best practice: save once at the end with all messages
+      return result.toUIMessageStreamResponse({
+        originalMessages: segmentUiMessages,
+        generateMessageId: () => new ObjectId().toString(),
+        // Forward reasoning tokens from models that support extended thinking
+        // (e.g., Claude claude-3-7-sonnet-20250219, DeepSeek deepseek-r1)
+        sendReasoning: true,
+        // Buffer a tee'd copy of the SSE stream so detached clients (refresh,
+        // other devices, additional viewers) can reattach via
+        // GET /chat/:chatId/stream while the turn is still generating. The
+        // chat's activeStreamId is the resume pointer; finalization clears it.
+        consumeSseStream: async ({ stream }) => {
+          // Persist the conversation as of turn start (which includes this
+          // turn's user message — until now it only existed in the request
+          // body). A client that reloads mid-turn can then render the full
+          // history from MongoDB and layer the resumed SSE replay (assistant
+          // chunks only) on top. Also bumps updatedAt so the in-flight chat
+          // sorts to the top of the history list. Scheduled through the
+          // per-chat finalization queue so a fast turn's finalization (full
+          // message set) can never be overwritten by this earlier snapshot.
+          scheduleChatFinalization(chatId, async () => {
+            try {
+              await saveChat(chatId, workspaceId, actorId, segmentUiMessages);
+            } catch (error) {
+              logger.warn("Failed to persist turn-start messages", {
+                error,
+                chatId,
+              });
+            }
+          });
+
+          const streamId = new ObjectId().toString();
+          turnStreamId = streamId;
+          try {
+            registerActiveGeneration(chatId, streamId, turnAbortController);
+            await getResumableStreamContext().createNewResumableStream(
+              streamId,
+              () => stream,
+            );
+            await Chat.updateOne(
+              { _id: new ObjectId(chatId) },
+              { $set: { activeStreamId: streamId } },
+            );
+            // Live activity indicators: open windows light up the chat in
+            // the history menu without polling.
+            publishRealtimeEvent(workspaceId, {
+              type: "chat.activity",
+              chatId,
+              state: "streaming",
+            });
+          } catch (error) {
+            // Resumability is best-effort: the direct response stream to the
+            // originating client is unaffected by failures here.
+            logger.warn("Failed to set up resumable stream", {
+              error,
+              chatId,
+              streamId,
+            });
+          }
+        },
+        onFinish: ({ messages: allMessages, isAborted }) => {
+          // Run finalization in the background so it does not block the UI
+          // message stream from closing. The AI SDK awaits onFinish inside the
+          // stream's flush(), and useChat only fires the tool-result auto-resume
+          // once the stream closes — so any slow work here (cost computation,
+          // saveChat, etc.) is serialized into the user-perceived latency of
+          // every client-side tool round-trip, making fast tools (e.g. an
+          // instant modify_console patch) appear frozen. See
+          // scheduleChatFinalization above.
+          scheduleChatFinalization(chatId, async () => {
+            if (requestExecutionIds.size > 0) {
+              await cancelRegisteredExecutions();
+              requestExecutionIds.clear();
+            }
+            const durationMs = Date.now() - startTime;
+
+            // Extract detailed per-step usage from result.steps
+            let steps: Array<Record<string, unknown>> = [];
+            try {
+              steps = (await result.steps) as unknown as Array<
+                Record<string, unknown>
+              >;
+            } catch (err) {
+              logger.warn("Failed to get steps from result", { error: err });
+            }
+
+            // Aggregate detailed token usage across all steps
+            let inputTokens = 0;
+            let outputTokens = 0;
+            let cacheReadTokens = 0;
+            let cacheWriteTokens = 0;
+            let reasoningTokens = 0;
+
+            let stepDetails: Array<{
+              modelId: string;
+              inputTokens: number;
+              outputTokens: number;
+              cacheReadTokens: number;
+              cacheWriteTokens: number;
+              reasoningTokens: number;
+              costUsd: number;
+            }> = [];
+
+            for (const step of steps) {
+              const usage = step.usage as Record<string, unknown> | undefined;
+              if (!usage) continue;
+
+              const { inputTokens: sInput, outputTokens: sOutput } =
+                extractTokenCounts(usage);
+
+              const details = usage.inputTokenDetails as
+                | Record<string, unknown>
+                | undefined;
+              const outDetails = usage.outputTokenDetails as
+                | Record<string, unknown>
+                | undefined;
+
+              const sCacheRead = toNum(details?.cacheReadTokens);
+              const sCacheWrite = toNum(details?.cacheWriteTokens);
+              const sReasoning = toNum(outDetails?.reasoningTokens);
+
+              inputTokens += sInput;
+              outputTokens += sOutput;
+              cacheReadTokens += sCacheRead;
+              cacheWriteTokens += sCacheWrite;
+              reasoningTokens += sReasoning;
+
+              const stepModelId = (
+                step.response as Record<string, unknown> | undefined
+              )?.modelId as string | undefined;
+
+              stepDetails.push({
+                modelId: stepModelId || resolvedModelId,
+                inputTokens: sInput,
+                outputTokens: sOutput,
+                cacheReadTokens: sCacheRead,
+                cacheWriteTokens: sCacheWrite,
+                reasoningTokens: sReasoning,
+                costUsd: 0, // filled in by cost calculator
+              });
+            }
+
+            // Fallback to top-level usage if no steps produced usage data
+            if (stepDetails.length === 0) {
+              try {
+                const usage = (await result.usage) as unknown as Record<
+                  string,
+                  unknown
+                >;
+                const extracted = extractTokenCounts(usage ?? {});
+                inputTokens = extracted.inputTokens;
+                outputTokens = extracted.outputTokens;
+
+                const details = usage?.inputTokenDetails as
+                  | Record<string, unknown>
+                  | undefined;
+                const outDetails = usage?.outputTokenDetails as
+                  | Record<string, unknown>
+                  | undefined;
+                cacheReadTokens = toNum(details?.cacheReadTokens);
+                cacheWriteTokens = toNum(details?.cacheWriteTokens);
+                reasoningTokens = toNum(outDetails?.reasoningTokens);
+              } catch (err) {
+                logger.warn("Failed to get usage from model", { error: err });
+              }
+            }
+
+            const totalTokens = inputTokens + outputTokens;
+
+            logger.info(
+              isAborted
+                ? "Stream aborted, saving partial chat"
+                : "Stream finished, saving chat",
+              {
+                chatId,
+                isAborted,
+                messageCount: allMessages.length,
+                inputTokens,
+                outputTokens,
+                cacheReadTokens,
+                totalTokens,
+                durationMs,
+              },
+            );
+
+            // Compute cost before saving so both trackUsage and saveChat receive it
+            let costUsd: number | undefined;
+            try {
+              const costResult = await computeInvocationCost({
+                modelId: resolvedModelId,
+                inputTokens,
+                outputTokens,
+                cacheReadTokens,
+                cacheWriteTokens,
+                reasoningTokens,
+                steps: stepDetails,
+              });
+              costUsd = costResult.totalCostUsd;
+              if (costResult.steps) {
+                stepDetails = costResult.steps;
+              }
+            } catch (err) {
+              logger.warn("Failed to compute invocation cost", { error: err });
+            }
+
+            // Track usage (fire-and-forget)
+            void trackUsage({
+              workspaceId,
+              userId: actorId,
+              chatId,
+              invocationType: "chat",
+              modelId: resolvedModelId,
+              inputTokens,
+              outputTokens,
+              cacheReadTokens,
+              cacheWriteTokens,
+              reasoningTokens,
+              totalTokens,
+              steps: stepDetails,
+              agentId: resolvedAgentId,
+              durationMs,
+              costUsd,
+            }).catch(err =>
+              logger.warn("Failed to track LLM usage", { error: err }),
+            );
+
+            try {
+              await saveChat(chatId, workspaceId, actorId, allMessages, {
+                promptTokens: inputTokens,
+                completionTokens: outputTokens,
+                totalTokens,
+                cacheReadTokens,
+                cacheWriteTokens,
+                reasoningTokens,
+                costUsd,
+                model: resolvedModelId,
+              });
+            } catch (error) {
+              logger.error("Error saving chat", { error });
+            }
+
+            // "No client attached" fallback: if this segment dead-ended on
+            // client-only tool calls and no browser is attached, synthesize
+            // the tool results and continue the turn server-side. When a
+            // continuation starts it owns the resume pointer, so the clear
+            // below is skipped.
+            let continued = false;
+            try {
+              continued = await maybeContinueStrandedTurn(
+                allMessages,
+                isAborted,
+                continuationDepth,
+                turnStreamId,
+              );
+            } catch (error) {
+              logger.warn("Stranded-turn continuation failed", {
+                error,
+                chatId,
+              });
+            }
+
+            // Turn is finalized: drop the resume pointer so reconnecting
+            // clients load the saved chat instead of reattaching. Guarded on
+            // the streamId so a newer turn's pointer is never clobbered.
+            if (!continued && turnStreamId) {
+              clearActiveGeneration(chatId, turnStreamId);
+              try {
+                await Chat.updateOne(
+                  { _id: new ObjectId(chatId), activeStreamId: turnStreamId },
+                  { $set: { activeStreamId: null } },
+                );
+              } catch (error) {
+                logger.warn("Failed to clear activeStreamId", {
+                  error,
+                  chatId,
+                });
+              }
+              publishRealtimeEvent(workspaceId, {
+                type: "chat.activity",
+                chatId,
+                state: "idle",
+              });
+            }
+
+            if (isDescriptionGenAvailable()) {
+              void (async () => {
+                try {
+                  const consoleContexts =
+                    extractConsoleContextFromMessages(allMessages);
+                  for (const [consoleId, ctx] of consoleContexts) {
+                    const console = await SavedConsole.findById(
+                      consoleId,
+                    ).select("code name connectionId databaseName language");
+                    if (!console) continue;
+
+                    const connDoc = console.connectionId
+                      ? await DatabaseConnection.findById(console.connectionId)
+                      : null;
+
+                    const { description, embedding, embeddingModel } =
+                      await generateDescriptionAndEmbedding(
+                        {
+                          code: console.code,
+                          title: console.name,
+                          connectionName: connDoc?.name,
+                          databaseType: connDoc?.type,
+                          databaseName: console.databaseName,
+                          language: console.language,
+                          conversationExcerpt: ctx.conversationExcerpt,
+                          resultSample: ctx.resultSample,
+                        },
+                        { workspaceId, userId: actorId, userEmail: actorEmail },
+                      );
+
+                    const $set: Record<string, any> = {
+                      descriptionGeneratedAt: new Date(),
+                    };
+                    if (description) $set.description = description;
+                    if (embedding) {
+                      $set.descriptionEmbedding = embedding;
+                      $set.embeddingModel = embeddingModel;
+                    }
+                    await SavedConsole.updateOne(
+                      { _id: new ObjectId(consoleId) },
+                      { $set },
+                    );
+                  }
+                } catch (err) {
+                  logger.error("Background description generation failed", {
+                    error: err,
+                  });
+                }
+              })();
+            }
+          });
+        },
+        });
+      };
+
+      /**
+       * Stranded-turn detection + continuation ("no client attached"
+       * fallback, issue #475).
+       *
+       * A segment is stranded when it finished waiting on tool calls that
+       * only a browser can execute, but no browser window is attached to
+       * the workspace (refresh mid-call, tab closed). In that case we patch
+       * the pending tool parts with an in-band "no client attached" result,
+       * persist, and run the next segment so the model can adapt and the
+       * turn survives end-to-end.
+       *
+       * Returns true when a continuation segment was started (the caller
+       * must then leave the resume pointer to the new segment).
+       */
+      const maybeContinueStrandedTurn = async (
+        allMessages: UIMessage[],
+        isAborted: boolean,
+        continuationDepth: number,
+        segmentStreamId: string | null,
+      ): Promise<boolean> => {
+        if (isAborted || turnSignal.aborted) return false;
+        if (continuationDepth >= MAX_NO_CLIENT_CONTINUATIONS) {
+          return false;
+        }
+
+        const lastMessage = allMessages[allMessages.length - 1];
+        if (!lastMessage || lastMessage.role !== "assistant") return false;
+
+        type ToolPart = {
+          type: string;
+          state?: string;
+          toolName?: string;
+          input?: unknown;
+        };
+        const pendingParts = ((lastMessage.parts ?? []) as ToolPart[]).filter(
+          part =>
+            (part.type?.startsWith("tool-") || part.type === "dynamic-tool") &&
+            part.state === "input-available",
+        );
+        if (pendingParts.length === 0) return false;
+
+        // Every pending tool must be a registered client-side tool (no
+        // execute function) and none may be human-in-the-loop.
+        for (const part of pendingParts) {
+          const toolName =
+            part.type === "dynamic-tool"
+              ? (part.toolName ?? "")
+              : part.type.slice("tool-".length);
+          if (HUMAN_IN_THE_LOOP_TOOLS.has(toolName)) return false;
+          const registered = (
+            tools as Record<string, { execute?: unknown } | undefined>
+          )[toolName];
+          if (!registered || typeof registered.execute === "function") {
+            return false;
+          }
+        }
+
+        // Grace period: a client that just refreshed gets a chance to
+        // reattach and run the tools itself (the normal client-driven loop).
+        await new Promise(resolve => setTimeout(resolve, STRANDED_GRACE_MS));
+        if (turnSignal.aborted) return false;
+        if (await hasAttachedClients(workspaceId)) return false;
+
+        // Confirm this segment still owns the turn (no newer turn or stop).
+        const freshChat = await Chat.findById(chatId).select("activeStreamId");
+        if (!freshChat || freshChat.activeStreamId !== segmentStreamId) {
+          return false;
+        }
+
+        const pendingSet = new Set(pendingParts);
+        const patchedLast = {
+          ...lastMessage,
+          parts: (lastMessage.parts ?? []).map(part =>
+            pendingSet.has(part as ToolPart)
+              ? {
+                  ...part,
+                  state: "output-available" as const,
+                  output: NO_CLIENT_TOOL_RESULT,
+                }
+              : part,
+          ),
+        } as UIMessage;
+        const patchedMessages = [...allMessages.slice(0, -1), patchedLast];
+
+        try {
+          await saveChat(chatId, workspaceId, actorId, patchedMessages);
+        } catch (error) {
+          logger.warn("Failed to persist synthesized tool results", {
+            error,
+            chatId,
+          });
+          return false;
+        }
+
+        logger.info("Continuing stranded turn without attached client", {
+          chatId,
+          continuationDepth: continuationDepth + 1,
+          pendingTools: pendingParts.map(p =>
+            p.type === "dynamic-tool" ? p.toolName : p.type.slice(5),
+          ),
+        });
+
+        // The continuation Response has no HTTP consumer — drain its body so
+        // nothing backs up; reattaching clients consume the resumable copy.
+        const response = await runSegment(
+          patchedMessages,
+          continuationDepth + 1,
+        );
+        if (response.body) {
+          void response.body
+            .pipeTo(
+              new WritableStream({
+                write() {
+                  /* discard */
+                },
+              }),
+            )
+            .catch(() => undefined);
+        }
+        return true;
+      };
+
+      return await runSegment(messages, 0);
     },
+  );
+});
+
+/**
+ * Load a chat and verify the caller may access its workspace. Mirrors the
+ * auth model of POST /chat: session users need workspace membership, API
+ * keys must belong to the chat's workspace.
+ */
+async function authorizeChatStreamAccess(
+  c: AuthenticatedContext,
+  chatId: string,
+): Promise<
+  | {
+      ok: true;
+      chat: { activeStreamId?: string | null; workspaceId: string };
+    }
+  | { ok: false; status: 400 | 401 | 403 | 404 }
+> {
+  const user = c.get("user");
+  const apiKeyWorkspace = c.get("workspace");
+
+  if (!ObjectId.isValid(chatId)) {
+    return { ok: false, status: 400 };
+  }
+
+  const chat = await Chat.findById(chatId).select("workspaceId activeStreamId");
+  if (!chat) {
+    return { ok: false, status: 404 };
+  }
+
+  const chatWorkspaceId = chat.workspaceId.toString();
+  if (apiKeyWorkspace) {
+    if (apiKeyWorkspace._id.toString() !== chatWorkspaceId) {
+      return { ok: false, status: 403 };
+    }
+  } else if (user) {
+    const hasAccess = await workspaceService.hasAccess(
+      chatWorkspaceId,
+      user.id,
+    );
+    if (!hasAccess) {
+      return { ok: false, status: 403 };
+    }
+  } else {
+    return { ok: false, status: 401 };
+  }
+
+  return {
+    ok: true,
+    chat: { activeStreamId: chat.activeStreamId, workspaceId: chatWorkspaceId },
+  };
+}
+
+/**
+ * GET /api/agent/chat/:chatId/stream
+ *
+ * Resume endpoint for useChat({ resume: true }). Reattaches the caller to
+ * the chat's in-flight turn: buffered chunks are replayed, then live chunks
+ * follow. Multiple clients may attach to the same stream concurrently.
+ * Responds 204 when nothing is streaming — the client then renders the chat
+ * persisted in MongoDB.
+ */
+agentRoutes.get("/chat/:chatId/stream", async (c: AuthenticatedContext) => {
+  const chatId = c.req.param("chatId");
+  const access = await authorizeChatStreamAccess(c, chatId);
+  if (!access.ok) {
+    // A not-yet-created chat (client-minted chatId, no turn sent) is a normal
+    // "nothing to resume" case, not an error.
+    if (access.status === 404) return c.body(null, 204);
+    return c.json({ error: "Cannot access chat stream" }, access.status);
+  }
+
+  const { activeStreamId } = access.chat;
+  if (!activeStreamId) {
+    return c.body(null, 204);
+  }
+
+  const stream =
+    await getResumableStreamContext().resumeExistingStream(activeStreamId);
+  if (!stream) {
+    // Stale pointer: stream expired or was lost (e.g. process restart with
+    // the in-memory backend). Clear it so future mounts short-circuit.
+    void Chat.updateOne(
+      { _id: new ObjectId(chatId), activeStreamId },
+      { $set: { activeStreamId: null } },
+    ).catch(error =>
+      logger.warn("Failed to clear stale activeStreamId", { error, chatId }),
+    );
+    return c.body(null, 204);
+  }
+
+  logger.info("Client reattached to chat stream", {
+    chatId,
+    streamId: activeStreamId,
   });
+  return new Response(stream.pipeThrough(new TextEncoderStream()), {
+    headers: UI_MESSAGE_STREAM_HEADERS,
+  });
+});
+
+/**
+ * POST /api/agent/chat/:chatId/stop
+ *
+ * Explicitly aborts the chat's in-flight generation. With resumable streams a
+ * client disconnect (refresh, tab close) intentionally no longer cancels the
+ * turn, so the Stop button calls this endpoint. Aborting triggers the normal
+ * onFinish(isAborted) path, which persists the partial assistant message and
+ * clears the resume pointer.
+ */
+agentRoutes.post("/chat/:chatId/stop", async (c: AuthenticatedContext) => {
+  const chatId = c.req.param("chatId");
+  const access = await authorizeChatStreamAccess(c, chatId);
+  if (!access.ok) {
+    if (access.status === 404) return c.json({ stopped: false });
+    return c.json({ error: "Cannot access chat" }, access.status);
+  }
+
+  const stopped = stopActiveGeneration(chatId);
+
+  // Clear the pointer immediately so reconnecting clients don't reattach to
+  // the aborted stream. Finalization also clears it, but only on the
+  // instance that owns the generation.
+  await Chat.updateOne(
+    { _id: new ObjectId(chatId) },
+    { $set: { activeStreamId: null } },
+  );
+  publishRealtimeEvent(access.chat.workspaceId, {
+    type: "chat.activity",
+    chatId,
+    state: "idle",
+  });
+
+  logger.info("Chat generation stop requested", { chatId, stopped });
+  return c.json({ stopped });
 });

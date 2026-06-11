@@ -6,7 +6,7 @@
  * AI_GATEWAY_API_KEY is required.
  */
 
-import { type LanguageModel } from "ai";
+import { type EmbeddingModel, type LanguageModel } from "ai";
 import {
   createGateway,
   type GatewayLanguageModelOptions,
@@ -24,6 +24,11 @@ function getGateway() {
   if (!_gateway) {
     _gateway = createGateway({
       apiKey: process.env.AI_GATEWAY_API_KEY ?? "",
+      // Optional override (testing / self-hosted gateway proxies). The
+      // @ai-sdk/gateway package only reads the option, not an env var.
+      ...(process.env.AI_GATEWAY_BASE_URL
+        ? { baseURL: process.env.AI_GATEWAY_BASE_URL }
+        : {}),
     });
   }
   return _gateway;
@@ -39,6 +44,14 @@ function getGateway() {
  */
 export function getModel(modelId: string): LanguageModel {
   return getGateway()(modelId) as unknown as LanguageModel;
+}
+
+/**
+ * Resolve a text-embedding model by its ID (e.g. "openai/text-embedding-3-small").
+ * The ID is passed directly to the Vercel AI Gateway.
+ */
+export function getEmbeddingModel(modelId: string): EmbeddingModel {
+  return getGateway().textEmbeddingModel(modelId) as unknown as EmbeddingModel;
 }
 
 /**

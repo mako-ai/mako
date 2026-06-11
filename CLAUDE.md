@@ -18,6 +18,13 @@ Mako is a production-ready, multi-tenant AI-powered SQL client built with a PNPM
 - **Website**: Next.js 14 marketing site with Tailwind CSS
 - **Docs**: Astro-based documentation site
 
+## Agent prompts & skills
+
+Keep base agent prompts lean. Durable vendor/database/dashboard/flow guidance
+belongs in git-versioned system skills under `api/src/agent-skills/**`, not in
+always-on prompt literals. See `.cursor/rules/35-agent-prompts.mdc` and
+`api/src/agent-skills/README.md` before changing prompt content.
+
 ## Essential Commands
 
 ### Development
@@ -113,6 +120,12 @@ SENDGRID_VERIFICATION_TEMPLATE_ID=d-xxxxxxxxx
 # Inngest (optional)
 INNGEST_EVENT_KEY=your_inngest_event_key
 INNGEST_SIGNING_KEY=your_inngest_signing_key
+
+# Redis (optional — resumable chat streams)
+# Unset: in-process stream buffer (local dev / single API instance).
+# Set when running multiple API instances so chat stream resume
+# (GET /api/agent/chat/:chatId/stream) works across instances.
+REDIS_URL=redis://localhost:6379
 ```
 
 ## Technology Stack

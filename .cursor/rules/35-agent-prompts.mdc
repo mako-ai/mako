@@ -1,0 +1,51 @@
+---
+alwaysApply: true
+description: Keep base agent prompts lean; put vendor and domain guidance into system skills.
+---
+
+# Agent prompts and system skills
+
+Base agent prompts must stay lean. They should describe role, modality triage,
+core safety rules, and tool workflow only.
+
+## Put reference material in skills
+
+Any new vendor, database, dashboard, flow, connector, or domain-specific
+guidance belongs in:
+
+```text
+api/src/agent-skills/<name>/SKILL.md
+```
+
+Do not add large reference sections to:
+
+- `api/src/agent-lib/prompts/**`
+- `api/src/agents/**/prompt.ts`
+- route-level prompt assembly code
+
+## System skill format
+
+- One skill per capability or vendor dialect.
+- `SKILL.md` must start with frontmatter:
+  - `name`: stable identifier used by `load_skill`.
+  - `description`: short trigger sentence used for retrieval.
+  - `entities`: optional extra trigger tokens/synonyms for retrieval.
+- Keep `SKILL.md` focused and generally under about 500 lines.
+- Put long material in `references/*.md`.
+- Do not duplicate long content between `SKILL.md` and `references/`.
+- In the skill body, list exact `read_skill_resource` paths for tier-3
+  references the agent may need.
+- When a standalone agent needs the complete guide inlined, source it from the
+  registry with `getSystemSkillFullText(name)` instead of duplicating literals
+  or hard-coding every reference filename in the prompt module.
+
+## Review checklist
+
+Before changing agent prompts, ask:
+
+1. Is this core behavior needed every turn?
+2. Could it be loaded on demand from a system skill?
+3. Does the base prompt still fit the lean role/workflow/tool contract?
+
+If the answer to (2) is yes, create or update a system skill instead of adding
+the content to the base prompt.

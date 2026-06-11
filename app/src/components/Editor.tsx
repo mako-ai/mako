@@ -46,6 +46,7 @@ import {
   AppWindow as AppIcon,
   FileCode as AppFileIcon,
   Database as DatabaseIcon,
+  Table as TableDataIcon,
   ChevronRight as BreadcrumbChevronIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -60,7 +61,9 @@ import DashboardCanvas from "./DashboardCanvas";
 import AppRenderer from "./AppRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
+import TableDataView from "./TableDataView";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
+import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
 import type { DbFlowFormRef } from "./DbFlowForm";
 import ConflictResolutionDialog, {
@@ -77,7 +80,6 @@ import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
-import { ConsoleModification } from "../hooks/useMonacoConsole";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
@@ -86,7 +88,11 @@ import {
   computeConsoleStateHash,
   computeDashboardStateHash,
 } from "../utils/stateHash";
-import type { ScheduledQueryRunItem } from "../lib/api-types";
+import type {
+  ScheduledQueryRunItem,
+  ConsoleVersionConflict,
+} from "../lib/api-types";
+import VersionConflictDialog from "./VersionConflictDialog";
 import {
   logRenderDebug,
   onRenderDebug,
@@ -435,6 +441,10 @@ function Editor({
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [conflictData, setConflictData] = useState<ConflictData | null>(null);
 
+  // Concurrent-edit (optimistic concurrency) conflict state
+  const [versionConflictData, setVersionConflictData] =
+    useState<ConsoleVersionConflict | null>(null);
+
   const [pendingDashboardCloseTabId, setPendingDashboardCloseTabId] = useState<
     string | null
   >(null);
@@ -468,6 +478,7 @@ function Editor({
   const updateDirty = useConsoleStore(state => state.updateDirty);
   const updateSavedState = useConsoleStore(state => state.updateSavedState);
   const updateChartSpec = useConsoleStore(state => state.updateChartSpec);
+  const updateVersion = useConsoleStore(state => state.updateVersion);
   const updateResultsViewMode = useConsoleStore(
     state => state.updateResultsViewMode,
   );
@@ -742,48 +753,28 @@ function Editor({
     getConnectionType,
   });
 
-  // Listen for console modification events from AI
+  // NOTE: the legacy "console-modification" event (agent diff preview) is
+  // gone — console tools execute server-side (issue #475) and edits arrive
+  // through the realtime channel as "console-remote-content" below.
+
+  // Realtime sync: push server-authoritative content into the mounted Monaco
+  // editor (store content is updated by consoleStore/realtimeStore before
+  // this event fires). setRemoteContent is quiet — no dirty flag, no
+  // autosave echo, no focus steal.
   useEffect(() => {
-    const handleConsoleModification = (event: Event) => {
-      const customEvent = event as CustomEvent<{
-        consoleId: string;
-        modification: ConsoleModification;
-      }>;
-
-      const { consoleId: eventConsoleId, modification } = customEvent.detail;
-      const targetConsoleId = eventConsoleId || activeConsoleId;
-
-      if (!targetConsoleId) return;
-
-      const showDiffWithRetry = (retries = 10, delay = 100) => {
-        const consoleRef = consoleRefs.current[targetConsoleId]?.current;
-        if (consoleRef) {
-          consoleRef.showDiff(modification);
-        } else if (retries > 0) {
-          setTimeout(() => {
-            showDiffWithRetry(retries - 1, delay);
-          }, delay);
-        } else {
-          console.error(
-            "Console ref not found after retries. Target ID:",
-            targetConsoleId,
-            "Available IDs:",
-            Object.keys(consoleRefs.current),
-          );
-        }
-      };
-
-      showDiffWithRetry();
+    const handleRemoteContent = (event: Event) => {
+      const { consoleId, content } = (
+        event as CustomEvent<{ consoleId: string; content: string }>
+      ).detail;
+      if (!consoleId) return;
+      consoleRefs.current[consoleId]?.current?.setRemoteContent(content);
     };
 
-    window.addEventListener("console-modification", handleConsoleModification);
+    window.addEventListener("console-remote-content", handleRemoteContent);
     return () => {
-      window.removeEventListener(
-        "console-modification",
-        handleConsoleModification,
-      );
+      window.removeEventListener("console-remote-content", handleRemoteContent);
     };
-  }, [activeConsoleId, consoleTabs]);
+  }, []);
 
   // Listen for console execution events from AI (run_console tool)
   useEffect(() => {
@@ -820,6 +811,36 @@ function Editor({
       );
     };
   }, []);
+
+  // Detached-return path: a console opened with a persisted server-side run
+  // artifact (agent ran it while no window was attached) renders those
+  // results without re-running. In-memory results always win.
+  useEffect(() => {
+    for (const tab of consoleTabs) {
+      const lastRun = tab.lastRun;
+      if (!lastRun || lastRun.status !== "success" || !lastRun.sampleRows) {
+        continue;
+      }
+      if (tabResults[tab.id] !== undefined) continue;
+      setTabResults(prev =>
+        prev[tab.id] !== undefined
+          ? prev
+          : {
+              ...prev,
+              [tab.id]: {
+                results: lastRun.sampleRows ?? [],
+                executedAt: lastRun.at,
+                resultCount:
+                  lastRun.rowCount ?? lastRun.sampleRows?.length ?? 0,
+                executionTime: lastRun.durationMs,
+                fields: (lastRun.fields as QueryResult["fields"]) ?? null,
+                pageInfo: null,
+              } as QueryResult,
+            },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consoleTabs]);
 
   /* ------------------------ Console Actions ------------------------ */
   const handleTabChange = (_: React.SyntheticEvent, newValue: string) => {
@@ -1203,6 +1224,25 @@ function Editor({
         });
         setConflictData(result.conflict);
         setConflictDialogOpen(true);
+        setIsSaving(false);
+        return false;
+      }
+
+      // Handle concurrent-edit conflict — someone else saved this console
+      // since we loaded it. Show a diff so the user resolves it explicitly
+      // instead of silently overwriting the other person's save.
+      if (result.error === "version_conflict" && result.versionConflict) {
+        setPendingSaveData({
+          tabId,
+          content: contentToSave,
+          path: savePath,
+          connectionId,
+          databaseId,
+          databaseName,
+          comment,
+          access: currentTab?.access,
+        });
+        setVersionConflictData(result.versionConflict);
         setIsSaving(false);
         return false;
       }
@@ -1820,6 +1860,55 @@ function Editor({
     setPendingSaveData(null);
   };
 
+  // ── Concurrent-edit (version) conflict resolution ──────────────────
+
+  const handleVersionConflictOverwrite = async () => {
+    if (!pendingSaveData || !versionConflictData) return;
+    const { tabId, content, path, comment } = pendingSaveData;
+    // Fast-forward to the server's version so the retried save passes the
+    // guard (unless someone saves yet again in the meantime).
+    updateVersion(tabId, versionConflictData.currentVersion);
+    setVersionConflictData(null);
+    const success = await executeConsoleSave(
+      tabId,
+      content,
+      path,
+      comment ?? "",
+    );
+    if (success) {
+      setPendingSaveData(null);
+    }
+  };
+
+  const handleVersionConflictLoadLatest = () => {
+    if (!pendingSaveData || !versionConflictData) return;
+    const { tabId } = pendingSaveData;
+    const serverContent = versionConflictData.content;
+    // Replace the editor buffer with the server copy (the previous local
+    // content stays reachable via Monaco undo) and reset the baseline.
+    consoleRefs.current[tabId]?.current?.applyModification({
+      action: "replace",
+      content: serverContent,
+    });
+    updateContent(tabId, serverContent);
+    updateVersion(tabId, versionConflictData.currentVersion);
+    const currentTab = tabs[tabId];
+    const newHash = computeConsoleStateHash(
+      serverContent,
+      currentTab?.connectionId,
+      currentTab?.databaseId,
+      currentTab?.databaseName,
+    );
+    updateSavedState(tabId, true, newHash);
+    setVersionConflictData(null);
+    setPendingSaveData(null);
+  };
+
+  const handleVersionConflictClose = () => {
+    setVersionConflictData(null);
+    setPendingSaveData(null);
+  };
+
   const handleCloseErrorModal = () => {
     setErrorModalOpen(false);
     setErrorMessage("");
@@ -1952,6 +2041,8 @@ function Editor({
                               <AppFileIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "app-binding" ? (
                               <DatabaseIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "table-data" ? (
+                              <TableDataIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
                               <Box
                                 component="img"
@@ -2122,6 +2213,8 @@ function Editor({
                     }}
                     dbFlowFormRef={dbFlowFormRef}
                   />
+                ) : tab.kind === "table-data" ? (
+                  <TableDataView tabId={tab.id} />
                 ) : tab.kind === "dashboard" ? (
                   <DashboardCanvas
                     dashboardId={tab.metadata?.dashboardId as string}
@@ -2169,72 +2262,107 @@ function Editor({
                       }
                     >
                       <Panel defaultSize={60} minSize={1}>
-                        <Console
-                          ref={consoleRefs.current[tab.id]}
-                          consoleId={tab.id}
-                          initialContent={tab.content}
-                          title={tab.title}
-                          onExecute={(content, connectionId, databaseId) =>
-                            handleConsoleExecute(
-                              tab.id,
-                              content,
-                              connectionId,
-                              {
-                                databaseId: databaseId || tab.databaseId,
-                                databaseName: tab.databaseName,
-                              },
-                            )
-                          }
-                          onCancel={() => handleConsoleCancel(tab.id)}
-                          onSave={(content, currentPath) =>
-                            handleConsoleSave(tab.id, content, currentPath)
-                          }
-                          onSaveAsCopy={content =>
-                            handleSaveAsCopy(tab.id, content)
-                          }
-                          onRenameMove={(content, currentPath) =>
-                            handleRenameMove(tab.id, content, currentPath)
-                          }
-                          isExecuting={executingTabs[tab.id] || false}
-                          isCancelling={cancellingTabs[tab.id] || false}
-                          isSaving={isSaving}
-                          onContentChange={content => {
-                            updateContent(tab.id, content);
-                            if (!tab.isDirty) {
-                              updateDirty(tab.id, true);
-                            }
-                            // Also refresh activeEditorContent for Chat consumers
-                            const ref = consoleRefs.current[tab.id]?.current;
-                            if (activeConsoleId === tab.id && ref) {
-                              setActiveEditorContent(ref.getCurrentContent());
-                            }
+                        <Box
+                          sx={{
+                            height: "100%",
+                            display: "flex",
+                            flexDirection: "column",
                           }}
-                          connectionId={tab.connectionId}
-                          databaseId={tab.databaseId}
-                          databaseName={tab.databaseName}
-                          databases={availableDatabases}
-                          onDatabaseChange={connId =>
-                            updateConnection(tab.id, connId)
-                          }
-                          onDatabaseNameChange={(dbId, dbName) =>
-                            updateDatabase(tab.id, dbId, dbName)
-                          }
-                          filePath={tab.filePath}
-                          enableVersionControl={true}
-                          onHistoryClick={() => {
-                            setVersionHistoryTabId(tab.id);
-                            setVersionHistoryEntityType("console");
-                            setVersionHistoryOpen(true);
-                          }}
-                          historyAvailable={tab.isSaved}
-                          schedule={tab.schedule}
-                          onCreateSchedule={() =>
-                            handleOpenScheduleModal(tab.id, "create")
-                          }
-                          onUpdateSchedule={() =>
-                            handleOpenScheduleModal(tab.id, "update")
-                          }
-                        />
+                        >
+                          {tab.remoteUpdate && (
+                            <ConsoleRemoteUpdateBanner
+                              remoteUpdate={tab.remoteUpdate}
+                              onLoadLatest={() => {
+                                if (!currentWorkspace?.id) return;
+                                void useConsoleStore
+                                  .getState()
+                                  .applyRemoteConsoleUpdate(
+                                    currentWorkspace.id,
+                                    tab.id,
+                                  );
+                              }}
+                              onDismiss={() =>
+                                useConsoleStore
+                                  .getState()
+                                  .setRemoteUpdate(tab.id, null)
+                              }
+                              onCloseTab={() =>
+                                useConsoleStore.getState().closeTab(tab.id)
+                              }
+                            />
+                          )}
+                          <Box sx={{ flex: 1, minHeight: 0 }}>
+                            <Console
+                              ref={consoleRefs.current[tab.id]}
+                              consoleId={tab.id}
+                              initialContent={tab.content}
+                              title={tab.title}
+                              onExecute={(content, connectionId, databaseId) =>
+                                handleConsoleExecute(
+                                  tab.id,
+                                  content,
+                                  connectionId,
+                                  {
+                                    databaseId: databaseId || tab.databaseId,
+                                    databaseName: tab.databaseName,
+                                  },
+                                )
+                              }
+                              onCancel={() => handleConsoleCancel(tab.id)}
+                              onSave={(content, currentPath) =>
+                                handleConsoleSave(tab.id, content, currentPath)
+                              }
+                              onSaveAsCopy={content =>
+                                handleSaveAsCopy(tab.id, content)
+                              }
+                              onRenameMove={(content, currentPath) =>
+                                handleRenameMove(tab.id, content, currentPath)
+                              }
+                              isExecuting={executingTabs[tab.id] || false}
+                              isCancelling={cancellingTabs[tab.id] || false}
+                              isSaving={isSaving}
+                              onContentChange={content => {
+                                updateContent(tab.id, content);
+                                if (!tab.isDirty) {
+                                  updateDirty(tab.id, true);
+                                }
+                                // Also refresh activeEditorContent for Chat consumers
+                                const ref =
+                                  consoleRefs.current[tab.id]?.current;
+                                if (activeConsoleId === tab.id && ref) {
+                                  setActiveEditorContent(
+                                    ref.getCurrentContent(),
+                                  );
+                                }
+                              }}
+                              connectionId={tab.connectionId}
+                              databaseId={tab.databaseId}
+                              databaseName={tab.databaseName}
+                              databases={availableDatabases}
+                              onDatabaseChange={connId =>
+                                updateConnection(tab.id, connId)
+                              }
+                              onDatabaseNameChange={(dbId, dbName) =>
+                                updateDatabase(tab.id, dbId, dbName)
+                              }
+                              filePath={tab.filePath}
+                              enableVersionControl={true}
+                              onHistoryClick={() => {
+                                setVersionHistoryTabId(tab.id);
+                                setVersionHistoryEntityType("console");
+                                setVersionHistoryOpen(true);
+                              }}
+                              historyAvailable={tab.isSaved}
+                              schedule={tab.schedule}
+                              onCreateSchedule={() =>
+                                handleOpenScheduleModal(tab.id, "create")
+                              }
+                              onUpdateSchedule={() =>
+                                handleOpenScheduleModal(tab.id, "update")
+                              }
+                            />
+                          </Box>
+                        </Box>
                       </Panel>
 
                       <StyledVerticalResizeHandle />
@@ -2479,6 +2607,17 @@ function Editor({
         newContent={pendingSaveData?.content || ""}
         onOverwrite={handleConflictOverwrite}
         onSaveAsNew={handleConflictSaveAsNew}
+        isProcessing={isSaving}
+      />
+
+      {/* Concurrent-edit (version) Conflict Dialog */}
+      <VersionConflictDialog
+        open={Boolean(versionConflictData)}
+        onClose={handleVersionConflictClose}
+        conflict={versionConflictData}
+        newContent={pendingSaveData?.content || ""}
+        onOverwrite={handleVersionConflictOverwrite}
+        onLoadLatest={handleVersionConflictLoadLatest}
         isProcessing={isSaving}
       />
 

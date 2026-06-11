@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { propagateAttributes } from "@langfuse/tracing";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { getUtilityModelId } from "../agent-lib/ai-models";
 import { getUtilityModelIds } from "./model-catalog.service";
@@ -41,6 +42,8 @@ export interface VersionCommentContext {
 export interface VersionCommentTrackingContext {
   workspaceId: string;
   userId: string;
+  /** User email, used as the Langfuse user identifier when present. */
+  userEmail?: string;
 }
 
 function computeUnifiedDiff(a: string, b: string): string {
@@ -107,20 +110,39 @@ async function generateCommitMessage(
     : {};
   const gatewayBase = (baseOpts.gateway ?? {}) as Record<string, unknown>;
 
-  const { text, usage, response } = await generateText({
-    model: getModel(utilityModel),
-    system,
-    prompt,
-    providerOptions: {
-      gateway: {
-        ...gatewayBase,
-        models: [
-          utilityModel,
-          ...failoverModels.filter(id => id !== utilityModel),
-        ],
-      } satisfies GatewayLanguageModelOptions,
+  const { text, usage, response } = await propagateAttributes(
+    {
+      traceName: "version-comment",
+      userId: trackingCtx?.userEmail ?? trackingCtx?.userId,
+      tags: ["type:version_comment"],
+      metadata: trackingCtx
+        ? { workspaceId: trackingCtx.workspaceId }
+        : undefined,
     },
-  });
+    () =>
+      generateText({
+        model: getModel(utilityModel),
+        system,
+        prompt,
+        providerOptions: {
+          gateway: {
+            ...gatewayBase,
+            models: [
+              utilityModel,
+              ...failoverModels.filter(id => id !== utilityModel),
+            ],
+          } satisfies GatewayLanguageModelOptions,
+        },
+        experimental_telemetry: {
+          isEnabled: true,
+          functionId: "version-comment",
+          metadata: {
+            workspaceId: trackingCtx?.workspaceId ?? "unknown",
+            invocationType: "version_comment",
+          },
+        },
+      }),
+  );
 
   const actualModelId = (response as Record<string, unknown>)?.modelId as
     | string

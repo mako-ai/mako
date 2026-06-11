@@ -55,7 +55,7 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
         role: "system" as const,
         content: DASHBOARD_SYSTEM_PROMPT,
         providerOptions: {
-          anthropic: { cacheControl: { type: "ephemeral" } },
+          anthropic: { cacheControl: { type: "ephemeral", ttl: "1h" } },
         },
       },
       {

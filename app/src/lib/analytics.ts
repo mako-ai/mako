@@ -26,8 +26,10 @@ type ProductEvent =
   | "console_renamed"
   | "flow_created"
   | "ai_chat_message_sent"
+  | "ai_chat_message_queued"
   | "api_key_created"
   | "password_reset_requested"
+  | "desktop_auth_handoff"
   | "logout";
 
 /**

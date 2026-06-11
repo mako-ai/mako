@@ -1,0 +1,34 @@
+# Homebrew cask template for Mako Desktop. The release workflow substitutes
+# __VERSION__, __SHA_ARM64__ and __SHA_X64__ and pushes the result to
+# Casks/mako.rb in the mako-ai/homebrew-tap repository.
+#
+# Install with:
+#   brew install --cask mako-ai/tap/mako
+cask "mako" do
+  version "__VERSION__"
+
+  arch arm: "arm64", intel: "x64"
+  sha256 arm: "__SHA_ARM64__", intel: "__SHA_X64__"
+
+  url "https://github.com/mako-ai/mako/releases/download/desktop-v#{version}/Mako-mac-#{arch}.dmg"
+  name "Mako"
+  desc "AI-native SQL client with local database support"
+  homepage "https://mako.ai/"
+
+  livecheck do
+    url :url
+    regex(/^desktop-v?(\d+(?:\.\d+)+)$/i)
+  end
+
+  auto_updates false
+  depends_on macos: ">= :big_sur"
+
+  app "Mako.app"
+
+  zap trash: [
+    "~/.mako/agent",
+    "~/Library/Application Support/Mako",
+    "~/Library/Preferences/ai.mako.desktop.plist",
+    "~/Library/Saved Application State/ai.mako.desktop.savedState",
+  ]
+end

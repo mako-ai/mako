@@ -94,6 +94,23 @@ export interface IEmailVerification extends Document {
 }
 
 /**
+ * Desktop auth code model interface.
+ *
+ * One-time, short-lived codes used to hand a session from the user's system
+ * browser to the Mako Desktop app via a `mako://auth?code=...` deep link.
+ * The raw code is never stored — `_id` is its SHA-256 hash (base64url).
+ * `challenge` is the PKCE-style S256 hash of a verifier held only by the
+ * desktop app instance that initiated the flow.
+ */
+export interface IDesktopAuthCode extends Document {
+  _id: string; // SHA-256 hash (base64url) of the raw code
+  userId: string;
+  challenge: string; // base64url(SHA-256(verifier))
+  expiresAt: Date;
+  createdAt: Date;
+}
+
+/**
  * Session model interface for Lucia
  */
 export interface ISession extends Document {
@@ -206,6 +223,37 @@ EmailVerificationSchema.index({ email: 1, type: 1 });
 EmailVerificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 /**
+ * Desktop Auth Code Schema (browser → desktop app session handoff)
+ */
+const DesktopAuthCodeSchema = new Schema<IDesktopAuthCode>(
+  {
+    _id: {
+      type: String, // SHA-256 hash (base64url) of the raw code
+      required: true,
+    },
+    userId: {
+      type: String,
+      required: true,
+      ref: "User",
+    },
+    challenge: {
+      type: String,
+      required: true,
+    },
+    expiresAt: {
+      type: Date,
+      required: true,
+    },
+  },
+  {
+    timestamps: { createdAt: true, updatedAt: false },
+  },
+);
+
+// TTL cleanup for unredeemed codes
+DesktopAuthCodeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+/**
  * Session Schema for Lucia
  */
 const SessionSchema = new Schema<ISession>({
@@ -284,6 +332,10 @@ export const EmailVerification =
     "EmailVerification",
     EmailVerificationSchema,
   );
+
+export const DesktopAuthCode =
+  (mongoose.models.DesktopAuthCode as mongoose.Model<IDesktopAuthCode>) ||
+  mongoose.model<IDesktopAuthCode>("DesktopAuthCode", DesktopAuthCodeSchema);
 
 // ---------------------------------------------------------------------------
 // LLM Usage — per-invocation tracking for cost analytics
@@ -386,11 +438,15 @@ export const LlmUsage =
 // ---------------------------------------------------------------------------
 
 export interface IModelCatalogSnapshot extends Document {
-  _id: "gateway" | "arena" | "pricing" | "curation";
+  _id: "gateway" | "arena" | "pricing" | "curation" | "capabilities";
   /**
    * Free-form payload keyed by snapshot id:
    *  - gateway / pricing → array of normalized upstream records
    *  - curation          → `{ models, defaultChatModelId, defaultFreeChatModelId, lastRefreshError }`
+   *  - capabilities      → `{ thinkingModes: { [modelId]: "adaptive" | "manual" } }`
+   *                        probed overrides for Anthropic extended thinking,
+   *                        written by the catalog-refresh probe and the
+   *                        runtime self-heal (see anthropic-thinking.ts)
    *  - arena             → legacy, removed by the 2026-04-23 migration
    */
   data: any;
@@ -404,7 +460,7 @@ const ModelCatalogSnapshotSchema = new Schema(
     // the seed migration deletes them.
     _id: {
       type: String,
-      enum: ["gateway", "arena", "pricing", "curation"],
+      enum: ["gateway", "arena", "pricing", "curation", "capabilities"],
     },
     data: { type: Schema.Types.Mixed, default: [] },
     fetchedAt: { type: Date, required: true },

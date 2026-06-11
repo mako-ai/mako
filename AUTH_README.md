@@ -260,6 +260,8 @@ app.get("/api/user/profile", authMiddleware, async c => {
 | GET    | `/api/auth/github`          | Initiate GitHub OAuth                       | No            |
 | GET    | `/api/auth/github/callback` | GitHub OAuth callback                       | No            |
 | GET    | `/api/auth/oauth-receive`   | Receive session from production OAuth proxy | No            |
+| POST   | `/api/auth/desktop/code`    | Mint one-time desktop handoff code          | Yes           |
+| GET    | `/api/auth/desktop/complete`| Redeem desktop code, set session cookie     | No (code+PKCE)|
 
 ### Request/Response Examples
 
@@ -403,6 +405,63 @@ Browser → GET /api/auth/oauth-receive (on preview)
 | `api/src/auth/oauth-proxy.ts`     | Proxy helpers: origin detection, state encoding/decoding, transfer tokens, origin validation |
 | `api/src/auth/arctic.ts`          | OAuth provider setup (callback URLs always point to production)                              |
 | `api/src/auth/auth.controller.ts` | OAuth routes with proxy-aware initiation, callback, and `/oauth-receive` endpoint            |
+
+## Desktop App Authentication (deep-link handoff)
+
+Mako Desktop (Electron) never renders third-party login pages inside its own
+window. Instead it hands authentication off to the user's system browser
+(Slack/Notion model) where the URL bar, certificates, and password manager are
+available, then receives the session back via a `mako://` deep link.
+
+### Flow
+
+```
+Desktop app ("Continue with Google/GitHub" or "Sign in using your browser")
+  → main process generates PKCE pair:
+      verifier  = base64url(randomBytes(32))      (kept in memory, never leaves app)
+      challenge = base64url(SHA-256(verifier))
+  → opens SYSTEM BROWSER at {CLIENT_URL}/desktop-auth?challenge=<challenge>
+
+Browser /desktop-auth
+  → not signed in? challenge saved to sessionStorage, user logs in normally
+    (Google/GitHub/email — full browser UI), then returns to /desktop-auth
+  → signed in: POST /api/auth/desktop/code { challenge }   (session cookie auth)
+      → server stores { _id: SHA-256(code), userId, challenge, expiresAt: +60s }
+      → responds with the one-time raw code
+  → triggers mako://auth?code=<code>  ("Open Mako" button)
+
+Desktop app (deep link received: open-url on macOS, argv on Win/Linux)
+  → loads {APP_URL}/api/auth/desktop/complete?code=<code>&verifier=<verifier>
+    INSIDE the app window
+      → server atomically consumes the code (findOneAndDelete by hash),
+        checks expiry, verifies SHA-256(verifier) == stored challenge
+      → creates a fresh session, sets auth_session cookie, redirects to CLIENT_URL
+  → desktop window is now signed in
+```
+
+### Security Properties
+
+- **No third-party login inside the app**: Google/GitHub pages only ever render
+  in the user's real browser.
+- **Single-use codes**: redeemed via atomic `findOneAndDelete`; replays fail.
+- **Short TTL**: codes expire after 60 seconds (plus a TTL index for cleanup).
+- **Hashed at rest**: only the SHA-256 of the code is stored; a database leak
+  exposes nothing redeemable.
+- **Mandatory PKCE**: the verifier never leaves the desktop app, so a malicious
+  application that registers the `mako://` scheme and intercepts the deep link
+  cannot redeem the stolen code.
+- **Rate limited**: `POST /desktop/code` allows 10 requests/minute per IP.
+
+### Key Files
+
+| File                                   | Purpose                                                  |
+| -------------------------------------- | -------------------------------------------------------- |
+| `api/src/auth/desktop-auth.ts`         | Code mint/redeem helpers (hashing, PKCE verification)    |
+| `api/src/database/schema.ts`           | `DesktopAuthCode` model (TTL index on `expiresAt`)       |
+| `api/src/auth/auth.controller.ts`      | `/desktop/code` and `/desktop/complete` routes           |
+| `app/src/components/DesktopAuthPage.tsx` | Browser-side handoff page (`/desktop-auth`)            |
+| `app/src/utils/desktop-auth-redirect.ts` | sessionStorage resume across the login round trip      |
+| `packages/desktop/src/main.ts`         | PKCE generation, `mako://` protocol, deep-link handling  |
 
 ## Customization
 

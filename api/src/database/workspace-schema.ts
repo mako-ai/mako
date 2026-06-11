@@ -404,7 +404,35 @@ export interface ISavedConsole extends Document {
     runCount: number;
     consecutiveFailures: number;
   };
+  /**
+   * Explicit-save snapshot counter (optimistic concurrency for the Save
+   * action; see PUT /consoles/:id `expectedVersion`). Unchanged by drafts.
+   */
   version: number;
+  /**
+   * Monotonic draft revision: bumped on EVERY content-bearing write (user
+   * autosave, explicit save, agent modify). Drives the realtime
+   * poke-then-pull sync — clients compare revisions and refetch when stale.
+   * Legacy documents without the field count as revision 1.
+   */
+  draftRevision: number;
+  /**
+   * Latest run artifact (server-side run_console / console execution).
+   * Persisted so results survive a detached agent session — when the user
+   * reopens the console, the results are still there. sampleRows is capped
+   * (50 rows / ~256KB) at write time.
+   */
+  lastRun?: {
+    at: Date;
+    status: "success" | "error";
+    rowCount?: number;
+    durationMs: number;
+    error?: string;
+    sampleRows?: unknown[];
+    fields?: unknown;
+    runBy: string;
+    source: string;
+  };
   is_deleted?: boolean;
   deletedAt?: Date;
   createdAt: Date;
@@ -583,6 +611,9 @@ export interface IChat extends Document {
   pinnedConsoleId?: string; // Console ID that this chat session is bound to
   createdBy: string;
   titleGenerated: boolean;
+  // Resume pointer for in-flight turns: the resumable-stream ID clients can
+  // reattach to via GET /api/agent/chat/:chatId/stream. Null when idle.
+  activeStreamId?: string | null;
   systemPrompt?: string; // System prompt used for this conversation
   workspacePrompt?: string; // Workspace custom prompt appended to system prompt
   usage?: IChatUsage; // Token usage tracking for billing
@@ -1554,6 +1585,31 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: Number,
       default: 1,
     },
+    // Bumped on every content-bearing write; legacy docs without it are
+    // treated as revision 1 (same convention as `version`).
+    draftRevision: {
+      type: Number,
+      default: 1,
+    },
+    // Latest server-side run artifact. Schema.Types.Mixed members are
+    // size-capped by the writer (console-execution.service.ts).
+    lastRun: {
+      type: new Schema(
+        {
+          at: { type: Date, required: true },
+          status: { type: String, enum: ["success", "error"], required: true },
+          rowCount: { type: Number },
+          durationMs: { type: Number, required: true },
+          error: { type: String },
+          sampleRows: { type: [Schema.Types.Mixed] },
+          fields: { type: Schema.Types.Mixed },
+          runBy: { type: String, required: true },
+          source: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     is_deleted: {
       type: Boolean,
       default: false,
@@ -1579,7 +1635,14 @@ SavedConsoleSchema.index(
 );
 SavedConsoleSchema.index(
   { name: "text", description: "text" },
-  { name: "console_text_search" },
+  {
+    name: "console_text_search",
+    // CRITICAL: without this, MongoDB interprets the console's `language`
+    // field ("sql" | "javascript" | "mongodb") as the text-index language
+    // override and rejects every insert/update with "language override
+    // unsupported: sql". Point the override at a field that never exists.
+    language_override: "_textSearchLanguage",
+  },
 );
 
 /**
@@ -1691,6 +1754,10 @@ const ChatSchema = new Schema<IChat>(
     titleGenerated: {
       type: Boolean,
       default: false,
+    },
+    activeStreamId: {
+      type: String,
+      default: null,
     },
     systemPrompt: {
       type: String,
@@ -3753,3 +3820,45 @@ SkillSchema.index(
 );
 
 export const Skill = mongoose.model<ISkill>("Skill", SkillSchema);
+
+/**
+ * RealtimePresence — one document per connected realtime (SSE) client tab.
+ *
+ * Heartbeated by routes/realtime.ts while the connection is open; reaped by
+ * a TTL index after 90s without a heartbeat. Lets server-side code answer
+ * "is any browser attached to this workspace right now?" across instances
+ * (used by the agent's "no client attached" tool fallback).
+ */
+export interface IRealtimePresence extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  clientId: string;
+  userId: string;
+  lastSeenAt: Date;
+}
+
+const RealtimePresenceSchema = new Schema<IRealtimePresence>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    clientId: { type: String, required: true },
+    userId: { type: String, required: true },
+    lastSeenAt: { type: Date, required: true },
+  },
+  { collection: "realtime_presence" },
+);
+
+RealtimePresenceSchema.index(
+  { workspaceId: 1, clientId: 1 },
+  { unique: true },
+);
+// TTL reaper: connections that stop heartbeating disappear automatically.
+RealtimePresenceSchema.index({ lastSeenAt: 1 }, { expireAfterSeconds: 90 });
+
+export const RealtimePresence = mongoose.model<IRealtimePresence>(
+  "RealtimePresence",
+  RealtimePresenceSchema,
+);
