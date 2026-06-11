@@ -2256,10 +2256,26 @@ function Editor({
                                     tab.id,
                                   );
                               }}
+                              onKeepMine={() => {
+                                if (!currentWorkspace?.id) return;
+                                // Use the LIVE Monaco buffer, not the store
+                                // copy — it may lag keystrokes by a debounce.
+                                const live =
+                                  consoleRefs.current[
+                                    tab.id
+                                  ]?.current?.getCurrentContent().content;
+                                void useConsoleStore
+                                  .getState()
+                                  .resolveRemoteUpdateKeepMine(
+                                    currentWorkspace.id,
+                                    tab.id,
+                                    live ?? tab.content,
+                                  );
+                              }}
                               onDismiss={() =>
                                 useConsoleStore
                                   .getState()
-                                  .setRemoteUpdate(tab.id, null)
+                                  .dismissRemoteUpdate(tab.id)
                               }
                               onCloseTab={() =>
                                 useConsoleStore.getState().closeTab(tab.id)

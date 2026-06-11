@@ -17,7 +17,7 @@ import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
-import { useConsoleStore, hasRecentUserEdit } from "./consoleStore";
+import { useConsoleStore, hasUnsavedLocalEdits } from "./consoleStore";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
 
@@ -163,12 +163,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
       const workspaceId = get().workspaceId;
       if (!workspaceId) return;
 
-      // Pull the persisted run artifact and render it through the existing
-      // results-panel pipeline (same events the client run_console used).
-      // The agent runs queries fast: this event often races the tab being
-      // opened by the create/open ui-intent, so wait briefly for the tab.
+      // The run bumped the console's draftRevision (the artifact is part of
+      // replicated draft state). Pull any content/revision change through
+      // the normal guarded sync path — NEVER fast-forward the revision base
+      // out-of-band, or the Monaco buffer ends up permanently stale.
+      scheduleSync();
+
+      // Separately, pull the persisted run artifact and render it through
+      // the existing results-panel pipeline (same events the client
+      // run_console used). The agent runs queries fast: this event often
+      // races the tab being opened by the create/open intent, so wait
+      // briefly for the tab.
       void (async () => {
-        const consoleStore = useConsoleStore.getState();
         for (
           let attempt = 0;
           attempt < 10 && !useConsoleStore.getState().tabs[event.consoleId];
@@ -178,12 +184,10 @@ export const useRealtimeStore = create<RealtimeStore>()(
         }
         if (!useConsoleStore.getState().tabs[event.consoleId]) return;
 
-        const res = await consoleStore.fetchConsoleContent(
-          workspaceId,
-          event.consoleId,
-        );
-        const lastRun = res?.lastRun;
-        if (!res?.success || !lastRun) return;
+        const lastRun = await useConsoleStore
+          .getState()
+          .fetchConsoleRunArtifact(workspaceId, event.consoleId);
+        if (!lastRun) return;
         window.dispatchEvent(
           new CustomEvent("console-execution-result", {
             detail: {
@@ -219,22 +223,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         consoleStore.setActiveTab(event.consoleId);
         return;
       }
-      void (async () => {
-        const data = await consoleStore.fetchConsoleContent(
-          workspaceId,
-          event.consoleId,
-        );
-        if (!data?.success) return;
-        consoleStore.openTab({
-          id: event.consoleId,
-          title: data.name || data.path || "Untitled",
-          content: data.content || "",
-          connectionId: data.connectionId,
-          databaseId: data.databaseId,
-          databaseName: data.databaseName,
-        });
-        consoleStore.setActiveTab(event.consoleId);
-      })();
+      void consoleStore.openConsoleFromServer(workspaceId, event.consoleId);
     };
 
     const handleEvent = (event: RealtimeEvent) => {
@@ -407,13 +396,17 @@ export const useRealtimeStore = create<RealtimeStore>()(
             const tab = store.tabs[entry.id];
             if (!tab) continue;
             if ((tab.draftRevision ?? 0) >= entry.draftRevision) continue;
-            // isDirty lags raw typing by a debounce; hasRecentUserEdit
-            // covers keystrokes inside that window so they are never
-            // silently replaced.
-            if (tab.isDirty || hasRecentUserEdit(entry.id)) {
-              // The one overlap case: remote update while this tab holds
-              // unsaved keystrokes. Never merge silently — surface the
-              // affordance; the next save's revision check backstops.
+            if (tab.content === entry.content) {
+              // Server content already matches this tab (echoed write from
+              // another tab, run-artifact revision bump, …). Fast-forward
+              // revision/metadata WITHOUT touching the Monaco buffer — it
+              // may be ahead by keystrokes that haven't autosaved yet.
+              store.fastForwardRemoteConsoleEntry(entry);
+            } else if (hasUnsavedLocalEdits(entry.id)) {
+              // Remote update while this tab holds unsaved local edits
+              // (recent keystrokes, queued/blocked autosave, or an unsaved
+              // explicit-save delta). Never merge silently — surface the
+              // affordance; revision-checked writes backstop the rest.
               store.setRemoteUpdate(entry.id, {
                 draftRevision: entry.draftRevision,
                 updatedBy: lastUpdatedByConsole.get(entry.id),

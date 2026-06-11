@@ -382,6 +382,10 @@ consoleRoutes.post("/revisions-sync", async (c: Context) => {
         databaseId: doc.databaseId,
         databaseName: doc.databaseName,
         version: doc.version ?? 1,
+        // Server truth for draft-vs-saved: clients use this to keep the
+        // tab's autosave eligibility correct (drafts autosave, saved
+        // consoles don't). Missing on legacy docs ⇒ treated as saved.
+        isSaved: doc.isSaved ?? true,
         lastRun: doc.lastRun,
       });
     }

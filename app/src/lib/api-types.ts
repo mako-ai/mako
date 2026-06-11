@@ -103,6 +103,8 @@ export interface ConsoleRevisionSyncEntry {
   databaseId?: string;
   databaseName?: string;
   version?: number;
+  /** Server truth for draft-vs-saved (drives autosave eligibility). */
+  isSaved?: boolean;
   lastRun?: ConsoleLastRun;
 }
 

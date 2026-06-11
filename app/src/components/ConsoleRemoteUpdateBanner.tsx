@@ -10,6 +10,8 @@ import type { ConsoleTab } from "../store/lib/types";
 interface ConsoleRemoteUpdateBannerProps {
   remoteUpdate: NonNullable<ConsoleTab["remoteUpdate"]>;
   onLoadLatest: () => void;
+  /** Deliberately overwrite the server copy with this tab's content. */
+  onKeepMine?: () => void;
   onDismiss: () => void;
   onCloseTab: () => void;
 }
@@ -17,6 +19,7 @@ interface ConsoleRemoteUpdateBannerProps {
 export default function ConsoleRemoteUpdateBanner({
   remoteUpdate,
   onLoadLatest,
+  onKeepMine,
   onDismiss,
   onCloseTab,
 }: ConsoleRemoteUpdateBannerProps) {
@@ -34,9 +37,16 @@ export default function ConsoleRemoteUpdateBanner({
               Close tab
             </Button>
           ) : (
-            <Button color="inherit" size="small" onClick={onLoadLatest}>
-              Load latest
-            </Button>
+            <>
+              <Button color="inherit" size="small" onClick={onLoadLatest}>
+                Load latest
+              </Button>
+              {onKeepMine && (
+                <Button color="inherit" size="small" onClick={onKeepMine}>
+                  Keep mine
+                </Button>
+              )}
+            </>
           )}
           <Button color="inherit" size="small" onClick={onDismiss}>
             Dismiss
