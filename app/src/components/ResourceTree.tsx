@@ -166,8 +166,10 @@ export interface ResourceTreeProps {
   /**
    * Opt-in: when this returns true for a directory node, clicking the row
    * (name/icon area) fires `onItemClick` instead of toggling expansion. The
-   * chevron still expands/collapses. Used by the database explorer so
-   * clicking a table name opens its data while the caret browses the schema.
+   * caret — and anything left of it (the indent) — still expands/collapses.
+   * Used by the database explorer so clicking a table name opens its data
+   * while the caret browses the schema, and by the apps explorer so clicking
+   * an app name opens the app while the caret browses its files.
    */
   shouldFolderClickActivate?: (node: ResourceTreeNode) => boolean;
   onPickerFileClick?: (node: ResourceTreeNode) => void;
@@ -996,12 +998,26 @@ function ResourceTreeInner(
             key={node.id}
             data-node-id={node.id}
             selected={isSelectedLocation}
-            onClick={() => {
+            onClick={event => {
               setFocusedNodeId(node.id);
               if (mode === "picker") {
                 updateLocationSelection(node.id, sectionKey);
               } else if (shouldFolderClickActivate?.(node)) {
-                onItemClick?.(node);
+                // Clicks on the caret itself are handled (and stopped) by the
+                // caret's own handler; clicks left of it (the indent) should
+                // still toggle, while the name/icon area activates.
+                const caret =
+                  event.currentTarget.querySelector("[data-tree-caret]");
+                if (
+                  caret &&
+                  event.clientX <= caret.getBoundingClientRect().right
+                ) {
+                  const willExpand = !isExpanded;
+                  onToggleFolder(getExpansionKey(node));
+                  if (willExpand) maybeLoadChildren(node);
+                } else {
+                  onItemClick?.(node);
+                }
               } else {
                 const willExpand = !isExpanded;
                 onToggleFolder(getExpansionKey(node));
@@ -1052,6 +1068,7 @@ function ResourceTreeInner(
             >
               <Box
                 component="span"
+                data-tree-caret
                 onClick={event => {
                   event.stopPropagation();
                   const willExpand = !isExpanded;

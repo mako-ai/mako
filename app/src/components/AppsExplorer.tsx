@@ -266,11 +266,21 @@ export function AppsExplorer() {
 
   const handleItemClick = useCallback((node: ResourceTreeNode) => {
     const parsed = parseNodeId(node.id);
-    if (parsed.kind === "file") focusAppFileTab(parsed.appId, parsed.path);
-    else if (parsed.kind === "binding") {
+    if (parsed.kind === "app") focusAppTab(parsed.appId, node.name);
+    else if (parsed.kind === "file") {
+      focusAppFileTab(parsed.appId, parsed.path);
+    } else if (parsed.kind === "binding") {
       focusAppBindingTab(parsed.appId, parsed.path, node.name);
     }
   }, []);
+
+  // Clicking an app *name* opens the app preview tab; the caret (and the
+  // indent left of it) still expands/collapses the app's file sub-tree.
+  // Mirrors the database explorer's table behavior.
+  const shouldFolderClickActivate = useCallback(
+    (node: ResourceTreeNode) => parseNodeId(node.id).kind === "app",
+    [],
+  );
 
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
     const parsed = parseNodeId(node.id);
@@ -471,6 +481,7 @@ export function AppsExplorer() {
             getContextMenuItems={getContextMenuItems}
             hideFolderIcon
             onItemClick={handleItemClick}
+            shouldFolderClickActivate={shouldFolderClickActivate}
             onLoadChildren={handleLoadChildren}
             isLoadingChildren={node => {
               const parsed = parseNodeId(node.id);
