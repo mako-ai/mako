@@ -77,11 +77,21 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let visibilityListenerInstalled = false;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+/** Timestamp of the last frame seen on the SSE stream (any event type). */
+let lastEventAt = 0;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 /** Batch bursts of pokes (e.g. agent patching repeatedly) into one pull. */
 const SYNC_DEBOUNCE_MS = 250;
+/**
+ * Liveness watchdog: the server heartbeats every 25s, so a stream that has
+ * been silent longer than this is dead even though no `error` event fired
+ * (NAT/proxy half-close, sleeping machine). 70s tolerates two missed beats.
+ */
+const WATCHDOG_STALE_MS = 70_000;
+const WATCHDOG_INTERVAL_MS = 15_000;
 
 /** Last known writer per console (from pokes) — labels the dirty affordance. */
 const lastUpdatedByConsole = new Map<string, string>();
@@ -268,6 +278,30 @@ export const useRealtimeStore = create<RealtimeStore>()(
       }, jitter);
     };
 
+    const stopWatchdog = () => {
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+
+    // Detect silently-dead connections (no `error` event ever fires for a
+    // NAT/proxy half-close): if nothing — message, ping, hello — arrived
+    // within the stale window while we believe the stream is open, drop the
+    // socket and reconnect. The reconnect's `onopen` runs syncRevisions, so
+    // missed pokes are repaired by the normal poke-then-pull reconciliation.
+    const startWatchdog = () => {
+      if (watchdogTimer) return;
+      watchdogTimer = setInterval(() => {
+        if (!eventSource) return;
+        if (get().status !== "open") return;
+        if (Date.now() - lastEventAt <= WATCHDOG_STALE_MS) return;
+        eventSource.close();
+        eventSource = null;
+        scheduleReconnect();
+      }, WATCHDOG_INTERVAL_MS);
+    };
+
     const openConnection = (workspaceId: string) => {
       if (eventSource) {
         eventSource.close();
@@ -287,6 +321,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
       source.onopen = () => {
         if (eventSource !== source) return;
         reconnectAttempt = 0;
+        lastEventAt = Date.now();
         set(state => {
           state.status = "open";
         });
@@ -297,11 +332,22 @@ export const useRealtimeStore = create<RealtimeStore>()(
 
       source.addEventListener("message", (e: MessageEvent) => {
         if (eventSource !== source) return;
+        lastEventAt = Date.now();
         try {
           handleEvent(JSON.parse(e.data) as RealtimeEvent);
         } catch {
           // Malformed event — the next revision sync corrects any gap.
         }
+      });
+
+      // Liveness only — these carry no payload the store consumes.
+      source.addEventListener("ping", () => {
+        if (eventSource !== source) return;
+        lastEventAt = Date.now();
+      });
+      source.addEventListener("hello", () => {
+        if (eventSource !== source) return;
+        lastEventAt = Date.now();
       });
 
       source.onerror = () => {
@@ -346,11 +392,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
           state.chatActivity = {};
         });
         installVisibilityListener();
+        startWatchdog();
         openConnection(workspaceId);
       },
 
       disconnect: () => {
         clearTimers();
+        stopWatchdog();
         reconnectAttempt = 0;
         if (eventSource) {
           eventSource.close();
