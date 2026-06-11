@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
+  CircularProgress,
   IconButton,
   Tooltip,
   Typography,
@@ -38,6 +39,11 @@ export default function AppRenderer({ appId }: { appId: string }) {
   const runBinding = useAppStore(s => s.runBinding);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  // True from the moment a (re)built srcdoc is handed to the iframe until the
+  // bootstrap posts ready/error. Loading deps from the CDN and transpiling
+  // with Babel can take several seconds; show progress instead of a white box.
+  const [booting, setBooting] = useState(true);
 
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
@@ -161,10 +167,12 @@ export default function AppRenderer({ appId }: { appId: string }) {
             }),
           );
       } else if (data.type === PREVIEW_MESSAGE.error) {
+        setBooting(false);
         setPreviewErrors(appId, [
           { message: data.message, source: data.source, at: Date.now() },
         ]);
       } else if (data.type === PREVIEW_MESSAGE.ready) {
+        setBooting(false);
         setPreviewErrors(appId, []);
       }
     };
@@ -178,6 +186,11 @@ export default function AppRenderer({ appId }: { appId: string }) {
     return buildPreviewHtml(appEntity);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appEntity?._id, previewNonce]);
+
+  // Every new srcdoc boots from scratch (deps re-import, Babel re-transpiles).
+  useEffect(() => {
+    if (srcDoc) setBooting(true);
+  }, [srcDoc]);
 
   if (!appEntity) {
     return (
@@ -231,7 +244,9 @@ export default function AppRenderer({ appId }: { appId: string }) {
       )}
 
       {/* Full-screen preview */}
-      <Box sx={{ flex: 1, minHeight: 0, bgcolor: "#fff" }}>
+      <Box
+        sx={{ flex: 1, minHeight: 0, bgcolor: "#fff", position: "relative" }}
+      >
         <iframe
           ref={iframeRef}
           title={`app-preview-${appId}`}
@@ -240,6 +255,28 @@ export default function AppRenderer({ appId }: { appId: string }) {
           sandbox="allow-scripts"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
+        {booting && errors.length === 0 && (
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 1.5,
+              bgcolor: "background.default",
+            }}
+          >
+            <CircularProgress size={28} />
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              Building preview…
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Fetching dependencies and compiling in the browser
+            </Typography>
+          </Box>
+        )}
       </Box>
     </Box>
   );
