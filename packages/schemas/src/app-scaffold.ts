@@ -2,39 +2,25 @@
  * Default scaffold for a new React App.
  *
  * Mirrors the "Blank App" template used by builders like dyad: a small
- * React + TypeScript starter. The starter intentionally demonstrates the
- * `@mako/app-sdk` data binding hook so the AI (and user) have a working
- * example of how to read workspace data.
+ * React + TypeScript starter. The `@mako/app-sdk` data binding hook is shown
+ * in a comment (not live code) so a fresh app renders without errors — the
+ * scaffold ships with no data bindings.
  */
 
 import type { AppDefinition, AppFile } from "./app.schema";
 
-const APP_TSX = `import { useQuery } from "@mako/app-sdk";
+const APP_TSX = `// Read workspace data with the injected SDK once a data binding exists:
+//
+//   import { useQuery } from "@mako/app-sdk";
+//   const { data, loading, error } = useQuery("my_binding");
+//
+// Create bindings from the chat ("bind the revenue query") or the data panel.
 
 export default function App() {
-  // \`useQuery\` runs a named data binding through Mako (workspace-scoped).
-  // Create bindings from the chat ("bind the revenue query") or the data panel.
-  const { data, error, loading } = useQuery("example");
-
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 24 }}>
       <h1>Hello from your Mako app</h1>
       <p>Edit <code>src/App.tsx</code> and ask the assistant to build features.</p>
-      {loading && <p>Loading data…</p>}
-      {error && <p style={{ color: "crimson" }}>Error: {error}</p>}
-      {data && (
-        <pre
-          style={{
-            background: "#0f172a",
-            color: "#e2e8f0",
-            padding: 16,
-            borderRadius: 8,
-            overflow: "auto",
-          }}
-        >
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      )}
     </div>
   );
 }
