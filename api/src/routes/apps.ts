@@ -152,24 +152,19 @@ app.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-function canManage(
-  doc: IMakoApp,
-  userId: string | undefined,
-  memberRole: string | undefined,
-): boolean {
-  if (memberRole === "owner" || memberRole === "admin") return true;
+function canManage(doc: IMakoApp, userId: string | undefined): boolean {
   if (doc.owner_id && doc.owner_id === userId) return true;
-  // Workspace-shared apps are editable by any member, like consoles/dashboards.
+  // Private apps are owner-only, matching dashboards (DashboardManager):
+  // workspace admins and API keys (which authenticate with an "admin" member
+  // role) must not be able to read or modify another member's private app.
+  if (doc.access === "private") return false;
+  // Workspace-shared apps are editable by any member, like consoles.
   return doc.access === "workspace";
 }
 
-function canRead(
-  doc: IMakoApp,
-  userId: string | undefined,
-  memberRole: string | undefined,
-): boolean {
+function canRead(doc: IMakoApp, userId: string | undefined): boolean {
   if (doc.access === "workspace") return true;
-  return canManage(doc, userId, memberRole);
+  return canManage(doc, userId);
 }
 
 // Validate that every data binding references a connection in this workspace.
@@ -288,7 +283,6 @@ app.get("/:id", async (c: AuthenticatedContext) => {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
     const userId = c.get("user")?.id;
-    const memberRole = c.get("memberRole");
 
     if (!Types.ObjectId.isValid(id)) {
       return c.json({ success: false, error: "Invalid app ID" }, 400);
@@ -299,7 +293,7 @@ app.get("/:id", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canRead(doc, userId, memberRole)) {
+    if (!canRead(doc, userId)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
@@ -316,7 +310,6 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
     const userId = c.get("user")?.id;
-    const memberRole = c.get("memberRole");
 
     if (!Types.ObjectId.isValid(id)) {
       return c.json({ success: false, error: "Invalid app ID" }, 400);
@@ -327,7 +320,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canManage(doc, userId, memberRole)) {
+    if (!canManage(doc, userId)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
@@ -401,7 +394,6 @@ app.delete("/:id", async (c: AuthenticatedContext) => {
     const workspaceId = c.req.param("workspaceId");
     const id = c.req.param("id");
     const userId = c.get("user")?.id;
-    const memberRole = c.get("memberRole");
 
     if (!Types.ObjectId.isValid(id)) {
       return c.json({ success: false, error: "Invalid app ID" }, 400);
@@ -412,7 +404,7 @@ app.delete("/:id", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canManage(doc, userId, memberRole)) {
+    if (!canManage(doc, userId)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
@@ -433,7 +425,6 @@ app.post(
       const id = c.req.param("id");
       const bindingId = c.req.param("bindingId");
       const userId = c.get("user")?.id;
-      const memberRole = c.get("memberRole");
 
       if (!Types.ObjectId.isValid(id)) {
         return c.json({ success: false, error: "Invalid app ID" }, 400);
@@ -444,7 +435,7 @@ app.post(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-      if (!canManage(doc, userId, memberRole)) {
+      if (!canManage(doc, userId)) {
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
@@ -484,7 +475,6 @@ app.get(
       const id = c.req.param("id");
       const bindingId = c.req.param("bindingId");
       const userId = c.get("user")?.id;
-      const memberRole = c.get("memberRole");
 
       if (!Types.ObjectId.isValid(id)) {
         return c.json({ success: false, error: "Invalid app ID" }, 400);
@@ -495,7 +485,7 @@ app.get(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-      if (!canRead(doc, userId, memberRole)) {
+      if (!canRead(doc, userId)) {
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
