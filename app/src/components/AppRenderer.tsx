@@ -218,6 +218,7 @@ export default function AppRenderer({ appId }: { appId: string }) {
         <iframe
           ref={iframeRef}
           title={`app-preview-${appId}`}
+          data-mako-app-preview={appId}
           srcDoc={srcDoc}
           sandbox="allow-scripts"
           style={{ width: "100%", height: "100%", border: "none" }}

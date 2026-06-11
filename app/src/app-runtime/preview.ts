@@ -29,8 +29,24 @@ export const PREVIEW_MESSAGE = {
   bindingResult: "mako-app:binding-result",
   runDuckDb: "mako-app:run-duckdb",
   duckDbResult: "mako-app:duckdb-result",
+  capture: "mako-app:capture",
+  captureResult: "mako-app:capture-result",
   error: "mako-app:error",
 } as const;
+
+/**
+ * DOM-capture library loaded *inside* the sandboxed iframe for self-capture.
+ * The iframe is an opaque origin (`sandbox="allow-scripts"` without
+ * `allow-same-origin`), so the parent cannot rasterize its DOM — instead the
+ * parent asks the iframe to capture itself and composites the result.
+ *
+ * html-to-image (not modern-screenshot) is required here: modern-screenshot
+ * computes default styles in a nested helper iframe, and nested browsing
+ * contexts inside a sandboxed document get a *distinct* opaque origin, so
+ * accessing the helper's document throws a cross-origin error. html-to-image
+ * inlines computed styles directly with no helper iframe.
+ */
+const CAPTURE_LIB_URL = `${ESM_HOST}/html-to-image@1`;
 
 function buildImportMap(dependencies: Record<string, string>): string {
   const imports: Record<string, string> = {
@@ -106,6 +122,7 @@ export function buildPreviewHtml(appEntity: AppEntity): string {
       "\\u003c",
     )}</script>
     <script type="module">
+      const MAKO_CAPTURE_LIB_URL = ${JSON.stringify(CAPTURE_LIB_URL)};
       ${BOOTSTRAP_SOURCE}
     </script>
   </body>
@@ -169,6 +186,36 @@ function runDuckDb(sql) {
     POST({ type: "mako-app:run-duckdb", requestId, sql: sql });
   });
 }
+
+// --- Self-capture: the parent cannot rasterize this opaque-origin iframe, so
+// it asks us to screenshot ourselves and posts the PNG back. ---
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "mako-app:capture" || !data.requestId) return;
+  import(MAKO_CAPTURE_LIB_URL)
+    .then((mod) =>
+      mod.toPng(document.documentElement, {
+        backgroundColor: data.backgroundColor == null ? "#ffffff" : data.backgroundColor,
+        pixelRatio: typeof data.scale === "number" ? data.scale : 1,
+      }),
+    )
+    .then((dataUrl) =>
+      POST({
+        type: "mako-app:capture-result",
+        requestId: data.requestId,
+        success: true,
+        dataUrl,
+      }),
+    )
+    .catch((err) =>
+      POST({
+        type: "mako-app:capture-result",
+        requestId: data.requestId,
+        success: false,
+        error: String((err && err.message) || err),
+      }),
+    );
+});
 
 async function main() {
   const Babel = await waitForBabel();
