@@ -94,6 +94,62 @@ export async function queryAppDuckDB(
   return queryDuckDB(inst.db, sql);
 }
 
+/** Max rows posted back to the sandboxed iframe per query / binding read. */
+export const SANDBOX_DUCKDB_ROW_LIMIT = 50_000;
+
+const LEADING_SQL_COMMENTS = /^(\s*(--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/))*\s*/;
+
+/**
+ * Read-only gate for SQL arriving from the sandboxed preview iframe. The
+ * DuckDB instance only holds this app's materialized tables, but statement
+ * level commands (INSTALL / LOAD / ATTACH / CREATE / COPY / PRAGMA / SET ...)
+ * must not be reachable from untrusted app code. Requiring a single statement
+ * that starts with SELECT or WITH rules all of them out without
+ * false-positives on identifiers that merely contain those words.
+ */
+export function checkSandboxDuckDbSql(
+  sql: string,
+): { ok: true } | { ok: false; error: string } {
+  const stripped = sql.replace(LEADING_SQL_COMMENTS, "").trim();
+  if (!/^(SELECT|WITH)\b/i.test(stripped)) {
+    return {
+      ok: false,
+      error:
+        "Only read-only SELECT / WITH queries are allowed from the app sandbox.",
+    };
+  }
+  // Reject multi-statement SQL: scan for a semicolon (outside string
+  // literals / quoted identifiers) that is followed by more SQL.
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (inSingle) {
+      if (ch === "'") {
+        if (stripped[i + 1] === "'") i++;
+        else inSingle = false;
+      }
+      continue;
+    }
+    if (inDouble) {
+      if (ch === '"') {
+        if (stripped[i + 1] === '"') i++;
+        else inDouble = false;
+      }
+      continue;
+    }
+    if (ch === "'") inSingle = true;
+    else if (ch === '"') inDouble = true;
+    else if (ch === ";" && stripped.slice(i + 1).trim().length > 0) {
+      return {
+        ok: false,
+        error: "Only a single SQL statement is allowed from the app sandbox.",
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /** Tear down an app's DuckDB instance (on tab close / unmount). */
 export async function disposeAppDuckDB(appId: string): Promise<void> {
   const inst = instances.get(appId);

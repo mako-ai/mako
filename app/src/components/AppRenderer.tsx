@@ -16,6 +16,8 @@ import {
   queryAppDuckDB,
   disposeAppDuckDB,
   bindingTableName,
+  checkSandboxDuckDbSql,
+  SANDBOX_DUCKDB_ROW_LIMIT,
 } from "../app-runtime/duckdb";
 
 /**
@@ -84,7 +86,8 @@ export default function AppRenderer({ appId }: { appId: string }) {
             .then(() =>
               queryAppDuckDB(
                 appId,
-                `SELECT * FROM "${bindingTableName(binding.name)}"`,
+                // +1 so we can tell the iframe when the read was truncated.
+                `SELECT * FROM "${bindingTableName(binding.name)}" LIMIT ${SANDBOX_DUCKDB_ROW_LIMIT + 1}`,
               ),
             )
             .then(result =>
@@ -92,7 +95,8 @@ export default function AppRenderer({ appId }: { appId: string }) {
                 type: PREVIEW_MESSAGE.bindingResult,
                 requestId: data.requestId,
                 success: true,
-                rows: result.rows,
+                rows: result.rows.slice(0, SANDBOX_DUCKDB_ROW_LIMIT),
+                truncated: result.rows.length > SANDBOX_DUCKDB_ROW_LIMIT,
               }),
             )
             .catch(err =>
@@ -117,6 +121,18 @@ export default function AppRenderer({ appId }: { appId: string }) {
           }),
         );
       } else if (data.type === PREVIEW_MESSAGE.runDuckDb) {
+        // Untrusted boundary: the sandboxed app supplies this SQL. Only allow
+        // single read-only statements (blocks INSTALL/LOAD/ATTACH/COPY/...).
+        const safety = checkSandboxDuckDbSql(String(data.sql ?? ""));
+        if (!safety.ok) {
+          post({
+            type: PREVIEW_MESSAGE.duckDbResult,
+            requestId: data.requestId,
+            success: false,
+            error: safety.error,
+          });
+          return;
+        }
         const parquetBindings = (appEntity?.dataBindings || []).filter(
           b => b.materialization === "parquet",
         );
@@ -131,8 +147,9 @@ export default function AppRenderer({ appId }: { appId: string }) {
               type: PREVIEW_MESSAGE.duckDbResult,
               requestId: data.requestId,
               success: true,
-              rows: result.rows,
+              rows: result.rows.slice(0, SANDBOX_DUCKDB_ROW_LIMIT),
               fields: result.fields,
+              truncated: result.rows.length > SANDBOX_DUCKDB_ROW_LIMIT,
             }),
           )
           .catch(err =>
