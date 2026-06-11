@@ -14,6 +14,7 @@ const scenarios = [
   "03-agent-modalities.mjs",
   "04-dead-sse.mjs",
   "05-stale-save-dual-guard.mjs",
+  "06-wake-triggers.mjs",
 ];
 
 const results = [];

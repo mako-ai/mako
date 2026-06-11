@@ -1412,6 +1412,16 @@ export const useConsoleStore = create<ConsoleStore>()(
           databaseName,
         );
         if (lastSavedContentHash.get(consoleId) === stateHash) {
+          // Content is back to the persisted baseline (e.g. type + undo).
+          // CANCEL any queued autosave too: it captured an intermediate
+          // keystroke state which is now obsolete — letting it fire would
+          // persist phantom content the editor no longer shows and steal
+          // the revision from concurrent writers.
+          const pending = draftSaveTimers.get(consoleId);
+          if (pending) {
+            clearTimeout(pending);
+            draftSaveTimers.delete(consoleId);
+          }
           return;
         }
 
@@ -1544,6 +1554,30 @@ export const useConsoleStore = create<ConsoleStore>()(
                 delete tab.savedConnectionId;
                 delete tab.savedDatabaseId;
                 delete tab.savedDatabaseName;
+
+                // Seed the autosave baseline with the persisted content.
+                // The module-level hash map is empty on every page load;
+                // without seeding, a net-zero edit (type + undo) in a
+                // rehydrated draft fires an autosave of unchanged content,
+                // which can only 409 against newer remote edits and locks
+                // the tab into a phantom conflict. The first revision sync
+                // re-seeds with the server copy if it moved while we were
+                // away (applyRemoteConsoleEntry / fetchConsoleContent).
+                if (
+                  (tab.kind === undefined || tab.kind === "console") &&
+                  typeof tab.content === "string" &&
+                  typeof tab.id === "string"
+                ) {
+                  lastSavedContentHash.set(
+                    tab.id,
+                    computeConsoleStateHash(
+                      tab.content,
+                      tab.connectionId,
+                      tab.databaseId,
+                      tab.databaseName,
+                    ),
+                  );
+                }
               });
             }
             return data;
