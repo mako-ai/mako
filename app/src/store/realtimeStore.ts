@@ -17,7 +17,11 @@ import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
-import { useConsoleStore, hasUnsavedLocalEdits } from "./consoleStore";
+import {
+  useConsoleStore,
+  hasUnsavedLocalEdits,
+  hasBlockedDraftSave,
+} from "./consoleStore";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
@@ -77,10 +81,13 @@ let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-let visibilityListenerInstalled = false;
+let wakeListenersInstalled = false;
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let deferredResyncTimer: ReturnType<typeof setTimeout> | null = null;
 /** Timestamp of the last frame seen on the SSE stream (any event type). */
 let lastEventAt = 0;
+/** Timestamp of the last wake-trigger handling (focus/visibility burst). */
+let lastWakeAt = 0;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
@@ -93,6 +100,24 @@ const SYNC_DEBOUNCE_MS = 250;
  */
 const WATCHDOG_STALE_MS = 70_000;
 const WATCHDOG_INTERVAL_MS = 15_000;
+/**
+ * Wake-trigger staleness: when the user comes back to this window (focus /
+ * visibility / pageshow), a stream that hasn't produced a frame within ~1.5
+ * heartbeats is treated as dead and reconnected immediately instead of
+ * waiting for the slow watchdog. Chrome can freeze background tabs and kill
+ * their sockets without firing an `error` event, so `status === "open"`
+ * cannot be trusted on wake.
+ */
+const WAKE_STALE_MS = 40_000;
+/** Collapse the burst of focus+visibility events one window switch fires. */
+const WAKE_THROTTLE_MS = 1_000;
+/**
+ * Re-evaluation delay when a remote update was deferred only because the
+ * user was mid-typing (keystroke recency / in-flight autosave). Slightly
+ * longer than consoleStore's USER_EDIT_RECENCY_MS (3s) so the re-run sees a
+ * quiescent tab and can apply cleanly without user interaction.
+ */
+const DEFERRED_RESYNC_MS = 3_500;
 
 /** Last known writer per console (from pokes) — labels the dirty affordance. */
 const lastUpdatedByConsole = new Map<string, string>();
@@ -114,6 +139,10 @@ function clearTimers(): void {
     clearTimeout(syncDebounceTimer);
     syncDebounceTimer = null;
   }
+  if (deferredResyncTimer) {
+    clearTimeout(deferredResyncTimer);
+    deferredResyncTimer = null;
+  }
 }
 
 export const useRealtimeStore = create<RealtimeStore>()(
@@ -124,6 +153,21 @@ export const useRealtimeStore = create<RealtimeStore>()(
         syncDebounceTimer = null;
         void get().syncRevisions();
       }, SYNC_DEBOUNCE_MS);
+    };
+
+    /**
+     * A remote update was deferred (banner) only because the user was
+     * mid-typing — re-run the sync once the recency window has passed so a
+     * now-quiescent tab converges on its own. Without this, a single remote
+     * edit landing inside the typing window leaves the tab stale until the
+     * user clicks the banner or another event happens to arrive.
+     */
+    const scheduleDeferredResync = () => {
+      if (deferredResyncTimer) return;
+      deferredResyncTimer = setTimeout(() => {
+        deferredResyncTimer = null;
+        void get().syncRevisions();
+      }, DEFERRED_RESYNC_MS);
     };
 
     const handleConsoleUpdated = (
@@ -359,23 +403,49 @@ export const useRealtimeStore = create<RealtimeStore>()(
       };
     };
 
-    const installVisibilityListener = () => {
-      if (visibilityListenerInstalled) return;
-      visibilityListenerInstalled = true;
+    /**
+     * The user came back to this window. IMPORTANT: `visibilitychange` alone
+     * is NOT enough — two side-by-side windows are both permanently
+     * "visible", so switching between them never fires it. Window `focus` is
+     * the trigger that matches how people actually multi-window;
+     * `pageshow`/`resume` cover BFCache restores and unfrozen tabs.
+     */
+    const wake = () => {
+      const now = Date.now();
+      // One window switch fires a burst (focus + visibilitychange); the
+      // first one does the work.
+      if (now - lastWakeAt < WAKE_THROTTLE_MS) return;
+      lastWakeAt = now;
+
+      const { workspaceId, status } = get();
+      if (!workspaceId) return;
+
+      const streamSilentMs = now - lastEventAt;
+      if (status === "open" && eventSource && streamSilentMs <= WAKE_STALE_MS) {
+        // Connection looks healthy; revisions may still have moved while we
+        // were backgrounded (throttled timers) — reconcile.
+        void get().syncRevisions();
+      } else {
+        // Stream missing, mid-backoff, or silent past ~1.5 heartbeats.
+        // `status === "open"` is NOT trustworthy here: Chrome freezes
+        // background tabs and can drop their sockets without an `error`
+        // event. Reconnect now; `onopen` runs the revision sync.
+        clearTimers();
+        reconnectAttempt = 0;
+        openConnection(workspaceId);
+      }
+    };
+
+    const installWakeListeners = () => {
+      if (wakeListenersInstalled) return;
+      wakeListenersInstalled = true;
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState !== "visible") return;
-        const { workspaceId, status } = get();
-        if (!workspaceId) return;
-        if (status === "open") {
-          // Connection survived the background period; revisions may not have.
-          void get().syncRevisions();
-        } else {
-          // Skip the remaining backoff — the user is looking at the tab now.
-          clearTimers();
-          reconnectAttempt = 0;
-          openConnection(workspaceId);
-        }
+        if (document.visibilityState === "visible") wake();
       });
+      window.addEventListener("focus", wake);
+      window.addEventListener("pageshow", wake);
+      // Page Lifecycle API: fired when Chrome unfreezes a frozen tab.
+      document.addEventListener("resume", wake);
     };
 
     return {
@@ -392,7 +462,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
           state.workspaceId = workspaceId;
           state.chatActivity = {};
         });
-        installVisibilityListener();
+        installWakeListeners();
         startWatchdog();
         openConnection(workspaceId);
       },
@@ -470,6 +540,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
                   updatedBy: lastUpdatedByConsole.get(entry.id),
                   kind: "updated",
                 });
+                // Transient deferral (typing recency / autosave in flight)
+                // without a CONFIRMED conflict: re-evaluate shortly — once
+                // the tab is quiescent the decision flips to "apply" and the
+                // banner clears itself. Confirmed conflicts (blocked
+                // autosave after a real 409, or unsaved explicit-save
+                // deltas) wait for the user instead of polling.
+                if (
+                  !hasBlockedDraftSave(entry.id) &&
+                  !(tab?.isSaved ?? false)
+                ) {
+                  scheduleDeferredResync();
+                }
                 break;
               case "apply":
                 store.applyRemoteConsoleEntry(entry);
