@@ -1865,9 +1865,14 @@ function Editor({
   const handleVersionConflictOverwrite = async () => {
     if (!pendingSaveData || !versionConflictData) return;
     const { tabId, content, path, comment } = pendingSaveData;
-    // Fast-forward to the server's version so the retried save passes the
-    // guard (unless someone saves yet again in the meantime).
+    // Fast-forward to the server's bases so the retried save passes BOTH
+    // guards (unless someone saves yet again in the meantime).
     updateVersion(tabId, versionConflictData.currentVersion);
+    if (typeof versionConflictData.currentDraftRevision === "number") {
+      useConsoleStore
+        .getState()
+        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
+    }
     setVersionConflictData(null);
     const success = await executeConsoleSave(
       tabId,
@@ -1892,6 +1897,11 @@ function Editor({
     });
     updateContent(tabId, serverContent);
     updateVersion(tabId, versionConflictData.currentVersion);
+    if (typeof versionConflictData.currentDraftRevision === "number") {
+      useConsoleStore
+        .getState()
+        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
+    }
     const currentTab = tabs[tabId];
     const newHash = computeConsoleStateHash(
       serverContent,
@@ -2281,10 +2291,26 @@ function Editor({
                                     tab.id,
                                   );
                               }}
+                              onKeepMine={() => {
+                                if (!currentWorkspace?.id) return;
+                                // Use the LIVE Monaco buffer, not the store
+                                // copy — it may lag keystrokes by a debounce.
+                                const live =
+                                  consoleRefs.current[
+                                    tab.id
+                                  ]?.current?.getCurrentContent().content;
+                                void useConsoleStore
+                                  .getState()
+                                  .resolveRemoteUpdateKeepMine(
+                                    currentWorkspace.id,
+                                    tab.id,
+                                    live ?? tab.content,
+                                  );
+                              }}
                               onDismiss={() =>
                                 useConsoleStore
                                   .getState()
-                                  .setRemoteUpdate(tab.id, null)
+                                  .dismissRemoteUpdate(tab.id)
                               }
                               onCloseTab={() =>
                                 useConsoleStore.getState().closeTab(tab.id)

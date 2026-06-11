@@ -2565,6 +2565,51 @@ const Chat: React.FC<ChatProps> = ({
     };
   }, [chatId, currentWorkspace?.id]);
 
+  // In-band console opening: when a create_console / open_console tool
+  // result streams in (state "output-available"), open the console tab in
+  // THIS window. The chat stream is resumable, so unlike the legacy
+  // chat.ui-intent realtime poke this survives SSE drops, reconnects and
+  // page refreshes — the replayed part triggers the same idempotent open.
+  // Tool call ids seen in RESTORED history are pre-seeded into this set by
+  // loadSession (reopening a chat must not re-open every console it ever
+  // touched — the dedicated consoles-restore payload handles that).
+  const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    handledConsoleOpenToolCallIdsRef.current = new Set();
+  }, [chatId]);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    for (const part of last.parts ?? []) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        state?: string;
+        toolCallId?: string;
+        output?: { success?: boolean; consoleId?: string };
+      };
+      const toolName =
+        p.type === "dynamic-tool"
+          ? p.toolName
+          : p.type?.startsWith("tool-")
+            ? p.type.slice("tool-".length)
+            : undefined;
+      if (toolName !== "create_console" && toolName !== "open_console") {
+        continue;
+      }
+      if (p.state !== "output-available") continue;
+      const consoleId = p.output?.consoleId;
+      if (!p.toolCallId || !p.output?.success || !consoleId) continue;
+      if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
+      handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
+      void useConsoleStore
+        .getState()
+        .openConsoleFromServer(workspaceId, consoleId);
+    }
+  }, [messages, currentWorkspace?.id]);
+
   // Load messages when selecting an existing chat from history
   useEffect(() => {
     // Flipped when this effect is superseded (chat switched / unmount) so a
@@ -2715,6 +2760,19 @@ const Chat: React.FC<ChatProps> = ({
                 parts,
               };
             }) || [];
+
+          // Restored tool parts must not re-trigger the in-band console
+          // opener (only LIVE streamed results should); the consoles-restore
+          // payload below already reopens what matters.
+          for (const msg of convertedMessages) {
+            for (const part of msg.parts ?? []) {
+              const toolCallId = (part as { toolCallId?: string }).toolCallId;
+              if (toolCallId) {
+                handledConsoleOpenToolCallIdsRef.current.add(toolCallId);
+              }
+            }
+          }
+
           setMessages(convertedMessages);
 
           // Restore consoles that were modified by the agent in this chat

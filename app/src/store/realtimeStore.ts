@@ -17,7 +17,12 @@ import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
-import { useConsoleStore, hasRecentUserEdit } from "./consoleStore";
+import {
+  useConsoleStore,
+  hasUnsavedLocalEdits,
+  hasBlockedDraftSave,
+} from "./consoleStore";
+import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
 
@@ -76,12 +81,43 @@ let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let syncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-let visibilityListenerInstalled = false;
+let wakeListenersInstalled = false;
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+let deferredResyncTimer: ReturnType<typeof setTimeout> | null = null;
+/** Timestamp of the last frame seen on the SSE stream (any event type). */
+let lastEventAt = 0;
+/** Timestamp of the last wake-trigger handling (focus/visibility burst). */
+let lastWakeAt = 0;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 /** Batch bursts of pokes (e.g. agent patching repeatedly) into one pull. */
 const SYNC_DEBOUNCE_MS = 250;
+/**
+ * Liveness watchdog: the server heartbeats every 25s, so a stream that has
+ * been silent longer than this is dead even though no `error` event fired
+ * (NAT/proxy half-close, sleeping machine). 70s tolerates two missed beats.
+ */
+const WATCHDOG_STALE_MS = 70_000;
+const WATCHDOG_INTERVAL_MS = 15_000;
+/**
+ * Wake-trigger staleness: when the user comes back to this window (focus /
+ * visibility / pageshow), a stream that hasn't produced a frame within ~1.5
+ * heartbeats is treated as dead and reconnected immediately instead of
+ * waiting for the slow watchdog. Chrome can freeze background tabs and kill
+ * their sockets without firing an `error` event, so `status === "open"`
+ * cannot be trusted on wake.
+ */
+const WAKE_STALE_MS = 40_000;
+/** Collapse the burst of focus+visibility events one window switch fires. */
+const WAKE_THROTTLE_MS = 1_000;
+/**
+ * Re-evaluation delay when a remote update was deferred only because the
+ * user was mid-typing (keystroke recency / in-flight autosave). Slightly
+ * longer than consoleStore's USER_EDIT_RECENCY_MS (3s) so the re-run sees a
+ * quiescent tab and can apply cleanly without user interaction.
+ */
+const DEFERRED_RESYNC_MS = 3_500;
 
 /** Last known writer per console (from pokes) — labels the dirty affordance. */
 const lastUpdatedByConsole = new Map<string, string>();
@@ -103,6 +139,10 @@ function clearTimers(): void {
     clearTimeout(syncDebounceTimer);
     syncDebounceTimer = null;
   }
+  if (deferredResyncTimer) {
+    clearTimeout(deferredResyncTimer);
+    deferredResyncTimer = null;
+  }
 }
 
 export const useRealtimeStore = create<RealtimeStore>()(
@@ -113,6 +153,21 @@ export const useRealtimeStore = create<RealtimeStore>()(
         syncDebounceTimer = null;
         void get().syncRevisions();
       }, SYNC_DEBOUNCE_MS);
+    };
+
+    /**
+     * A remote update was deferred (banner) only because the user was
+     * mid-typing — re-run the sync once the recency window has passed so a
+     * now-quiescent tab converges on its own. Without this, a single remote
+     * edit landing inside the typing window leaves the tab stale until the
+     * user clicks the banner or another event happens to arrive.
+     */
+    const scheduleDeferredResync = () => {
+      if (deferredResyncTimer) return;
+      deferredResyncTimer = setTimeout(() => {
+        deferredResyncTimer = null;
+        void get().syncRevisions();
+      }, DEFERRED_RESYNC_MS);
     };
 
     const handleConsoleUpdated = (
@@ -163,12 +218,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
       const workspaceId = get().workspaceId;
       if (!workspaceId) return;
 
-      // Pull the persisted run artifact and render it through the existing
-      // results-panel pipeline (same events the client run_console used).
-      // The agent runs queries fast: this event often races the tab being
-      // opened by the create/open ui-intent, so wait briefly for the tab.
+      // The run bumped the console's draftRevision (the artifact is part of
+      // replicated draft state). Pull any content/revision change through
+      // the normal guarded sync path — NEVER fast-forward the revision base
+      // out-of-band, or the Monaco buffer ends up permanently stale.
+      scheduleSync();
+
+      // Separately, pull the persisted run artifact and render it through
+      // the existing results-panel pipeline (same events the client
+      // run_console used). The agent runs queries fast: this event often
+      // races the tab being opened by the create/open intent, so wait
+      // briefly for the tab.
       void (async () => {
-        const consoleStore = useConsoleStore.getState();
         for (
           let attempt = 0;
           attempt < 10 && !useConsoleStore.getState().tabs[event.consoleId];
@@ -178,12 +239,10 @@ export const useRealtimeStore = create<RealtimeStore>()(
         }
         if (!useConsoleStore.getState().tabs[event.consoleId]) return;
 
-        const res = await consoleStore.fetchConsoleContent(
-          workspaceId,
-          event.consoleId,
-        );
-        const lastRun = res?.lastRun;
-        if (!res?.success || !lastRun) return;
+        const lastRun = await useConsoleStore
+          .getState()
+          .fetchConsoleRunArtifact(workspaceId, event.consoleId);
+        if (!lastRun) return;
         window.dispatchEvent(
           new CustomEvent("console-execution-result", {
             detail: {
@@ -219,22 +278,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         consoleStore.setActiveTab(event.consoleId);
         return;
       }
-      void (async () => {
-        const data = await consoleStore.fetchConsoleContent(
-          workspaceId,
-          event.consoleId,
-        );
-        if (!data?.success) return;
-        consoleStore.openTab({
-          id: event.consoleId,
-          title: data.name || data.path || "Untitled",
-          content: data.content || "",
-          connectionId: data.connectionId,
-          databaseId: data.databaseId,
-          databaseName: data.databaseName,
-        });
-        consoleStore.setActiveTab(event.consoleId);
-      })();
+      void consoleStore.openConsoleFromServer(workspaceId, event.consoleId);
     };
 
     const handleEvent = (event: RealtimeEvent) => {
@@ -279,6 +323,30 @@ export const useRealtimeStore = create<RealtimeStore>()(
       }, jitter);
     };
 
+    const stopWatchdog = () => {
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+
+    // Detect silently-dead connections (no `error` event ever fires for a
+    // NAT/proxy half-close): if nothing — message, ping, hello — arrived
+    // within the stale window while we believe the stream is open, drop the
+    // socket and reconnect. The reconnect's `onopen` runs syncRevisions, so
+    // missed pokes are repaired by the normal poke-then-pull reconciliation.
+    const startWatchdog = () => {
+      if (watchdogTimer) return;
+      watchdogTimer = setInterval(() => {
+        if (!eventSource) return;
+        if (get().status !== "open") return;
+        if (Date.now() - lastEventAt <= WATCHDOG_STALE_MS) return;
+        eventSource.close();
+        eventSource = null;
+        scheduleReconnect();
+      }, WATCHDOG_INTERVAL_MS);
+    };
+
     const openConnection = (workspaceId: string) => {
       if (eventSource) {
         eventSource.close();
@@ -298,6 +366,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
       source.onopen = () => {
         if (eventSource !== source) return;
         reconnectAttempt = 0;
+        lastEventAt = Date.now();
         set(state => {
           state.status = "open";
         });
@@ -308,11 +377,22 @@ export const useRealtimeStore = create<RealtimeStore>()(
 
       source.addEventListener("message", (e: MessageEvent) => {
         if (eventSource !== source) return;
+        lastEventAt = Date.now();
         try {
           handleEvent(JSON.parse(e.data) as RealtimeEvent);
         } catch {
           // Malformed event — the next revision sync corrects any gap.
         }
+      });
+
+      // Liveness only — these carry no payload the store consumes.
+      source.addEventListener("ping", () => {
+        if (eventSource !== source) return;
+        lastEventAt = Date.now();
+      });
+      source.addEventListener("hello", () => {
+        if (eventSource !== source) return;
+        lastEventAt = Date.now();
       });
 
       source.onerror = () => {
@@ -323,23 +403,49 @@ export const useRealtimeStore = create<RealtimeStore>()(
       };
     };
 
-    const installVisibilityListener = () => {
-      if (visibilityListenerInstalled) return;
-      visibilityListenerInstalled = true;
+    /**
+     * The user came back to this window. IMPORTANT: `visibilitychange` alone
+     * is NOT enough — two side-by-side windows are both permanently
+     * "visible", so switching between them never fires it. Window `focus` is
+     * the trigger that matches how people actually multi-window;
+     * `pageshow`/`resume` cover BFCache restores and unfrozen tabs.
+     */
+    const wake = () => {
+      const now = Date.now();
+      // One window switch fires a burst (focus + visibilitychange); the
+      // first one does the work.
+      if (now - lastWakeAt < WAKE_THROTTLE_MS) return;
+      lastWakeAt = now;
+
+      const { workspaceId, status } = get();
+      if (!workspaceId) return;
+
+      const streamSilentMs = now - lastEventAt;
+      if (status === "open" && eventSource && streamSilentMs <= WAKE_STALE_MS) {
+        // Connection looks healthy; revisions may still have moved while we
+        // were backgrounded (throttled timers) — reconcile.
+        void get().syncRevisions();
+      } else {
+        // Stream missing, mid-backoff, or silent past ~1.5 heartbeats.
+        // `status === "open"` is NOT trustworthy here: Chrome freezes
+        // background tabs and can drop their sockets without an `error`
+        // event. Reconnect now; `onopen` runs the revision sync.
+        clearTimers();
+        reconnectAttempt = 0;
+        openConnection(workspaceId);
+      }
+    };
+
+    const installWakeListeners = () => {
+      if (wakeListenersInstalled) return;
+      wakeListenersInstalled = true;
       document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState !== "visible") return;
-        const { workspaceId, status } = get();
-        if (!workspaceId) return;
-        if (status === "open") {
-          // Connection survived the background period; revisions may not have.
-          void get().syncRevisions();
-        } else {
-          // Skip the remaining backoff — the user is looking at the tab now.
-          clearTimers();
-          reconnectAttempt = 0;
-          openConnection(workspaceId);
-        }
+        if (document.visibilityState === "visible") wake();
       });
+      window.addEventListener("focus", wake);
+      window.addEventListener("pageshow", wake);
+      // Page Lifecycle API: fired when Chrome unfreezes a frozen tab.
+      document.addEventListener("resume", wake);
     };
 
     return {
@@ -356,12 +462,14 @@ export const useRealtimeStore = create<RealtimeStore>()(
           state.workspaceId = workspaceId;
           state.chatActivity = {};
         });
-        installVisibilityListener();
+        installWakeListeners();
+        startWatchdog();
         openConnection(workspaceId);
       },
 
       disconnect: () => {
         clearTimers();
+        stopWatchdog();
         reconnectAttempt = 0;
         if (eventSource) {
           eventSource.close();
@@ -405,22 +513,49 @@ export const useRealtimeStore = create<RealtimeStore>()(
           const store = useConsoleStore.getState();
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
-            if (!tab) continue;
-            if ((tab.draftRevision ?? 0) >= entry.draftRevision) continue;
-            // isDirty lags raw typing by a debounce; hasRecentUserEdit
-            // covers keystrokes inside that window so they are never
-            // silently replaced.
-            if (tab.isDirty || hasRecentUserEdit(entry.id)) {
-              // The one overlap case: remote update while this tab holds
-              // unsaved keystrokes. Never merge silently — surface the
-              // affordance; the next save's revision check backstops.
-              store.setRemoteUpdate(entry.id, {
-                draftRevision: entry.draftRevision,
-                updatedBy: lastUpdatedByConsole.get(entry.id),
-                kind: "updated",
-              });
-            } else {
-              store.applyRemoteConsoleEntry(entry);
+            const decision = decideRemoteApply({
+              tabExists: Boolean(tab),
+              tabRevision: tab?.draftRevision,
+              entryRevision: entry.draftRevision,
+              contentMatches: tab?.content === entry.content,
+              unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
+            });
+            switch (decision) {
+              case "skip":
+                break;
+              case "fast-forward":
+                // Server content already matches this tab (echoed write from
+                // another tab, run-artifact revision bump, …). Fast-forward
+                // revision/metadata WITHOUT touching the Monaco buffer — it
+                // may be ahead by keystrokes that haven't autosaved yet.
+                store.fastForwardRemoteConsoleEntry(entry);
+                break;
+              case "banner":
+                // Remote update while this tab holds unsaved local edits
+                // (recent keystrokes, queued/blocked autosave, or an unsaved
+                // explicit-save delta). Never merge silently — surface the
+                // affordance; revision-checked writes backstop the rest.
+                store.setRemoteUpdate(entry.id, {
+                  draftRevision: entry.draftRevision,
+                  updatedBy: lastUpdatedByConsole.get(entry.id),
+                  kind: "updated",
+                });
+                // Transient deferral (typing recency / autosave in flight)
+                // without a CONFIRMED conflict: re-evaluate shortly — once
+                // the tab is quiescent the decision flips to "apply" and the
+                // banner clears itself. Confirmed conflicts (blocked
+                // autosave after a real 409, or unsaved explicit-save
+                // deltas) wait for the user instead of polling.
+                if (
+                  !hasBlockedDraftSave(entry.id) &&
+                  !(tab?.isSaved ?? false)
+                ) {
+                  scheduleDeferredResync();
+                }
+                break;
+              case "apply":
+                store.applyRemoteConsoleEntry(entry);
+                break;
             }
           }
           for (const deletedId of res.deleted) {

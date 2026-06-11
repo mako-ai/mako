@@ -688,10 +688,17 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
         const currentContent = model.getValue();
 
-        // Auto-save new consoles created with content (e.g., by agent create_console)
-        // Skip if console is already explicitly saved (isSaved=true)
+        // Mount-autosave is ONLY for drafts that have never synced with the
+        // server (no draftRevision — e.g. legacy localStorage-restored tabs
+        // whose server doc may not exist). Re-saving an already-synced draft
+        // on every mount used to bump draftRevision with identical content,
+        // which made every OTHER window's revision base stale and dead-ended
+        // their autosaves in 409s. Agent-created consoles arrive with a
+        // server revision, so they never take this path either.
+        const mountTab = useConsoleStore.getState().tabs[consoleId];
         if (
           !isSaved &&
+          mountTab?.draftRevision === undefined &&
           currentWorkspace?.id &&
           consoleId &&
           currentContent.trim()
