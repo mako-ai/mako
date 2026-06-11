@@ -28,6 +28,7 @@ import {
   withArtifactBuildLock,
 } from "./dashboard-cache.service";
 import { databaseConnectionService } from "./database-connection.service";
+import { checkPreviewQuerySafety } from "./query-pagination.service";
 import { loggers } from "../logging";
 
 const logger = loggers.api("app-materialization");
@@ -127,7 +128,22 @@ export function hydrateAppBindingUrls(app: {
 
 // SQL-family bindings execute the raw code. (MongoDB materialization would need
 // collection/operation metadata; not supported yet.)
+//
+// The binding code is user/agent-editable, so enforce the same read-only
+// safety gate as live preview execution: materialization must never run
+// DDL/DML against the source connection.
 function buildExecutableQuery(binding: IMakoAppDataBinding): string {
+  if (binding.language !== "sql") {
+    throw new Error(
+      `Materialization is not supported for ${binding.language} bindings yet`,
+    );
+  }
+  const safety = checkPreviewQuerySafety(binding.code);
+  if (!safety.safe) {
+    throw new Error(
+      `Binding query failed read-only safety checks: ${safety.errors.join(" ")}`,
+    );
+  }
   return binding.code;
 }
 
