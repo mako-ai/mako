@@ -46,6 +46,7 @@ import {
   getNextScheduledConsoleRunAt,
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
 /**
  * Map console language to query language for tracking
@@ -286,6 +287,15 @@ consoleRoutes.get("/content", async (c: Context) => {
       readOnly,
       schedule: fullConsole?.schedule,
       scheduledRun: fullConsole?.scheduledRun,
+      // Optimistic-concurrency base: the client echoes this back as
+      // expectedVersion on explicit saves.
+      version: fullConsole?.version ?? 1,
+      // Realtime sync base: clients compare against console.updated pokes
+      // and echo it back as expectedDraftRevision on draft auto-saves.
+      draftRevision: fullConsole?.draftRevision ?? 1,
+      // Latest server-side run artifact (agent run_console while detached);
+      // lets a reopened console render results without re-running.
+      lastRun: fullConsole?.lastRun,
     });
   } catch (error) {
     logger.error("Error fetching console content", {
@@ -298,6 +308,96 @@ consoleRoutes.get("/content", async (c: Context) => {
         error: error instanceof Error ? error.message : "Console not found",
       },
       404,
+    );
+  }
+});
+
+// POST /api/workspaces/:workspaceId/consoles/revisions-sync
+//
+// Bulk poke-then-pull reconciliation: the client sends the draftRevision of
+// every console tab it has open; the server returns full payloads for the
+// ones that changed. Called on realtime (re)connect and on tab focus, which
+// makes reconnect a refetch rather than a replay.
+consoleRoutes.post("/revisions-sync", async (c: Context) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    const user = c.get("user");
+
+    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+      return c.json(
+        { success: false, error: "Access denied to workspace" },
+        403,
+      );
+    }
+
+    const body = await c.req.json();
+    const revisions = body?.revisions as Record<string, unknown> | undefined;
+    if (!revisions || typeof revisions !== "object") {
+      return c.json(
+        { success: false, error: "'revisions' object is required" },
+        400,
+      );
+    }
+
+    const entries = Object.entries(revisions)
+      .filter(
+        ([id, rev]) =>
+          Types.ObjectId.isValid(id) &&
+          typeof rev === "number" &&
+          Number.isFinite(rev),
+      )
+      .slice(0, 100) as Array<[string, number]>;
+
+    if (entries.length === 0) {
+      return c.json({ success: true, changed: [], deleted: [] });
+    }
+
+    const docs = await SavedConsole.find({
+      _id: { $in: entries.map(([id]) => new Types.ObjectId(id)) },
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    const docsById = new Map(docs.map(d => [d._id.toString(), d]));
+
+    const changed: Array<Record<string, unknown>> = [];
+    const deleted: string[] = [];
+    for (const [id, clientRevision] of entries) {
+      const doc = docsById.get(id);
+      if (!doc || doc.is_deleted) {
+        deleted.push(id);
+        continue;
+      }
+      if (!(await consoleManager.canReadWithInheritance(doc, user.id))) {
+        // Not readable (e.g. access flipped to private): treat as gone.
+        deleted.push(id);
+        continue;
+      }
+      const serverRevision = doc.draftRevision ?? 1;
+      if (serverRevision === clientRevision) continue;
+      changed.push({
+        id,
+        draftRevision: serverRevision,
+        name: doc.name,
+        content: doc.code,
+        connectionId: doc.connectionId?.toString(),
+        databaseId: doc.databaseId,
+        databaseName: doc.databaseName,
+        version: doc.version ?? 1,
+        lastRun: doc.lastRun,
+      });
+    }
+
+    return c.json({ success: true, changed, deleted });
+  } catch (error) {
+    logger.error("Error syncing console revisions", { error });
+    return c.json(
+      {
+        success: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unknown error syncing revisions",
+      },
+      500,
     );
   }
 });
@@ -800,6 +900,81 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       const now = new Date();
       const isExplicitSave = body.isSaved === true;
 
+      // Optimistic concurrency (opt-in): when the client sends the version it
+      // loaded, explicit saves only apply while the document still has that
+      // version. On mismatch we return 409 version_conflict with the server
+      // copy so the user can resolve, instead of silently overwriting another
+      // user's save (previously last-write-wins).
+      const expectedVersion =
+        typeof body.expectedVersion === "number" &&
+        Number.isInteger(body.expectedVersion) &&
+        body.expectedVersion >= 1
+          ? (body.expectedVersion as number)
+          : undefined;
+      const useVersionGuard =
+        expectedVersion !== undefined && existingById !== null;
+
+      // Realtime sync (issue #475): `clientId` identifies the writing tab
+      // (or `agent:<chatId>`) so subscribers can suppress their own echoes;
+      // `expectedDraftRevision` makes draft auto-saves revision-checked so a
+      // stale tab cannot silently overwrite a newer draft.
+      const clientId =
+        typeof body.clientId === "string"
+          ? body.clientId.slice(0, 64)
+          : undefined;
+      const expectedDraftRevision =
+        typeof body.expectedDraftRevision === "number" &&
+        Number.isInteger(body.expectedDraftRevision) &&
+        body.expectedDraftRevision >= 1
+          ? (body.expectedDraftRevision as number)
+          : undefined;
+      const publishConsoleUpdated = (
+        doc: ISavedConsole,
+        origin: "draft" | "save",
+      ) => {
+        publishRealtimeEvent(workspaceId, {
+          type: "console.updated",
+          consoleId: doc._id.toString(),
+          draftRevision: doc.draftRevision ?? 1,
+          name: doc.name,
+          updatedBy: user.id,
+          clientId,
+          origin,
+        });
+      };
+
+      const idFilter = {
+        _id: new Types.ObjectId(pathOrId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      };
+      // The guard is applied atomically in the update filter (not as a
+      // read-then-write check). With the guard active we must not upsert:
+      // a version mismatch would otherwise insert a duplicate document.
+      const guardedFilter: Record<string, unknown> = useVersionGuard
+        ? {
+            ...idFilter,
+            // Legacy documents predating the version field count as version 1.
+            version:
+              expectedVersion === 1 ? { $in: [1, null] } : expectedVersion,
+          }
+        : idFilter;
+      const versionConflictResponse = async () => {
+        const current = await SavedConsole.findOne(idFilter);
+        return c.json(
+          {
+            success: false,
+            error: "version_conflict",
+            versionConflict: {
+              currentVersion: current?.version ?? 1,
+              content: current?.code ?? "",
+              name: current?.name,
+              updatedAt: current?.updatedAt,
+            },
+          },
+          409,
+        );
+      };
+
       // If this is an explicit save with a path, check for path conflicts
       if (isExplicitSave && body.path) {
         const consolePath = body.path;
@@ -876,17 +1051,17 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         }
 
         const result = await SavedConsole.findOneAndUpdate(
-          {
-            _id: new Types.ObjectId(pathOrId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          },
+          guardedFilter,
           {
             $set: setFields,
-            $inc: { version: 1 },
+            $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: true, new: true },
+          { upsert: !useVersionGuard, new: true },
         );
+        if (!result) {
+          return versionConflictResponse();
+        }
 
         // Create version record for the new state
         await createVersion({
@@ -899,9 +1074,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           comment: body.comment ?? "",
         });
 
+        publishConsoleUpdated(result as ISavedConsole, "save");
+
         return c.json({
           success: true,
           message: "Console saved",
+          version: result.version,
+          draftRevision: result.draftRevision ?? 1,
           console: {
             id: result._id.toString(),
             name: result.name,
@@ -957,17 +1136,19 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         }
 
         const result = await SavedConsole.findOneAndUpdate(
-          {
-            _id: new Types.ObjectId(pathOrId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          },
+          guardedFilter,
           {
             $set: setFields,
-            $inc: { version: 1 },
+            $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: true, new: true },
+          { upsert: !useVersionGuard, new: true },
         );
+        if (!result) {
+          return versionConflictResponse();
+        }
+
+        publishConsoleUpdated(result as ISavedConsole, "save");
 
         // Create version record for the new state
         const displayNameExplicit = await getUserDisplayName(user.id);
@@ -1027,6 +1208,8 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         return c.json({
           success: true,
           message: "Console saved",
+          version: result.version,
+          draftRevision: result.draftRevision ?? 1,
           console: {
             id: result._id.toString(),
             name: result.name,
@@ -1034,7 +1217,13 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         });
       }
 
-      // Draft auto-save flow: Use upsert to create if doesn't exist
+      // Draft auto-save flow: Use upsert to create if doesn't exist.
+      //
+      // Not `version`-guarded (that counter belongs to explicit saves), but
+      // when the client sends `expectedDraftRevision` the write is
+      // draft-revision-checked: a stale tab gets 409 draft_conflict instead
+      // of overwriting a newer draft (another tab, another user, or the
+      // agent). Clients without the field keep legacy last-write-wins.
       const setOnInsertFields: Record<string, any> = {
         createdBy: user.id,
         owner_id: user.id,
@@ -1050,21 +1239,55 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         setOnInsertFields.name = "Untitled";
       }
 
+      const useDraftGuard =
+        expectedDraftRevision !== undefined && existingById !== null;
+      // Applied atomically in the update filter. With the guard active we
+      // must not upsert: a revision mismatch would insert a duplicate doc.
+      const draftFilter: Record<string, unknown> = useDraftGuard
+        ? {
+            ...idFilter,
+            // Legacy documents predating the field count as revision 1.
+            draftRevision:
+              expectedDraftRevision === 1
+                ? { $in: [1, null] }
+                : expectedDraftRevision,
+          }
+        : idFilter;
+
       const result = await SavedConsole.findOneAndUpdate(
-        {
-          _id: new Types.ObjectId(pathOrId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
+        draftFilter,
         {
           $set: setFields,
+          $inc: { draftRevision: 1 },
           $setOnInsert: setOnInsertFields,
         },
-        { upsert: true, new: true },
+        { upsert: !useDraftGuard, new: true },
       );
+
+      if (!result) {
+        const current = await SavedConsole.findOne(idFilter);
+        return c.json(
+          {
+            success: false,
+            error: "draft_conflict",
+            draftConflict: {
+              currentDraftRevision: current?.draftRevision ?? 1,
+              content: current?.code ?? "",
+              name: current?.name,
+              updatedAt: current?.updatedAt,
+            },
+          },
+          409,
+        );
+      }
+
+      publishConsoleUpdated(result as ISavedConsole, "draft");
 
       return c.json({
         success: true,
         message: "Console saved",
+        version: result.version,
+        draftRevision: result.draftRevision ?? 1,
         console: {
           id: result._id.toString(),
           name: result.name,
@@ -1308,6 +1531,28 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
     );
 
     if (success) {
+      // Bump the draft revision so revision-sync catches the rename, then
+      // poke subscribers (other tabs/users update the tab title live).
+      if (Types.ObjectId.isValid(consoleId)) {
+        const renamed = await SavedConsole.findOneAndUpdate(
+          {
+            _id: new Types.ObjectId(consoleId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          },
+          { $inc: { draftRevision: 1 } },
+          { new: true },
+        );
+        if (renamed) {
+          publishRealtimeEvent(workspaceId, {
+            type: "console.updated",
+            consoleId,
+            draftRevision: renamed.draftRevision ?? 1,
+            name: renamed.name,
+            updatedBy: user.id,
+            origin: "save",
+          });
+        }
+      }
       return c.json({ success: true, message: "Console renamed successfully" });
     } else {
       return c.json({ success: false, error: "Console not found" }, 404);
@@ -1377,6 +1622,10 @@ consoleRoutes.delete("/:id", async (c: Context) => {
     );
 
     if (success) {
+      publishRealtimeEvent(workspaceId, {
+        type: "console.deleted",
+        consoleId,
+      });
       return c.json({
         success: true,
         message: "Console deleted successfully",

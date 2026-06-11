@@ -1,0 +1,69 @@
+# Packaging configuration for Mako Desktop.
+#
+# The Mako Local Agent is bundled as an extra resource: build it first with
+# `pnpm --filter @mako/local-agent build` (produces a standalone single-file
+# bundle at packages/local-agent/dist/index.js). The desktop main process
+# spawns it with ELECTRON_RUN_AS_NODE from resources/agent/index.js.
+appId: ai.mako.desktop
+productName: Mako
+directories:
+  output: release
+files:
+  - dist/**
+# Deep-link scheme for the browser → app sign-in handoff (mako://auth).
+# electron-builder wires this per-OS: CFBundleURLTypes in Info.plist (macOS),
+# NSIS registry entries (Windows), and an x-scheme-handler/mako MimeType in
+# the generated .desktop entry (Linux).
+protocols:
+  - name: Mako
+    schemes: [mako]
+# Ad-hoc signs macOS builds when no Developer ID cert is configured (see
+# scripts/after-pack.js). Replace with real signing + notarization secrets
+# for public distribution.
+afterPack: ./scripts/after-pack.js
+extraResources:
+  - from: ../local-agent/dist/index.js
+    to: agent/index.js
+# Stable artifact names give us evergreen download links:
+# https://github.com/mako-ai/mako/releases/latest/download/<artifact>
+mac:
+  category: public.app-category.developer-tools
+  artifactName: Mako-mac-${arch}.${ext}
+  # Hardened runtime + entitlements are required for notarization. They only
+  # take effect when a Developer ID certificate is configured (CSC_LINK);
+  # unsigned CI builds fall back to ad-hoc signing via scripts/after-pack.js.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Enabled on CI with --config.mac.notarize=true when Apple secrets exist.
+  notarize: false
+  # The dmg is for humans; the zip feeds electron-updater (macOS auto-update
+  # consumes the zip referenced by latest-mac.yml).
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+win:
+  artifactName: Mako-win-${arch}.${ext}
+  target:
+    - target: nsis
+      arch: [x64]
+linux:
+  executableName: mako
+  artifactName: Mako-linux-${arch}.${ext}
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Development
+# Auto-update feed. The "generic" provider never publishes from
+# electron-builder itself (the GitHub Actions workflow uploads assets to the
+# release explicitly); it only embeds app-update.yml into the packaged app so
+# electron-updater knows where to look. The releases/latest/download URL
+# always resolves to the newest non-prerelease release, so stable asset names
+# (Mako-mac-arm64.zip, latest-mac.yml, ...) make the feed evergreen without
+# tag-name parsing.
+publish:
+  provider: generic
+  url: https://github.com/mako-ai/mako/releases/latest/download

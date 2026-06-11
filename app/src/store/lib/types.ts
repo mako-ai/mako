@@ -14,7 +14,8 @@ export type TabKind =
   | "connectors"
   | "members"
   | "flow-editor"
-  | "dashboard";
+  | "dashboard"
+  | "table-data";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
@@ -77,6 +78,42 @@ export interface ConsoleTab {
   owner_id?: string;
   /** True if the current user can only read (not edit) this console */
   readOnly?: boolean;
+  /**
+   * Server document version this tab was loaded from (optimistic
+   * concurrency). Sent as expectedVersion on explicit saves and
+   * fast-forwarded from each save response.
+   */
+  version?: number;
+  /**
+   * Server draft revision this tab last synced to (realtime channel).
+   * Sent as expectedDraftRevision on draft autosaves; fast-forwarded from
+   * save responses and console.updated pokes.
+   */
+  draftRevision?: number;
+  /**
+   * Set when the server document changed while this tab had unsaved local
+   * edits (remote update poke or 409 draft_conflict). Drives the
+   * non-blocking "updated by X — load latest" affordance; never merged
+   * silently.
+   */
+  remoteUpdate?: {
+    draftRevision: number;
+    updatedBy?: string;
+    kind: "updated" | "deleted";
+  } | null;
+  /**
+   * Latest server-side run artifact (agent run_console). Lets a reopened
+   * console render results that were produced while no window was attached.
+   */
+  lastRun?: {
+    at: string;
+    status: "success" | "error";
+    rowCount?: number;
+    durationMs: number;
+    error?: string;
+    sampleRows?: Record<string, unknown>[];
+    fields?: unknown;
+  } | null;
   schedule?: {
     cron: string;
     timezone: string;

@@ -24,6 +24,11 @@ function getGateway() {
   if (!_gateway) {
     _gateway = createGateway({
       apiKey: process.env.AI_GATEWAY_API_KEY ?? "",
+      // Optional override (testing / self-hosted gateway proxies). The
+      // @ai-sdk/gateway package only reads the option, not an env var.
+      ...(process.env.AI_GATEWAY_BASE_URL
+        ? { baseURL: process.env.AI_GATEWAY_BASE_URL }
+        : {}),
     });
   }
   return _gateway;

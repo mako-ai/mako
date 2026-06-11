@@ -20,6 +20,7 @@ import {
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { PostgreSQLDatabaseDriver } from "../postgresql/driver";
+import { listPostgresTableColumns } from "../postgresql/introspection";
 
 // Shared instance — PostgreSQLDatabaseDriver is stateless (no instance-level
 // config or logging context), so a module-level singleton is safe here.
@@ -51,6 +52,14 @@ export class RedshiftDatabaseDriver implements DatabaseDriver {
     // Schema expansion: list tables (same as PostgreSQL)
     if (parent.kind === "schema") {
       return postgresDriver.getChildren(database, parent);
+    }
+    // Redshift has no indexes/triggers, so tables expand straight to columns
+    // instead of the grouped folders the PostgreSQL driver returns.
+    if (parent.kind === "table" || parent.kind === "view") {
+      return listPostgresTableColumns(
+        (query, options) => this.executeQuery(database, query, options),
+        parent,
+      );
     }
     if (parent.kind !== "database") return [];
 

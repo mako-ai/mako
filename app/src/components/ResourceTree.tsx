@@ -163,6 +163,13 @@ export interface ResourceTreeProps {
   enableNewFolder?: boolean;
 
   onItemClick?: (node: ResourceTreeNode) => void;
+  /**
+   * Opt-in: when this returns true for a directory node, clicking the row
+   * (name/icon area) fires `onItemClick` instead of toggling expansion. The
+   * chevron still expands/collapses. Used by the database explorer so
+   * clicking a table name opens its data while the caret browses the schema.
+   */
+  shouldFolderClickActivate?: (node: ResourceTreeNode) => boolean;
   onPickerFileClick?: (node: ResourceTreeNode) => void;
   onLocationChange?: (folderId: string | null, sectionKey: string) => void;
   selectedLocationId?: string | null;
@@ -227,6 +234,7 @@ function ResourceTreeInner(
     enableInfo = false,
     enableNewFolder = true,
     onItemClick,
+    shouldFolderClickActivate,
     onPickerFileClick,
     onLocationChange,
     selectedLocationId,
@@ -992,6 +1000,8 @@ function ResourceTreeInner(
               setFocusedNodeId(node.id);
               if (mode === "picker") {
                 updateLocationSelection(node.id, sectionKey);
+              } else if (shouldFolderClickActivate?.(node)) {
+                onItemClick?.(node);
               } else {
                 const willExpand = !isExpanded;
                 onToggleFolder(getExpansionKey(node));

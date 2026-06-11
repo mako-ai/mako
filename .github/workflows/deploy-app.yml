@@ -178,6 +178,7 @@ jobs:
       LANGFUSE_TRACING_ENVIRONMENT: pr-${{ needs.detect-changes.outputs.pr_number }}
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
       SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
@@ -521,9 +522,9 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=1Gi \
-            --concurrency=4 \
+            --concurrency=80 \
             --min-instances=0 \
-            --max-instances=2 \
+            --max-instances=3 \
             --allow-unauthenticated \
             --network=mako-vpc \
             --subnet=mako-subnet \
@@ -561,6 +562,7 @@ jobs:
             --set-env-vars SYNC_PARQUET_DUCKDB_THREADS=1 \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
+            --set-env-vars REDIS_URL=${REDIS_URL} \
             --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
             --set-env-vars SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL} \
             --set-env-vars SENDGRID_INVITATION_TEMPLATE_ID=${SENDGRID_INVITATION_TEMPLATE_ID} \
@@ -777,6 +779,7 @@ jobs:
       LANGFUSE_TRACING_ENVIRONMENT: production
       RATE_LIMIT_MAX_REQUESTS: ${{ vars.RATE_LIMIT_MAX_REQUESTS }}
       RATE_LIMIT_WINDOW_MS: ${{ vars.RATE_LIMIT_WINDOW_MS }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
       SENDGRID_API_KEY: ${{ secrets.SENDGRID_API_KEY }}
       SENDGRID_FROM_EMAIL: ${{ vars.SENDGRID_FROM_EMAIL }}
       SENDGRID_INVITATION_TEMPLATE_ID: ${{ vars.SENDGRID_INVITATION_TEMPLATE_ID }}
@@ -891,7 +894,7 @@ jobs:
             --region ${GCP_REGION} \
             --timeout=3600 \
             --memory=4Gi \
-            --concurrency=10 \
+            --concurrency=80 \
             --min-instances=1 \
             --max-instances=15 \
             --network=mako-vpc \
@@ -931,6 +934,7 @@ jobs:
             --set-env-vars SYNC_PARQUET_DUCKDB_THREADS=1 \
             --set-env-vars RATE_LIMIT_MAX_REQUESTS=${RATE_LIMIT_MAX_REQUESTS} \
             --set-env-vars RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS} \
+            --set-env-vars REDIS_URL=${REDIS_URL} \
             --set-env-vars SENDGRID_API_KEY=${SENDGRID_API_KEY} \
             --set-env-vars SENDGRID_FROM_EMAIL=${SENDGRID_FROM_EMAIL} \
             --set-env-vars SENDGRID_INVITATION_TEMPLATE_ID=${SENDGRID_INVITATION_TEMPLATE_ID} \

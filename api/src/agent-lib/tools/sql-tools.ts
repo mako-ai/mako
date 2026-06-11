@@ -11,7 +11,6 @@ import { databaseConnectionService } from "../../services/database-connection.se
 import { queryExecutionService } from "../../services/query-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
 import type { ConsoleDataV2 } from "../types";
-import { clientConsoleTools } from "@mako/agent-tools";
 import {
   truncateSamples,
   truncateQueryResults,
@@ -107,7 +106,20 @@ const inspectTableSchema = z.object({
 
 const executeQuerySchema = z.object({
   connectionId: z.string().describe("The connection ID"),
-  database: z.string().describe("The database/dataset name"),
+  // Optional on purpose: a required `database` made models that omitted it
+  // (reasonable for Postgres/MySQL connections with a configured default, or
+  // fully-qualified BigQuery/ClickHouse queries) fail AI SDK input validation
+  // before execute() ever ran — burning a whole step on "Invalid input".
+  database: z
+    .string()
+    .optional()
+    .describe(
+      "The database/dataset name. Optional: defaults to the connection's " +
+        "configured database (Postgres/MySQL/SQLite). For BigQuery and " +
+        "ClickHouse, omit it and fully qualify tables in the query " +
+        "(dataset.table / db.table), or pass the dataset name. " +
+        "For Cloudflare D1, pass the database UUID from sql_list_databases.",
+    ),
   query: z.string().describe("The SQL query to execute"),
 });
 
@@ -847,7 +859,7 @@ async function inspectTableInner(
 // ============================================================================
 async function executeQueryImpl(
   connectionId: string,
-  databaseName: string,
+  requestedDatabase: string | undefined,
   query: string,
   workspaceId: string,
   userId?: string,
@@ -855,21 +867,47 @@ async function executeQueryImpl(
 ) {
   const startTime = Date.now();
 
-  if (!databaseName) {
-    throw new Error("'database' is required");
-  }
   if (typeof query !== "string" || query.trim().length === 0) {
     throw new Error("'query' must be a non-empty string");
   }
 
   const database = await fetchSqlDatabase(connectionId, workspaceId);
   const dialect = getDialect(database.type);
+
+  // Resolve the target database, falling back to the connection's configured
+  // default when the model omits `database`. BigQuery/ClickHouse/MSSQL run
+  // against the connection default with fully-qualified table names, so no
+  // explicit database is needed there.
+  const connection =
+    (database as unknown as { connection?: Record<string, unknown> })
+      .connection ?? {};
+  let databaseName = requestedDatabase?.trim() || undefined;
+  if (!databaseName) {
+    if (dialect === "postgresql" || dialect === "mysql") {
+      databaseName = (connection.database ?? connection.db) as
+        | string
+        | undefined;
+    } else if (dialect === "sqlite") {
+      databaseName = connection.database_id as string | undefined;
+    }
+  }
+  if (
+    !databaseName &&
+    (dialect === "postgresql" || dialect === "mysql" || dialect === "sqlite")
+  ) {
+    throw new Error(
+      "'database' is required for this connection (it has no configured " +
+        "default). Call sql_list_databases with this connectionId and retry " +
+        "with one of the returned names.",
+    );
+  }
+
   const safeQuery = appendLimitIfMissing(query);
 
   let options: Record<string, string> = {};
-  if (dialect === "postgresql" || dialect === "mysql") {
+  if ((dialect === "postgresql" || dialect === "mysql") && databaseName) {
     options = { databaseName };
-  } else if (dialect === "sqlite") {
+  } else if (dialect === "sqlite" && databaseName) {
     options = { databaseId: databaseName };
   }
 
@@ -1001,8 +1039,6 @@ export const createSqlToolsV2 = (
   toolExecutionContext?: AgentToolExecutionContext,
 ) => {
   return {
-    ...clientConsoleTools,
-
     sql_list_connections: tool({
       description:
         "List all SQL database connections (PostgreSQL, MySQL, BigQuery, SQLite, Cloudflare D1) in this workspace. Returns connection ID, name, type, and sqlDialect.",
@@ -1103,7 +1139,7 @@ export const createSqlToolsV2 = (
 
     sql_execute_query: tool({
       description:
-        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
+        "Execute a SQL query and return results. LIMIT 500 is automatically added to SELECT queries if missing. Use sqlDialect from previous tool calls to write correct syntax. The 'database' parameter is optional: when omitted, the query runs against the connection's default database (Postgres/MySQL) — for BigQuery/ClickHouse fully qualify tables (dataset.table) or pass the dataset as 'database'. IMPORTANT for Cloudflare D1: use the UUID from sql_list_databases 'id' field as the database parameter.",
       inputSchema: executeQuerySchema,
       execute: async ({ connectionId, database, query }) => {
         try {

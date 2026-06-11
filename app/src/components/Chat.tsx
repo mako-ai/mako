@@ -68,16 +68,22 @@ import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
+import { useRealtimeStore } from "../store/realtimeStore";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
-import type {
-  ConsoleModification,
-  ConsoleModificationPayload,
-} from "../hooks/useMonacoConsole";
+import type { ConsoleModification } from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
+import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
+import { PlanCard } from "./PlanCard";
+import type {
+  AskClarifyingQuestionsInput,
+  AskClarifyingQuestionsOutput,
+  SubmitPlanInput,
+  SubmitPlanOutput,
+} from "@mako/agent-tools";
 import {
   computeReasoningGroups,
   getStreamingReasoningGroupStart,
@@ -110,6 +116,45 @@ interface ChatSessionMeta {
   title: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Resume pointer set while a turn is generating server-side. */
+  activeStreamId?: string | null;
+}
+
+// ── Per-tab chat session persistence ─────────────────────────────
+// sessionStorage scopes the active chat to the browser tab: a refresh
+// restores (and reattaches to) the same chat, while new tabs start blank.
+
+const CHAT_SESSION_STORAGE_KEY = "mako:active-chat";
+
+interface StoredChatSession {
+  chatId: string;
+  workspaceId: string;
+}
+
+function readStoredChatSession(): StoredChatSession | null {
+  try {
+    const raw = sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredChatSession>;
+    if (
+      typeof parsed.chatId === "string" &&
+      /^[0-9a-fA-F]{24}$/.test(parsed.chatId) &&
+      typeof parsed.workspaceId === "string"
+    ) {
+      return { chatId: parsed.chatId, workspaceId: parsed.workspaceId };
+    }
+  } catch {
+    /* sessionStorage unavailable or corrupted entry */
+  }
+  return null;
+}
+
+function writeStoredChatSession(session: StoredChatSession): void {
+  try {
+    sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    /* ignore storage failures (private mode, quota) */
+  }
 }
 
 // CodeBlock component for syntax highlighting
@@ -825,6 +870,37 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             const key = toolCallId
               ? `tool-${toolCallId}`
               : `tool-idx-${partIndex}`;
+
+            // Interactive plan-lifecycle tools: while pending they render in
+            // the docked panel above the composer (Cursor-style), NOT in the
+            // chat. Once resolved, a read-only summary appears inline here.
+            // Errors fall through to the generic tool card.
+            if (
+              toolName === "ask_clarifying_questions" ||
+              toolName === "submit_plan"
+            ) {
+              if (rawState === "output-available") {
+                if (toolName === "ask_clarifying_questions") {
+                  return (
+                    <ClarifyingQuestionsCard
+                      key={key}
+                      input={part.input as AskClarifyingQuestionsInput}
+                      output={part.output as AskClarifyingQuestionsOutput}
+                    />
+                  );
+                }
+                return (
+                  <PlanCard
+                    key={key}
+                    input={part.input as SubmitPlanInput}
+                    output={part.output as SubmitPlanOutput}
+                  />
+                );
+              }
+              if (rawState !== "output-error") {
+                return null;
+              }
+            }
             return (
               <StreamingToolCard
                 key={key}
@@ -1613,7 +1689,6 @@ ChatInputArea.displayName = "ChatInputArea";
 // DbFlowFormRef is imported from ./DbFlowForm
 
 interface ChatProps {
-  onConsoleModification?: (modification: ConsoleModificationPayload) => void;
   dbFlowFormRef?: React.RefObject<DbFlowFormRef | null>;
   onChartSpecChangeRef?: React.MutableRefObject<
     ((payload: import("./Editor").ChartSpecChangePayload) => void) | undefined
@@ -1632,7 +1707,6 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
 }
 
 const Chat: React.FC<ChatProps> = ({
-  onConsoleModification,
   dbFlowFormRef,
   onChartSpecChangeRef,
   resultsContextRef,
@@ -1671,8 +1745,18 @@ const Chat: React.FC<ChatProps> = ({
   }, [dbTypes, workspaceConnections]);
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
+  // The chat persisted for this tab (if any), read once per mount. Restoring
+  // it means a page refresh reopens — and reattaches to — the same chat.
+  const initialStoredSessionRef = useRef<StoredChatSession | null | undefined>(
+    undefined,
+  );
+  if (initialStoredSessionRef.current === undefined) {
+    initialStoredSessionRef.current = readStoredChatSession();
+  }
   // chatId is a MongoDB ObjectId generated locally - frontend owns the ID (AI SDK best practice)
-  const [chatId, setChatId] = useState<string>(() => generateObjectId());
+  const [chatId, setChatId] = useState<string>(
+    () => initialStoredSessionRef.current?.chatId ?? generateObjectId(),
+  );
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
@@ -1686,15 +1770,19 @@ const Chat: React.FC<ChatProps> = ({
 
   // Track if we're viewing an existing chat from history (vs a new chat)
   // Moved before useChat so onFinish callback can access it
-  const [isExistingChat, setIsExistingChat] = useState(false);
+  // A chat restored from sessionStorage is treated as existing so its
+  // persisted messages are loaded before reattaching to the live stream.
+  const [isExistingChat, setIsExistingChat] = useState(() =>
+    Boolean(initialStoredSessionRef.current),
+  );
 
   // Refs for accessing current values in callbacks (avoids stale closures)
   const isExistingChatRef = useRef(isExistingChat);
   isExistingChatRef.current = isExistingChat;
 
-  // Ref for onConsoleModification to avoid stale closure in onToolCall
-  const onConsoleModificationRef = useRef(onConsoleModification);
-  onConsoleModificationRef.current = onConsoleModification;
+  // NOTE: console tools execute server-side (issue #475); open tabs follow
+  // along via the realtime channel (realtimeStore), so Chat no longer
+  // applies console modifications itself.
 
   // Ref to capture the active console ID at the time the user submits a message
   // This prevents the race condition where user switches consoles while agent is thinking
@@ -1848,6 +1936,11 @@ const Chat: React.FC<ChatProps> = ({
             ) as Record<string, unknown>,
           };
         },
+        // Where `resume: true` reattaches to an in-flight turn (page refresh,
+        // another device/viewer). 204 means nothing is streaming.
+        prepareReconnectToStreamRequest: ({ id }) => ({
+          api: `/api/agent/chat/${id}/stream`,
+        }),
       }),
     [resultsContextRef],
   );
@@ -1867,9 +1960,16 @@ const Chat: React.FC<ChatProps> = ({
     stop,
     setMessages,
     addToolOutput,
+    resumeStream,
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
     transport,
+    // NOTE: we intentionally do NOT use `resume: true`. The hook's resume
+    // effect only fires on mount (its deps are [resume, chatRef] and chatRef
+    // is a stable ref), so it never reattaches when chatId changes (history
+    // selection). Instead `resumeStream()` is called explicitly at the end of
+    // loadSession, which also sequences it after setMessages so the replayed
+    // stream is never clobbered by the persisted-message load.
     experimental_throttle: 50,
 
     // Automatically submit when all tool results are available
@@ -1885,6 +1985,17 @@ const Chat: React.FC<ChatProps> = ({
       const toolName = toolCall.toolName;
       const input = toolCall.input as Record<string, unknown>;
 
+      // Deferred plan-lifecycle tools: do NOT settle here. The interactive
+      // card rendered in the message list resolves them via addToolOutput once
+      // the user answers / approves. Returning without output keeps the tool
+      // call pending (human-in-the-loop) until then.
+      if (
+        toolName === "ask_clarifying_questions" ||
+        toolName === "submit_plan"
+      ) {
+        return;
+      }
+
       try {
         if (
           await executeConsoleAgentTool({
@@ -1894,8 +2005,6 @@ const Chat: React.FC<ChatProps> = ({
             },
             input,
             workspaceId: workspaceIdRef.current,
-            capturedConsoleId: capturedConsoleIdRef.current,
-            onConsoleModification: onConsoleModificationRef.current,
             onChartSpecChange: onChartSpecChangeRef?.current,
             addToolOutput,
             registerActiveClientToolCall,
@@ -2196,6 +2305,11 @@ const Chat: React.FC<ChatProps> = ({
     },
   });
 
+  // Latest resumeStream for use inside effects without dep churn — it is
+  // re-bound to a fresh Chat instance whenever chatId changes.
+  const resumeStreamRef = useRef(resumeStream);
+  resumeStreamRef.current = resumeStream;
+
   const createCancellationOutput = useCallback(
     (toolName: string): Record<string, unknown> => ({
       success: false,
@@ -2295,6 +2409,14 @@ const Chat: React.FC<ChatProps> = ({
     activeClientToolCallsRef.current.clear();
     setActiveClientToolCallCount(0);
     setQueuedPrompts([]);
+    // With resumable streams, disconnecting no longer cancels the turn — the
+    // server keeps generating for reconnecting clients. Stop must be explicit:
+    // this aborts the server-side generation and clears the resume pointer.
+    if (chatIdRef.current) {
+      void fetch(`/api/agent/chat/${chatIdRef.current}/stop`, {
+        method: "POST",
+      }).catch(() => undefined);
+    }
     stop();
   }, [addToolOutput, stop]);
 
@@ -2328,8 +2450,40 @@ const Chat: React.FC<ChatProps> = ({
     fetchSessionsRef.current?.();
   }, [currentWorkspace]);
 
+  // Validate the restored per-tab chat once the workspace resolves: a chat
+  // persisted for a different workspace must not leak into this one.
+  const sessionRestoreCheckedRef = useRef(false);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId || sessionRestoreCheckedRef.current) return;
+    sessionRestoreCheckedRef.current = true;
+    const stored = initialStoredSessionRef.current;
+    if (stored && stored.workspaceId !== workspaceId) {
+      setChatId(generateObjectId());
+      setMessages([]);
+      setIsExistingChat(false);
+    }
+  }, [currentWorkspace?.id, setMessages]);
+
+  // Keep the per-tab session pointer current so a refresh restores this chat.
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    writeStoredChatSession({ chatId, workspaceId });
+    // Register the active chat with the realtime store so chat.ui-intent
+    // events (e.g. the agent opening a console) only act on the chat this
+    // window is actually viewing.
+    useRealtimeStore.getState().setActiveChatId(chatId);
+    return () => {
+      useRealtimeStore.getState().setActiveChatId(null);
+    };
+  }, [chatId, currentWorkspace?.id]);
+
   // Load messages when selecting an existing chat from history
   useEffect(() => {
+    // Flipped when this effect is superseded (chat switched / unmount) so a
+    // slow fetch can't clobber the next chat's state or resume the wrong one.
+    let cancelled = false;
     const loadSession = async () => {
       if (!isExistingChat || !currentWorkspace) {
         return;
@@ -2338,6 +2492,7 @@ const Chat: React.FC<ChatProps> = ({
         const res = await fetch(
           `/api/workspaces/${currentWorkspace.id}/chats/${chatId}`,
         );
+        if (cancelled) return;
         if (res.ok) {
           const data = await res.json();
           // Convert stored messages to AI SDK format with parts including tool calls
@@ -2510,8 +2665,20 @@ const Chat: React.FC<ChatProps> = ({
       } catch {
         /* ignore */
       }
+
+      // Reattach to a still-generating turn AFTER the persisted messages are
+      // in place: the resumable SSE replay only contains this turn's
+      // assistant chunks, so loading first yields the full conversation and
+      // avoids setMessages clobbering an in-flight replay. The server answers
+      // 204 when the chat is idle (or unknown), making this a cheap no-op.
+      if (!cancelled) {
+        void resumeStreamRef.current?.();
+      }
     };
     loadSession();
+    return () => {
+      cancelled = true;
+    };
   }, [chatId, isExistingChat, currentWorkspace, setMessages]);
 
   // Create new chat session - just generate a new ID locally (no API call needed)
@@ -2524,8 +2691,27 @@ const Chat: React.FC<ChatProps> = ({
     setIsExistingChat(false);
   };
 
+  // Live per-chat activity from the realtime channel. The server-fetched
+  // activeStreamId is the initial value (correct on cold open); chat.activity
+  // events keep it current while the menu is open — including turns started
+  // by other windows or continuing server-side after a detach.
+  const chatActivity = useRealtimeStore(s => s.chatActivity);
+  const isSessionStreaming = useCallback(
+    (session: ChatSessionMeta): boolean => {
+      const live = chatActivity[session._id];
+      if (live === "streaming") return true;
+      if (live === "idle") return false;
+      return Boolean(session.activeStreamId);
+    },
+    [chatActivity],
+  );
+
   const handleHistoryMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
     setHistoryMenuAnchor(event.currentTarget);
+    // The list goes stale the moment a new chat starts a turn (the doc is
+    // created server-side at turn start) — refresh it on every open so
+    // in-flight chats appear immediately with their streaming indicator.
+    void fetchSessionsRef.current?.();
   };
 
   const handleHistoryMenuClose = () => {
@@ -2568,6 +2754,49 @@ const Chat: React.FC<ChatProps> = ({
     setSelectedTool(tool);
     setToolDialogOpen(true);
   }, []);
+
+  // Resolve a deferred interactive tool (clarifying questions / plan) with the
+  // user's answer. Stable identity so the docked card doesn't remount.
+  const handleResolveInteractiveTool = useCallback(
+    (args: {
+      tool: string;
+      toolCallId: string;
+      output: Record<string, unknown>;
+    }) => {
+      void addToolOutput({
+        tool: args.tool,
+        toolCallId: args.toolCallId,
+        output: args.output,
+      });
+    },
+    [addToolOutput],
+  );
+
+  // The deferred interactive tool call currently awaiting the user, if any.
+  // Rendered as a docked panel above the composer (Cursor-style) rather than
+  // inline in the chat; the inline summary only appears once resolved.
+  const pendingInteractiveTool = useMemo(() => {
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return null;
+    for (const part of (last.parts ?? []) as Array<Record<string, unknown>>) {
+      const partType = part.type as string | undefined;
+      if (
+        partType !== "tool-ask_clarifying_questions" &&
+        partType !== "tool-submit_plan"
+      ) {
+        continue;
+      }
+      if (part.state !== "input-available") continue;
+      return {
+        toolName: partType.slice("tool-".length) as
+          | "ask_clarifying_questions"
+          | "submit_plan",
+        toolCallId: (part.toolCallId as string) || "",
+        input: part.input,
+      };
+    }
+    return null;
+  }, [messages]);
 
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
@@ -2858,11 +3087,7 @@ const Chat: React.FC<ChatProps> = ({
             <IconButton size="small" onClick={createNewSession}>
               <Plus size={20} />
             </IconButton>
-            <IconButton
-              size="small"
-              onClick={handleHistoryMenuOpen}
-              disabled={sessions.length === 0}
-            >
+            <IconButton size="small" onClick={handleHistoryMenuOpen}>
               <History size={20} />
             </IconButton>
           </Box>
@@ -2882,6 +3107,7 @@ const Chat: React.FC<ChatProps> = ({
           .filter(
             session =>
               session._id === chatId ||
+              isSessionStreaming(session) ||
               (session.title && session.title.length > 0),
           )
           .map(session => (
@@ -2893,7 +3119,23 @@ const Chat: React.FC<ChatProps> = ({
             >
               <Box sx={{ display: "flex", alignItems: "center", flex: 1 }}>
                 <ListItemIcon>
-                  <MessageSquare size={18} />
+                  {isSessionStreaming(session) ? (
+                    // Turn in flight server-side — pulsing indicator instead
+                    // of the static chat icon.
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 18,
+                        height: 18,
+                      }}
+                    >
+                      <Box sx={streamingIndicatorDotSx} />
+                    </Box>
+                  ) : (
+                    <MessageSquare size={18} />
+                  )}
                 </ListItemIcon>
                 <Box>
                   <ListItemText
@@ -3028,6 +3270,42 @@ const Chat: React.FC<ChatProps> = ({
           </IconButton>
         )}
       </Box>
+
+      {/* Pending interactive tool (clarifying questions / plan approval) —
+          docked above the composer like the prompt queue. The chat itself
+          only shows a read-only summary once the user has responded. */}
+      {pendingInteractiveTool && (
+        <Box
+          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          key={pendingInteractiveTool.toolCallId}
+        >
+          {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
+            <ClarifyingQuestionsCard
+              input={
+                pendingInteractiveTool.input as AskClarifyingQuestionsInput
+              }
+              onResolve={output =>
+                handleResolveInteractiveTool({
+                  tool: pendingInteractiveTool.toolName,
+                  toolCallId: pendingInteractiveTool.toolCallId,
+                  output: output as unknown as Record<string, unknown>,
+                })
+              }
+            />
+          ) : (
+            <PlanCard
+              input={pendingInteractiveTool.input as SubmitPlanInput}
+              onResolve={output =>
+                handleResolveInteractiveTool({
+                  tool: pendingInteractiveTool.toolName,
+                  toolCallId: pendingInteractiveTool.toolCallId,
+                  output: output as unknown as Record<string, unknown>,
+                })
+              }
+            />
+          )}
+        </Box>
+      )}
 
       <Collapse
         in={queuedPrompts.length > 0}

@@ -74,6 +74,33 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `STRIPE_WEBHOOK_SECRET`        | Optional    | Stripe webhook signing secret |
 | `STRIPE_PRO_PRICE_ID`          | Optional    | Stripe Price ID for the Pro monthly subscription |
 | `STRIPE_METER_EVENT_NAME`      | Optional    | Stripe meter event name for usage reporting (default: `llm_usage_usd`) |
+| `LANGFUSE_PUBLIC_KEY`          | Optional    | Langfuse LLM observability — public key (tracing is a no-op when unset) |
+| `LANGFUSE_SECRET_KEY`          | Optional    | Langfuse LLM observability — secret key |
+| `LANGFUSE_BASE_URL`            | Optional    | Langfuse region base URL (EU `https://cloud.langfuse.com`, US `https://us.cloud.langfuse.com`) |
+| `LANGFUSE_TRACING_ENVIRONMENT` | Optional    | Trace environment label (defaults to `NODE_ENV`) |
+
+### LLM Observability (Langfuse)
+
+Mako can export traces of its AI calls to [Langfuse](https://langfuse.com) for
+debugging, cost tracking, and quality evaluation. Tracing is **optional and
+off by default** — when the Langfuse keys are unset the bootstrap is a no-op, so
+local and self-hosted deployments run unaffected.
+
+To enable it, set the keys from your Langfuse project (Settings → API Keys):
+
+```env
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+# Region base URL — EU: https://cloud.langfuse.com  US: https://us.cloud.langfuse.com
+LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
+# Optional: override the environment label (defaults to NODE_ENV)
+# LANGFUSE_TRACING_ENVIRONMENT=production
+```
+
+Only Langfuse/GenAI/LLM spans are exported — unrelated HTTP and database spans
+are filtered out and never count toward billable units. A defensive redaction
+pass strips connection strings, bearer tokens, provider API keys, and card
+numbers before any trace leaves the process.
 
 ### Dashboard Artifact Storage
 

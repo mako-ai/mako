@@ -7,6 +7,19 @@
 
 // ==================== Console Endpoints ====================
 
+/** Latest server-side run artifact persisted on a console (agent run_console). */
+export interface ConsoleLastRun {
+  at: string;
+  status: "success" | "error";
+  rowCount?: number;
+  durationMs: number;
+  error?: string;
+  sampleRows?: Record<string, unknown>[];
+  fields?: unknown;
+  runBy: string;
+  source: string;
+}
+
 export interface ConsoleContentResponse {
   success: boolean;
   content: string;
@@ -23,6 +36,12 @@ export interface ConsoleContentResponse {
   access?: "private" | "workspace";
   owner_id?: string;
   readOnly?: boolean;
+  /** Optimistic-concurrency base; echoed back as expectedVersion on save. */
+  version?: number;
+  /** Realtime sync base; echoed back as expectedDraftRevision on autosaves. */
+  draftRevision?: number;
+  /** Latest server-side run artifact (results survive detached sessions). */
+  lastRun?: ConsoleLastRun;
   schedule?: {
     cron: string;
     timezone: string;
@@ -40,10 +59,22 @@ export interface ConsoleContentResponse {
   };
 }
 
+export interface ConsoleVersionConflict {
+  currentVersion: number;
+  content: string;
+  name?: string;
+  updatedAt?: string;
+}
+
 export interface ConsoleSaveResponse {
   success: boolean;
   path?: string;
   error?: string;
+  /** New document version after a successful save. */
+  version?: number;
+  /** New draft revision after a successful save (realtime sync base). */
+  draftRevision?: number;
+  /** Path conflict: a different console already exists at the target path. */
   conflict?: {
     existingId: string;
     existingContent: string;
@@ -51,6 +82,35 @@ export interface ConsoleSaveResponse {
     existingLanguage?: "sql" | "javascript" | "mongodb";
     path: string;
   };
+  /** Concurrent-edit conflict: the console changed since this client loaded it. */
+  versionConflict?: ConsoleVersionConflict;
+  /** Stale draft autosave: the draft changed since this tab last synced. */
+  draftConflict?: {
+    currentDraftRevision: number;
+    content: string;
+    name?: string;
+    updatedAt?: string;
+  };
+}
+
+/** One changed console returned by POST /consoles/revisions-sync. */
+export interface ConsoleRevisionSyncEntry {
+  id: string;
+  draftRevision: number;
+  name?: string;
+  content: string;
+  connectionId?: string;
+  databaseId?: string;
+  databaseName?: string;
+  version?: number;
+  lastRun?: ConsoleLastRun;
+}
+
+export interface ConsoleRevisionsSyncResponse {
+  success: boolean;
+  changed: ConsoleRevisionSyncEntry[];
+  deleted: string[];
+  error?: string;
 }
 
 export interface ConsoleListItem {

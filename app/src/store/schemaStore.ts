@@ -3,6 +3,10 @@ import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { get, set, del } from "idb-keyval";
 import { apiClient } from "../lib/api-client";
+import {
+  isLocalConnectionId,
+  localAgentClient,
+} from "../lib/local-agent-client";
 
 // ============================================================================
 // Types
@@ -21,6 +25,8 @@ export interface Connection {
   lastConnectedAt?: string;
   isClusterMode?: boolean;
   isDemo?: boolean;
+  /** True when served by the Mako Local Agent on this machine. */
+  isLocal?: boolean;
   displayName: string;
   hostKey: string;
   hostName: string;
@@ -109,6 +115,29 @@ function makeNodeKey(node?: { id: string; kind: string }): string {
   return `${node.kind}:${node.id}`;
 }
 
+/**
+ * Local connections registered with the Mako Local Agent. Returns [] when the
+ * agent is not running so cloud connections are unaffected.
+ */
+async function fetchLocalConnections(): Promise<Connection[]> {
+  try {
+    const res = await localAgentClient.get<{
+      success: boolean;
+      data: Connection[];
+    }>("/connections", undefined, { timeoutMs: 2000 });
+    return res.success ? res.data : [];
+  } catch {
+    return [];
+  }
+}
+
+function mergeConnections(
+  cloud: Connection[],
+  local: Connection[],
+): Connection[] {
+  return [...cloud, ...local].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // ============================================================================
 // Store Types
 // ============================================================================
@@ -177,6 +206,7 @@ interface SchemaState {
   testConnection: (
     workspaceId: string,
     payload: { type: string; connection: Record<string, unknown> },
+    options?: { local?: boolean },
   ) => Promise<{ success: boolean; error?: string }>;
   fetchDatabase: (
     workspaceId: string,
@@ -186,6 +216,7 @@ interface SchemaState {
     workspaceId: string,
     payload: Record<string, unknown>,
     databaseId?: string,
+    options?: { local?: boolean },
   ) => Promise<{ success: boolean; data?: unknown; error?: string }>;
   fetchCollections: (
     workspaceId: string,
@@ -207,6 +238,13 @@ interface SchemaState {
     connectionId: string,
     node?: { id: string; kind: string; metadata?: Record<string, unknown> },
   ) => Promise<{ language: string; template: string } | null>;
+
+  // === Table Definition (DDL) ===
+  fetchTableDefinition: (
+    workspaceId: string,
+    connectionId: string,
+    params: { schema: string; table: string; database?: string },
+  ) => Promise<{ definition?: string; error?: string }>;
 
   // === Table Existence Check ===
   checkTableExists: (
@@ -253,14 +291,18 @@ export const useSchemaStore = create<SchemaState>()(
           });
 
           try {
-            const res = await apiClient.get<{
-              success: boolean;
-              data: Connection[];
-            }>(`/workspaces/${workspaceId}/databases`);
+            const [res, localConnections] = await Promise.all([
+              apiClient.get<{
+                success: boolean;
+                data: Connection[];
+              }>(`/workspaces/${workspaceId}/databases`),
+              fetchLocalConnections(),
+            ]);
 
             if (res.success) {
-              const connections = (res.data as Connection[]).sort((a, b) =>
-                a.name.localeCompare(b.name),
+              const connections = mergeConnections(
+                res.data as Connection[],
+                localConnections,
               );
               set(s => {
                 s.connections[workspaceId] = connections;
@@ -295,10 +337,15 @@ export const useSchemaStore = create<SchemaState>()(
           });
 
           try {
-            const res = await apiClient.get<{
-              success: boolean;
-              data: TreeNode[];
-            }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
+            const res = isLocalConnectionId(connectionId)
+              ? await localAgentClient.get<{
+                  success: boolean;
+                  data: TreeNode[];
+                }>(`/connections/${connectionId}/tree`)
+              : await apiClient.get<{
+                  success: boolean;
+                  data: TreeNode[];
+                }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
 
             const data = res.success ? (res.data as TreeNode[]) : [];
             set(s => {
@@ -338,19 +385,26 @@ export const useSchemaStore = create<SchemaState>()(
           });
 
           try {
-            const params = new URLSearchParams();
-            params.set("nodeId", node.id);
-            params.set("kind", node.kind);
+            const params: Record<string, string> = {
+              nodeId: node.id,
+              kind: node.kind,
+            };
             if (node.metadata) {
-              params.set("metadata", JSON.stringify(node.metadata));
+              params.metadata = JSON.stringify(node.metadata);
             }
 
-            const res = await apiClient.get<{
-              success: boolean;
-              data: TreeNode[];
-            }>(
-              `/workspaces/${workspaceId}/databases/${connectionId}/tree?${params.toString()}`,
-            );
+            const res = isLocalConnectionId(connectionId)
+              ? await localAgentClient.get<{
+                  success: boolean;
+                  data: TreeNode[];
+                }>(`/connections/${connectionId}/tree`, params)
+              : await apiClient.get<{
+                  success: boolean;
+                  data: TreeNode[];
+                }>(
+                  `/workspaces/${workspaceId}/databases/${connectionId}/tree`,
+                  params,
+                );
 
             const data = res.success ? (res.data as TreeNode[]) : [];
             set(s => {
@@ -388,12 +442,17 @@ export const useSchemaStore = create<SchemaState>()(
           });
 
           try {
-            const res = await apiClient.get<{
-              success: boolean;
-              data: AutocompleteSchema;
-            }>(
-              `/workspaces/${workspaceId}/databases/${connectionId}/autocomplete`,
-            );
+            const res = isLocalConnectionId(connectionId)
+              ? await localAgentClient.get<{
+                  success: boolean;
+                  data: AutocompleteSchema;
+                }>(`/connections/${connectionId}/autocomplete`)
+              : await apiClient.get<{
+                  success: boolean;
+                  data: AutocompleteSchema;
+                }>(
+                  `/workspaces/${workspaceId}/databases/${connectionId}/autocomplete`,
+                );
 
             if (res.success && res.data) {
               const schema = res.data as AutocompleteSchema;
@@ -427,6 +486,10 @@ export const useSchemaStore = create<SchemaState>()(
         const cacheKey = `${connectionId}:${schemaId}:${tableId}`;
         const cached = get().columns[cacheKey];
         if (cached) return cached;
+
+        // Incremental column fetch is a BigQuery-only cloud path; local
+        // connections preload full schemas via ensureAutocompleteSchema.
+        if (isLocalConnectionId(connectionId)) return [];
 
         return ensureWithDedup(`columns:${cacheKey}`, async () => {
           const key = `columns:${cacheKey}`;
@@ -493,14 +556,18 @@ export const useSchemaStore = create<SchemaState>()(
         });
 
         try {
-          const res = await apiClient.get<{
-            success: boolean;
-            data: Connection[];
-          }>(`/workspaces/${workspaceId}/databases`);
+          const [res, localConnections] = await Promise.all([
+            apiClient.get<{
+              success: boolean;
+              data: Connection[];
+            }>(`/workspaces/${workspaceId}/databases`),
+            fetchLocalConnections(),
+          ]);
 
           if (res.success) {
-            const connections = (res.data as Connection[]).sort((a, b) =>
-              a.name.localeCompare(b.name),
+            const connections = mergeConnections(
+              res.data as Connection[],
+              localConnections,
             );
             set(s => {
               s.connections[workspaceId] = connections;
@@ -536,10 +603,15 @@ export const useSchemaStore = create<SchemaState>()(
         });
 
         try {
-          const res = await apiClient.get<{
-            success: boolean;
-            data: TreeNode[];
-          }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
+          const res = isLocalConnectionId(connectionId)
+            ? await localAgentClient.get<{
+                success: boolean;
+                data: TreeNode[];
+              }>(`/connections/${connectionId}/tree`)
+            : await apiClient.get<{
+                success: boolean;
+                data: TreeNode[];
+              }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
 
           const data = res.success ? (res.data as TreeNode[]) : [];
           set(s => {
@@ -622,9 +694,13 @@ export const useSchemaStore = create<SchemaState>()(
       },
 
       deleteConnection: async (workspaceId: string, connectionId: string) => {
-        const res = await apiClient.delete<{ success: boolean }>(
-          `/workspaces/${workspaceId}/databases/${connectionId}`,
-        );
+        const res = isLocalConnectionId(connectionId)
+          ? await localAgentClient.delete<{ success: boolean }>(
+              `/connections/${connectionId}`,
+            )
+          : await apiClient.delete<{ success: boolean }>(
+              `/workspaces/${workspaceId}/databases/${connectionId}`,
+            );
 
         if (res.success) {
           // Clear cached data for this connection
@@ -643,12 +719,20 @@ export const useSchemaStore = create<SchemaState>()(
         }
       },
 
-      testConnection: async (workspaceId, payload) => {
+      testConnection: async (workspaceId, payload, options) => {
         try {
-          const res = await apiClient.post<{
-            success: boolean;
-            error?: string;
-          }>(`/workspaces/${workspaceId}/databases/test-connection`, payload);
+          const res = options?.local
+            ? await localAgentClient.post<{
+                success: boolean;
+                error?: string;
+              }>("/test-connection", payload)
+            : await apiClient.post<{
+                success: boolean;
+                error?: string;
+              }>(
+                `/workspaces/${workspaceId}/databases/test-connection`,
+                payload,
+              );
           return res;
         } catch (error) {
           return {
@@ -661,10 +745,15 @@ export const useSchemaStore = create<SchemaState>()(
 
       fetchDatabase: async (workspaceId, databaseId) => {
         try {
-          const res = await apiClient.get<{
-            success: boolean;
-            data: unknown;
-          }>(`/workspaces/${workspaceId}/databases/${databaseId}`);
+          const res = isLocalConnectionId(databaseId)
+            ? await localAgentClient.get<{
+                success: boolean;
+                data: unknown;
+              }>(`/connections/${databaseId}`)
+            : await apiClient.get<{
+                success: boolean;
+                data: unknown;
+              }>(`/workspaces/${workspaceId}/databases/${databaseId}`);
 
           return res.success ? res.data : null;
         } catch (error) {
@@ -673,19 +762,40 @@ export const useSchemaStore = create<SchemaState>()(
         }
       },
 
-      saveDatabase: async (workspaceId, payload, databaseId) => {
+      saveDatabase: async (workspaceId, payload, databaseId, options) => {
         try {
-          const res = databaseId
-            ? await apiClient.put<{
-                success: boolean;
-                data: unknown;
-                error?: string;
-              }>(`/workspaces/${workspaceId}/databases/${databaseId}`, payload)
-            : await apiClient.post<{
-                success: boolean;
-                data: unknown;
-                error?: string;
-              }>(`/workspaces/${workspaceId}/databases`, payload);
+          const isLocalTarget =
+            options?.local || isLocalConnectionId(databaseId);
+
+          let res: { success: boolean; data?: unknown; error?: string };
+          if (isLocalTarget) {
+            res = databaseId
+              ? await localAgentClient.put<{
+                  success: boolean;
+                  data: unknown;
+                  error?: string;
+                }>(`/connections/${databaseId}`, payload)
+              : await localAgentClient.post<{
+                  success: boolean;
+                  data: unknown;
+                  error?: string;
+                }>("/connections", payload);
+          } else {
+            res = databaseId
+              ? await apiClient.put<{
+                  success: boolean;
+                  data: unknown;
+                  error?: string;
+                }>(
+                  `/workspaces/${workspaceId}/databases/${databaseId}`,
+                  payload,
+                )
+              : await apiClient.post<{
+                  success: boolean;
+                  data: unknown;
+                  error?: string;
+                }>(`/workspaces/${workspaceId}/databases`, payload);
+          }
 
           if (res.success) {
             await get().refreshConnections(workspaceId);
@@ -704,6 +814,9 @@ export const useSchemaStore = create<SchemaState>()(
       },
 
       fetchCollections: async (workspaceId, connectionId) => {
+        // Local-agent connections expose collections through the schema tree
+        // only; the flat collections endpoint is not implemented yet.
+        if (isLocalConnectionId(connectionId)) return [];
         const res = await apiClient.get<{
           success: boolean;
           data: DatabaseCollectionInfo[];
@@ -722,6 +835,11 @@ export const useSchemaStore = create<SchemaState>()(
         connectionId,
         collectionName,
       ) => {
+        if (isLocalConnectionId(connectionId)) {
+          throw new Error(
+            "Collection details are not supported for local connections yet",
+          );
+        }
         const res = await apiClient.get<{
           success: boolean;
           data: unknown;
@@ -740,6 +858,7 @@ export const useSchemaStore = create<SchemaState>()(
       },
 
       fetchViews: async (workspaceId, connectionId) => {
+        if (isLocalConnectionId(connectionId)) return [];
         const res = await apiClient.get<{
           success: boolean;
           data: DatabaseViewInfo[];
@@ -768,13 +887,18 @@ export const useSchemaStore = create<SchemaState>()(
             }
           }
 
-          const res = await apiClient.get<{
-            success: boolean;
-            data: { language: string; template: string };
-          }>(
-            `/workspaces/${workspaceId}/databases/${connectionId}/console-template`,
-            params,
-          );
+          const res = isLocalConnectionId(connectionId)
+            ? await localAgentClient.get<{
+                success: boolean;
+                data: { language: string; template: string };
+              }>(`/connections/${connectionId}/console-template`, params)
+            : await apiClient.get<{
+                success: boolean;
+                data: { language: string; template: string };
+              }>(
+                `/workspaces/${workspaceId}/databases/${connectionId}/console-template`,
+                params,
+              );
 
           if (res.success) {
             return res.data as { language: string; template: string };
@@ -785,12 +909,61 @@ export const useSchemaStore = create<SchemaState>()(
         return null;
       },
 
+      fetchTableDefinition: async (
+        workspaceId: string,
+        connectionId: string,
+        params: { schema: string; table: string; database?: string },
+      ) => {
+        try {
+          const query: Record<string, string> = {
+            schema: params.schema,
+            table: params.table,
+          };
+          if (params.database) query.database = params.database;
+
+          const res = isLocalConnectionId(connectionId)
+            ? await localAgentClient.get<{
+                success: boolean;
+                data?: { definition: string };
+                error?: string;
+              }>(`/connections/${connectionId}/table-definition`, query)
+            : await apiClient.get<{
+                success: boolean;
+                data?: { definition: string };
+                error?: string;
+              }>(
+                `/workspaces/${workspaceId}/databases/${connectionId}/table-definition`,
+                query,
+              );
+
+          if (res.success && res.data?.definition) {
+            return { definition: res.data.definition };
+          }
+          return { error: res.error || "Failed to fetch table definition" };
+        } catch (error) {
+          return {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to fetch table definition",
+          };
+        }
+      },
+
       checkTableExists: async (
         workspaceId: string,
         connectionId: string,
         tableName: string,
         options?: { schema?: string; database?: string },
       ) => {
+        if (isLocalConnectionId(connectionId)) {
+          return {
+            exists: false,
+            columns: [],
+            supported: false,
+            error: "Table checks are not supported for local connections yet",
+          };
+        }
         try {
           const params: Record<string, string> = { tableName };
           if (options?.schema) params.schema = options.schema;
@@ -841,7 +1014,10 @@ export const useSchemaStore = create<SchemaState>()(
     })),
     {
       name: "mako-schema-store",
-      version: 1,
+      // v3: Postgres tables now expand to grouped folders (columns / keys /
+      // indexes / triggers) instead of a flat column list; discard older
+      // cached trees so stale children don't linger.
+      version: 3,
       storage: createJSONStorage(() => indexedDBStorage),
       partialize: state => ({
         // Only persist the data, not loading/error states

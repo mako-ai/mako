@@ -110,6 +110,21 @@ Key capabilities:
 
 The agent handles edit-mode locking, so concurrent users cannot conflict.
 
+## Visual Inspection
+
+The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
+
+| Target | Captures |
+|--------|----------|
+| `active_dashboard` | The current dashboard — for visual QA of layout and charts |
+| `active_tab` | The current main tab |
+| `app_shell` | The full Mako app UI |
+| `widget` | A specific dashboard widget |
+| `viewport` | The current visible page |
+| `selector` | A specific element matched by a CSS selector |
+
+This lets the agent verify dashboard rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
+
 ## AI Models
 
 Mako routes all AI requests through the **Vercel AI Gateway**, which provides access to 180+ models across Anthropic, OpenAI, Google, DeepSeek, and others. Only `AI_GATEWAY_API_KEY` is required — no individual provider API keys needed.

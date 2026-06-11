@@ -120,6 +120,12 @@ SENDGRID_VERIFICATION_TEMPLATE_ID=d-xxxxxxxxx
 # Inngest (optional)
 INNGEST_EVENT_KEY=your_inngest_event_key
 INNGEST_SIGNING_KEY=your_inngest_signing_key
+
+# Redis (optional — resumable chat streams)
+# Unset: in-process stream buffer (local dev / single API instance).
+# Set when running multiple API instances so chat stream resume
+# (GET /api/agent/chat/:chatId/stream) works across instances.
+REDIS_URL=redis://localhost:6379
 ```
 
 ## Technology Stack

@@ -7,8 +7,8 @@ import {
 import { DatabaseConnection } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
-import { DatabaseDriver } from "../databases/driver";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { buildConsoleTemplate } from "../databases/console-template";
 import { loggers } from "../logging";
 
 export const databaseTreeRoutes = new Hono();
@@ -205,9 +205,7 @@ databaseTreeRoutes.get(
       return c.json({ success: false, error: "Database not found" }, 404);
     }
 
-    const driver = databaseRegistry.getDriver(database.type) as
-      | (DatabaseDriver & { getMetadata: () => { consoleLanguage?: string } })
-      | undefined;
+    const driver = databaseRegistry.getDriver(database.type);
     if (!driver) {
       return c.json({ success: false, error: "Driver not found" }, 404);
     }
@@ -218,54 +216,97 @@ databaseTreeRoutes.get(
     const metadataRaw = c.req.query("metadata");
     const metadata = metadataRaw ? JSON.parse(String(metadataRaw)) : undefined;
 
-    const dbType = database.type;
-    const language =
-      (driver.getMetadata().consoleLanguage as string) ||
-      (dbType === "mongodb" ? "mongodb" : "sql");
+    const data = buildConsoleTemplate(database, {
+      id: nodeId ? String(nodeId) : undefined,
+      kind: nodeKind ? String(nodeKind) : undefined,
+      metadata,
+    });
 
-    // Derive sensible default template by DB type and node info
-    let template = "";
-    if (dbType === "mongodb") {
-      const collectionName =
-        nodeId && String(nodeKind) === "collection"
-          ? String(nodeId)
-          : "collection";
-      template = `db.getCollection("${collectionName}").find({}).limit(500)`;
-    } else if (dbType === "bigquery") {
-      const projectId = (database.connection as any)?.project_id || "project";
-      const dataset =
-        metadata?.datasetId ||
-        (typeof nodeId === "string" && nodeId.includes(".")
-          ? nodeId.split(".")[0]
-          : "dataset");
-      const table =
-        typeof nodeId === "string" && nodeId.includes(".")
-          ? nodeId.split(".")[1]
-          : nodeId || "table_name";
-      template = `SELECT * FROM \`${projectId}.${dataset}.${table}\` LIMIT 500;`;
-    } else if (dbType === "cloudflare-d1") {
-      // D1 is SQLite-based
-      const table =
-        metadata?.table ||
-        (typeof nodeId === "string" && nodeId.includes(".")
-          ? nodeId.split(".")[1]
-          : nodeId || "table_name");
-      template = `SELECT * FROM ${table} LIMIT 500;`;
-    } else if (dbType === "cloudflare-kv") {
-      // KV uses JavaScript-like syntax mirroring Cloudflare Workers API
-      template = "kv.list({ limit: 100 })";
-    } else if (dbType === "clickhouse") {
-      // ClickHouse uses database.table format
-      const dbName = metadata?.databaseName || "default";
-      const table = metadata?.tableName || nodeId || "table_name";
-      template = `SELECT * FROM "${dbName}"."${table}" LIMIT 500;`;
-    } else {
-      // Fallback SQL-like template
-      const table = nodeId || "table_name";
-      template = `SELECT * FROM ${table} LIMIT 500;`;
+    return c.json({ success: true, data });
+  },
+);
+
+// GET /api/workspaces/:workspaceId/databases/:id/table-definition
+// Full SQL definition script (DDL, comments, indexes, triggers) for one
+// table or view. Currently Postgres-family only.
+databaseTreeRoutes.get(
+  "/:id/table-definition",
+  unifiedAuthMiddleware,
+  requireWorkspace,
+  async (c: AuthenticatedContext) => {
+    const log = loggers.api("database-tree");
+    const workspace = c.get("workspace");
+    const databaseId = c.req.param("id");
+    if (!Types.ObjectId.isValid(databaseId)) {
+      return c.json({ success: false, error: "Invalid database ID" }, 400);
     }
 
-    return c.json({ success: true, data: { language, template } });
+    const table = c.req.query("table");
+    if (!table) {
+      return c.json({ success: false, error: "table is required" }, 400);
+    }
+    const schema = String(c.req.query("schema") || "public");
+    const databaseName = c.req.query("database");
+
+    const database = await DatabaseConnection.findOne({
+      _id: new Types.ObjectId(databaseId),
+      workspaceId: workspace._id,
+    });
+    if (!database) {
+      return c.json({ success: false, error: "Database not found" }, 404);
+    }
+
+    const driver = databaseRegistry.getDriver(database.type);
+    if (!driver) {
+      return c.json({ success: false, error: "Driver not found" }, 404);
+    }
+    if (!driver.getTableDefinition) {
+      return c.json(
+        {
+          success: false,
+          error: `Table definition not supported for ${database.type}`,
+        },
+        400,
+      );
+    }
+
+    try {
+      const result = await driver.getTableDefinition(database as any, {
+        schema,
+        table: String(table),
+        databaseName: databaseName ? String(databaseName) : undefined,
+      });
+      if (!result.success) {
+        return c.json(
+          {
+            success: false,
+            error: result.error || "Failed to fetch table definition",
+          },
+          500,
+        );
+      }
+      return c.json({
+        success: true,
+        data: { definition: result.definition },
+      });
+    } catch (error) {
+      log.error("Error fetching table definition", {
+        error,
+        schema,
+        table,
+        databaseType: database.type,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to fetch table definition",
+        },
+        500,
+      );
+    }
   },
 );
 

@@ -240,6 +240,26 @@ class AuthClient {
   }
 
   /**
+   * Mint a one-time desktop auth code bound to a PKCE challenge.
+   * Called from the /desktop-auth handoff page in the system browser;
+   * the code is then delivered to the desktop app via mako://auth?code=...
+   */
+  async createDesktopAuthCode(
+    challenge: string,
+  ): Promise<{ code: string; expiresIn: number }> {
+    const response = await fetch(this.buildUrl("/auth/desktop/code"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include",
+      body: JSON.stringify({ challenge }),
+    });
+
+    return this.handleResponse<{ code: string; expiresIn: number }>(response);
+  }
+
+  /**
    * Request password reset
    */
   async requestPasswordReset(email: string): Promise<void> {

@@ -1,0 +1,162 @@
+name: Desktop CI
+
+# Runs on PRs that touch desktop-related code:
+# - smoke-build: fast agent bundle + health probe + unpacked package (linux).
+# - package: full unsigned installers for macOS/Windows/Linux, uploaded as
+#   workflow artifacts so the build can be downloaded and tried from the PR
+#   (Actions run page -> Artifacts). Releases still only happen from master
+#   via release-desktop.yml.
+
+on:
+  pull_request:
+    paths:
+      - "packages/desktop/**"
+      - "packages/local-agent/**"
+      - "api/src/databases/**"
+      - "api/src/services/database-connection.service.ts"
+      - "api/src/services/ssh-tunnel.service.ts"
+      - "api/src/services/query-pagination.service.ts"
+      - ".github/workflows/desktop-ci.yml"
+      - ".github/workflows/release-desktop.yml"
+
+jobs:
+  smoke-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck agent and desktop
+        run: |
+          pnpm --filter @mako/local-agent typecheck
+          pnpm --filter @mako/desktop typecheck
+
+      - name: Bundle Mako Local Agent
+        run: pnpm --filter @mako/local-agent build
+
+      - name: Smoke test agent bundle
+        run: |
+          MAKO_AGENT_PORT=41799 node packages/local-agent/dist/index.js &
+          AGENT_PID=$!
+          sleep 3
+          curl --fail --silent http://127.0.0.1:41799/health
+          kill $AGENT_PID
+
+      - name: Package desktop app (unpacked)
+        working-directory: packages/desktop
+        run: |
+          pnpm run build
+          npx electron-builder --config electron-builder.yml --dir
+          test -f release/linux-unpacked/resources/agent/index.js
+
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mac-arm64
+            os: macos-latest
+            args: --mac dmg --arm64
+          - name: mac-x64
+            os: macos-latest
+            args: --mac dmg --x64
+          - name: win-x64
+            os: windows-latest
+            args: --win
+          - name: linux-x64
+            os: ubuntu-latest
+            args: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bundle Mako Local Agent
+        run: pnpm --filter @mako/local-agent build
+
+      - name: Build desktop main process
+        run: pnpm --filter @mako/desktop build
+
+      # No signing certificates on CI: electron-builder falls back to ad-hoc
+      # signing on macOS (required for arm64 binaries to be loadable at all).
+      # CSC_FOR_PULL_REQUEST is needed because electron-builder otherwise
+      # skips signing entirely for pull_request builds.
+      - name: Package desktop app
+        working-directory: packages/desktop
+        env:
+          CSC_FOR_PULL_REQUEST: "true"
+        run: npx electron-builder --config electron-builder.yml ${{ matrix.args }}
+
+      # One installer per artifact (~100MB each). Note: GitHub always wraps
+      # artifact downloads in a zip; for raw installer files, use the
+      # desktop-canary prerelease updated by the canary job below.
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: mako-desktop-${{ matrix.name }}
+          path: |
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+  # Publishes the PR builds to a rolling "desktop-canary" prerelease so the
+  # raw installers (.dmg/.exe/.AppImage, no zip wrapper) can be downloaded
+  # directly. Marked prerelease so it never becomes the "latest" release that
+  # the website's evergreen links point to.
+  canary:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Update desktop-canary prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Rolling canary build from ${GITHUB_SHA} (PR run ${GITHUB_RUN_ID}). Unsigned/ad-hoc signed — on macOS use: xattr -dr com.apple.quarantine /Applications/Mako.app"
+          if ! gh release view desktop-canary --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create desktop-canary \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --title "Mako Desktop Canary" \
+              --notes "$NOTES"
+          else
+            gh release edit desktop-canary --repo "$GITHUB_REPOSITORY" --notes "$NOTES"
+          fi
+          gh release upload desktop-canary dist/* --repo "$GITHUB_REPOSITORY" --clobber

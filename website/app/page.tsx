@@ -86,6 +86,12 @@ export default function Home() {
                 Guides
               </Link>
               <Link
+                href="/download"
+                className="hover:text-zinc-900 dark:hover:text-white transition-colors"
+              >
+                Download
+              </Link>
+              <Link
                 href="https://docs.mako.ai"
                 className="hover:text-zinc-900 dark:hover:text-white transition-colors"
               >
