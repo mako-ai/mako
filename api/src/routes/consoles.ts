@@ -47,6 +47,7 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { buildConsoleWriteGuard } from "../services/console-save-guards";
 
 /**
  * Map console language to query language for tracking
@@ -915,9 +916,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         body.expectedVersion >= 1
           ? (body.expectedVersion as number)
           : undefined;
-      const useVersionGuard =
-        expectedVersion !== undefined && existingById !== null;
-
       // Realtime sync (issue #475): `clientId` identifies the writing tab
       // (or `agent:<chatId>`) so subscribers can suppress their own echoes;
       // `expectedDraftRevision` makes draft auto-saves revision-checked so a
@@ -955,31 +953,15 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // them: `version` catches concurrent explicit saves, `draftRevision`
       // catches everything else that moves the draft (agent modify_console,
       // another tab's autosave) — without it a stale window's Cmd+S passes
-      // the version guard and silently reverts those edits.
-      const useDraftGuardOnSave =
-        expectedDraftRevision !== undefined && existingById !== null;
-      // The guards are applied atomically in the update filter (not as a
-      // read-then-write check). With any guard active we must not upsert:
-      // a mismatch would otherwise insert a duplicate document.
-      const guardedFilter: Record<string, unknown> = {
-        ...idFilter,
-        // Legacy documents predating the counters count as 1.
-        ...(useVersionGuard
-          ? {
-              version:
-                expectedVersion === 1 ? { $in: [1, null] } : expectedVersion,
-            }
-          : {}),
-        ...(useDraftGuardOnSave
-          ? {
-              draftRevision:
-                expectedDraftRevision === 1
-                  ? { $in: [1, null] }
-                  : expectedDraftRevision,
-            }
-          : {}),
-      };
-      const saveGuardActive = useVersionGuard || useDraftGuardOnSave;
+      // the version guard and silently reverts those edits. See
+      // console-save-guards.ts for the atomic-filter / no-upsert semantics.
+      const { filter: guardedFilter, guardActive: saveGuardActive } =
+        buildConsoleWriteGuard({
+          baseFilter: idFilter,
+          docExists: existingById !== null,
+          expectedVersion,
+          expectedDraftRevision,
+        });
       const versionConflictResponse = async () => {
         const current = await SavedConsole.findOne(idFilter);
         return c.json(
@@ -1264,20 +1246,14 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         setOnInsertFields.name = "Untitled";
       }
 
-      const useDraftGuard =
-        expectedDraftRevision !== undefined && existingById !== null;
-      // Applied atomically in the update filter. With the guard active we
-      // must not upsert: a revision mismatch would insert a duplicate doc.
-      const draftFilter: Record<string, unknown> = useDraftGuard
-        ? {
-            ...idFilter,
-            // Legacy documents predating the field count as revision 1.
-            draftRevision:
-              expectedDraftRevision === 1
-                ? { $in: [1, null] }
-                : expectedDraftRevision,
-          }
-        : idFilter;
+      const { filter: draftFilter, guardActive: useDraftGuard } =
+        buildConsoleWriteGuard({
+          baseFilter: idFilter,
+          docExists: existingById !== null,
+          // Draft autosaves are deliberately NOT version-guarded (that
+          // counter belongs to explicit saves).
+          expectedDraftRevision,
+        });
 
       const result = await SavedConsole.findOneAndUpdate(
         draftFilter,

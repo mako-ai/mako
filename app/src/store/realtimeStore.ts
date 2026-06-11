@@ -18,6 +18,7 @@ import { apiClient } from "../lib/api-client";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import { useConsoleStore, hasUnsavedLocalEdits } from "./consoleStore";
+import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
 
@@ -442,26 +443,37 @@ export const useRealtimeStore = create<RealtimeStore>()(
           const store = useConsoleStore.getState();
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
-            if (!tab) continue;
-            if ((tab.draftRevision ?? 0) >= entry.draftRevision) continue;
-            if (tab.content === entry.content) {
-              // Server content already matches this tab (echoed write from
-              // another tab, run-artifact revision bump, …). Fast-forward
-              // revision/metadata WITHOUT touching the Monaco buffer — it
-              // may be ahead by keystrokes that haven't autosaved yet.
-              store.fastForwardRemoteConsoleEntry(entry);
-            } else if (hasUnsavedLocalEdits(entry.id)) {
-              // Remote update while this tab holds unsaved local edits
-              // (recent keystrokes, queued/blocked autosave, or an unsaved
-              // explicit-save delta). Never merge silently — surface the
-              // affordance; revision-checked writes backstop the rest.
-              store.setRemoteUpdate(entry.id, {
-                draftRevision: entry.draftRevision,
-                updatedBy: lastUpdatedByConsole.get(entry.id),
-                kind: "updated",
-              });
-            } else {
-              store.applyRemoteConsoleEntry(entry);
+            const decision = decideRemoteApply({
+              tabExists: Boolean(tab),
+              tabRevision: tab?.draftRevision,
+              entryRevision: entry.draftRevision,
+              contentMatches: tab?.content === entry.content,
+              unsavedLocalEdits: hasUnsavedLocalEdits(entry.id),
+            });
+            switch (decision) {
+              case "skip":
+                break;
+              case "fast-forward":
+                // Server content already matches this tab (echoed write from
+                // another tab, run-artifact revision bump, …). Fast-forward
+                // revision/metadata WITHOUT touching the Monaco buffer — it
+                // may be ahead by keystrokes that haven't autosaved yet.
+                store.fastForwardRemoteConsoleEntry(entry);
+                break;
+              case "banner":
+                // Remote update while this tab holds unsaved local edits
+                // (recent keystrokes, queued/blocked autosave, or an unsaved
+                // explicit-save delta). Never merge silently — surface the
+                // affordance; revision-checked writes backstop the rest.
+                store.setRemoteUpdate(entry.id, {
+                  draftRevision: entry.draftRevision,
+                  updatedBy: lastUpdatedByConsole.get(entry.id),
+                  kind: "updated",
+                });
+                break;
+              case "apply":
+                store.applyRemoteConsoleEntry(entry);
+                break;
             }
           }
           for (const deletedId of res.deleted) {
