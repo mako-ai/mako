@@ -61,6 +61,11 @@ export interface ConsoleContentResponse {
 
 export interface ConsoleVersionConflict {
   currentVersion: number;
+  /**
+   * Draft-revision base at conflict time. A retried "overwrite with mine"
+   * must fast-forward to BOTH bases to pass the explicit save's dual guard.
+   */
+  currentDraftRevision?: number;
   content: string;
   name?: string;
   updatedAt?: string;

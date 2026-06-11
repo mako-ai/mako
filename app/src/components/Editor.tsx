@@ -1859,9 +1859,14 @@ function Editor({
   const handleVersionConflictOverwrite = async () => {
     if (!pendingSaveData || !versionConflictData) return;
     const { tabId, content, path, comment } = pendingSaveData;
-    // Fast-forward to the server's version so the retried save passes the
-    // guard (unless someone saves yet again in the meantime).
+    // Fast-forward to the server's bases so the retried save passes BOTH
+    // guards (unless someone saves yet again in the meantime).
     updateVersion(tabId, versionConflictData.currentVersion);
+    if (typeof versionConflictData.currentDraftRevision === "number") {
+      useConsoleStore
+        .getState()
+        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
+    }
     setVersionConflictData(null);
     const success = await executeConsoleSave(
       tabId,
@@ -1886,6 +1891,11 @@ function Editor({
     });
     updateContent(tabId, serverContent);
     updateVersion(tabId, versionConflictData.currentVersion);
+    if (typeof versionConflictData.currentDraftRevision === "number") {
+      useConsoleStore
+        .getState()
+        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
+    }
     const currentTab = tabs[tabId];
     const newHash = computeConsoleStateHash(
       serverContent,

@@ -951,17 +951,35 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         _id: new Types.ObjectId(pathOrId),
         workspaceId: new Types.ObjectId(workspaceId),
       };
-      // The guard is applied atomically in the update filter (not as a
-      // read-then-write check). With the guard active we must not upsert:
-      // a version mismatch would otherwise insert a duplicate document.
-      const guardedFilter: Record<string, unknown> = useVersionGuard
-        ? {
-            ...idFilter,
-            // Legacy documents predating the version field count as version 1.
-            version:
-              expectedVersion === 1 ? { $in: [1, null] } : expectedVersion,
-          }
-        : idFilter;
+      // Explicit saves are guarded on BOTH counters when the client sent
+      // them: `version` catches concurrent explicit saves, `draftRevision`
+      // catches everything else that moves the draft (agent modify_console,
+      // another tab's autosave) — without it a stale window's Cmd+S passes
+      // the version guard and silently reverts those edits.
+      const useDraftGuardOnSave =
+        expectedDraftRevision !== undefined && existingById !== null;
+      // The guards are applied atomically in the update filter (not as a
+      // read-then-write check). With any guard active we must not upsert:
+      // a mismatch would otherwise insert a duplicate document.
+      const guardedFilter: Record<string, unknown> = {
+        ...idFilter,
+        // Legacy documents predating the counters count as 1.
+        ...(useVersionGuard
+          ? {
+              version:
+                expectedVersion === 1 ? { $in: [1, null] } : expectedVersion,
+            }
+          : {}),
+        ...(useDraftGuardOnSave
+          ? {
+              draftRevision:
+                expectedDraftRevision === 1
+                  ? { $in: [1, null] }
+                  : expectedDraftRevision,
+            }
+          : {}),
+      };
+      const saveGuardActive = useVersionGuard || useDraftGuardOnSave;
       const versionConflictResponse = async () => {
         const current = await SavedConsole.findOne(idFilter);
         return c.json(
@@ -970,6 +988,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             error: "version_conflict",
             versionConflict: {
               currentVersion: current?.version ?? 1,
+              // Both bases are needed to retry an "Overwrite with mine":
+              // the retried save must pass BOTH guards.
+              currentDraftRevision: current?.draftRevision ?? 1,
               content: current?.code ?? "",
               name: current?.name,
               updatedAt: current?.updatedAt,
@@ -1061,7 +1082,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: !useVersionGuard, new: true },
+          { upsert: !saveGuardActive, new: true },
         );
         if (!result) {
           return versionConflictResponse();
@@ -1146,7 +1167,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: !useVersionGuard, new: true },
+          { upsert: !saveGuardActive, new: true },
         );
         if (!result) {
           return versionConflictResponse();

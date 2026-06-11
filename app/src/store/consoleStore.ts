@@ -1058,8 +1058,11 @@ export const useConsoleStore = create<ConsoleStore>()(
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
           // Optimistic concurrency: send the version this tab was loaded
           // from so the server rejects (409) instead of overwriting a
-          // concurrent save by someone else.
+          // concurrent save by someone else. The draft revision rides along
+          // so a stale window cannot silently revert agent edits / other
+          // tabs' autosaves (those bump draftRevision but not version).
           const expectedVersion = get().tabs[tabId]?.version;
+          const expectedDraftRevision = get().tabs[tabId]?.draftRevision;
           const response = await fetch(
             `/api/workspaces/${workspaceId}/consoles/${tabId}`,
             {
@@ -1080,6 +1083,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 isPrivate:
                   access === undefined ? undefined : access === "private",
                 expectedVersion,
+                expectedDraftRevision,
                 // Realtime sync: identifies this tab so its own
                 // console.updated poke is suppressed.
                 clientId: realtimeClientId,
