@@ -11,7 +11,7 @@
  */
 
 /** Dynamic expertise modes the model can enable via `enable_mode`. */
-export type ExpertiseModeId = "sql" | "dashboard" | "flow" | "explore";
+export type ExpertiseModeId = "sql" | "dashboard" | "flow" | "app" | "explore";
 
 /**
  * A registered expertise mode. Modes reference tools *by name* — the actual

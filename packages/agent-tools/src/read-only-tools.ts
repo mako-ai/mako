@@ -38,10 +38,16 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   // Dashboard reads / previews
   "list_open_dashboards",
   "get_dashboard_state",
-  "preview_data_source",
-  "get_data_preview",
   "get_chart_templates",
   "get_chart_template",
+  // App reads
+  "list_open_apps",
+  "get_app_state",
+  "app_read_file",
+  // Surface-scoped data-source reads (apps + dashboards, local DuckDB only)
+  "list_data_sources",
+  "inspect_data_source",
+  "query_duckdb",
   // Visual inspection (no mutation)
   "capture_screenshot",
   // Search

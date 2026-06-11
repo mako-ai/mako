@@ -3568,6 +3568,179 @@ export const Dashboard = mongoose.model<IDashboard>(
 );
 
 /**
+ * MakoApp — a workspace-scoped React app (Lovable / v0 style) that runs inside
+ * Mako with first-class access to workspace database connections via data
+ * bindings. The app body is a virtual filesystem (`files`) + npm dependency
+ * manifest (`dependencies`) + `dataBindings`. See `@mako/schemas` AppDefinition.
+ */
+export interface IMakoAppFile {
+  path: string;
+  contents: string;
+}
+
+export interface IMakoAppBindingMaterializationRun {
+  at: Date;
+  status: "ready" | "error";
+  rowCount?: number;
+  byteSize?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface IMakoAppBindingCache {
+  parquetArtifactKey?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
+  parquetBuildStatus?:
+    | "missing"
+    | "queued"
+    | "building"
+    | "ready"
+    | "error"
+    | null;
+  parquetLastError?: string | null;
+  rowCount?: number;
+  byteSize?: number;
+  lastRefreshedAt?: Date;
+  parquetBuiltAt?: Date;
+  history?: IMakoAppBindingMaterializationRun[];
+}
+
+export interface IMakoAppDataBinding {
+  id: string;
+  name: string;
+  connectionId: string;
+  language: "sql" | "javascript" | "mongodb";
+  code: string;
+  databaseId?: string;
+  databaseName?: string;
+  materialization: "live" | "parquet";
+  cache?: IMakoAppBindingCache;
+}
+
+export interface IMakoApp extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  description?: string;
+  template: string;
+  runtime: "cdn" | "webcontainer";
+  entrypoint: string;
+  files: IMakoAppFile[];
+  dependencies: Record<string, string>;
+  dataBindings: IMakoAppDataBinding[];
+  version: number;
+  access: "private" | "workspace";
+  owner_id?: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MakoAppFileSchema = new Schema<IMakoAppFile>(
+  {
+    path: { type: String, required: true },
+    contents: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const MakoAppBindingMaterializationRunSchema =
+  new Schema<IMakoAppBindingMaterializationRun>(
+    {
+      at: { type: Date, required: true },
+      status: { type: String, enum: ["ready", "error"], required: true },
+      rowCount: { type: Number },
+      byteSize: { type: Number },
+      durationMs: { type: Number },
+      error: { type: String },
+    },
+    { _id: false },
+  );
+
+const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
+  {
+    parquetArtifactKey: { type: String },
+    definitionHash: { type: String },
+    artifactRevision: { type: String },
+    parquetBuildStatus: {
+      type: String,
+      enum: ["missing", "queued", "building", "ready", "error", null],
+      default: null,
+    },
+    parquetLastError: { type: String, default: null },
+    rowCount: { type: Number },
+    byteSize: { type: Number },
+    lastRefreshedAt: { type: Date },
+    parquetBuiltAt: { type: Date },
+    history: {
+      type: [MakoAppBindingMaterializationRunSchema],
+      default: undefined,
+    },
+  },
+  { _id: false },
+);
+
+const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
+  {
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    connectionId: { type: String, required: true },
+    language: {
+      type: String,
+      enum: ["sql", "javascript", "mongodb"],
+      default: "sql",
+    },
+    code: { type: String, default: "" },
+    databaseId: { type: String },
+    databaseName: { type: String },
+    materialization: {
+      type: String,
+      enum: ["live", "parquet"],
+      default: "live",
+    },
+    cache: { type: MakoAppBindingCacheSchema, default: undefined },
+  },
+  { _id: false },
+);
+
+const MakoAppSchema = new Schema<IMakoApp>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+      index: true,
+    },
+    title: { type: String, required: true },
+    description: { type: String },
+    template: { type: String, default: "react-ts" },
+    runtime: {
+      type: String,
+      enum: ["cdn", "webcontainer"],
+      default: "cdn",
+    },
+    entrypoint: { type: String, default: "src/App.tsx" },
+    files: { type: [MakoAppFileSchema], default: [] },
+    dependencies: { type: Schema.Types.Mixed, default: {} },
+    dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
+    version: { type: Number, default: 1 },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    owner_id: { type: String, index: true },
+    createdBy: { type: String, required: true },
+  },
+  { timestamps: true },
+);
+
+MakoAppSchema.index({ workspaceId: 1, updatedAt: -1 });
+
+export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
+
+/**
  * Skill — workspace-scoped knowledge + procedure primitive.
  *
  * See GitHub issue #365. A skill is a named, conditional playbook with:

@@ -5,6 +5,7 @@ import {
   SQL_MODE_SYSTEM_PROMPT,
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
+  APP_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
 } from "./prompts";
 
@@ -78,8 +79,10 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "modify_widget",
   "remove_widget",
   "get_dashboard_state",
-  "preview_data_source",
-  "get_data_preview",
+  // Shared surface-scoped data-source primitives (apps + dashboards)
+  "list_data_sources",
+  "inspect_data_source",
+  "query_duckdb",
   "add_global_filter",
   "remove_global_filter",
   "link_tables",
@@ -112,6 +115,40 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "sql_list_databases",
   "sql_list_tables",
   "sql_inspect_table",
+];
+
+const APP_MODE_TOOL_NAMES: string[] = [
+  // Client app tools
+  "list_open_apps",
+  "open_app",
+  "create_app",
+  "get_app_state",
+  "app_read_file",
+  "app_write_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "materialize_binding",
+  "run_app",
+  // Shared surface-scoped data-source primitives (apps + dashboards)
+  "list_data_sources",
+  "inspect_data_source",
+  "query_duckdb",
+  "capture_screenshot",
+  // Discovery for validating binding queries
+  "list_connections",
+  "sql_list_connections",
+  "sql_list_databases",
+  "sql_list_tables",
+  "sql_inspect_table",
+  "sql_execute_query",
+  "mongo_list_connections",
+  "mongo_list_databases",
+  "mongo_list_collections",
+  "mongo_inspect_collection",
+  "mongo_execute_query",
 ];
 
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
@@ -173,6 +210,19 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Configure pagination and schema mapping",
     ],
   },
+  app: {
+    id: "app",
+    name: "React App",
+    routingPrompt:
+      "Build React apps wired to workspace data: edit files, add dependencies, and create data bindings.",
+    systemPrompt: APP_MODE_SYSTEM_PROMPT,
+    toolNames: APP_MODE_TOOL_NAMES,
+    trajectories: [
+      "Locate or create the target app",
+      "Validate the data and create data bindings",
+      "Edit app files and verify the preview builds without errors",
+    ],
+  },
   explore: {
     id: "explore",
     name: "Explore",
@@ -204,6 +254,7 @@ export function defaultExpertiseMode(
   const view = context.activeView;
   if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
+  if (view === "app" || tabKind === "app") return "app";
   return "sql";
 }
 

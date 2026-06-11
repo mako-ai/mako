@@ -1,4 +1,5 @@
 import { useDashboardStore } from "../store/dashboardStore";
+import { PREVIEW_MESSAGE } from "../app-runtime/preview";
 
 type ScreenshotTarget =
   | "active_dashboard"
@@ -509,6 +510,164 @@ async function analyzeImageQuality(
   };
 }
 
+/**
+ * App previews render in opaque-origin iframes (`sandbox="allow-scripts"`),
+ * which modern-screenshot cannot rasterize from the parent — they come out
+ * blank. Ask each visible app-preview iframe inside the capture target to
+ * screenshot itself (the preview bootstrap handles `mako-app:capture`) and
+ * composite the returned PNGs over the parent capture at the iframe rects.
+ */
+const APP_PREVIEW_IFRAME_SELECTOR = "iframe[data-mako-app-preview]";
+const APP_PREVIEW_CAPTURE_TIMEOUT_MS = 8000;
+let captureSeq = 0;
+
+function findAppPreviewIframes(target: HTMLElement): HTMLIFrameElement[] {
+  const iframes = Array.from(
+    target.querySelectorAll<HTMLIFrameElement>(APP_PREVIEW_IFRAME_SELECTOR),
+  );
+  if (
+    target instanceof HTMLIFrameElement &&
+    target.matches(APP_PREVIEW_IFRAME_SELECTOR)
+  ) {
+    iframes.unshift(target);
+  }
+  return iframes.filter(iframe => {
+    const rect = iframe.getBoundingClientRect();
+    return rect.width >= 8 && rect.height >= 8 && iframe.contentWindow != null;
+  });
+}
+
+function requestAppPreviewCapture(
+  iframe: HTMLIFrameElement,
+  options: { scale: number; backgroundColor?: string | null },
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const contentWindow = iframe.contentWindow;
+    if (!contentWindow) {
+      reject(new Error("App preview iframe has no content window"));
+      return;
+    }
+    const requestId = `capture_${Date.now()}_${++captureSeq}`;
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener("message", onMessage);
+      reject(new Error("App preview capture timed out"));
+    }, APP_PREVIEW_CAPTURE_TIMEOUT_MS);
+
+    function onMessage(event: MessageEvent) {
+      const data = (event.data ?? {}) as {
+        type?: string;
+        requestId?: string;
+        success?: boolean;
+        dataUrl?: string;
+        error?: string;
+      };
+      if (
+        event.source !== contentWindow ||
+        data.type !== PREVIEW_MESSAGE.captureResult ||
+        data.requestId !== requestId
+      ) {
+        return;
+      }
+      window.clearTimeout(timeout);
+      window.removeEventListener("message", onMessage);
+      if (data.success && data.dataUrl) resolve(data.dataUrl);
+      else reject(new Error(data.error || "App preview capture failed"));
+    }
+
+    window.addEventListener("message", onMessage);
+    // The sandboxed iframe has an opaque origin, so "*" is required.
+    contentWindow.postMessage(
+      {
+        type: PREVIEW_MESSAGE.capture,
+        requestId,
+        scale: options.scale,
+        backgroundColor: options.backgroundColor,
+      },
+      "*",
+    );
+  });
+}
+
+async function compositeAppPreviews(
+  baseDataUrl: string,
+  target: HTMLElement,
+  options: { scale: number; backgroundColor?: string | null },
+): Promise<{
+  dataUrl: string;
+  compositedCount: number;
+  failures: string[];
+}> {
+  const iframes = findAppPreviewIframes(target);
+  if (iframes.length === 0) {
+    return { dataUrl: baseDataUrl, compositedCount: 0, failures: [] };
+  }
+
+  const failures: string[] = [];
+  const captures = await Promise.all(
+    iframes.map(async iframe => {
+      try {
+        return {
+          iframe,
+          dataUrl: await requestAppPreviewCapture(iframe, options),
+        };
+      } catch (error) {
+        failures.push(
+          `${iframe.dataset.makoAppPreview ?? "unknown"}: ${
+            error instanceof Error ? error.message : "capture failed"
+          }`,
+        );
+        return null;
+      }
+    }),
+  );
+  const successful = captures.filter(
+    (c): c is { iframe: HTMLIFrameElement; dataUrl: string } => c !== null,
+  );
+  if (successful.length === 0) {
+    return { dataUrl: baseDataUrl, compositedCount: 0, failures };
+  }
+
+  const baseImage = await loadImage(baseDataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = baseImage.naturalWidth || baseImage.width;
+  canvas.height = baseImage.naturalHeight || baseImage.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return { dataUrl: baseDataUrl, compositedCount: 0, failures };
+  }
+  ctx.drawImage(baseImage, 0, 0);
+
+  const targetRect = target.getBoundingClientRect();
+  const scaleX = targetRect.width > 0 ? canvas.width / targetRect.width : 1;
+  const scaleY = targetRect.height > 0 ? canvas.height / targetRect.height : 1;
+
+  for (const { iframe, dataUrl } of successful) {
+    try {
+      const image = await loadImage(dataUrl);
+      const rect = iframe.getBoundingClientRect();
+      ctx.drawImage(
+        image,
+        (rect.left - targetRect.left) * scaleX,
+        (rect.top - targetRect.top) * scaleY,
+        rect.width * scaleX,
+        rect.height * scaleY,
+      );
+    } catch (error) {
+      failures.push(
+        `${iframe.dataset.makoAppPreview ?? "unknown"}: ${
+          error instanceof Error ? error.message : "composite failed"
+        }`,
+      );
+    }
+  }
+
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    compositedCount: successful.length,
+    failures,
+  };
+}
+
 async function captureWithModernScreenshot(
   target: HTMLElement,
   options: { scale: number; backgroundColor?: string | null },
@@ -600,6 +759,16 @@ export async function captureScreenshot(
     });
     throwIfAborted(signal);
 
+    // Sandboxed app previews are blank in the parent capture; ask them to
+    // self-capture and composite the PNGs at the iframe rects.
+    const composite = await compositeAppPreviews(
+      capture.dataUrl,
+      target.element,
+      { scale, backgroundColor: input.backgroundColor },
+    );
+    throwIfAborted(signal);
+    capture.dataUrl = composite.dataUrl;
+
     const outputBytes = dataUrlToBytes(capture.dataUrl);
     const quality = await analyzeImageQuality(
       capture.dataUrl,
@@ -669,10 +838,24 @@ export async function captureScreenshot(
       memoryDeltaBytes: memoryDeltaBytes(memoryBefore, memoryAfter),
       resourceTiming: summarizeResources(resourceEntries),
       quality,
+      appPreviews: {
+        composited: composite.compositedCount,
+        failures: composite.failures,
+      },
       imagesPassedToModel,
       imagesDownloaded,
       measurementNotes: [
         "The screenshot was captured with modern-screenshot.",
+        ...(composite.compositedCount > 0
+          ? [
+              "Sandboxed app preview iframe(s) were self-captured and composited into the screenshot.",
+            ]
+          : []),
+        ...(composite.failures.length > 0
+          ? [
+              `Some app preview iframe(s) could not be captured and may appear blank: ${composite.failures.join("; ")}`,
+            ]
+          : []),
         "When passImageToModel is enabled, the screenshot is sent as a real image input in the next model request, not as a base64 string inside the tool result.",
         "Quality is a heuristic based on decoded screenshot pixels, blankness, color variance, and whether visible SVG/canvas regions in the target appear non-blank in the output.",
       ],

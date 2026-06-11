@@ -118,6 +118,15 @@ interface ConsoleProps {
   };
   onCreateSchedule?: () => void;
   onUpdateSchedule?: () => void;
+  /**
+   * Surface this console UI is rendering. "console" (default) is a saved query
+   * console; "data-source" reuses the same toolbar/editor for an app/dashboard
+   * data source (run/save/connection are identical; callers supply
+   * `headerExtras` for surface-specific controls like materialization).
+   */
+  variant?: "console" | "data-source";
+  /** Extra controls rendered inline in the left toolbar group. */
+  headerExtras?: React.ReactNode;
 }
 
 export interface ConsoleRef {
@@ -170,7 +179,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     schedule,
     onCreateSchedule,
     onUpdateSchedule,
+    variant = "console",
+    headerExtras,
   } = props;
+  void variant;
 
   const editorRef = useRef<any>(null);
   const diffEditorRef = useRef<any>(null);
@@ -1213,6 +1225,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
               </Menu>
             </Box>
           )}
+
+          {headerExtras}
 
           {enableVersionControl && (
             <>

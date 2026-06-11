@@ -43,6 +43,9 @@ import {
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
   ChartPie as DashboardIcon,
+  AppWindow as AppIcon,
+  FileCode as AppFileIcon,
+  Database as DatabaseIcon,
   Table as TableDataIcon,
   ChevronRight as BreadcrumbChevronIcon,
 } from "lucide-react";
@@ -55,6 +58,9 @@ import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
+import AppRenderer from "./AppRenderer";
+import AppFileEditor from "./AppFileEditor";
+import AppBindingEditor from "./AppBindingEditor";
 import TableDataView from "./TableDataView";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
@@ -2029,6 +2035,12 @@ function Editor({
                               )
                             ) : tab.kind === "dashboard" ? (
                               <DashboardIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app" ? (
+                              <AppIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app-file" ? (
+                              <AppFileIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app-binding" ? (
+                              <DatabaseIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "table-data" ? (
                               <TableDataIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
@@ -2220,6 +2232,19 @@ function Editor({
                         }
                       });
                     }}
+                  />
+                ) : tab.kind === "app" ? (
+                  <AppRenderer appId={tab.metadata?.appId as string} />
+                ) : tab.kind === "app-file" ? (
+                  <AppFileEditor
+                    appId={tab.metadata?.appId as string}
+                    path={tab.metadata?.path as string}
+                  />
+                ) : tab.kind === "app-binding" ? (
+                  <AppBindingEditor
+                    tabId={tab.id}
+                    appId={tab.metadata?.appId as string}
+                    bindingId={tab.metadata?.bindingId as string}
                   />
                 ) : (
                   /* Console tab: editor + results split */

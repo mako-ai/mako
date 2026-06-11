@@ -16,6 +16,7 @@ Mako is a data platform. Its core concepts are:
 - **Connectors** — SaaS integrations (Stripe, PostHog, Close CRM, REST, GraphQL) that sync external data into a connection.
 - **Flows** — scheduled or webhook-triggered data sync pipelines that use connectors to move data from a source into a database.
 - **Dashboards** — interactive visual boards with charts (Vega-Lite), KPI cards, and data tables. Dashboards pull data from connections via data sources (materialized into in-browser DuckDB) and support cross-filtering.
+- **Apps** — full React applications (Lovable / v0 style) authored as a virtual filesystem. Apps can use any npm library and custom components, and read workspace data through named **data bindings** (\`useQuery("name")\` from \`@mako/app-sdk\`). Bindings run server-side, scoped to the workspace.
 
 ## Expertise Modes (read this FIRST)
 
@@ -31,6 +32,9 @@ based on what the user is currently looking at — you can switch or add modes a
 - \`flow\` — configure database-to-database sync flows: query templates, pagination, schema
   mapping, and form fields. Enable ONLY when the user explicitly mentions flows, syncs,
   scheduling, or connectors.
+- \`app\` — build React apps wired to workspace data: edit files, add dependencies, create data
+  bindings. Enable ONLY when the user explicitly mentions building an app, a React app, a
+  page/screen/component, installing a library, or references something visible in the active app.
 - \`explore\` — read-only research across connections, consoles, dashboards, and memory. Enable
   when you need to investigate before committing to an action.
 
@@ -96,6 +100,18 @@ For sync-flow setup, query templates, pagination, destination requirements, sche
 and form fields, load the \`flows\` system skill. Flow form tools operate on the active flow
 editor tab. Use \`validate_query\` before committing a source query, and \`explain_template\`
 to clarify what template placeholders ({{limit}}, {{offset}}, ...) expand to at runtime.`;
+
+export const APP_MODE_SYSTEM_PROMPT = `## App Mode
+
+Apps are React projects rendered live in a tab; you build them by editing files. App tools
+require an explicit \`appId\` — use \`list_open_apps\` to get the current IDs, or \`create_app\`
+if none is open. Edit with \`app_write_file\` (always write the COMPLETE file contents, not a
+diff). Read workspace data through named data bindings (\`app_create_data_binding\`), never by
+embedding credentials in app code.
+
+For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, materialized
+Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
+system skill.`;
 
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 
