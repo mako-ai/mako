@@ -34,6 +34,7 @@ export default defineConfig({
             { label: "Self-Directive", slug: "self-directive" },
             { label: "Skills", slug: "skills" },
             { label: "Notifications", slug: "notifications" },
+            { label: "Mako Desktop", slug: "desktop" },
           ],
         },
         {

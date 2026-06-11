@@ -27,6 +27,10 @@ Mako connects to your databases directly — no data leaves your infrastructure.
 4. Click **Test Connection** to verify
 5. Save — Mako will discover your schema automatically
 
+## Local Databases (localhost)
+
+Mako Cloud can't reach databases on your local machine or private network. Use [Mako Desktop](/desktop/) instead: local addresses (`localhost`, `127.x`, private LAN ranges) are detected automatically and connect through the bundled Mako Agent. Credentials for local connections stay on your machine and are never sent to Mako Cloud.
+
 ## IP Whitelisting
 
 If your database requires IP whitelisting, add the following address to your allowlist:
