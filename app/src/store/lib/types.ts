@@ -15,6 +15,7 @@ export type TabKind =
   | "members"
   | "flow-editor"
   | "dashboard"
+  | "dashboard-data-source"
   | "table-data"
   | "app"
   | "app-file"

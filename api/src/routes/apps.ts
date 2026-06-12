@@ -24,7 +24,8 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { AppDefinitionSchema, normalizeAppFiles } from "@mako/schemas";
 import {
-  materializeAppBinding,
+  queueAppBindingMaterialization,
+  buildAppBindingMaterializationStatus,
   hydrateAppBindingUrls,
   getBindingArtifactInfo,
 } from "../services/app-binding-materialization.service";
@@ -416,7 +417,9 @@ app.delete("/:id", async (c: AuthenticatedContext) => {
   }
 });
 
-// POST /:id/bindings/:bindingId/materialize — build the Parquet artifact
+// POST /:id/bindings/:bindingId/materialize — queue the Parquet build.
+// Returns immediately: the build runs in the background (Inngest). Clients
+// poll GET .../materialization until the status is ready/error.
 app.post(
   "/:id/bindings/:bindingId/materialize",
   async (c: AuthenticatedContext) => {
@@ -442,24 +445,73 @@ app.post(
       const body = (await c.req.json().catch(() => ({}))) as {
         force?: boolean;
       };
-      const status = await materializeAppBinding({
+      const result = await queueAppBindingMaterialization({
         workspaceId,
         appId: id,
         bindingId,
         force: body.force === true,
       });
 
-      // Return the refreshed app so the client gets the hydrated parquetUrl.
-      const refreshed = await MakoApp.findById(doc._id);
+      // On a cache hit nothing was queued — return the refreshed app so the
+      // client immediately gets the hydrated parquetUrl.
+      let app: ReturnType<typeof serializeApp> | undefined;
+      if (result.status === "ready") {
+        const refreshed = await MakoApp.findById(doc._id);
+        app = refreshed ? serializeApp(refreshed) : undefined;
+      }
+
       return c.json({
-        success: status.status === "ready",
-        status,
-        app: refreshed ? serializeApp(refreshed) : undefined,
+        success: result.status !== "error",
+        queued: result.queued,
+        alreadyRunning: result.alreadyRunning === true,
+        status: result,
+        app,
       });
     } catch (error) {
-      logger.error("Error materializing app binding", { error });
+      logger.error("Error queueing app binding materialization", { error });
       return c.json(
         { success: false, error: "Failed to materialize binding" },
+        500,
+      );
+    }
+  },
+);
+
+// GET /:id/bindings/:bindingId/materialization — build status (for polling)
+app.get(
+  "/:id/bindings/:bindingId/materialization",
+  async (c: AuthenticatedContext) => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      const bindingId = c.req.param("bindingId");
+      const userId = c.get("user")?.id;
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const status = buildAppBindingMaterializationStatus(doc, bindingId);
+      if (!status) {
+        return c.json({ success: false, error: "Binding not found" }, 404);
+      }
+
+      return c.json({ success: true, data: status });
+    } catch (error) {
+      logger.error("Error getting app binding materialization status", {
+        error,
+      });
+      return c.json(
+        { success: false, error: "Failed to get materialization status" },
         500,
       );
     }
