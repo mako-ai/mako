@@ -213,12 +213,15 @@ app.get("/", async (c: AuthenticatedContext) => {
       .sort({ updatedAt: -1 })
       .lean<IMakoApp[]>();
 
+    // Mirror dashboards: section is determined by access, not ownership.
+    // Workspace-shared apps live under "Workspace" for everyone (owner
+    // included) so sharing an app visibly moves it between sections.
     const myApps: AppListItem[] = [];
     const workspaceApps: AppListItem[] = [];
     for (const doc of docs) {
       const item = toListItem(doc);
-      if (doc.owner_id === userId) myApps.push(item);
-      else workspaceApps.push(item);
+      if (doc.access === "workspace") workspaceApps.push(item);
+      else if (doc.owner_id === userId) myApps.push(item);
     }
 
     return c.json({ success: true, myApps, workspaceApps });
