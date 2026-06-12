@@ -29,6 +29,16 @@ import {
   getBindingArtifactInfo,
 } from "../services/app-binding-materialization.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
+import {
+  canReadResource,
+  canWriteResource,
+  canManageSharing,
+} from "../utils/resource-acl";
+import {
+  registerCollaboratorRoutes,
+  registerSharingSettingsRoutes,
+} from "./lib/collaborator-routes";
+import { registerPublicShareRoutes } from "./lib/public-share-routes";
 
 const logger = loggers.api("apps");
 
@@ -38,21 +48,40 @@ interface AppListItem {
   id: string;
   name: string;
   access: "private" | "workspace";
+  workspaceRole?: "viewer" | "editor";
   owner_id?: string;
   fileCount: number;
   updatedAt: Date;
   createdAt: Date;
+  readOnly?: boolean;
 }
 
-function toListItem(doc: IMakoApp): AppListItem {
+function toListItem(
+  doc: IMakoApp,
+  userId?: string,
+  memberRole?: string,
+): AppListItem {
   return {
     id: doc._id.toString(),
     name: doc.title,
     access: doc.access,
+    workspaceRole: doc.workspaceRole ?? "viewer",
     owner_id: doc.owner_id,
     fileCount: Array.isArray(doc.files) ? doc.files.length : 0,
     updatedAt: doc.updatedAt,
     createdAt: doc.createdAt,
+    readOnly: userId ? !canManage(doc, userId, memberRole) : undefined,
+  };
+}
+
+/** Public-share info safe to return to authenticated clients. */
+function serializePublicShare(doc: IMakoApp) {
+  if (!doc.publicShare?.enabled || !doc.publicShare.token) return undefined;
+  return {
+    enabled: true,
+    token: doc.publicShare.token,
+    hasPassword: !!doc.publicShare.passwordHash,
+    createdAt: doc.publicShare.createdAt,
   };
 }
 
@@ -100,6 +129,14 @@ function serializeApp(doc: IMakoApp) {
     })) as Array<Record<string, any>>,
     version: doc.version,
     access: doc.access,
+    workspaceRole: doc.workspaceRole ?? "viewer",
+    sharedWith: (doc.sharedWith ?? []).map(s => ({
+      userId: s.userId,
+      role: s.role,
+      addedAt: s.addedAt,
+      addedBy: s.addedBy,
+    })),
+    publicShare: serializePublicShare(doc),
     owner_id: doc.owner_id,
     createdBy: doc.createdBy,
     createdAt: doc.createdAt,
@@ -152,19 +189,23 @@ app.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-function canManage(doc: IMakoApp, userId: string | undefined): boolean {
-  if (doc.owner_id && doc.owner_id === userId) return true;
-  // Private apps are owner-only, matching dashboards (DashboardManager):
-  // workspace admins and API keys (which authenticate with an "admin" member
-  // role) must not be able to read or modify another member's private app.
-  if (doc.access === "private") return false;
-  // Workspace-shared apps are editable by any member, like consoles.
-  return doc.access === "workspace";
+// Unified ACL (utils/resource-acl): owner > sharedWith entry > workspace
+// scope with `workspaceRole`. Private apps stay invisible to admins/API keys
+// unless explicitly shared — preserving the pre-existing privacy guarantee.
+function canManage(
+  doc: IMakoApp,
+  userId: string | undefined,
+  memberRole?: string,
+): boolean {
+  return canWriteResource(doc, userId, memberRole);
 }
 
-function canRead(doc: IMakoApp, userId: string | undefined): boolean {
-  if (doc.access === "workspace") return true;
-  return canManage(doc, userId);
+function canRead(
+  doc: IMakoApp,
+  userId: string | undefined,
+  memberRole?: string,
+): boolean {
+  return canReadResource(doc, userId, memberRole);
 }
 
 // Validate that every data binding references a connection in this workspace.
@@ -204,10 +245,15 @@ app.get("/", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
     const userId = c.get("user")?.id;
+    const memberRole = c.get("memberRole");
 
     const docs = await MakoApp.find({
       workspaceId: new Types.ObjectId(workspaceId),
-      $or: [{ owner_id: userId }, { access: "workspace" }],
+      $or: [
+        { owner_id: userId },
+        { access: "workspace" },
+        { "sharedWith.userId": userId },
+      ],
     })
       .sort({ updatedAt: -1 })
       .lean<IMakoApp[]>();
@@ -215,7 +261,7 @@ app.get("/", async (c: AuthenticatedContext) => {
     const myApps: AppListItem[] = [];
     const workspaceApps: AppListItem[] = [];
     for (const doc of docs) {
-      const item = toListItem(doc);
+      const item = toListItem(doc, userId, memberRole);
       if (doc.owner_id === userId) myApps.push(item);
       else workspaceApps.push(item);
     }
@@ -293,11 +339,16 @@ app.get("/:id", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canRead(doc, userId)) {
+    const memberRole = c.get("memberRole");
+    if (!canRead(doc, userId, memberRole)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
-    return c.json({ success: true, app: serializeApp(doc) });
+    return c.json({
+      success: true,
+      app: serializeApp(doc),
+      readOnly: !canManage(doc, userId, memberRole),
+    });
   } catch (error) {
     logger.error("Error fetching app", { error });
     return c.json({ success: false, error: "Failed to fetch app" }, 500);
@@ -320,7 +371,8 @@ app.put("/:id", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canManage(doc, userId)) {
+    const memberRole = c.get("memberRole");
+    if (!canManage(doc, userId, memberRole)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
@@ -374,8 +426,28 @@ app.put("/:id", async (c: AuthenticatedContext) => {
         };
       }) as IMakoApp["dataBindings"];
     }
-    if (body.access === "private" || body.access === "workspace") {
-      doc.access = body.access;
+    const wantsAccessChange =
+      (body.access === "private" || body.access === "workspace") &&
+      body.access !== doc.access;
+    const wantsWorkspaceRoleChange =
+      (body.workspaceRole === "viewer" || body.workspaceRole === "editor") &&
+      body.workspaceRole !== (doc.workspaceRole ?? "viewer");
+    if (wantsAccessChange || wantsWorkspaceRoleChange) {
+      if (!canManageSharing(doc, userId, memberRole)) {
+        return c.json(
+          {
+            success: false,
+            error: "Only the owner or an admin can change sharing settings",
+          },
+          403,
+        );
+      }
+      if (wantsAccessChange) {
+        doc.access = body.access as "private" | "workspace";
+      }
+      if (wantsWorkspaceRoleChange) {
+        doc.workspaceRole = body.workspaceRole as "viewer" | "editor";
+      }
     }
 
     doc.version += 1;
@@ -404,7 +476,7 @@ app.delete("/:id", async (c: AuthenticatedContext) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canManage(doc, userId)) {
+    if (!canManage(doc, userId, c.get("memberRole"))) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
@@ -435,7 +507,7 @@ app.post(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-      if (!canManage(doc, userId)) {
+      if (!canManage(doc, userId, c.get("memberRole"))) {
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
@@ -485,7 +557,7 @@ app.get(
         workspaceId: new Types.ObjectId(workspaceId),
       });
       if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-      if (!canRead(doc, userId)) {
+      if (!canRead(doc, userId, c.get("memberRole"))) {
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
@@ -522,6 +594,32 @@ app.get(
     }
   },
 );
+
+// ── Sharing (collaborators, general access, public link) ──
+
+const loadAppById = async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!Types.ObjectId.isValid(id)) return null;
+  return MakoApp.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+};
+
+registerCollaboratorRoutes(app, {
+  resourceName: "App",
+  load: loadAppById,
+});
+registerSharingSettingsRoutes(app, {
+  resourceName: "App",
+  load: loadAppById,
+});
+registerPublicShareRoutes(app, {
+  resourceName: "App",
+  load: loadAppById,
+  getTitle: doc => (doc as unknown as IMakoApp).title,
+});
 
 export const appRoutes = app;
 export default app;

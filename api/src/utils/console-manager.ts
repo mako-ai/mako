@@ -9,6 +9,7 @@ import {
   ConsoleAccessLevel,
 } from "../database/workspace-schema";
 import { getLogger } from "../logging";
+import { canReadResource, canWriteResource } from "./resource-acl";
 
 const logger = getLogger(["api", "consoles"]);
 
@@ -93,14 +94,23 @@ export class ConsoleManager {
   }
 
   /**
+   * Whether `userId` is an explicit collaborator (viewer or editor).
+   */
+  static isCollaborator(console: ISavedConsole, userId: string): boolean {
+    return (console.sharedWith || []).some(s => s.userId === userId);
+  }
+
+  /**
    * Check whether `userId` can read the given console.
    */
-  static canRead(console: ISavedConsole, userId: string): boolean {
-    const ownerId = (console.owner_id || console.createdBy)?.toString();
-    if (ownerId === userId) return true;
-
-    const access = ConsoleManager.resolveAccess(console);
-    return access === "workspace";
+  static canRead(
+    console: ISavedConsole,
+    userId: string,
+    memberRole?: string,
+  ): boolean {
+    return canReadResource(console, userId, memberRole, {
+      effectiveAccess: ConsoleManager.resolveAccess(console),
+    });
   }
 
   /**
@@ -111,13 +121,14 @@ export class ConsoleManager {
     console: ISavedConsole,
     userId: string,
     isAdmin: boolean = false,
+    memberRole?: string,
   ): boolean {
-    const ownerId = (console.owner_id || console.createdBy)?.toString();
-    if (ownerId === userId) return true;
-
-    const access = ConsoleManager.resolveAccess(console);
-    if (access === "private") return false;
-    return isAdmin;
+    return canWriteResource(
+      console,
+      userId,
+      memberRole ?? (isAdmin ? "admin" : undefined),
+      { effectiveAccess: ConsoleManager.resolveAccess(console) },
+    );
   }
 
   /**
@@ -132,6 +143,9 @@ export class ConsoleManager {
 
     const access = ConsoleManager.resolveAccess(console);
     if (access === "workspace") return "workspace";
+    // Private consoles shared explicitly with this user surface under the
+    // shared section so collaborators can find them.
+    if (ConsoleManager.isCollaborator(console, userId)) return "workspace";
     return null;
   }
 
@@ -161,6 +175,7 @@ export class ConsoleManager {
   ): Promise<boolean> {
     const ownerId = (console.owner_id || console.createdBy)?.toString();
     if (ownerId === userId) return true;
+    if (ConsoleManager.isCollaborator(console, userId)) return true;
 
     const ownAccess = ConsoleManager.resolveAccess(console);
     if (ownAccess === "workspace") return true;
@@ -410,7 +425,12 @@ export class ConsoleManager {
       for (const c of consoles) {
         const ownerId = (c.owner_id || c.createdBy)?.toString();
         const ownAccess = ConsoleManager.resolveAccess(c);
-        const section = classify(ownAccess, ownerId, c.folderId);
+        let section = classify(ownAccess, ownerId, c.folderId);
+        // Private consoles shared explicitly with this user surface in the
+        // shared section so collaborators can find them.
+        if (section === null && ConsoleManager.isCollaborator(c, userId)) {
+          section = "workspace";
+        }
         if (section === "my") myConsolesRaw.push(c);
         else if (section === "workspace") sharedWithWorkspaceRaw.push(c);
       }

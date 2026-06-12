@@ -173,6 +173,15 @@ interface DashboardStoreState {
     dashboardId: string,
     userId: string,
   ) => Promise<{ ok: boolean; error?: string }>;
+  /** Sync sharing settings updated by the ShareDialog into the open dashboard. */
+  applySharingChanges: (
+    dashboardId: string,
+    changes: {
+      access?: Dashboard["access"];
+      workspaceRole?: Dashboard["workspaceRole"];
+      publicShare?: Dashboard["publicShare"];
+    },
+  ) => void;
   openDashboard: (
     workspaceId: string,
     dashboardId: string,
@@ -1039,6 +1048,18 @@ export const useDashboardStore = create<DashboardStoreState>()(
             error: error instanceof Error ? error.message : "Failed to remove",
           };
         }
+      },
+
+      applySharingChanges: (dashboardId, changes) => {
+        set(state => {
+          const d = state.openDashboards[dashboardId];
+          if (!d) return;
+          if (changes.access) d.access = changes.access;
+          if (changes.workspaceRole) d.workspaceRole = changes.workspaceRole;
+          if (changes.publicShare !== undefined) {
+            d.publicShare = changes.publicShare;
+          }
+        });
       },
 
       forceAcquireLock: async (
