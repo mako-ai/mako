@@ -42,9 +42,11 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    the query into a Parquet artifact (same pipeline as dashboards) that is loaded into
    DuckDB-WASM in the browser. After creating/editing a parquet binding, call
    `materialize_binding`. The build runs server-side in the background; the tool waits
-   briefly and may return status `building` — that is not an error. The app loads the
-   data automatically when ready, and you can call `materialize_binding` again later to
-   confirm. Then the app can run fast analytical SQL client-side:
+   up to `waitSeconds` (default 120) and may return status `building` — that is not an
+   error. The app loads the data automatically when ready. To block until the build
+   finishes, call `materialize_binding` again — it resumes waiting on the in-flight
+   build (poll-with-timeout). Use `waitSeconds: 0` for an instant status check. Then
+   the app can run fast analytical SQL client-side:
 
    ```tsx
    import { useDuckDB } from "@mako/app-sdk";

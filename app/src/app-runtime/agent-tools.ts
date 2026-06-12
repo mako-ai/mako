@@ -46,8 +46,12 @@ function listOpenApps() {
  * Bounded wait for `materialize_binding`. The build runs server-side in the
  * background; the tool waits at most this long before returning a "still
  * building" result, so the agent round-trip can never hang on a slow build.
+ * The agent can override per call via `waitSeconds` (0..600); re-calling the
+ * tool resumes waiting on the in-flight build, so polling with a timeout is
+ * just repeated calls.
  */
-const MATERIALIZE_TOOL_WAIT_MS = 120_000;
+const MATERIALIZE_TOOL_DEFAULT_WAIT_MS = 120_000;
+const MATERIALIZE_TOOL_MAX_WAIT_MS = 600_000;
 
 export async function executeAppAgentTool(
   toolName: string,
@@ -212,11 +216,15 @@ export async function executeAppAgentTool(
       const appEntity = await ensureApp(appId);
       const binding = appEntity?.dataBindings.find(b => b.name === input.name);
       if (!binding) return fail(`No data binding named "${input.name}"`);
+      const timeoutMs =
+        typeof input.waitSeconds === "number" && input.waitSeconds >= 0
+          ? Math.min(input.waitSeconds * 1000, MATERIALIZE_TOOL_MAX_WAIT_MS)
+          : MATERIALIZE_TOOL_DEFAULT_WAIT_MS;
       const result = await store.materializeBinding(
         workspaceId,
         appId,
         binding.id,
-        { signal: options?.signal, timeoutMs: MATERIALIZE_TOOL_WAIT_MS },
+        { signal: options?.signal, timeoutMs },
       );
       if (result.status === "building") {
         // Not an error: the build continues server-side. Return so the agent
@@ -228,7 +236,8 @@ export async function executeAppAgentTool(
           hint:
             `Materialization of "${binding.name}" is still running in the background. ` +
             "The app will load the data automatically once it is ready. " +
-            "Call materialize_binding again later to check completion if needed.",
+            "To wait for completion, call materialize_binding again (optionally " +
+            "with a larger waitSeconds); it resumes waiting on the in-flight build.",
         };
       }
       if (!result.success) {

@@ -81,6 +81,17 @@ const createDataBindingSchema = z.object({
 const materializeBindingSchema = z.object({
   appId: appIdField,
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
+  waitSeconds: z
+    .number()
+    .min(0)
+    .max(600)
+    .optional()
+    .describe(
+      "How long to wait for the background build before returning (default " +
+        "120, max 600). Use 0 to check the current status without waiting. " +
+        "If the build is still running when the wait elapses, the tool " +
+        "returns status 'building' — call again to keep waiting.",
+    ),
 });
 
 const createAppSchema = z.object({
@@ -159,10 +170,12 @@ export const clientAppTools = {
       "Build (or rebuild) the Parquet artifact for a 'parquet' data binding and " +
       "load it into the app's DuckDB-WASM instance. Run this after creating or " +
       "editing a parquet binding so useQuery/useDuckDB return fresh data. " +
-      "The build runs server-side in the background: the tool waits up to ~2 " +
-      "minutes and returns status 'building' if it is still running — that is " +
-      "not an error; the app picks up the data automatically when ready, and " +
-      "you can call this tool again later to confirm completion.",
+      "The build runs server-side in the background: the tool waits up to " +
+      "waitSeconds (default 120) and returns status 'building' if it is still " +
+      "running — that is not an error; the app picks up the data automatically " +
+      "when ready. To block until completion, call this tool again (it resumes " +
+      "waiting on the in-flight build); use waitSeconds: 0 for an instant " +
+      "status check.",
     inputSchema: materializeBindingSchema,
   }),
   run_app: tool({
