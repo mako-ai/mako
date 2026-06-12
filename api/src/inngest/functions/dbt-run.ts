@@ -406,3 +406,102 @@ export const dbtSchedulerFunction = inngest.createFunction(
     return { checked: dueJobs.length, triggered };
   },
 );
+
+/**
+ * Sweep dbt runs whose executor died (instance crash/recycle mid-step).
+ * With retries: 0 Inngest never re-invokes the executor, so the run doc
+ * would stay "running" forever. A live run always has log activity (2s
+ * flush cadence) and a 50m per-command timeout, so >60m of log silence
+ * means the process is gone.
+ */
+const DBT_RUN_STALL_MS = 60 * 60 * 1000;
+const DBT_RUN_QUEUED_STALL_MS = 6 * 60 * 60 * 1000;
+
+export const dbtRunSweeperFunction = inngest.createFunction(
+  {
+    id: "dbt-run-sweeper",
+    name: "Cleanup Abandoned dbt Runs",
+  },
+  { cron: "*/5 * * * *" },
+  async ({ step }) => {
+    const swept = await step.run("sweep-abandoned-dbt-runs", async () => {
+      const now = Date.now();
+
+      // Active runs are rare; fetch and filter in JS so we can look at the
+      // last log timestamp (capped array — $slice: -1 keeps this cheap).
+      const activeRuns = await DbtRun.find({
+        status: { $in: ["queued", "running"] },
+      })
+        .select({
+          status: 1,
+          startedAt: 1,
+          createdAt: 1,
+          jobId: 1,
+          logs: { $slice: -1 },
+        })
+        .lean();
+
+      const abandoned = activeRuns.filter(run => {
+        if (run.status === "queued") {
+          // Queued runs can legitimately wait behind the per-project
+          // concurrency lock — only sweep clearly lost events.
+          return now - run.createdAt.getTime() > DBT_RUN_QUEUED_STALL_MS;
+        }
+        const lastActivity =
+          run.logs?.[0]?.ts ?? run.startedAt ?? run.createdAt;
+        return now - new Date(lastActivity).getTime() > DBT_RUN_STALL_MS;
+      });
+
+      for (const run of abandoned) {
+        const completedAt = new Date();
+        const updated = await DbtRun.updateOne(
+          { _id: run._id, status: { $in: ["queued", "running"] } },
+          {
+            $set: {
+              status: "error",
+              completedAt,
+              error:
+                "Run abandoned — executor terminated without finalizing (instance crash or deploy)",
+              ...(run.startedAt
+                ? {
+                    durationMs:
+                      completedAt.getTime() - new Date(run.startedAt).getTime(),
+                  }
+                : {}),
+            },
+          },
+        );
+        // Finalized concurrently by the executor or cancel finalizer.
+        if (updated.modifiedCount === 0) continue;
+
+        // Mirror finalize-run so job health stats don't silently drift.
+        if (run.jobId) {
+          await DbtJob.updateOne(
+            { _id: run.jobId },
+            {
+              $set: {
+                "scheduledRun.lastAt": completedAt,
+                "scheduledRun.lastStatus": "error",
+                "scheduledRun.lastError": "Run abandoned by executor",
+              },
+              $inc: {
+                "scheduledRun.runCount": 1,
+                "scheduledRun.consecutiveFailures": 1,
+              },
+            },
+          );
+        }
+
+        logger.warn("Swept abandoned dbt run", {
+          runId: run._id.toString(),
+          jobId: run.jobId?.toString(),
+          status: run.status,
+        });
+      }
+
+      return abandoned.length;
+    });
+
+    return { swept };
+  },
+);

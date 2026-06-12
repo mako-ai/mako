@@ -34,6 +34,7 @@ import {
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
   dbtSchedulerFunction,
+  dbtRunSweeperFunction,
 } from "./functions/dbt-run";
 import { loggers } from "../logging";
 
@@ -53,6 +54,7 @@ const baseFunctions = [
   notificationDeliverFunction,
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
+  dbtRunSweeperFunction,
 ];
 
 const allWebhookFunctions = [
@@ -144,4 +146,5 @@ export {
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
   dbtSchedulerFunction,
+  dbtRunSweeperFunction,
 };
