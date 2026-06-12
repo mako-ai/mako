@@ -7,6 +7,7 @@ import {
   WebhookVerificationResult,
   WebhookHandlerOptions,
   WebhookEventMapping,
+  EntityMetadata,
 } from "../base/BaseConnector";
 import Stripe from "stripe";
 import { loggers } from "../../logging";
@@ -114,6 +115,23 @@ export class StripeConnector extends BaseConnector {
       "invoices",
       "products",
       "plans",
+    ];
+  }
+
+  getEntityMetadata(): EntityMetadata[] {
+    // Stripe records are upserted in place; partition on sync time.
+    const layoutSuggestion = {
+      partitionField: "_syncedAt",
+      partitionGranularity: "day" as const,
+      clusterFields: ["_dataSourceId", "id"],
+    };
+    return [
+      { name: "customers", label: "Customers", layoutSuggestion },
+      { name: "subscriptions", label: "Subscriptions", layoutSuggestion },
+      { name: "charges", label: "Charges", layoutSuggestion },
+      { name: "invoices", label: "Invoices", layoutSuggestion },
+      { name: "products", label: "Products", layoutSuggestion },
+      { name: "plans", label: "Plans", layoutSuggestion },
     ];
   }
 
