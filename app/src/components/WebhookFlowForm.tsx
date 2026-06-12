@@ -622,6 +622,12 @@ export function WebhookFlowForm({
             partitionField: "_syncedAt",
             clusterFields: [] as string[],
           },
+          {
+            name: "outcomes",
+            label: "Outcomes",
+            partitionField: "_syncedAt",
+            clusterFields: [] as string[],
+          },
         ];
         setEntityMetadata(entities);
         // Read saved layouts from the flow object (store), not watch(),
