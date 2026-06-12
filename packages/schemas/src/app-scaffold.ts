@@ -15,12 +15,33 @@ const APP_TSX = `// Read workspace data with the injected SDK once a data bindin
 //   const { data, loading, error } = useQuery("my_binding");
 //
 // Create bindings from the chat ("bind the revenue query") or the data panel.
+//
+// Theming: the runtime provides CSS variables (--background, --foreground,
+// --card, --border, --muted-foreground, --primary, --chart-1..5, --radius, …)
+// that switch with light/dark automatically — use var(--token) instead of
+// hardcoded colors. The page background/text are already wired up.
 
 export default function App() {
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", padding: 24 }}>
       <h1>Hello from your Mako app</h1>
-      <p>Edit <code>src/App.tsx</code> and ask the assistant to build features.</p>
+      <div
+        style={{
+          background: "var(--card)",
+          color: "var(--card-foreground)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius)",
+          padding: 16,
+          maxWidth: 480,
+        }}
+      >
+        <p style={{ margin: 0 }}>
+          Edit <code>src/App.tsx</code> and ask the assistant to build features.
+        </p>
+        <p style={{ margin: "8px 0 0", color: "var(--muted-foreground)" }}>
+          This card follows the light/dark theme on its own.
+        </p>
+      </div>
     </div>
   );
 }
@@ -42,6 +63,29 @@ const { data, loading, error } = useQuery("my_binding");
 
 Queries execute server-side, scoped to your workspace — the app never sees
 database credentials.
+
+## Theming (light/dark)
+
+The app inherits its theme automatically: Mako's theme when opened inside the
+workspace, the OS preference when opened from a share link. The runtime injects
+ready-to-use CSS variables that switch between modes:
+
+\`--background\`, \`--foreground\`, \`--card\`, \`--card-foreground\`,
+\`--popover\`, \`--popover-foreground\`, \`--primary\`, \`--primary-foreground\`,
+\`--secondary\`, \`--secondary-foreground\`, \`--muted\`, \`--muted-foreground\`,
+\`--accent\`, \`--accent-foreground\`, \`--destructive\`,
+\`--destructive-foreground\`, \`--border\`, \`--input\`, \`--ring\`,
+\`--chart-1\`…\`--chart-5\`, \`--radius\`
+
+Use \`var(--token)\` instead of hardcoded colors (works in inline styles,
+CSS-in-JS, and SVG/chart \`fill\`/\`stroke\`). The page background and text are
+pre-wired. When code needs the literal mode (e.g. a chart library option):
+
+\`\`\`tsx
+import { useTheme } from "@mako/app-sdk";
+
+const { theme } = useTheme(); // "light" | "dark"
+\`\`\`
 `;
 
 export const DEFAULT_APP_SCAFFOLD_FILES: AppFile[] = [
