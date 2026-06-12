@@ -73,6 +73,20 @@ For MongoDB connections, collection and view management is exposed under the sam
 The legacy `/api/database/collections`, `/api/database/views`, and related top-level routes were removed in [#408](https://github.com/mako-ai/mako/pull/408). Callers must use the workspace-scoped endpoints above and authenticate with a session cookie or `Bearer revops_*` API key.
 :::
 
+## Apps
+
+React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app.
+
+| Method   | Endpoint                                                                | Description                                              |
+| -------- | ----------------------------------------------------------------------- | -------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/apps`                                             | List apps visible to the caller                          |
+| `POST`   | `/api/workspaces/:wid/apps`                                             | Create an app (scaffolds a React + TypeScript starter)   |
+| `GET`    | `/api/workspaces/:wid/apps/:id`                                         | Get an app (files, dependencies, data bindings)          |
+| `PUT`    | `/api/workspaces/:wid/apps/:id`                                         | Update an app (files, dependencies, bindings, access)    |
+| `DELETE` | `/api/workspaces/:wid/apps/:id`                                         | Delete an app                                            |
+| `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialize`               | Build/rebuild a binding's Parquet artifact (`{force}`)   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization/artifact`  | Stream the materialized Parquet artifact                 |
+
 ## Query Execution
 
 Session cookie or `Authorization: Bearer revops_*` API key required. Use the database connection ID from `GET /api/workspaces/:wid/databases`.

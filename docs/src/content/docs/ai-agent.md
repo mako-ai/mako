@@ -110,6 +110,10 @@ Key capabilities:
 
 The agent handles edit-mode locking, so concurrent users cannot conflict.
 
+### App Agent
+
+Active when building [Apps](/apps/) — live React projects inside the workspace. The agent scaffolds a React + TypeScript starter, edits files (always writing complete file contents), manages npm dependencies, and wires up data bindings so the app reads workspace data without ever seeing credentials. It validates queries with the shared data-source tools before coding against them, and reads build/runtime errors from the live preview to iterate until the app renders clean.
+
 ## Visual Inspection
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
