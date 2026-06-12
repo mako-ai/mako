@@ -2,15 +2,86 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
 
+export interface ConnectorEntityLayoutSuggestion {
+  partitionField?: string;
+  partitionGranularity?: "day" | "hour" | "month" | "year";
+  clusterFields?: string[];
+}
+
+export interface ConnectorEntityMetadata {
+  name: string;
+  label?: string;
+  description?: string;
+  subEntities?: ConnectorEntityMetadata[];
+  layoutSuggestion?: ConnectorEntityLayoutSuggestion;
+}
+
+/** Older connectors may return a flat string list instead of metadata. */
+export type AvailableConnectorEntity = string | ConnectorEntityMetadata;
+
+export interface FlattenedConnectorEntity {
+  name: string;
+  label: string;
+  partitionField: string;
+  partitionGranularity: "day" | "hour" | "month" | "year";
+  clusterFields: string[];
+}
+
+function fallbackLabel(name: string): string {
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+/**
+ * Flatten connector entity metadata into one selectable row per syncable
+ * entity. Parents with sub-entities (e.g. Close "activities") cannot be
+ * synced bare, so they are expanded into `parent:Sub` rows.
+ */
+export function flattenConnectorEntities(
+  list: AvailableConnectorEntity[],
+): FlattenedConnectorEntity[] {
+  const result: FlattenedConnectorEntity[] = [];
+
+  for (const item of list) {
+    const meta: ConnectorEntityMetadata =
+      typeof item === "string" ? { name: item } : item;
+    const layout = meta.layoutSuggestion;
+    const subEntities = meta.subEntities ?? [];
+
+    if (subEntities.length > 0) {
+      for (const sub of subEntities) {
+        const subLayout = sub.layoutSuggestion ?? layout;
+        result.push({
+          name: `${meta.name}:${sub.name}`,
+          label: sub.label || fallbackLabel(sub.name),
+          partitionField: subLayout?.partitionField || "_syncedAt",
+          partitionGranularity: subLayout?.partitionGranularity || "day",
+          clusterFields: [],
+        });
+      }
+      continue;
+    }
+
+    result.push({
+      name: meta.name,
+      label: meta.label || fallbackLabel(meta.name),
+      partitionField: layout?.partitionField || "_syncedAt",
+      partitionGranularity: layout?.partitionGranularity || "day",
+      clusterFields: [],
+    });
+  }
+
+  return result;
+}
+
 interface AvailableEntitiesState {
-  byConnector: Record<string, string[]>; // key = `${workspaceId}:${connectorId}`
+  byConnector: Record<string, AvailableConnectorEntity[]>; // key = `${workspaceId}:${connectorId}`
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
   fetch: (
     workspaceId: string,
     connectorId: string,
     force?: boolean,
-  ) => Promise<string[]>;
+  ) => Promise<AvailableConnectorEntity[]>;
   clear: (workspaceId: string, connectorId: string) => void;
 }
 
@@ -42,11 +113,11 @@ export const useAvailableEntitiesStore = create<AvailableEntitiesState>()(
       });
 
       try {
-        const json = await apiClient.get<ApiResponse<string[]>>(
-          `/workspaces/${workspaceId}/connectors/${connectorId}/entities`,
-        );
+        const json = await apiClient.get<
+          ApiResponse<AvailableConnectorEntity[]>
+        >(`/workspaces/${workspaceId}/connectors/${connectorId}/entities`);
         if (json.success) {
-          const list: string[] = json.data || [];
+          const list: AvailableConnectorEntity[] = json.data || [];
           set(state => {
             state.byConnector[key] = list;
             delete state.loading[key];

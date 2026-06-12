@@ -731,6 +731,12 @@ export class CloseConnector extends BaseConnector {
       partitionGranularity: "day" as const,
       clusterFields: ["_dataSourceId", "id"],
     };
+    // Lookup tables have no stable creation timestamp worth partitioning on.
+    const lookupLayout = {
+      partitionField: "_syncedAt",
+      partitionGranularity: "day" as const,
+      clusterFields: ["_dataSourceId", "id"],
+    };
     return [
       { name: "leads", label: "Leads", layoutSuggestion: defaultLayout },
       {
@@ -758,7 +764,37 @@ export class CloseConnector extends BaseConnector {
       {
         name: "custom_fields",
         label: "Custom Fields",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "custom_activity_types",
+        label: "Custom Activity Types",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "custom_object_types",
+        label: "Custom Object Types",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "custom_objects",
+        label: "Custom Objects",
         layoutSuggestion: defaultLayout,
+      },
+      {
+        name: "lead_statuses",
+        label: "Lead Statuses",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "opportunity_statuses",
+        label: "Opportunity Statuses",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "outcomes",
+        label: "Outcomes",
+        layoutSuggestion: lookupLayout,
       },
     ];
   }
