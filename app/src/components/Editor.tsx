@@ -62,6 +62,8 @@ import AppRenderer from "./AppRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
+import DbtFileEditor from "./DbtFileEditor";
+import DbtJobView from "./DbtJobView";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -2228,6 +2230,16 @@ function Editor({
                 ) : tab.kind === "plan" ? (
                   <PlanDocumentTab
                     toolCallId={tab.metadata?.toolCallId as string}
+                  />
+                ) : tab.kind === "dbt-file" ? (
+                  <DbtFileEditor
+                    projectId={tab.metadata?.projectId as string}
+                    path={tab.metadata?.path as string}
+                  />
+                ) : tab.kind === "dbt-job" ? (
+                  <DbtJobView
+                    projectId={tab.metadata?.projectId as string}
+                    jobId={tab.metadata?.jobId as string}
                   />
                 ) : tab.kind === "dashboard-data-source" ? (
                   <DashboardDataSourceEditor

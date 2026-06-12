@@ -114,6 +114,12 @@ function segmentsForTab(
       return plain(["Settings", "Members"]);
     case "plan":
       return plain(["Plans", tab.title || "Plan"]);
+    case "dbt-file": {
+      const path = (tab.metadata?.path as string | undefined) || "";
+      return plain(["Transforms", ...path.split("/").filter(Boolean)]);
+    }
+    case "dbt-job":
+      return plain(["Transforms", "Jobs", tab.title || "Job"]);
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       // Runtime still degrades gracefully for stale persisted tabs.

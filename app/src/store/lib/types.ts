@@ -20,7 +20,9 @@ export type TabKind =
   | "app"
   | "app-file"
   | "app-binding"
-  | "plan";
+  | "plan"
+  | "dbt-file"
+  | "dbt-job";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
@@ -170,6 +172,7 @@ export type LeftPaneView =
   | "flows"
   | "dashboards"
   | "apps"
+  | "dbt"
   | "settings";
 
 /**
