@@ -56,6 +56,7 @@ import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
+import { UpdateNotification } from "./components/UpdateNotification";
 
 // Draggable divider between a fixed-width side pane and the flexible center.
 // Resizing changes the side pane's pixel width directly (not a percentage),
@@ -734,6 +735,7 @@ function App() {
     <>
       <PageViewTracker />
       <DesktopAuthResume />
+      <UpdateNotification />
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />

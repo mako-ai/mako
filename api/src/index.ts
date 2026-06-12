@@ -133,6 +133,37 @@ app.get("/health", c => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// Frontend build version - public, used by long-lived clients (especially the
+// desktop app) to detect that their loaded bundle is stale and prompt a
+// reload. The build ID is emitted into public/version.json by the Vite build
+// (git SHA in CI), so it is always in sync with the bundle shipped in this
+// image. Falls back to "dev" locally where no version.json exists.
+let cachedBuildId: string | null = null;
+function getFrontendBuildId(): string {
+  if (cachedBuildId === null) {
+    try {
+      const versionPath = path.join(process.cwd(), "public", "version.json");
+      const parsed = JSON.parse(fs.readFileSync(versionPath, "utf8")) as {
+        buildId?: unknown;
+      };
+      cachedBuildId =
+        typeof parsed.buildId === "string" && parsed.buildId
+          ? parsed.buildId
+          : "dev";
+    } catch {
+      cachedBuildId = "dev";
+    }
+  }
+  return cachedBuildId;
+}
+
+app.get("/api/version", c => {
+  // no-store: this endpoint exists to detect new deploys, so neither the
+  // browser nor any CDN in front may ever serve a cached response.
+  c.header("Cache-Control", "no-store");
+  return c.json({ buildId: getFrontendBuildId() });
+});
+
 // API routes
 app.route("/api/auth", authRoutes);
 app.route("/api/workspaces", workspaceRoutes);
@@ -218,6 +249,9 @@ app.use("*", async (c, next) => {
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
       const content = fs.readFileSync(indexPath, "utf8");
+      // index.html must always be revalidated so a reload after a deploy
+      // picks up the new bundle (stale-client detection depends on this).
+      c.header("Cache-Control", "no-cache");
       return c.html(content);
     }
   }
@@ -227,13 +261,21 @@ app.use("*", async (c, next) => {
     const ext = path.extname(filePath);
     const contentType = getContentType(ext);
     const content = fs.readFileSync(filePath);
-    return c.body(content, { headers: { "Content-Type": contentType } });
+    // Vite assets are content-hashed, so they can be cached forever; anything
+    // else (index.html handled above) gets revalidation.
+    const cacheControl = requestPath.startsWith("/assets/")
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+    return c.body(content, {
+      headers: { "Content-Type": contentType, "Cache-Control": cacheControl },
+    });
   }
 
   // Fallback to index.html for SPA routing
   const indexPath = path.join(publicPath, "index.html");
   if (fs.existsSync(indexPath)) {
     const content = fs.readFileSync(indexPath, "utf8");
+    c.header("Cache-Control", "no-cache");
     return c.html(content);
   }
 
