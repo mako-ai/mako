@@ -47,7 +47,6 @@ import {
   FileCode as AppFileIcon,
   Database as DatabaseIcon,
   Table as TableDataIcon,
-  ChevronRight as BreadcrumbChevronIcon,
   ClipboardList as PlanIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -65,6 +64,7 @@ import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
+import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
@@ -2129,69 +2129,20 @@ function Editor({
             </DndContext>
           </Box>
 
-          {/* Breadcrumb path (Cursor-style) — only for console tabs */}
+          {/* Breadcrumb path (Cursor-style) — one consistent bar for every
+              tab kind. Views that embed their own actions in the bar
+              (table data, app files/bindings, dashboard data sources)
+              render EntityBreadcrumbs themselves. */}
           {(() => {
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
-            if (activeTab?.kind !== "console") return null;
-            const filePath = activeTab.filePath;
-            const isUnsaved = !filePath;
-            const segments = isUnsaved
-              ? ["Unsaved console"]
-              : [
-                  activeTab.access === "workspace"
-                    ? "Workspace"
-                    : "My Consoles",
-                  ...filePath.split("/").filter(Boolean),
-                ];
-            return (
-              <Box
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  minHeight: 22,
-                  px: 1.5,
-                  py: 0.25,
-                  backgroundColor: "background.paper",
-                  color: "text.secondary",
-                  fontSize: "0.75rem",
-                  overflow: "hidden",
-                  whiteSpace: "nowrap",
-                  gap: 0.25,
-                }}
-              >
-                {segments.map((segment, index) => (
-                  <Box
-                    key={`${index}-${segment}`}
-                    component="span"
-                    sx={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 0.25,
-                      minWidth: 0,
-                    }}
-                  >
-                    {index > 0 && (
-                      <BreadcrumbChevronIcon
-                        size={12}
-                        strokeWidth={2}
-                        style={{ flexShrink: 0, opacity: 0.6 }}
-                      />
-                    )}
-                    <Box
-                      component="span"
-                      sx={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontStyle: isUnsaved ? "italic" : "normal",
-                      }}
-                    >
-                      {segment}
-                    </Box>
-                  </Box>
-                ))}
-              </Box>
-            );
+            if (!activeTab) return null;
+            const rendersOwnBreadcrumbs =
+              activeTab.kind === "table-data" ||
+              activeTab.kind === "app-file" ||
+              activeTab.kind === "app-binding" ||
+              activeTab.kind === "dashboard-data-source";
+            if (rendersOwnBreadcrumbs) return null;
+            return <EntityBreadcrumbs tabId={activeTab.id} />;
           })()}
 
           {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
@@ -2264,6 +2215,7 @@ function Editor({
                   <AppRenderer appId={tab.metadata?.appId as string} />
                 ) : tab.kind === "app-file" ? (
                   <AppFileEditor
+                    tabId={tab.id}
                     appId={tab.metadata?.appId as string}
                     path={tab.metadata?.path as string}
                   />
