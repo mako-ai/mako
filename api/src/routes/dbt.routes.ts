@@ -597,8 +597,9 @@ dbtRoutes.patch(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const jobId = c.req.param("jobId");
-      if (!Types.ObjectId.isValid(jobId))
+      if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
+      }
       const job = await DbtJob.findOne({
         _id: new Types.ObjectId(jobId),
         projectId: project._id,
@@ -650,8 +651,9 @@ dbtRoutes.delete(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const jobId = c.req.param("jobId");
-      if (!Types.ObjectId.isValid(jobId))
+      if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
+      }
       const result = await DbtJob.deleteOne({
         _id: new Types.ObjectId(jobId),
         projectId: project._id,
@@ -675,8 +677,9 @@ dbtRoutes.post(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const jobId = c.req.param("jobId");
-      if (!Types.ObjectId.isValid(jobId))
+      if (!Types.ObjectId.isValid(jobId)) {
         return badRequest(c, "Invalid job id");
+      }
       const job = await DbtJob.findOne({
         _id: new Types.ObjectId(jobId),
         projectId: project._id,
@@ -733,8 +736,9 @@ dbtRoutes.get(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const runId = c.req.param("runId");
-      if (!Types.ObjectId.isValid(runId))
+      if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
+      }
       const run = await DbtRun.findOne({
         _id: new Types.ObjectId(runId),
         projectId: project._id,
@@ -768,8 +772,9 @@ dbtRoutes.post(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const runId = c.req.param("runId");
-      if (!Types.ObjectId.isValid(runId))
+      if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
+      }
       const cancelled = await requestDbtRunCancel({
         workspaceId: project.workspaceId.toString(),
         runId,
@@ -794,8 +799,9 @@ dbtRoutes.get(
       }
       const runId = c.req.param("runId");
       const kind = c.req.param("kind");
-      if (!Types.ObjectId.isValid(runId))
+      if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
+      }
       if (!["manifest", "runResults", "catalog"].includes(kind)) {
         return badRequest(c, "kind must be manifest | runResults | catalog");
       }

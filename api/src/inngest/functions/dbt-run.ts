@@ -160,6 +160,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             profile: snapshot.profile,
             commands: [parsed],
             dbtVersion: snapshot.project.dbtVersion,
+            // Cloud Run services deploy with --timeout=3600; leave buffer for
+            // snapshot loading + artifact upload within the step request.
+            commandTimeoutMs: 50 * 60 * 1000,
             onLog: logWriter.onLog,
           });
 
