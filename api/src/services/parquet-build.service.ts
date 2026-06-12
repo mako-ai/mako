@@ -100,17 +100,16 @@ export async function buildQueryParquetFile(
 
   let fields: FieldMeta[] = [];
   try {
-    const schemaResult = await databaseConnectionService.getStreamingQueryFields(
-      connection,
-      executableQuery,
-      { databaseId, databaseName },
-    );
+    const schemaResult =
+      await databaseConnectionService.getStreamingQueryFields(
+        connection,
+        executableQuery,
+        { databaseId, databaseName },
+      );
     if (schemaResult.success && schemaResult.fields) {
       fields = schemaResult.fields;
     } else if (input.schemaProbe !== "lenient") {
-      throw new Error(
-        schemaResult.error || "Failed to resolve query schema",
-      );
+      throw new Error(schemaResult.error || "Failed to resolve query schema");
     } else {
       logger.warn("Schema probe failed, falling back to runtime inference", {
         filenameBase,
@@ -131,16 +130,17 @@ export async function buildQueryParquetFile(
     fields,
     onBatchInserted,
     streamBatches: async insertBatch => {
-      const streamResult = await databaseConnectionService.executeStreamingQuery(
-        connection,
-        executableQuery,
-        {
-          batchSize: STREAM_BATCH_SIZE,
-          databaseId,
-          databaseName,
-          onBatch: insertBatch,
-        },
-      );
+      const streamResult =
+        await databaseConnectionService.executeStreamingQuery(
+          connection,
+          executableQuery,
+          {
+            batchSize: STREAM_BATCH_SIZE,
+            databaseId,
+            databaseName,
+            onBatch: insertBatch,
+          },
+        );
       // A mid-stream failure must fail the build — otherwise a silently
       // truncated (or empty) artifact would be reported as "ready".
       if (!streamResult.success) {

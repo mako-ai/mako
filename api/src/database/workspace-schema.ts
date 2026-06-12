@@ -3857,10 +3857,7 @@ const RealtimePresenceSchema = new Schema<IRealtimePresence>(
   { collection: "realtime_presence" },
 );
 
-RealtimePresenceSchema.index(
-  { workspaceId: 1, clientId: 1 },
-  { unique: true },
-);
+RealtimePresenceSchema.index({ workspaceId: 1, clientId: 1 }, { unique: true });
 // TTL reaper: connections that stop heartbeating disappear automatically.
 RealtimePresenceSchema.index({ lastSeenAt: 1 }, { expireAfterSeconds: 90 });
 
