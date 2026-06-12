@@ -169,6 +169,30 @@ function MainApp() {
     (side: SidePane, e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
 
+      // Capture the pointer so move/up events keep flowing to the divider even
+      // when the cursor crosses an iframe (e.g. the app preview), which would
+      // otherwise swallow them and freeze the drag.
+      const divider = e.currentTarget;
+      try {
+        divider.setPointerCapture(e.pointerId);
+      } catch {
+        // Pointer may already be gone (e.g. released between events).
+      }
+
+      // Belt-and-suspenders for browsers with flaky pointer capture across
+      // (cross-origin) iframes: make iframes transparent to pointer events
+      // for the duration of the drag.
+      const iframes = Array.from(document.querySelectorAll("iframe"));
+      const savedPointerEvents = iframes.map(f => f.style.pointerEvents);
+      iframes.forEach(f => {
+        f.style.pointerEvents = "none";
+      });
+      const restoreIframes = () => {
+        iframes.forEach((f, i) => {
+          f.style.pointerEvents = savedPointerEvents[i];
+        });
+      };
+
       const container = panelContainerRef.current;
       const containerWidth = container
         ? container.clientWidth
@@ -216,6 +240,8 @@ function MainApp() {
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        restoreIframes();
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
 
@@ -241,6 +267,7 @@ function MainApp() {
       document.body.style.userSelect = "none";
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
     },
     [closeLeftPane, closeRightPane, leftPaneOpen, rightPaneOpen, setPaneWidths],
   );
