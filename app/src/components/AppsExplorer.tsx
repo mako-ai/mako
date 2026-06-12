@@ -18,15 +18,22 @@ import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
   AppWindow as AppIcon,
-  FileCode as FileIcon,
+  FileCode as CodeFileIcon,
+  FileText as TextFileIcon,
+  File as PlainFileIcon,
+  Braces as JsonFileIcon,
+  Folder as FolderIcon,
+  FolderOpen as FolderOpenIcon,
   Database as BindingIcon,
   Globe as GlobeIcon,
   User as UserIcon,
+  Lock as LockIcon,
   ExternalLink as OpenIcon,
   Pencil as RenameIcon,
   Trash2 as DeleteIcon,
   Database as MaterializeIcon,
 } from "lucide-react";
+import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerStore } from "../store/explorerStore";
@@ -56,6 +63,30 @@ function dirname(path: string): string {
   const parts = path.split("/").filter(Boolean);
   parts.pop();
   return parts.join("/");
+}
+
+// Per-extension file icons, mirroring the database explorer's per-kind icons.
+const CODE_FILE_EXTENSIONS = new Set([
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "css",
+  "scss",
+  "html",
+]);
+function fileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (CODE_FILE_EXTENSIONS.has(ext)) {
+    return <CodeFileIcon size={16} strokeWidth={1.5} />;
+  }
+  if (ext === "md" || ext === "mdx" || ext === "txt") {
+    return <TextFileIcon size={16} strokeWidth={1.5} />;
+  }
+  if (ext === "json") {
+    return <JsonFileIcon size={16} strokeWidth={1.5} />;
+  }
+  return <PlainFileIcon size={16} strokeWidth={1.5} />;
 }
 
 interface ParsedNode {
@@ -127,7 +158,10 @@ function buildAppFileNodes(
 
 export function AppsExplorer() {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
+  const isAdmin =
+    currentWorkspace?.role === "owner" || currentWorkspace?.role === "admin";
 
   const myApps = useAppStore(
     s => (workspaceId ? s.myApps[workspaceId] : undefined) || EMPTY_LIST,
@@ -150,6 +184,7 @@ export function AppsExplorer() {
   const removeDataBinding = useAppStore(s => s.removeDataBinding);
   const materializeBinding = useAppStore(s => s.materializeBinding);
   const persistApp = useAppStore(s => s.persistApp);
+  const setAppAccess = useAppStore(s => s.setAppAccess);
 
   const activeTabId = useConsoleStore(s => s.activeTabId);
   const tabs = useConsoleStore(s => s.tabs);
@@ -228,6 +263,7 @@ export function AppsExplorer() {
         label: "My Apps",
         icon: <UserIcon size={16} strokeWidth={1.5} />,
         nodes: buildSectionNodes(myApps),
+        droppableId: "__section_my",
         defaultAccess: "private" as const,
       },
       {
@@ -235,6 +271,7 @@ export function AppsExplorer() {
         label: "Workspace",
         icon: <GlobeIcon size={16} strokeWidth={1.5} />,
         nodes: buildSectionNodes(workspaceApps),
+        droppableId: "__section_workspace",
         defaultAccess: "workspace" as const,
       },
     ],
@@ -282,19 +319,93 @@ export function AppsExplorer() {
     [],
   );
 
-  const getItemIcon = useCallback((node: ResourceTreeNode) => {
-    const parsed = parseNodeId(node.id);
-    if (parsed.kind === "app") {
-      return <AppIcon size={16} strokeWidth={1.5} />;
+  // Only app rows are draggable / manageable through the tree itself; files
+  // and folders inside an app are edited through their own tabs.
+  const canManageNode = useCallback(
+    (node: ResourceTreeNode) => {
+      if (parseNodeId(node.id).kind !== "app") return false;
+      return isAdmin || node.owner_id === user?.id;
+    },
+    [isAdmin, user?.id],
+  );
+
+  // Which section an app currently lives in (drives drop no-op detection).
+  const sectionAccessOfApp = useCallback(
+    (appId: string): "private" | "workspace" | null => {
+      if (myApps.some(item => item.id === appId)) return "private";
+      if (workspaceApps.some(item => item.id === appId)) return "workspace";
+      return null;
+    },
+    [myApps, workspaceApps],
+  );
+
+  // Drag an app onto the "My Apps" / "Workspace" section (or onto any node
+  // inside it) to change its sharing. Drops within the same section no-op.
+  const handleMoveNode = useCallback(
+    (nodeId: string, targetId: string | null, access?: string) => {
+      if (!workspaceId) return;
+      const parsed = parseNodeId(nodeId);
+      if (parsed.kind !== "app") return;
+      let nextAccess: "private" | "workspace" | null =
+        access === "private" || access === "workspace" ? access : null;
+      if (!nextAccess && targetId) {
+        nextAccess = sectionAccessOfApp(parseNodeId(targetId).appId);
+      }
+      if (!nextAccess || sectionAccessOfApp(parsed.appId) === nextAccess) {
+        return;
+      }
+      void setAppAccess(workspaceId, parsed.appId, nextAccess);
+    },
+    [workspaceId, sectionAccessOfApp, setAppAccess],
+  );
+
+  // Dimmed file count on app rows, like the database explorer's group counts.
+  const fileCountByAppId = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of [...myApps, ...workspaceApps]) {
+      map.set(item.id, item.fileCount);
     }
-    if (parsed.kind === "file") {
-      return <FileIcon size={16} strokeWidth={1.5} />;
-    }
-    if (parsed.kind === "binding") {
-      return <BindingIcon size={16} strokeWidth={1.5} />;
-    }
-    return undefined; // folders use the default folder icon
-  }, []);
+    return map;
+  }, [myApps, workspaceApps]);
+
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const parsed = parseNodeId(node.id);
+      if (parsed.kind !== "app") return null;
+      const count = fileCountByAppId.get(parsed.appId);
+      if (count === undefined) return null;
+      return (
+        <Typography
+          variant="caption"
+          sx={{ color: "text.disabled", whiteSpace: "nowrap" }}
+        >
+          {count}
+        </Typography>
+      );
+    },
+    [fileCountByAppId],
+  );
+
+  const getItemIcon = useCallback(
+    (node: ResourceTreeNode, ctx?: { isExpanded: boolean }) => {
+      const parsed = parseNodeId(node.id);
+      if (parsed.kind === "app") {
+        return <AppIcon size={16} strokeWidth={1.5} />;
+      }
+      if (parsed.kind === "file") {
+        return fileIcon(node.name);
+      }
+      if (parsed.kind === "binding") {
+        return <BindingIcon size={16} strokeWidth={1.5} />;
+      }
+      return ctx?.isExpanded ? (
+        <FolderOpenIcon size={16} strokeWidth={1.5} />
+      ) : (
+        <FolderIcon size={16} strokeWidth={1.5} />
+      );
+    },
+    [],
+  );
 
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
@@ -321,6 +432,34 @@ export function AppsExplorer() {
           Open
         </MenuItem>,
       );
+
+      // Share / unshare — the menu twin of dragging the app between the
+      // "My Apps" and "Workspace" sections.
+      if (parsed.kind === "app" && workspaceId && canManageNode(node)) {
+        const isShared = node.access === "workspace";
+        items.push(
+          <MenuItem
+            key="share"
+            onClick={() => {
+              void setAppAccess(
+                workspaceId,
+                parsed.appId,
+                isShared ? "private" : "workspace",
+              );
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              {isShared ? (
+                <LockIcon size={16} strokeWidth={1.5} />
+              ) : (
+                <GlobeIcon size={16} strokeWidth={1.5} />
+              )}
+            </ListItemIcon>
+            {isShared ? "Move to My Apps" : "Move to Workspace"}
+          </MenuItem>,
+        );
+      }
 
       // Materialize action for parquet bindings.
       if (parsed.kind === "binding" && workspaceId) {
@@ -378,7 +517,7 @@ export function AppsExplorer() {
       );
       return items;
     },
-    [workspaceId, openApps, materializeBinding],
+    [workspaceId, openApps, materializeBinding, canManageNode, setAppAccess],
   );
 
   const handleRenameConfirm = useCallback(async () => {
@@ -478,8 +617,8 @@ export function AppsExplorer() {
             searchQuery={searchQuery}
             activeItemId={activeItemId}
             getItemIcon={getItemIcon}
+            getRightAdornment={getRightAdornment}
             getContextMenuItems={getContextMenuItems}
-            hideFolderIcon
             onItemClick={handleItemClick}
             shouldFolderClickActivate={shouldFolderClickActivate}
             onLoadChildren={handleLoadChildren}
@@ -487,7 +626,10 @@ export function AppsExplorer() {
               const parsed = parseNodeId(node.id);
               return parsed.kind === "app" && !!loadingApps[parsed.appId];
             }}
-            enableDragDrop={false}
+            enableDragDrop
+            onMoveItem={handleMoveNode}
+            onMoveFolder={handleMoveNode}
+            canManageItem={canManageNode}
             enableRename={false}
             enableDelete={false}
             enableNewFolder={false}

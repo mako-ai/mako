@@ -1470,11 +1470,8 @@ function ResourceTreeInner(
               fontSize: "0.8125rem",
             }}
           >
-            {draggedNode.isDirectory ? (
-              <Folder size={14} />
-            ) : (
-              getItemIcon?.(draggedNode) || null
-            )}
+            {getItemIcon?.(draggedNode) ||
+              (draggedNode.isDirectory ? <Folder size={14} /> : null)}
             <span className="app-truncate-inline">{draggedNode.name}</span>
           </Box>
         ) : null}
