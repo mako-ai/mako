@@ -16,6 +16,7 @@ import {
   Database as MaterializeIcon,
   Info as InfoIcon,
   History as HistoryIcon,
+  Eye as PreviewIcon,
   CheckCircle2 as SuccessIcon,
   XCircle as ErrorIcon,
 } from "lucide-react";
@@ -23,6 +24,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
+import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 
@@ -68,6 +70,7 @@ export default function AppBindingEditor({
   const [viewMode, setViewMode] = useState<"table" | "json" | "chart">("table");
   const [running, setRunning] = useState(false);
   const [materializing, setMaterializing] = useState(false);
+  const [previewingSnapshot, setPreviewingSnapshot] = useState(false);
   const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -123,6 +126,39 @@ export default function AppBindingEditor({
     await materializeBinding(workspaceId, appId, bindingId);
     setMaterializing(false);
   }, [workspaceId, appId, bindingId, materializeBinding]);
+
+  const bindingCache = binding?.cache;
+  const handlePreviewSnapshot = useCallback(async () => {
+    if (!bindingCache?.parquetUrl) return;
+    setPreviewingSnapshot(true);
+    const startedAt = Date.now();
+    try {
+      const result = await previewParquetArtifact(bindingCache.parquetUrl);
+      setPreview({
+        results: result.rows,
+        executedAt: new Date().toISOString(),
+        resultCount: result.totalRows,
+        executionTime: Date.now() - startedAt,
+        fields: result.fields.map(f => f.name),
+      });
+      setViewMode("table");
+    } catch (e) {
+      setPreview({
+        results: [
+          {
+            error:
+              e instanceof Error
+                ? e.message
+                : "Failed to preview the materialized data",
+          },
+        ],
+        executedAt: new Date().toISOString(),
+        resultCount: 0,
+      });
+    } finally {
+      setPreviewingSnapshot(false);
+    }
+  }, [bindingCache?.parquetUrl]);
 
   if (!appEntity) {
     return (
@@ -216,6 +252,19 @@ export default function AppBindingEditor({
                   : cache.parquetBuildStatus
               }
             />
+          )}
+          {cache?.parquetBuildStatus === "ready" && cache?.parquetUrl && (
+            <Tooltip title="Preview the materialized data">
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => void handlePreviewSnapshot()}
+                  disabled={previewingSnapshot}
+                >
+                  <PreviewIcon size={18} strokeWidth={1.5} />
+                </IconButton>
+              </span>
+            </Tooltip>
           )}
           <Tooltip title="Materialization history">
             <span>

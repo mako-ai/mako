@@ -61,6 +61,7 @@ import DashboardCanvas from "./DashboardCanvas";
 import AppRenderer from "./AppRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
+import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
@@ -2049,7 +2050,8 @@ function Editor({
                               <AppIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "app-file" ? (
                               <AppFileIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app-binding" ? (
+                            ) : tab.kind === "app-binding" ||
+                              tab.kind === "dashboard-data-source" ? (
                               <DatabaseIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "table-data" ? (
                               <TableDataIcon size={18} strokeWidth={1.5} />
@@ -2255,6 +2257,12 @@ function Editor({
                     tabId={tab.id}
                     appId={tab.metadata?.appId as string}
                     bindingId={tab.metadata?.bindingId as string}
+                  />
+                ) : tab.kind === "dashboard-data-source" ? (
+                  <DashboardDataSourceEditor
+                    tabId={tab.id}
+                    dashboardId={tab.metadata?.dashboardId as string}
+                    dataSourceId={tab.metadata?.dataSourceId as string}
                   />
                 ) : (
                   /* Console tab: editor + results split */

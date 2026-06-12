@@ -10,7 +10,6 @@
  * APIs verbatim; only the artifact key/hash and Mongo writes are app-specific.
  */
 
-import { promises as fsPromises } from "fs";
 import { Types } from "mongoose";
 import {
   MakoApp,
@@ -19,22 +18,20 @@ import {
   type IMakoAppDataBinding,
 } from "../database/workspace-schema";
 import {
-  buildParquetFromBatches,
-  type FieldMeta,
-} from "../utils/streaming-parquet-builder";
-import {
-  storeArtifact,
   artifactExists,
   withArtifactBuildLock,
+  getArtifactPrefix,
 } from "./dashboard-cache.service";
-import { databaseConnectionService } from "./database-connection.service";
-import { checkPreviewQuerySafety } from "./query-pagination.service";
+import {
+  buildQueryParquetFile,
+  storeParquetArtifactFile,
+  assertReadOnlyMaterializationQuery,
+  PARQUET_ROW_LIMIT,
+} from "./parquet-build.service";
 import { inngest } from "../inngest/client";
 import { loggers } from "../logging";
 
 const logger = loggers.api("app-materialization");
-
-const PARQUET_ROW_LIMIT = 500_000;
 
 /** How often a running build refreshes its heartbeat (`parquetBuildStatusAt`). */
 const BUILD_HEARTBEAT_INTERVAL_MS = 30 * 1000;
@@ -90,27 +87,13 @@ export function buildAppBindingDefinitionHash(
   return (hash >>> 0).toString(16);
 }
 
-/** Object-store key prefix, shared with the dashboard artifact bucket. */
-function artifactPrefix(): string {
-  if (process.env.DASHBOARD_ARTIFACT_PREFIX) {
-    return process.env.DASHBOARD_ARTIFACT_PREFIX;
-  }
-  if (process.env.PR_NUMBER) {
-    return `dashboard-artifacts/pr-${process.env.PR_NUMBER}`;
-  }
-  if (process.env.NODE_ENV === "production") {
-    return "dashboard-artifacts/prod";
-  }
-  return "dashboards";
-}
-
 export function buildAppBindingArtifactKey(input: {
   workspaceId: string;
   appId: string;
   bindingId: string;
   definitionHash: string;
 }): string {
-  return `${artifactPrefix()}/workspaces/${input.workspaceId}/apps/${input.appId}/bindings/${input.bindingId}/${input.definitionHash}.parquet`;
+  return `${getArtifactPrefix()}/workspaces/${input.workspaceId}/apps/${input.appId}/bindings/${input.bindingId}/${input.definitionHash}.parquet`;
 }
 
 /** Proxied API path the browser fetches to read a binding's Parquet artifact. */
@@ -383,21 +366,16 @@ export async function queueAppBindingMaterialization(input: {
 // SQL-family bindings execute the raw code. (MongoDB materialization would need
 // collection/operation metadata; not supported yet.)
 //
-// The binding code is user/agent-editable, so enforce the same read-only
-// safety gate as live preview execution: materialization must never run
-// DDL/DML against the source connection.
+// The binding code is user/agent-editable; the shared read-only safety gate
+// (also enforced inside the build core) is applied here too so queue-time
+// validation reports unsafe queries synchronously.
 function buildExecutableQuery(binding: IMakoAppDataBinding): string {
   if (binding.language !== "sql") {
     throw new Error(
       `Materialization is not supported for ${binding.language} bindings yet`,
     );
   }
-  const safety = checkPreviewQuerySafety(binding.code);
-  if (!safety.safe) {
-    throw new Error(
-      `Binding query failed read-only safety checks: ${safety.errors.join(" ")}`,
-    );
-  }
+  assertReadOnlyMaterializationQuery(binding.code);
   return binding.code;
 }
 
@@ -513,55 +491,23 @@ export async function materializeAppBinding(input: {
       );
       if (!connection) throw new Error("Connection not found");
 
-      const executableQuery = buildExecutableQuery(binding);
-      const fieldsResult =
-        await databaseConnectionService.getStreamingQueryFields(
-          connection,
-          executableQuery,
-          {
-            databaseId: binding.databaseId,
-            databaseName: binding.databaseName,
-          },
-        );
-      // A failed schema probe means the query itself is broken — surface it
-      // instead of silently building an empty "ready" artifact.
-      if (!fieldsResult.success) {
-        throw new Error(
-          fieldsResult.error || "Failed to resolve query schema",
-        );
-      }
-      const fields: FieldMeta[] = fieldsResult.fields ?? [];
-
-      const parquet = await buildParquetFromBatches({
-        filenameBase: `app-${appId}-${bindingId}`,
+      // Shared core: schema probe + streaming + Parquet build + upload.
+      // Strict probe — for SQL bindings a probe failure means the query is
+      // broken, so fail fast instead of building an empty artifact.
+      const parquet = await buildQueryParquetFile({
+        connection,
+        executableQuery: buildExecutableQuery(binding),
+        databaseId: binding.databaseId,
+        databaseName: binding.databaseName,
         rowLimit: PARQUET_ROW_LIMIT,
-        fields,
-        streamBatches: async insertBatch => {
-          const streamResult =
-            await databaseConnectionService.executeStreamingQuery(
-              connection,
-              executableQuery,
-              {
-                batchSize: 5000,
-                databaseId: binding.databaseId,
-                databaseName: binding.databaseName,
-                onBatch: insertBatch,
-              },
-            );
-          // Same rationale: a mid-stream failure must fail the build, not
-          // produce a silently truncated artifact.
-          if (!streamResult.success) {
-            throw new Error(streamResult.error || "Streaming query failed");
-          }
-        },
+        filenameBase: `app-${appId}-${bindingId}`,
+        schemaProbe: "strict",
       });
-
-      await storeArtifact(parquet.filePath, artifactKey, {
-        appId,
-        bindingId,
-        definitionHash,
+      await storeParquetArtifactFile({
+        filePath: parquet.filePath,
+        artifactKey,
+        metadata: { appId, bindingId, definitionHash },
       });
-      await fsPromises.rm(parquet.filePath, { force: true });
 
       const builtAt = new Date();
       const artifactRevision = String(builtAt.getTime());
