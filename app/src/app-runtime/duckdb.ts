@@ -94,8 +94,45 @@ export async function queryAppDuckDB(
   return queryDuckDB(inst.db, sql);
 }
 
-/** Max rows posted back to the sandboxed iframe per query / binding read. */
-export const SANDBOX_DUCKDB_ROW_LIMIT = 50_000;
+/**
+ * Default max rows posted back to the sandboxed iframe per query / binding
+ * read. The cap exists to bound the structured-clone cost of the postMessage
+ * bridge, not to protect data access (the instance only holds this app's own
+ * materialized tables). It matches the 500k-row parquet materialization cap
+ * (api/src/services/app-binding-materialization.service.ts), so a plain
+ * binding read can never be truncated — only row-multiplying SQL (joins,
+ * cross products, generate_series, ...) can exceed it. Apps override it per
+ * call via the SDK's `rowLimit` option; `rowLimit: null` disables it.
+ */
+export const SANDBOX_DUCKDB_ROW_LIMIT = 500_000;
+
+/**
+ * Sanitize a row limit requested by the (untrusted) preview iframe.
+ * - `null` / `Infinity` -> no cap (explicit opt-out)
+ * - finite number >= 1  -> that many rows (floored)
+ * - anything else       -> the default cap
+ */
+export function resolveSandboxRowLimit(requested: unknown): number | null {
+  if (requested === null) return null;
+  if (typeof requested === "number") {
+    if (requested === Infinity) return null;
+    if (Number.isFinite(requested) && requested >= 1) {
+      return Math.floor(requested);
+    }
+  }
+  return SANDBOX_DUCKDB_ROW_LIMIT;
+}
+
+/** Apply a resolved row limit to a query result, flagging dropped rows. */
+export function applySandboxRowLimit<T>(
+  rows: T[],
+  rowLimit: number | null,
+): { rows: T[]; truncated: boolean } {
+  if (rowLimit == null || rows.length <= rowLimit) {
+    return { rows, truncated: false };
+  }
+  return { rows: rows.slice(0, rowLimit), truncated: true };
+}
 
 const LEADING_SQL_COMMENTS = /^(\s*(--[^\n]*(\n|$)|\/\*[\s\S]*?\*\/))*\s*/;
 

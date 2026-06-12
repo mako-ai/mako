@@ -172,19 +172,28 @@ window.addEventListener("message", (event) => {
     resolve(data);
   }
 });
-function runBinding(name) {
+function runBinding(name, rowLimit) {
   return new Promise((resolve) => {
     const requestId = "req_" + ++reqSeq;
     pending.set(requestId, resolve);
-    POST({ type: "mako-app:run-binding", requestId, binding: name });
+    POST({ type: "mako-app:run-binding", requestId, binding: name, rowLimit: rowLimit });
   });
 }
-function runDuckDb(sql) {
+function runDuckDb(sql, rowLimit) {
   return new Promise((resolve) => {
     const requestId = "duck_" + ++reqSeq;
     pending.set(requestId, resolve);
-    POST({ type: "mako-app:run-duckdb", requestId, sql: sql });
+    POST({ type: "mako-app:run-duckdb", requestId, sql: sql, rowLimit: rowLimit });
   });
+}
+function warnTruncated(source, res) {
+  console.warn(
+    "[mako/app-sdk] " + source + " hit the " + res.rowLimit + "-row cap" +
+      (typeof res.rowCount === "number" ? "; the query produced " + res.rowCount + " rows" : "") +
+      ". Rows beyond the cap were dropped, so derived numbers may be wrong. " +
+      "Aggregate in SQL instead, or pass { rowLimit: <n> } to raise the cap " +
+      "({ rowLimit: null } disables it).",
+  );
 }
 
 // --- Self-capture: the parent cannot rasterize this opaque-origin iframe, so
@@ -238,34 +247,58 @@ async function main() {
   const makoSdk = {
     // Read a named binding. Live bindings run server-side; parquet bindings
     // return the materialized table rows from DuckDB-WASM (parent decides).
-    useQuery(name) {
-      const [state, setState] = React.useState({ data: null, error: null, loading: true });
+    // opts: { rowLimit?: number | null } — max rows delivered for parquet
+    // bindings (default 500k; null disables the cap). When rows beyond the
+    // cap were dropped, "truncated" is true and a console warning is logged.
+    useQuery(name, opts) {
+      const rowLimit = opts ? opts.rowLimit : undefined;
+      const [state, setState] = React.useState({ data: null, error: null, loading: true, truncated: false });
       React.useEffect(() => {
         let active = true;
-        setState({ data: null, error: null, loading: true });
-        runBinding(name).then((res) => {
+        setState({ data: null, error: null, loading: true, truncated: false });
+        runBinding(name, rowLimit).then((res) => {
           if (!active) return;
-          if (res.success) setState({ data: res.rows, error: null, loading: false });
-          else setState({ data: null, error: res.error || "Query failed", loading: false });
+          if (res.success) {
+            if (res.truncated) warnTruncated('useQuery("' + name + '")', res);
+            setState({ data: res.rows, error: null, loading: false, truncated: !!res.truncated });
+          } else {
+            setState({ data: null, error: res.error || "Query failed", loading: false, truncated: false });
+          }
         });
         return () => { active = false; };
-      }, [name]);
+      }, [name, rowLimit]);
       return state;
     },
     // Run analytical SQL over the app's materialized (parquet) tables in
-    // DuckDB-WASM. Table names are the binding names. Returns { data, fields }.
-    useDuckDB(sql) {
-      const [state, setState] = React.useState({ data: null, fields: null, error: null, loading: true });
+    // DuckDB-WASM. Table names are the binding names.
+    // opts: { rowLimit?: number | null } — max rows delivered (default 500k;
+    // null disables the cap). Returns { data, fields, rowCount, truncated }:
+    // "rowCount" is the full result size before the cap, "truncated" is true
+    // when rows beyond the cap were dropped (also logs a console warning).
+    useDuckDB(sql, opts) {
+      const rowLimit = opts ? opts.rowLimit : undefined;
+      const [state, setState] = React.useState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
       React.useEffect(() => {
         let active = true;
-        setState({ data: null, fields: null, error: null, loading: true });
-        runDuckDb(sql).then((res) => {
+        setState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
+        runDuckDb(sql, rowLimit).then((res) => {
           if (!active) return;
-          if (res.success) setState({ data: res.rows, fields: res.fields, error: null, loading: false });
-          else setState({ data: null, fields: null, error: res.error || "DuckDB query failed", loading: false });
+          if (res.success) {
+            if (res.truncated) warnTruncated("useDuckDB", res);
+            setState({
+              data: res.rows,
+              fields: res.fields,
+              error: null,
+              loading: false,
+              truncated: !!res.truncated,
+              rowCount: typeof res.rowCount === "number" ? res.rowCount : (res.rows ? res.rows.length : null),
+            });
+          } else {
+            setState({ data: null, fields: null, error: res.error || "DuckDB query failed", loading: false, truncated: false, rowCount: null });
+          }
         });
         return () => { active = false; };
-      }, [sql]);
+      }, [sql, rowLimit]);
       return state;
     },
   };

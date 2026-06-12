@@ -51,6 +51,17 @@ Apps are React projects rendered live in a tab. You build them by editing files.
 
    Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
    live useQuery for small, always-fresh lookups.
+
+   **Result row cap:** rows delivered to the app are capped per query/binding read
+   (default 500,000 — the bridge into the sandboxed iframe). Both hooks return
+   `truncated: true` when rows beyond the cap were dropped, and `useDuckDB` also
+   returns `rowCount` (the full result size before the cap); the SDK logs a console
+   warning too. NEVER ignore `truncated` — aggregates computed in JS over a truncated
+   result are silently wrong (classic symptom: an unfiltered view showing smaller
+   totals than filtered views). Prefer aggregating in SQL so results stay small. If
+   you genuinely need more rows, pass `useDuckDB(sql, { rowLimit: 2_000_000 })` or
+   `{ rowLimit: null }` to disable the cap (costs memory + serialization time), and
+   surface `truncated` in the UI whenever you render row-level data.
 6. After a batch of edits, if something looks wrong, call `get_app_state` (or `run_app`)
    to read build/runtime errors and fix them. Iterate until the preview is error-free.
 7. Understand and validate data before coding against it using the shared data-source

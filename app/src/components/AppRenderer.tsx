@@ -18,7 +18,8 @@ import {
   disposeAppDuckDB,
   bindingTableName,
   checkSandboxDuckDbSql,
-  SANDBOX_DUCKDB_ROW_LIMIT,
+  resolveSandboxRowLimit,
+  applySandboxRowLimit,
 } from "../app-runtime/duckdb";
 
 /**
@@ -88,23 +89,28 @@ export default function AppRenderer({ appId }: { appId: string }) {
         );
         // Materialized binding -> read its table from DuckDB-WASM.
         if (binding?.materialization === "parquet") {
+          const rowLimit = resolveSandboxRowLimit(data.rowLimit);
           void ensureBindingLoaded(appId, binding)
             .then(() =>
               queryAppDuckDB(
                 appId,
                 // +1 so we can tell the iframe when the read was truncated.
-                `SELECT * FROM "${bindingTableName(binding.name)}" LIMIT ${SANDBOX_DUCKDB_ROW_LIMIT + 1}`,
+                rowLimit == null
+                  ? `SELECT * FROM "${bindingTableName(binding.name)}"`
+                  : `SELECT * FROM "${bindingTableName(binding.name)}" LIMIT ${rowLimit + 1}`,
               ),
             )
-            .then(result =>
+            .then(result => {
+              const limited = applySandboxRowLimit(result.rows, rowLimit);
               post({
                 type: PREVIEW_MESSAGE.bindingResult,
                 requestId: data.requestId,
                 success: true,
-                rows: result.rows.slice(0, SANDBOX_DUCKDB_ROW_LIMIT),
-                truncated: result.rows.length > SANDBOX_DUCKDB_ROW_LIMIT,
-              }),
-            )
+                rows: limited.rows,
+                truncated: limited.truncated,
+                rowLimit,
+              });
+            })
             .catch(err =>
               post({
                 type: PREVIEW_MESSAGE.bindingResult,
@@ -142,22 +148,27 @@ export default function AppRenderer({ appId }: { appId: string }) {
         const parquetBindings = (appEntity?.dataBindings || []).filter(
           b => b.materialization === "parquet",
         );
+        const rowLimit = resolveSandboxRowLimit(data.rowLimit);
         void Promise.all(
           parquetBindings.map(b =>
             ensureBindingLoaded(appId, b).catch(() => false),
           ),
         )
           .then(() => queryAppDuckDB(appId, data.sql))
-          .then(result =>
+          .then(result => {
+            const limited = applySandboxRowLimit(result.rows, rowLimit);
             post({
               type: PREVIEW_MESSAGE.duckDbResult,
               requestId: data.requestId,
               success: true,
-              rows: result.rows.slice(0, SANDBOX_DUCKDB_ROW_LIMIT),
+              rows: limited.rows,
               fields: result.fields,
-              truncated: result.rows.length > SANDBOX_DUCKDB_ROW_LIMIT,
-            }),
-          )
+              // True size of the query result, before the bridge cap.
+              rowCount: result.rows.length,
+              truncated: limited.truncated,
+              rowLimit,
+            });
+          })
           .catch(err =>
             post({
               type: PREVIEW_MESSAGE.duckDbResult,
