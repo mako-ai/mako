@@ -1,0 +1,248 @@
+import React from "react";
+import { Box } from "@mui/material";
+import { ChevronRight as BreadcrumbChevronIcon } from "lucide-react";
+import { useConsoleStore } from "../store/consoleStore";
+import { useSchemaStore } from "../store/schemaStore";
+import { useAppStore } from "../store/appStore";
+import { useDashboardStore } from "../store/dashboardStore";
+import { useWorkspace } from "../contexts/workspace-context";
+import { SECTION_LABELS } from "../pages/settings/sections";
+import type { ConsoleTab } from "../store/lib/types";
+
+interface BreadcrumbSegment {
+  label: string;
+  /** Render in italics (e.g. "Unsaved console"). */
+  italic?: boolean;
+}
+
+interface EntityContext {
+  workspaceName: string;
+  connectionName?: string;
+  dashboardTitle?: string;
+  dashboardDataSourceName?: string;
+  appTitle?: string;
+  appBindingName?: string;
+}
+
+/**
+ * Compute the full breadcrumb trail for a tab. Every trail starts at the
+ * workspace root, followed by the sidebar section the entity lives under,
+ * then the entity's own path — e.g.
+ * `Acme / Databases / prod / public / users` or
+ * `Acme / Apps / My App / src / App.tsx`.
+ */
+function segmentsForTab(
+  tab: ConsoleTab,
+  ctx: EntityContext,
+): BreadcrumbSegment[] {
+  const root: BreadcrumbSegment = { label: ctx.workspaceName };
+  const plain = (labels: Array<string | undefined>): BreadcrumbSegment[] => [
+    root,
+    ...labels
+      .filter((label): label is string => !!label)
+      .map(label => ({ label })),
+  ];
+
+  switch (tab.kind) {
+    case undefined:
+    case "console": {
+      if (!tab.filePath) {
+        return [
+          root,
+          { label: "Consoles" },
+          { label: "Unsaved console", italic: true },
+        ];
+      }
+      const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
+      return plain([
+        "Consoles",
+        group,
+        ...tab.filePath.split("/").filter(Boolean),
+      ]);
+    }
+    case "table-data":
+      return plain([
+        "Databases",
+        ctx.connectionName,
+        tab.databaseName,
+        (tab.metadata?.schema as string | undefined) || undefined,
+        (tab.metadata?.table as string | undefined) || undefined,
+      ]);
+    case "dashboard":
+      return plain(["Dashboards", ctx.dashboardTitle || tab.title]);
+    case "dashboard-data-source":
+      return plain([
+        "Dashboards",
+        ctx.dashboardTitle,
+        "Data sources",
+        ctx.dashboardDataSourceName || tab.title,
+      ]);
+    case "app":
+      return plain(["Apps", ctx.appTitle || tab.title]);
+    case "app-file": {
+      const path = (tab.metadata?.path as string | undefined) || "";
+      return plain([
+        "Apps",
+        ctx.appTitle || tab.title,
+        ...path.split("/").filter(Boolean),
+      ]);
+    }
+    case "app-binding":
+      return plain([
+        "Apps",
+        ctx.appTitle,
+        "Data sources",
+        ctx.appBindingName || tab.title,
+      ]);
+    case "connectors":
+      return plain(["Connectors", tab.title || "New connector"]);
+    case "flow-editor":
+      return plain(["Flows", tab.title || "New flow"]);
+    case "settings":
+      return plain([
+        "Settings",
+        tab.settingsSection ? SECTION_LABELS[tab.settingsSection] : undefined,
+      ]);
+    case "members":
+      return plain(["Settings", "Members"]);
+    case "plan":
+      return plain(["Plans", tab.title || "Plan"]);
+    default:
+      return plain([tab.title]);
+  }
+}
+
+interface EntityBreadcrumbsProps {
+  tabId: string;
+  /** Optional right-aligned content (e.g. a refresh button). */
+  trailing?: React.ReactNode;
+}
+
+/**
+ * Standardized breadcrumb bar shown at the top of every tab. One
+ * implementation so every entity gets the same font, height and style,
+ * with trails always starting at the workspace root.
+ */
+function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
+  const tab = useConsoleStore(s => s.tabs[tabId]);
+  const { currentWorkspace } = useWorkspace();
+
+  const connectionId = tab?.connectionId;
+  const connectionName = useSchemaStore(s => {
+    if (tab?.kind !== "table-data" || !currentWorkspace || !connectionId) {
+      return undefined;
+    }
+    const connection = (s.connections[currentWorkspace.id] || []).find(
+      c => c.id === connectionId,
+    );
+    return connection?.displayName || connection?.name;
+  });
+
+  const appId = tab?.metadata?.appId as string | undefined;
+  const bindingId = tab?.metadata?.bindingId as string | undefined;
+  const appTitle = useAppStore(s =>
+    appId ? s.openApps[appId]?.title : undefined,
+  );
+  const appBindingName = useAppStore(s =>
+    appId && bindingId
+      ? s.openApps[appId]?.dataBindings.find(b => b.id === bindingId)?.name
+      : undefined,
+  );
+
+  const dashboardId = tab?.metadata?.dashboardId as string | undefined;
+  const dataSourceId = tab?.metadata?.dataSourceId as string | undefined;
+  const dashboardTitle = useDashboardStore(s =>
+    dashboardId ? s.openDashboards[dashboardId]?.title : undefined,
+  );
+  const dashboardDataSourceName = useDashboardStore(s =>
+    dashboardId && dataSourceId
+      ? s.openDashboards[dashboardId]?.dataSources.find(
+          ds => ds.id === dataSourceId,
+        )?.name
+      : undefined,
+  );
+
+  if (!tab) return null;
+
+  const segments = segmentsForTab(tab, {
+    workspaceName: currentWorkspace?.name || "Workspace",
+    connectionName,
+    dashboardTitle,
+    dashboardDataSourceName,
+    appTitle,
+    appBindingName,
+  });
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        minHeight: 26,
+        px: 1.5,
+        py: 0.25,
+        backgroundColor: "background.paper",
+        color: "text.secondary",
+        fontSize: "0.75rem",
+        overflow: "hidden",
+        whiteSpace: "nowrap",
+        gap: 0.25,
+        borderBottom: "1px solid",
+        borderColor: "divider",
+        flexShrink: 0,
+      }}
+    >
+      {segments.map((segment, index) => {
+        const isLast = index === segments.length - 1;
+        return (
+          <Box
+            key={`${index}-${segment.label}`}
+            component="span"
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.25,
+              minWidth: 0,
+              flexShrink: isLast ? 0 : 1,
+            }}
+          >
+            {index > 0 && (
+              <BreadcrumbChevronIcon
+                size={12}
+                strokeWidth={2}
+                style={{ flexShrink: 0, opacity: 0.6 }}
+              />
+            )}
+            <Box
+              component="span"
+              sx={{
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                fontStyle: segment.italic ? "italic" : "normal",
+                color: isLast ? "text.primary" : "inherit",
+                fontWeight: isLast ? 500 : 400,
+              }}
+            >
+              {segment.label}
+            </Box>
+          </Box>
+        );
+      })}
+      {trailing && (
+        <Box
+          sx={{
+            ml: "auto",
+            display: "flex",
+            alignItems: "center",
+            flexShrink: 0,
+          }}
+        >
+          {trailing}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+export default React.memo(EntityBreadcrumbs);

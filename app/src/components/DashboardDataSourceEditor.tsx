@@ -10,7 +10,6 @@ import {
   Divider,
 } from "@mui/material";
 import {
-  ChevronRight as BreadcrumbChevronIcon,
   Database as MaterializeIcon,
   History as HistoryIcon,
   Eye as PreviewIcon,
@@ -27,6 +26,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
+import EntityBreadcrumbs from "./EntityBreadcrumbs";
 
 interface PreviewResult {
   results: Record<string, unknown>[];
@@ -74,6 +74,7 @@ export default function DashboardDataSourceEditor({
     s => s.fetchMaterializationRuns,
   );
   const executeQuery = useConsoleStore(s => s.executeQuery);
+  const updateTabTitle = useConsoleStore(s => s.updateTitle);
 
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "json" | "chart">("table");
@@ -92,6 +93,13 @@ export default function DashboardDataSourceEditor({
   }, [dashboard, workspaceId, dashboardId, openDashboard]);
 
   const dataSource = dashboard?.dataSources.find(ds => ds.id === dataSourceId);
+
+  // Keep the tab title in sync with the data source name (e.g. when the tab
+  // was opened from a deep link with a placeholder title).
+  const dataSourceName = dataSource?.name;
+  useEffect(() => {
+    if (dataSourceName) updateTabTitle(tabId, dataSourceName);
+  }, [dataSourceName, tabId, updateTabTitle]);
 
   const handleExecute = useCallback(
     async (content: string, connectionId?: string, databaseId?: string) => {
@@ -254,13 +262,6 @@ export default function DashboardDataSourceEditor({
     );
   }
 
-  const breadcrumb = [
-    "Dashboards",
-    dashboard.title || "Dashboard",
-    "Data sources",
-    dataSource.name,
-  ];
-
   const headerExtras = (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, ml: 1 }}>
       <Button
@@ -316,53 +317,7 @@ export default function DashboardDataSourceEditor({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Breadcrumb — matches the console breadcrumb style */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          minHeight: 22,
-          px: 1.5,
-          py: 0.25,
-          backgroundColor: "background.paper",
-          color: "text.secondary",
-          fontSize: "0.75rem",
-          gap: 0.25,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        {breadcrumb.map((segment, index) => (
-          <Box
-            key={`${index}-${segment}`}
-            component="span"
-            sx={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 0.25,
-              minWidth: 0,
-            }}
-          >
-            {index > 0 && (
-              <BreadcrumbChevronIcon
-                size={12}
-                strokeWidth={2}
-                style={{ flexShrink: 0, opacity: 0.6 }}
-              />
-            )}
-            <Box
-              component="span"
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {segment}
-            </Box>
-          </Box>
-        ))}
-      </Box>
+      <EntityBreadcrumbs tabId={tabId} />
 
       <Box sx={{ flexGrow: 1, minHeight: 0 }}>
         <PanelGroup direction="vertical" style={{ height: "100%" }}>

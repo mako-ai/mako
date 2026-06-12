@@ -7,6 +7,7 @@ import {
   configureMonacoForJsx,
   languageForPath,
 } from "../app-runtime/monaco-jsx";
+import EntityBreadcrumbs from "./EntityBreadcrumbs";
 
 /**
  * Full-screen editor for a single file within an app. Opened as its own tab
@@ -14,9 +15,11 @@ import {
  * refreshes any open preview tab) and auto-persist.
  */
 export default function AppFileEditor({
+  tabId,
   appId,
   path,
 }: {
+  tabId: string;
   appId: string;
   path: string;
 }) {
@@ -68,23 +71,7 @@ export default function AppFileEditor({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Breadcrumb */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          minHeight: 22,
-          px: 1.5,
-          py: 0.25,
-          backgroundColor: "background.paper",
-          color: "text.secondary",
-          fontSize: "0.75rem",
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        {appEntity.title} / {path}
-      </Box>
+      <EntityBreadcrumbs tabId={tabId} />
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <MonacoEditor
           height="100%"

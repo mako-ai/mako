@@ -5,9 +5,21 @@ import {
   useConsoleStore,
 } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
+import { useAppStore } from "../store/appStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { SECTION_LABELS, isSettingsSection } from "../pages/settings/sections";
+import {
+  focusAppBindingTab,
+  focusAppFileTab,
+  focusAppTab,
+} from "../app-runtime/shell";
+import { focusDashboardDataSourceTab } from "../dashboard-runtime/shell";
+
+/** Encode a path that may contain slashes, keeping the slashes readable. */
+function encodePathSegments(path: string): string {
+  return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+}
 
 /**
  * UrlSync component
@@ -53,6 +65,46 @@ export function UrlSync() {
         return tab.metadata?.dashboardId
           ? `/d/${tab.metadata.dashboardId}`
           : null;
+      case "dashboard-data-source": {
+        const dashboardId = tab.metadata?.dashboardId as string | undefined;
+        const dataSourceId = tab.metadata?.dataSourceId as string | undefined;
+        return dashboardId && dataSourceId
+          ? `/d/${dashboardId}/data/${dataSourceId}`
+          : null;
+      }
+      case "table-data": {
+        const schema = tab.metadata?.schema as string | undefined;
+        const table = tab.metadata?.table as string | undefined;
+        if (!tab.connectionId || !table) return null;
+        const params = new URLSearchParams();
+        if (tab.databaseName) params.set("db", tab.databaseName);
+        if (tab.databaseId) params.set("dbid", tab.databaseId);
+        const query = params.toString();
+        return (
+          `/t/${tab.connectionId}/${encodeURIComponent(schema || "public")}` +
+          `/${encodeURIComponent(table)}${query ? `?${query}` : ""}`
+        );
+      }
+      case "app": {
+        const appId = tab.metadata?.appId as string | undefined;
+        return appId ? `/a/${appId}` : null;
+      }
+      case "app-file": {
+        const appId = tab.metadata?.appId as string | undefined;
+        const path = tab.metadata?.path as string | undefined;
+        return appId && path
+          ? `/a/${appId}/file/${encodePathSegments(path)}`
+          : null;
+      }
+      case "app-binding": {
+        const appId = tab.metadata?.appId as string | undefined;
+        const bindingId = tab.metadata?.bindingId as string | undefined;
+        return appId && bindingId ? `/a/${appId}/data/${bindingId}` : null;
+      }
+      case "plan": {
+        const chatId = tab.metadata?.chatId as string | undefined;
+        return chatId ? `/p/${chatId}` : null;
+      }
       case "settings":
         return tab.settingsSection
           ? `/settings/${tab.settingsSection}`
@@ -82,11 +134,23 @@ export function UrlSync() {
 
     const path = window.location.pathname;
 
-    // Regex patterns for routes
+    // Regex patterns for routes (most specific first)
     const consoleMatch = path.match(/^\/c\/([a-zA-Z0-9-]+)/);
     const connectorMatch = path.match(/^\/cx\/([a-zA-Z0-9-]+)/);
     const flowMatch = path.match(/^\/f\/([a-zA-Z0-9-]+)/);
-    const dashboardMatch = path.match(/^\/d\/([a-zA-Z0-9-]+)/);
+    const dashboardDataSourceMatch = path.match(
+      /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9-]+)/,
+    );
+    const dashboardMatch = path.match(/^\/d\/([a-zA-Z0-9-]+)\/?$/);
+    const tableMatch = path.match(
+      /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
+    );
+    const appFileMatch = path.match(/^\/a\/([a-zA-Z0-9-]+)\/file\/(.+)$/);
+    const appBindingMatch = path.match(
+      /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9-]+)/,
+    );
+    const appMatch = path.match(/^\/a\/([a-zA-Z0-9-]+)\/?$/);
+    const planMatch = path.match(/^\/p\/([a-zA-Z0-9-]+)/);
     const settingsSectionMatch = path.match(/^\/settings\/([a-z-]+)$/);
     const settingsMatch = path.match(/^\/settings\/?$/);
 
@@ -141,6 +205,15 @@ export function UrlSync() {
         });
         setActiveTab(id);
       }
+    } else if (dashboardDataSourceMatch) {
+      // /d/:dashboardId/data/:dataSourceId
+      const dashboardId = dashboardDataSourceMatch[1];
+      const dataSourceId = dashboardDataSourceMatch[2];
+      setLeftPane("dashboards");
+
+      // Placeholder title — DashboardDataSourceEditor syncs the real name
+      // onto the tab once the dashboard loads.
+      focusDashboardDataSourceTab(dashboardId, dataSourceId, "Data source");
     } else if (dashboardMatch) {
       // /d/:dashboardId
       const dashboardId = dashboardMatch[1];
@@ -167,6 +240,88 @@ export function UrlSync() {
             });
             setActiveTab(id);
           });
+      }
+    } else if (tableMatch) {
+      // /t/:connectionId/:schema/:table (+ ?db=<name>&dbid=<id>)
+      const connectionId = tableMatch[1];
+      const schema = decodeURIComponent(tableMatch[2]);
+      const table = decodeURIComponent(tableMatch[3]);
+      const params = new URLSearchParams(window.location.search);
+      const databaseName = params.get("db") || undefined;
+      const databaseId = params.get("dbid") || undefined;
+      setLeftPane("databases");
+
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
+        t =>
+          t.kind === "table-data" &&
+          t.connectionId === connectionId &&
+          t.metadata?.schema === schema &&
+          t.metadata?.table === table &&
+          (t.databaseName || undefined) === databaseName,
+      );
+
+      if (existingTab) {
+        setActiveTab(existingTab.id);
+      } else {
+        const id = openTab({
+          title: table,
+          content: "",
+          kind: "table-data",
+          connectionId,
+          databaseId,
+          databaseName,
+          metadata: { schema, table },
+        });
+        setActiveTab(id);
+      }
+    } else if (appFileMatch) {
+      // /a/:appId/file/:path
+      const appId = appFileMatch[1];
+      const filePath = appFileMatch[2]
+        .split("/")
+        .filter(Boolean)
+        .map(decodeURIComponent)
+        .join("/");
+      setLeftPane("apps");
+      focusAppFileTab(appId, filePath);
+    } else if (appBindingMatch) {
+      // /a/:appId/data/:bindingId
+      const appId = appBindingMatch[1];
+      const bindingId = appBindingMatch[2];
+      setLeftPane("apps");
+
+      // Placeholder title — AppBindingEditor syncs the real name onto the
+      // tab once the app loads.
+      focusAppBindingTab(appId, bindingId, "Data source");
+    } else if (appMatch) {
+      // /a/:appId
+      const appId = appMatch[1];
+      setLeftPane("apps");
+
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
+        t => t.kind === "app" && t.metadata?.appId === appId,
+      );
+
+      if (existingTab) {
+        setActiveTab(existingTab.id);
+      } else {
+        // Fetch the app to get its title, then open the tab
+        useAppStore
+          .getState()
+          .fetchApp(currentWorkspace.id, appId)
+          .then(app => {
+            focusAppTab(appId, app?.title || "App");
+          });
+      }
+    } else if (planMatch) {
+      // /p/:chatId — plans only exist within a chat session, so we can only
+      // focus a plan tab that is already present in this browser's state.
+      const chatId = planMatch[1];
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
+        t => t.kind === "plan" && t.metadata?.chatId === chatId,
+      );
+      if (existingTab) {
+        setActiveTab(existingTab.id);
       }
     } else if (settingsSectionMatch) {
       // /settings/:section — open the explorer *and* focus the section's tab.
@@ -221,7 +376,10 @@ export function UrlSync() {
       newPath = "/settings";
     }
 
-    if (window.location.pathname !== newPath) {
+    // Compare against pathname + search: table URLs carry the database in a
+    // query string, and switching to a tab without one must clear it.
+    const currentPath = window.location.pathname + window.location.search;
+    if (currentPath !== newPath) {
       window.history.replaceState(null, "", newPath);
     }
   }, [activeTabPath, activeView, user]);
