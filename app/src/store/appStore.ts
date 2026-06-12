@@ -81,6 +81,16 @@ interface AppActions {
     appId: string,
     title: string,
   ) => Promise<void>;
+  /**
+   * Share an app to the workspace (or make it private again). Moves the app
+   * between the "My Apps" / "Workspace" explorer sections optimistically and
+   * persists the access change; refetches the list on failure.
+   */
+  setAppAccess: (
+    workspaceId: string,
+    appId: string,
+    access: "private" | "workspace",
+  ) => Promise<void>;
 
   setActiveApp: (appId: string | null) => void;
 
@@ -310,6 +320,40 @@ export const useAppStore = create<AppStore>()(
       });
       await get().persistApp(workspaceId, appId);
       void get().fetchList(workspaceId);
+    },
+
+    setAppAccess: async (workspaceId, appId, access) => {
+      const fromKey = access === "workspace" ? "myApps" : "workspaceApps";
+      const toKey = access === "workspace" ? "workspaceApps" : "myApps";
+
+      let moved = false;
+      set(state => {
+        const fromList = state[fromKey][workspaceId] || [];
+        const index = fromList.findIndex(item => item.id === appId);
+        if (index === -1) return; // already in the target section
+        const [item] = fromList.splice(index, 1);
+        item.access = access;
+        const toList = state[toKey][workspaceId] || [];
+        toList.unshift(item);
+        state[toKey][workspaceId] = toList;
+        const open = state.openApps[appId];
+        if (open) open.access = access;
+        moved = true;
+      });
+      if (!moved) return;
+
+      try {
+        await apiClient.put<{ success: boolean; app: AppEntity }>(
+          `/workspaces/${workspaceId}/apps/${appId}`,
+          { access },
+        );
+      } catch {
+        // Revert to server truth on failure.
+        void get().fetchList(workspaceId);
+        set(state => {
+          state.error[workspaceId] = "Failed to update app sharing";
+        });
+      }
     },
 
     setActiveApp: appId =>
