@@ -36,6 +36,7 @@ import { useSchemaStore } from "../store/schemaStore";
 import {
   useAvailableEntitiesStore,
   flattenConnectorEntities,
+  type FlattenedConnectorEntity,
 } from "../store/availableEntitiesStore";
 import { trackEvent } from "../lib/analytics";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
@@ -72,270 +73,8 @@ const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set([
 const SYNC_ENGINE_PERMISSION_ERROR =
   "The flow was saved, but changing the sync engine requires the workspace Owner or Admin role. Ask an admin to upgrade your role, then set the sync engine again.";
 
-const CLAAP_ENTITY_FIELDS: Record<string, string[]> = {
-  recordings: [
-    "id",
-    "title",
-    "state",
-    "createdAt",
-    "durationSeconds",
-    "source",
-    "url",
-    "thumbnailUrl",
-    "labels",
-    "channel",
-    "recorder",
-    "workspace",
-    "meeting",
-    "deal",
-    "companies",
-    "crmInfo",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  workspace: [
-    "id",
-    "name",
-    "createdAt",
-    "membersCount",
-    "recordingsCount",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-};
-
-const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
-  leads: [
-    "id",
-    "display_name",
-    "status_id",
-    "status_label",
-    "date_created",
-    "date_updated",
-    "organization_id",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  opportunities: [
-    "id",
-    "lead_id",
-    "status_id",
-    "status_label",
-    "status_type",
-    "value",
-    "date_created",
-    "date_updated",
-    "date_won",
-    "user_id",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Call": [
-    "id",
-    "lead_id",
-    "user_id",
-    "direction",
-    "duration",
-    "phone",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Email": [
-    "id",
-    "lead_id",
-    "user_id",
-    "subject",
-    "sender",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:EmailThread": [
-    "id",
-    "lead_id",
-    "user_id",
-    "subject",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:SMS": [
-    "id",
-    "lead_id",
-    "user_id",
-    "text",
-    "direction",
-    "phone",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Meeting": [
-    "id",
-    "lead_id",
-    "user_id",
-    "title",
-    "starts_at",
-    "ends_at",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Note": [
-    "id",
-    "lead_id",
-    "user_id",
-    "note",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:LeadStatusChange": [
-    "id",
-    "lead_id",
-    "user_id",
-    "old_status_label",
-    "new_status_label",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:OpportunityStatusChange": [
-    "id",
-    "lead_id",
-    "user_id",
-    "old_status_label",
-    "new_status_label",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:TaskCompleted": [
-    "id",
-    "lead_id",
-    "user_id",
-    "text",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  contacts: [
-    "id",
-    "lead_id",
-    "first_name",
-    "last_name",
-    "display_name",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  users: [
-    "id",
-    "email",
-    "first_name",
-    "last_name",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_fields: [
-    "id",
-    "name",
-    "custom_field_type",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:CustomActivity": [
-    "id",
-    "lead_id",
-    "user_id",
-    "_type",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_activity_types: [
-    "id",
-    "name",
-    "description",
-    "api_create_only",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_object_types: [
-    "id",
-    "name",
-    "description",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_objects: [
-    "id",
-    "custom_object_type",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  lead_statuses: [
-    "id",
-    "label",
-    "organization_id",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  opportunity_statuses: [
-    "id",
-    "label",
-    "type",
-    "organization_id",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-};
+// Always-selectable fallback when the connector exposes no schema fields.
+const SYSTEM_ENTITY_FIELDS = ["_syncedAt", "_dataSourceId", "id"];
 
 interface FormData {
   dataSourceId: string;
@@ -411,7 +150,9 @@ export function WebhookFlowForm({
     flowId,
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
-  const [_entityMetadata, setEntityMetadata] = useState<any[]>([]);
+  const [entityMetadata, setEntityMetadata] = useState<
+    FlattenedConnectorEntity[]
+  >([]);
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
 
   const toggleStep = (stepIndex: number) => {
@@ -1358,22 +1099,23 @@ export function WebhookFlowForm({
                               </Typography>
                             </Box>
                             {watchEntityLayouts.map((layout, idx) => {
-                              const entityFieldMap =
-                                selectedConnectorType === "close"
-                                  ? CLOSE_ENTITY_FIELDS
-                                  : selectedConnectorType === "claap"
-                                    ? CLAAP_ENTITY_FIELDS
-                                    : {};
-                              const entityFields = entityFieldMap[
-                                layout.entity
-                              ] || ["_syncedAt", "_dataSourceId", "id"];
-                              const timestampFields = entityFields.filter(
-                                f =>
-                                  f.includes("date") ||
-                                  f.includes("created") ||
-                                  f.includes("updated") ||
-                                  f === "_syncedAt",
-                              );
+                              const schemaFields =
+                                entityMetadata.find(
+                                  e => e.name === layout.entity,
+                                )?.fields ?? [];
+                              const entityFields =
+                                schemaFields.length > 0
+                                  ? schemaFields.map(f => f.name)
+                                  : SYSTEM_ENTITY_FIELDS;
+                              const timestampFields =
+                                schemaFields.length > 0
+                                  ? schemaFields
+                                      .filter(f => f.type === "timestamp")
+                                      .map(f => f.name)
+                                  : ["_syncedAt"];
+                              if (!timestampFields.includes("_syncedAt")) {
+                                timestampFields.push("_syncedAt");
+                              }
                               const isEnabled = layout.enabled !== false;
                               return (
                                 <Box
