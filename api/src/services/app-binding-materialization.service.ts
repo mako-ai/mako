@@ -523,6 +523,13 @@ export async function materializeAppBinding(input: {
             databaseName: binding.databaseName,
           },
         );
+      // A failed schema probe means the query itself is broken — surface it
+      // instead of silently building an empty "ready" artifact.
+      if (!fieldsResult.success) {
+        throw new Error(
+          fieldsResult.error || "Failed to resolve query schema",
+        );
+      }
       const fields: FieldMeta[] = fieldsResult.fields ?? [];
 
       const parquet = await buildParquetFromBatches({
@@ -530,16 +537,22 @@ export async function materializeAppBinding(input: {
         rowLimit: PARQUET_ROW_LIMIT,
         fields,
         streamBatches: async insertBatch => {
-          await databaseConnectionService.executeStreamingQuery(
-            connection,
-            executableQuery,
-            {
-              batchSize: 5000,
-              databaseId: binding.databaseId,
-              databaseName: binding.databaseName,
-              onBatch: insertBatch,
-            },
-          );
+          const streamResult =
+            await databaseConnectionService.executeStreamingQuery(
+              connection,
+              executableQuery,
+              {
+                batchSize: 5000,
+                databaseId: binding.databaseId,
+                databaseName: binding.databaseName,
+                onBatch: insertBatch,
+              },
+            );
+          // Same rationale: a mid-stream failure must fail the build, not
+          // produce a silently truncated artifact.
+          if (!streamResult.success) {
+            throw new Error(streamResult.error || "Streaming query failed");
+          }
         },
       });
 
