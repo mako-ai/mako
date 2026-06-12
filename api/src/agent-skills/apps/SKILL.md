@@ -41,7 +41,10 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    **Materialized bindings (DuckDB):** set `materialization: "parquet"` to materialize
    the query into a Parquet artifact (same pipeline as dashboards) that is loaded into
    DuckDB-WASM in the browser. After creating/editing a parquet binding, call
-   `materialize_binding`. Then the app can run fast analytical SQL client-side:
+   `materialize_binding`. The build runs server-side in the background; the tool waits
+   briefly and may return status `building` — that is not an error. The app loads the
+   data automatically when ready, and you can call `materialize_binding` again later to
+   confirm. Then the app can run fast analytical SQL client-side:
 
    ```tsx
    import { useDuckDB } from "@mako/app-sdk";

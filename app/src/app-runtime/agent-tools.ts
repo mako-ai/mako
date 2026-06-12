@@ -42,10 +42,17 @@ function listOpenApps() {
     });
 }
 
+/**
+ * Bounded wait for `materialize_binding`. The build runs server-side in the
+ * background; the tool waits at most this long before returning a "still
+ * building" result, so the agent round-trip can never hang on a slow build.
+ */
+const MATERIALIZE_TOOL_WAIT_MS = 120_000;
+
 export async function executeAppAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  _options?: { executionId?: string; signal?: AbortSignal },
+  options?: { executionId?: string; signal?: AbortSignal },
 ): Promise<ToolResult> {
   const store = useAppStore.getState();
   const workspaceId = getCurrentWorkspaceId();
@@ -209,13 +216,28 @@ export async function executeAppAgentTool(
         workspaceId,
         appId,
         binding.id,
+        { signal: options?.signal, timeoutMs: MATERIALIZE_TOOL_WAIT_MS },
       );
+      if (result.status === "building") {
+        // Not an error: the build continues server-side. Return so the agent
+        // can keep working instead of blocking on a long-running build.
+        return {
+          success: true,
+          binding: { name: binding.name },
+          status: "building",
+          hint:
+            `Materialization of "${binding.name}" is still running in the background. ` +
+            "The app will load the data automatically once it is ready. " +
+            "Call materialize_binding again later to check completion if needed.",
+        };
+      }
       if (!result.success) {
         return fail(result.error || "Materialization failed");
       }
       return {
         success: true,
         binding: { name: binding.name },
+        status: "ready",
         hint: `Materialized. Read it with useQuery("${binding.name}") or useDuckDB(sql).`,
       };
     }

@@ -81,6 +81,11 @@ export const AppBindingCacheSchema = z.object({
   definitionHash: z.string().optional(),
   artifactRevision: z.string().optional(),
   parquetBuildStatus: AppBindingParquetStatusSchema.nullish(),
+  /**
+   * Heartbeat for the current build. Refreshed periodically while a build is
+   * queued/running so stuck "building" statuses can be detected and recovered.
+   */
+  parquetBuildStatusAt: z.string().nullish(),
   parquetLastError: z.string().nullish(),
   rowCount: z.number().optional(),
   byteSize: z.number().optional(),

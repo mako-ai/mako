@@ -158,7 +158,11 @@ export const clientAppTools = {
     description:
       "Build (or rebuild) the Parquet artifact for a 'parquet' data binding and " +
       "load it into the app's DuckDB-WASM instance. Run this after creating or " +
-      "editing a parquet binding so useQuery/useDuckDB return fresh data.",
+      "editing a parquet binding so useQuery/useDuckDB return fresh data. " +
+      "The build runs server-side in the background: the tool waits up to ~2 " +
+      "minutes and returns status 'building' if it is still running — that is " +
+      "not an error; the app picks up the data automatically when ready, and " +
+      "you can call this tool again later to confirm completion.",
     inputSchema: materializeBindingSchema,
   }),
   run_app: tool({
