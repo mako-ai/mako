@@ -53,8 +53,20 @@ interface EntityLayoutConfig {
   enabled?: boolean;
 }
 
-const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set(["stripe", "close", "claap"]);
-const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set(["close", "claap"]);
+const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set([
+  "stripe",
+  "close",
+  "claap",
+  "calendly",
+]);
+const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set([
+  "close",
+  "claap",
+  "calendly",
+]);
+
+const SYNC_ENGINE_PERMISSION_ERROR =
+  "The flow was saved, but changing the sync engine requires the workspace Owner or Admin role. Ask an admin to upgrade your role, then set the sync engine again.";
 
 const CLAAP_ENTITY_FIELDS: Record<string, string[]> = {
   recordings: [
@@ -461,7 +473,9 @@ export function WebhookFlowForm({
       ? "Claap"
       : selectedConnectorType === "close"
         ? "Close"
-        : "Provider";
+        : selectedConnectorType === "calendly"
+          ? "Calendly"
+          : "Provider";
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -943,13 +957,16 @@ export function WebhookFlowForm({
       let newFlow;
       if (isNewMode) {
         newFlow = await createFlow(currentWorkspace.id, payload);
-        if (desiredSyncEngine !== "legacy") {
-          await setSyncEngine(
-            currentWorkspace.id,
-            newFlow._id,
-            desiredSyncEngine,
-          );
-        }
+        // setSyncEngine swallows its error and returns false (e.g. 403 when the
+        // user isn't owner/admin). Capture it before fetchFlows wipes storeError.
+        const syncEngineOk =
+          desiredSyncEngine === "legacy"
+            ? true
+            : await setSyncEngine(
+                currentWorkspace.id,
+                newFlow._id,
+                desiredSyncEngine,
+              );
 
         // Track flow creation
         trackEvent("flow_created", {
@@ -967,6 +984,13 @@ export function WebhookFlowForm({
         // Notify parent that a new flow has been created
         onSaved?.(newFlow._id);
 
+        if (!syncEngineOk) {
+          setError(SYNC_ENGINE_PERMISSION_ERROR);
+          // Keep the form open so the message stays visible; the flow itself
+          // was created, only the sync-engine change was rejected.
+          return;
+        }
+
         // Reset form with the new flow data to mark it as pristine
         reset(data);
 
@@ -974,20 +998,26 @@ export function WebhookFlowForm({
         onSave?.();
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
-        if (desiredSyncEngine !== currentSyncEngine) {
-          await setSyncEngine(
-            currentWorkspace.id,
-            currentFlowId,
-            desiredSyncEngine,
-          );
-        }
+        const syncEngineOk =
+          desiredSyncEngine === currentSyncEngine
+            ? true
+            : await setSyncEngine(
+                currentWorkspace.id,
+                currentFlowId,
+                desiredSyncEngine,
+              );
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
+        onSaved?.(currentFlowId);
+
+        if (!syncEngineOk) {
+          setError(SYNC_ENGINE_PERMISSION_ERROR);
+          return;
+        }
+
         // Reset form to mark it as pristine
         reset(data);
-
-        onSaved?.(currentFlowId);
 
         // Notify parent if needed
         onSave?.();
