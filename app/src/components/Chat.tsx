@@ -78,6 +78,7 @@ import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
 import { PlanCard } from "./PlanCard";
+import { focusPlanTab, usePlanStore } from "../store/planStore";
 import type {
   AskClarifyingQuestionsInput,
   AskClarifyingQuestionsOutput,
@@ -896,6 +897,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 return (
                   <PlanCard
                     key={key}
+                    toolCallId={toolCallId}
                     input={part.input as SubmitPlanInput}
                     output={part.output as SubmitPlanOutput}
                   />
@@ -2942,6 +2944,39 @@ const Chat: React.FC<ChatProps> = ({
     return null;
   }, [messages]);
 
+  // Pending submit_plan: register the plan + its resolver in planStore and
+  // auto-open the main-view plan tab (once per toolCallId; focusPlanTab is
+  // idempotent via the deterministic `plan-${toolCallId}` tab id). The
+  // resolver re-registers whenever handleResolveInteractiveTool changes so it
+  // always settles the tool through the live useChat instance.
+  const autoOpenedPlanTabsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (
+      !pendingInteractiveTool ||
+      pendingInteractiveTool.toolName !== "submit_plan"
+    ) {
+      return;
+    }
+    const { toolCallId } = pendingInteractiveTool;
+    if (!toolCallId) return;
+    const input = pendingInteractiveTool.input as SubmitPlanInput;
+
+    const planStore = usePlanStore.getState();
+    planStore.registerPlan(toolCallId, chatId, input);
+    planStore.registerResolver(toolCallId, output => {
+      handleResolveInteractiveTool({
+        tool: "submit_plan",
+        toolCallId,
+        output: output as unknown as Record<string, unknown>,
+      });
+    });
+
+    if (!autoOpenedPlanTabsRef.current.has(toolCallId)) {
+      autoOpenedPlanTabsRef.current.add(toolCallId);
+      focusPlanTab(toolCallId, chatId, input?.title ?? "Plan");
+    }
+  }, [pendingInteractiveTool, chatId, handleResolveInteractiveTool]);
+
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
     const existingTab = store.tabs[consoleId];
@@ -3438,14 +3473,9 @@ const Chat: React.FC<ChatProps> = ({
             />
           ) : (
             <PlanCard
+              toolCallId={pendingInteractiveTool.toolCallId}
+              chatId={chatId}
               input={pendingInteractiveTool.input as SubmitPlanInput}
-              onResolve={output =>
-                handleResolveInteractiveTool({
-                  tool: pendingInteractiveTool.toolName,
-                  toolCallId: pendingInteractiveTool.toolCallId,
-                  output: output as unknown as Record<string, unknown>,
-                })
-              }
             />
           )}
         </Box>

@@ -18,7 +18,8 @@ export type TabKind =
   | "table-data"
   | "app"
   | "app-file"
-  | "app-binding";
+  | "app-binding"
+  | "plan";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its

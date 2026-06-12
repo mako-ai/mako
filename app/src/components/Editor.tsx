@@ -48,6 +48,7 @@ import {
   Database as DatabaseIcon,
   Table as TableDataIcon,
   ChevronRight as BreadcrumbChevronIcon,
+  ClipboardList as PlanIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -61,6 +62,7 @@ import DashboardCanvas from "./DashboardCanvas";
 import AppRenderer from "./AppRenderer";
 import AppFileEditor from "./AppFileEditor";
 import AppBindingEditor from "./AppBindingEditor";
+import PlanDocumentTab from "./PlanDocumentTab";
 import TableDataView from "./TableDataView";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
@@ -2053,6 +2055,8 @@ function Editor({
                               <DatabaseIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "table-data" ? (
                               <TableDataIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "plan" ? (
+                              <PlanIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
                               <Box
                                 component="img"
@@ -2255,6 +2259,10 @@ function Editor({
                     tabId={tab.id}
                     appId={tab.metadata?.appId as string}
                     bindingId={tab.metadata?.bindingId as string}
+                  />
+                ) : tab.kind === "plan" ? (
+                  <PlanDocumentTab
+                    toolCallId={tab.metadata?.toolCallId as string}
                   />
                 ) : (
                   /* Console tab: editor + results split */
