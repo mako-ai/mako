@@ -31,8 +31,12 @@ export const PREVIEW_MESSAGE = {
   duckDbResult: "mako-app:duckdb-result",
   capture: "mako-app:capture",
   captureResult: "mako-app:capture-result",
+  setTheme: "mako-app:set-theme",
   error: "mako-app:error",
 } as const;
+
+/** Effective color mode delivered to the sandboxed app. */
+export type PreviewTheme = "light" | "dark";
 
 /**
  * DOM-capture library loaded *inside* the sandboxed iframe for self-capture.
@@ -47,6 +51,82 @@ export const PREVIEW_MESSAGE = {
  * inlines computed styles directly with no helper iframe.
  */
 const CAPTURE_LIB_URL = `${ESM_HOST}/html-to-image@1`;
+
+/**
+ * Design tokens injected into every app preview.
+ *
+ * Shadcn-style names with the same palette as the Mako shell
+ * (`app/src/index.css`), but shipped as ready-to-use colors — app code writes
+ * `var(--background)` directly (works in inline styles, CSS-in-JS, and SVG
+ * fill/stroke) instead of the host's `hsl(var(--background))` triplet idiom.
+ *
+ * Light values live on `:root`, dark overrides on `:root.dark`. The bootstrap
+ * toggles the `dark` class from the embedded payload theme, parent
+ * `mako-app:set-theme` messages, or `prefers-color-scheme` when standalone.
+ * Body background/text are pre-wired so apps inherit a correct theme with no
+ * theme code at all. The (future) `webcontainer` runtime should keep this
+ * same token + message contract.
+ */
+const THEME_TOKENS_CSS = `
+      :root {
+        color-scheme: light;
+        --background: hsl(0 0% 100%);
+        --foreground: hsl(240 10% 3.9%);
+        --card: hsl(0 0% 100%);
+        --card-foreground: hsl(240 10% 3.9%);
+        --popover: hsl(0 0% 100%);
+        --popover-foreground: hsl(240 10% 3.9%);
+        --primary: hsl(240 5.9% 10%);
+        --primary-foreground: hsl(0 0% 98%);
+        --secondary: hsl(240 4.8% 95.9%);
+        --secondary-foreground: hsl(240 5.9% 10%);
+        --muted: hsl(240 4.8% 95.9%);
+        --muted-foreground: hsl(240 3.8% 46.1%);
+        --accent: hsl(240 4.8% 95.9%);
+        --accent-foreground: hsl(240 5.9% 10%);
+        --destructive: hsl(0 84.2% 60.2%);
+        --destructive-foreground: hsl(0 0% 98%);
+        --border: hsl(240 5.9% 90%);
+        --input: hsl(240 5.9% 90%);
+        --ring: hsl(240 5.9% 10%);
+        --chart-1: hsl(12 76% 61%);
+        --chart-2: hsl(173 58% 39%);
+        --chart-3: hsl(197 37% 24%);
+        --chart-4: hsl(43 74% 66%);
+        --chart-5: hsl(27 87% 67%);
+        --radius: 0.5rem;
+      }
+      :root.dark {
+        color-scheme: dark;
+        --background: hsl(240 10% 3.9%);
+        --foreground: hsl(0 0% 98%);
+        --card: hsl(240 10% 3.9%);
+        --card-foreground: hsl(0 0% 98%);
+        --popover: hsl(240 10% 3.9%);
+        --popover-foreground: hsl(0 0% 98%);
+        --primary: hsl(0 0% 98%);
+        --primary-foreground: hsl(240 5.9% 10%);
+        --secondary: hsl(240 3.7% 15.9%);
+        --secondary-foreground: hsl(0 0% 98%);
+        --muted: hsl(240 3.7% 15.9%);
+        --muted-foreground: hsl(240 5% 64.9%);
+        --accent: hsl(240 3.7% 15.9%);
+        --accent-foreground: hsl(0 0% 98%);
+        --destructive: hsl(0 62.8% 30.6%);
+        --destructive-foreground: hsl(0 0% 98%);
+        --border: hsl(240 3.7% 15.9%);
+        --input: hsl(240 3.7% 15.9%);
+        --ring: hsl(240 4.9% 83.9%);
+        --chart-1: hsl(220 70% 50%);
+        --chart-2: hsl(160 60% 45%);
+        --chart-3: hsl(30 80% 55%);
+        --chart-4: hsl(280 65% 60%);
+        --chart-5: hsl(340 75% 55%);
+      }
+      body {
+        background: var(--background);
+        color: var(--foreground);
+      }`;
 
 function buildImportMap(dependencies: Record<string, string>): string {
   const imports: Record<string, string> = {
@@ -80,7 +160,17 @@ function bareSpecifiers(dependencies: Record<string, string>): string[] {
   return [...set];
 }
 
-export function buildPreviewHtml(appEntity: AppEntity): string {
+export function buildPreviewHtml(
+  appEntity: AppEntity,
+  options?: {
+    /**
+     * Effective theme to boot with. Hosts embedding the preview pass their
+     * current mode (and post `mako-app:set-theme` on later toggles); when
+     * omitted/null the iframe follows `prefers-color-scheme` (standalone).
+     */
+    theme?: PreviewTheme | null;
+  },
+): string {
   const scriptFiles: Record<string, string> = {};
   for (const file of appEntity.files) {
     if (SCRIPT_EXT.test(file.path)) {
@@ -96,6 +186,7 @@ export function buildPreviewHtml(appEntity: AppEntity): string {
     files: scriptFiles,
     bareDeps,
     entrypoint,
+    theme: options?.theme ?? null,
   });
 
   return `<!DOCTYPE html>
@@ -107,6 +198,7 @@ export function buildPreviewHtml(appEntity: AppEntity): string {
     <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
     <style>
       html, body, #root { margin: 0; height: 100%; }
+${THEME_TOKENS_CSS}
       #mako-error {
         position: fixed; inset: 0; background: #1e1e1e; color: #f48771;
         font-family: ui-monospace, monospace; font-size: 13px; padding: 16px;
@@ -147,6 +239,49 @@ window.addEventListener("error", (e) => showError(e.message || "Runtime error", 
 window.addEventListener("unhandledrejection", (e) =>
   showError((e.reason && e.reason.message) || "Unhandled promise rejection", "runtime"),
 );
+
+// --- Theme: the injected CSS tokens flip via the 'dark' class on <html>.
+// An explicit theme comes from the embedded payload (host's mode at build
+// time) or parent "mako-app:set-theme" messages (live toggles); with no
+// explicit theme the app follows prefers-color-scheme (standalone). ---
+const themeListeners = new Set();
+const systemDark = window.matchMedia
+  ? window.matchMedia("(prefers-color-scheme: dark)")
+  : null;
+let explicitTheme = null; // "light" | "dark" | null (null = follow system)
+let currentTheme = "light";
+
+function resolveTheme() {
+  if (explicitTheme === "light" || explicitTheme === "dark") return explicitTheme;
+  return systemDark && systemDark.matches ? "dark" : "light";
+}
+function applyTheme() {
+  const next = resolveTheme();
+  document.documentElement.classList.toggle("dark", next === "dark");
+  if (next !== currentTheme) {
+    currentTheme = next;
+    themeListeners.forEach((listener) => {
+      try {
+        listener(next);
+      } catch (_) {
+        /* listener errors must not break theming */
+      }
+    });
+  }
+}
+function setExplicitTheme(theme) {
+  explicitTheme = theme === "light" || theme === "dark" ? theme : null;
+  applyTheme();
+}
+if (systemDark && systemDark.addEventListener) {
+  systemDark.addEventListener("change", () => {
+    if (explicitTheme == null) applyTheme();
+  });
+}
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type === "mako-app:set-theme") setExplicitTheme(data.theme);
+});
 
 async function waitForBabel(timeoutMs = 10000) {
   const start = Date.now();
@@ -198,13 +333,25 @@ function warnTruncated(source, res) {
 
 // --- Self-capture: the parent cannot rasterize this opaque-origin iframe, so
 // it asks us to screenshot ourselves and posts the PNG back. ---
+function defaultCaptureBackground() {
+  // Match the active theme (--background flips with the 'dark' class) so dark
+  // apps aren't composited onto a white backdrop.
+  try {
+    const bg = getComputedStyle(document.documentElement)
+      .getPropertyValue("--background")
+      .trim();
+    return bg || "#ffffff";
+  } catch (_) {
+    return "#ffffff";
+  }
+}
 window.addEventListener("message", (event) => {
   const data = event.data || {};
   if (data.type !== "mako-app:capture" || !data.requestId) return;
   import(MAKO_CAPTURE_LIB_URL)
     .then((mod) =>
       mod.toPng(document.documentElement, {
-        backgroundColor: data.backgroundColor == null ? "#ffffff" : data.backgroundColor,
+        backgroundColor: data.backgroundColor == null ? defaultCaptureBackground() : data.backgroundColor,
         pixelRatio: typeof data.scale === "number" ? data.scale : 1,
       }),
     )
@@ -227,8 +374,13 @@ window.addEventListener("message", (event) => {
 });
 
 async function main() {
-  const Babel = await waitForBabel();
   const payload = JSON.parse(document.getElementById("mako-payload").textContent);
+
+  // Apply the host-provided theme (or the system fallback) before anything
+  // renders so the first paint already uses the right tokens.
+  setExplicitTheme(payload.theme);
+
+  const Babel = await waitForBabel();
 
   // Pre-import bare npm dependencies as ESM (via the import map).
   const deps = {};
@@ -300,6 +452,22 @@ async function main() {
         return () => { active = false; };
       }, [sql, rowLimit]);
       return state;
+    },
+    // Effective color mode: { theme: "light" | "dark" }. Tracks the host app
+    // theme when embedded in Mako and the OS preference when standalone. Use
+    // it for chart configs or conditional logic that needs a literal value;
+    // for styling prefer the injected CSS variables (var(--background),
+    // var(--card), var(--chart-1), ...) which switch automatically.
+    useTheme() {
+      const [theme, setTheme] = React.useState(currentTheme);
+      React.useEffect(() => {
+        const listener = (next) => setTheme(next);
+        themeListeners.add(listener);
+        // Re-sync in case the theme changed between render and subscribe.
+        setTheme(currentTheme);
+        return () => { themeListeners.delete(listener); };
+      }, []);
+      return { theme: theme };
     },
   };
 

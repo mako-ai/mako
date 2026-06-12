@@ -11,6 +11,7 @@ import {
 import { RefreshCw as RefreshIcon, Share2 as ShareIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
+import { useTheme } from "../contexts/ThemeContext";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
 import ShareDialog from "./ShareDialog";
@@ -36,6 +37,13 @@ export default function AppRenderer({ appId }: { appId: string }) {
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const workspaceId = currentWorkspace?.id;
   const [shareOpen, setShareOpen] = useState(false);
+
+  // The sandboxed preview inherits the host theme: the current mode seeds the
+  // srcdoc, and later toggles are pushed via postMessage (rebuilding the
+  // preview takes seconds, so theme changes must never bump the srcdoc).
+  const { effectiveMode } = useTheme();
+  const effectiveModeRef = useRef(effectiveMode);
+  effectiveModeRef.current = effectiveMode;
 
   const appEntity = useAppStore(s => s.openApps[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
@@ -191,16 +199,31 @@ export default function AppRenderer({ appId }: { appId: string }) {
       } else if (data.type === PREVIEW_MESSAGE.ready) {
         setBooting(false);
         setPreviewErrors(appId, []);
+        // Covers a theme toggle that raced the (slow) preview boot.
+        post({
+          type: PREVIEW_MESSAGE.setTheme,
+          theme: effectiveModeRef.current,
+        });
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [appId, workspaceId, appEntity, runBinding, setPreviewErrors]);
 
+  // Keep the booted preview's theme in sync with the host toggle.
+  useEffect(() => {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: PREVIEW_MESSAGE.setTheme, theme: effectiveMode },
+      "*",
+    );
+  }, [effectiveMode]);
+
   // Rebuild the preview document whenever files/deps change (nonce bumps).
+  // The theme is read from a ref on purpose: it only seeds the boot paint and
+  // must not trigger an expensive rebuild on toggle (set-theme handles that).
   const srcDoc = useMemo(() => {
     if (!appEntity) return "";
-    return buildPreviewHtml(appEntity);
+    return buildPreviewHtml(appEntity, { theme: effectiveModeRef.current });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appEntity?._id, previewNonce]);
 
@@ -286,7 +309,12 @@ export default function AppRenderer({ appId }: { appId: string }) {
 
       {/* Full-screen preview */}
       <Box
-        sx={{ flex: 1, minHeight: 0, bgcolor: "#fff", position: "relative" }}
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          bgcolor: "background.default",
+          position: "relative",
+        }}
       >
         <iframe
           ref={iframeRef}
