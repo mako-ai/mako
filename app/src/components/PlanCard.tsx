@@ -1,5 +1,12 @@
 import React, { useEffect } from "react";
-import { Box, Button, Chip, Stack, Typography } from "@mui/material";
+import {
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Stack,
+  Typography,
+} from "@mui/material";
 import { ClipboardList } from "lucide-react";
 import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
 import {
@@ -14,6 +21,10 @@ interface PlanCardProps {
   /** Chat owning the tool call; falls back to the registered plan entry when
    * omitted (inline summaries in message history). */
   chatId?: string;
+  /** True while the model is still streaming the plan input. The card renders
+   * the "Writing plan…" progress variant and reads live data from planStore
+   * (which Chat.tsx feeds on every streamed delta). */
+  streaming?: boolean;
   input?: SubmitPlanInput;
   /** Present once the plan has been resolved (read-only summary view). */
   output?: SubmitPlanOutput;
@@ -23,11 +34,12 @@ interface PlanCardProps {
  * Compact summary card for the deferred `submit_plan` tool (Cursor-style).
  * All review/editing happens in the main-view plan tab; clicking the card
  * opens or focuses that tab. While pending, a quick "Approve & run" button
- * resolves the plan directly without opening the tab.
+ * resolves the plan directly — iteration happens by replying in chat.
  */
 export const PlanCard: React.FC<PlanCardProps> = ({
   toolCallId,
   chatId,
+  streaming = false,
   input,
   output,
 }) => {
@@ -36,8 +48,10 @@ export const PlanCard: React.FC<PlanCardProps> = ({
 
   // Hydrate the store from message history (idempotent; registerPlan never
   // clobbers an existing draft and markResolved skips already-resolved plans).
+  // Skipped while streaming: a partial input must not finalize the draft —
+  // Chat.tsx feeds streaming deltas via setStreamingInput instead.
   useEffect(() => {
-    if (!toolCallId) return;
+    if (!toolCallId || streaming) return;
     const store = usePlanStore.getState();
     if (input) {
       store.registerPlan(
@@ -47,8 +61,9 @@ export const PlanCard: React.FC<PlanCardProps> = ({
       );
     }
     if (output) store.markResolved(toolCallId, output);
-  }, [toolCallId, chatId, input, output]);
+  }, [toolCallId, chatId, streaming, input, output]);
 
+  const isStreaming = streaming || plan?.status === "streaming";
   const title =
     plan?.draft.title ?? output?.editedPlan?.title ?? input?.title ?? "Plan";
   const stepCount =
@@ -57,8 +72,10 @@ export const PlanCard: React.FC<PlanCardProps> = ({
     input?.todos.length ??
     0;
   const decision =
-    plan && plan.status !== "pending" ? plan.status : output?.decision;
-  const pending = !decision;
+    plan && plan.status !== "pending" && plan.status !== "streaming"
+      ? plan.status
+      : output?.decision;
+  const pending = !decision && !isStreaming;
 
   const openTab = () => {
     if (!toolCallId) return;
@@ -78,7 +95,7 @@ export const PlanCard: React.FC<PlanCardProps> = ({
       }}
       sx={{
         border: 1,
-        borderColor: pending ? "primary.main" : "divider",
+        borderColor: pending || isStreaming ? "primary.main" : "divider",
         borderRadius: 2,
         p: 1.5,
         my: 0.5,
@@ -88,23 +105,47 @@ export const PlanCard: React.FC<PlanCardProps> = ({
       }}
     >
       <Stack direction="row" spacing={1} alignItems="center">
-        <ClipboardList size={15} />
+        {isStreaming ? (
+          <CircularProgress size={15} thickness={5} />
+        ) : (
+          <ClipboardList size={15} />
+        )}
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle2" fontWeight={600} noWrap>
-            {title}
+          <Typography
+            variant="subtitle2"
+            fontWeight={600}
+            noWrap
+            sx={
+              isStreaming && !title.trim()
+                ? {
+                    animation: "planCardPulse 1.4s ease-in-out infinite",
+                    "@keyframes planCardPulse": {
+                      "0%, 100%": { opacity: 1 },
+                      "50%": { opacity: 0.45 },
+                    },
+                  }
+                : undefined
+            }
+          >
+            {isStreaming && !title.trim() ? "Writing plan…" : title}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Plan · {stepCount} step{stepCount === 1 ? "" : "s"}
+            {isStreaming
+              ? `Writing plan… · ${stepCount} step${stepCount === 1 ? "" : "s"}`
+              : pending
+                ? `${stepCount} step${stepCount === 1 ? "" : "s"} · reply in chat to iterate`
+                : `Plan · ${stepCount} step${stepCount === 1 ? "" : "s"}`}
           </Typography>
         </Box>
-        {decision ? (
+        {decision && (
           <Chip
             size="small"
             label={DECISION_LABEL[decision]}
             color={DECISION_COLOR[decision]}
             variant="outlined"
           />
-        ) : (
+        )}
+        {pending && (
           <Button
             size="small"
             variant="contained"

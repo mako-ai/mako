@@ -29,7 +29,15 @@ export interface PlanDraft {
   todos: PlanTodo[];
 }
 
-export type PlanStatus = "pending" | PlanDecision;
+/** Progressively-parsed partial input while the model streams submit_plan
+ * arguments — every field may be undefined or truncated mid-stream. */
+export interface PartialSubmitPlanInput {
+  title?: string;
+  planMarkdown?: string;
+  todos?: Array<Partial<PlanTodo> | undefined>;
+}
+
+export type PlanStatus = "streaming" | "pending" | PlanDecision;
 
 /** Display label for a plan decision (chips in the card and document tab). */
 export const DECISION_LABEL: Record<PlanDecision, string> = {
@@ -67,7 +75,16 @@ interface PlanState {
 }
 
 interface PlanActions {
-  /** Idempotent: never clobbers an existing draft (it may hold user edits). */
+  /** Overwrite the draft from the partial tool input while the model is still
+   * writing the plan. No-ops once the plan has left the "streaming" state so a
+   * late delta can never clobber the finalized draft. */
+  setStreamingInput: (
+    toolCallId: string,
+    chatId: string,
+    partial: PartialSubmitPlanInput | undefined,
+  ) => void;
+  /** Finalize to "pending" with the complete input as the draft baseline.
+   * Idempotent once pending/resolved: never clobbers user edits. */
   registerPlan: (
     toolCallId: string,
     chatId: string,
@@ -99,13 +116,49 @@ const draftFromInput = (input: SubmitPlanInput): PlanDraft => ({
   todos: input.todos.map(t => ({ status: "pending" as const, ...t })),
 });
 
+const draftFromPartialInput = (
+  partial: PartialSubmitPlanInput | undefined,
+): PlanDraft => ({
+  title: partial?.title ?? "",
+  planMarkdown: partial?.planMarkdown ?? "",
+  todos: (partial?.todos ?? [])
+    .filter((t): t is Partial<PlanTodo> => Boolean(t))
+    .map(t => ({
+      ...(t.id !== undefined ? { id: t.id } : {}),
+      content: t.content ?? "",
+      status: t.status ?? "pending",
+    })),
+});
+
 export const usePlanStore = create<PlanStore>()(
   persist(
     immer((set, get) => ({
       plans: {},
 
+      setStreamingInput: (toolCallId, chatId, partial) => {
+        const existing = get().plans[toolCallId];
+        if (existing && existing.status !== "streaming") return;
+        set(state => {
+          const draft = draftFromPartialInput(partial);
+          state.plans[toolCallId] = {
+            chatId,
+            input: {
+              title: draft.title,
+              planMarkdown: draft.planMarkdown,
+              todos: draft.todos,
+            },
+            draft,
+            status: "streaming",
+          };
+        });
+      },
+
       registerPlan: (toolCallId, chatId, input) => {
-        if (get().plans[toolCallId]) return;
+        const existing = get().plans[toolCallId];
+        // Streaming → pending always resets the draft from the final input so
+        // a half-streamed plan is never persisted as a user draft; once
+        // pending, user edits are preserved.
+        if (existing && existing.status !== "streaming") return;
         set(state => {
           state.plans[toolCallId] = {
             chatId,
@@ -193,7 +246,13 @@ export const usePlanStore = create<PlanStore>()(
 
       markResolved: (toolCallId, output) => {
         const existing = get().plans[toolCallId];
-        if (existing && existing.status !== "pending") return;
+        if (
+          existing &&
+          existing.status !== "pending" &&
+          existing.status !== "streaming"
+        ) {
+          return;
+        }
         resolvers.delete(toolCallId);
         set(state => {
           const entry = state.plans[toolCallId];
@@ -225,12 +284,20 @@ export const usePlanStore = create<PlanStore>()(
   ),
 );
 
-/** Deterministic tab id so opening a plan is idempotent across reloads. */
-export const planTabId = (toolCallId: string) => `plan-${toolCallId}`;
+/**
+ * Deterministic tab id. One plan tab per chat: when the model revises a plan
+ * after feedback (new toolCallId), the revision replaces the same tab instead
+ * of stacking a new one. Falls back to a per-toolCallId id when the chat is
+ * unknown (e.g. summaries of old plans with no registered entry).
+ */
+export const planTabId = (toolCallId: string, chatId: string) =>
+  chatId ? `plan-chat-${chatId}` : `plan-${toolCallId}`;
 
 /**
  * Open (or focus) the main-view document tab for a plan. Follows the same
- * dedupe pattern as consoleStore.loadConsole: focus the existing tab if open.
+ * dedupe pattern as consoleStore.loadConsole: focus the existing tab if it
+ * already shows this toolCallId; re-point it (openTab with the same id
+ * overwrites title + metadata) when a plan revision arrives.
  */
 export function focusPlanTab(
   toolCallId: string,
@@ -238,8 +305,9 @@ export function focusPlanTab(
   title: string,
 ): string {
   const consoleStore = useConsoleStore.getState();
-  const id = planTabId(toolCallId);
-  if (consoleStore.tabs[id]) {
+  const id = planTabId(toolCallId, chatId);
+  const existing = consoleStore.tabs[id];
+  if (existing && existing.metadata?.toolCallId === toolCallId) {
     consoleStore.setActiveTab(id);
     return id;
   }
@@ -255,4 +323,23 @@ export function focusPlanTab(
     metadata: { toolCallId, chatId },
   });
   return id;
+}
+
+/** Keep the plan tab's title in sync as it streams/finalizes (no-op when the
+ * tab is closed or the title is unchanged — cheap to call per delta). */
+export function syncPlanTabTitle(
+  toolCallId: string,
+  chatId: string,
+  title: string,
+): void {
+  if (!title) return;
+  const id = planTabId(toolCallId, chatId);
+  const tab = useConsoleStore.getState().tabs[id];
+  if (!tab || tab.title === title || tab.metadata?.toolCallId !== toolCallId) {
+    return;
+  }
+  useConsoleStore.setState(state => {
+    const t = state.tabs[id];
+    if (t) t.title = title;
+  });
 }

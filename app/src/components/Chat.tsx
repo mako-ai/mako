@@ -78,7 +78,12 @@ import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
 import { PlanCard } from "./PlanCard";
-import { focusPlanTab, usePlanStore } from "../store/planStore";
+import {
+  focusPlanTab,
+  syncPlanTabTitle,
+  usePlanStore,
+  type PartialSubmitPlanInput,
+} from "../store/planStore";
 import type {
   AskClarifyingQuestionsInput,
   AskClarifyingQuestionsOutput,
@@ -2932,21 +2937,38 @@ const Chat: React.FC<ChatProps> = ({
       ) {
         continue;
       }
-      if (part.state !== "input-available") continue;
+      // submit_plan also surfaces while its input is still streaming so the
+      // plan tab and dock card can render the plan as the model writes it.
+      const isStreamingPlan =
+        partType === "tool-submit_plan" && part.state === "input-streaming";
+      if (part.state !== "input-available" && !isStreamingPlan) continue;
       return {
         toolName: partType.slice("tool-".length) as
           | "ask_clarifying_questions"
           | "submit_plan",
         toolCallId: (part.toolCallId as string) || "",
         input: part.input,
+        streaming: isStreamingPlan,
       };
     }
     return null;
   }, [messages]);
 
+  // While a submit_plan awaits review (input fully available, unresolved),
+  // the chat composer becomes the plan-iteration channel: a sent message is
+  // routed to the tool output as request_changes feedback instead of a normal
+  // user message. Ref keeps handleChatSubmit's identity stable (perf rules).
+  const pendingPlanToolCallIdRef = useRef<string | null>(null);
+  pendingPlanToolCallIdRef.current =
+    pendingInteractiveTool?.toolName === "submit_plan" &&
+    !pendingInteractiveTool.streaming
+      ? pendingInteractiveTool.toolCallId
+      : null;
+
   // Pending submit_plan: register the plan + its resolver in planStore and
-  // auto-open the main-view plan tab (once per toolCallId; focusPlanTab is
-  // idempotent via the deterministic `plan-${toolCallId}` tab id). The
+  // auto-open the main-view plan tab (once per toolCallId, as soon as
+  // streaming starts). While the input streams, each delta only does a cheap
+  // store write (setStreamingInput) — no tab re-open, no resolver churn. The
   // resolver re-registers whenever handleResolveInteractiveTool changes so it
   // always settles the tool through the live useChat instance.
   const autoOpenedPlanTabsRef = useRef<Set<string>>(new Set());
@@ -2957,23 +2979,37 @@ const Chat: React.FC<ChatProps> = ({
     ) {
       return;
     }
-    const { toolCallId } = pendingInteractiveTool;
+    const { toolCallId, streaming } = pendingInteractiveTool;
     if (!toolCallId) return;
-    const input = pendingInteractiveTool.input as SubmitPlanInput;
 
     const planStore = usePlanStore.getState();
-    planStore.registerPlan(toolCallId, chatId, input);
-    planStore.registerResolver(toolCallId, output => {
-      handleResolveInteractiveTool({
-        tool: "submit_plan",
+    if (streaming) {
+      planStore.setStreamingInput(
         toolCallId,
-        output: output as unknown as Record<string, unknown>,
+        chatId,
+        pendingInteractiveTool.input as PartialSubmitPlanInput | undefined,
+      );
+    } else {
+      const input = pendingInteractiveTool.input as SubmitPlanInput;
+      planStore.registerPlan(toolCallId, chatId, input);
+      planStore.registerResolver(toolCallId, output => {
+        handleResolveInteractiveTool({
+          tool: "submit_plan",
+          toolCallId,
+          output: output as unknown as Record<string, unknown>,
+        });
       });
-    });
+    }
 
     if (!autoOpenedPlanTabsRef.current.has(toolCallId)) {
       autoOpenedPlanTabsRef.current.add(toolCallId);
-      focusPlanTab(toolCallId, chatId, input?.title ?? "Plan");
+      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
+      focusPlanTab(toolCallId, chatId, title || "Plan");
+    } else {
+      // Keep the tab title in sync as the title streams in / finalizes
+      // (no-op unless it actually changed).
+      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
+      if (title) syncPlanTabTitle(toolCallId, chatId, title);
     }
   }, [pendingInteractiveTool, chatId, handleResolveInteractiveTool]);
 
@@ -3075,6 +3111,26 @@ const Chat: React.FC<ChatProps> = ({
         );
       }
       return;
+    }
+
+    // Conversational plan iteration (Cursor-style): while a submitted plan is
+    // awaiting review, the typed message becomes request_changes feedback on
+    // the plan — including the current draft, so manual edits made in the
+    // plan tab flow back — instead of a normal user message.
+    const pendingPlanToolCallId = pendingPlanToolCallIdRef.current;
+    if (pendingPlanToolCallId) {
+      const planStore = usePlanStore.getState();
+      const planEntry = planStore.plans[pendingPlanToolCallId];
+      const feedback = text.trim();
+      if (planEntry?.status === "pending" && feedback) {
+        trackEvent("ai_plan_feedback_sent", { model: modelIdRef.current });
+        planStore.resolvePlan(
+          pendingPlanToolCallId,
+          "request_changes",
+          feedback,
+        );
+        return;
+      }
     }
 
     capturedConsoleIdRef.current = activeConsoleIdRef.current;
@@ -3480,7 +3536,14 @@ const Chat: React.FC<ChatProps> = ({
             <PlanCard
               toolCallId={pendingInteractiveTool.toolCallId}
               chatId={chatId}
-              input={pendingInteractiveTool.input as SubmitPlanInput}
+              streaming={pendingInteractiveTool.streaming}
+              // While streaming the input is partial — the card reads live
+              // data from planStore instead (fed by setStreamingInput).
+              input={
+                pendingInteractiveTool.streaming
+                  ? undefined
+                  : (pendingInteractiveTool.input as SubmitPlanInput)
+              }
             />
           )}
         </Box>

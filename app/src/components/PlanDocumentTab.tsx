@@ -3,10 +3,10 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   IconButton,
   InputBase,
   Stack,
-  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -67,8 +67,6 @@ export default function PlanDocumentTab({
   const resolvePlan = usePlanStore(s => s.resolvePlan);
 
   const [viewMode, setViewMode] = useState<ViewMode>("preview");
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [feedback, setFeedback] = useState("");
 
   if (!plan) {
     return (
@@ -81,21 +79,9 @@ export default function PlanDocumentTab({
     );
   }
 
+  const streaming = plan.status === "streaming";
   const pending = plan.status === "pending";
   const effectiveMode: ViewMode = pending ? viewMode : "preview";
-
-  const decide = (decision: "approve" | "request_changes" | "cancel") => {
-    if (!pending) return;
-    if (decision === "request_changes" && !showFeedback) {
-      setShowFeedback(true);
-      return;
-    }
-    resolvePlan(
-      toolCallId,
-      decision,
-      decision === "request_changes" ? feedback : undefined,
-    );
-  };
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -138,7 +124,15 @@ export default function PlanDocumentTab({
             {plan.draft.title}
           </Typography>
         )}
-        {!pending && plan.output && (
+        {streaming && (
+          <Stack direction="row" spacing={0.75} alignItems="center">
+            <CircularProgress size={12} thickness={5} />
+            <Typography variant="caption" color="text.secondary">
+              Writing plan…
+            </Typography>
+          </Stack>
+        )}
+        {!pending && !streaming && plan.output && (
           <Chip
             size="small"
             label={DECISION_LABEL[plan.output.decision]}
@@ -187,90 +181,94 @@ export default function PlanDocumentTab({
           />
         ) : (
           <Box sx={{ maxWidth: 760, mx: "auto", px: 3, py: 3 }}>
-            <StreamingMarkdown isStreaming={false}>
+            <StreamingMarkdown isStreaming={streaming}>
               {plan.draft.planMarkdown}
             </StreamingMarkdown>
 
-            {/* Todos */}
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="subtitle2" color="text.secondary" mb={1}>
-                {plan.draft.todos.length} To-do
-                {plan.draft.todos.length === 1 ? "" : "s"}
-              </Typography>
-              <Stack spacing={0.5}>
-                {plan.draft.todos.map((todo, index) => {
-                  const status = todo.status ?? "pending";
-                  return (
-                    <Stack
-                      key={todo.id ?? index}
-                      direction="row"
-                      spacing={1}
-                      alignItems="center"
-                      sx={{
-                        color:
-                          status === "completed" || status === "cancelled"
-                            ? "text.disabled"
-                            : "text.primary",
-                      }}
-                    >
-                      <Box
+            {/* Todos (appear/grow as they stream in) */}
+            {(plan.draft.todos.length > 0 || pending) && (
+              <Box sx={{ mt: 3 }}>
+                <Typography variant="subtitle2" color="text.secondary" mb={1}>
+                  {plan.draft.todos.length} To-do
+                  {plan.draft.todos.length === 1 ? "" : "s"}
+                </Typography>
+                <Stack spacing={0.5}>
+                  {plan.draft.todos.map((todo, index) => {
+                    const status = todo.status ?? "pending";
+                    return (
+                      <Stack
+                        key={todo.id ?? index}
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
                         sx={{
-                          display: "flex",
                           color:
-                            status === "completed"
-                              ? "success.main"
-                              : "text.secondary",
+                            status === "completed" || status === "cancelled"
+                              ? "text.disabled"
+                              : "text.primary",
                         }}
                       >
-                        {TODO_STATUS_ICON[status]}
-                      </Box>
-                      {pending ? (
-                        <InputBase
-                          fullWidth
-                          value={todo.content}
-                          placeholder="Describe this step"
-                          onChange={e =>
-                            updateTodo(toolCallId, index, e.target.value)
-                          }
-                          sx={{ typography: "body2" }}
-                        />
-                      ) : (
-                        <Typography
-                          variant="body2"
+                        <Box
                           sx={{
-                            flex: 1,
-                            textDecoration:
-                              status === "cancelled" ? "line-through" : "none",
+                            display: "flex",
+                            color:
+                              status === "completed"
+                                ? "success.main"
+                                : "text.secondary",
                           }}
                         >
-                          {todo.content}
-                        </Typography>
-                      )}
-                      {pending && (
-                        <IconButton
-                          size="small"
-                          aria-label="Remove step"
-                          onClick={() => removeTodo(toolCallId, index)}
-                        >
-                          <X size={14} />
-                        </IconButton>
-                      )}
-                    </Stack>
-                  );
-                })}
-              </Stack>
-              {pending && (
-                <Button
-                  size="small"
-                  color="inherit"
-                  startIcon={<Plus size={14} />}
-                  onClick={() => addTodo(toolCallId)}
-                  sx={{ mt: 1 }}
-                >
-                  Add step
-                </Button>
-              )}
-            </Box>
+                          {TODO_STATUS_ICON[status]}
+                        </Box>
+                        {pending ? (
+                          <InputBase
+                            fullWidth
+                            value={todo.content}
+                            placeholder="Describe this step"
+                            onChange={e =>
+                              updateTodo(toolCallId, index, e.target.value)
+                            }
+                            sx={{ typography: "body2" }}
+                          />
+                        ) : (
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              flex: 1,
+                              textDecoration:
+                                status === "cancelled"
+                                  ? "line-through"
+                                  : "none",
+                            }}
+                          >
+                            {todo.content}
+                          </Typography>
+                        )}
+                        {pending && (
+                          <IconButton
+                            size="small"
+                            aria-label="Remove step"
+                            onClick={() => removeTodo(toolCallId, index)}
+                          >
+                            <X size={14} />
+                          </IconButton>
+                        )}
+                      </Stack>
+                    );
+                  })}
+                </Stack>
+                {pending && (
+                  <Button
+                    size="small"
+                    color="inherit"
+                    startIcon={<Plus size={14} />}
+                    onClick={() => addTodo(toolCallId)}
+                    sx={{ mt: 1 }}
+                  >
+                    Add step
+                  </Button>
+                )}
+              </Box>
+            )}
 
             {!pending && plan.output?.feedback && (
               <Typography variant="body2" color="warning.main" mt={2}>
@@ -281,7 +279,9 @@ export default function PlanDocumentTab({
         )}
       </Box>
 
-      {/* Sticky action bar */}
+      {/* Sticky action bar — plan iteration happens conversationally: typing
+          in the chat composer while the plan is pending sends the message as
+          request_changes feedback. */}
       {pending && (
         <Box
           sx={{
@@ -292,40 +292,19 @@ export default function PlanDocumentTab({
             py: 1.5,
           }}
         >
-          {showFeedback && (
-            <TextField
-              size="small"
-              fullWidth
-              multiline
-              minRows={2}
-              maxRows={6}
-              placeholder="What should change?"
-              value={feedback}
-              onChange={e => setFeedback(e.target.value)}
-              sx={{ mb: 1.5 }}
-            />
-          )}
-          <Stack direction="row" spacing={1} justifyContent="flex-end">
-            <Button
-              size="small"
-              color="inherit"
-              onClick={() => decide("cancel")}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="small"
-              color="warning"
-              variant={showFeedback ? "contained" : "outlined"}
-              disabled={showFeedback && feedback.trim().length === 0}
-              onClick={() => decide("request_changes")}
-            >
-              {showFeedback ? "Send feedback" : "Request changes"}
-            </Button>
+          <Stack
+            direction="row"
+            spacing={1.5}
+            alignItems="center"
+            justifyContent="flex-end"
+          >
+            <Typography variant="caption" color="text.secondary">
+              or reply in chat to iterate on the plan
+            </Typography>
             <Button
               size="small"
               variant="contained"
-              onClick={() => decide("approve")}
+              onClick={() => resolvePlan(toolCallId, "approve")}
             >
               Approve &amp; run
             </Button>
