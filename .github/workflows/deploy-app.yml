@@ -265,11 +265,16 @@ jobs:
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Create .env.production for Docker build
+        env:
+          # Build ID baked into the frontend bundle + version.json so clients
+          # can detect stale bundles (served back via GET /api/version)
+          VITE_BUILD_ID: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
         run: |
           cat <<EOF > .env.production
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
           VITE_GTM_ID=${VITE_GTM_ID}
+          VITE_BUILD_ID=${VITE_BUILD_ID}
           EOF
 
       - name: Build Docker image
@@ -864,6 +869,7 @@ jobs:
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
           VITE_GTM_ID=${VITE_GTM_ID}
+          VITE_BUILD_ID=${GITHUB_SHA}
           EOF
 
       - name: Build Docker image
