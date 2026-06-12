@@ -26,6 +26,7 @@ export type AgentToolDomain =
   | "dashboard"
   | "flow"
   | "app"
+  | "dbt"
   | "search"
   | "memory"
   | "database"
@@ -36,6 +37,7 @@ export type ClientToolExecutor =
   | "dashboard"
   | "flow"
   | "app"
+  | "dbt"
   | "data";
 
 export interface ToolUiConfig {
@@ -537,6 +539,94 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  read_dbt_project_tree: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    getLabel: () => "Reading dbt project tree",
+    icon: "list",
+  },
+  read_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Reading ${path}` : "Reading dbt file";
+    },
+    icon: "eye",
+  },
+  create_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Creating ${path}` : "Creating dbt file";
+    },
+    icon: "plus",
+    preview: { field: "contents", language: "sql" },
+  },
+  modify_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing dbt file";
+    },
+    icon: "pencil",
+    preview: { field: "contents", language: "sql" },
+  },
+  delete_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Deleting ${path}` : "Deleting dbt file";
+    },
+    icon: "trash",
+  },
+  dbt_parse: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Validating dbt project",
+    icon: "shield-check",
+  },
+  dbt_compile_model: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const model = (input as Record<string, unknown>)?.model;
+      return model ? `Compiling ${model}` : "Compiling model";
+    },
+    icon: "shield-check",
+  },
+  dbt_run_model: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const model = (input as Record<string, unknown>)?.model;
+      return model ? `Building ${model}` : "Building model";
+    },
+    icon: "play",
+  },
+  dbt_run_job: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const jobName = (input as Record<string, unknown>)?.jobName;
+      return jobName ? `Running job "${jobName}"` : "Running dbt job";
+    },
+    icon: "play",
+  },
   search_consoles: {
     domain: "search",
     execution: "server",
@@ -758,6 +848,10 @@ export const CONSOLE_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const APP_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "app",
+);
+
+export const DBT_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "dbt",
 );
 
 export const DATA_SOURCE_EXECUTOR_TOOL_NAMES = createToolNameSet(

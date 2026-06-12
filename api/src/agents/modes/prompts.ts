@@ -119,6 +119,24 @@ For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, mate
 Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
 system skill.`;
 
+export const DBT_MODE_SYSTEM_PROMPT = `## dbt Mode
+
+dbt projects are virtual filesystems edited through tools; runs execute dbt Core against the
+project's warehouse environments (dev/prod). Start with \`read_dbt_project_tree\` to get project
+IDs, file paths, environments, and jobs. Edit with \`create_dbt_file\` / \`modify_dbt_file\`
+(always write COMPLETE file contents). Inspect source tables with the SQL discovery tools
+before writing staging models.
+
+The verification loop is mandatory after edits:
+1. \`dbt_parse\` — project-wide validation (cheap, no warehouse access)
+2. \`dbt_compile_model\` — confirm the Jinja renders to valid SQL
+3. \`dbt_run_model\` — build the model + its tests on the dev environment and report
+   row counts and test results to the user
+
+Never run \`dbt_run_job\` (full jobs, possibly prod) without the user explicitly confirming the
+job. For conventions (staging/marts layout, ref()/source(), materializations, incremental
+models, snapshots, schema.yml tests), load the \`dbt\` system skill.`;
+
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 
 You are investigating, not changing anything. Use discovery and inspection tools to understand

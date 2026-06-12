@@ -44,6 +44,11 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
   "list_open_apps",
   "get_app_state",
   "app_read_file",
+  // dbt reads + verification (parse/compile never mutate the warehouse)
+  "read_dbt_project_tree",
+  "read_dbt_file",
+  "dbt_parse",
+  "dbt_compile_model",
   // Surface-scoped data-source reads (apps + dashboards, local DuckDB only)
   "list_data_sources",
   "inspect_data_source",

@@ -108,11 +108,13 @@ import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   APP_EXECUTOR_TOOL_NAMES,
+  DBT_EXECUTOR_TOOL_NAMES,
   DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
 import { executeAppAgentTool } from "../app-runtime/agent-tools";
+import { executeDbtAgentTool } from "../dbt-runtime/agent-tools";
 import { executeDataSourceTool } from "../agent-runtime/data-source-tools";
 import { UpgradePrompt } from "./UpgradePrompt";
 import {
@@ -2122,6 +2124,44 @@ const Chat: React.FC<ChatProps> = ({
                   appError instanceof Error
                     ? appError.message
                     : "App tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- dbt tools (client-side) ---
+        if (DBT_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeDbtTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          // Fire-and-forget, same rationale as app tools above.
+          void (async () => {
+            try {
+              const dbtToolOutput = await executeDbtAgentTool(toolName, input);
+              if (activeDbtTool.abortController.signal.aborted) return;
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                dbtToolOutput ?? {
+                  success: false,
+                  error: `dbt tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dbtError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDbtTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  dbtError instanceof Error
+                    ? dbtError.message
+                    : "dbt tool execution failed",
               });
             }
           })();

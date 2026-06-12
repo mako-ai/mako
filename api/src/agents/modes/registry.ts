@@ -6,6 +6,7 @@ import {
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
   APP_MODE_SYSTEM_PROMPT,
+  DBT_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
 } from "./prompts";
 
@@ -151,6 +152,28 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "mongo_execute_query",
 ];
 
+const DBT_MODE_TOOL_NAMES: string[] = [
+  // Client dbt file tools
+  "read_dbt_project_tree",
+  "read_dbt_file",
+  "create_dbt_file",
+  "modify_dbt_file",
+  "delete_dbt_file",
+  // Server dbt verification tools
+  "dbt_parse",
+  "dbt_compile_model",
+  "dbt_run_model",
+  "dbt_run_job",
+  // Discovery: inspect sources before writing staging models; preview built
+  // tables after dbt_run_model.
+  "list_connections",
+  "sql_list_connections",
+  "sql_list_databases",
+  "sql_list_tables",
+  "sql_inspect_table",
+  "sql_execute_query",
+];
+
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
   "sql_list_connections",
@@ -223,6 +246,19 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Edit app files and verify the preview builds without errors",
     ],
   },
+  dbt: {
+    id: "dbt",
+    name: "dbt Transforms",
+    routingPrompt:
+      "Build and run dbt models: edit project files, compile, test, and run transformations against the warehouse.",
+    systemPrompt: DBT_MODE_SYSTEM_PROMPT,
+    toolNames: DBT_MODE_TOOL_NAMES,
+    trajectories: [
+      "Inspect the source tables for the model",
+      "Write the model SQL + schema.yml entries",
+      "Verify with dbt_parse, dbt_compile_model, then dbt_run_model on dev",
+    ],
+  },
   explore: {
     id: "explore",
     name: "Explore",
@@ -255,6 +291,7 @@ export function defaultExpertiseMode(
   if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
+  if (tabKind === "dbt-file" || tabKind === "dbt-job") return "dbt";
   return "query";
 }
 
