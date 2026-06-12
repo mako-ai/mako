@@ -864,6 +864,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               schedule: res.schedule,
               scheduledRun: res.scheduledRun,
               access: res.access,
+              workspaceRole: res.workspaceRole,
               owner_id: res.owner_id,
               readOnly: res.readOnly,
               metadata: options?.openScheduledRuns
@@ -1004,6 +1005,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               isSaved,
               filePath: isSaved ? res.path || res.name : undefined,
               access: res.access,
+              workspaceRole: res.workspaceRole,
               owner_id: res.owner_id,
               readOnly: res.readOnly,
               version: res.version,

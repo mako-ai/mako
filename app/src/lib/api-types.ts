@@ -34,6 +34,8 @@ export interface ConsoleContentResponse {
   chartSpec?: Record<string, unknown>;
   resultsViewMode?: "table" | "json" | "chart";
   access?: "private" | "workspace";
+  workspaceRole?: "viewer" | "editor";
+  sharedWith?: Array<{ userId: string; role: "viewer" | "editor" }>;
   owner_id?: string;
   readOnly?: boolean;
   /** Optimistic-concurrency base; echoed back as expectedVersion on save. */

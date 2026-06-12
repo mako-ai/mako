@@ -340,6 +340,40 @@ export interface IConsoleFolder extends Document {
 export type ConsoleAccessLevel = "private" | "workspace";
 
 /**
+ * Google Workspace-style sharing primitives, shared by dashboards, consoles
+ * and apps.
+ *
+ * - `sharedWith` entries grant a specific user `viewer` (read) or `editor`
+ *   (read + write) access regardless of the resource's `access` scope.
+ * - `workspaceRole` is the role every workspace member gets when the
+ *   resource's `access` is "workspace" (workspace members with the `viewer`
+ *   member role are always capped to viewer).
+ * - `publicShare` (dashboards + apps only) exposes the resource read-only at
+ *   /share/:token, optionally protected by a bcrypt-hashed password. Public
+ *   viewers only ever see materialized snapshot artifacts — never live data.
+ */
+export type ResourceShareRole = "viewer" | "editor";
+
+export interface IResourceShareEntry {
+  userId: string;
+  role: ResourceShareRole;
+  addedAt: Date;
+  addedBy?: string;
+}
+
+export interface IPublicShare {
+  enabled: boolean;
+  token?: string;
+  passwordHash?: string | null;
+  /** AES-encrypted copy so owners/admins can reveal the password in the UI. */
+  passwordEncrypted?: string | null;
+  createdAt?: Date;
+  createdBy?: string;
+  /** Throttle marker for the anonymous "Refresh data" action (dashboards). */
+  lastPublicRefreshAt?: Date;
+}
+
+/**
  * SavedConsole model interface
  *
  * Consoles can be:
@@ -388,6 +422,10 @@ export interface ISavedConsole extends Document {
   isPrivate: boolean;
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
   access: ConsoleAccessLevel;
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: ResourceShareRole;
+  /** Per-user collaborators (viewer/editor), independent of `access`. */
+  sharedWith?: IResourceShareEntry[];
   owner_id: string;
   schedule?: {
     cron: string;
@@ -1432,6 +1470,32 @@ ConsoleFolderSchema.index({ workspaceId: 1, ownerId: 1, isPrivate: 1 });
 ConsoleFolderSchema.index({ workspaceId: 1, access: 1 });
 
 /**
+ * Shared sharing sub-schemas (dashboards, consoles, apps).
+ */
+const ResourceShareEntrySchema = new Schema<IResourceShareEntry>(
+  {
+    userId: { type: String, required: true },
+    role: { type: String, enum: ["viewer", "editor"], default: "editor" },
+    addedAt: { type: Date, default: Date.now },
+    addedBy: { type: String },
+  },
+  { _id: false },
+);
+
+const PublicShareSchema = new Schema<IPublicShare>(
+  {
+    enabled: { type: Boolean, default: false },
+    token: { type: String },
+    passwordHash: { type: String, default: null },
+    passwordEncrypted: { type: String, default: null },
+    createdAt: { type: Date },
+    createdBy: { type: String },
+    lastPublicRefreshAt: { type: Date },
+  },
+  { _id: false },
+);
+
+/**
  * SavedConsole Schema
  */
 const SavedConsoleSchema = new Schema<ISavedConsole>(
@@ -1527,6 +1591,15 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: String,
       enum: ["private", "workspace"],
       default: "private",
+    },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
+    sharedWith: {
+      type: [ResourceShareEntrySchema],
+      default: [],
     },
     owner_id: {
       type: String,
@@ -1625,6 +1698,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 
 // Indexes
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
+SavedConsoleSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
@@ -2996,16 +3070,15 @@ export interface IDashboard extends Document {
 
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: ResourceShareRole;
   /**
-   * Per-user collaborators granted explicit edit access, independent of the
-   * `access` level. Anyone listed here can read + write the dashboard.
+   * Per-user collaborators (viewer/editor), independent of the `access`
+   * level. Editors can read + write; viewers can only read.
    */
-  sharedWith?: Array<{
-    userId: string;
-    role: "editor";
-    addedAt: Date;
-    addedBy?: string;
-  }>;
+  sharedWith?: IResourceShareEntry[];
+  /** Public link sharing (read-only, snapshot data, optional password). */
+  publicShare?: IPublicShare;
   owner_id?: string;
   createdBy: string;
   createdAt: Date;
@@ -3335,17 +3408,16 @@ const DashboardSchema = new Schema<IDashboard>(
       enum: ["private", "workspace"],
       default: "private",
     },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
     sharedWith: {
-      type: [
-        {
-          userId: { type: String, required: true },
-          role: { type: String, enum: ["editor"], default: "editor" },
-          addedAt: { type: Date, default: Date.now },
-          addedBy: { type: String },
-        },
-      ],
+      type: [ResourceShareEntrySchema],
       default: [],
     },
+    publicShare: { type: PublicShareSchema, default: undefined },
     owner_id: { type: String },
     createdBy: { type: String, required: true },
   },
@@ -3359,6 +3431,10 @@ DashboardSchema.index({ workspaceId: 1 });
 DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
 DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
 DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
+DashboardSchema.index(
+  { "publicShare.token": 1 },
+  { unique: true, sparse: true },
+);
 
 /**
  * DashboardFolder Schema
@@ -3636,6 +3712,12 @@ export interface IMakoApp extends Document {
   dataBindings: IMakoAppDataBinding[];
   version: number;
   access: "private" | "workspace";
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: ResourceShareRole;
+  /** Per-user collaborators (viewer/editor), independent of `access`. */
+  sharedWith?: IResourceShareEntry[];
+  /** Public link sharing (read-only, snapshot data, optional password). */
+  publicShare?: IPublicShare;
   owner_id?: string;
   createdBy: string;
   createdAt: Date;
@@ -3736,6 +3818,16 @@ const MakoAppSchema = new Schema<IMakoApp>(
       enum: ["private", "workspace"],
       default: "private",
     },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
+    sharedWith: {
+      type: [ResourceShareEntrySchema],
+      default: [],
+    },
+    publicShare: { type: PublicShareSchema, default: undefined },
     owner_id: { type: String, index: true },
     createdBy: { type: String, required: true },
   },
@@ -3743,6 +3835,8 @@ const MakoAppSchema = new Schema<IMakoApp>(
 );
 
 MakoAppSchema.index({ workspaceId: 1, updatedAt: -1 });
+MakoAppSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
+MakoAppSchema.index({ "publicShare.token": 1 }, { unique: true, sparse: true });
 
 export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
 
@@ -3857,10 +3951,7 @@ const RealtimePresenceSchema = new Schema<IRealtimePresence>(
   { collection: "realtime_presence" },
 );
 
-RealtimePresenceSchema.index(
-  { workspaceId: 1, clientId: 1 },
-  { unique: true },
-);
+RealtimePresenceSchema.index({ workspaceId: 1, clientId: 1 }, { unique: true });
 // TTL reaper: connections that stop heartbeating disappear automatically.
 RealtimePresenceSchema.index({ lastSeenAt: 1 }, { expireAfterSeconds: 90 });
 

@@ -34,6 +34,21 @@ export interface AppEntity {
   dataBindings: AppDataBinding[];
   version: number;
   access: "private" | "workspace";
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: "viewer" | "editor";
+  /** Per-user collaborators (viewer/editor). */
+  sharedWith?: Array<{
+    userId: string;
+    role: "viewer" | "editor";
+    addedAt?: string;
+  }>;
+  /** Public link sharing metadata (no secrets). */
+  publicShare?: {
+    enabled: boolean;
+    token?: string;
+    hasPassword?: boolean;
+    createdAt?: string;
+  };
   owner_id?: string;
   createdBy: string;
   createdAt: string;
@@ -103,6 +118,16 @@ interface AppActions {
 
   bumpPreview: (appId: string) => void;
   setPreviewErrors: (appId: string, errors: AppPreviewError[]) => void;
+
+  /** Sync sharing settings updated by the ShareDialog into the open app. */
+  applySharingChanges: (
+    appId: string,
+    changes: {
+      access?: AppEntity["access"];
+      workspaceRole?: AppEntity["workspaceRole"];
+      publicShare?: AppEntity["publicShare"];
+    },
+  ) => void;
 
   runBinding: (
     workspaceId: string,
@@ -437,6 +462,19 @@ export const useAppStore = create<AppStore>()(
     bumpPreview: appId =>
       set(state => {
         state.previewNonce[appId] = (state.previewNonce[appId] || 0) + 1;
+      }),
+
+    applySharingChanges: (appId, changes) =>
+      set(state => {
+        const appEntity = state.openApps[appId];
+        if (!appEntity) return;
+        if (changes.access) appEntity.access = changes.access;
+        if (changes.workspaceRole) {
+          appEntity.workspaceRole = changes.workspaceRole;
+        }
+        if (changes.publicShare !== undefined) {
+          appEntity.publicShare = changes.publicShare;
+        }
       }),
 
     setPreviewErrors: (appId, errors) =>
