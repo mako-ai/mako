@@ -15,6 +15,14 @@ export interface DashboardArtifactDescriptor {
   rowCount?: number;
 }
 
+/**
+ * Object-store key prefix for all materialized artifacts (dashboards and app
+ * bindings share the same bucket/prefix).
+ */
+export function getArtifactPrefix(): string {
+  return getDashboardArtifactPrefix();
+}
+
 function getDashboardArtifactPrefix(): string {
   const rawPrefix = process.env.DASHBOARD_ARTIFACT_PREFIX;
   if (rawPrefix) {

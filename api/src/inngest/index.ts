@@ -18,6 +18,7 @@ import {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
+import { appBindingMaterializeFunction } from "./functions/app-binding-materialize";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { usageReportingFunction } from "./functions/usage-reporting";
 import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
@@ -39,6 +40,7 @@ const baseFunctions = [
   syncBackfillEntityFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  appBindingMaterializeFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
@@ -126,6 +128,7 @@ export {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  appBindingMaterializeFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

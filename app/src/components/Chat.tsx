@@ -3455,11 +3455,16 @@ const Chat: React.FC<ChatProps> = ({
           only shows a read-only summary once the user has responded. */}
       {pendingInteractiveTool && (
         <Box
-          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          sx={
+            pendingInteractiveTool.toolName === "ask_clarifying_questions"
+              ? { mx: 2.25, mt: 1, mb: -1 }
+              : { mx: 1, mt: 1, mb: -0.5 }
+          }
           key={pendingInteractiveTool.toolCallId}
         >
           {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
             <ClarifyingQuestionsCard
+              docked
               input={
                 pendingInteractiveTool.input as AskClarifyingQuestionsInput
               }

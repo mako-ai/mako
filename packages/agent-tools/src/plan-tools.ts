@@ -27,12 +27,23 @@ export const clarifyingQuestionSchema = z.object({
   options: z
     .array(z.string())
     .optional()
-    .describe("Selectable options (required when type is 'choice')."),
+    .describe(
+      "Selectable options (required when type is 'choice'). Do NOT include an " +
+        "'Other' / 'Something else' entry — the form appends a free-text " +
+        "'Other' choice automatically unless allowOther is false.",
+    ),
   allowMultiple: z
     .boolean()
     .optional()
     .describe(
       "For 'choice' questions, allow selecting more than one option.",
+    ),
+  allowOther: z
+    .boolean()
+    .optional()
+    .describe(
+      "For 'choice' questions, append an 'Other' free-text option (defaults to true). " +
+        "Set false when the listed options are exhaustive.",
     ),
 });
 
@@ -76,6 +87,8 @@ export const clientPlanTools = {
       "Pause and ask the user one or more targeted clarifying questions before planning or acting. " +
       "Use this whenever the request is ambiguous or you need a decision (which connection, " +
       "which dashboard, scope, etc.). The user answers in an inline form; their answers are returned to you. " +
+      "This is the ONLY way to ask the user questions — never present questions or option lists " +
+      "as plain text in a reply. Prefer 'choice' questions with concrete options over free text. " +
       "Only ask what you genuinely need — do not ask questions you can answer with read-only tools.",
     inputSchema: askClarifyingQuestionsSchema,
     // No execute function - resolved by the client via an interactive form.

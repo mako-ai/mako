@@ -3598,6 +3598,11 @@ export interface IMakoAppBindingCache {
     | "ready"
     | "error"
     | null;
+  /**
+   * Heartbeat for the current build. Refreshed periodically while a build is
+   * queued/running so stuck "building" statuses can be detected and recovered.
+   */
+  parquetBuildStatusAt?: Date | null;
   parquetLastError?: string | null;
   rowCount?: number;
   byteSize?: number;
@@ -3668,6 +3673,7 @@ const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
       enum: ["missing", "queued", "building", "ready", "error", null],
       default: null,
     },
+    parquetBuildStatusAt: { type: Date, default: null },
     parquetLastError: { type: String, default: null },
     rowCount: { type: Number },
     byteSize: { type: Number },
@@ -3851,10 +3857,7 @@ const RealtimePresenceSchema = new Schema<IRealtimePresence>(
   { collection: "realtime_presence" },
 );
 
-RealtimePresenceSchema.index(
-  { workspaceId: 1, clientId: 1 },
-  { unique: true },
-);
+RealtimePresenceSchema.index({ workspaceId: 1, clientId: 1 }, { unique: true });
 // TTL reaper: connections that stop heartbeating disappear automatically.
 RealtimePresenceSchema.index({ lastSeenAt: 1 }, { expireAfterSeconds: 90 });
 

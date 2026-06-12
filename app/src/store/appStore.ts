@@ -110,11 +110,22 @@ interface AppActions {
     bindingName: string,
   ) => Promise<{ success: boolean; rows?: unknown[]; error?: string }>;
 
+  /**
+   * Queue a parquet binding build (server-side, background) and poll until it
+   * is ready, fails, or the bounded wait elapses. Never hangs: `timeoutMs`
+   * caps the wait and `signal` aborts the polling (the build itself keeps
+   * running server-side either way).
+   */
   materializeBinding: (
     workspaceId: string,
     appId: string,
     bindingId: string,
-  ) => Promise<{ success: boolean; error?: string }>;
+    options?: { force?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  ) => Promise<{
+    success: boolean;
+    status: "ready" | "building" | "error";
+    error?: string;
+  }>;
 
   reset: () => void;
 }
@@ -134,6 +145,38 @@ const initialState: AppState = {
 
 function genId(): string {
   return Math.random().toString(36).slice(2, 12);
+}
+
+const MATERIALIZE_POLL_INTERVAL_MS = 2500;
+const MATERIALIZE_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+
+interface BindingMaterializationStatus {
+  status: "missing" | "queued" | "building" | "ready" | "error";
+  error?: string | null;
+  rowCount?: number;
+  artifactRevision?: string;
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError";
 }
 
 export const useAppStore = create<AppStore>()(
@@ -436,34 +479,111 @@ export const useAppStore = create<AppStore>()(
       }
     },
 
-    materializeBinding: async (workspaceId, appId, bindingId) => {
+    materializeBinding: async (workspaceId, appId, bindingId, options) => {
+      const signal = options?.signal;
+      const timeoutMs = options?.timeoutMs ?? MATERIALIZE_DEFAULT_TIMEOUT_MS;
+      const base = `/workspaces/${workspaceId}/apps/${appId}/bindings/${bindingId}`;
+
+      // Mirror the server-reported status onto the open app so UI chips
+      // (binding editor, explorer) update live while the build runs.
+      const setLocalStatus = (
+        status: BindingMaterializationStatus["status"],
+        error?: string | null,
+      ) => {
+        set(state => {
+          const binding = state.openApps[appId]?.dataBindings.find(
+            b => b.id === bindingId,
+          );
+          if (!binding) return;
+          binding.cache = {
+            ...(binding.cache ?? {}),
+            parquetBuildStatus: status,
+            parquetLastError: error ?? null,
+          };
+        });
+      };
+
+      const finishReady = async () => {
+        await get().fetchApp(workspaceId, appId);
+        get().bumpPreview(appId);
+        return { success: true, status: "ready" as const };
+      };
+
       try {
         const res = await apiClient.post<{
           success: boolean;
+          queued?: boolean;
           status?: { status: string; error?: string };
           app?: AppEntity;
           error?: string;
         }>(
-          `/workspaces/${workspaceId}/apps/${appId}/bindings/${bindingId}/materialize`,
+          `${base}/materialize`,
+          options?.force ? { force: true } : undefined,
+          { signal },
         );
-        if (res.app) {
-          set(state => {
-            state.openApps[appId] = res.app as AppEntity;
-          });
-          get().bumpPreview(appId);
-        }
         if (!res.success) {
-          return {
-            success: false,
-            error: res.status?.error || res.error || "Materialization failed",
-          };
+          const error =
+            res.status?.error || res.error || "Materialization failed";
+          setLocalStatus("error", error);
+          return { success: false, status: "error", error };
         }
-        return { success: true };
-      } catch (e) {
+        // Cache hit — artifact already built, nothing queued.
+        if (res.status?.status === "ready") {
+          if (res.app) {
+            set(state => {
+              state.openApps[appId] = res.app as AppEntity;
+            });
+            get().bumpPreview(appId);
+            return { success: true, status: "ready" };
+          }
+          return await finishReady();
+        }
+
+        setLocalStatus(
+          res.status?.status === "building" ? "building" : "queued",
+        );
+
+        // Poll the status endpoint until the background build terminates,
+        // the bounded wait elapses, or the caller aborts.
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          await abortableSleep(MATERIALIZE_POLL_INTERVAL_MS, signal);
+          const poll = await apiClient.get<{
+            success: boolean;
+            data?: BindingMaterializationStatus;
+          }>(`${base}/materialization`, undefined, { signal });
+          const data = poll.data;
+          if (!data) continue;
+          setLocalStatus(data.status, data.error);
+          if (data.status === "ready") {
+            return await finishReady();
+          }
+          if (data.status === "error") {
+            return {
+              success: false,
+              status: "error",
+              error: data.error || "Materialization failed",
+            };
+          }
+        }
         return {
           success: false,
-          error: e instanceof Error ? e.message : "Materialization failed",
+          status: "building",
+          error:
+            "Materialization is still running in the background; it will finish server-side.",
         };
+      } catch (e) {
+        if (isAbortError(e)) {
+          return {
+            success: false,
+            status: "building",
+            error:
+              "Stopped waiting; materialization continues in the background.",
+          };
+        }
+        const error = e instanceof Error ? e.message : "Materialization failed";
+        setLocalStatus("error", error);
+        return { success: false, status: "error", error };
       }
     },
 
