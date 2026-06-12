@@ -30,6 +30,11 @@ import {
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
 } from "./functions/flow-run-notifications";
+import {
+  dbtRunExecutorFunction,
+  dbtRunCancelFunction,
+  dbtSchedulerFunction,
+} from "./functions/dbt-run";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -46,6 +51,8 @@ const baseFunctions = [
   scheduledQueryExecutorFunction,
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
+  dbtRunExecutorFunction,
+  dbtRunCancelFunction,
 ];
 
 const allWebhookFunctions = [
@@ -81,6 +88,7 @@ export function getFunctions() {
         flowSchedulerFunction,
         dashboardSchedulerFunction,
         scheduledQuerySchedulerFunction,
+        dbtSchedulerFunction,
       ];
 
   return _functions;
@@ -133,4 +141,7 @@ export {
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
   scheduledQuerySchedulerFunction,
+  dbtRunExecutorFunction,
+  dbtRunCancelFunction,
+  dbtSchedulerFunction,
 };

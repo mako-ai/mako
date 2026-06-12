@@ -1,0 +1,405 @@
+/**
+ * dbt run orchestration.
+ *
+ * - dbtRunExecutorFunction: executes a queued DbtRun. One step.run per
+ *   command (each must finish inside the Cloud Run request timeout), with
+ *   batched log writes into dbt_runs.logs and artifact upload to the
+ *   artifact store. Secrets never cross step boundaries — every step loads
+ *   the project snapshot + decrypted profile itself.
+ * - dbtSchedulerFunction: cron sweep over due dbt_jobs with the same
+ *   optimistic claim pattern as scheduled-query.ts.
+ * - dbtRunCancelFunction: companion that finalizes runs killed by cancelOn.
+ */
+
+import { Types } from "mongoose";
+import { inngest } from "../client";
+import { DbtJob, DbtProject, DbtRun } from "../../database/workspace-schema";
+import { loggers } from "../../logging";
+import { parseDbtCommand } from "../../dbt/commands";
+import { loadDbtProjectSnapshot } from "../../dbt/dbt-project.service";
+import {
+  parseStepResults,
+  runDbt,
+  type DbtLogLine,
+} from "../../dbt/runner.service";
+import { triggerDbtJobRun } from "../../dbt/dbt-run.service";
+import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
+import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
+
+const logger = loggers.inngest("dbt");
+
+const MAX_LOG_LINES = 5000;
+const LOG_FLUSH_INTERVAL_MS = 2000;
+
+/** Buffered writer for dbt_runs.logs — capped, batched $push. */
+function createLogWriter(runId: Types.ObjectId) {
+  let buffer: DbtLogLine[] = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let flushing = Promise.resolve();
+
+  const flush = () => {
+    if (buffer.length === 0) return flushing;
+    const lines = buffer;
+    buffer = [];
+    flushing = flushing.then(async () => {
+      await DbtRun.updateOne(
+        { _id: runId },
+        {
+          $push: {
+            logs: {
+              $each: lines.map(line => ({
+                ts: line.ts,
+                level: line.level,
+                line: line.line.slice(0, 2000),
+              })),
+              $slice: -MAX_LOG_LINES,
+            },
+          },
+        },
+      ).catch(error => {
+        logger.warn("dbt log flush failed", { error, runId: runId.toString() });
+      });
+    });
+    return flushing;
+  };
+
+  return {
+    onLog: (line: DbtLogLine) => {
+      buffer.push(line);
+      if (!timer) {
+        timer = setTimeout(() => {
+          timer = null;
+          void flush();
+        }, LOG_FLUSH_INTERVAL_MS);
+      }
+    },
+    finish: async () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      await flush();
+    },
+  };
+}
+
+interface DbtRunRequestedEvent {
+  workspaceId: string;
+  projectId: string;
+  runId: string;
+  jobId?: string;
+}
+
+export const dbtRunExecutorFunction = inngest.createFunction(
+  {
+    id: "dbt-run-executor",
+    name: "Execute dbt Run",
+    retries: 0,
+    concurrency: {
+      key: "event.data.projectId",
+      limit: 1,
+    },
+    cancelOn: [
+      {
+        event: "dbt/run.cancel",
+        if: "async.data.runId == event.data.runId",
+      },
+    ],
+  },
+  { event: "dbt/run.requested" },
+  async ({ event, step }) => {
+    const data = event.data as DbtRunRequestedEvent;
+    const runObjectId = new Types.ObjectId(data.runId);
+
+    const runInfo = await step.run("mark-running", async () => {
+      const run = await DbtRun.findOneAndUpdate(
+        { _id: runObjectId, status: "queued" },
+        { $set: { status: "running", startedAt: new Date() } },
+        { new: true },
+      ).lean();
+      if (!run) return null;
+      return {
+        environment: run.environment,
+        commands: run.commands,
+        jobId: run.jobId?.toString(),
+      };
+    });
+
+    if (!runInfo) {
+      // Already cancelled or duplicate delivery.
+      return { skipped: true };
+    }
+
+    let failed = false;
+    let errorMessage: string | undefined;
+    const allStepResults: ReturnType<typeof parseStepResults> = [];
+
+    for (let i = 0; i < runInfo.commands.length; i++) {
+      const commandText = runInfo.commands[i];
+
+      const stepOutcome = await step.run(`exec-cmd-${i}`, async () => {
+        // Snapshot (files + decrypted profile) is loaded inside the step so
+        // credentials never land in Inngest step state.
+        const snapshot = await loadDbtProjectSnapshot({
+          workspaceId: data.workspaceId,
+          projectId: data.projectId,
+          environmentName: runInfo.environment,
+        });
+        const parsed = parseDbtCommand(commandText);
+        const logWriter = createLogWriter(runObjectId);
+
+        logWriter.onLog({
+          ts: new Date(),
+          level: "info",
+          line: `$ dbt ${parsed.argv.join(" ")}`,
+        });
+
+        try {
+          const result = await runDbt({
+            files: snapshot.files,
+            profile: snapshot.profile,
+            commands: [parsed],
+            dbtVersion: snapshot.project.dbtVersion,
+            onLog: logWriter.onLog,
+          });
+
+          const commandResult = result.commandResults[0];
+          const stepResults = parseStepResults(commandResult?.runResults);
+
+          // Upload artifacts after every command — the last successful
+          // upload wins, which matches dbt's own target/ behavior.
+          const store = getDashboardArtifactStore();
+          const prefix = `dbt-artifacts/${data.workspaceId}/${data.runId}`;
+          const artifactKeys: Record<string, string> = {};
+          const uploads: Array<[string, Buffer | undefined, string]> = [
+            ["manifest", result.artifacts.manifest, "manifest.json"],
+            ["runResults", result.artifacts.runResults, "run_results.json"],
+            ["catalog", result.artifacts.catalog, "catalog.json"],
+          ];
+          for (const [kind, buffer, filename] of uploads) {
+            if (!buffer) continue;
+            const key = `${prefix}/${filename}`;
+            try {
+              await store.putBuffer(buffer, key, "application/json");
+              artifactKeys[kind] = key;
+            } catch (uploadError) {
+              logger.warn("dbt artifact upload failed", {
+                error: uploadError,
+                key,
+              });
+            }
+          }
+
+          const update: Record<string, unknown> = {};
+          for (const [kind, key] of Object.entries(artifactKeys)) {
+            update[`artifactKeys.${kind}`] = key;
+          }
+          if (stepResults.length > 0 || Object.keys(update).length > 0) {
+            await DbtRun.updateOne(
+              { _id: runObjectId },
+              {
+                ...(Object.keys(update).length > 0 ? { $set: update } : {}),
+                ...(stepResults.length > 0
+                  ? { $push: { stepResults: { $each: stepResults } } }
+                  : {}),
+              },
+            );
+          }
+
+          return {
+            exitCode: commandResult?.exitCode ?? 1,
+            success: result.success,
+            stepResultCount: stepResults.length,
+            failedSteps: stepResults.filter(
+              stepResult =>
+                stepResult.status === "error" || stepResult.status === "fail",
+            ).length,
+          };
+        } finally {
+          await logWriter.finish();
+        }
+      });
+
+      if (!stepOutcome.success) {
+        failed = true;
+        errorMessage = `dbt command "${commandText}" exited with code ${stepOutcome.exitCode}`;
+        break;
+      }
+    }
+
+    await step.run("finalize-run", async () => {
+      const completedAt = new Date();
+      const run = await DbtRun.findById(runObjectId).select("startedAt").lean();
+      const durationMs = run?.startedAt
+        ? completedAt.getTime() - new Date(run.startedAt).getTime()
+        : undefined;
+
+      await DbtRun.updateOne(
+        { _id: runObjectId, status: "running" },
+        {
+          $set: {
+            status: failed ? "error" : "success",
+            completedAt,
+            ...(durationMs !== undefined ? { durationMs } : {}),
+            ...(errorMessage ? { error: errorMessage } : {}),
+          },
+        },
+      );
+
+      if (runInfo.jobId) {
+        await DbtJob.updateOne(
+          { _id: new Types.ObjectId(runInfo.jobId) },
+          {
+            $set: {
+              "scheduledRun.lastAt": completedAt,
+              "scheduledRun.lastStatus": failed ? "error" : "success",
+              "scheduledRun.lastError": failed ? errorMessage : undefined,
+              ...(durationMs !== undefined
+                ? { "scheduledRun.lastDurationMs": durationMs }
+                : {}),
+              ...(failed ? {} : { "scheduledRun.consecutiveFailures": 0 }),
+            },
+            $inc: {
+              "scheduledRun.runCount": 1,
+              ...(failed ? { "scheduledRun.consecutiveFailures": 1 } : {}),
+            },
+          },
+        );
+      }
+
+      // Keep the last successful prod manifest as the state artifact for
+      // --defer / state:modified+ (Slim CI, later phase).
+      if (!failed) {
+        const finishedRun = await DbtRun.findById(runObjectId)
+          .select("artifactKeys environment")
+          .lean();
+        if (finishedRun?.artifactKeys?.manifest) {
+          const project = await DbtProject.findById(
+            new Types.ObjectId(data.projectId),
+          ).select("defaultEnvironment");
+          const prodLike =
+            finishedRun.environment === "prod" ||
+            finishedRun.environment === project?.defaultEnvironment;
+          if (prodLike) {
+            await DbtProject.updateOne(
+              { _id: new Types.ObjectId(data.projectId) },
+              {
+                $set: {
+                  lastProdManifestKey: finishedRun.artifactKeys.manifest,
+                },
+              },
+            );
+          }
+        }
+      }
+    });
+
+    return {
+      runId: data.runId,
+      status: failed ? "error" : "success",
+      stepResults: allStepResults.length,
+    };
+  },
+);
+
+/**
+ * Finalize runs whose executor was killed by cancelOn. Waits briefly so the
+ * in-flight subprocess SIGTERM (queued runs are finalized synchronously by
+ * requestDbtRunCancel) settles, then flips any still-active status.
+ */
+export const dbtRunCancelFunction = inngest.createFunction(
+  {
+    id: "dbt-run-cancel-finalizer",
+    name: "Finalize cancelled dbt Run",
+    retries: 1,
+  },
+  { event: "dbt/run.cancel" },
+  async ({ event, step }) => {
+    const runId = (event.data as { runId: string }).runId;
+    await step.sleep("allow-executor-teardown", "10s");
+    await step.run("finalize-cancelled", async () => {
+      await DbtRun.updateOne(
+        {
+          _id: new Types.ObjectId(runId),
+          status: { $in: ["queued", "running"] },
+        },
+        {
+          $set: {
+            status: "cancelled",
+            completedAt: new Date(),
+            error: "Cancelled by user",
+          },
+        },
+      );
+    });
+    return { runId };
+  },
+);
+
+export const dbtSchedulerFunction = inngest.createFunction(
+  {
+    id: "dbt-job-scheduler",
+    name: "Run Scheduled dbt Jobs",
+  },
+  { cron: "*/1 * * * *" },
+  async ({ step }) => {
+    const now = new Date();
+
+    const dueJobs = await step.run("fetch-due-dbt-jobs", async () => {
+      const jobs = await DbtJob.find({
+        enabled: true,
+        "schedule.cron": { $exists: true, $ne: "" },
+        "scheduledRun.nextAt": { $lte: now },
+      })
+        .select("_id workspaceId schedule scheduledRun")
+        .lean();
+
+      return jobs.map(job => ({
+        id: job._id.toString(),
+        workspaceId: job.workspaceId.toString(),
+        nextAt: job.scheduledRun?.nextAt ?? null,
+        schedule: job.schedule,
+      }));
+    });
+
+    let triggered = 0;
+    for (const dueJob of dueJobs) {
+      if (!dueJob.schedule?.cron || !dueJob.schedule?.timezone) continue;
+
+      const nextAt = getNextScheduledConsoleRunAt(
+        { cron: dueJob.schedule.cron, timezone: dueJob.schedule.timezone },
+        now,
+      );
+
+      // Optimistic claim — only the instance that flips nextAt triggers.
+      const updateResult = await step.run(
+        `claim-${dueJob.id}-${dueJob.nextAt?.toString() ?? "none"}`,
+        async () =>
+          DbtJob.updateOne(
+            {
+              _id: new Types.ObjectId(dueJob.id),
+              "scheduledRun.nextAt": dueJob.nextAt,
+            },
+            { $set: { "scheduledRun.nextAt": nextAt } },
+          ),
+      );
+
+      if (updateResult.modifiedCount === 0) continue;
+
+      await step.run(`trigger-${dueJob.id}`, async () => {
+        const job = await DbtJob.findById(new Types.ObjectId(dueJob.id));
+        if (!job) return null;
+        const run = await triggerDbtJobRun({
+          workspaceId: dueJob.workspaceId,
+          job,
+          trigger: "schedule",
+          triggeredBy: "scheduler",
+        });
+        return run._id.toString();
+      });
+      triggered++;
+    }
+
+    return { checked: dueJobs.length, triggered };
+  },
+);

@@ -3499,7 +3499,7 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard";
+export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -3524,7 +3524,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard"],
+      enum: ["console", "dashboard", "dbt-file"],
       required: true,
     },
     entityId: {
@@ -3959,3 +3959,321 @@ export const RealtimePresence = mongoose.model<IRealtimePresence>(
   "RealtimePresence",
   RealtimePresenceSchema,
 );
+
+/**
+ * dbt — workspace-scoped dbt Core projects ("dbt Cloud replica").
+ *
+ * A project is a virtual filesystem in Mongo (one DbtFile doc per file)
+ * materialized to a temp dir at run time by api/src/dbt/runner.service.ts.
+ * Jobs hold command lists + cron schedules (claim pattern mirrors
+ * SavedConsole.scheduledRun); runs are the per-execution records with
+ * capped logs and parsed run_results.json step results.
+ */
+
+export interface IDbtEnvironment {
+  /** Environment name, e.g. "dev" or "prod". Unique within the project. */
+  name: string;
+  /** DatabaseConnection id used as the warehouse target. */
+  connectionId: Types.ObjectId;
+  /** Target schema (dataset for BigQuery) dbt builds into. */
+  targetSchema: string;
+  /** dbt threads; default low (4) — prod container is memory-constrained. */
+  threads: number;
+  /** dbt vars passed as --vars for every command in this environment. */
+  vars?: Record<string, unknown>;
+}
+
+export interface IDbtProject extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  /** Pinned dbt-core minor version, e.g. "1.9". Informational for now. */
+  dbtVersion: string;
+  environments: IDbtEnvironment[];
+  defaultEnvironment: string;
+  /**
+   * Artifact-store key of the last successful prod manifest.json. This is
+   * the state artifact for --defer / state:modified+ (Slim CI, later phase).
+   */
+  lastProdManifestKey?: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
+  {
+    name: { type: String, required: true, trim: true },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: true,
+    },
+    targetSchema: { type: String, required: true, trim: true },
+    threads: { type: Number, default: 4, min: 1, max: 16 },
+    vars: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
+const DbtProjectSchema = new Schema<IDbtProject>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true },
+    dbtVersion: { type: String, default: "1.9" },
+    environments: { type: [DbtEnvironmentSchema], default: [] },
+    defaultEnvironment: { type: String, default: "dev" },
+    lastProdManifestKey: { type: String },
+    createdBy: { type: String, required: true },
+  },
+  { collection: "dbt_projects", timestamps: true },
+);
+
+DbtProjectSchema.index({ workspaceId: 1, name: 1 }, { unique: true });
+DbtProjectSchema.index({ workspaceId: 1, updatedAt: -1 });
+
+export const DbtProject = mongoose.model<IDbtProject>(
+  "DbtProject",
+  DbtProjectSchema,
+);
+
+export interface IDbtFile extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  /** POSIX path relative to project root, e.g. "models/staging/stg_x.sql". */
+  path: string;
+  content: string;
+  updatedBy: string;
+  is_deleted: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtFileSchema = new Schema<IDbtFile>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    path: { type: String, required: true, trim: true },
+    content: { type: String, default: "" },
+    updatedBy: { type: String, required: true },
+    is_deleted: { type: Boolean, default: false },
+  },
+  { collection: "dbt_files", timestamps: true },
+);
+
+DbtFileSchema.index({ projectId: 1, path: 1 }, { unique: true });
+DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
+
+export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
+
+export interface IDbtJob extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  name: string;
+  /** Environment name from the project's environments list. */
+  environment: string;
+  /** Validated against the dbt command allowlist (api/src/dbt/commands.ts). */
+  commands: string[];
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  /** Mirrors SavedConsole.scheduledRun so the optimistic claim transfers. */
+  scheduledRun?: {
+    nextAt?: Date;
+    lastAt?: Date;
+    lastStatus?: "success" | "error";
+    lastError?: string;
+    lastDurationMs?: number;
+    runCount: number;
+    consecutiveFailures: number;
+  };
+  enabled: boolean;
+  /** Reserved for Slim CI (--defer against the stored prod manifest). */
+  deferToProduction: boolean;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtJobSchema = new Schema<IDbtJob>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true },
+    environment: { type: String, required: true },
+    commands: { type: [String], default: [] },
+    schedule: {
+      cron: { type: String },
+      timezone: { type: String },
+    },
+    scheduledRun: {
+      nextAt: { type: Date },
+      lastAt: { type: Date },
+      lastStatus: { type: String, enum: ["success", "error"] },
+      lastError: { type: String },
+      lastDurationMs: { type: Number },
+      runCount: { type: Number, default: 0 },
+      consecutiveFailures: { type: Number, default: 0 },
+    },
+    enabled: { type: Boolean, default: true },
+    deferToProduction: { type: Boolean, default: false },
+    createdBy: { type: String, required: true },
+  },
+  { collection: "dbt_jobs", timestamps: true },
+);
+
+DbtJobSchema.index({ workspaceId: 1, projectId: 1 });
+DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
+
+export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);
+
+export type DbtRunStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "error"
+  | "cancelled";
+
+export interface IDbtRunLogLine {
+  ts: Date;
+  level: string;
+  line: string;
+}
+
+export interface IDbtRunStepResult {
+  uniqueId: string;
+  name: string;
+  resourceType: string;
+  status: string;
+  executionTimeMs: number;
+  rowsAffected?: number;
+  message?: string;
+}
+
+export interface IDbtRun extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  jobId?: Types.ObjectId;
+  environment: string;
+  commands: string[];
+  status: DbtRunStatus;
+  trigger: "schedule" | "manual" | "agent";
+  /** User id for manual triggers, "scheduler" / "agent" otherwise. */
+  triggeredBy: string;
+  startedAt?: Date;
+  completedAt?: Date;
+  durationMs?: number;
+  /** Capped, batch-written log lines (parsed from --log-format json). */
+  logs: IDbtRunLogLine[];
+  /** Parsed from run_results.json after each command. */
+  stepResults: IDbtRunStepResult[];
+  artifactKeys: {
+    manifest?: string;
+    runResults?: string;
+    catalog?: string;
+  };
+  error?: string;
+  inngestRunId?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtRunSchema = new Schema<IDbtRun>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    jobId: { type: Schema.Types.ObjectId, ref: "DbtJob" },
+    environment: { type: String, required: true },
+    commands: { type: [String], default: [] },
+    status: {
+      type: String,
+      enum: ["queued", "running", "success", "error", "cancelled"],
+      default: "queued",
+      required: true,
+    },
+    trigger: {
+      type: String,
+      enum: ["schedule", "manual", "agent"],
+      required: true,
+    },
+    triggeredBy: { type: String, required: true },
+    startedAt: { type: Date },
+    completedAt: { type: Date },
+    durationMs: { type: Number },
+    logs: {
+      type: [
+        new Schema<IDbtRunLogLine>(
+          {
+            ts: { type: Date, required: true },
+            level: { type: String, default: "info" },
+            line: { type: String, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    stepResults: {
+      type: [
+        new Schema<IDbtRunStepResult>(
+          {
+            uniqueId: { type: String, required: true },
+            name: { type: String, required: true },
+            resourceType: { type: String, default: "model" },
+            status: { type: String, required: true },
+            executionTimeMs: { type: Number, default: 0 },
+            rowsAffected: { type: Number },
+            message: { type: String },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    artifactKeys: {
+      manifest: { type: String },
+      runResults: { type: String },
+      catalog: { type: String },
+    },
+    error: { type: String },
+    inngestRunId: { type: String },
+  },
+  { collection: "dbt_runs", timestamps: true },
+);
+
+DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
+DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
+
+export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);

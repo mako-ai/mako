@@ -11,6 +11,7 @@ import { realtimeRoutes } from "./routes/realtime";
 import { dataSourceRoutes } from "./routes/sources";
 import { customPromptRoutes } from "./routes/custom-prompt";
 import { skillsRoutes } from "./routes/skills";
+import { dbtRoutes } from "./routes/dbt.routes";
 import { chatsRoutes } from "./routes/chats";
 import { chatImagesRoutes } from "./routes/chat-images";
 import { agentRoutes } from "./routes/agent.routes";
@@ -175,6 +176,7 @@ app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
+app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);

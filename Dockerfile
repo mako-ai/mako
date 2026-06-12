@@ -25,12 +25,33 @@ RUN pnpm run api:build
 FROM node:20-slim
 WORKDIR /app
 
-# Install build tools needed for native modules
+# Install build tools needed for native modules (+ venv for the dbt runner)
 RUN apt-get update && apt-get install -y \
     python3 \
+    python3-venv \
+    python3-pip \
     make \
     g++ \
     && rm -rf /var/lib/apt/lists/*
+
+# Bake a pinned dbt Core venv with the supported warehouse adapters.
+# The dbt runner (api/src/dbt/dbt-bin.ts) resolves the binary via DBT_VENV_BIN.
+RUN python3 -m venv /opt/dbt \
+    && /opt/dbt/bin/pip install --no-cache-dir \
+    "dbt-core==1.9.10" \
+    "dbt-postgres==1.9.1" \
+    "dbt-redshift==1.9.5" \
+    "dbt-bigquery==1.9.2" \
+    "dbt-clickhouse==1.9.2" \
+    "dbt-sqlserver==1.9.0"
+ENV DBT_VENV_BIN=/opt/dbt/bin/dbt
+
+# dbt-mysql lags upstream (requires dbt-core ~=1.7), so it gets its own venv.
+RUN python3 -m venv /opt/dbt-mysql \
+    && /opt/dbt-mysql/bin/pip install --no-cache-dir \
+    "dbt-core==1.7.19" \
+    "dbt-mysql==1.7.0"
+ENV DBT_MYSQL_VENV_BIN=/opt/dbt-mysql/bin/dbt
 
 # Install pnpm in production too (this layer will be cached)
 RUN npm install -g pnpm

@@ -1,0 +1,329 @@
+/**
+ * dbt runner — materializes a project snapshot to a temp dir and executes
+ * dbt commands as a subprocess with JSON log streaming.
+ *
+ * Security: credentials are passed only through the child-process env
+ * (profiles.yml references {{ env_var(...) }}); file paths are validated
+ * against traversal; commands are pre-validated by commands.ts.
+ */
+
+import { spawn } from "child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import { dirname, join, normalize, sep } from "path";
+import { loggers } from "../logging";
+import type { ParsedDbtCommand } from "./commands";
+import type { RenderedProfile } from "./adapter-map";
+import { resolveDbtBin } from "./dbt-bin";
+
+const logger = loggers.app();
+
+export interface DbtLogLine {
+  ts: Date;
+  level: string;
+  line: string;
+}
+
+export interface DbtRunRequest {
+  files: Array<{ path: string; content: string }>;
+  profile: RenderedProfile;
+  commands: ParsedDbtCommand[];
+  dbtVersion?: string;
+  /** Per-command timeout (ms). Defaults to 9 minutes (Cloud Run is 600s). */
+  commandTimeoutMs?: number;
+  signal?: AbortSignal;
+  onLog?: (line: DbtLogLine) => void;
+}
+
+export interface RunResultsArtifact {
+  results: Array<{
+    unique_id: string;
+    status: string;
+    execution_time: number;
+    message?: string | null;
+    adapter_response?: { rows_affected?: number };
+  }>;
+  elapsed_time?: number;
+}
+
+export interface DbtCommandResult {
+  command: string;
+  exitCode: number;
+  logLines: DbtLogLine[];
+  runResults?: RunResultsArtifact;
+}
+
+export interface DbtRunResult {
+  success: boolean;
+  commandResults: DbtCommandResult[];
+  /** Raw artifact contents collected from target/ after the last command. */
+  artifacts: {
+    manifest?: Buffer;
+    runResults?: Buffer;
+    catalog?: Buffer;
+  };
+}
+
+function ensureSafeRelativePath(path: string): string {
+  const normalized = normalize(path).replace(/\\/g, "/");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.startsWith("..") ||
+    normalized.split("/").includes("..")
+  ) {
+    throw new Error(`Invalid dbt file path: ${path}`);
+  }
+  return normalized;
+}
+
+interface DbtJsonLogEvent {
+  info?: {
+    ts?: string;
+    level?: string;
+    msg?: string;
+  };
+}
+
+function parseLogLine(raw: string): DbtLogLine {
+  try {
+    const event = JSON.parse(raw) as DbtJsonLogEvent;
+    if (event.info) {
+      return {
+        ts: event.info.ts ? new Date(event.info.ts) : new Date(),
+        level: event.info.level ?? "info",
+        line: event.info.msg ?? raw,
+      };
+    }
+  } catch {
+    // Non-JSON output (e.g. tracebacks) — keep the raw line.
+  }
+  return { ts: new Date(), level: "info", line: raw };
+}
+
+async function readArtifact(
+  projectDir: string,
+  name: string,
+): Promise<Buffer | undefined> {
+  try {
+    return await readFile(join(projectDir, "target", name));
+  } catch {
+    return undefined;
+  }
+}
+
+function execDbtCommand(params: {
+  bin: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  onLog: (line: DbtLogLine) => void;
+}): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(params.bin, params.args, {
+      cwd: params.cwd,
+      env: params.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdoutBuffer = "";
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      params.onLog({
+        ts: new Date(),
+        level: "error",
+        line: `Command timed out after ${Math.round(params.timeoutMs / 1000)}s — sending SIGTERM`,
+      });
+      child.kill("SIGTERM");
+    }, params.timeoutMs);
+
+    const onAbort = () => child.kill("SIGTERM");
+    params.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const flushLines = (chunk: string, isStderr: boolean) => {
+      if (isStderr) {
+        for (const line of chunk.split("\n")) {
+          if (line.trim()) {
+            params.onLog({ ts: new Date(), level: "error", line });
+          }
+        }
+        return;
+      }
+      stdoutBuffer += chunk;
+      let newlineIdx = stdoutBuffer.indexOf("\n");
+      while (newlineIdx >= 0) {
+        const raw = stdoutBuffer.slice(0, newlineIdx).trim();
+        stdoutBuffer = stdoutBuffer.slice(newlineIdx + 1);
+        if (raw) params.onLog(parseLogLine(raw));
+        newlineIdx = stdoutBuffer.indexOf("\n");
+      }
+    };
+
+    child.stdout.on("data", (data: Buffer) =>
+      flushLines(data.toString("utf8"), false),
+    );
+    child.stderr.on("data", (data: Buffer) =>
+      flushLines(data.toString("utf8"), true),
+    );
+
+    child.on("error", error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      params.signal?.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+
+    child.on("close", code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      params.signal?.removeEventListener("abort", onAbort);
+      if (stdoutBuffer.trim()) params.onLog(parseLogLine(stdoutBuffer.trim()));
+      resolve(code ?? 1);
+    });
+  });
+}
+
+/**
+ * Materialize project files + profiles.yml into a temp dir, run each
+ * pre-validated command in order (stopping at the first failure), collect
+ * target/ artifacts, and always clean up the temp dir.
+ */
+export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
+  const projectDir = await mkdtemp(join(tmpdir(), "mako-dbt-"));
+  const commandResults: DbtCommandResult[] = [];
+  const artifacts: DbtRunResult["artifacts"] = {};
+
+  try {
+    for (const file of request.files) {
+      const safePath = ensureSafeRelativePath(file.path);
+      const absolute = join(projectDir, ...safePath.split("/"));
+      await mkdir(dirname(absolute), { recursive: true });
+      await writeFile(absolute, file.content, "utf8");
+    }
+    await writeFile(
+      join(projectDir, "profiles.yml"),
+      request.profile.profilesYml,
+      "utf8",
+    );
+
+    const resolved = resolveDbtBin(
+      request.profile.adapterPackage,
+      request.dbtVersion,
+    );
+
+    const childEnv: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...request.profile.secretEnv,
+      DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
+      HOME: projectDir,
+    };
+
+    let success = true;
+    for (const command of request.commands) {
+      if (request.signal?.aborted) {
+        success = false;
+        break;
+      }
+
+      const logLines: DbtLogLine[] = [];
+      const onLog = (line: DbtLogLine) => {
+        logLines.push(line);
+        request.onLog?.(line);
+      };
+
+      const args = [
+        ...resolved.prefixArgs,
+        ...command.argv,
+        "--profiles-dir",
+        projectDir,
+        "--project-dir",
+        projectDir,
+        "--profile",
+        "mako",
+        "--log-format",
+        "json",
+        "--no-use-colors",
+      ];
+
+      logger.info("Executing dbt command", {
+        subcommand: command.subcommand,
+        projectDir: projectDir.split(sep).pop(),
+      });
+
+      const exitCode = await execDbtCommand({
+        bin: resolved.bin,
+        args,
+        cwd: projectDir,
+        env: childEnv,
+        timeoutMs: request.commandTimeoutMs ?? 9 * 60 * 1000,
+        signal: request.signal,
+        onLog,
+      });
+
+      let runResults: RunResultsArtifact | undefined;
+      const runResultsRaw = await readArtifact(projectDir, "run_results.json");
+      if (runResultsRaw) {
+        try {
+          runResults = JSON.parse(
+            runResultsRaw.toString("utf8"),
+          ) as RunResultsArtifact;
+        } catch {
+          // corrupt artifact — ignore
+        }
+      }
+
+      commandResults.push({
+        command: command.argv.join(" "),
+        exitCode,
+        logLines,
+        runResults,
+      });
+
+      if (exitCode !== 0) {
+        success = false;
+        break;
+      }
+    }
+
+    artifacts.manifest = await readArtifact(projectDir, "manifest.json");
+    artifacts.runResults = await readArtifact(projectDir, "run_results.json");
+    artifacts.catalog = await readArtifact(projectDir, "catalog.json");
+
+    return { success, commandResults, artifacts };
+  } finally {
+    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Map a run_results.json artifact to the dbt_runs.stepResults shape. */
+export function parseStepResults(
+  runResults: RunResultsArtifact | undefined,
+): Array<{
+  uniqueId: string;
+  name: string;
+  resourceType: string;
+  status: string;
+  executionTimeMs: number;
+  rowsAffected?: number;
+  message?: string;
+}> {
+  if (!runResults?.results) return [];
+  return runResults.results.map(result => {
+    // unique_id format: "model.project_name.model_name" / "test.project.x.hash"
+    const parts = result.unique_id.split(".");
+    return {
+      uniqueId: result.unique_id,
+      name: parts[parts.length - 1] ?? result.unique_id,
+      resourceType: parts[0] ?? "model",
+      status: result.status,
+      executionTimeMs: Math.round((result.execution_time ?? 0) * 1000),
+      rowsAffected: result.adapter_response?.rows_affected,
+      message: result.message ?? undefined,
+    };
+  });
+}
