@@ -82,7 +82,9 @@ import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
@@ -288,6 +290,7 @@ function Editor({
   resultsContextRef,
 }: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
@@ -417,6 +420,14 @@ function Editor({
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [versionHistoryTabId, setVersionHistoryTabId] = useState<string | null>(
     null,
+  );
+
+  // Unified share dialog state (consoles)
+  const [shareConsoleTabId, setShareConsoleTabId] = useState<string | null>(
+    null,
+  );
+  const shareConsoleTab = useConsoleStore(s =>
+    shareConsoleTabId ? s.tabs[shareConsoleTabId] : undefined,
   );
   const [versionHistoryEntityType, setVersionHistoryEntityType] = useState<
     "console" | "dashboard"
@@ -2395,6 +2406,8 @@ function Editor({
                                 setVersionHistoryOpen(true);
                               }}
                               historyAvailable={tab.isSaved}
+                              onShareClick={() => setShareConsoleTabId(tab.id)}
+                              shareAvailable={tab.isSaved}
                               schedule={tab.schedule}
                               onCreateSchedule={() =>
                                 handleOpenScheduleModal(tab.id, "create")
@@ -2720,6 +2733,27 @@ function Editor({
           onRestore={() => {
             if (currentWorkspace && versionHistoryTabId) {
               reloadConsole(currentWorkspace.id, versionHistoryTabId);
+            }
+          }}
+        />
+      )}
+
+      {shareConsoleTab && (
+        <ShareDialog
+          open={!!shareConsoleTabId}
+          onClose={() => setShareConsoleTabId(null)}
+          resourceType="console"
+          resourceId={shareConsoleTab.id}
+          resourceName={shareConsoleTab.title}
+          ownerId={shareConsoleTab.owner_id}
+          access={shareConsoleTab.access ?? "private"}
+          workspaceRole={shareConsoleTab.workspaceRole ?? "viewer"}
+          canManage={shareConsoleTab.owner_id === user?.id || isWorkspaceAdmin}
+          onSharingChanged={changes => {
+            if (changes.access && shareConsoleTabId) {
+              useConsoleStore
+                .getState()
+                .updateAccess(shareConsoleTabId, changes.access);
             }
           }}
         />

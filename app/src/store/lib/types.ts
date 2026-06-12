@@ -79,6 +79,8 @@ export interface ConsoleTab {
   resultsViewMode?: "table" | "json" | "chart";
   /** Access level: private or workspace */
   access?: ConsoleAccessLevel;
+  /** Role granted to workspace members when access is "workspace" */
+  workspaceRole?: "viewer" | "editor";
   /** User ID of the console owner */
   owner_id?: string;
   /** True if the current user can only read (not edit) this console */

@@ -40,6 +40,7 @@ const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadAppsExplorer = () => import("./components/AppsExplorer");
 const AppsExplorer = lazy(loadAppsExplorer);
+const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -736,6 +737,33 @@ function App() {
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* Public share viewer - no authentication required. The optional
+            first segment is the workspace slug (cosmetic only). */}
+        {["/share/:token", "/share/:workspaceSlug/:token"].map(path => (
+          <Route
+            key={path}
+            path={path}
+            element={
+              <Suspense
+                fallback={
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      height: "100vh",
+                    }}
+                  >
+                    <CircularProgress />
+                  </Box>
+                }
+              >
+                <PublicSharePage />
+              </Suspense>
+            }
+          />
+        ))}
 
         {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
         <Route path="/desktop-auth" element={<DesktopAuthPage />} />

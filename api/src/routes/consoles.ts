@@ -48,6 +48,10 @@ import {
 } from "../services/scheduled-query-schedule.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { buildConsoleWriteGuard } from "../services/console-save-guards";
+import {
+  registerCollaboratorRoutes,
+  registerSharingSettingsRoutes,
+} from "./lib/collaborator-routes";
 
 /**
  * Map console language to query language for tracking
@@ -115,15 +119,17 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
           403,
         );
       }
+      c.set("memberRole", "admin");
     } else if (user) {
       // For session auth, verify user has access to this workspace
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
+      const member = await workspaceService.getMember(workspaceId, user.id);
+      if (!member) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
         );
       }
+      c.set("memberRole", member.role);
     } else {
       // Neither API key nor session auth succeeded - reject request
       return c.json({ success: false, error: "Unauthorized" }, 401);
@@ -161,6 +167,26 @@ async function verifyWorkspaceAccess(
 
 consoleRoutes.use("/:id/schedule", requireWorkspaceAdmin);
 consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
+
+// ── Sharing (collaborators + general access) ──
+const loadConsoleById = async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!Types.ObjectId.isValid(id)) return null;
+  return SavedConsole.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+};
+
+registerCollaboratorRoutes(consoleRoutes, {
+  resourceName: "Console",
+  load: loadConsoleById,
+});
+registerSharingSettingsRoutes(consoleRoutes, {
+  resourceName: "Console",
+  load: loadConsoleById,
+});
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
 consoleRoutes.get("/", async (c: Context) => {
@@ -259,7 +285,7 @@ consoleRoutes.get("/content", async (c: Context) => {
     const isAdmin = member?.role === "owner" || member?.role === "admin";
 
     const readOnly = fullConsole
-      ? !ConsoleManager.canWrite(fullConsole, user.id, isAdmin)
+      ? !ConsoleManager.canWrite(fullConsole, user.id, isAdmin, member?.role)
       : false;
 
     // Resolve owner display name
@@ -283,6 +309,8 @@ consoleRoutes.get("/content", async (c: Context) => {
       chartSpec: consoleData.chartSpec,
       resultsViewMode: consoleData.resultsViewMode,
       access: consoleAccess,
+      workspaceRole: fullConsole?.workspaceRole ?? "viewer",
+      sharedWith: fullConsole?.sharedWith ?? [],
       owner_id: ownerId,
       ownerDisplayName,
       readOnly,
@@ -891,7 +919,12 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       });
       if (
         existingById &&
-        !ConsoleManager.canWrite(existingById, user.id, isAdminPut)
+        !ConsoleManager.canWrite(
+          existingById,
+          user.id,
+          isAdminPut,
+          memberPut?.role,
+        )
       ) {
         return c.json(
           {
@@ -1505,7 +1538,12 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
       });
       if (
         existing &&
-        !ConsoleManager.canWrite(existing, user.id, isAdminRename)
+        !ConsoleManager.canWrite(
+          existing,
+          user.id,
+          isAdminRename,
+          memberRename?.role,
+        )
       ) {
         return c.json(
           {
@@ -1897,7 +1935,12 @@ consoleRoutes.patch("/:id/move", async (c: Context) => {
       });
       if (
         existing &&
-        !ConsoleManager.canWrite(existing, user.id, isAdminMove)
+        !ConsoleManager.canWrite(
+          existing,
+          user.id,
+          isAdminMove,
+          memberMove?.role,
+        )
       ) {
         return c.json(
           { success: false, error: "Cannot move a read-only console" },
@@ -2657,7 +2700,12 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const isAdminDetail =
       memberDetail?.role === "owner" || memberDetail?.role === "admin";
     const readOnly = user?.id
-      ? !ConsoleManager.canWrite(savedConsole, user.id, isAdminDetail)
+      ? !ConsoleManager.canWrite(
+          savedConsole,
+          user.id,
+          isAdminDetail,
+          memberDetail?.role,
+        )
       : false;
 
     let ownerDisplayName: string | undefined;
@@ -2832,7 +2880,7 @@ consoleRoutes.post("/:id/versions/:version/restore", async (c: Context) => {
 
     const member = await workspaceService.getMember(workspaceId, user.id);
     const isAdmin = member?.role === "owner" || member?.role === "admin";
-    if (!ConsoleManager.canWrite(consoleDoc, user.id, isAdmin)) {
+    if (!ConsoleManager.canWrite(consoleDoc, user.id, isAdmin, member?.role)) {
       return c.json(
         { success: false, error: "You do not have write access" },
         403,

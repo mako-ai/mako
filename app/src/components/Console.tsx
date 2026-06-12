@@ -37,6 +37,7 @@ import {
   Copy as CopyIcon,
   FolderInput as MoveIcon,
   Clock3 as ScheduleIcon,
+  Share2 as Share2Icon,
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
@@ -111,6 +112,10 @@ interface ConsoleProps {
    * callers that already gate via `onHistoryClick` keep working.
    */
   historyAvailable?: boolean;
+  /** Opens the unified ShareDialog for this console. */
+  onShareClick?: () => void;
+  /** When false, the share button renders disabled (unsaved drafts). */
+  shareAvailable?: boolean;
   enableVersionControl?: boolean;
   schedule?: {
     cron: string;
@@ -175,6 +180,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     filePath,
     onHistoryClick,
     historyAvailable = true,
+    onShareClick,
+    shareAvailable = true,
     enableVersionControl = false,
     schedule,
     onCreateSchedule,
@@ -1300,6 +1307,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                       disabled={isDiffMode || !historyAvailable}
                     >
                       <HistoryIcon strokeWidth={2} size={22} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+
+              {onShareClick && (
+                <Tooltip
+                  title={
+                    shareAvailable
+                      ? "Share"
+                      : "Save this console before sharing it"
+                  }
+                >
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={onShareClick}
+                      disabled={isDiffMode || !shareAvailable}
+                    >
+                      <Share2Icon strokeWidth={2} size={22} />
                     </IconButton>
                   </span>
                 </Tooltip>
