@@ -7,7 +7,7 @@ import { useAppStore } from "../store/appStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
-import type { ConsoleTab } from "../store/lib/types";
+import type { ConsoleTab, TabKind } from "../store/lib/types";
 
 interface BreadcrumbSegment {
   label: string;
@@ -30,6 +30,10 @@ interface EntityContext {
  * then the entity's own path — e.g.
  * `Acme / Databases / prod / public / users` or
  * `Acme / Apps / My App / src / App.tsx`.
+ *
+ * REGRESSION GUARD: the switch is exhaustive over `TabKind` — adding a new
+ * tab kind without defining its breadcrumb trail is a compile error (see
+ * also lib/tab-routing.ts for the matching URL guard).
  */
 function segmentsForTab(
   tab: ConsoleTab,
@@ -43,8 +47,8 @@ function segmentsForTab(
       .map(label => ({ label })),
   ];
 
-  switch (tab.kind) {
-    case undefined:
+  const kind: NonNullable<TabKind> = tab.kind ?? "console";
+  switch (kind) {
     case "console": {
       if (!tab.filePath) {
         return [
@@ -107,8 +111,13 @@ function segmentsForTab(
       return plain(["Settings", "Members"]);
     case "plan":
       return plain(["Plans", tab.title || "Plan"]);
-    default:
+    default: {
+      // Compile-time exhaustiveness: a new TabKind must be handled above.
+      // Runtime still degrades gracefully for stale persisted tabs.
+      const exhaustivenessCheck: never = kind;
+      void exhaustivenessCheck;
       return plain([tab.title]);
+    }
   }
 }
 

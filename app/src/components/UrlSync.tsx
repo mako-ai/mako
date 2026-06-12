@@ -15,11 +15,11 @@ import {
   focusAppTab,
 } from "../app-runtime/shell";
 import { focusDashboardDataSourceTab } from "../dashboard-runtime/shell";
-
-/** Encode a path that may contain slashes, keeping the slashes readable. */
-function encodePathSegments(path: string): string {
-  return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-}
+import {
+  TAB_DEEP_LINK_PATTERNS,
+  decodePathSegments,
+  tabUrlPath,
+} from "../lib/tab-routing";
 
 /**
  * UrlSync component
@@ -51,67 +51,7 @@ export function UrlSync() {
     if (!id) return null;
     const tab = state.tabs[id];
     if (!tab) return null;
-    switch (tab.kind) {
-      case undefined:
-      case "console":
-        return `/c/${id}`;
-      case "connectors":
-        return typeof tab.content === "string" && tab.content
-          ? `/cx/${tab.content}`
-          : null;
-      case "flow-editor":
-        return tab.metadata?.flowId ? `/f/${tab.metadata.flowId}` : null;
-      case "dashboard":
-        return tab.metadata?.dashboardId
-          ? `/d/${tab.metadata.dashboardId}`
-          : null;
-      case "dashboard-data-source": {
-        const dashboardId = tab.metadata?.dashboardId as string | undefined;
-        const dataSourceId = tab.metadata?.dataSourceId as string | undefined;
-        return dashboardId && dataSourceId
-          ? `/d/${dashboardId}/data/${dataSourceId}`
-          : null;
-      }
-      case "table-data": {
-        const schema = tab.metadata?.schema as string | undefined;
-        const table = tab.metadata?.table as string | undefined;
-        if (!tab.connectionId || !table) return null;
-        const params = new URLSearchParams();
-        if (tab.databaseName) params.set("db", tab.databaseName);
-        if (tab.databaseId) params.set("dbid", tab.databaseId);
-        const query = params.toString();
-        return (
-          `/t/${tab.connectionId}/${encodeURIComponent(schema || "public")}` +
-          `/${encodeURIComponent(table)}${query ? `?${query}` : ""}`
-        );
-      }
-      case "app": {
-        const appId = tab.metadata?.appId as string | undefined;
-        return appId ? `/a/${appId}` : null;
-      }
-      case "app-file": {
-        const appId = tab.metadata?.appId as string | undefined;
-        const path = tab.metadata?.path as string | undefined;
-        return appId && path
-          ? `/a/${appId}/file/${encodePathSegments(path)}`
-          : null;
-      }
-      case "app-binding": {
-        const appId = tab.metadata?.appId as string | undefined;
-        const bindingId = tab.metadata?.bindingId as string | undefined;
-        return appId && bindingId ? `/a/${appId}/data/${bindingId}` : null;
-      }
-      case "plan": {
-        const chatId = tab.metadata?.chatId as string | undefined;
-        return chatId ? `/p/${chatId}` : null;
-      }
-      case "settings":
-        return tab.settingsSection
-          ? `/settings/${tab.settingsSection}`
-          : "/settings";
-      default:
-        return null;
-    }
+    return tabUrlPath(id, tab);
   });
 
   const activeView = useUIStore(state => state.leftPane);
@@ -134,24 +74,21 @@ export function UrlSync() {
 
     const path = window.location.pathname;
 
-    // Regex patterns for routes (most specific first)
-    const consoleMatch = path.match(/^\/c\/([a-zA-Z0-9-]+)/);
-    const connectorMatch = path.match(/^\/cx\/([a-zA-Z0-9-]+)/);
-    const flowMatch = path.match(/^\/f\/([a-zA-Z0-9-]+)/);
+    // Route patterns live in lib/tab-routing.ts next to the URL builders so
+    // the two directions stay in sync (most specific matched first below).
+    const consoleMatch = path.match(TAB_DEEP_LINK_PATTERNS.console);
+    const connectorMatch = path.match(TAB_DEEP_LINK_PATTERNS.connectors);
+    const flowMatch = path.match(TAB_DEEP_LINK_PATTERNS["flow-editor"]);
     const dashboardDataSourceMatch = path.match(
-      /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9-]+)/,
+      TAB_DEEP_LINK_PATTERNS["dashboard-data-source"],
     );
-    const dashboardMatch = path.match(/^\/d\/([a-zA-Z0-9-]+)\/?$/);
-    const tableMatch = path.match(
-      /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
-    );
-    const appFileMatch = path.match(/^\/a\/([a-zA-Z0-9-]+)\/file\/(.+)$/);
-    const appBindingMatch = path.match(
-      /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9-]+)/,
-    );
-    const appMatch = path.match(/^\/a\/([a-zA-Z0-9-]+)\/?$/);
-    const planMatch = path.match(/^\/p\/([a-zA-Z0-9-]+)/);
-    const settingsSectionMatch = path.match(/^\/settings\/([a-z-]+)$/);
+    const dashboardMatch = path.match(TAB_DEEP_LINK_PATTERNS.dashboard);
+    const tableMatch = path.match(TAB_DEEP_LINK_PATTERNS["table-data"]);
+    const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
+    const appBindingMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-binding"]);
+    const appMatch = path.match(TAB_DEEP_LINK_PATTERNS.app);
+    const planMatch = path.match(TAB_DEEP_LINK_PATTERNS.plan);
+    const settingsSectionMatch = path.match(TAB_DEEP_LINK_PATTERNS.settings);
     const settingsMatch = path.match(/^\/settings\/?$/);
 
     if (consoleMatch) {
@@ -277,11 +214,7 @@ export function UrlSync() {
     } else if (appFileMatch) {
       // /a/:appId/file/:path
       const appId = appFileMatch[1];
-      const filePath = appFileMatch[2]
-        .split("/")
-        .filter(Boolean)
-        .map(decodeURIComponent)
-        .join("/");
+      const filePath = decodePathSegments(appFileMatch[2]);
       setLeftPane("apps");
       focusAppFileTab(appId, filePath);
     } else if (appBindingMatch) {
