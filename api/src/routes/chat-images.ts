@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import { ObjectId } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -8,6 +8,7 @@ import {
 } from "../services/chat-attachment.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { workspaceService } from "../services/workspace.service";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("chat-images");
 
@@ -21,7 +22,7 @@ const logger = loggers.api("chat-images");
  * immutable (attachment ids are content-addressed) so they are aggressively
  * cached by the browser.
  */
-export const chatImagesRoutes = new Hono();
+export const chatImagesRoutes = createRouter();
 
 chatImagesRoutes.use("*", unifiedAuthMiddleware);
 
@@ -88,64 +89,95 @@ function nodeStreamToWeb(
   });
 }
 
-chatImagesRoutes.get("/:attachmentId", async (c: AuthenticatedContext) => {
-  try {
-    const user = c.get("user");
-    const userId = user?.id;
-    if (!userId) {
-      return c.json({ error: "User not authenticated" }, 401);
-    }
+chatImagesRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{attachmentId}",
+    tags: ["Chat Images"],
+    summary: "Stream a chat image attachment",
+    description:
+      "Streams a chat image attachment from object storage. Private to the chat creator.",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        attachmentId: z
+          .string()
+          .openapi({ param: { name: "attachmentId", in: "path" } }),
+      }),
+    },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: {
+        description: "Attachment bytes.",
+        content: {
+          "application/octet-stream": {
+            schema: z.string().openapi({ format: "binary" }),
+          },
+        },
+      },
+      304: { description: "Not modified (matched `If-None-Match`)." },
+    },
+  }),
+  async c => {
+    try {
+      const user = c.get("user");
+      const userId = user?.id;
+      if (!userId) {
+        return c.json({ error: "User not authenticated" }, 401);
+      }
 
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    const workspaceId = c.req.param("workspaceId") as string;
-    const attachmentId = c.req.param("attachmentId");
+      const workspaceId = c.req.param("workspaceId") as string;
+      const attachmentId = c.req.param("attachmentId");
 
-    if (!ObjectId.isValid(workspaceId)) {
-      return c.json({ error: "Invalid workspace id" }, 400);
-    }
-    if (!ObjectId.isValid(attachmentId)) {
-      return c.json({ error: "Invalid attachment id" }, 400);
-    }
+      if (!ObjectId.isValid(workspaceId)) {
+        return c.json({ error: "Invalid workspace id" }, 400);
+      }
+      if (!ObjectId.isValid(attachmentId)) {
+        return c.json({ error: "Invalid attachment id" }, 400);
+      }
 
-    const attachment = await getChatAttachmentForUser(
-      attachmentId,
-      workspaceId,
-      userId.toString(),
-    );
-    if (!attachment) {
-      return c.json({ error: "Attachment not found" }, 404);
-    }
-
-    // Content-addressed id => safe to cache forever in the browser.
-    const etag = `"${attachment.sha256}"`;
-    if (c.req.header("if-none-match") === etag) {
-      return c.body(null, 304);
-    }
-
-    const stream = await openChatAttachmentStream(attachment.storageKey);
-    if (!stream) {
-      logger.warn("Chat attachment bytes missing from object store", {
+      const attachment = await getChatAttachmentForUser(
         attachmentId,
         workspaceId,
-      });
-      return c.json({ error: "Attachment not available" }, 404);
-    }
+        userId.toString(),
+      );
+      if (!attachment) {
+        return c.json({ error: "Attachment not found" }, 404);
+      }
 
-    const headers: Record<string, string> = {
-      "Content-Type": attachment.mediaType,
-      "Cache-Control": "private, max-age=31536000, immutable",
-      ETag: etag,
-      "Content-Length": String(attachment.size),
-    };
-    if (attachment.filename) {
-      headers["Content-Disposition"] =
-        `inline; filename="${attachment.filename.replace(/"/g, "")}"`;
-    }
+      // Content-addressed id => safe to cache forever in the browser.
+      const etag = `"${attachment.sha256}"`;
+      if (c.req.header("if-none-match") === etag) {
+        return c.body(null, 304);
+      }
 
-    return c.body(nodeStreamToWeb(stream), 200, headers);
-  } catch (error) {
-    logger.error("Error serving chat image", { error });
-    return c.json({ error: "Failed to load attachment" }, 500);
-  }
-});
+      const stream = await openChatAttachmentStream(attachment.storageKey);
+      if (!stream) {
+        logger.warn("Chat attachment bytes missing from object store", {
+          attachmentId,
+          workspaceId,
+        });
+        return c.json({ error: "Attachment not available" }, 404);
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": attachment.mediaType,
+        "Cache-Control": "private, max-age=31536000, immutable",
+        ETag: etag,
+        "Content-Length": String(attachment.size),
+      };
+      if (attachment.filename) {
+        headers["Content-Disposition"] =
+          `inline; filename="${attachment.filename.replace(/"/g, "")}"`;
+      }
+
+      return c.body(nodeStreamToWeb(stream), 200, headers);
+    } catch (error) {
+      logger.error("Error serving chat image", { error });
+      return c.json({ error: "Failed to load attachment" }, 500);
+    }
+  },
+);
