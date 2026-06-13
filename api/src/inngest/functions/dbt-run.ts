@@ -286,7 +286,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       );
 
       if (runInfo.jobId) {
-        await DbtJob.updateOne(
+        const updatedJob = await DbtJob.findOneAndUpdate(
           { _id: new Types.ObjectId(runInfo.jobId) },
           {
             $set: {
@@ -303,7 +303,36 @@ export const dbtRunExecutorFunction = inngest.createFunction(
               ...(failed ? { "scheduledRun.consecutiveFailures": 1 } : {}),
             },
           },
+          { new: true },
         );
+
+        // Stop a broken scheduled job from hammering the warehouse forever:
+        // after a threshold of consecutive failures, disable the schedule and
+        // surface why. A manual run (which resets consecutiveFailures on
+        // success) re-enables normal cadence after the user re-enables it.
+        const failures = updatedJob?.scheduledRun?.consecutiveFailures ?? 0;
+        if (
+          failed &&
+          updatedJob?.enabled &&
+          updatedJob.schedule?.cron &&
+          DBT_AUTO_DISABLE_AFTER_FAILURES > 0 &&
+          failures >= DBT_AUTO_DISABLE_AFTER_FAILURES
+        ) {
+          await DbtJob.updateOne(
+            { _id: updatedJob._id },
+            {
+              $set: {
+                enabled: false,
+                "scheduledRun.lastError": `Auto-disabled after ${failures} consecutive failures. Last error: ${errorMessage ?? "unknown"}`,
+              },
+              $unset: { "scheduledRun.nextAt": "" },
+            },
+          );
+          logger.warn("Auto-disabled dbt job after repeated failures", {
+            jobId: updatedJob._id.toString(),
+            consecutiveFailures: failures,
+          });
+        }
       }
 
       // Keep the last successful prod manifest as the state artifact for
@@ -461,6 +490,15 @@ const DBT_RUN_QUEUED_STALL_MS = 6 * 60 * 60 * 1000;
  */
 const DBT_RUN_RETENTION_DAYS = Number(
   process.env.DBT_RUN_RETENTION_DAYS ?? "30",
+);
+
+/**
+ * Auto-disable a scheduled job after this many consecutive failures so a
+ * persistently broken job stops re-running on every tick. 0 disables the
+ * behavior. Override with DBT_AUTO_DISABLE_AFTER_FAILURES.
+ */
+const DBT_AUTO_DISABLE_AFTER_FAILURES = Number(
+  process.env.DBT_AUTO_DISABLE_AFTER_FAILURES ?? "10",
 );
 
 export const dbtRunSweeperFunction = inngest.createFunction(
