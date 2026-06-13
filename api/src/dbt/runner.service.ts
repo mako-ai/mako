@@ -40,6 +40,12 @@ export interface DbtRunRequest {
     runResults?: Buffer;
     manifest?: Buffer;
   };
+  /**
+   * Prod manifest.json for Slim CI. When set, commands run with
+   * `--defer --state <dir>` so unselected refs resolve to prod and
+   * `--select state:modified+` only builds what changed.
+   */
+  deferState?: Buffer;
   signal?: AbortSignal;
   onLog?: (line: DbtLogLine) => void;
 }
@@ -258,6 +264,14 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       }
     }
 
+    // Slim CI: stage the prod manifest in a state dir for `--defer --state`.
+    let stateDir: string | undefined;
+    if (request.deferState) {
+      stateDir = join(projectDir, "state");
+      await mkdir(stateDir, { recursive: true });
+      await writeFile(join(stateDir, "manifest.json"), request.deferState);
+    }
+
     const resolved = resolveDbtBin(
       request.profile.adapterPackage,
       request.dbtVersion,
@@ -323,9 +337,24 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         request.onLog?.(line);
       };
 
+      // --defer/--state only apply to node-executing/compiling subcommands.
+      const stateAware = new Set([
+        "run",
+        "build",
+        "test",
+        "compile",
+        "seed",
+        "snapshot",
+      ]);
+      const deferArgs =
+        stateDir && stateAware.has(command.subcommand)
+          ? ["--defer", "--state", stateDir]
+          : [];
+
       const args = [
         ...resolved.prefixArgs,
         ...command.argv,
+        ...deferArgs,
         "--profiles-dir",
         projectDir,
         "--project-dir",

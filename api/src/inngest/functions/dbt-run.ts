@@ -138,6 +138,24 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         { new: true },
       ).lean();
       if (!run) return null;
+
+      // Slim CI: when the job defers to production, resolve the project's last
+      // prod manifest so the executor can run `--defer --state`.
+      let deferStateKey: string | null = null;
+      if (run.jobId) {
+        const job = await DbtJob.findById(run.jobId)
+          .select("deferToProduction")
+          .lean();
+        if (job?.deferToProduction) {
+          const project = await DbtProject.findById(run.projectId)
+            .select("lastProdManifestKey")
+            .lean();
+          deferStateKey =
+            (project as { lastProdManifestKey?: string })
+              ?.lastProdManifestKey ?? null;
+        }
+      }
+
       return {
         environment: run.environment,
         commands: run.commands,
@@ -148,6 +166,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
               manifest: run.restoreArtifactKeys.manifest,
             }
           : null,
+        deferStateKey,
       };
     });
 
@@ -189,6 +208,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
               manifest: await readArtifactBuffer(restoreKeys.manifest),
             }
           : undefined;
+        const deferState = await readArtifactBuffer(
+          runInfo.deferStateKey ?? undefined,
+        );
 
         try {
           const result = await runDbt({
@@ -200,6 +222,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             // snapshot loading + artifact upload within the step request.
             commandTimeoutMs: 50 * 60 * 1000,
             restoreTarget,
+            deferState,
             onLog: logWriter.onLog,
           });
 

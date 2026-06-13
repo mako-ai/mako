@@ -163,6 +163,7 @@ export default function DbtJobView({
   const [formCron, setFormCron] = useState(PRESET_CRONS.daily);
   const [formTimezone, setFormTimezone] = useState("UTC");
   const [formEnabled, setFormEnabled] = useState(true);
+  const [formDefer, setFormDefer] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const timezones = useMemo<string[]>(() => {
@@ -268,6 +269,7 @@ export default function DbtJobView({
     setFormPreset(presetFromCron(cron));
     setFormTimezone(job.schedule?.timezone ?? "UTC");
     setFormEnabled(job.enabled);
+    setFormDefer(!!job.deferToProduction);
     setEditing(true);
   }, [job]);
 
@@ -304,6 +306,7 @@ export default function DbtJobView({
         ? { cron: formCron, timezone: formTimezone }
         : null,
       enabled: formEnabled,
+      deferToProduction: formDefer,
     };
     const saved = await saveJob(workspaceId, projectId, payload, jobId);
     setSaving(false);
@@ -319,6 +322,7 @@ export default function DbtJobView({
     formCron,
     formTimezone,
     formEnabled,
+    formDefer,
     saveJob,
   ]);
 
@@ -587,8 +591,22 @@ export default function DbtJobView({
               />
             }
             label="Enabled"
-            sx={{ display: "block", mb: 2 }}
+            sx={{ display: "block", mb: 1 }}
           />
+
+          <Tooltip title="Run with --defer --state against the last successful prod manifest. Use with `--select state:modified+` to build only what changed (Slim CI).">
+            <FormControlLabel
+              control={
+                <Switch
+                  size="small"
+                  checked={formDefer}
+                  onChange={e => setFormDefer(e.target.checked)}
+                />
+              }
+              label="Defer to production (Slim CI)"
+              sx={{ display: "block", mb: 2 }}
+            />
+          </Tooltip>
 
           <Button
             variant="contained"
