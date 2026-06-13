@@ -13,6 +13,8 @@ entities:
   - useduckdb
   - parquet
   - preview
+  - theme
+  - dark mode
 ---
 
 Apps are React projects rendered live in a tab. You build them by editing files.
@@ -77,10 +79,43 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
    app's explorer tree.
 
+### Theming & dark mode
+
+Apps are themed by the runtime — do not build a theme system. The preview injects
+shadcn-named CSS variables that switch between light and dark automatically (the Mako
+theme when the app runs inside the workspace, the OS preference when opened standalone
+from a share link). The page background and text color are pre-wired; a new app is
+dark-mode-correct with zero theme code.
+
+The one rule: **never hardcode surface/text/border colors — use the tokens.**
+
+- Surfaces & text: `var(--background)` / `var(--foreground)`, `var(--card)` /
+  `var(--card-foreground)`, `var(--popover)` / `var(--popover-foreground)`,
+  `var(--muted)` / `var(--muted-foreground)`, `var(--secondary)`, `var(--accent)`
+- Lines & controls: `var(--border)`, `var(--input)`, `var(--ring)`, `var(--radius)`
+- Emphasis: `var(--primary)` / `var(--primary-foreground)`, `var(--destructive)` /
+  `var(--destructive-foreground)`
+- Charts: `var(--chart-1)` … `var(--chart-5)` — tokens are resolved colors, so they
+  work directly in inline styles, CSS-in-JS, and SVG `fill`/`stroke` (recharts, d3).
+
+When code needs the literal mode or a computed color (e.g. a canvas-based chart
+library's theme option), use the SDK hook:
+
+```tsx
+import { useTheme } from "@mako/app-sdk";
+const { theme } = useTheme(); // "light" | "dark", updates live on toggle
+```
+
+Brand colors are fine for accents — just keep backgrounds, text, and borders on the
+tokens so both modes stay readable.
+
 ### Constraints
 
 - The default `cdn` runtime runs React + ESM dependencies without a build step. Plain
   CSS and runtime libraries (d3, recharts, etc.) work well. A full Tailwind/shadcn build
   requires the `webcontainer` runtime (not yet enabled) — prefer plain CSS or CSS-in-JS
   for styling in the cdn runtime.
+- Use the injected theme tokens (`var(--background)`, `var(--card)`, `var(--border)`,
+  `var(--chart-1)`, …) instead of hardcoded colors so apps follow light/dark mode; see
+  "Theming & dark mode".
 - Keep components in their own files and import them; write idiomatic, modern React.

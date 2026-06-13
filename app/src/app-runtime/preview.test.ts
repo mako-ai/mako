@@ -40,4 +40,45 @@ describe("buildPreviewHtml", () => {
     // …and warn when the parent reports dropped rows.
     expect(script).toContain("warnTruncated");
   });
+
+  it("injects light/dark theme tokens and pre-wires the body colors", () => {
+    const html = buildPreviewHtml(app);
+    // Resolved color values (var(--background) usable directly), both modes.
+    expect(html).toContain("--background: hsl(0 0% 100%)");
+    expect(html).toContain(":root.dark");
+    expect(html).toContain("--background: hsl(240 10% 3.9%)");
+    expect(html).toContain("--chart-5");
+    // Zero-code default: apps inherit themed body background/text.
+    expect(html).toContain("background: var(--background)");
+    expect(html).toContain("color: var(--foreground)");
+  });
+
+  it("embeds the host theme in the payload (null = follow system)", () => {
+    const payloadOf = (html: string) =>
+      JSON.parse(
+        String(
+          html
+            .split('<script id="mako-payload" type="application/json">')[1]
+            ?.split("</script>")[0],
+        ),
+      ) as { theme: string | null };
+    expect(payloadOf(buildPreviewHtml(app, { theme: "dark" })).theme).toBe(
+      "dark",
+    );
+    expect(payloadOf(buildPreviewHtml(app, { theme: "light" })).theme).toBe(
+      "light",
+    );
+    expect(payloadOf(buildPreviewHtml(app)).theme).toBeNull();
+  });
+
+  it("wires live theme switching and the useTheme SDK hook in the bootstrap", () => {
+    const script = extractModuleScript(buildPreviewHtml(app));
+    // Parent-driven toggles (embedded in Mako)…
+    expect(script).toContain("mako-app:set-theme");
+    // …system fallback when standalone…
+    expect(script).toContain("prefers-color-scheme: dark");
+    // …applied before the app renders, and exposed to app code.
+    expect(script).toContain("setExplicitTheme(payload.theme)");
+    expect(script).toContain("useTheme()");
+  });
 });

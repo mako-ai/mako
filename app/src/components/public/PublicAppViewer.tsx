@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, CircularProgress, Typography, Alert } from "@mui/material";
+import { useTheme } from "../../contexts/ThemeContext";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../../app-runtime/preview";
 import {
   ensureBindingLoaded,
@@ -68,6 +69,14 @@ export default function PublicAppViewer({ token, content }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [booting, setBooting] = useState(true);
   const [previewError, setPreviewError] = useState<string | null>(null);
+
+  // Anonymous visitors have no saved theme preference, so the ThemeProvider
+  // default ("system") makes effectiveMode track the OS preference — exactly
+  // what a standalone app should inherit. Seed the srcdoc with it and push
+  // later changes via postMessage (no srcdoc rebuild).
+  const { effectiveMode } = useTheme();
+  const effectiveModeRef = useRef(effectiveMode);
+  effectiveModeRef.current = effectiveMode;
 
   const duckAppId = `share-${token}`;
 
@@ -191,19 +200,37 @@ export default function PublicAppViewer({ token, content }: Props) {
       } else if (data.type === PREVIEW_MESSAGE.ready) {
         setBooting(false);
         setPreviewError(null);
+        // Covers a theme change that raced the (slow) preview boot.
+        post({
+          type: PREVIEW_MESSAGE.setTheme,
+          theme: effectiveModeRef.current,
+        });
       }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [duckAppId, content]);
 
+  // Keep the booted preview's theme in sync with system/theme changes.
+  useEffect(() => {
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: PREVIEW_MESSAGE.setTheme, theme: effectiveMode },
+      "*",
+    );
+  }, [effectiveMode]);
+
+  // Theme comes from a ref on purpose: it only seeds the boot paint and must
+  // not rebuild the (slow, Babel-compiled) preview — set-theme handles toggles.
   const srcDoc = useMemo(
     () =>
-      buildPreviewHtml({
-        files: content.files,
-        dependencies: content.dependencies,
-        entrypoint: content.entrypoint,
-      } as Parameters<typeof buildPreviewHtml>[0]),
+      buildPreviewHtml(
+        {
+          files: content.files,
+          dependencies: content.dependencies,
+          entrypoint: content.entrypoint,
+        } as Parameters<typeof buildPreviewHtml>[0],
+        { theme: effectiveModeRef.current },
+      ),
     [content],
   );
 
@@ -240,7 +267,12 @@ export default function PublicAppViewer({ token, content }: Props) {
       )}
 
       <Box
-        sx={{ flex: 1, minHeight: 0, bgcolor: "#fff", position: "relative" }}
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          bgcolor: "background.default",
+          position: "relative",
+        }}
       >
         <iframe
           ref={iframeRef}
