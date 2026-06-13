@@ -124,6 +124,7 @@ export const OPEN_RESPONSES = {
   200: jsonContent(z.any(), "Successful response"),
   201: jsonContent(z.any(), "Created"),
   202: jsonContent(z.any(), "Accepted"),
+  204: { description: "No content" },
   206: jsonContent(z.any(), "Partial content"),
   400: jsonContent(z.any(), "Invalid request"),
   401: jsonContent(z.any(), "Authentication required"),
