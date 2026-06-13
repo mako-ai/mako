@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { serve } from "@hono/node-server";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
@@ -62,7 +62,7 @@ const REQUIRED_SYSTEM_SKILLS = [
   "flows",
 ];
 
-const app = new Hono();
+const app = new OpenAPIHono();
 
 // CORS middleware
 app.use(

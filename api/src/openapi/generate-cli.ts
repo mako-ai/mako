@@ -12,7 +12,7 @@ import { buildOpenApiDocument } from "./document";
  *   tsx src/openapi/generate-cli.ts [outputPath]
  *
  * This is a build-time helper; it does not start the server or touch the
- * database — it only introspects the route table.
+ * database — it builds the document from the Zod route definitions.
  */
 function main(): void {
   const outArg = process.argv[2];
@@ -28,13 +28,14 @@ function main(): void {
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, json, "utf8");
 
-  const operationCount = Object.values(document.paths).reduce(
-    (total, item) => total + Object.keys(item).length,
+  const paths = document.paths ?? {};
+  const operationCount = Object.values(paths).reduce(
+    (total, item) => total + Object.keys(item as object).length,
     0,
   );
   console.log(
     `Wrote OpenAPI spec: ${operationCount} operations across ` +
-      `${Object.keys(document.paths).length} paths -> ${outPath}`,
+      `${Object.keys(paths).length} paths -> ${outPath}`,
   );
 
   // Imported route modules register services that keep the event loop alive

@@ -1,104 +1,178 @@
-import { Hono } from "hono";
-import { connectorRegistry } from "../connectors/registry";
+import { createRoute, z } from "@hono/zod-openapi";
 import fs from "fs";
 import path from "path";
 
-export const connectorRoutes = new Hono();
+import { connectorRegistry } from "../connectors/registry";
+import {
+  createRouter,
+  errorJson,
+  jsonContent,
+  successEnvelope,
+} from "../openapi/core";
 
-// GET /api/connectors/types - list all available connector types
-connectorRoutes.get("/types", async c => {
-  try {
-    const connectors = connectorRegistry.getAllMetadata();
+/**
+ * Connector catalog endpoints. Intentionally public (no authentication) — they
+ * expose only static metadata and config-field schemas for available connectors.
+ */
+export const connectorRoutes = createRouter();
 
-    return c.json({
-      success: true,
-      data: connectors.map(c => ({
-        type: c.type,
-        ...c.metadata,
-      })),
-    });
-  } catch (error) {
+const ConnectorMetadataSchema = z
+  .object({
+    type: z.string(),
+    name: z.string(),
+    version: z.string(),
+    description: z.string(),
+    author: z.string().optional(),
+    supportedEntities: z.array(z.string()),
+  })
+  .openapi("ConnectorMetadata");
+
+const TypeParam = z.object({
+  type: z.string().openapi({ param: { name: "type", in: "path" } }),
+});
+
+connectorRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/types",
+    tags: ["Connectors"],
+    summary: "List connector types",
+    description:
+      "Returns metadata for every available connector type. Public — no authentication required.",
+    security: [],
+    responses: {
+      200: jsonContent(
+        successEnvelope(z.array(ConnectorMetadataSchema)),
+        "Connector type metadata.",
+      ),
+      500: errorJson("Internal server error"),
+    },
+  }),
+  c => {
+    try {
+      const connectors = connectorRegistry.getAllMetadata();
+      return c.json(
+        {
+          success: true as const,
+          data: connectors.map(entry => ({
+            type: entry.type,
+            ...entry.metadata,
+          })),
+        },
+        200,
+      );
+    } catch (error) {
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+        500,
+      );
+    }
+  },
+);
+
+connectorRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{type}/schema",
+    tags: ["Connectors"],
+    summary: "Get connector config schema",
+    description:
+      "Returns the JSON schema describing a connector's configuration fields.",
+    security: [],
+    request: { params: TypeParam },
+    responses: {
+      200: jsonContent(
+        successEnvelope(z.record(z.string(), z.unknown())),
+        "Connector configuration schema.",
+      ),
+      404: errorJson("Connector or schema not found"),
+    },
+  }),
+  c => {
+    const { type } = c.req.valid("param");
+    const metadata = connectorRegistry.getMetadata(type);
+    if (!metadata) {
+      return c.json({ success: false, error: "Connector not found" }, 404);
+    }
+
+    const connectorClass = metadata.connector as {
+      getConfigSchema?: () => unknown;
+    };
+    const schema = connectorClass.getConfigSchema?.();
+    if (!schema) {
+      return c.json(
+        { success: false, error: "Schema not defined for connector" },
+        404,
+      );
+    }
+
     return c.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
+      { success: true as const, data: schema as Record<string, unknown> },
+      200,
+    );
+  },
+);
+
+connectorRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{type}/icon.svg",
+    tags: ["Connectors"],
+    summary: "Get connector icon",
+    description: "Returns the SVG icon for a connector type.",
+    security: [],
+    request: { params: TypeParam },
+    responses: {
+      200: {
+        description: "SVG icon.",
+        content: { "image/svg+xml": { schema: z.string() } },
       },
-      500,
-    );
-  }
-});
+      304: { description: "Not modified (matched `If-None-Match`)." },
+      404: errorJson("Icon not found"),
+    },
+  }),
+  c => {
+    const { type } = c.req.valid("param");
 
-// GET /api/connectors/:type/schema - returns JSON schema for connector config fields
-connectorRoutes.get("/:type/schema", async c => {
-  const type = c.req.param("type");
-  if (!type) {
-    return c.json({ success: false, error: "Connector type is required" }, 400);
-  }
-
-  const metadata = connectorRegistry.getMetadata(type);
-  if (!metadata) {
-    return c.json({ success: false, error: "Connector not found" }, 404);
-  }
-
-  // Expect connector class to expose static getConfigSchema()
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  const schema = metadata.connector.getConfigSchema?.();
-  if (!schema) {
-    return c.json(
-      { success: false, error: "Schema not defined for connector" },
-      404,
-    );
-  }
-
-  return c.json({ success: true, data: schema });
-});
-
-// GET /api/connectors/:type/icon.svg - return SVG icon for connector type
-connectorRoutes.get("/:type/icon.svg", async c => {
-  const type = c.req.param("type");
-
-  if (!type) {
-    return c.text("Connector type is required", 400);
-  }
-
-  // Try to resolve icon path relative to this file's directory first (handles compiled dist as well)
-  let iconPath = path.resolve(__dirname, "..", "connectors", type, "icon.svg");
-
-  // If not found, fallback to project root structure (when running from monorepo root)
-  if (!fs.existsSync(iconPath)) {
-    iconPath = path.resolve(
-      process.cwd(),
-      "src",
+    let iconPath = path.resolve(
+      __dirname,
+      "..",
       "connectors",
       type,
       "icon.svg",
     );
-  }
+    if (!fs.existsSync(iconPath)) {
+      iconPath = path.resolve(
+        process.cwd(),
+        "src",
+        "connectors",
+        type,
+        "icon.svg",
+      );
+    }
 
-  if (!fs.existsSync(iconPath)) {
-    return c.text("Icon not found", 404);
-  }
+    if (!fs.existsSync(iconPath)) {
+      return c.json({ success: false, error: "Icon not found" }, 404);
+    }
 
-  const stat = fs.statSync(iconPath);
-  const etag = `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`;
+    const stat = fs.statSync(iconPath);
+    const etag = `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`;
 
-  // Check If-None-Match for conditional requests
-  const ifNoneMatch = c.req.header("If-None-Match");
-  if (ifNoneMatch === etag) {
-    return c.body(null, { status: 304 });
-  }
+    if (c.req.header("If-None-Match") === etag) {
+      return c.body(null, 304);
+    }
 
-  const svgBuffer = fs.readFileSync(iconPath);
-  const isDev = process.env.NODE_ENV !== "production";
-  return c.body(svgBuffer, {
-    headers: {
+    const svgBuffer = fs.readFileSync(iconPath);
+    const isDev = process.env.NODE_ENV !== "production";
+    return c.body(svgBuffer, 200, {
       "Content-Type": "image/svg+xml",
       ETag: etag,
-      // In dev: always revalidate. In prod: cache for 1 day but allow revalidation.
       "Cache-Control": isDev
         ? "no-cache"
         : "public, max-age=86400, must-revalidate",
-    },
-  });
-});
+    });
+  },
+);
