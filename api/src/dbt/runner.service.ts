@@ -70,6 +70,8 @@ export interface DbtRunResult {
     manifest?: Buffer;
     runResults?: Buffer;
     catalog?: Buffer;
+    /** Written by `dbt source freshness`. */
+    sources?: Buffer;
   };
 }
 
@@ -378,6 +380,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     artifacts.manifest = await readArtifact(projectDir, "manifest.json");
     artifacts.runResults = await readArtifact(projectDir, "run_results.json");
     artifacts.catalog = await readArtifact(projectDir, "catalog.json");
+    artifacts.sources = await readArtifact(projectDir, "sources.json");
 
     return { success, commandResults, artifacts };
   } finally {
@@ -409,6 +412,55 @@ export function parseStepResults(
       executionTimeMs: Math.round((result.execution_time ?? 0) * 1000),
       rowsAffected: result.adapter_response?.rows_affected,
       message: result.message ?? undefined,
+    };
+  });
+}
+
+interface SourceFreshnessResult {
+  unique_id: string;
+  status: string;
+  max_loaded_at?: string;
+  snapshotted_at?: string;
+  max_loaded_at_time_ago_in_s?: number;
+  execution_time?: number;
+}
+
+/**
+ * Map a sources.json (`dbt source freshness`) artifact to the stepResults
+ * shape so source freshness surfaces in the same run-detail table as models.
+ */
+export function parseSourceFreshness(sources: Buffer | undefined): Array<{
+  uniqueId: string;
+  name: string;
+  resourceType: string;
+  status: string;
+  executionTimeMs: number;
+  message?: string;
+}> {
+  if (!sources) return [];
+  let parsed: { results?: SourceFreshnessResult[] };
+  try {
+    parsed = JSON.parse(sources.toString("utf8")) as {
+      results?: SourceFreshnessResult[];
+    };
+  } catch {
+    return [];
+  }
+  if (!parsed.results) return [];
+  return parsed.results.map(result => {
+    const parts = result.unique_id.split(".");
+    const ageSeconds = result.max_loaded_at_time_ago_in_s;
+    const ageLabel =
+      typeof ageSeconds === "number"
+        ? `loaded ${Math.round(ageSeconds / 60)}m ago`
+        : undefined;
+    return {
+      uniqueId: result.unique_id,
+      name: parts.slice(2).join(".") || result.unique_id,
+      resourceType: "source",
+      status: result.status,
+      executionTimeMs: Math.round((result.execution_time ?? 0) * 1000),
+      message: ageLabel,
     };
   });
 }

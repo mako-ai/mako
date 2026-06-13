@@ -18,6 +18,7 @@ import { loggers } from "../../logging";
 import { parseDbtCommand } from "../../dbt/commands";
 import { loadDbtProjectSnapshot } from "../../dbt/dbt-project.service";
 import {
+  parseSourceFreshness,
   parseStepResults,
   runDbt,
   type DbtLogLine,
@@ -203,7 +204,10 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           });
 
           const commandResult = result.commandResults[0];
-          const stepResults = parseStepResults(commandResult?.runResults);
+          const stepResults = [
+            ...parseStepResults(commandResult?.runResults),
+            ...parseSourceFreshness(result.artifacts.sources),
+          ];
 
           // Upload artifacts after every command — the last successful
           // upload wins, which matches dbt's own target/ behavior.
@@ -214,6 +218,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             ["manifest", result.artifacts.manifest, "manifest.json"],
             ["runResults", result.artifacts.runResults, "run_results.json"],
             ["catalog", result.artifacts.catalog, "catalog.json"],
+            ["sources", result.artifacts.sources, "sources.json"],
           ];
           for (const [kind, buffer, filename] of uploads) {
             if (!buffer) continue;

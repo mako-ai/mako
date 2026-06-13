@@ -846,7 +846,9 @@ export default function DbtJobView({
                                 {step.status}
                                 {step.message &&
                                 (step.status === "error" ||
-                                  step.status === "fail")
+                                  step.status === "fail" ||
+                                  step.status === "warn" ||
+                                  step.resourceType === "source")
                                   ? ` — ${step.message}`
                                   : ""}
                               </td>

@@ -833,8 +833,11 @@ dbtRoutes.get(
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
-      if (!["manifest", "runResults", "catalog"].includes(kind)) {
-        return badRequest(c, "kind must be manifest | runResults | catalog");
+      if (!["manifest", "runResults", "catalog", "sources"].includes(kind)) {
+        return badRequest(
+          c,
+          "kind must be manifest | runResults | catalog | sources",
+        );
       }
       const run = await DbtRun.findOne({
         _id: new Types.ObjectId(runId),
@@ -843,7 +846,9 @@ dbtRoutes.get(
         .select("artifactKeys")
         .lean();
       const key =
-        run?.artifactKeys?.[kind as "manifest" | "runResults" | "catalog"];
+        run?.artifactKeys?.[
+          kind as "manifest" | "runResults" | "catalog" | "sources"
+        ];
       if (!key) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
