@@ -11,6 +11,7 @@
     "worker": "tsx src/worker.ts",
     "worker:dev": "tsx watch src/worker.ts",
     "migrate:workspaces": "tsx src/migrations/migrate-to-workspaces.ts",
+    "openapi:generate": "tsx src/openapi/generate-cli.ts",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"
   },
@@ -31,6 +32,7 @@
     "@opentelemetry/sdk-trace-node": "^2.7.1",
     "@react-email/components": "^1.0.12",
     "@react-email/render": "^2.0.6",
+    "@scalar/hono-api-reference": "^0.11.3",
     "ai": "6.0.196",
     "apache-arrow": "^21.1.0",
     "arctic": "^3.7.0",

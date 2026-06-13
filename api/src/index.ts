@@ -3,29 +3,13 @@ import { serve } from "@hono/node-server";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { serve as serveInngest } from "inngest/hono";
+import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
-import { consoleRoutes } from "./routes/consoles";
-import { realtimeRoutes } from "./routes/realtime";
-import { dataSourceRoutes } from "./routes/sources";
-import { customPromptRoutes } from "./routes/custom-prompt";
-import { skillsRoutes } from "./routes/skills";
-import { dbtRoutes } from "./routes/dbt.routes";
-import { chatsRoutes } from "./routes/chats";
-import { chatImagesRoutes } from "./routes/chat-images";
-import { agentRoutes } from "./routes/agent.routes";
-import { adminRoutes } from "./routes/admin.routes";
-import { authRoutes } from "./auth/auth.controller";
 import { connectDatabase } from "./database/schema";
-import { workspaceRoutes } from "./routes/workspaces";
-import {
-  workspaceDatabaseRoutes,
-  workspaceExecuteRoutes,
-} from "./routes/workspace-databases";
-import { connectorRoutes } from "./routes/connectors";
-import { databaseSchemaRoutes } from "./routes/database-schemas";
-import { databaseTreeRoutes } from "./routes/database-tree";
+import { registerApiRoutes } from "./routes/register-routes";
+import { getOpenApiDocument } from "./openapi";
 import { databaseRegistry } from "./databases/registry";
 import { BigQueryDatabaseDriver } from "./databases/drivers/bigquery/driver";
 import { MongoDatabaseDriver } from "./databases/drivers/mongodb/driver";
@@ -36,18 +20,6 @@ import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/dr
 import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
 import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
-import { flowRoutes } from "./routes/flows";
-import { usageRoutes } from "./routes/usage";
-import { billingRoutes } from "./routes/billing";
-import { stripeWebhookRoutes } from "./routes/stripe-webhook";
-import { dashboardRoutes } from "./routes/dashboards";
-import { appRoutes } from "./routes/apps";
-import { publicShareRoutes } from "./routes/public-share";
-import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
-import { scheduledQueryRoutes } from "./routes/scheduled-queries";
-import { notificationRulesRoutes } from "./routes/notification-rules";
-import { devEmailPreviewRoutes } from "./routes/dev-email-preview.routes";
-import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
@@ -165,49 +137,9 @@ app.get("/api/version", c => {
   return c.json({ buildId: getFrontendBuildId() });
 });
 
-// API routes
-app.route("/api/auth", authRoutes);
-app.route("/api/workspaces", workspaceRoutes);
-app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
-app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
-app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
-app.route("/api/workspaces/:workspaceId/realtime", realtimeRoutes);
-app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
-app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
-app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
-app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
-app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
-// Connectors routes
-app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
-app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
-app.route(
-  "/api/workspaces/:workspaceId/scheduled-queries",
-  scheduledQueryRoutes,
-);
-app.route(
-  "/api/workspaces/:workspaceId/notification-rules",
-  notificationRulesRoutes,
-);
-
-if (process.env.NODE_ENV !== "production") {
-  app.route("/api/dev/email-preview", devEmailPreviewRoutes);
-}
-
-app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
-app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
-app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
-app.route("/api/workspaces/:workspaceId/apps", appRoutes);
-app.route(
-  "/api/workspaces/:workspaceId/dashboards/:dashboardId",
-  dashboardMaterializationRoutes,
-);
-// Intentionally public: token-gated read-only shares (dashboards + apps).
-app.route("/api/share", publicShareRoutes);
-app.route("/api/agent", agentRoutes);
-app.route("/api/admin", adminRoutes);
-app.route("/api/connectors", connectorRoutes);
-app.route("/api/databases", databaseSchemaRoutes);
-app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
+// API routes — single source of truth for the documented REST surface.
+// Shared with the OpenAPI generator so docs can never drift from the server.
+registerApiRoutes(app);
 
 // Register database drivers
 databaseRegistry.register(new BigQueryDatabaseDriver());
@@ -219,8 +151,18 @@ databaseRegistry.register(new CloudflareD1DatabaseDriver());
 databaseRegistry.register(new CloudflareKVDatabaseDriver());
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
-app.route("/api", webhookRoutes);
-app.route("/api/webhooks/stripe", stripeWebhookRoutes);
+
+// OpenAPI specification (machine-readable) and interactive reference UI.
+// Both are public so agents and external clients can discover the API surface.
+app.get("/api/openapi.json", c => c.json(getOpenApiDocument()));
+app.get(
+  "/api/reference",
+  Scalar({
+    url: "/api/openapi.json",
+    pageTitle: "Mako API Reference",
+    theme: "purple",
+  }),
+);
 
 // Inngest endpoint
 app.on(
