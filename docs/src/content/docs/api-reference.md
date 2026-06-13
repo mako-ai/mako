@@ -3,7 +3,14 @@ title: API Reference
 description: REST API endpoints for authentication, workspaces, queries, and the AI agent.
 ---
 
-The Mako API is a RESTful API built with [Hono](https://hono.dev). All endpoints are prefixed with `/api`.
+:::tip[Interactive reference]
+The complete, always-up-to-date endpoint reference is generated automatically
+from the API source code. Browse it under **REST API** in the sidebar, or open
+the interactive playground at `/api/reference` on a running server. The raw
+OpenAPI spec is served at `/api/openapi.json`.
+:::
+
+This page is a hand-written conceptual overview. The Mako API is a RESTful API built with [Hono](https://hono.dev). All endpoints are prefixed with `/api`.
 
 ## Authentication
 
