@@ -5,7 +5,18 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Box, CircularProgress, Typography, useTheme } from "@mui/material";
+import {
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Divider,
+  IconButton,
+  Link,
+  Typography,
+  useTheme,
+} from "@mui/material";
+import { X as CloseIcon, ExternalLink as OpenIcon } from "lucide-react";
 import {
   Background,
   Controls,
@@ -16,7 +27,11 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useWorkspace } from "../contexts/workspace-context";
-import { useDbtStore, type DbtLineage } from "../store/dbtStore";
+import {
+  useDbtStore,
+  type DbtLineage,
+  type DbtLineageNode,
+} from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 
 const NODE_WIDTH = 190;
@@ -60,6 +75,7 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
   const fetchLineage = useDbtStore(s => s.fetchLineage);
   const [lineage, setLineage] = useState<DbtLineage | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -91,6 +107,7 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
         return theme.palette.error.main;
       }
       if (resourceType === "source") return theme.palette.info.main;
+      if (resourceType === "exposure") return theme.palette.secondary.main;
       return theme.palette.divider;
     };
 
@@ -111,9 +128,12 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
           width: NODE_WIDTH,
           height: NODE_HEIGHT,
           fontSize: 12,
-          borderRadius: 8,
-          border: `2px solid ${colorFor(node.lastStatus, node.resourceType)}`,
-          background: theme.palette.background.paper,
+          borderRadius: node.resourceType === "exposure" ? 22 : 8,
+          border: `2px ${node.resourceType === "exposure" ? "dashed" : "solid"} ${colorFor(node.lastStatus, node.resourceType)}`,
+          background:
+            node.id === selectedNodeId
+              ? theme.palette.action.selected
+              : theme.palette.background.paper,
           color: theme.palette.text.primary,
         },
       };
@@ -128,16 +148,15 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
     }));
 
     return { nodes: flowNodes, edges: flowEdges };
-  }, [lineage, theme]);
+  }, [lineage, theme, selectedNodeId]);
 
-  const handleNodeClick = useCallback(
-    (_event: unknown, node: Node) => {
-      const meta = lineage?.nodes.find(n => n.id === node.id);
-      if (meta?.filePath) {
-        focusDbtFileTab(projectId, meta.filePath);
-      }
-    },
-    [lineage, projectId],
+  const handleNodeClick = useCallback((_event: unknown, node: Node) => {
+    setSelectedNodeId(node.id);
+  }, []);
+
+  const selectedNode: DbtLineageNode | undefined = useMemo(
+    () => lineage?.nodes.find(n => n.id === selectedNodeId),
+    [lineage, selectedNodeId],
   );
 
   if (loading) {
@@ -160,20 +179,162 @@ export default function DbtLineageView({ projectId }: { projectId: string }) {
   }
 
   return (
-    <Box sx={{ height: "100%", width: "100%" }}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodeClick={handleNodeClick}
-        fitView
-        nodesDraggable={false}
-        nodesConnectable={false}
-        proOptions={{ hideAttribution: true }}
-        colorMode={theme.palette.mode === "dark" ? "dark" : "light"}
-      >
-        <Background gap={16} />
-        <Controls showInteractive={false} />
-      </ReactFlow>
+    <Box sx={{ height: "100%", width: "100%", display: "flex" }}>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodeClick={handleNodeClick}
+          fitView
+          nodesDraggable={false}
+          nodesConnectable={false}
+          proOptions={{ hideAttribution: true }}
+          colorMode={theme.palette.mode === "dark" ? "dark" : "light"}
+        >
+          <Background gap={16} />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </Box>
+      {selectedNode && (
+        <Box
+          sx={{
+            width: 320,
+            flexShrink: 0,
+            borderLeft: "1px solid",
+            borderColor: "divider",
+            overflow: "auto",
+            p: 2,
+          }}
+        >
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              mb: 1,
+            }}
+          >
+            <Typography variant="subtitle2" sx={{ wordBreak: "break-word" }}>
+              {selectedNode.name}
+            </Typography>
+            <IconButton size="small" onClick={() => setSelectedNodeId(null)}>
+              <CloseIcon size={16} />
+            </IconButton>
+          </Box>
+          <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", mb: 1.5 }}>
+            <Chip size="small" label={selectedNode.resourceType} />
+            {selectedNode.materialized && (
+              <Chip
+                size="small"
+                variant="outlined"
+                label={selectedNode.materialized}
+              />
+            )}
+            {selectedNode.lastStatus && (
+              <Chip
+                size="small"
+                variant="outlined"
+                label={selectedNode.lastStatus}
+              />
+            )}
+            {selectedNode.tags?.map(tag => (
+              <Chip key={tag} size="small" variant="outlined" label={tag} />
+            ))}
+          </Box>
+
+          {selectedNode.description ? (
+            <Typography variant="body2" sx={{ mb: 1.5 }}>
+              {selectedNode.description}
+            </Typography>
+          ) : (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mb: 1.5 }}
+            >
+              No description in the manifest.
+            </Typography>
+          )}
+
+          {selectedNode.owner && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mb: 0.5 }}
+            >
+              Owner: {selectedNode.owner}
+            </Typography>
+          )}
+          {selectedNode.url && (
+            <Link
+              href={selectedNode.url}
+              target="_blank"
+              rel="noopener"
+              variant="caption"
+              sx={{ display: "block", mb: 1.5 }}
+            >
+              {selectedNode.url}
+            </Link>
+          )}
+
+          {selectedNode.columns && selectedNode.columns.length > 0 && (
+            <>
+              <Divider sx={{ my: 1 }} />
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ fontWeight: 600 }}
+              >
+                Columns ({selectedNode.columns.length})
+              </Typography>
+              <Box sx={{ mt: 0.5 }}>
+                {selectedNode.columns.map(col => (
+                  <Box key={col.name} sx={{ mb: 0.75 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                      {col.name}
+                      {col.type ? (
+                        <Box
+                          component="span"
+                          sx={{ color: "text.secondary", fontWeight: 400 }}
+                        >
+                          {" "}
+                          · {col.type}
+                        </Box>
+                      ) : null}
+                    </Typography>
+                    {col.description && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: "block" }}
+                      >
+                        {col.description}
+                      </Typography>
+                    )}
+                  </Box>
+                ))}
+              </Box>
+            </>
+          )}
+
+          {selectedNode.filePath && (
+            <Button
+              size="small"
+              variant="outlined"
+              fullWidth
+              startIcon={<OpenIcon size={14} />}
+              onClick={() => {
+                if (selectedNode.filePath) {
+                  focusDbtFileTab(projectId, selectedNode.filePath);
+                }
+              }}
+              sx={{ mt: 1.5 }}
+            >
+              Open file
+            </Button>
+          )}
+        </Box>
+      )}
     </Box>
   );
 }

@@ -968,20 +968,58 @@ dbtRoutes.post(
 // Lineage — flattened manifest parent_map for the DAG view
 // ---------------------------------------------------------------------------
 
+interface ManifestColumn {
+  name?: string;
+  description?: string;
+  data_type?: string | null;
+}
+
+interface ManifestNode {
+  name?: string;
+  resource_type?: string;
+  original_file_path?: string;
+  description?: string;
+  columns?: Record<string, ManifestColumn>;
+  tags?: string[];
+  config?: { materialized?: string };
+}
+
 interface ManifestForLineage {
-  nodes?: Record<
+  nodes?: Record<string, ManifestNode>;
+  sources?: Record<
     string,
     {
       name?: string;
+      source_name?: string;
       resource_type?: string;
-      original_file_path?: string;
+      description?: string;
+      columns?: Record<string, ManifestColumn>;
     }
   >;
-  sources?: Record<
+  exposures?: Record<
     string,
-    { name?: string; source_name?: string; resource_type?: string }
+    {
+      name?: string;
+      label?: string;
+      type?: string;
+      url?: string;
+      description?: string;
+      maturity?: string;
+      owner?: { name?: string; email?: string };
+    }
   >;
   parent_map?: Record<string, string[]>;
+}
+
+function mapColumns(
+  columns: Record<string, ManifestColumn> | undefined,
+): Array<{ name: string; type?: string; description?: string }> {
+  if (!columns) return [];
+  return Object.values(columns).map(col => ({
+    name: col.name ?? "",
+    type: col.data_type ?? undefined,
+    description: col.description || undefined,
+  }));
 }
 
 dbtRoutes.get(
@@ -1030,6 +1068,12 @@ dbtRoutes.get(
         resourceType: string;
         filePath?: string;
         lastStatus?: string;
+        description?: string;
+        materialized?: string;
+        tags?: string[];
+        columns?: Array<{ name: string; type?: string; description?: string }>;
+        url?: string;
+        owner?: string;
       }> = [];
 
       for (const [id, node] of Object.entries(manifest.nodes ?? {})) {
@@ -1041,6 +1085,10 @@ dbtRoutes.get(
           resourceType,
           filePath: node.original_file_path,
           lastStatus: statusByUniqueId.get(id),
+          description: node.description || undefined,
+          materialized: node.config?.materialized,
+          tags: node.tags?.length ? node.tags : undefined,
+          columns: mapColumns(node.columns),
         });
       }
       for (const [id, source] of Object.entries(manifest.sources ?? {})) {
@@ -1050,6 +1098,21 @@ dbtRoutes.get(
             ? `${source.source_name}.${source.name}`
             : (source.name ?? id),
           resourceType: "source",
+          description: source.description || undefined,
+          columns: mapColumns(source.columns),
+        });
+      }
+      // Exposures are leaf consumers (dashboards/apps) — render them as
+      // terminal nodes so the DAG shows what downstream depends on each model.
+      for (const [id, exposure] of Object.entries(manifest.exposures ?? {})) {
+        nodes.push({
+          id,
+          name: exposure.label || exposure.name || id,
+          resourceType: "exposure",
+          description: exposure.description || undefined,
+          materialized: exposure.type,
+          url: exposure.url,
+          owner: exposure.owner?.name || exposure.owner?.email,
         });
       }
 

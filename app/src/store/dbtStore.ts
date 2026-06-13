@@ -107,14 +107,22 @@ export interface DbtRunModelResult {
   logs: DbtRunLogLine[];
 }
 
+export interface DbtLineageNode {
+  id: string;
+  name: string;
+  resourceType: string;
+  filePath?: string;
+  lastStatus?: string;
+  description?: string;
+  materialized?: string;
+  tags?: string[];
+  columns?: Array<{ name: string; type?: string; description?: string }>;
+  url?: string;
+  owner?: string;
+}
+
 export interface DbtLineage {
-  nodes: Array<{
-    id: string;
-    name: string;
-    resourceType: string;
-    filePath?: string;
-    lastStatus?: string;
-  }>;
+  nodes: DbtLineageNode[];
   edges: Array<{ source: string; target: string }>;
   generatedAt: string | null;
 }
