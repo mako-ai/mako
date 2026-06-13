@@ -956,7 +956,9 @@ function ResourceTreeInner(
       if (cancelled) return;
       const el = rootRef.current?.querySelector(`[data-node-id="${escapeId}"]`);
       if (el) {
-        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        // Center the revealed row vertically rather than nudging it just barely
+        // into view, so the focused entity lands near the middle of the panel.
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
         revealDoneNonceRef.current = revealNonce;
         cancelled = true;
       }
