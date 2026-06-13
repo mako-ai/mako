@@ -1,5 +1,25 @@
 import { OpenAPIHono, z } from "@hono/zod-openapi";
 
+import type { ValidatedSession, ValidatedUser } from "../auth/session";
+
+/**
+ * Context variables populated by the auth + workspace middleware chain. Typing
+ * routers with this Env means `c.get("user")` / `c.get("workspace")` etc. are
+ * typed inside every handler without per-handler annotations.
+ */
+export interface AuthVariables {
+  user?: ValidatedUser;
+  session?: ValidatedSession;
+  // `workspace`, `apiKey` are Mongoose documents; kept loose on purpose.
+  workspace?: unknown;
+  apiKey?: unknown;
+  memberRole?: string;
+  authType?: "session" | "apiKey";
+  workspaceId?: string;
+}
+
+export type AuthEnv = { Variables: AuthVariables };
+
 /**
  * Shared building blocks for documenting the REST API with `@hono/zod-openapi`.
  *
@@ -25,8 +45,8 @@ export const ErrorSchema = z
   .openapi("Error");
 
 /** Creates an `OpenAPIHono` router whose validation errors use the API envelope. */
-export function createRouter(): OpenAPIHono {
-  return new OpenAPIHono({
+export function createRouter(): OpenAPIHono<AuthEnv> {
+  return new OpenAPIHono<AuthEnv>({
     defaultHook: (result, c) => {
       if (!result.success) {
         const message =
@@ -59,6 +79,59 @@ export function successEnvelope<T extends z.ZodType>(dataSchema: T) {
   return z.object({ success: z.literal(true), data: dataSchema });
 }
 
+/**
+ * Generic success response (`200`) with an open JSON body. Used when wrapping an
+ * existing handler whose payload is dynamic or not worth modelling field-by-field;
+ * the route contract, params/query validation, and status codes are still typed.
+ */
+export const okJson = jsonContent(z.any(), "Successful response");
+
+/** Generic `201 Created` response with an open JSON body. */
+export const createdJson = jsonContent(z.any(), "Created");
+
+/** `204 No Content` response. */
+export const noContentResponse = { description: "No content" };
+
+/**
+ * The standard error responses every endpoint may return, keyed by literal
+ * status code so `OpenAPIHono.openapi(...)` allows handlers to return any of
+ * them. Spread into a route's `responses` alongside its success response(s).
+ */
+export const STD_ERRORS = {
+  400: errorJson("Invalid request"),
+  401: errorJson("Authentication required"),
+  403: errorJson("Forbidden"),
+  404: errorJson("Not found"),
+  409: errorJson("Conflict"),
+  500: errorJson("Internal server error"),
+};
+
+/** Convenience: `{ 200: okJson, ...STD_ERRORS }`. */
+export const STD_RESPONSES = { 200: okJson, ...STD_ERRORS };
+
+/**
+ * Permissive response set (open JSON body for every common status) used when
+ * wrapping an existing handler whose return shapes/statuses are dynamic. This
+ * documents the route, validates request params/query/body, and keeps the
+ * handler body untouched (preserving runtime behaviour). Error bodies follow
+ * the shared `{ success: false, error }` envelope at runtime; richer per-field
+ * response typing is applied module-by-module (see connectors/database-schemas).
+ */
+export const OPEN_RESPONSES = {
+  200: jsonContent(z.any(), "Successful response"),
+  201: jsonContent(z.any(), "Created"),
+  202: jsonContent(z.any(), "Accepted"),
+  400: jsonContent(z.any(), "Invalid request"),
+  401: jsonContent(z.any(), "Authentication required"),
+  402: jsonContent(z.any(), "Payment required"),
+  403: jsonContent(z.any(), "Forbidden"),
+  404: jsonContent(z.any(), "Not found"),
+  409: jsonContent(z.any(), "Conflict"),
+  422: jsonContent(z.any(), "Unprocessable entity"),
+  429: jsonContent(z.any(), "Too many requests"),
+  500: jsonContent(z.any(), "Internal server error"),
+};
+
 /** Security requirement: session cookie OR workspace API key. */
 export const AUTH_SECURITY: Array<Record<string, string[]>> = [
   { cookieAuth: [] },
@@ -66,7 +139,7 @@ export const AUTH_SECURITY: Array<Record<string, string[]>> = [
 ];
 
 /** Registers the shared security schemes on an `OpenAPIHono` registry. */
-export function registerSecuritySchemes(app: OpenAPIHono): void {
+export function registerSecuritySchemes(app: OpenAPIHono<AuthEnv>): void {
   app.openAPIRegistry.registerComponent("securitySchemes", "cookieAuth", {
     type: "apiKey",
     in: "cookie",

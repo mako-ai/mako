@@ -1,5 +1,6 @@
 import type { OpenAPIHono } from "@hono/zod-openapi";
 
+import type { AuthEnv } from "../openapi/core";
 import { consoleRoutes } from "./consoles";
 import { realtimeRoutes } from "./realtime";
 import { dataSourceRoutes } from "./sources";
@@ -44,7 +45,7 @@ import { webhookRoutes } from "./webhooks";
  * intentionally registered directly in `src/index.ts` and are not part of the
  * documented surface.
  */
-export function registerApiRoutes(app: OpenAPIHono): void {
+export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/auth", authRoutes);
   app.route("/api/workspaces", workspaceRoutes);
   app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);

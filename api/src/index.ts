@@ -10,6 +10,7 @@ import path from "path";
 import { connectDatabase } from "./database/schema";
 import { registerApiRoutes } from "./routes/register-routes";
 import { getOpenApiDocument } from "./openapi";
+import type { AuthEnv } from "./openapi/core";
 import { databaseRegistry } from "./databases/registry";
 import { BigQueryDatabaseDriver } from "./databases/drivers/bigquery/driver";
 import { MongoDatabaseDriver } from "./databases/drivers/mongodb/driver";
@@ -62,7 +63,7 @@ const REQUIRED_SYSTEM_SKILLS = [
   "flows",
 ];
 
-const app = new OpenAPIHono();
+const app = new OpenAPIHono<AuthEnv>();
 
 // CORS middleware
 app.use(
