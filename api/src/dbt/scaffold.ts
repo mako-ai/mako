@@ -43,6 +43,16 @@ models:
 `,
     },
     {
+      path: "packages.yml",
+      content: `# Add dbt packages here, then they install automatically on the next run.
+# See https://hub.getdbt.com for available packages.
+#
+# packages:
+#   - package: dbt-labs/dbt_utils
+#     version: [">=1.1.0", "<2.0.0"]
+`,
+    },
+    {
       path: "models/staging/.gitkeep",
       content: "",
     },

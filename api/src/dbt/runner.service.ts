@@ -64,6 +64,23 @@ export interface DbtRunResult {
   };
 }
 
+/**
+ * True when the project declares at least one dbt package (ignoring the
+ * commented scaffold). Drives whether we run `dbt deps` before commands.
+ */
+function projectHasPackages(
+  files: Array<{ path: string; content: string }>,
+): boolean {
+  const pkg = files.find(
+    file => file.path === "packages.yml" || file.path === "dependencies.yml",
+  );
+  if (!pkg) return false;
+  return pkg.content
+    .split("\n")
+    .map(line => line.trim())
+    .some(line => line.length > 0 && !line.startsWith("#"));
+}
+
 function ensureSafeRelativePath(path: string): string {
   const normalized = normalize(path).replace(/\\/g, "/");
   if (
@@ -222,6 +239,46 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
       HOME: projectDir,
     };
+
+    // Install packages first when declared. The executor runs one runDbt per
+    // command, each in its own temp dir, so deps must be (re)installed here
+    // before any command that depends on package macros can compile.
+    if (projectHasPackages(request.files)) {
+      const depsLogLines: DbtLogLine[] = [];
+      const onDepsLog = (line: DbtLogLine) => {
+        depsLogLines.push(line);
+        request.onLog?.(line);
+      };
+      onDepsLog({ ts: new Date(), level: "info", line: "$ dbt deps" });
+      const depsExit = await execDbtCommand({
+        bin: resolved.bin,
+        args: [
+          ...resolved.prefixArgs,
+          "deps",
+          "--profiles-dir",
+          projectDir,
+          "--project-dir",
+          projectDir,
+          "--log-format",
+          "json",
+          "--no-use-colors",
+        ],
+        cwd: projectDir,
+        env: childEnv,
+        timeoutMs: request.commandTimeoutMs ?? 9 * 60 * 1000,
+        signal: request.signal,
+        onLog: onDepsLog,
+      });
+      if (depsExit !== 0) {
+        commandResults.push({
+          command: "deps",
+          exitCode: depsExit,
+          logLines: depsLogLines,
+          runResults: undefined,
+        });
+        return { success: false, commandResults, artifacts };
+      }
+    }
 
     let success = true;
     for (const command of request.commands) {

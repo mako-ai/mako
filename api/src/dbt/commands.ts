@@ -18,6 +18,8 @@ const ALLOWED_SUBCOMMANDS = new Set([
   "parse",
   "source",
   "docs",
+  "deps",
+  "retry",
 ]);
 
 /** Flags that take a value (the next token is consumed as the value). */
