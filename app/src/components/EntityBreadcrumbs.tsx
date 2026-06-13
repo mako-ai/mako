@@ -5,6 +5,9 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useAppStore } from "../store/appStore";
 import { useDashboardStore } from "../store/dashboardStore";
+import { useUIStore } from "../store/uiStore";
+import { useExplorerRevealStore } from "../store/explorerRevealStore";
+import { tabRevealTarget } from "../lib/explorer-reveal";
 import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
@@ -136,6 +139,21 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
   const tab = useConsoleStore(s => s.tabs[tabId]);
   const { currentWorkspace } = useWorkspace();
 
+  const setLeftPane = useUIStore(s => s.setLeftPane);
+  const openLeftPane = useUIStore(s => s.openLeftPane);
+  const requestReveal = useExplorerRevealStore(s => s.requestReveal);
+
+  // The breadcrumb is clickable when its entity has a sidebar home: clicking
+  // switches to that explorer (even from a different one) and scrolls the
+  // entity's row into view.
+  const revealTarget = tabRevealTarget(tab);
+  const handleNavigateToExplorer = React.useCallback(() => {
+    if (!revealTarget) return;
+    setLeftPane(revealTarget.explorer);
+    openLeftPane();
+    requestReveal(revealTarget.explorer, revealTarget.nodeId);
+  }, [revealTarget, setLeftPane, openLeftPane, requestReveal]);
+
   const connectionId = tab?.connectionId;
   const connectionName = useSchemaStore(s => {
     if (tab?.kind !== "table-data" || !currentWorkspace || !connectionId) {
@@ -223,7 +241,10 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
               />
             )}
             <Box
-              component="span"
+              component={revealTarget ? "button" : "span"}
+              type={revealTarget ? "button" : undefined}
+              onClick={revealTarget ? handleNavigateToExplorer : undefined}
+              title={revealTarget ? "Reveal in explorer" : undefined}
               sx={{
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -231,6 +252,28 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
                 fontStyle: segment.italic ? "italic" : "normal",
                 color: isLast ? "text.primary" : "inherit",
                 fontWeight: isLast ? 500 : 400,
+                ...(revealTarget
+                  ? {
+                      cursor: "pointer",
+                      appearance: "none",
+                      background: "none",
+                      border: "none",
+                      p: 0,
+                      m: 0,
+                      font: "inherit",
+                      color: isLast ? "text.primary" : "inherit",
+                      maxWidth: "100%",
+                      "&:hover": {
+                        textDecoration: "underline",
+                        color: "text.primary",
+                      },
+                      "&:focus-visible": {
+                        outline: "1px solid",
+                        outlineColor: "primary.main",
+                        borderRadius: 0.5,
+                      },
+                    }
+                  : {}),
               }}
             >
               {segment.label}
