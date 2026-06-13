@@ -23,9 +23,24 @@ export async function triggerDbtRun(params: {
   commands: string[];
   trigger: "schedule" | "manual" | "agent";
   triggeredBy: string;
+  /**
+   * When set (scheduled runs), collapse onto an already-active run for the
+   * same job instead of stacking a new one — the executor only runs one run
+   * per project at a time, so overlapping schedule ticks would otherwise queue
+   * up redundant work (dbt Cloud skips overlapping scheduled runs likewise).
+   */
+  skipIfActive?: boolean;
 }): Promise<IDbtRun> {
   // Validate before persisting anything — bad commands never reach a run doc.
   parseDbtCommands(params.commands);
+
+  if (params.skipIfActive && params.jobId) {
+    const active = await DbtRun.findOne({
+      jobId: new Types.ObjectId(params.jobId),
+      status: { $in: ["queued", "running"] },
+    }).sort({ createdAt: -1 });
+    if (active) return active;
+  }
 
   const run = await DbtRun.create({
     workspaceId: new Types.ObjectId(params.workspaceId),
@@ -65,6 +80,8 @@ export async function triggerDbtJobRun(params: {
     commands: params.job.commands,
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    // Scheduled ticks must not stack behind a still-running run.
+    skipIfActive: params.trigger === "schedule",
   });
 }
 

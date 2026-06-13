@@ -417,6 +417,16 @@ export const dbtSchedulerFunction = inngest.createFunction(
 const DBT_RUN_STALL_MS = 60 * 60 * 1000;
 const DBT_RUN_QUEUED_STALL_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Run-history retention. dbt_runs embed capped logs + stepResults and would
+ * otherwise grow unbounded. The parent job preserves last status/error in
+ * `scheduledRun`, so pruning completed history rows past the window is safe.
+ * Override with DBT_RUN_RETENTION_DAYS.
+ */
+const DBT_RUN_RETENTION_DAYS = Number(
+  process.env.DBT_RUN_RETENTION_DAYS ?? "30",
+);
+
 export const dbtRunSweeperFunction = inngest.createFunction(
   {
     id: "dbt-run-sweeper",
@@ -502,6 +512,29 @@ export const dbtRunSweeperFunction = inngest.createFunction(
       return abandoned.length;
     });
 
-    return { swept };
+    const pruned = await step.run("prune-old-dbt-runs", async () => {
+      if (
+        !Number.isFinite(DBT_RUN_RETENTION_DAYS) ||
+        DBT_RUN_RETENTION_DAYS <= 0
+      ) {
+        return 0;
+      }
+      const cutoff = new Date(
+        Date.now() - DBT_RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+      );
+      const result = await DbtRun.deleteMany({
+        status: { $in: ["success", "error", "cancelled"] },
+        completedAt: { $lt: cutoff },
+      });
+      if (result.deletedCount) {
+        logger.info("Pruned old dbt runs", {
+          deleted: result.deletedCount,
+          retentionDays: DBT_RUN_RETENTION_DAYS,
+        });
+      }
+      return result.deletedCount ?? 0;
+    });
+
+    return { swept, pruned };
   },
 );
