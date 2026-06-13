@@ -130,6 +130,7 @@ export const OPEN_RESPONSES = {
   403: jsonContent(z.any(), "Forbidden"),
   404: jsonContent(z.any(), "Not found"),
   409: jsonContent(z.any(), "Conflict"),
+  410: jsonContent(z.any(), "Gone"),
   422: jsonContent(z.any(), "Unprocessable entity"),
   429: jsonContent(z.any(), "Too many requests"),
   500: jsonContent(z.any(), "Internal server error"),
