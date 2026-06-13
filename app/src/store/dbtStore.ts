@@ -146,6 +146,16 @@ interface DbtActions {
       defaultEnvironment: string;
     },
   ) => Promise<DbtProjectItem | null>;
+  updateProject: (
+    workspaceId: string,
+    projectId: string,
+    patch: {
+      name?: string;
+      environments?: DbtEnvironment[];
+      defaultEnvironment?: string;
+      dbtVersion?: string;
+    },
+  ) => Promise<DbtProjectItem | null>;
   deleteProject: (workspaceId: string, projectId: string) => Promise<boolean>;
 
   fetchFiles: (workspaceId: string, projectId: string) => Promise<void>;
@@ -291,6 +301,26 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error.projects = errMessage(error, "Failed to create project");
+        });
+        return null;
+      }
+    },
+
+    updateProject: async (workspaceId, projectId, patch) => {
+      try {
+        const response = await apiClient.patch<{
+          success: boolean;
+          project: DbtProjectItem;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}`, patch);
+        const project = response.project;
+        set(state => {
+          const idx = state.projects.findIndex(p => p._id === projectId);
+          if (idx >= 0) state.projects[idx] = project;
+        });
+        return project;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(error, "Failed to update project");
         });
         return null;
       }

@@ -24,6 +24,7 @@ import {
   Select,
   FormControl,
   InputLabel,
+  Menu,
 } from "@mui/material";
 import {
   Plus as AddIcon,
@@ -35,6 +36,8 @@ import {
   Trash2 as DeleteIcon,
   ExternalLink as OpenIcon,
   FilePlus as NewFileIcon,
+  Settings as EditProjectIcon,
+  MoreVertical as KebabIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -42,6 +45,7 @@ import { useExplorerStore } from "../store/explorerStore";
 import { useSchemaStore, type Connection } from "../store/schemaStore";
 import {
   useDbtStore,
+  type DbtEnvironment,
   type DbtJobItem,
   type DbtProjectItem,
 } from "../store/dbtStore";
@@ -188,6 +192,7 @@ export function DbtExplorer() {
   const fetchFiles = useDbtStore(s => s.fetchFiles);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
   const createProject = useDbtStore(s => s.createProject);
+  const updateProject = useDbtStore(s => s.updateProject);
   const deleteProject = useDbtStore(s => s.deleteProject);
   const createFile = useDbtStore(s => s.createFile);
   const deleteFile = useDbtStore(s => s.deleteFile);
@@ -238,13 +243,29 @@ export function DbtExplorer() {
     name: string;
   } | null>(null);
 
+  // Edit-project dialog state
+  const [editProjectId, setEditProjectId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDbtVersion, setEditDbtVersion] = useState("");
+  const [editDefaultEnv, setEditDefaultEnv] = useState("");
+  const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // Hover kebab menu (reuses getContextMenuItems for the same actions).
+  const [kebabMenu, setKebabMenu] = useState<{
+    anchorEl: HTMLElement;
+    node: ResourceTreeNode;
+  } | null>(null);
+
   useEffect(() => {
     if (workspaceId) void fetchProjects(workspaceId);
   }, [workspaceId, fetchProjects]);
 
   useEffect(() => {
-    if (createOpen && workspaceId) void ensureConnections(workspaceId);
-  }, [createOpen, workspaceId, ensureConnections]);
+    if ((createOpen || editProjectId) && workspaceId) {
+      void ensureConnections(workspaceId);
+    }
+  }, [createOpen, editProjectId, workspaceId, ensureConnections]);
 
   const dbtConnections: Connection[] = useMemo(() => {
     const all = workspaceId ? (connections[workspaceId] ?? []) : [];
@@ -334,6 +355,19 @@ export function DbtExplorer() {
     [jobsByProject],
   );
 
+  const openEditProject = useCallback(
+    (projectId: string) => {
+      const project = projects.find(p => p._id === projectId);
+      if (!project) return;
+      setEditProjectId(projectId);
+      setEditName(project.name);
+      setEditDbtVersion(project.dbtVersion ?? "");
+      setEditDefaultEnv(project.defaultEnvironment);
+      setEditEnvs(project.environments.map(env => ({ ...env })));
+    },
+    [projects],
+  );
+
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
     const parsed = parseNodeId(node.id);
     if (parsed.kind === "project") {
@@ -394,6 +428,23 @@ export function DbtExplorer() {
         );
       }
 
+      if (parsed.kind === "project") {
+        items.push(
+          <MenuItem
+            key="edit-project"
+            onClick={() => {
+              openEditProject(parsed.projectId);
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <EditProjectIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Edit project
+          </MenuItem>,
+        );
+      }
+
       if (parsed.kind === "file") {
         items.push(
           <MenuItem
@@ -434,8 +485,34 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [handleItemClick],
+    [handleItemClick, openEditProject],
   );
+
+  // Hover kebab: same actions as the right-click menu, but discoverable.
+  const getRightAdornment = useCallback((node: ResourceTreeNode) => {
+    const parsed = parseNodeId(node.id);
+    if (parsed.kind === "dir") return null;
+    return (
+      <IconButton
+        size="small"
+        aria-label="Actions"
+        className="dbt-row-kebab"
+        onClick={event => {
+          event.stopPropagation();
+          setKebabMenu({ anchorEl: event.currentTarget, node });
+        }}
+        sx={{
+          p: 0.25,
+          opacity: 0,
+          transition: "opacity 0.1s",
+          ".MuiListItemButton-root:hover &": { opacity: 1 },
+          "&:focus-visible, &[aria-expanded='true']": { opacity: 1 },
+        }}
+      >
+        <KebabIcon size={15} strokeWidth={1.5} />
+      </IconButton>
+    );
+  }, []);
 
   const handleCreateProject = useCallback(async () => {
     if (!workspaceId || !createName.trim() || !createConnectionId) return;
@@ -480,6 +557,40 @@ export function DbtExplorer() {
     fetchJobs,
     expandDbtFolder,
   ]);
+
+  const handleUpdateProject = useCallback(async () => {
+    if (!workspaceId || !editProjectId || !editName.trim()) return;
+    setSavingEdit(true);
+    const updated = await updateProject(workspaceId, editProjectId, {
+      name: editName.trim(),
+      environments: editEnvs.map(env => ({
+        ...env,
+        targetSchema: env.targetSchema.trim(),
+        threads: Number(env.threads) || 1,
+      })),
+      defaultEnvironment: editDefaultEnv,
+      dbtVersion: editDbtVersion.trim() || undefined,
+    });
+    setSavingEdit(false);
+    if (updated) setEditProjectId(null);
+  }, [
+    workspaceId,
+    editProjectId,
+    editName,
+    editEnvs,
+    editDefaultEnv,
+    editDbtVersion,
+    updateProject,
+  ]);
+
+  const updateEditEnv = useCallback(
+    (index: number, patch: Partial<DbtEnvironment>) => {
+      setEditEnvs(prev =>
+        prev.map((env, i) => (i === index ? { ...env, ...patch } : env)),
+      );
+    },
+    [],
+  );
 
   const handleNewFileConfirm = useCallback(async () => {
     if (!workspaceId || !newFileTarget) return;
@@ -579,6 +690,7 @@ export function DbtExplorer() {
               activeItemId={activeItemId}
               getItemIcon={getItemIcon}
               getContextMenuItems={getContextMenuItems}
+              getRightAdornment={getRightAdornment}
               hideFolderIcon
               onItemClick={handleItemClick}
               onLoadChildren={handleLoadChildren}
@@ -726,6 +838,133 @@ export function DbtExplorer() {
         <DialogActions>
           <Button onClick={() => setRenameTarget(null)}>Cancel</Button>
           <Button onClick={handleRenameConfirm}>Rename</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Hover kebab menu — reuses the right-click action items */}
+      <Menu
+        open={!!kebabMenu}
+        anchorEl={kebabMenu?.anchorEl ?? null}
+        onClose={() => setKebabMenu(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+      >
+        {kebabMenu
+          ? getContextMenuItems(kebabMenu.node, {
+              closeMenu: () => setKebabMenu(null),
+            })
+          : null}
+      </Menu>
+
+      {/* Edit project dialog */}
+      <Dialog
+        open={!!editProjectId}
+        onClose={() => setEditProjectId(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Edit dbt project</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="Project name"
+            value={editName}
+            onChange={e => setEditName(e.target.value)}
+            sx={{ mt: 1, mb: 2 }}
+          />
+          <TextField
+            fullWidth
+            size="small"
+            label="dbt version"
+            placeholder="1.9.10"
+            value={editDbtVersion}
+            onChange={e => setEditDbtVersion(e.target.value)}
+            sx={{ mb: 2 }}
+          />
+          {editEnvs.map((env, index) => (
+            <Box
+              key={env.name}
+              sx={{
+                mb: 2,
+                p: 1.5,
+                border: 1,
+                borderColor: "divider",
+                borderRadius: 1,
+              }}
+            >
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                {env.name}
+              </Typography>
+              <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                <InputLabel id={`dbt-edit-conn-${env.name}`}>
+                  Connection
+                </InputLabel>
+                <Select
+                  labelId={`dbt-edit-conn-${env.name}`}
+                  label="Connection"
+                  value={env.connectionId}
+                  onChange={e =>
+                    updateEditEnv(index, { connectionId: e.target.value })
+                  }
+                >
+                  {dbtConnections.map(conn => (
+                    <MenuItem key={conn.id} value={conn.id}>
+                      {conn.name} ({conn.type})
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <TextField
+                fullWidth
+                size="small"
+                label="Target schema"
+                value={env.targetSchema}
+                onChange={e =>
+                  updateEditEnv(index, { targetSchema: e.target.value })
+                }
+                sx={{ mb: 1.5 }}
+              />
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                label="Threads"
+                value={env.threads}
+                onChange={e =>
+                  updateEditEnv(index, { threads: Number(e.target.value) })
+                }
+                inputProps={{ min: 1, max: 32 }}
+              />
+            </Box>
+          ))}
+          <FormControl fullWidth size="small">
+            <InputLabel id="dbt-edit-default-env">
+              Default environment
+            </InputLabel>
+            <Select
+              labelId="dbt-edit-default-env"
+              label="Default environment"
+              value={editDefaultEnv}
+              onChange={e => setEditDefaultEnv(e.target.value)}
+            >
+              {editEnvs.map(env => (
+                <MenuItem key={env.name} value={env.name}>
+                  {env.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditProjectId(null)}>Cancel</Button>
+          <Button
+            onClick={handleUpdateProject}
+            disabled={savingEdit || !editName.trim()}
+          >
+            Save
+          </Button>
         </DialogActions>
       </Dialog>
 
