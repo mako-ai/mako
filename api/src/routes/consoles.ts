@@ -976,8 +976,9 @@ consoleRoutes.openapi(
       // Persist chart spec and view mode if provided
       if (body.chartSpec !== undefined || body.resultsViewMode !== undefined) {
         const chartUpdate: Record<string, unknown> = {};
-        if (body.chartSpec !== undefined)
+        if (body.chartSpec !== undefined) {
           chartUpdate.chartSpec = body.chartSpec;
+        }
         if (body.resultsViewMode !== undefined) {
           chartUpdate.resultsViewMode = body.resultsViewMode;
         }
