@@ -34,6 +34,21 @@
       }
     },
     "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string",
+            "example": "Human-readable error message"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
       "ConnectorMetadata": {
         "type": "object",
         "properties": {
@@ -67,25 +82,452 @@
           "supportedEntities"
         ]
       },
-      "Error": {
+      "DatabaseType": {
         "type": "object",
         "properties": {
-          "success": {
-            "type": "boolean"
+          "type": {
+            "type": "string"
           },
-          "error": {
-            "type": "string",
-            "example": "Human-readable error message"
+          "displayName": {
+            "type": "string"
+          },
+          "consoleLanguage": {
+            "type": "string"
+          },
+          "iconUrl": {
+            "type": "string"
+          },
+          "defaultTemplate": {
+            "type": "string"
           }
         },
         "required": [
-          "error"
+          "type",
+          "displayName",
+          "consoleLanguage",
+          "iconUrl",
+          "defaultTemplate"
+        ]
+      },
+      "DatabaseField": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "password",
+              "textarea",
+              "select"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "default": {},
+          "helperText": {
+            "type": "string"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "number"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "value": {}
+              },
+              "required": [
+                "label"
+              ]
+            }
+          },
+          "path": {
+            "type": "string"
+          },
+          "advanced": {
+            "type": "boolean"
+          },
+          "group": {
+            "type": "string"
+          },
+          "visibleWhen": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "equals": {}
+            },
+            "required": [
+              "field"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "type"
         ]
       }
     },
     "parameters": {}
   },
   "paths": {
+    "/api/workspaces/{workspaceId}/custom-prompt": {
+      "get": {
+        "tags": [
+          "Custom Prompt"
+        ],
+        "summary": "Get the workspace custom prompt",
+        "description": "Returns the workspace's custom agent prompt, falling back to the default template when unset.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Custom prompt content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "content"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid workspace ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to read custom prompt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Custom Prompt"
+        ],
+        "summary": "Update the workspace custom prompt",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "Custom prompt markdown content"
+                  }
+                },
+                "required": [
+                  "content"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Custom prompt updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to update custom prompt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspaceId}/custom-prompt/reset": {
+      "post": {
+        "tags": [
+          "Custom Prompt"
+        ],
+        "summary": "Reset the workspace custom prompt",
+        "description": "Resets the workspace custom prompt to the default template.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Custom prompt reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "message",
+                    "content"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid workspace ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to reset custom prompt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{workspaceId}/scheduled-queries": {
+      "get": {
+        "tags": [
+          "Scheduled Queries"
+        ],
+        "summary": "List scheduled queries",
+        "description": "Lists saved consoles in the workspace that have a cron schedule configured. Requires workspace admin.",
+        "security": [
+          {
+            "cookieAuth": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scheduled queries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "scheduledQueries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "scheduledQueries"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to list scheduled queries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/connectors/types": {
       "get": {
         "tags": [
@@ -235,6 +677,149 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/databases/types": {
+      "get": {
+        "tags": [
+          "Databases"
+        ],
+        "summary": "List database types",
+        "description": "Returns the supported database types with display metadata and default console templates. Public — no authentication required.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Supported database types.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DatabaseType"
+                      }
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/databases/{type}/schema": {
+      "get": {
+        "tags": [
+          "Databases"
+        ],
+        "summary": "Get database connection schema",
+        "description": "Returns the connection-form field schema for a database type. Public — no authentication required.",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "type",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection-form field schema.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "fields": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/DatabaseField"
+                          }
+                        }
+                      },
+                      "required": [
+                        "fields"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Database type not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/databases/{type}/icon.svg": {
+      "get": {
+        "tags": [
+          "Databases"
+        ],
+        "summary": "Get database icon",
+        "description": "Returns the SVG icon for a database type (with a generic fallback).",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "type",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SVG icon.",
+            "content": {
+              "image/svg+xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not modified (matched `If-None-Match`)."
           }
         }
       }

@@ -60,7 +60,10 @@ export function successEnvelope<T extends z.ZodType>(dataSchema: T) {
 }
 
 /** Security requirement: session cookie OR workspace API key. */
-export const AUTH_SECURITY = [{ cookieAuth: [] }, { bearerAuth: [] }];
+export const AUTH_SECURITY: Array<Record<string, string[]>> = [
+  { cookieAuth: [] },
+  { bearerAuth: [] },
+];
 
 /** Registers the shared security schemes on an `OpenAPIHono` registry. */
 export function registerSecuritySchemes(app: OpenAPIHono): void {
