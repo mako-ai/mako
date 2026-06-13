@@ -1,4 +1,5 @@
-import { Hono, Context } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
+import type { Context, Hono } from "hono";
 import { ConsoleManager } from "../utils/console-manager";
 import {
   unifiedAuthMiddleware,
@@ -24,6 +25,7 @@ import {
 import { Types } from "mongoose";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   isDescriptionGenAvailable,
   generateDescriptionAndEmbedding,
@@ -87,7 +89,7 @@ function sanitizeDownloadFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_");
 }
 
-export const consoleRoutes = new Hono();
+export const consoleRoutes = createRouter();
 const consoleManager = new ConsoleManager();
 
 // Apply unified auth middleware to all console routes
@@ -95,7 +97,7 @@ consoleRoutes.use("*", unifiedAuthMiddleware);
 
 // Middleware to verify workspace access and enrich logging context
 consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
+  const workspaceId = c.req.param("workspaceId") as string;
   if (workspaceId) {
     // Validate ObjectId format early to return 400 instead of 500
     if (!Types.ObjectId.isValid(workspaceId)) {
@@ -145,7 +147,7 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
 async function verifyWorkspaceAccess(
   c: Context,
 ): Promise<{ hasAccess: boolean; workspaceId: string } | null> {
-  const workspaceId = c.req.param("workspaceId");
+  const workspaceId = c.req.param("workspaceId") as string;
 
   if (isApiKeyAuth(c)) {
     // For API key auth, workspace is already verified and set in context
@@ -170,7 +172,7 @@ consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
 
 // ── Sharing (collaborators + general access) ──
 const loadConsoleById = async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId");
+  const workspaceId = c.req.param("workspaceId") as string;
   const id = c.req.param("id");
   if (!Types.ObjectId.isValid(id)) return null;
   return SavedConsole.findOne({
@@ -179,167 +181,204 @@ const loadConsoleById = async (c: AuthenticatedContext) => {
   });
 };
 
-registerCollaboratorRoutes(consoleRoutes, {
+registerCollaboratorRoutes(consoleRoutes as unknown as Hono, {
   resourceName: "Console",
   load: loadConsoleById,
 });
-registerSharingSettingsRoutes(consoleRoutes, {
+registerSharingSettingsRoutes(consoleRoutes as unknown as Hono, {
   resourceName: "Console",
   load: loadConsoleById,
 });
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
-consoleRoutes.get("/", async (c: Context) => {
-  try {
-    const access = await verifyWorkspaceAccess(c);
-    if (!access) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/",
+    tags: ["Consoles"],
+    summary: "GET /",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const access = await verifyWorkspaceAccess(c);
+      if (!access) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
 
-    const user = c.get("user");
-    const userId: string | undefined = user?.id;
+      const user = c.get("user");
+      const userId: string | undefined = user?.id;
 
-    if (userId) {
-      const member = await workspaceService.getMember(
+      if (userId) {
+        const member = await workspaceService.getMember(
+          access.workspaceId,
+          userId,
+        );
+        const userRole = member?.role || "member";
+
+        const { myConsoles, sharedWithWorkspace } =
+          await consoleManager.listConsolesSplit(
+            access.workspaceId,
+            userId,
+            userRole,
+          );
+
+        return c.json({
+          success: true,
+          myConsoles,
+          sharedWithWorkspace,
+          tree: myConsoles,
+        });
+      }
+
+      const tree = await consoleManager.listConsoles(
         access.workspaceId,
         userId,
       );
-      const userRole = member?.role || "member";
+      return c.json({ success: true, tree });
+    } catch (error) {
+      logger.error("Error listing consoles", { error });
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+        500,
+      );
+    }
+  },
+);
 
-      const { myConsoles, sharedWithWorkspace } =
-        await consoleManager.listConsolesSplit(
-          access.workspaceId,
-          userId,
-          userRole,
+// GET /api/workspaces/:workspaceId/consoles/content - Get specific console content
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/content",
+    tags: ["Consoles"],
+    summary: "GET /content",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.query("id");
+      const user = c.get("user");
+
+      // Verify user has access to workspace
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
         );
+      }
+
+      if (!consoleId) {
+        return c.json(
+          { success: false, error: "ID query parameter is required" },
+          400,
+        );
+      }
+
+      const consoleData = await consoleManager.getConsoleWithMetadata(
+        consoleId,
+        workspaceId,
+      );
+
+      if (!consoleData) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const fullConsole = consoleData._raw;
+
+      if (
+        fullConsole &&
+        !(await consoleManager.canReadWithInheritance(fullConsole, user.id))
+      ) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const consoleAccess = consoleData.access || "private";
+      const ownerId = consoleData.owner_id;
+
+      const member = await workspaceService.getMember(workspaceId, user.id);
+      const isAdmin = member?.role === "owner" || member?.role === "admin";
+
+      const readOnly = fullConsole
+        ? !ConsoleManager.canWrite(fullConsole, user.id, isAdmin, member?.role)
+        : false;
+
+      // Resolve owner display name
+      let ownerDisplayName: string | undefined;
+      if (ownerId) {
+        const ownerUser = await User.findById(ownerId).select("email").lean();
+        ownerDisplayName = ownerUser?.email;
+      }
 
       return c.json({
         success: true,
-        myConsoles,
-        sharedWithWorkspace,
-        tree: myConsoles,
+        content: consoleData.content,
+        connectionId: consoleData.connectionId,
+        databaseName: consoleData.databaseName,
+        databaseId: consoleData.databaseId,
+        language: consoleData.language,
+        id: consoleData.id,
+        name: consoleData.name,
+        path: consoleData.path,
+        isSaved: consoleData.isSaved,
+        chartSpec: consoleData.chartSpec,
+        resultsViewMode: consoleData.resultsViewMode,
+        access: consoleAccess,
+        workspaceRole: fullConsole?.workspaceRole ?? "viewer",
+        sharedWith: fullConsole?.sharedWith ?? [],
+        owner_id: ownerId,
+        ownerDisplayName,
+        readOnly,
+        schedule: fullConsole?.schedule,
+        scheduledRun: fullConsole?.scheduledRun,
+        // Optimistic-concurrency base: the client echoes this back as
+        // expectedVersion on explicit saves.
+        version: fullConsole?.version ?? 1,
+        // Realtime sync base: clients compare against console.updated pokes
+        // and echo it back as expectedDraftRevision on draft auto-saves.
+        draftRevision: fullConsole?.draftRevision ?? 1,
+        // Latest server-side run artifact (agent run_console while detached);
+        // lets a reopened console render results without re-running.
+        lastRun: fullConsole?.lastRun,
       });
-    }
-
-    const tree = await consoleManager.listConsoles(access.workspaceId, userId);
-    return c.json({ success: true, tree });
-  } catch (error) {
-    logger.error("Error listing consoles", { error });
-    return c.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-      },
-      500,
-    );
-  }
-});
-
-// GET /api/workspaces/:workspaceId/consoles/content - Get specific console content
-consoleRoutes.get("/content", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.query("id");
-    const user = c.get("user");
-
-    // Verify user has access to workspace
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+    } catch (error) {
+      logger.error("Error fetching console content", {
+        consoleId: c.req.query("id"),
+        error,
+      });
       return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Console not found",
+        },
+        404,
       );
     }
-
-    if (!consoleId) {
-      return c.json(
-        { success: false, error: "ID query parameter is required" },
-        400,
-      );
-    }
-
-    const consoleData = await consoleManager.getConsoleWithMetadata(
-      consoleId,
-      workspaceId,
-    );
-
-    if (!consoleData) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const fullConsole = consoleData._raw;
-
-    if (
-      fullConsole &&
-      !(await consoleManager.canReadWithInheritance(fullConsole, user.id))
-    ) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const consoleAccess = consoleData.access || "private";
-    const ownerId = consoleData.owner_id;
-
-    const member = await workspaceService.getMember(workspaceId, user.id);
-    const isAdmin = member?.role === "owner" || member?.role === "admin";
-
-    const readOnly = fullConsole
-      ? !ConsoleManager.canWrite(fullConsole, user.id, isAdmin, member?.role)
-      : false;
-
-    // Resolve owner display name
-    let ownerDisplayName: string | undefined;
-    if (ownerId) {
-      const ownerUser = await User.findById(ownerId).select("email").lean();
-      ownerDisplayName = ownerUser?.email;
-    }
-
-    return c.json({
-      success: true,
-      content: consoleData.content,
-      connectionId: consoleData.connectionId,
-      databaseName: consoleData.databaseName,
-      databaseId: consoleData.databaseId,
-      language: consoleData.language,
-      id: consoleData.id,
-      name: consoleData.name,
-      path: consoleData.path,
-      isSaved: consoleData.isSaved,
-      chartSpec: consoleData.chartSpec,
-      resultsViewMode: consoleData.resultsViewMode,
-      access: consoleAccess,
-      workspaceRole: fullConsole?.workspaceRole ?? "viewer",
-      sharedWith: fullConsole?.sharedWith ?? [],
-      owner_id: ownerId,
-      ownerDisplayName,
-      readOnly,
-      schedule: fullConsole?.schedule,
-      scheduledRun: fullConsole?.scheduledRun,
-      // Optimistic-concurrency base: the client echoes this back as
-      // expectedVersion on explicit saves.
-      version: fullConsole?.version ?? 1,
-      // Realtime sync base: clients compare against console.updated pokes
-      // and echo it back as expectedDraftRevision on draft auto-saves.
-      draftRevision: fullConsole?.draftRevision ?? 1,
-      // Latest server-side run artifact (agent run_console while detached);
-      // lets a reopened console render results without re-running.
-      lastRun: fullConsole?.lastRun,
-    });
-  } catch (error) {
-    logger.error("Error fetching console content", {
-      consoleId: c.req.query("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Console not found",
-      },
-      404,
-    );
-  }
-});
+  },
+);
 
 // POST /api/workspaces/:workspaceId/consoles/revisions-sync
 //
@@ -347,547 +386,706 @@ consoleRoutes.get("/content", async (c: Context) => {
 // every console tab it has open; the server returns full payloads for the
 // ones that changed. Called on realtime (re)connect and on tab focus, which
 // makes reconnect a refetch rather than a replay.
-consoleRoutes.post("/revisions-sync", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const body = await c.req.json();
-    const revisions = body?.revisions as Record<string, unknown> | undefined;
-    if (!revisions || typeof revisions !== "object") {
-      return c.json(
-        { success: false, error: "'revisions' object is required" },
-        400,
-      );
-    }
-
-    const entries = Object.entries(revisions)
-      .filter(
-        ([id, rev]) =>
-          Types.ObjectId.isValid(id) &&
-          typeof rev === "number" &&
-          Number.isFinite(rev),
-      )
-      .slice(0, 100) as Array<[string, number]>;
-
-    if (entries.length === 0) {
-      return c.json({ success: true, changed: [], deleted: [] });
-    }
-
-    const docs = await SavedConsole.find({
-      _id: { $in: entries.map(([id]) => new Types.ObjectId(id)) },
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    const docsById = new Map(docs.map(d => [d._id.toString(), d]));
-
-    const changed: Array<Record<string, unknown>> = [];
-    const deleted: string[] = [];
-    for (const [id, clientRevision] of entries) {
-      const doc = docsById.get(id);
-      if (!doc || doc.is_deleted) {
-        deleted.push(id);
-        continue;
-      }
-      if (!(await consoleManager.canReadWithInheritance(doc, user.id))) {
-        // Not readable (e.g. access flipped to private): treat as gone.
-        deleted.push(id);
-        continue;
-      }
-      const serverRevision = doc.draftRevision ?? 1;
-      if (serverRevision === clientRevision) continue;
-      changed.push({
-        id,
-        draftRevision: serverRevision,
-        name: doc.name,
-        content: doc.code,
-        connectionId: doc.connectionId?.toString(),
-        databaseId: doc.databaseId,
-        databaseName: doc.databaseName,
-        version: doc.version ?? 1,
-        // Server truth for draft-vs-saved: clients use this to keep the
-        // tab's autosave eligibility correct (drafts autosave, saved
-        // consoles don't). Missing on legacy docs ⇒ treated as saved.
-        isSaved: doc.isSaved ?? true,
-        lastRun: doc.lastRun,
-      });
-    }
-
-    return c.json({ success: true, changed, deleted });
-  } catch (error) {
-    logger.error("Error syncing console revisions", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error syncing revisions",
-      },
-      500,
-    );
-  }
-});
-
-consoleRoutes.put("/:id/schedule", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const body = await c.req.json();
-
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
-    }
-
-    const savedConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      $or: [{ is_deleted: { $ne: true } }, { is_deleted: { $exists: false } }],
-    });
-
-    if (!savedConsole) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const schedule = validateScheduledConsoleSchedule({
-      cron: body?.cron,
-      timezone: body?.timezone,
-    });
-    const nextAt = getNextScheduledConsoleRunAt(schedule);
-
-    savedConsole.schedule = schedule;
-    savedConsole.scheduledRun = {
-      nextAt,
-      lastAt: savedConsole.scheduledRun?.lastAt,
-      lastStatus: savedConsole.scheduledRun?.lastStatus,
-      lastError: savedConsole.scheduledRun?.lastError,
-      lastDurationMs: savedConsole.scheduledRun?.lastDurationMs,
-      lastRowsAffected: savedConsole.scheduledRun?.lastRowsAffected,
-      lastRowCount: savedConsole.scheduledRun?.lastRowCount,
-      runCount: savedConsole.scheduledRun?.runCount ?? 0,
-      consecutiveFailures: savedConsole.scheduledRun?.consecutiveFailures ?? 0,
-    };
-    savedConsole.isSaved = true;
-    await savedConsole.save();
-
-    return c.json({
-      success: true,
-      schedule: savedConsole.schedule,
-      scheduledRun: savedConsole.scheduledRun,
-    });
-  } catch (error) {
-    logger.error("Error updating console schedule", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to update console schedule",
-      },
-      500,
-    );
-  }
-});
-
-consoleRoutes.delete("/:id/schedule", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
-    }
-
-    const savedConsole = await SavedConsole.findOneAndUpdate(
-      {
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      },
-      {
-        $unset: {
-          schedule: 1,
-          "scheduledRun.nextAt": 1,
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/revisions-sync",
+    tags: ["Consoles"],
+    summary: "POST /revisions-sync",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
         },
       },
-      { new: true },
-    );
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const user = c.get("user");
 
-    if (!savedConsole) {
-      return c.json({ success: false, error: "Console not found" }, 404);
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const body = await c.req.json();
+      const revisions = body?.revisions as Record<string, unknown> | undefined;
+      if (!revisions || typeof revisions !== "object") {
+        return c.json(
+          { success: false, error: "'revisions' object is required" },
+          400,
+        );
+      }
+
+      const entries = Object.entries(revisions)
+        .filter(
+          ([id, rev]) =>
+            Types.ObjectId.isValid(id) &&
+            typeof rev === "number" &&
+            Number.isFinite(rev),
+        )
+        .slice(0, 100) as Array<[string, number]>;
+
+      if (entries.length === 0) {
+        return c.json({ success: true, changed: [], deleted: [] });
+      }
+
+      const docs = await SavedConsole.find({
+        _id: { $in: entries.map(([id]) => new Types.ObjectId(id)) },
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      const docsById = new Map(docs.map(d => [d._id.toString(), d]));
+
+      const changed: Array<Record<string, unknown>> = [];
+      const deleted: string[] = [];
+      for (const [id, clientRevision] of entries) {
+        const doc = docsById.get(id);
+        if (!doc || doc.is_deleted) {
+          deleted.push(id);
+          continue;
+        }
+        if (!(await consoleManager.canReadWithInheritance(doc, user.id))) {
+          // Not readable (e.g. access flipped to private): treat as gone.
+          deleted.push(id);
+          continue;
+        }
+        const serverRevision = doc.draftRevision ?? 1;
+        if (serverRevision === clientRevision) continue;
+        changed.push({
+          id,
+          draftRevision: serverRevision,
+          name: doc.name,
+          content: doc.code,
+          connectionId: doc.connectionId?.toString(),
+          databaseId: doc.databaseId,
+          databaseName: doc.databaseName,
+          version: doc.version ?? 1,
+          // Server truth for draft-vs-saved: clients use this to keep the
+          // tab's autosave eligibility correct (drafts autosave, saved
+          // consoles don't). Missing on legacy docs ⇒ treated as saved.
+          isSaved: doc.isSaved ?? true,
+          lastRun: doc.lastRun,
+        });
+      }
+
+      return c.json({ success: true, changed, deleted });
+    } catch (error) {
+      logger.error("Error syncing console revisions", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error syncing revisions",
+        },
+        500,
+      );
     }
+  },
+);
 
-    return c.json({ success: true });
-  } catch (error) {
-    logger.error("Error removing console schedule", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to remove console schedule",
+consoleRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/schedule",
+    tags: ["Consoles"],
+    summary: "PUT /{id}/schedule",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
       },
-      500,
-    );
-  }
-});
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const body = await c.req.json();
 
-consoleRoutes.post("/:id/schedule/run", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const user = c.get("user");
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
 
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
+      const savedConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+        $or: [
+          { is_deleted: { $ne: true } },
+          { is_deleted: { $exists: false } },
+        ],
+      });
+
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const schedule = validateScheduledConsoleSchedule({
+        cron: body?.cron,
+        timezone: body?.timezone,
+      });
+      const nextAt = getNextScheduledConsoleRunAt(schedule);
+
+      savedConsole.schedule = schedule;
+      savedConsole.scheduledRun = {
+        nextAt,
+        lastAt: savedConsole.scheduledRun?.lastAt,
+        lastStatus: savedConsole.scheduledRun?.lastStatus,
+        lastError: savedConsole.scheduledRun?.lastError,
+        lastDurationMs: savedConsole.scheduledRun?.lastDurationMs,
+        lastRowsAffected: savedConsole.scheduledRun?.lastRowsAffected,
+        lastRowCount: savedConsole.scheduledRun?.lastRowCount,
+        runCount: savedConsole.scheduledRun?.runCount ?? 0,
+        consecutiveFailures:
+          savedConsole.scheduledRun?.consecutiveFailures ?? 0,
+      };
+      savedConsole.isSaved = true;
+      await savedConsole.save();
+
+      return c.json({
+        success: true,
+        schedule: savedConsole.schedule,
+        scheduledRun: savedConsole.scheduledRun,
+      });
+    } catch (error) {
+      logger.error("Error updating console schedule", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to update console schedule",
+        },
+        500,
+      );
     }
+  },
+);
 
-    const savedConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    }).select("_id");
+consoleRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/schedule",
+    tags: ["Consoles"],
+    summary: "DELETE /{id}/schedule",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
 
-    if (!savedConsole) {
-      return c.json({ success: false, error: "Console not found" }, 404);
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
+
+      const savedConsole = await SavedConsole.findOneAndUpdate(
+        {
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        },
+        {
+          $unset: {
+            schedule: 1,
+            "scheduledRun.nextAt": 1,
+          },
+        },
+        { new: true },
+      );
+
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      return c.json({ success: true });
+    } catch (error) {
+      logger.error("Error removing console schedule", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to remove console schedule",
+        },
+        500,
+      );
     }
+  },
+);
 
-    const eventId = await inngest.send({
-      name: "scheduled_query/execute",
-      data: {
-        workspaceId,
-        consoleId,
-        triggerType: "manual",
-        triggeredBy: user?.id,
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/schedule/run",
+    tags: ["Consoles"],
+    summary: "POST /{id}/schedule/run",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
       },
-    });
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const user = c.get("user");
 
-    return c.json({ success: true, eventId });
-  } catch (error) {
-    logger.error("Error triggering scheduled console run", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to trigger scheduled query run",
-      },
-      500,
-    );
-  }
-});
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
 
-consoleRoutes.get("/:id/schedule/runs", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
+      const savedConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      }).select("_id");
 
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const eventId = await inngest.send({
+        name: "scheduled_query/execute",
+        data: {
+          workspaceId,
+          consoleId,
+          triggerType: "manual",
+          triggeredBy: user?.id,
+        },
+      });
+
+      return c.json({ success: true, eventId });
+    } catch (error) {
+      logger.error("Error triggering scheduled console run", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to trigger scheduled query run",
+        },
+        500,
+      );
     }
+  },
+);
 
-    const workspaceObjectId = new Types.ObjectId(workspaceId);
-    const consoleObjectId = new Types.ObjectId(consoleId);
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/schedule/runs",
+    tags: ["Consoles"],
+    summary: "GET /{id}/schedule/runs",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 100);
 
-    const [runs, consoleDoc] = await Promise.all([
-      ScheduledQueryRun.find({
-        workspaceId: workspaceObjectId,
-        consoleId: consoleObjectId,
-      })
-        .sort({ triggeredAt: -1 })
-        .limit(limit)
-        .lean(),
-      SavedConsole.findOne({
-        _id: consoleObjectId,
-        workspaceId: workspaceObjectId,
-      })
-        .select("scheduledRun")
-        .lean(),
-    ]);
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
 
-    return c.json({
-      success: true,
-      scheduledRun: consoleDoc?.scheduledRun,
-      runs: runs.map(run => ({
-        id: run._id.toString(),
-        triggeredAt: run.triggeredAt,
-        startedAt: run.startedAt,
-        completedAt: run.completedAt,
-        status: run.status,
-        triggerType: run.triggerType,
-        triggeredBy: run.triggeredBy,
-        durationMs: run.durationMs,
-        rowsAffected: run.rowsAffected,
-        rowCount: run.rowCount,
-        error: run.error,
-        inngestRunId: run.inngestRunId,
-      })),
-    });
-  } catch (error) {
-    logger.error("Error listing scheduled console runs", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to list scheduled query runs",
-      },
-      500,
-    );
-  }
-});
+      const workspaceObjectId = new Types.ObjectId(workspaceId);
+      const consoleObjectId = new Types.ObjectId(consoleId);
+
+      const [runs, consoleDoc] = await Promise.all([
+        ScheduledQueryRun.find({
+          workspaceId: workspaceObjectId,
+          consoleId: consoleObjectId,
+        })
+          .sort({ triggeredAt: -1 })
+          .limit(limit)
+          .lean(),
+        SavedConsole.findOne({
+          _id: consoleObjectId,
+          workspaceId: workspaceObjectId,
+        })
+          .select("scheduledRun")
+          .lean(),
+      ]);
+
+      return c.json({
+        success: true,
+        scheduledRun: consoleDoc?.scheduledRun,
+        runs: runs.map(run => ({
+          id: run._id.toString(),
+          triggeredAt: run.triggeredAt,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt,
+          status: run.status,
+          triggerType: run.triggerType,
+          triggeredBy: run.triggeredBy,
+          durationMs: run.durationMs,
+          rowsAffected: run.rowsAffected,
+          rowCount: run.rowCount,
+          error: run.error,
+          inngestRunId: run.inngestRunId,
+        })),
+      });
+    } catch (error) {
+      logger.error("Error listing scheduled console runs", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to list scheduled query runs",
+        },
+        500,
+      );
+    }
+  },
+);
 
 // GET /api/workspaces/:workspaceId/consoles/search?q=...
-consoleRoutes.get("/search", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const query = c.req.query("q") || "";
-    const limitParam = c.req.query("limit");
-    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/search",
+    tags: ["Consoles"],
+    summary: "GET /search",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const query = c.req.query("q") || "";
+      const limitParam = c.req.query("limit");
+      const limit = limitParam ? Math.min(parseInt(limitParam, 10), 50) : 20;
 
-    if (query.length < 2) {
-      return c.json({ results: [] });
+      if (query.length < 2) {
+        return c.json({ results: [] });
+      }
+
+      const { searchConsoles } = await import(
+        "../agent-lib/tools/console-search-tools"
+      );
+      const results = await searchConsoles(query, workspaceId, limit);
+
+      return c.json({ results });
+    } catch (err) {
+      logger.error("Console search failed", { error: err });
+      return c.json({ success: false, error: "Search failed" }, 500);
     }
-
-    const { searchConsoles } = await import(
-      "../agent-lib/tools/console-search-tools"
-    );
-    const results = await searchConsoles(query, workspaceId, limit);
-
-    return c.json({ results });
-  } catch (err) {
-    logger.error("Console search failed", { error: err });
-    return c.json({ success: false, error: "Search failed" }, 500);
-  }
-});
+  },
+);
 
 // POST /api/workspaces/:workspaceId/consoles - Create new console
-consoleRoutes.post("/", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const body = await c.req.json();
-    const {
-      id, // Optional client-provided ID
-      path: consolePath,
-      content,
-      connectionId,
-      databaseId, // Backward compatibility
-      databaseName,
-      folderId,
-      description,
-      language,
-      isPrivate,
-      access,
-    } = body;
-    const user = c.get("user");
-
-    // Verify user has access to workspace
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    if (!consolePath || typeof consolePath !== "string") {
-      return c.json(
-        { success: false, error: "Path is required and must be a string" },
-        400,
-      );
-    }
-    if (typeof content !== "string") {
-      return c.json({ success: false, error: "Content must be a string" }, 400);
-    }
-
-    // connectionId is optional - consoles can be saved without being associated with a specific database
-    let targetConnectionId = connectionId;
-    if (!targetConnectionId) {
-      // Try to get the first database for the workspace, but don't require it
-      const databases = await DatabaseConnection.find({ workspaceId }).limit(1);
-      if (databases.length > 0) {
-        targetConnectionId = databases[0]._id.toString();
-      }
-      // If no databases exist, that's fine - targetConnectionId will remain undefined
-    }
-
-    // Check if a console already exists at this path (with a different ID)
-    const existingConsole = await consoleManager.getConsoleByPath(
-      consolePath,
-      workspaceId,
-    );
-
-    // If console exists and has a different ID, check for conflict
-    // Skip conflict if existing console only has placeholder content (loading...)
-    const hasRealContent =
-      existingConsole?.code &&
-      existingConsole.code.trim() !== "" &&
-      existingConsole.code !== "loading...";
-
-    // Determine which ID to use for saving
-    let consoleIdToUse = id;
-
-    if (existingConsole && existingConsole._id.toString() !== id) {
-      if (hasRealContent) {
-        // Real conflict - return conflict response for user to resolve
-        return c.json(
-          {
-            success: false,
-            error: "conflict",
-            conflict: {
-              existingId: existingConsole._id.toString(),
-              existingContent: existingConsole.code,
-              existingName: existingConsole.name,
-              existingLanguage: existingConsole.language,
-              path: consolePath,
-            },
-          },
-          409,
-        );
-      } else {
-        // Existing console has placeholder content - overwrite it by using its ID
-        // This prevents creating a duplicate at the same path
-        // IMPORTANT: The client uses the returned `id` in the response to update its
-        // local state, so we must return savedConsole._id (not the original client ID)
-        consoleIdToUse = existingConsole._id.toString();
-      }
-    }
-
-    const savedConsole = await consoleManager.saveConsole(
-      consolePath,
-      content,
-      workspaceId,
-      user.id,
-      targetConnectionId,
-      databaseName,
-      databaseId,
-      {
-        id: consoleIdToUse, // Use existing console ID if overwriting placeholder, otherwise client ID
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/",
+    tags: ["Consoles"],
+    summary: "POST /",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const body = await c.req.json();
+      const {
+        id, // Optional client-provided ID
+        path: consolePath,
+        content,
+        connectionId,
+        databaseId, // Backward compatibility
+        databaseName,
         folderId,
         description,
         language,
         isPrivate,
         access,
-      },
-    );
+      } = body;
+      const user = c.get("user");
 
-    // Persist chart spec and view mode if provided
-    if (body.chartSpec !== undefined || body.resultsViewMode !== undefined) {
-      const chartUpdate: Record<string, unknown> = {};
-      if (body.chartSpec !== undefined) chartUpdate.chartSpec = body.chartSpec;
-      if (body.resultsViewMode !== undefined) {
-        chartUpdate.resultsViewMode = body.resultsViewMode;
+      // Verify user has access to workspace
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
       }
-      await SavedConsole.findByIdAndUpdate(savedConsole._id, {
-        $set: chartUpdate,
-      });
-    }
 
-    // Create version 1 for this new console
-    const freshDoc = await SavedConsole.findById(savedConsole._id).lean();
-    if (freshDoc) {
-      const displayName = await getUserDisplayName(user.id);
-      await createVersion({
-        entityType: "console",
-        entityId: savedConsole._id,
-        workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildConsoleSnapshot(freshDoc as ISavedConsole),
-        savedBy: user.id,
-        savedByName: displayName,
-        comment: body.comment ?? "",
-      });
-      await SavedConsole.updateOne(
-        { _id: savedConsole._id },
-        { $set: { version: 1 } },
+      if (!consolePath || typeof consolePath !== "string") {
+        return c.json(
+          { success: false, error: "Path is required and must be a string" },
+          400,
+        );
+      }
+      if (typeof content !== "string") {
+        return c.json(
+          { success: false, error: "Content must be a string" },
+          400,
+        );
+      }
+
+      // connectionId is optional - consoles can be saved without being associated with a specific database
+      let targetConnectionId = connectionId;
+      if (!targetConnectionId) {
+        // Try to get the first database for the workspace, but don't require it
+        const databases = await DatabaseConnection.find({ workspaceId }).limit(
+          1,
+        );
+        if (databases.length > 0) {
+          targetConnectionId = databases[0]._id.toString();
+        }
+        // If no databases exist, that's fine - targetConnectionId will remain undefined
+      }
+
+      // Check if a console already exists at this path (with a different ID)
+      const existingConsole = await consoleManager.getConsoleByPath(
+        consolePath,
+        workspaceId,
+      );
+
+      // If console exists and has a different ID, check for conflict
+      // Skip conflict if existing console only has placeholder content (loading...)
+      const hasRealContent =
+        existingConsole?.code &&
+        existingConsole.code.trim() !== "" &&
+        existingConsole.code !== "loading...";
+
+      // Determine which ID to use for saving
+      let consoleIdToUse = id;
+
+      if (existingConsole && existingConsole._id.toString() !== id) {
+        if (hasRealContent) {
+          // Real conflict - return conflict response for user to resolve
+          return c.json(
+            {
+              success: false,
+              error: "conflict",
+              conflict: {
+                existingId: existingConsole._id.toString(),
+                existingContent: existingConsole.code,
+                existingName: existingConsole.name,
+                existingLanguage: existingConsole.language,
+                path: consolePath,
+              },
+            },
+            409,
+          );
+        } else {
+          // Existing console has placeholder content - overwrite it by using its ID
+          // This prevents creating a duplicate at the same path
+          // IMPORTANT: The client uses the returned `id` in the response to update its
+          // local state, so we must return savedConsole._id (not the original client ID)
+          consoleIdToUse = existingConsole._id.toString();
+        }
+      }
+
+      const savedConsole = await consoleManager.saveConsole(
+        consolePath,
+        content,
+        workspaceId,
+        user.id,
+        targetConnectionId,
+        databaseName,
+        databaseId,
+        {
+          id: consoleIdToUse, // Use existing console ID if overwriting placeholder, otherwise client ID
+          folderId,
+          description,
+          language,
+          isPrivate,
+          access,
+        },
+      );
+
+      // Persist chart spec and view mode if provided
+      if (body.chartSpec !== undefined || body.resultsViewMode !== undefined) {
+        const chartUpdate: Record<string, unknown> = {};
+        if (body.chartSpec !== undefined)
+          chartUpdate.chartSpec = body.chartSpec;
+        if (body.resultsViewMode !== undefined) {
+          chartUpdate.resultsViewMode = body.resultsViewMode;
+        }
+        await SavedConsole.findByIdAndUpdate(savedConsole._id, {
+          $set: chartUpdate,
+        });
+      }
+
+      // Create version 1 for this new console
+      const freshDoc = await SavedConsole.findById(savedConsole._id).lean();
+      if (freshDoc) {
+        const displayName = await getUserDisplayName(user.id);
+        await createVersion({
+          entityType: "console",
+          entityId: savedConsole._id,
+          workspaceId: new Types.ObjectId(workspaceId),
+          snapshot: buildConsoleSnapshot(freshDoc as ISavedConsole),
+          savedBy: user.id,
+          savedByName: displayName,
+          comment: body.comment ?? "",
+        });
+        await SavedConsole.updateOne(
+          { _id: savedConsole._id },
+          { $set: { version: 1 } },
+        );
+      }
+
+      // Fire-and-forget: generate description + embedding for searchability
+      if (isDescriptionGenAvailable() && content.trim()) {
+        void (async () => {
+          try {
+            const connDoc = targetConnectionId
+              ? await DatabaseConnection.findById(targetConnectionId)
+              : null;
+            const {
+              description: genDesc,
+              embedding,
+              embeddingModel,
+            } = await generateDescriptionAndEmbedding(
+              {
+                code: content,
+                title: consolePath.split("/").pop() || consolePath,
+                connectionName: connDoc?.name,
+                databaseType: connDoc?.type,
+                databaseName,
+                language: savedConsole.language,
+              },
+              { workspaceId, userId: user.id, userEmail: user.email },
+            );
+            if (genDesc || embedding) {
+              const update: Record<string, unknown> = {};
+              if (genDesc && !description) update.description = genDesc;
+              if (embedding) {
+                update.descriptionEmbedding = embedding;
+                update.embeddingModel = embeddingModel;
+              }
+              if (Object.keys(update).length > 0) {
+                await SavedConsole.findByIdAndUpdate(savedConsole._id, {
+                  $set: update,
+                });
+              }
+            }
+          } catch (err) {
+            logger.debug("Console description generation failed", {
+              error: err,
+            });
+          }
+        })();
+      }
+
+      return c.json(
+        {
+          success: true,
+          message: "Console created successfully",
+          data: {
+            id: savedConsole._id.toString(),
+            path: consolePath,
+            content,
+            connectionId: targetConnectionId,
+            databaseName,
+            databaseId,
+            language: savedConsole.language,
+          },
+        },
+        201,
+      );
+    } catch (error) {
+      logger.error("Error creating console", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error creating console",
+        },
+        500,
       );
     }
-
-    // Fire-and-forget: generate description + embedding for searchability
-    if (isDescriptionGenAvailable() && content.trim()) {
-      void (async () => {
-        try {
-          const connDoc = targetConnectionId
-            ? await DatabaseConnection.findById(targetConnectionId)
-            : null;
-          const {
-            description: genDesc,
-            embedding,
-            embeddingModel,
-          } = await generateDescriptionAndEmbedding(
-            {
-              code: content,
-              title: consolePath.split("/").pop() || consolePath,
-              connectionName: connDoc?.name,
-              databaseType: connDoc?.type,
-              databaseName,
-              language: savedConsole.language,
-            },
-            { workspaceId, userId: user.id, userEmail: user.email },
-          );
-          if (genDesc || embedding) {
-            const update: Record<string, unknown> = {};
-            if (genDesc && !description) update.description = genDesc;
-            if (embedding) {
-              update.descriptionEmbedding = embedding;
-              update.embeddingModel = embeddingModel;
-            }
-            if (Object.keys(update).length > 0) {
-              await SavedConsole.findByIdAndUpdate(savedConsole._id, {
-                $set: update,
-              });
-            }
-          }
-        } catch (err) {
-          logger.debug("Console description generation failed", { error: err });
-        }
-      })();
-    }
-
-    return c.json(
-      {
-        success: true,
-        message: "Console created successfully",
-        data: {
-          id: savedConsole._id.toString(),
-          path: consolePath,
-          content,
-          connectionId: targetConnectionId,
-          databaseName,
-          databaseId,
-          language: savedConsole.language,
-        },
-      },
-      201,
-    );
-  } catch (error) {
-    logger.error("Error creating console", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error creating console",
-      },
-      500,
-    );
-  }
-});
+  },
+);
 
 // PUT /api/workspaces/:workspaceId/consoles/:pathOrId - Update/upsert console
 // If pathOrId is a valid ObjectId, upserts by ID (used for auto-save)
 // Otherwise, saves by path (used for explicit user save to folder)
 consoleRoutes.put("/:path{.+}", async (c: Context) => {
   try {
-    const workspaceId = c.req.param("workspaceId");
+    const workspaceId = c.req.param("workspaceId") as string;
     const pathOrId = c.req.param("path");
     const body = await c.req.json();
     const user = c.get("user");
@@ -1452,796 +1650,1085 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
 });
 
 // POST /api/workspaces/:workspaceId/consoles/folders - Create new folder
-consoleRoutes.post("/folders", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const body = await c.req.json();
-    const { name, parentId, isPrivate, access } = body;
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    if (!name || typeof name !== "string") {
-      return c.json(
-        { success: false, error: "Name is required and must be a string" },
-        400,
-      );
-    }
-
-    const folder = await consoleManager.createFolder(
-      name,
-      workspaceId,
-      user.id,
-      parentId,
-      isPrivate || false,
-      access || "private",
-    );
-
-    return c.json(
-      {
-        success: true,
-        message: "Folder created successfully",
-        data: {
-          id: folder._id.toString(),
-          name: folder.name,
-          parentId: folder.parentId?.toString(),
-          isPrivate: folder.isPrivate,
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/folders",
+    tags: ["Consoles"],
+    summary: "POST /folders",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
         },
       },
-      201,
-    );
-  } catch (error) {
-    logger.error("Error creating folder", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error creating folder",
-      },
-      500,
-    );
-  }
-});
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const body = await c.req.json();
+      const { name, parentId, isPrivate, access } = body;
+      const user = c.get("user");
 
-// PATCH /api/workspaces/:workspaceId/consoles/:id/rename - Rename a console
-consoleRoutes.patch("/:id/rename", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const body = await c.req.json();
-    const { name } = body;
-    const user = c.get("user");
-
-    // Verify user has access to workspace
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const memberRename = await workspaceService.getMember(workspaceId, user.id);
-    const isAdminRename =
-      memberRename?.role === "owner" || memberRename?.role === "admin";
-
-    if (Types.ObjectId.isValid(consoleId)) {
-      const existing = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (
-        existing &&
-        !ConsoleManager.canWrite(
-          existing,
-          user.id,
-          isAdminRename,
-          memberRename?.role,
-        )
-      ) {
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
         return c.json(
-          {
-            success: false,
-            error: "Cannot rename a read-only console",
-          },
+          { success: false, error: "Access denied to workspace" },
           403,
         );
       }
-    }
 
-    if (!name || typeof name !== "string") {
-      return c.json(
-        { success: false, error: "Name is required and must be a string" },
-        400,
-      );
-    }
-
-    const success = await consoleManager.renameConsole(
-      consoleId,
-      name,
-      workspaceId,
-      user.id,
-    );
-
-    if (success) {
-      // Bump the draft revision so revision-sync catches the rename, then
-      // poke subscribers (other tabs/users update the tab title live).
-      if (Types.ObjectId.isValid(consoleId)) {
-        const renamed = await SavedConsole.findOneAndUpdate(
-          {
-            _id: new Types.ObjectId(consoleId),
-            workspaceId: new Types.ObjectId(workspaceId),
-          },
-          { $inc: { draftRevision: 1 } },
-          { new: true },
+      if (!name || typeof name !== "string") {
+        return c.json(
+          { success: false, error: "Name is required and must be a string" },
+          400,
         );
-        if (renamed) {
-          publishRealtimeEvent(workspaceId, {
-            type: "console.updated",
-            consoleId,
-            draftRevision: renamed.draftRevision ?? 1,
-            name: renamed.name,
-            updatedBy: user.id,
-            origin: "save",
-          });
-        }
       }
-      return c.json({ success: true, message: "Console renamed successfully" });
-    } else {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-  } catch (error) {
-    logger.error("Error renaming console", {
-      consoleId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error renaming console",
-      },
-      500,
-    );
-  }
-});
 
-// DELETE /api/workspaces/:workspaceId/consoles/:id - Soft-delete a console
-consoleRoutes.delete("/:id", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
+      const folder = await consoleManager.createFolder(
+        name,
+        workspaceId,
+        user.id,
+        parentId,
+        isPrivate || false,
+        access || "private",
       );
-    }
 
-    if (Types.ObjectId.isValid(consoleId)) {
-      const existing = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (existing) {
-        const ownerId = existing.owner_id || existing.createdBy;
-        if (ownerId !== user.id) {
-          const isAdminOrOwner = await workspaceService.hasRole(
-            workspaceId,
-            user.id,
-            ["owner", "admin"],
-          );
-          if (!isAdminOrOwner) {
-            return c.json(
-              {
-                success: false,
-                error:
-                  "Only the console owner or a workspace admin can delete it",
-              },
-              403,
-            );
-          }
-        }
-      }
-    }
-
-    const success = await consoleManager.softDeleteConsole(
-      consoleId,
-      workspaceId,
-    );
-
-    if (success) {
-      publishRealtimeEvent(workspaceId, {
-        type: "console.deleted",
-        consoleId,
-      });
-      return c.json({
-        success: true,
-        message: "Console deleted successfully",
-        id: consoleId,
-      });
-    } else {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-  } catch (error) {
-    logger.error("Error deleting console", {
-      consoleId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error deleting console",
-      },
-      500,
-    );
-  }
-});
-
-// POST /api/workspaces/:workspaceId/consoles/:id/duplicate - Duplicate a console
-consoleRoutes.post("/:id/duplicate", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const copy = await consoleManager.duplicateConsole(
-      consoleId,
-      workspaceId,
-      user.id,
-    );
-
-    if (copy) {
       return c.json(
         {
           success: true,
-          message: "Console duplicated",
+          message: "Folder created successfully",
           data: {
-            id: copy._id.toString(),
-            name: copy.name,
-            folderId: copy.folderId?.toString(),
+            id: folder._id.toString(),
+            name: folder.name,
+            parentId: folder.parentId?.toString(),
+            isPrivate: folder.isPrivate,
           },
         },
         201,
       );
-    } else {
-      return c.json({ success: false, error: "Console not found" }, 404);
+    } catch (error) {
+      logger.error("Error creating folder", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error creating folder",
+        },
+        500,
+      );
     }
-  } catch (error) {
-    logger.error("Error duplicating console", {
-      consoleId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error duplicating console",
+  },
+);
+
+// PATCH /api/workspaces/:workspaceId/consoles/:id/rename - Rename a console
+consoleRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/rename",
+    tags: ["Consoles"],
+    summary: "PATCH /{id}/rename",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
       },
-      500,
-    );
-  }
-});
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const body = await c.req.json();
+      const { name } = body;
+      const user = c.get("user");
 
-// PATCH /api/workspaces/:workspaceId/consoles/:id/restore - Restore a soft-deleted console
-consoleRoutes.patch("/:id/restore", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const success = await consoleManager.restoreConsole(consoleId, workspaceId);
-
-    if (success) {
-      return c.json({ success: true, message: "Console restored" });
-    } else {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-  } catch (error) {
-    logger.error("Error restoring console", {
-      consoleId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error restoring console",
-      },
-      500,
-    );
-  }
-});
-
-// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/rename - Rename a folder
-consoleRoutes.patch("/folders/:id/rename", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const folderId = c.req.param("id");
-    const body = await c.req.json();
-    const { name } = body;
-    const user = c.get("user");
-
-    // Verify user has access to workspace
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    if (!name || typeof name !== "string") {
-      return c.json(
-        { success: false, error: "Name is required and must be a string" },
-        400,
-      );
-    }
-
-    const success = await consoleManager.renameFolder(
-      folderId,
-      name,
-      workspaceId,
-    );
-
-    if (success) {
-      return c.json({ success: true, message: "Folder renamed successfully" });
-    } else {
-      return c.json({ success: false, error: "Folder not found" }, 404);
-    }
-  } catch (error) {
-    logger.error("Error renaming folder", {
-      folderId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error renaming folder",
-      },
-      500,
-    );
-  }
-});
-
-// DELETE /api/workspaces/:workspaceId/consoles/folders/:id - Delete a folder
-consoleRoutes.delete("/folders/:id", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const folderId = c.req.param("id");
-    const user = c.get("user");
-
-    // Verify user has access to workspace
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    // Verify ownership or admin/owner role
-    if (Types.ObjectId.isValid(folderId)) {
-      const folder = await ConsoleFolder.findOne({
-        _id: new Types.ObjectId(folderId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (folder) {
-        const isOwnFolder = folder.ownerId?.toString() === user.id;
-        if (!isOwnFolder) {
-          const isAdminOrOwner = await workspaceService.hasRole(
-            workspaceId,
-            user.id,
-            ["owner", "admin"],
-          );
-          if (!isAdminOrOwner) {
-            return c.json(
-              {
-                success: false,
-                error:
-                  "Only the folder owner or a workspace admin can delete it",
-              },
-              403,
-            );
-          }
-        }
-      }
-    }
-
-    const success = await consoleManager.deleteFolder(folderId, workspaceId);
-
-    if (success) {
-      return c.json({ success: true, message: "Folder deleted successfully" });
-    } else {
-      return c.json({ success: false, error: "Folder not found" }, 404);
-    }
-  } catch (error) {
-    logger.error("Error deleting folder", {
-      folderId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error deleting folder",
-      },
-      500,
-    );
-  }
-});
-
-// PATCH /api/workspaces/:workspaceId/consoles/:id/move - Move a console to a different folder
-consoleRoutes.patch("/:id/move", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const body = await c.req.json();
-    const { folderId, access } = body as {
-      folderId: string | null;
-      access?: "private" | "workspace";
-    };
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const memberMove = await workspaceService.getMember(workspaceId, user.id);
-    const isAdminMove =
-      memberMove?.role === "owner" || memberMove?.role === "admin";
-
-    if (Types.ObjectId.isValid(consoleId)) {
-      const existing = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (
-        existing &&
-        !ConsoleManager.canWrite(
-          existing,
-          user.id,
-          isAdminMove,
-          memberMove?.role,
-        )
-      ) {
+      // Verify user has access to workspace
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
         return c.json(
-          { success: false, error: "Cannot move a read-only console" },
+          { success: false, error: "Access denied to workspace" },
           403,
         );
       }
-    }
 
-    const success = await consoleManager.moveConsole(
-      consoleId,
-      workspaceId,
-      folderId ?? null,
-      access,
-    );
-
-    if (success) {
-      return c.json({ success: true, message: "Console moved successfully" });
-    } else {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-  } catch (error) {
-    logger.error("Error moving console", {
-      consoleId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error moving console",
-      },
-      500,
-    );
-  }
-});
-
-// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/move - Move a folder to a different parent
-consoleRoutes.patch("/folders/:id/move", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const folderId = c.req.param("id");
-    const body = await c.req.json();
-    const { parentId, access } = body as {
-      parentId: string | null;
-      access?: "private" | "workspace";
-    };
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
+      const memberRename = await workspaceService.getMember(
+        workspaceId,
+        user.id,
       );
-    }
+      const isAdminRename =
+        memberRename?.role === "owner" || memberRename?.role === "admin";
 
-    const success = await consoleManager.moveFolder(
-      folderId,
-      workspaceId,
-      parentId ?? null,
-      access,
-    );
-
-    if (success) {
-      return c.json({ success: true, message: "Folder moved successfully" });
-    } else {
-      return c.json(
-        { success: false, error: "Folder not found or circular nesting" },
-        404,
-      );
-    }
-  } catch (error) {
-    logger.error("Error moving folder", {
-      folderId: c.req.param("id"),
-      error,
-    });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Unknown error moving folder",
-      },
-      500,
-    );
-  }
-});
-
-// POST /api/workspaces/:workspaceId/consoles/:id/version-comment - Generate AI version comment
-consoleRoutes.post("/:id/version-comment", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    const body = await c.req.json();
-    const { newContent, source, aiPrompt } = body;
-
-    if (typeof newContent !== "string") {
-      return c.json(
-        { success: false, error: "newContent must be a string" },
-        400,
-      );
-    }
-
-    if (newContent.length > 50_000) {
-      return c.json(
-        { success: false, error: "Content too large for comment generation" },
-        400,
-      );
-    }
-
-    let previousContent = "";
-    let versionFound = false;
-    if (Types.ObjectId.isValid(consoleId)) {
-      const latestSnapshot = await EntityVersion.findOne(
-        {
-          entityId: new Types.ObjectId(consoleId),
-          entityType: "console",
-        },
-        { snapshot: 1, version: 1 },
-      )
-        .sort({ version: -1 })
-        .lean();
-
-      if (latestSnapshot?.snapshot?.code) {
-        previousContent = latestSnapshot.snapshot.code as string;
-        versionFound = true;
+      if (Types.ObjectId.isValid(consoleId)) {
+        const existing = await SavedConsole.findOne({
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+        if (
+          existing &&
+          !ConsoleManager.canWrite(
+            existing,
+            user.id,
+            isAdminRename,
+            memberRename?.role,
+          )
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: "Cannot rename a read-only console",
+            },
+            403,
+          );
+        }
       }
 
-      logger.debug("Version comment baseline lookup", {
+      if (!name || typeof name !== "string") {
+        return c.json(
+          { success: false, error: "Name is required and must be a string" },
+          400,
+        );
+      }
+
+      const success = await consoleManager.renameConsole(
         consoleId,
-        versionFound,
-        latestVersion: latestSnapshot?.version ?? null,
-        snapshotKeys: latestSnapshot?.snapshot
-          ? Object.keys(latestSnapshot.snapshot)
-          : null,
-        previousContentLength: previousContent.length,
-        newContentLength: newContent.length,
+        name,
+        workspaceId,
+        user.id,
+      );
+
+      if (success) {
+        // Bump the draft revision so revision-sync catches the rename, then
+        // poke subscribers (other tabs/users update the tab title live).
+        if (Types.ObjectId.isValid(consoleId)) {
+          const renamed = await SavedConsole.findOneAndUpdate(
+            {
+              _id: new Types.ObjectId(consoleId),
+              workspaceId: new Types.ObjectId(workspaceId),
+            },
+            { $inc: { draftRevision: 1 } },
+            { new: true },
+          );
+          if (renamed) {
+            publishRealtimeEvent(workspaceId, {
+              type: "console.updated",
+              consoleId,
+              draftRevision: renamed.draftRevision ?? 1,
+              name: renamed.name,
+              updatedBy: user.id,
+              origin: "save",
+            });
+          }
+        }
+        return c.json({
+          success: true,
+          message: "Console renamed successfully",
+        });
+      } else {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error renaming console", {
+        consoleId: c.req.param("id"),
+        error,
       });
-    }
-
-    const result = await generateVersionComment(
-      {
-        previousContent,
-        newContent,
-        language: "sql",
-        source: source === "ai" ? "ai" : "user",
-        aiPrompt: typeof aiPrompt === "string" ? aiPrompt : undefined,
-      },
-      { workspaceId, userId: user.id, userEmail: user.email },
-    );
-
-    return c.json({
-      success: true,
-      comment: result.comment,
-      diff: result.diff,
-      debug: {
-        consoleId,
-        versionFound,
-        previousContentLength: previousContent.length,
-        newContentLength: newContent.length,
-      },
-    });
-  } catch (error) {
-    logger.error("Error generating version comment", { error });
-    return c.json(
-      { success: false, error: "Failed to generate version comment" },
-      500,
-    );
-  }
-});
-
-// POST /api/workspaces/:workspaceId/consoles/:id/execute - Execute a saved console
-consoleRoutes.post("/:id/execute", async (c: Context) => {
-  const startTime = Date.now();
-  let database: IDatabaseConnection | null = null;
-  let executionStatus: QueryStatus = "error";
-  let rowCount: number | undefined;
-  let errorType: string | undefined;
-  let workspaceId: string | undefined;
-  let consoleIdParsed: Types.ObjectId | undefined;
-
-  try {
-    const access = await verifyWorkspaceAccess(c);
-    if (!access) {
       return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error renaming console",
+        },
+        500,
       );
     }
-    workspaceId = access.workspaceId;
+  },
+);
 
-    const user = c.get("user");
-    const apiKey = c.get("apiKey");
-    const consoleId = c.req.param("id");
-    const mode = c.req.query("mode");
-    const pageSizeParam = c.req.query("pageSize");
-    const cursorParam = c.req.query("cursor");
+// DELETE /api/workspaces/:workspaceId/consoles/:id - Soft-delete a console
+consoleRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}",
+    tags: ["Consoles"],
+    summary: "DELETE /{id}",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const user = c.get("user");
 
-    // Validate console ID
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      if (Types.ObjectId.isValid(consoleId)) {
+        const existing = await SavedConsole.findOne({
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+        if (existing) {
+          const ownerId = existing.owner_id || existing.createdBy;
+          if (ownerId !== user.id) {
+            const isAdminOrOwner = await workspaceService.hasRole(
+              workspaceId,
+              user.id,
+              ["owner", "admin"],
+            );
+            if (!isAdminOrOwner) {
+              return c.json(
+                {
+                  success: false,
+                  error:
+                    "Only the console owner or a workspace admin can delete it",
+                },
+                403,
+              );
+            }
+          }
+        }
+      }
+
+      const success = await consoleManager.softDeleteConsole(
+        consoleId,
+        workspaceId,
+      );
+
+      if (success) {
+        publishRealtimeEvent(workspaceId, {
+          type: "console.deleted",
+          consoleId,
+        });
+        return c.json({
+          success: true,
+          message: "Console deleted successfully",
+          id: consoleId,
+        });
+      } else {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error deleting console", {
+        consoleId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error deleting console",
+        },
+        500,
+      );
     }
-    consoleIdParsed = new Types.ObjectId(consoleId);
+  },
+);
 
-    // Find the console
-    const savedConsole = await SavedConsole.findOne({
-      _id: consoleIdParsed,
-      workspaceId: new Types.ObjectId(access.workspaceId),
-    });
+// POST /api/workspaces/:workspaceId/consoles/:id/duplicate - Duplicate a console
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/duplicate",
+    tags: ["Consoles"],
+    summary: "POST /{id}/duplicate",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const user = c.get("user");
 
-    if (!savedConsole) {
-      return c.json({ success: false, error: "Console not found" }, 404);
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const copy = await consoleManager.duplicateConsole(
+        consoleId,
+        workspaceId,
+        user.id,
+      );
+
+      if (copy) {
+        return c.json(
+          {
+            success: true,
+            message: "Console duplicated",
+            data: {
+              id: copy._id.toString(),
+              name: copy.name,
+              folderId: copy.folderId?.toString(),
+            },
+          },
+          201,
+        );
+      } else {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error duplicating console", {
+        consoleId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error duplicating console",
+        },
+        500,
+      );
     }
+  },
+);
 
-    if (
-      user &&
-      !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
-    ) {
-      return c.json({ success: false, error: "Console not found" }, 404);
+// PATCH /api/workspaces/:workspaceId/consoles/:id/restore - Restore a soft-deleted console
+consoleRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/restore",
+    tags: ["Consoles"],
+    summary: "PATCH /{id}/restore",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const user = c.get("user");
+
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const success = await consoleManager.restoreConsole(
+        consoleId,
+        workspaceId,
+      );
+
+      if (success) {
+        return c.json({ success: true, message: "Console restored" });
+      } else {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error restoring console", {
+        consoleId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error restoring console",
+        },
+        500,
+      );
     }
+  },
+);
 
-    // If console has a connection ID, verify it exists and belongs to workspace
-    if (savedConsole.connectionId) {
-      database = await DatabaseConnection.findOne({
-        _id: savedConsole.connectionId,
+// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/rename - Rename a folder
+consoleRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/folders/{id}/rename",
+    tags: ["Consoles"],
+    summary: "PATCH /folders/{id}/rename",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const folderId = c.req.param("id");
+      const body = await c.req.json();
+      const { name } = body;
+      const user = c.get("user");
+
+      // Verify user has access to workspace
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      if (!name || typeof name !== "string") {
+        return c.json(
+          { success: false, error: "Name is required and must be a string" },
+          400,
+        );
+      }
+
+      const success = await consoleManager.renameFolder(
+        folderId,
+        name,
+        workspaceId,
+      );
+
+      if (success) {
+        return c.json({
+          success: true,
+          message: "Folder renamed successfully",
+        });
+      } else {
+        return c.json({ success: false, error: "Folder not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error renaming folder", {
+        folderId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error renaming folder",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// DELETE /api/workspaces/:workspaceId/consoles/folders/:id - Delete a folder
+consoleRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/folders/{id}",
+    tags: ["Consoles"],
+    summary: "DELETE /folders/{id}",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const folderId = c.req.param("id");
+      const user = c.get("user");
+
+      // Verify user has access to workspace
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      // Verify ownership or admin/owner role
+      if (Types.ObjectId.isValid(folderId)) {
+        const folder = await ConsoleFolder.findOne({
+          _id: new Types.ObjectId(folderId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+        if (folder) {
+          const isOwnFolder = folder.ownerId?.toString() === user.id;
+          if (!isOwnFolder) {
+            const isAdminOrOwner = await workspaceService.hasRole(
+              workspaceId,
+              user.id,
+              ["owner", "admin"],
+            );
+            if (!isAdminOrOwner) {
+              return c.json(
+                {
+                  success: false,
+                  error:
+                    "Only the folder owner or a workspace admin can delete it",
+                },
+                403,
+              );
+            }
+          }
+        }
+      }
+
+      const success = await consoleManager.deleteFolder(folderId, workspaceId);
+
+      if (success) {
+        return c.json({
+          success: true,
+          message: "Folder deleted successfully",
+        });
+      } else {
+        return c.json({ success: false, error: "Folder not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error deleting folder", {
+        folderId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error deleting folder",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// PATCH /api/workspaces/:workspaceId/consoles/:id/move - Move a console to a different folder
+consoleRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/{id}/move",
+    tags: ["Consoles"],
+    summary: "PATCH /{id}/move",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const body = await c.req.json();
+      const { folderId, access } = body as {
+        folderId: string | null;
+        access?: "private" | "workspace";
+      };
+      const user = c.get("user");
+
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const memberMove = await workspaceService.getMember(workspaceId, user.id);
+      const isAdminMove =
+        memberMove?.role === "owner" || memberMove?.role === "admin";
+
+      if (Types.ObjectId.isValid(consoleId)) {
+        const existing = await SavedConsole.findOne({
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        });
+        if (
+          existing &&
+          !ConsoleManager.canWrite(
+            existing,
+            user.id,
+            isAdminMove,
+            memberMove?.role,
+          )
+        ) {
+          return c.json(
+            { success: false, error: "Cannot move a read-only console" },
+            403,
+          );
+        }
+      }
+
+      const success = await consoleManager.moveConsole(
+        consoleId,
+        workspaceId,
+        folderId ?? null,
+        access,
+      );
+
+      if (success) {
+        return c.json({ success: true, message: "Console moved successfully" });
+      } else {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+    } catch (error) {
+      logger.error("Error moving console", {
+        consoleId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error moving console",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// PATCH /api/workspaces/:workspaceId/consoles/folders/:id/move - Move a folder to a different parent
+consoleRoutes.openapi(
+  createRoute({
+    method: "patch",
+    path: "/folders/{id}/move",
+    tags: ["Consoles"],
+    summary: "PATCH /folders/{id}/move",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const folderId = c.req.param("id");
+      const body = await c.req.json();
+      const { parentId, access } = body as {
+        parentId: string | null;
+        access?: "private" | "workspace";
+      };
+      const user = c.get("user");
+
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const success = await consoleManager.moveFolder(
+        folderId,
+        workspaceId,
+        parentId ?? null,
+        access,
+      );
+
+      if (success) {
+        return c.json({ success: true, message: "Folder moved successfully" });
+      } else {
+        return c.json(
+          { success: false, error: "Folder not found or circular nesting" },
+          404,
+        );
+      }
+    } catch (error) {
+      logger.error("Error moving folder", {
+        folderId: c.req.param("id"),
+        error,
+      });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Unknown error moving folder",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/consoles/:id/version-comment - Generate AI version comment
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/version-comment",
+    tags: ["Consoles"],
+    summary: "POST /{id}/version-comment",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const user = c.get("user");
+
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const body = await c.req.json();
+      const { newContent, source, aiPrompt } = body;
+
+      if (typeof newContent !== "string") {
+        return c.json(
+          { success: false, error: "newContent must be a string" },
+          400,
+        );
+      }
+
+      if (newContent.length > 50_000) {
+        return c.json(
+          { success: false, error: "Content too large for comment generation" },
+          400,
+        );
+      }
+
+      let previousContent = "";
+      let versionFound = false;
+      if (Types.ObjectId.isValid(consoleId)) {
+        const latestSnapshot = await EntityVersion.findOne(
+          {
+            entityId: new Types.ObjectId(consoleId),
+            entityType: "console",
+          },
+          { snapshot: 1, version: 1 },
+        )
+          .sort({ version: -1 })
+          .lean();
+
+        if (latestSnapshot?.snapshot?.code) {
+          previousContent = latestSnapshot.snapshot.code as string;
+          versionFound = true;
+        }
+
+        logger.debug("Version comment baseline lookup", {
+          consoleId,
+          versionFound,
+          latestVersion: latestSnapshot?.version ?? null,
+          snapshotKeys: latestSnapshot?.snapshot
+            ? Object.keys(latestSnapshot.snapshot)
+            : null,
+          previousContentLength: previousContent.length,
+          newContentLength: newContent.length,
+        });
+      }
+
+      const result = await generateVersionComment(
+        {
+          previousContent,
+          newContent,
+          language: "sql",
+          source: source === "ai" ? "ai" : "user",
+          aiPrompt: typeof aiPrompt === "string" ? aiPrompt : undefined,
+        },
+        { workspaceId, userId: user.id, userEmail: user.email },
+      );
+
+      return c.json({
+        success: true,
+        comment: result.comment,
+        diff: result.diff,
+        debug: {
+          consoleId,
+          versionFound,
+          previousContentLength: previousContent.length,
+          newContentLength: newContent.length,
+        },
+      });
+    } catch (error) {
+      logger.error("Error generating version comment", { error });
+      return c.json(
+        { success: false, error: "Failed to generate version comment" },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/consoles/:id/execute - Execute a saved console
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/execute",
+    tags: ["Consoles"],
+    summary: "POST /{id}/execute",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const startTime = Date.now();
+    let database: IDatabaseConnection | null = null;
+    let executionStatus: QueryStatus = "error";
+    let rowCount: number | undefined;
+    let errorType: string | undefined;
+    let workspaceId: string | undefined;
+    let consoleIdParsed: Types.ObjectId | undefined;
+
+    try {
+      const access = await verifyWorkspaceAccess(c);
+      if (!access) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+      workspaceId = access.workspaceId;
+
+      const user = c.get("user");
+      const apiKey = c.get("apiKey");
+      const consoleId = c.req.param("id");
+      const mode = c.req.query("mode");
+      const pageSizeParam = c.req.query("pageSize");
+      const cursorParam = c.req.query("cursor");
+
+      // Validate console ID
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
+      consoleIdParsed = new Types.ObjectId(consoleId);
+
+      // Find the console
+      const savedConsole = await SavedConsole.findOne({
+        _id: consoleIdParsed,
         workspaceId: new Types.ObjectId(access.workspaceId),
       });
 
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      if (
+        user &&
+        !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+      ) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      // If console has a connection ID, verify it exists and belongs to workspace
+      if (savedConsole.connectionId) {
+        database = await DatabaseConnection.findOne({
+          _id: savedConsole.connectionId,
+          workspaceId: new Types.ObjectId(access.workspaceId),
+        });
+
+        if (!database) {
+          return c.json(
+            {
+              success: false,
+              error: "Associated database not found or access denied",
+            },
+            404,
+          );
+        }
+      }
+
+      // Execute the query based on language
+      let result;
       if (!database) {
         return c.json(
           {
             success: false,
-            error: "Associated database not found or access denied",
+            error: "Console has no associated database connection",
           },
-          404,
+          400,
         );
       }
-    }
 
-    // Execute the query based on language
-    let result;
-    if (!database) {
-      return c.json(
-        {
-          success: false,
-          error: "Console has no associated database connection",
-        },
-        400,
-      );
-    }
+      // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)
+      const executionOptions = {
+        databaseId: savedConsole.databaseId,
+        databaseName: savedConsole.databaseName,
+      };
+      const isPreviewMode = mode === "preview";
 
-    // Pass explicit databaseId and databaseName for cluster mode (D1, etc.)
-    const executionOptions = {
-      databaseId: savedConsole.databaseId,
-      databaseName: savedConsole.databaseName,
-    };
-    const isPreviewMode = mode === "preview";
+      if (savedConsole.language === "mongodb") {
+        if (
+          savedConsole.mongoOptions &&
+          savedConsole.mongoOptions.collection &&
+          savedConsole.mongoOptions.operation
+        ) {
+          // For structured MongoDB operations (find, aggregate, etc.)
+          const mongoQuery = {
+            collection: savedConsole.mongoOptions.collection,
+            operation: savedConsole.mongoOptions.operation,
+            query: savedConsole.code,
+          };
 
-    if (savedConsole.language === "mongodb") {
-      if (
-        savedConsole.mongoOptions &&
-        savedConsole.mongoOptions.collection &&
-        savedConsole.mongoOptions.operation
-      ) {
-        // For structured MongoDB operations (find, aggregate, etc.)
-        const mongoQuery = {
-          collection: savedConsole.mongoOptions.collection,
-          operation: savedConsole.mongoOptions.operation,
-          query: savedConsole.code,
-        };
-
-        result = isPreviewMode
-          ? await databaseConnectionService.executePreviewQuery(
-              database,
-              mongoQuery,
-              {
-                ...savedConsole.mongoOptions,
-                ...executionOptions,
-                pageSize: pageSizeParam
-                  ? parseInt(pageSizeParam, 10)
-                  : undefined,
-                cursor: cursorParam || null,
-              },
-            )
-          : await databaseConnectionService.executeQuery(database, mongoQuery, {
-              ...savedConsole.mongoOptions,
-              ...executionOptions,
-            });
+          result = isPreviewMode
+            ? await databaseConnectionService.executePreviewQuery(
+                database,
+                mongoQuery,
+                {
+                  ...savedConsole.mongoOptions,
+                  ...executionOptions,
+                  pageSize: pageSizeParam
+                    ? parseInt(pageSizeParam, 10)
+                    : undefined,
+                  cursor: cursorParam || null,
+                },
+              )
+            : await databaseConnectionService.executeQuery(
+                database,
+                mongoQuery,
+                {
+                  ...savedConsole.mongoOptions,
+                  ...executionOptions,
+                },
+              );
+        } else {
+          // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
+          result = isPreviewMode
+            ? await databaseConnectionService.executePreviewQuery(
+                database,
+                savedConsole.code,
+                {
+                  ...executionOptions,
+                  pageSize: pageSizeParam
+                    ? parseInt(pageSizeParam, 10)
+                    : undefined,
+                  cursor: cursorParam || null,
+                },
+              )
+            : await databaseConnectionService.executeQuery(
+                database,
+                savedConsole.code,
+                executionOptions,
+              );
+        }
       } else {
-        // For JavaScript-style MongoDB queries (db.collection.find(), etc.)
+        // For SQL and other languages, execute the code directly
         result = isPreviewMode
           ? await databaseConnectionService.executePreviewQuery(
               database,
@@ -2260,696 +2747,806 @@ consoleRoutes.post("/:id/execute", async (c: Context) => {
               executionOptions,
             );
       }
-    } else {
-      // For SQL and other languages, execute the code directly
-      result = isPreviewMode
-        ? await databaseConnectionService.executePreviewQuery(
-            database,
-            savedConsole.code,
-            {
-              ...executionOptions,
-              pageSize: pageSizeParam ? parseInt(pageSizeParam, 10) : undefined,
-              cursor: cursorParam || null,
-            },
-          )
-        : await databaseConnectionService.executeQuery(
-            database,
-            savedConsole.code,
-            executionOptions,
-          );
-    }
 
-    // Update execution stats
-    await SavedConsole.updateOne(
-      { _id: savedConsole._id },
-      {
-        $set: { lastExecutedAt: new Date() },
-        $inc: { executionCount: 1 },
-      },
-    );
+      // Update execution stats
+      await SavedConsole.updateOne(
+        { _id: savedConsole._id },
+        {
+          $set: { lastExecutedAt: new Date() },
+          $inc: { executionCount: 1 },
+        },
+      );
 
-    // Return the result
-    const previewRows =
-      "rows" in result && Array.isArray(result.rows) ? result.rows : undefined;
-    const data = "data" in result ? result.data || [] : [];
-    rowCount =
-      result.rowCount ||
-      (Array.isArray(previewRows)
-        ? previewRows.length
-        : Array.isArray(data)
-          ? data.length
-          : 0);
+      // Return the result
+      const previewRows =
+        "rows" in result && Array.isArray(result.rows)
+          ? result.rows
+          : undefined;
+      const data = "data" in result ? result.data || [] : [];
+      rowCount =
+        result.rowCount ||
+        (Array.isArray(previewRows)
+          ? previewRows.length
+          : Array.isArray(data)
+            ? data.length
+            : 0);
 
-    // Determine execution status
-    if (result.success) {
-      executionStatus = "success";
-    } else {
-      executionStatus = "error";
-      const errorMsg = result.error?.toLowerCase() || "";
-      if (errorMsg.includes("syntax")) {
-        errorType = "syntax";
-      } else if (
-        errorMsg.includes("timeout") ||
-        errorMsg.includes("timed out")
-      ) {
-        errorType = "timeout";
-        executionStatus = "timeout";
-      } else if (errorMsg.includes("cancel") || errorMsg.includes("abort")) {
-        errorType = "cancelled";
-        executionStatus = "cancelled";
-      } else if (
-        errorMsg.includes("connection") ||
-        errorMsg.includes("connect")
-      ) {
-        errorType = "connection";
-      } else if (
-        errorMsg.includes("permission") ||
-        errorMsg.includes("access denied")
-      ) {
-        errorType = "permission";
+      // Determine execution status
+      if (result.success) {
+        executionStatus = "success";
       } else {
-        errorType = "unknown";
+        executionStatus = "error";
+        const errorMsg = result.error?.toLowerCase() || "";
+        if (errorMsg.includes("syntax")) {
+          errorType = "syntax";
+        } else if (
+          errorMsg.includes("timeout") ||
+          errorMsg.includes("timed out")
+        ) {
+          errorType = "timeout";
+          executionStatus = "timeout";
+        } else if (errorMsg.includes("cancel") || errorMsg.includes("abort")) {
+          errorType = "cancelled";
+          executionStatus = "cancelled";
+        } else if (
+          errorMsg.includes("connection") ||
+          errorMsg.includes("connect")
+        ) {
+          errorType = "connection";
+        } else if (
+          errorMsg.includes("permission") ||
+          errorMsg.includes("access denied")
+        ) {
+          errorType = "permission";
+        } else {
+          errorType = "unknown";
+        }
       }
-    }
 
-    // Track query execution (fire-and-forget)
-    const userId = user?.id || apiKey?.createdBy;
-    if (userId && database) {
-      queryExecutionService.track({
-        userId,
-        apiKeyId: apiKey?._id,
-        workspaceId: new Types.ObjectId(access.workspaceId),
-        connectionId: database._id,
-        databaseName: savedConsole.databaseName || database.connection.database,
-        consoleId: savedConsole._id,
-        source: apiKey ? "api" : "console_ui",
-        databaseType: database.type,
-        queryLanguage: mapConsoleLanguageToQueryLanguage(savedConsole.language),
-        status: executionStatus,
-        executionTimeMs: Date.now() - startTime,
-        rowCount,
-        errorType,
-      });
-    }
-
-    return c.json(
-      isPreviewMode
-        ? {
-            success: true,
-            rows: previewRows || [],
-            rowCount,
-            fields: result.fields || null,
-            pageInfo: "pageInfo" in result ? result.pageInfo || null : null,
-            console: {
-              id: savedConsole._id,
-              name: savedConsole.name,
-              language: savedConsole.language,
-              executedAt: new Date().toISOString(),
-            },
-          }
-        : {
-            success: true,
-            data: data,
-            rowCount: rowCount,
-            fields: result.fields || null,
-            console: {
-              id: savedConsole._id,
-              name: savedConsole.name,
-              language: savedConsole.language,
-              executedAt: new Date().toISOString(),
-            },
-          },
-    );
-  } catch (error) {
-    logger.error("Error executing console", { error });
-
-    // Track failed execution
-    const user = c.get("user");
-    const apiKey = c.get("apiKey");
-    const userId = user?.id || apiKey?.createdBy;
-
-    if (userId && database && workspaceId) {
-      queryExecutionService.track({
-        userId,
-        apiKeyId: apiKey?._id,
-        workspaceId: new Types.ObjectId(workspaceId),
-        connectionId: database._id,
-        databaseName: database.connection.database,
-        consoleId: consoleIdParsed,
-        source: apiKey ? "api" : "console_ui",
-        databaseType: database.type,
-        queryLanguage: mapConsoleLanguageToQueryLanguage(
-          database.type === "mongodb" ? "mongodb" : "sql",
-        ),
-        status: "error",
-        executionTimeMs: Date.now() - startTime,
-        errorType: "unknown",
-      });
-    }
-
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to execute console",
-      },
-      500,
-    );
-  }
-});
-
-// GET /api/workspaces/:workspaceId/consoles/:id/export - Export console query results as Arrow IPC or JSON
-consoleRoutes.get("/:id/export", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const format = (c.req.query("format") || "arrow") as
-      | "arrow"
-      | "json"
-      | "ndjson"
-      | "csv";
-    const limit = parseInt(c.req.query("limit") || "500000", 10);
-
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
-    }
-
-    const savedConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-
-    if (!savedConsole) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    if (!savedConsole.connectionId) {
-      return c.json(
-        { success: false, error: "Console has no database connection" },
-        400,
-      );
-    }
-
-    const database = await DatabaseConnection.findOne({
-      _id: savedConsole.connectionId,
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-
-    if (!database) {
-      return c.json(
-        { success: false, error: "Database connection not found" },
-        404,
-      );
-    }
-
-    const startTime = Date.now();
-
-    let query: any = savedConsole.code;
-    if (
-      savedConsole.language === "mongodb" &&
-      (savedConsole as any).mongoOptions?.collection
-    ) {
-      query = {
-        collection: (savedConsole as any).mongoOptions.collection,
-        operation: (savedConsole as any).mongoOptions.operation || "find",
-        query: savedConsole.code,
-      };
-    }
-
-    if (
-      (format === "ndjson" || format === "csv") &&
-      typeof query === "string" &&
-      database.type !== "cloudflare-kv"
-    ) {
-      const safety = checkPreviewQuerySafety(query);
-      if (!safety.safe) {
-        return c.json(
-          {
-            success: false,
-            error: safety.errors.join(" "),
-          },
-          400,
-        );
-      }
-    }
-
-    if (format === "ndjson" || format === "csv") {
-      const safeFileBase = sanitizeDownloadFilename(
-        savedConsole.name || `console-${savedConsole._id.toString()}`,
-      );
-      const streamQuery =
-        typeof query === "string" &&
-        database.type !== "cloudflare-kv" &&
-        database.type !== "mongodb"
-          ? applySqlRowLimit({
-              query,
-              databaseType: database.type,
-              limit,
-            })
-          : query;
-
-      return createStreamingExportResponse({
-        format,
-        filename: `${safeFileBase}.${format === "csv" ? "csv" : "ndjson"}`,
-        streamRows: emitRows =>
-          databaseConnectionService.executeStreamingQuery(
-            database,
-            streamQuery,
-            {
-              databaseId: savedConsole.databaseId,
-              databaseName: savedConsole.databaseName,
-              batchSize: Math.max(1, Math.min(10000, limit)),
-              signal: c.req.raw.signal,
-              onBatch: emitRows,
-            },
+      // Track query execution (fire-and-forget)
+      const userId = user?.id || apiKey?.createdBy;
+      if (userId && database) {
+        queryExecutionService.track({
+          userId,
+          apiKeyId: apiKey?._id,
+          workspaceId: new Types.ObjectId(access.workspaceId),
+          connectionId: database._id,
+          databaseName:
+            savedConsole.databaseName || database.connection.database,
+          consoleId: savedConsole._id,
+          source: apiKey ? "api" : "console_ui",
+          databaseType: database.type,
+          queryLanguage: mapConsoleLanguageToQueryLanguage(
+            savedConsole.language,
           ),
-      });
-    }
+          status: executionStatus,
+          executionTimeMs: Date.now() - startTime,
+          rowCount,
+          errorType,
+        });
+      }
 
-    const result = await databaseConnectionService.executeQuery(
-      database,
-      query,
-      {
-        databaseId: savedConsole.databaseId,
-        databaseName: savedConsole.databaseName,
-      },
-    );
-
-    if (!result.success || !result.data) {
       return c.json(
-        { success: false, error: result.error || "Query execution failed" },
+        isPreviewMode
+          ? {
+              success: true,
+              rows: previewRows || [],
+              rowCount,
+              fields: result.fields || null,
+              pageInfo: "pageInfo" in result ? result.pageInfo || null : null,
+              console: {
+                id: savedConsole._id,
+                name: savedConsole.name,
+                language: savedConsole.language,
+                executedAt: new Date().toISOString(),
+              },
+            }
+          : {
+              success: true,
+              data: data,
+              rowCount: rowCount,
+              fields: result.fields || null,
+              console: {
+                id: savedConsole._id,
+                name: savedConsole.name,
+                language: savedConsole.language,
+                executedAt: new Date().toISOString(),
+              },
+            },
+      );
+    } catch (error) {
+      logger.error("Error executing console", { error });
+
+      // Track failed execution
+      const user = c.get("user");
+      const apiKey = c.get("apiKey");
+      const userId = user?.id || apiKey?.createdBy;
+
+      if (userId && database && workspaceId) {
+        queryExecutionService.track({
+          userId,
+          apiKeyId: apiKey?._id,
+          workspaceId: new Types.ObjectId(workspaceId),
+          connectionId: database._id,
+          databaseName: database.connection.database,
+          consoleId: consoleIdParsed,
+          source: apiKey ? "api" : "console_ui",
+          databaseType: database.type,
+          queryLanguage: mapConsoleLanguageToQueryLanguage(
+            database.type === "mongodb" ? "mongodb" : "sql",
+          ),
+          status: "error",
+          executionTimeMs: Date.now() - startTime,
+          errorType: "unknown",
+        });
+      }
+
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to execute console",
+        },
         500,
       );
     }
+  },
+);
 
-    const rows = Array.isArray(result.data) ? result.data : [];
-    const limitedRows = rows.slice(0, limit);
-    const fields = (result.fields || []).map((f: any) => ({
-      name: f.name || f.columnName || String(f),
-      type: f.type || f.dataType,
-    }));
+// GET /api/workspaces/:workspaceId/consoles/:id/export - Export console query results as Arrow IPC or JSON
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/export",
+    tags: ["Consoles"],
+    summary: "GET /{id}/export",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const format = (c.req.query("format") || "arrow") as
+        | "arrow"
+        | "json"
+        | "ndjson"
+        | "csv";
+      const limit = parseInt(c.req.query("limit") || "500000", 10);
 
-    if (fields.length === 0 && limitedRows.length > 0) {
-      for (const key of Object.keys(limitedRows[0])) {
-        fields.push({ name: key, type: undefined });
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
       }
-    }
 
-    const duration = Date.now() - startTime;
-
-    if (format === "json") {
-      return c.json({
-        success: true,
-        data: limitedRows,
-        fields,
-        rowCount: limitedRows.length,
-        durationMs: duration,
+      const savedConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
       });
+
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      if (!savedConsole.connectionId) {
+        return c.json(
+          { success: false, error: "Console has no database connection" },
+          400,
+        );
+      }
+
+      const database = await DatabaseConnection.findOne({
+        _id: savedConsole.connectionId,
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+
+      if (!database) {
+        return c.json(
+          { success: false, error: "Database connection not found" },
+          404,
+        );
+      }
+
+      const startTime = Date.now();
+
+      let query: any = savedConsole.code;
+      if (
+        savedConsole.language === "mongodb" &&
+        (savedConsole as any).mongoOptions?.collection
+      ) {
+        query = {
+          collection: (savedConsole as any).mongoOptions.collection,
+          operation: (savedConsole as any).mongoOptions.operation || "find",
+          query: savedConsole.code,
+        };
+      }
+
+      if (
+        (format === "ndjson" || format === "csv") &&
+        typeof query === "string" &&
+        database.type !== "cloudflare-kv"
+      ) {
+        const safety = checkPreviewQuerySafety(query);
+        if (!safety.safe) {
+          return c.json(
+            {
+              success: false,
+              error: safety.errors.join(" "),
+            },
+            400,
+          );
+        }
+      }
+
+      if (format === "ndjson" || format === "csv") {
+        const safeFileBase = sanitizeDownloadFilename(
+          savedConsole.name || `console-${savedConsole._id.toString()}`,
+        );
+        const streamQuery =
+          typeof query === "string" &&
+          database.type !== "cloudflare-kv" &&
+          database.type !== "mongodb"
+            ? applySqlRowLimit({
+                query,
+                databaseType: database.type,
+                limit,
+              })
+            : query;
+
+        return createStreamingExportResponse({
+          format,
+          filename: `${safeFileBase}.${format === "csv" ? "csv" : "ndjson"}`,
+          streamRows: emitRows =>
+            databaseConnectionService.executeStreamingQuery(
+              database,
+              streamQuery,
+              {
+                databaseId: savedConsole.databaseId,
+                databaseName: savedConsole.databaseName,
+                batchSize: Math.max(1, Math.min(10000, limit)),
+                signal: c.req.raw.signal,
+                onBatch: emitRows,
+              },
+            ),
+        });
+      }
+
+      const result = await databaseConnectionService.executeQuery(
+        database,
+        query,
+        {
+          databaseId: savedConsole.databaseId,
+          databaseName: savedConsole.databaseName,
+        },
+      );
+
+      if (!result.success || !result.data) {
+        return c.json(
+          { success: false, error: result.error || "Query execution failed" },
+          500,
+        );
+      }
+
+      const rows = Array.isArray(result.data) ? result.data : [];
+      const limitedRows = rows.slice(0, limit);
+      const fields = (result.fields || []).map((f: any) => ({
+        name: f.name || f.columnName || String(f),
+        type: f.type || f.dataType,
+      }));
+
+      if (fields.length === 0 && limitedRows.length > 0) {
+        for (const key of Object.keys(limitedRows[0])) {
+          fields.push({ name: key, type: undefined });
+        }
+      }
+
+      const duration = Date.now() - startTime;
+
+      if (format === "json") {
+        return c.json({
+          success: true,
+          data: limitedRows,
+          fields,
+          rowCount: limitedRows.length,
+          durationMs: duration,
+        });
+      }
+
+      const { serializeToArrowIPC } = await import("../utils/arrow-serializer");
+      const arrowBuffer = serializeToArrowIPC(limitedRows, fields, { limit });
+
+      return new Response(arrowBuffer, {
+        headers: {
+          "Content-Type": "application/vnd.apache.arrow.stream",
+          "X-Row-Count": String(limitedRows.length),
+          "X-Export-Duration-Ms": String(duration),
+        },
+      });
+    } catch (error) {
+      logger.error("Error exporting console data", { error });
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Export failed",
+        },
+        500,
+      );
     }
-
-    const { serializeToArrowIPC } = await import("../utils/arrow-serializer");
-    const arrowBuffer = serializeToArrowIPC(limitedRows, fields, { limit });
-
-    return new Response(arrowBuffer, {
-      headers: {
-        "Content-Type": "application/vnd.apache.arrow.stream",
-        "X-Row-Count": String(limitedRows.length),
-        "X-Export-Duration-Ms": String(duration),
-      },
-    });
-  } catch (error) {
-    logger.error("Error exporting console data", { error });
-    return c.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Export failed",
-      },
-      500,
-    );
-  }
-});
+  },
+);
 
 // GET /api/workspaces/:workspaceId/consoles/list - List all consoles (flat list for API clients)
-consoleRoutes.get("/list", async (c: Context) => {
-  try {
-    const access = await verifyWorkspaceAccess(c);
-    if (!access) {
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/list",
+    tags: ["Consoles"],
+    summary: "GET /list",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const access = await verifyWorkspaceAccess(c);
+      if (!access) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      // Get all consoles for the workspace
+      const consoles = await SavedConsole.find({
+        workspaceId: new Types.ObjectId(access.workspaceId),
+      })
+        .select(
+          "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount access owner_id createdBy",
+        )
+        .populate("connectionId", "name type")
+        .sort({ updatedAt: -1 });
+
+      const user = c.get("user");
+      const userId = user?.id;
+
+      // Filter by visibility when we have a user
+      const visibleConsoles = userId
+        ? consoles.filter(doc => ConsoleManager.canRead(doc, userId))
+        : consoles;
+
+      return c.json({
+        success: true,
+        consoles: visibleConsoles.map(console => ({
+          id: console._id,
+          name: console.name,
+          description: console.description,
+          language: console.language,
+          connection: console.connectionId
+            ? {
+                id: console.connectionId._id,
+                name: (console.connectionId as any).name,
+                type: (console.connectionId as any).type,
+              }
+            : null,
+          databaseName: console.databaseName,
+          createdAt: console.createdAt,
+          updatedAt: console.updatedAt,
+          lastExecutedAt: console.lastExecutedAt,
+          executionCount: console.executionCount,
+          access: ConsoleManager.resolveAccess(console),
+          owner_id: console.owner_id || console.createdBy,
+        })),
+        total: visibleConsoles.length,
+      });
+    } catch (error) {
+      logger.error("Error listing consoles", { error });
       return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
+        {
+          success: false,
+          error:
+            error instanceof Error ? error.message : "Failed to list consoles",
+        },
+        500,
       );
     }
-
-    // Get all consoles for the workspace
-    const consoles = await SavedConsole.find({
-      workspaceId: new Types.ObjectId(access.workspaceId),
-    })
-      .select(
-        "_id name description language connectionId databaseName createdAt updatedAt lastExecutedAt executionCount access owner_id createdBy",
-      )
-      .populate("connectionId", "name type")
-      .sort({ updatedAt: -1 });
-
-    const user = c.get("user");
-    const userId = user?.id;
-
-    // Filter by visibility when we have a user
-    const visibleConsoles = userId
-      ? consoles.filter(doc => ConsoleManager.canRead(doc, userId))
-      : consoles;
-
-    return c.json({
-      success: true,
-      consoles: visibleConsoles.map(console => ({
-        id: console._id,
-        name: console.name,
-        description: console.description,
-        language: console.language,
-        connection: console.connectionId
-          ? {
-              id: console.connectionId._id,
-              name: (console.connectionId as any).name,
-              type: (console.connectionId as any).type,
-            }
-          : null,
-        databaseName: console.databaseName,
-        createdAt: console.createdAt,
-        updatedAt: console.updatedAt,
-        lastExecutedAt: console.lastExecutedAt,
-        executionCount: console.executionCount,
-        access: ConsoleManager.resolveAccess(console),
-        owner_id: console.owner_id || console.createdBy,
-      })),
-      total: visibleConsoles.length,
-    });
-  } catch (error) {
-    logger.error("Error listing consoles", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error ? error.message : "Failed to list consoles",
-      },
-      500,
-    );
-  }
-});
+  },
+);
 
 // GET /api/workspaces/:workspaceId/consoles/:id/details - Get console details (for API clients)
-consoleRoutes.get("/:id/details", async (c: Context) => {
-  try {
-    const access = await verifyWorkspaceAccess(c);
-    if (!access) {
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/details",
+    tags: ["Consoles"],
+    summary: "GET /{id}/details",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const access = await verifyWorkspaceAccess(c);
+      if (!access) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      const consoleId = c.req.param("id");
+
+      // Validate console ID
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
+
+      // Find the console
+      const savedConsole = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(access.workspaceId),
+      }).populate("connectionId", "name type");
+
+      if (!savedConsole) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const user = c.get("user");
+      const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
+      const ownerId = savedConsole.owner_id || savedConsole.createdBy;
+
+      if (
+        user?.id &&
+        !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
+      ) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const memberDetail = user?.id
+        ? await workspaceService.getMember(access.workspaceId, user.id)
+        : null;
+      const isAdminDetail =
+        memberDetail?.role === "owner" || memberDetail?.role === "admin";
+      const readOnly = user?.id
+        ? !ConsoleManager.canWrite(
+            savedConsole,
+            user.id,
+            isAdminDetail,
+            memberDetail?.role,
+          )
+        : false;
+
+      let ownerDisplayName: string | undefined;
+      if (ownerId) {
+        const ownerUser = await User.findById(ownerId).select("email").lean();
+        ownerDisplayName = ownerUser?.email;
+      }
+
+      return c.json({
+        success: true,
+        console: {
+          id: savedConsole._id,
+          name: savedConsole.name,
+          description: savedConsole.description,
+          code: savedConsole.code,
+          language: savedConsole.language,
+          mongoOptions: savedConsole.mongoOptions,
+          connection: savedConsole.connectionId
+            ? {
+                id: savedConsole.connectionId._id,
+                name: (savedConsole.connectionId as any).name,
+                type: (savedConsole.connectionId as any).type,
+              }
+            : null,
+          databaseName: savedConsole.databaseName,
+          createdAt: savedConsole.createdAt,
+          updatedAt: savedConsole.updatedAt,
+          lastExecutedAt: savedConsole.lastExecutedAt,
+          executionCount: savedConsole.executionCount,
+          access: resolvedAccess,
+          owner_id: ownerId,
+          ownerDisplayName,
+          readOnly,
+        },
+      });
+    } catch (error) {
+      logger.error("Error getting console details", { error });
       return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get console details",
+        },
+        500,
       );
     }
-
-    const consoleId = c.req.param("id");
-
-    // Validate console ID
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
-    }
-
-    // Find the console
-    const savedConsole = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(access.workspaceId),
-    }).populate("connectionId", "name type");
-
-    if (!savedConsole) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const user = c.get("user");
-    const resolvedAccess = ConsoleManager.resolveAccess(savedConsole);
-    const ownerId = savedConsole.owner_id || savedConsole.createdBy;
-
-    if (
-      user?.id &&
-      !(await consoleManager.canReadWithInheritance(savedConsole, user.id))
-    ) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const memberDetail = user?.id
-      ? await workspaceService.getMember(access.workspaceId, user.id)
-      : null;
-    const isAdminDetail =
-      memberDetail?.role === "owner" || memberDetail?.role === "admin";
-    const readOnly = user?.id
-      ? !ConsoleManager.canWrite(
-          savedConsole,
-          user.id,
-          isAdminDetail,
-          memberDetail?.role,
-        )
-      : false;
-
-    let ownerDisplayName: string | undefined;
-    if (ownerId) {
-      const ownerUser = await User.findById(ownerId).select("email").lean();
-      ownerDisplayName = ownerUser?.email;
-    }
-
-    return c.json({
-      success: true,
-      console: {
-        id: savedConsole._id,
-        name: savedConsole.name,
-        description: savedConsole.description,
-        code: savedConsole.code,
-        language: savedConsole.language,
-        mongoOptions: savedConsole.mongoOptions,
-        connection: savedConsole.connectionId
-          ? {
-              id: savedConsole.connectionId._id,
-              name: (savedConsole.connectionId as any).name,
-              type: (savedConsole.connectionId as any).type,
-            }
-          : null,
-        databaseName: savedConsole.databaseName,
-        createdAt: savedConsole.createdAt,
-        updatedAt: savedConsole.updatedAt,
-        lastExecutedAt: savedConsole.lastExecutedAt,
-        executionCount: savedConsole.executionCount,
-        access: resolvedAccess,
-        owner_id: ownerId,
-        ownerDisplayName,
-        readOnly,
-      },
-    });
-  } catch (error) {
-    logger.error("Error getting console details", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to get console details",
-      },
-      500,
-    );
-  }
-});
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Version history routes
 // ---------------------------------------------------------------------------
 
 // GET /api/workspaces/:workspaceId/consoles/:id/versions
-consoleRoutes.get("/:id/versions", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const user = c.get("user");
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions",
+    tags: ["Consoles"],
+    summary: "GET /{id}/versions",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const user = c.get("user");
 
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
 
-    if (!Types.ObjectId.isValid(consoleId)) {
-      return c.json({ success: false, error: "Invalid console ID" }, 400);
-    }
+      if (!Types.ObjectId.isValid(consoleId)) {
+        return c.json({ success: false, error: "Invalid console ID" }, 400);
+      }
 
-    const consoleDoc = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!consoleDoc) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const limit = Math.min(
-      parseInt(c.req.query("limit") ?? "50", 10) || 50,
-      100,
-    );
-    const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
-
-    const result = await listVersions(
-      new Types.ObjectId(consoleId),
-      "console",
-      { limit, offset },
-    );
-
-    return c.json({ success: true, ...result });
-  } catch (error) {
-    logger.error("Error listing console versions", { error });
-    return c.json({ success: false, error: "Failed to list versions" }, 500);
-  }
-});
-
-// GET /api/workspaces/:workspaceId/consoles/:id/versions/:version
-consoleRoutes.get("/:id/versions/:version", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const versionNum = parseInt(c.req.param("version"), 10);
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
-      return c.json(
-        { success: false, error: "Invalid console ID or version" },
-        400,
-      );
-    }
-
-    const consoleDoc = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!consoleDoc) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const version = await getVersion(consoleId, "console", versionNum);
-    if (!version) {
-      return c.json({ success: false, error: "Version not found" }, 404);
-    }
-
-    return c.json({ success: true, version });
-  } catch (error) {
-    logger.error("Error getting console version", { error });
-    return c.json({ success: false, error: "Failed to get version" }, 500);
-  }
-});
-
-// POST /api/workspaces/:workspaceId/consoles/:id/versions/:version/restore
-consoleRoutes.post("/:id/versions/:version/restore", async (c: Context) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const consoleId = c.req.param("id");
-    const versionNum = parseInt(c.req.param("version"), 10);
-    const body = await c.req.json().catch(() => ({}));
-    const user = c.get("user");
-
-    if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-
-    if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
-      return c.json(
-        { success: false, error: "Invalid console ID or version" },
-        400,
-      );
-    }
-
-    const consoleDoc = await SavedConsole.findOne({
-      _id: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!consoleDoc) {
-      return c.json({ success: false, error: "Console not found" }, 404);
-    }
-
-    const member = await workspaceService.getMember(workspaceId, user.id);
-    const isAdmin = member?.role === "owner" || member?.role === "admin";
-    if (!ConsoleManager.canWrite(consoleDoc, user.id, isAdmin, member?.role)) {
-      return c.json(
-        { success: false, error: "You do not have write access" },
-        403,
-      );
-    }
-
-    const oldVersion = await getVersion(consoleId, "console", versionNum);
-    if (!oldVersion) {
-      return c.json({ success: false, error: "Version not found" }, 404);
-    }
-
-    const snap = oldVersion.snapshot as Record<string, any>;
-
-    // Apply the snapshot to the console document. Includes every field
-    // captured in buildConsoleSnapshot so restore is a true revert.
-    const restoreFields: Record<string, any> = {
-      code: snap.code,
-      name: snap.name,
-      language: snap.language,
-      description: snap.description,
-      chartSpec: snap.chartSpec,
-      resultsViewMode: snap.resultsViewMode,
-      mongoOptions: snap.mongoOptions,
-      connectionId: snap.connectionId
-        ? new Types.ObjectId(snap.connectionId)
-        : undefined,
-      databaseName: snap.databaseName,
-      databaseId: snap.databaseId,
-      folderId: snap.folderId ? new Types.ObjectId(snap.folderId) : null,
-      access: snap.access,
-    };
-
-    const restored = await SavedConsole.findOneAndUpdate(
-      {
+      const consoleDoc = await SavedConsole.findOne({
         _id: new Types.ObjectId(consoleId),
         workspaceId: new Types.ObjectId(workspaceId),
-      },
-      { $set: restoreFields, $inc: { version: 1 } },
-      { new: true },
-    ).lean();
+      });
+      if (!consoleDoc) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
 
-    if (!restored) {
-      return c.json({ success: false, error: "Restore failed" }, 500);
+      const limit = Math.min(
+        parseInt(c.req.query("limit") ?? "50", 10) || 50,
+        100,
+      );
+      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+
+      const result = await listVersions(
+        new Types.ObjectId(consoleId),
+        "console",
+        { limit, offset },
+      );
+
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      logger.error("Error listing console versions", { error });
+      return c.json({ success: false, error: "Failed to list versions" }, 500);
     }
+  },
+);
 
-    const displayName = await getUserDisplayName(user.id);
-    const comment = body.comment ?? `Restored from version ${versionNum}`;
-    await createVersion({
-      entityType: "console",
-      entityId: new Types.ObjectId(consoleId),
-      workspaceId: new Types.ObjectId(workspaceId),
-      snapshot: buildConsoleSnapshot(restored as ISavedConsole),
-      savedBy: user.id,
-      savedByName: displayName,
-      comment,
-      restoredFrom: versionNum,
-    });
+// GET /api/workspaces/:workspaceId/consoles/:id/versions/:version
+consoleRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions/{version}",
+    tags: ["Consoles"],
+    summary: "GET /{id}/versions/{version}",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        version: z.string().openapi({ param: { name: "version", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const versionNum = parseInt(c.req.param("version"), 10);
+      const user = c.get("user");
 
-    return c.json({
-      success: true,
-      message: `Restored to version ${versionNum}`,
-      console: {
-        id: restored._id.toString(),
-        name: restored.name,
-        version: restored.version,
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
+        return c.json(
+          { success: false, error: "Invalid console ID or version" },
+          400,
+        );
+      }
+
+      const consoleDoc = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!consoleDoc) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const version = await getVersion(consoleId, "console", versionNum);
+      if (!version) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+
+      return c.json({ success: true, version });
+    } catch (error) {
+      logger.error("Error getting console version", { error });
+      return c.json({ success: false, error: "Failed to get version" }, 500);
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/consoles/:id/versions/:version/restore
+consoleRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/versions/{version}/restore",
+    tags: ["Consoles"],
+    summary: "POST /{id}/versions/{version}/restore",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        version: z.string().openapi({ param: { name: "version", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
       },
-    });
-  } catch (error) {
-    logger.error("Error restoring console version", { error });
-    return c.json({ success: false, error: "Failed to restore version" }, 500);
-  }
-});
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const consoleId = c.req.param("id");
+      const versionNum = parseInt(c.req.param("version"), 10);
+      const body = await c.req.json().catch(() => ({}));
+      const user = c.get("user");
+
+      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+
+      if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
+        return c.json(
+          { success: false, error: "Invalid console ID or version" },
+          400,
+        );
+      }
+
+      const consoleDoc = await SavedConsole.findOne({
+        _id: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!consoleDoc) {
+        return c.json({ success: false, error: "Console not found" }, 404);
+      }
+
+      const member = await workspaceService.getMember(workspaceId, user.id);
+      const isAdmin = member?.role === "owner" || member?.role === "admin";
+      if (
+        !ConsoleManager.canWrite(consoleDoc, user.id, isAdmin, member?.role)
+      ) {
+        return c.json(
+          { success: false, error: "You do not have write access" },
+          403,
+        );
+      }
+
+      const oldVersion = await getVersion(consoleId, "console", versionNum);
+      if (!oldVersion) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+
+      const snap = oldVersion.snapshot as Record<string, any>;
+
+      // Apply the snapshot to the console document. Includes every field
+      // captured in buildConsoleSnapshot so restore is a true revert.
+      const restoreFields: Record<string, any> = {
+        code: snap.code,
+        name: snap.name,
+        language: snap.language,
+        description: snap.description,
+        chartSpec: snap.chartSpec,
+        resultsViewMode: snap.resultsViewMode,
+        mongoOptions: snap.mongoOptions,
+        connectionId: snap.connectionId
+          ? new Types.ObjectId(snap.connectionId)
+          : undefined,
+        databaseName: snap.databaseName,
+        databaseId: snap.databaseId,
+        folderId: snap.folderId ? new Types.ObjectId(snap.folderId) : null,
+        access: snap.access,
+      };
+
+      const restored = await SavedConsole.findOneAndUpdate(
+        {
+          _id: new Types.ObjectId(consoleId),
+          workspaceId: new Types.ObjectId(workspaceId),
+        },
+        { $set: restoreFields, $inc: { version: 1 } },
+        { new: true },
+      ).lean();
+
+      if (!restored) {
+        return c.json({ success: false, error: "Restore failed" }, 500);
+      }
+
+      const displayName = await getUserDisplayName(user.id);
+      const comment = body.comment ?? `Restored from version ${versionNum}`;
+      await createVersion({
+        entityType: "console",
+        entityId: new Types.ObjectId(consoleId),
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildConsoleSnapshot(restored as ISavedConsole),
+        savedBy: user.id,
+        savedByName: displayName,
+        comment,
+        restoredFrom: versionNum,
+      });
+
+      return c.json({
+        success: true,
+        message: `Restored to version ${versionNum}`,
+        console: {
+          id: restored._id.toString(),
+          name: restored.name,
+          version: restored.version,
+        },
+      });
+    } catch (error) {
+      logger.error("Error restoring console version", { error });
+      return c.json(
+        { success: false, error: "Failed to restore version" },
+        500,
+      );
+    }
+  },
+);
