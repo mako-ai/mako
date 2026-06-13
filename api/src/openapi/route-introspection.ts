@@ -21,10 +21,16 @@ const DOCUMENTED_METHODS = new Set(["GET", "POST", "PUT", "DELETE", "PATCH"]);
  */
 function toOpenApiPath(honoPath: string): { path: string; params: string[] } {
   const params: string[] = [];
-  const path = honoPath.replace(/:([A-Za-z0-9_]+)/g, (_match, name: string) => {
-    params.push(name);
-    return `{${name}}`;
-  });
+  // Hono params are `:name`, optionally with a regex constraint (`:name{.+}`)
+  // or an optional marker (`:name?`). OpenAPI only models the parameter name,
+  // so both the constraint and marker are stripped.
+  const path = honoPath.replace(
+    /:([A-Za-z0-9_]+)(?:\{[^}]*\})?\??/g,
+    (_match, name: string) => {
+      params.push(name);
+      return `{${name}}`;
+    },
+  );
   return { path, params };
 }
 

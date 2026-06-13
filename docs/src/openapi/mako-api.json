@@ -13371,7 +13371,7 @@
         }
       }
     },
-    "/api/workspaces/{workspaceId}/consoles/{path}{.+}": {
+    "/api/workspaces/{workspaceId}/consoles/{path}": {
       "put": {
         "operationId": "put_api_workspaces_workspaceId_consoles_path",
         "summary": "Update Consoles",
