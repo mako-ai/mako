@@ -10,6 +10,10 @@ import {
 import { Eye as EyeIcon, SquareTerminal as ConsoleIcon } from "lucide-react";
 import { Box, Tooltip } from "@mui/material";
 import { useExplorerStore } from "../store/explorerStore";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
@@ -141,6 +145,10 @@ function ConsoleTreeInner(
   const resortItem = useConsoleTreeStore(state => state.resortItem);
 
   const activeTabId = useConsoleStore(state => state.activeTabId);
+
+  // Only the sidebar tree honors reveal requests; pickers ignore them.
+  const revealRequest = useExplorerRevealStore(selectRevealFor("consoles"));
+  const reveal = mode === "sidebar" ? revealRequest : null;
 
   const storeExpandedFolders = useExplorerStore(
     state => state.console.expandedFolders,
@@ -429,6 +437,8 @@ function ConsoleTreeInner(
       sections={sections}
       mode={mode}
       activeItemId={mode === "sidebar" ? activeTabId : null}
+      revealNodeId={reveal?.nodeId}
+      revealNonce={reveal?.nonce}
       searchQuery={searchQuery}
       getItemIcon={getResourceItemIcon}
       showFiles={showFiles}

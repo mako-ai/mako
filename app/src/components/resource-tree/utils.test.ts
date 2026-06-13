@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import {
   findAncestorPaths,
   findNodeInSections,
   flattenVisibleNodeIds,
   getFolderDropTargetId,
+  isSidebarRowActive,
   resolveTreeDropTarget,
   type ResourceTreeLikeNode,
   type ResourceTreeLikeSection,
@@ -82,6 +85,76 @@ describe("resource-tree utils", () => {
     });
 
     expect(visible).toEqual(["folder-a", "folder-b"]);
+  });
+
+  describe("isSidebarRowActive", () => {
+    it("matches the active node in sidebar mode", () => {
+      expect(
+        isSidebarRowActive({
+          mode: "sidebar",
+          activeItemId: "app-1",
+          nodeId: "app-1",
+        }),
+      ).toBe(true);
+    });
+
+    it("does not match a different node", () => {
+      expect(
+        isSidebarRowActive({
+          mode: "sidebar",
+          activeItemId: "app-1",
+          nodeId: "app-2",
+        }),
+      ).toBe(false);
+    });
+
+    it("never highlights in picker mode", () => {
+      expect(
+        isSidebarRowActive({
+          mode: "picker",
+          activeItemId: "app-1",
+          nodeId: "app-1",
+        }),
+      ).toBe(false);
+    });
+
+    it("returns false when there is no active item", () => {
+      expect(
+        isSidebarRowActive({
+          mode: "sidebar",
+          activeItemId: null,
+          nodeId: "app-1",
+        }),
+      ).toBe(false);
+      expect(
+        isSidebarRowActive({
+          mode: "sidebar",
+          activeItemId: undefined,
+          nodeId: "app-1",
+        }),
+      ).toBe(false);
+    });
+  });
+
+  // Structural regression guard: the highlight bug was that *folder* rows in
+  // ResourceTree ignored the sidebar active state, so an open app/table left
+  // its directory row un-highlighted. Both row types must derive `isActive`
+  // from `isSidebarRowActive` and feed it into the row's `selected` state.
+  describe("ResourceTree active-row highlight wiring", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../ResourceTree.tsx"),
+      "utf-8",
+    );
+
+    it("derives isActive from the shared helper", () => {
+      expect(source).toMatch(/const isActive = isSidebarRowActive\(/);
+    });
+
+    it("applies the active highlight to folder rows", () => {
+      // Folder row uses ListItemButton selected + buildRowSx isSelected.
+      expect(source).toMatch(/selected=\{isSelectedLocation \|\| isActive\}/);
+      expect(source).toMatch(/isSelected: isSelectedLocation \|\| isActive/);
+    });
   });
 
   it("resolves drops into sections and folders", () => {

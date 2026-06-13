@@ -1,6 +1,6 @@
 ---
-globs: app/src/store/lib/types.ts,app/src/components/UrlSync.tsx,app/src/components/EntityBreadcrumbs.tsx,app/src/components/Editor.tsx,app/src/lib/tab-routing.ts
-description: Invariants for tab entities — unique URLs, breadcrumbs, page titles
+globs: app/src/store/lib/types.ts,app/src/components/UrlSync.tsx,app/src/components/EntityBreadcrumbs.tsx,app/src/components/Editor.tsx,app/src/lib/tab-routing.ts,app/src/lib/explorer-reveal.ts,app/src/components/ResourceTree.tsx
+description: Invariants for tab entities — unique URLs, breadcrumbs, page titles, sidebar highlight + reveal
 ---
 
 # Tab entities: URLs, breadcrumbs, page titles
@@ -37,6 +37,37 @@ Never "fix" a compile error from these guards by adding a `default` case,
 casting, or returning `null` without a deliberate decision. `null` is only
 acceptable for kinds that genuinely cannot be deep-linked (currently only
 the legacy `members` kind).
+
+## Sidebar highlight + reveal (do not weaken)
+
+Every entity that opens in a tab and has a sidebar explorer row MUST:
+
+1. **Highlight its row when focused.** The explorer passes `activeItemId` to
+   `ResourceTree`. `ResourceTree` decides the highlight via the single helper
+   [isSidebarRowActive](mdc:app/src/components/resource-tree/utils.ts) and
+   applies it to **both file and folder rows**. Apps and Postgres tables open
+   from a *directory* row, so folder rows must respect `activeItemId` too — a
+   past regression highlighted files but not folders, leaving open apps
+   un-highlighted. Guarded by `resource-tree/utils.test.ts` (a structural test
+   asserts folder rows use `isSelectedLocation || isActive`).
+2. **Be reachable by reveal.** [explorer-reveal.ts](mdc:app/src/lib/explorer-reveal.ts)
+   maps a tab → `{ explorer, nodeId }`, where `nodeId` MUST equal the id the
+   owning explorer builds for that `ResourceTree` node. The switch is
+   exhaustive over `TabKind` (return `null` for kinds with no sidebar home).
+   `tabUrlPath`/breadcrumbs and this mapping must agree on the owning explorer.
+
+Reveal flow: producers (the tab-switch effect in `App.tsx`, clickable
+breadcrumbs in `EntityBreadcrumbs.tsx`) call
+`useExplorerRevealStore.requestReveal(explorer, nodeId)`. Each explorer
+subscribes with `selectRevealFor(<explorer>)` and threads `revealNodeId` /
+`revealNonce` into its `ResourceTree`, which expands ancestors and scrolls the
+row into view. Tab-switch auto-scroll only fires when the owning explorer is
+already on screen; breadcrumb clicks also switch the explorer first.
+
+When adding a new tab kind with a sidebar row, add its case to
+`tabRevealTarget`, make sure the explorer passes `activeItemId` +
+`revealNodeId`/`revealNonce`, and (if it uses encoded node ids like apps)
+source the separators from `explorer-reveal.ts` so reveal ids never drift.
 
 ## Checklist for adding a new tab kind
 

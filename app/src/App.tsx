@@ -27,6 +27,8 @@ import {
   useUIStore,
 } from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
+import { useExplorerRevealStore } from "./store/explorerRevealStore";
+import { tabRevealTarget } from "./lib/explorer-reveal";
 import Chat from "./components/Chat";
 import DatabaseExplorer, {
   type CollectionInfo,
@@ -102,6 +104,8 @@ type SidePane = "left" | "right";
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const activeTabId = useConsoleStore(state => state.activeTabId);
+  const requestReveal = useExplorerRevealStore(state => state.requestReveal);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const closeLeftPane = useUIStore(state => state.closeLeftPane);
   const closeRightPane = useUIStore(state => state.closeRightPane);
@@ -417,6 +421,20 @@ function MainApp() {
     },
     [openOrFocusConsoleTab],
   );
+
+  // When the focused tab changes, scroll the sidebar explorer to its row —
+  // but only when that explorer is already the one on screen. If the user is
+  // looking at a different explorer (or the pane is collapsed), leave it as is.
+  useEffect(() => {
+    if (!activeTabId) return;
+    const tab = useConsoleStore.getState().tabs[activeTabId];
+    const target = tabRevealTarget(tab);
+    if (!target) return;
+    const { leftPane, leftPaneOpen: paneOpen } = useUIStore.getState();
+    if (paneOpen && leftPane === target.explorer) {
+      requestReveal(target.explorer, target.nodeId);
+    }
+  }, [activeTabId, requestReveal]);
 
   // Left pane content renderer
   const renderLeftPane = () => {

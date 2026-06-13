@@ -26,6 +26,10 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useDashboardTreeStore } from "../store/dashboardTreeStore";
 import { useExplorerStore } from "../store/explorerStore";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
 import { focusDashboardTab } from "../dashboard-runtime/shell";
 import type { Dashboard } from "../dashboard-runtime/types";
 import { computeDashboardStateHash } from "../utils/stateHash";
@@ -93,6 +97,8 @@ export function DashboardsExplorer() {
     (key: string) => !!dashboardExpandedFolders[key],
     [dashboardExpandedFolders],
   );
+
+  const reveal = useExplorerRevealStore(selectRevealFor("dashboards"));
 
   const { openTab, setActiveTab, activeTabId, tabs } = useConsoleStore();
 
@@ -337,6 +343,8 @@ export function DashboardsExplorer() {
             mode="sidebar"
             searchQuery={searchQuery}
             activeItemId={activeDashboardTabId}
+            revealNodeId={reveal?.nodeId}
+            revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
             enableDragDrop
             enableRename

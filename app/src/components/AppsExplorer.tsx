@@ -37,7 +37,16 @@ import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerStore } from "../store/explorerStore";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
+import {
+  APP_FILE_SEP as FILE_SEP,
+  APP_DIR_SEP as DIR_SEP,
+  APP_BINDING_SEP as BINDING_SEP,
+} from "../lib/explorer-reveal";
 import {
   focusAppTab,
   focusAppFileTab,
@@ -54,9 +63,7 @@ const EMPTY_LIST: AppListItem[] = [];
 // Folder node:  "<appId>::dir::<dirPath>"
 // File node:    "<appId>::file::<filePath>"
 // Binding node: "<appId>::binding::<bindingId>"
-const FILE_SEP = "::file::";
-const DIR_SEP = "::dir::";
-const BINDING_SEP = "::binding::";
+// (separators are shared with lib/explorer-reveal so reveal ids never drift)
 const DATA_SOURCES_DIR = "__datasources";
 
 function dirname(path: string): string {
@@ -199,6 +206,8 @@ export function AppsExplorer() {
     }
     return null;
   }, [activeTab]);
+
+  const reveal = useExplorerRevealStore(selectRevealFor("apps"));
 
   const expandedFolders = useExplorerStore(s => s.app.expandedFolders);
   const toggleAppFolder = useExplorerStore(s => s.toggleAppFolder);
@@ -616,6 +625,8 @@ export function AppsExplorer() {
             mode="sidebar"
             searchQuery={searchQuery}
             activeItemId={activeItemId}
+            revealNodeId={reveal?.nodeId}
+            revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
             getRightAdornment={getRightAdornment}
             getContextMenuItems={getContextMenuItems}
