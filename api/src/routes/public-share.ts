@@ -16,8 +16,10 @@
 import crypto from "node:crypto";
 import { Readable } from "node:stream";
 import bcrypt from "bcrypt";
-import { Hono, type Context } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
+import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   Dashboard,
   MakoApp,
@@ -32,7 +34,20 @@ import { getBindingArtifactInfo } from "../services/app-binding-materialization.
 
 const logger = loggers.api("public-share");
 
-const app = new Hono();
+const app = createRouter();
+
+const TokenParam = z.object({
+  token: z.string().openapi({ param: { name: "token", in: "path" } }),
+});
+const ArtifactParam = TokenParam.extend({
+  artifactId: z.string().openapi({ param: { name: "artifactId", in: "path" } }),
+});
+const OptionalJsonBody = {
+  required: false,
+  content: {
+    "application/json": { schema: z.record(z.string(), z.any()) },
+  },
+};
 
 /** How long an unlock cookie stays valid. */
 const UNLOCK_TTL_MS = 12 * 60 * 60 * 1000;
@@ -220,251 +235,318 @@ function buildAppContent(token: string, makoApp: IMakoApp) {
 // ── Routes ──
 
 // GET /:token — public metadata (safe before password unlock)
-app.get("/:token", async c => {
-  try {
-    const token = c.req.param("token");
-    const resource = await findByToken(token);
-    if (!resource) {
-      return c.json({ success: false, error: "Share link not found" }, 404);
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{token}",
+    tags: ["Public Shares"],
+    summary: "Get public share metadata",
+    security: [],
+    request: { params: TokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      return c.json({
+        success: true,
+        data: {
+          type: resource.type,
+          title: resource.doc.title,
+          passwordRequired: passwordRequired(resource),
+          unlocked: !passwordRequired(resource) || hasValidUnlock(c, token),
+        },
+      });
+    } catch (error) {
+      logger.error("Error fetching share metadata", { error });
+      return c.json({ success: false, error: "Failed to load share" }, 500);
     }
-    return c.json({
-      success: true,
-      data: {
-        type: resource.type,
-        title: resource.doc.title,
-        passwordRequired: passwordRequired(resource),
-        unlocked: !passwordRequired(resource) || hasValidUnlock(c, token),
-      },
-    });
-  } catch (error) {
-    logger.error("Error fetching share metadata", { error });
-    return c.json({ success: false, error: "Failed to load share" }, 500);
-  }
-});
+  },
+);
 
 // POST /:token/unlock — verify password, set signed HttpOnly cookie
-app.post("/:token/unlock", async c => {
-  try {
-    const token = c.req.param("token");
-    const resource = await findByToken(token);
-    if (!resource) {
-      return c.json({ success: false, error: "Share link not found" }, 404);
-    }
-    if (!passwordRequired(resource)) {
-      return c.json({ success: true, data: { unlocked: true } });
-    }
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{token}/unlock",
+    tags: ["Public Shares"],
+    summary: "Unlock a password-protected share",
+    security: [],
+    request: { params: TokenParam, body: OptionalJsonBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      if (!passwordRequired(resource)) {
+        return c.json({ success: true, data: { unlocked: true } });
+      }
 
-    const rlKey = `${token}:${clientIp(c)}`;
-    if (isUnlockRateLimited(rlKey)) {
-      return c.json(
-        { success: false, error: "Too many attempts. Try again later." },
-        429,
+      const rlKey = `${token}:${clientIp(c)}`;
+      if (isUnlockRateLimited(rlKey)) {
+        return c.json(
+          { success: false, error: "Too many attempts. Try again later." },
+          429,
+        );
+      }
+
+      const body = await c.req.json().catch(() => ({}));
+      const password = typeof body?.password === "string" ? body.password : "";
+      const hash = resource.doc.publicShare?.passwordHash || "";
+      const valid =
+        password.length > 0 && (await bcrypt.compare(password, hash));
+      if (!valid) {
+        return c.json({ success: false, error: "Incorrect password" }, 401);
+      }
+
+      const expiresAt = Date.now() + UNLOCK_TTL_MS;
+      setCookie(
+        c,
+        unlockCookieName(token),
+        `${expiresAt}.${signUnlock(token, expiresAt)}`,
+        {
+          httpOnly: true,
+          sameSite: "Lax",
+          secure: process.env.NODE_ENV === "production",
+          path: "/api/share",
+          maxAge: Math.floor(UNLOCK_TTL_MS / 1000),
+        },
       );
+      return c.json({ success: true, data: { unlocked: true } });
+    } catch (error) {
+      logger.error("Error unlocking share", { error });
+      return c.json({ success: false, error: "Failed to unlock share" }, 500);
     }
-
-    const body = await c.req.json().catch(() => ({}));
-    const password = typeof body?.password === "string" ? body.password : "";
-    const hash = resource.doc.publicShare?.passwordHash || "";
-    const valid = password.length > 0 && (await bcrypt.compare(password, hash));
-    if (!valid) {
-      return c.json({ success: false, error: "Incorrect password" }, 401);
-    }
-
-    const expiresAt = Date.now() + UNLOCK_TTL_MS;
-    setCookie(
-      c,
-      unlockCookieName(token),
-      `${expiresAt}.${signUnlock(token, expiresAt)}`,
-      {
-        httpOnly: true,
-        sameSite: "Lax",
-        secure: process.env.NODE_ENV === "production",
-        path: "/api/share",
-        maxAge: Math.floor(UNLOCK_TTL_MS / 1000),
-      },
-    );
-    return c.json({ success: true, data: { unlocked: true } });
-  } catch (error) {
-    logger.error("Error unlocking share", { error });
-    return c.json({ success: false, error: "Failed to unlock share" }, 500);
-  }
-});
+  },
+);
 
 // GET /:token/content — sanitized definition (post-unlock)
-app.get("/:token/content", async c => {
-  try {
-    const token = c.req.param("token");
-    const resource = await findByToken(token);
-    if (!resource) {
-      return c.json({ success: false, error: "Share link not found" }, 404);
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{token}/content",
+    tags: ["Public Shares"],
+    summary: "Get sanitized share content",
+    security: [],
+    request: { params: TokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
+
+      const data =
+        resource.type === "dashboard"
+          ? await buildDashboardContent(token, resource.doc)
+          : buildAppContent(token, resource.doc);
+
+      return c.json({ success: true, data }, 200, {
+        "Cache-Control": "private, no-store",
+      });
+    } catch (error) {
+      logger.error("Error building share content", { error });
+      return c.json({ success: false, error: "Failed to load content" }, 500);
     }
-    const gate = requireUnlock(c, token, resource);
-    if (gate) return gate;
-
-    const data =
-      resource.type === "dashboard"
-        ? await buildDashboardContent(token, resource.doc)
-        : buildAppContent(token, resource.doc);
-
-    return c.json({ success: true, data }, 200, {
-      "Cache-Control": "private, no-store",
-    });
-  } catch (error) {
-    logger.error("Error building share content", { error });
-    return c.json({ success: false, error: "Failed to load content" }, 500);
-  }
-});
+  },
+);
 
 // GET /:token/artifacts/:artifactId — stream snapshot parquet (post-unlock)
-app.get("/:token/artifacts/:artifactId", async c => {
-  try {
-    const token = c.req.param("token");
-    const artifactId = c.req.param("artifactId");
-    const resource = await findByToken(token);
-    if (!resource) {
-      return c.json({ success: false, error: "Share link not found" }, 404);
-    }
-    const gate = requireUnlock(c, token, resource);
-    if (gate) return gate;
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{token}/artifacts/{artifactId}",
+    tags: ["Public Shares"],
+    summary: "Stream a share snapshot artifact",
+    security: [],
+    request: {
+      params: ArtifactParam,
+      query: z.object({ rev: z.string().optional() }),
+    },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: {
+        description: "Parquet snapshot bytes.",
+        content: {
+          "application/vnd.apache.parquet": {
+            schema: z.string().openapi({ format: "binary" }),
+          },
+        },
+      },
+    },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const artifactId = c.req.param("artifactId");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
 
-    let artifactKey: string | null = null;
-    let revision: string | null = null;
-    let rowCount: number | null = null;
+      let artifactKey: string | null = null;
+      let revision: string | null = null;
+      let rowCount: number | null = null;
 
-    if (resource.type === "dashboard") {
-      const dataSource = resource.doc.dataSources?.find(
-        ds => ds.id === artifactId,
-      );
-      if (!dataSource) {
+      if (resource.type === "dashboard") {
+        const dataSource = resource.doc.dataSources?.find(
+          ds => ds.id === artifactId,
+        );
+        if (!dataSource) {
+          return c.json({ success: false, error: "Artifact not found" }, 404);
+        }
+        const status = await buildDataSourceMaterializationStatus({
+          workspaceId: resource.doc.workspaceId.toString(),
+          dashboardId: resource.doc._id.toString(),
+          dataSource,
+        });
+        artifactKey = status.artifactKey;
+        revision = status.artifactRevision;
+        rowCount = status.rowCount;
+      } else {
+        const info = getBindingArtifactInfo(resource.doc, artifactId);
+        if (info) {
+          artifactKey = info.artifactKey;
+          revision = info.revision ?? null;
+          rowCount = info.rowCount ?? null;
+        }
+      }
+
+      if (!artifactKey) {
         return c.json({ success: false, error: "Artifact not found" }, 404);
       }
-      const status = await buildDataSourceMaterializationStatus({
-        workspaceId: resource.doc.workspaceId.toString(),
-        dashboardId: resource.doc._id.toString(),
-        dataSource,
-      });
-      artifactKey = status.artifactKey;
-      revision = status.artifactRevision;
-      rowCount = status.rowCount;
-    } else {
-      const info = getBindingArtifactInfo(resource.doc, artifactId);
-      if (info) {
-        artifactKey = info.artifactKey;
-        revision = info.revision ?? null;
-        rowCount = info.rowCount ?? null;
+
+      const store = getDashboardArtifactStore();
+      const stream = await store.openReadStream(artifactKey);
+      if (!stream) {
+        return c.json({ success: false, error: "Artifact not found" }, 404);
       }
-    }
 
-    if (!artifactKey) {
-      return c.json({ success: false, error: "Artifact not found" }, 404);
-    }
+      const rev = c.req.query("rev");
+      const cacheControl =
+        rev && revision && rev === revision
+          ? "private, max-age=86400, immutable"
+          : "private, no-store";
 
-    const store = getDashboardArtifactStore();
-    const stream = await store.openReadStream(artifactKey);
-    if (!stream) {
-      return c.json({ success: false, error: "Artifact not found" }, 404);
-    }
-
-    const rev = c.req.query("rev");
-    const cacheControl =
-      rev && revision && rev === revision
-        ? "private, max-age=86400, immutable"
-        : "private, no-store";
-
-    return new Response(Readable.toWeb(stream as Readable) as ReadableStream, {
-      headers: {
+      return c.body(Readable.toWeb(stream as Readable) as ReadableStream, 200, {
         "Content-Type": "application/vnd.apache.parquet",
         "X-Row-Count": String(rowCount ?? 0),
         "Cache-Control": cacheControl,
-      },
-    });
-  } catch (error) {
-    logger.error("Error streaming share artifact", { error });
-    return c.json({ success: false, error: "Failed to serve artifact" }, 500);
-  }
-});
+      });
+    } catch (error) {
+      logger.error("Error streaming share artifact", { error });
+      return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
 
 // POST /:token/refresh — throttled snapshot refresh (dashboards only).
 // Only re-runs the owner-defined data source queries; anonymous viewers can
 // never execute arbitrary queries.
-app.post("/:token/refresh", async c => {
-  try {
-    const token = c.req.param("token");
-    const resource = await findByToken(token);
-    if (!resource) {
-      return c.json({ success: false, error: "Share link not found" }, 404);
-    }
-    const gate = requireUnlock(c, token, resource);
-    if (gate) return gate;
-    if (resource.type !== "dashboard") {
-      return c.json(
-        { success: false, error: "Refresh is only available for dashboards" },
-        400,
-      );
-    }
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{token}/refresh",
+    tags: ["Public Shares"],
+    summary: "Refresh a dashboard share snapshot",
+    security: [],
+    request: { params: TokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
+      if (resource.type !== "dashboard") {
+        return c.json(
+          { success: false, error: "Refresh is only available for dashboards" },
+          400,
+        );
+      }
 
-    const dashboard = resource.doc;
-    const last = dashboard.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
-    const elapsed = Date.now() - last;
-    if (elapsed < PUBLIC_REFRESH_COOLDOWN_MS) {
-      const retryAfterMs = PUBLIC_REFRESH_COOLDOWN_MS - elapsed;
-      return c.json(
-        {
-          success: false,
-          error: "Refresh is cooling down",
-          code: "REFRESH_COOLDOWN",
-          retryAfterMs,
-        },
-        429,
-      );
-    }
-
-    // Claim the cooldown slot atomically so concurrent anonymous viewers
-    // can't queue duplicate refreshes.
-    const claimed = await Dashboard.findOneAndUpdate(
-      {
-        _id: dashboard._id,
-        "publicShare.enabled": true,
-        $or: [
-          { "publicShare.lastPublicRefreshAt": { $exists: false } },
+      const dashboard = resource.doc;
+      const last = dashboard.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
+      const elapsed = Date.now() - last;
+      if (elapsed < PUBLIC_REFRESH_COOLDOWN_MS) {
+        const retryAfterMs = PUBLIC_REFRESH_COOLDOWN_MS - elapsed;
+        return c.json(
           {
-            "publicShare.lastPublicRefreshAt": {
-              $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
-            },
+            success: false,
+            error: "Refresh is cooling down",
+            code: "REFRESH_COOLDOWN",
+            retryAfterMs,
           },
-        ],
-      },
-      { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
-      { new: true },
-    );
-    if (!claimed) {
-      return c.json(
+          429,
+        );
+      }
+
+      // Claim the cooldown slot atomically so concurrent anonymous viewers
+      // can't queue duplicate refreshes.
+      const claimed = await Dashboard.findOneAndUpdate(
         {
-          success: false,
-          error: "Refresh is cooling down",
-          code: "REFRESH_COOLDOWN",
-          retryAfterMs: PUBLIC_REFRESH_COOLDOWN_MS,
+          _id: dashboard._id,
+          "publicShare.enabled": true,
+          $or: [
+            { "publicShare.lastPublicRefreshAt": { $exists: false } },
+            {
+              "publicShare.lastPublicRefreshAt": {
+                $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+              },
+            },
+          ],
         },
-        429,
+        { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
+        { new: true },
       );
+      if (!claimed) {
+        return c.json(
+          {
+            success: false,
+            error: "Refresh is cooling down",
+            code: "REFRESH_COOLDOWN",
+            retryAfterMs: PUBLIC_REFRESH_COOLDOWN_MS,
+          },
+          429,
+        );
+      }
+
+      const queueResult = await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+        workspaceId: dashboard.workspaceId.toString(),
+        triggerType: "manual",
+      });
+
+      return c.json({
+        success: true,
+        queued: queueResult.queued,
+        alreadyRunning: !queueResult.queued,
+        cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
+      });
+    } catch (error) {
+      logger.error("Error refreshing public share", { error });
+      return c.json({ success: false, error: "Failed to refresh" }, 500);
     }
-
-    const queueResult = await queueDashboardArtifactRefresh({
-      dashboardId: dashboard._id.toString(),
-      workspaceId: dashboard.workspaceId.toString(),
-      triggerType: "manual",
-    });
-
-    return c.json({
-      success: true,
-      queued: queueResult.queued,
-      alreadyRunning: !queueResult.queued,
-      cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
-    });
-  } catch (error) {
-    logger.error("Error refreshing public share", { error });
-    return c.json({ success: false, error: "Failed to refresh" }, 500);
-  }
-});
+  },
+);
 
 export const publicShareRoutes = app;
