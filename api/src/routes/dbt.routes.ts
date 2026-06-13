@@ -32,6 +32,7 @@ import {
   applyJobScheduleChange,
   requestDbtRunCancel,
   triggerDbtJobRun,
+  triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
@@ -785,6 +786,36 @@ dbtRoutes.post(
       return c.json({ success: true });
     } catch (error) {
       return serverError(c, error, "Failed to cancel dbt run");
+    }
+  },
+);
+
+dbtRoutes.post(
+  "/projects/:projectId/runs/:runId/retry",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const runId = c.req.param("runId");
+      if (!Types.ObjectId.isValid(runId)) {
+        return badRequest(c, "Invalid run id");
+      }
+      const run = await triggerDbtRunRetry({
+        workspaceId: project.workspaceId.toString(),
+        runId,
+        triggeredBy: getUserId(c),
+      });
+      if (!run) {
+        return badRequest(
+          c,
+          "Run cannot be retried (must be a failed run with results)",
+        );
+      }
+      return c.json({ success: true, runId: run._id.toString() });
+    } catch (error) {
+      return serverError(c, error, "Failed to retry dbt run");
     }
   },
 );

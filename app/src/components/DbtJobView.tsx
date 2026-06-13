@@ -40,6 +40,7 @@ import {
   Plus as AddIcon,
   Trash2 as RemoveIcon,
   FileCode as ModelIcon,
+  RotateCcw as RetryIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { CronExpressionParser } from "cron-parser";
@@ -135,6 +136,7 @@ export default function DbtJobView({
   const fetchRunDetails = useDbtStore(s => s.fetchRunDetails);
   const triggerJob = useDbtStore(s => s.triggerJob);
   const cancelRun = useDbtStore(s => s.cancelRun);
+  const retryRun = useDbtStore(s => s.retryRun);
   const saveJob = useDbtStore(s => s.saveJob);
 
   const job = useMemo(
@@ -244,6 +246,12 @@ export default function DbtJobView({
     await cancelRun(workspaceId, projectId, runningRun._id);
     await fetchRuns(workspaceId, projectId, jobId);
   }, [workspaceId, projectId, jobId, runningRun, cancelRun, fetchRuns]);
+
+  const handleRetry = useCallback(async () => {
+    if (!workspaceId || !selectedRunId) return;
+    const runId = await retryRun(workspaceId, projectId, selectedRunId, jobId);
+    if (runId) setSelectedRunId(runId);
+  }, [workspaceId, projectId, jobId, selectedRunId, retryRun]);
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) void fetchRuns(workspaceId, projectId, jobId);
@@ -767,6 +775,19 @@ export default function DbtJobView({
                       <Typography variant="caption" color="error">
                         {(selectedRun ?? selectedRunListItem)?.error}
                       </Typography>
+                    )}
+                    {selectedStatus === "error" && (
+                      <Tooltip title="Re-run only the failed/skipped nodes">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<RetryIcon size={14} />}
+                          onClick={handleRetry}
+                          sx={{ ml: "auto" }}
+                        >
+                          Retry from failure
+                        </Button>
+                      </Tooltip>
                     )}
                   </Box>
 

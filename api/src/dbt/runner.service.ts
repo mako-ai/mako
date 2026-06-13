@@ -31,6 +31,15 @@ export interface DbtRunRequest {
   dbtVersion?: string;
   /** Per-command timeout (ms). Defaults to 9 minutes (Cloud Run is 600s). */
   commandTimeoutMs?: number;
+  /**
+   * Artifacts to seed into target/ before commands run. Used by retry-from-
+   * failure: `dbt retry` reads target/run_results.json to resume at the
+   * failed/skipped nodes.
+   */
+  restoreTarget?: {
+    runResults?: Buffer;
+    manifest?: Buffer;
+  };
   signal?: AbortSignal;
   onLog?: (line: DbtLogLine) => void;
 }
@@ -227,6 +236,25 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       request.profile.profilesYml,
       "utf8",
     );
+
+    // Seed prior artifacts into target/ for `dbt retry` (run_results.json is
+    // what dbt reads to resume at the failed/skipped nodes).
+    if (request.restoreTarget) {
+      const targetDir = join(projectDir, "target");
+      await mkdir(targetDir, { recursive: true });
+      if (request.restoreTarget.runResults) {
+        await writeFile(
+          join(targetDir, "run_results.json"),
+          request.restoreTarget.runResults,
+        );
+      }
+      if (request.restoreTarget.manifest) {
+        await writeFile(
+          join(targetDir, "manifest.json"),
+          request.restoreTarget.manifest,
+        );
+      }
+    }
 
     const resolved = resolveDbtBin(
       request.profile.adapterPackage,

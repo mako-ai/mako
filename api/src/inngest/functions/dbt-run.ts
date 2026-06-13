@@ -90,6 +90,25 @@ interface DbtRunRequestedEvent {
   jobId?: string;
 }
 
+/** Read an artifact key into a Buffer, or undefined if missing/unreadable. */
+async function readArtifactBuffer(
+  key: string | undefined,
+): Promise<Buffer | undefined> {
+  if (!key) return undefined;
+  try {
+    const stream = await getDashboardArtifactStore().openReadStream(key);
+    if (!stream) return undefined;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } catch (error) {
+    logger.warn("dbt restore artifact read failed", { error, key });
+    return undefined;
+  }
+}
+
 export const dbtRunExecutorFunction = inngest.createFunction(
   {
     id: "dbt-run-executor",
@@ -122,6 +141,12 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         environment: run.environment,
         commands: run.commands,
         jobId: run.jobId?.toString(),
+        restoreArtifactKeys: run.restoreArtifactKeys
+          ? {
+              runResults: run.restoreArtifactKeys.runResults,
+              manifest: run.restoreArtifactKeys.manifest,
+            }
+          : null,
       };
     });
 
@@ -154,6 +179,16 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           line: `$ dbt ${parsed.argv.join(" ")}`,
         });
 
+        // Retry runs seed the prior run_results.json into target/ so
+        // `dbt retry` resumes at the failed/skipped nodes.
+        const restoreKeys = runInfo.restoreArtifactKeys;
+        const restoreTarget = restoreKeys
+          ? {
+              runResults: await readArtifactBuffer(restoreKeys.runResults),
+              manifest: await readArtifactBuffer(restoreKeys.manifest),
+            }
+          : undefined;
+
         try {
           const result = await runDbt({
             files: snapshot.files,
@@ -163,6 +198,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             // Cloud Run services deploy with --timeout=3600; leave buffer for
             // snapshot loading + artifact upload within the step request.
             commandTimeoutMs: 50 * 60 * 1000,
+            restoreTarget,
             onLog: logWriter.onLog,
           });
 

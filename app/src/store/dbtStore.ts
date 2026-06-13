@@ -205,6 +205,12 @@ interface DbtActions {
     projectId: string,
     jobId: string,
   ) => Promise<string | null>;
+  retryRun: (
+    workspaceId: string,
+    projectId: string,
+    runId: string,
+    jobId?: string,
+  ) => Promise<string | null>;
 
   fetchRuns: (
     workspaceId: string,
@@ -595,6 +601,27 @@ export const useDbtStore = create<DbtStore>()(
           state.error[`runs:${projectId}`] = errMessage(
             error,
             "Failed to trigger job",
+          );
+        });
+        return null;
+      }
+    },
+
+    retryRun: async (workspaceId, projectId, runId, jobId) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          runId: string;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/retry`,
+        );
+        await get().fetchRuns(workspaceId, projectId, jobId);
+        return response.runId ?? null;
+      } catch (error) {
+        set(state => {
+          state.error[`runs:${projectId}`] = errMessage(
+            error,
+            "Failed to retry run",
           );
         });
         return null;

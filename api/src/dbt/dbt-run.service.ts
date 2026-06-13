@@ -85,6 +85,54 @@ export async function triggerDbtJobRun(params: {
   });
 }
 
+/**
+ * Retry a failed run from its point of failure. Creates a new run that runs
+ * `dbt retry`, seeding the source run's run_results.json into target/ so dbt
+ * resumes at the failed/skipped nodes. Requires the source run to have a
+ * persisted run_results.json artifact.
+ */
+export async function triggerDbtRunRetry(params: {
+  workspaceId: string;
+  runId: string;
+  triggeredBy: string;
+}): Promise<IDbtRun | null> {
+  const source = await DbtRun.findOne({
+    _id: new Types.ObjectId(params.runId),
+    workspaceId: new Types.ObjectId(params.workspaceId),
+  }).lean();
+  if (!source) return null;
+  if (source.status !== "error") return null;
+  if (!source.artifactKeys?.runResults) return null;
+
+  const run = await DbtRun.create({
+    workspaceId: source.workspaceId,
+    projectId: source.projectId,
+    jobId: source.jobId,
+    environment: source.environment,
+    commands: ["retry"],
+    status: "queued",
+    trigger: "manual",
+    triggeredBy: params.triggeredBy,
+    retryOfRunId: source._id,
+    restoreArtifactKeys: {
+      runResults: source.artifactKeys.runResults,
+      manifest: source.artifactKeys.manifest,
+    },
+  });
+
+  await inngest.send({
+    name: "dbt/run.requested",
+    data: {
+      workspaceId: params.workspaceId,
+      projectId: source.projectId.toString(),
+      runId: run._id.toString(),
+      jobId: source.jobId?.toString(),
+    },
+  });
+
+  return run;
+}
+
 export async function requestDbtRunCancel(params: {
   workspaceId: string;
   runId: string;

@@ -4196,6 +4196,16 @@ export interface IDbtRun extends Document {
     runResults?: string;
     catalog?: string;
   };
+  /** Set on retry runs: the run this was retried from. */
+  retryOfRunId?: Types.ObjectId;
+  /**
+   * Artifact keys restored into target/ before commands run (retry-from-
+   * failure: run_results.json drives `dbt retry`).
+   */
+  restoreArtifactKeys?: {
+    runResults?: string;
+    manifest?: string;
+  };
   error?: string;
   inngestRunId?: string;
   createdAt: Date;
@@ -4266,6 +4276,11 @@ const DbtRunSchema = new Schema<IDbtRun>(
       manifest: { type: String },
       runResults: { type: String },
       catalog: { type: String },
+    },
+    retryOfRunId: { type: Schema.Types.ObjectId, ref: "DbtRun" },
+    restoreArtifactKeys: {
+      runResults: { type: String },
+      manifest: { type: String },
     },
     error: { type: String },
     inngestRunId: { type: String },
