@@ -10,9 +10,12 @@ import type { ValidatedSession, ValidatedUser } from "../auth/session";
 export interface AuthVariables {
   user?: ValidatedUser;
   session?: ValidatedSession;
-  // `workspace`, `apiKey` are Mongoose documents; kept loose on purpose.
-  workspace?: unknown;
-  apiKey?: unknown;
+  // `workspace`, `apiKey` are Mongoose documents; kept loose (matches the
+  // existing AuthenticatedContext, which types these as `any`).
+
+  workspace?: any;
+
+  apiKey?: any;
   memberRole?: string;
   authType?: "session" | "apiKey";
   workspaceId?: string;
@@ -130,6 +133,8 @@ export const OPEN_RESPONSES = {
   422: jsonContent(z.any(), "Unprocessable entity"),
   429: jsonContent(z.any(), "Too many requests"),
   500: jsonContent(z.any(), "Internal server error"),
+  502: jsonContent(z.any(), "Bad gateway"),
+  503: jsonContent(z.any(), "Service unavailable"),
 };
 
 /** Security requirement: session cookie OR workspace API key. */
