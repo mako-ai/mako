@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import {
   isLocalConnectionId,
   localAgentClient,
@@ -1140,9 +1141,11 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       deleteConsole: async (workspaceId, consoleId) => {
         try {
-          return await apiClient.delete<ConsoleDeleteResponse>(
-            `/workspaces/${workspaceId}/consoles/${consoleId}`,
-          );
+          return unwrapBody(
+            await api.DELETE("/api/workspaces/{workspaceId}/consoles/{id}", {
+              params: { path: { workspaceId, id: consoleId } },
+            }),
+          ) as ConsoleDeleteResponse;
         } catch (e) {
           return {
             success: false,
