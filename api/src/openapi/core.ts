@@ -47,6 +47,20 @@ export const ErrorSchema = z
   })
   .openapi("Error");
 
+/**
+ * Loosely-typed error envelope for the permissive {@link OPEN_RESPONSES} set.
+ * Every field is optional so that wrapping an existing handler (whose success
+ * return shares the inferred status union) never fails type inference, while
+ * still documenting the `{ success, error }` shape with a named component —
+ * a strict improvement over an open `{}` body.
+ */
+export const ErrorEnvelopeSchema = z
+  .object({
+    success: z.boolean().optional(),
+    error: z.string().optional().openapi({ example: "Error message" }),
+  })
+  .openapi("ErrorEnvelope");
+
 /** Creates an `OpenAPIHono` router whose validation errors use the API envelope. */
 export function createRouter(): OpenAPIHono<AuthEnv> {
   return new OpenAPIHono<AuthEnv>({
@@ -154,25 +168,28 @@ export const STD_RESPONSES = { 200: okJson, ...STD_ERRORS };
  * the shared `{ success: false, error }` envelope at runtime; richer per-field
  * response typing is applied module-by-module (see connectors/database-schemas).
  */
+const err = (description: string) =>
+  jsonContent(ErrorEnvelopeSchema, description);
+
 export const OPEN_RESPONSES = {
   200: jsonContent(z.any(), "Successful response"),
   201: jsonContent(z.any(), "Created"),
   202: jsonContent(z.any(), "Accepted"),
   204: { description: "No content" },
   206: jsonContent(z.any(), "Partial content"),
-  400: jsonContent(z.any(), "Invalid request"),
-  401: jsonContent(z.any(), "Authentication required"),
-  402: jsonContent(z.any(), "Payment required"),
-  403: jsonContent(z.any(), "Forbidden"),
-  404: jsonContent(z.any(), "Not found"),
-  409: jsonContent(z.any(), "Conflict"),
-  410: jsonContent(z.any(), "Gone"),
-  416: jsonContent(z.any(), "Range not satisfiable"),
-  422: jsonContent(z.any(), "Unprocessable entity"),
-  429: jsonContent(z.any(), "Too many requests"),
-  500: jsonContent(z.any(), "Internal server error"),
-  502: jsonContent(z.any(), "Bad gateway"),
-  503: jsonContent(z.any(), "Service unavailable"),
+  400: err("Invalid request"),
+  401: err("Authentication required"),
+  402: err("Payment required"),
+  403: err("Forbidden"),
+  404: err("Not found"),
+  409: err("Conflict"),
+  410: err("Gone"),
+  416: err("Range not satisfiable"),
+  422: err("Unprocessable entity"),
+  429: err("Too many requests"),
+  500: err("Internal server error"),
+  502: err("Bad gateway"),
+  503: err("Service unavailable"),
 };
 
 /** Security requirement: session cookie OR workspace API key. */

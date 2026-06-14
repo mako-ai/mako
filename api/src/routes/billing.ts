@@ -25,7 +25,10 @@ import { loggers, enrichContextWithWorkspace } from "../logging";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
+  STD_ERRORS,
   createRouter,
+  jsonContent,
+  pathParam,
   type AuthEnv,
 } from "../openapi/core";
 
@@ -33,17 +36,23 @@ const logger = loggers.api("billing");
 
 export const billingRoutes = createRouter();
 
-const WorkspaceParam = z.object({
-  workspaceId: z
-    .string()
-    .openapi({ param: { name: "workspaceId", in: "path" } }),
-});
-const UrlBody = {
+const WorkspaceParam = z.object({ workspaceId: pathParam("workspaceId") });
+const RedirectUrlBody = {
   required: false,
   content: {
-    "application/json": { schema: z.record(z.string(), z.any()) },
+    "application/json": {
+      schema: z.object({
+        successUrl: z.string().url().optional(),
+        cancelUrl: z.string().url().optional(),
+        returnUrl: z.string().url().optional(),
+      }),
+    },
   },
 };
+const StripeUrlResponse = jsonContent(
+  z.object({ url: z.string().url() }),
+  "Stripe-hosted URL to redirect the user to.",
+);
 
 billingRoutes.use("*", unifiedAuthMiddleware);
 
@@ -154,8 +163,8 @@ billingRoutes.openapi(
     tags: ["Billing"],
     summary: "Create a checkout session",
     security: AUTH_SECURITY,
-    request: { params: WorkspaceParam, body: UrlBody },
-    responses: { ...OPEN_RESPONSES },
+    request: { params: WorkspaceParam, body: RedirectUrlBody },
+    responses: { 200: StripeUrlResponse, ...STD_ERRORS },
   }),
   async c => {
     if (!isBillingEnabled()) {
@@ -227,7 +236,7 @@ billingRoutes.openapi(
         cancelUrl,
       );
 
-      return c.json({ url });
+      return c.json({ url }, 200);
     } catch (err) {
       logger.error("Error creating checkout session", { error: err });
       return c.json({ error: "Failed to create checkout session" }, 500);
@@ -246,8 +255,8 @@ billingRoutes.openapi(
     tags: ["Billing"],
     summary: "Create a billing portal session",
     security: AUTH_SECURITY,
-    request: { params: WorkspaceParam, body: UrlBody },
-    responses: { ...OPEN_RESPONSES },
+    request: { params: WorkspaceParam, body: RedirectUrlBody },
+    responses: { 200: StripeUrlResponse, ...STD_ERRORS },
   }),
   async c => {
     if (!isBillingEnabled()) {
@@ -299,7 +308,7 @@ billingRoutes.openapi(
 
       const url = await createPortalSession(workspace, returnUrl);
 
-      return c.json({ url });
+      return c.json({ url }, 200);
     } catch (err) {
       if (err instanceof PortalUnavailableError) {
         return c.json({ error: "No billing account to manage" }, 400);

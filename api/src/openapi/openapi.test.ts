@@ -141,6 +141,36 @@ function testErrorSchemaComponentExists() {
   const components = doc.components as AnyObj;
   const schemas = (components.schemas ?? {}) as AnyObj;
   assert.ok(schemas.Error, "Error schema component must be registered");
+  assert.ok(
+    schemas.ErrorEnvelope,
+    "ErrorEnvelope schema component must be registered",
+  );
+}
+
+function testErrorResponsesAreTyped() {
+  // Every declared 4xx/5xx JSON response must reference a typed schema, never
+  // an open `{}` body. This enforces that no endpoint regresses to `z.any()`
+  // for its error envelope.
+  let checked = 0;
+  for (const { path, method, op } of operations()) {
+    const responses = (op.responses ?? {}) as Record<string, AnyObj>;
+    for (const [code, resp] of Object.entries(responses)) {
+      if (!/^[45]\d\d$/.test(code)) continue;
+      const content = resp.content as AnyObj | undefined;
+      const json = content?.["application/json"] as AnyObj | undefined;
+      if (!json) continue; // some errors are content-less by design
+      const schema = json.schema as AnyObj | undefined;
+      assert.ok(
+        schema && Object.keys(schema).length > 0,
+        `${method.toUpperCase()} ${path} ${code} error must reference a typed schema`,
+      );
+      checked++;
+    }
+  }
+  assert.ok(
+    checked > 500,
+    `expected many typed error responses, got ${checked}`,
+  );
 }
 
 function main() {
@@ -151,6 +181,7 @@ function main() {
   testPathParamsAreDeclared();
   testTightenedModulesHaveTypedResponses();
   testErrorSchemaComponentExists();
+  testErrorResponsesAreTyped();
 
   const ops = operations();
   console.log(
