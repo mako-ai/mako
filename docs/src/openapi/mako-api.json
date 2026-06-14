@@ -14355,7 +14355,7 @@
         "tags": [
           "Consoles"
         ],
-        "summary": "GET /{id}/schedule/runs",
+        "summary": "List scheduled query runs",
         "security": [
           {
             "cookieAuth": []
@@ -14380,6 +14380,14 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
           }
         ],
         "responses": {

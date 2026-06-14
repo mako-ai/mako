@@ -721,7 +721,7 @@ consoleRoutes.openapi(
     method: "get",
     path: "/{id}/schedule/runs",
     tags: ["Consoles"],
-    summary: "GET /{id}/schedule/runs",
+    summary: "List scheduled query runs",
     security: AUTH_SECURITY,
     request: {
       params: z.object({
@@ -729,6 +729,12 @@ consoleRoutes.openapi(
           .string()
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      query: z.object({
+        limit: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
       }),
     },
     responses: { ...OPEN_RESPONSES },

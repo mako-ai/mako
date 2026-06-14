@@ -1307,10 +1307,15 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       setSchedule: async (workspaceId, consoleId, input) => {
         try {
-          const response = await apiClient.put<ScheduledQueryScheduleResponse>(
-            `/workspaces/${workspaceId}/consoles/${consoleId}/schedule`,
-            input,
-          );
+          const response = unwrapBody(
+            await api.PUT(
+              "/api/workspaces/{workspaceId}/consoles/{id}/schedule",
+              {
+                params: { path: { workspaceId, id: consoleId } },
+                body: input as Record<string, unknown>,
+              },
+            ),
+          ) as ScheduledQueryScheduleResponse;
 
           if (response.success) {
             set(state => {
@@ -1333,10 +1338,12 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       removeSchedule: async (workspaceId, consoleId) => {
         try {
-          const response = await apiClient.delete<{
-            success: boolean;
-            error?: string;
-          }>(`/workspaces/${workspaceId}/consoles/${consoleId}/schedule`);
+          const response = unwrapBody(
+            await api.DELETE(
+              "/api/workspaces/{workspaceId}/consoles/{id}/schedule",
+              { params: { path: { workspaceId, id: consoleId } } },
+            ),
+          ) as { success: boolean; error?: string };
 
           if (response.success) {
             set(state => {
@@ -1361,9 +1368,12 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       runScheduledNow: async (workspaceId, consoleId) => {
         try {
-          return await apiClient.post<ScheduledQueryScheduleResponse>(
-            `/workspaces/${workspaceId}/consoles/${consoleId}/schedule/run`,
-          );
+          return unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/consoles/{id}/schedule/run",
+              { params: { path: { workspaceId, id: consoleId } } },
+            ),
+          ) as ScheduledQueryScheduleResponse;
         } catch (e) {
           return {
             success: false,
@@ -1374,10 +1384,17 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       listScheduledRuns: async (workspaceId, consoleId, limit = 50) => {
         try {
-          return await apiClient.get<ScheduledQueryRunsResponse>(
-            `/workspaces/${workspaceId}/consoles/${consoleId}/schedule/runs`,
-            { limit: String(limit) },
-          );
+          return unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/consoles/{id}/schedule/runs",
+              {
+                params: {
+                  path: { workspaceId, id: consoleId },
+                  query: { limit: String(limit) },
+                },
+              },
+            ),
+          ) as ScheduledQueryRunsResponse;
         } catch (e) {
           return {
             success: false,

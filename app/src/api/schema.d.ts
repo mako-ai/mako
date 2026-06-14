@@ -945,7 +945,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /{id}/schedule/runs */
+        /** List scheduled query runs */
         get: operations["get_api_workspaces_workspaceId_consoles_id_schedule_runs"];
         put?: never;
         post?: never;
@@ -15982,7 +15982,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_consoles_id_schedule_runs: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
