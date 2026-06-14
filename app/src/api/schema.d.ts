@@ -1270,7 +1270,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /{id}/versions */
+        /** List console versions */
         get: operations["get_api_workspaces_workspaceId_consoles_id_versions"];
         put?: never;
         post?: never;
@@ -2701,7 +2701,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /{id}/versions */
+        /** List dashboard versions */
         get: operations["get_api_workspaces_workspaceId_dashboards_id_versions"];
         put?: never;
         post?: never;
@@ -19946,7 +19946,10 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_consoles_id_versions: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: string;
+                offset?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -36800,7 +36803,10 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_dashboards_id_versions: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: string;
+                offset?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;

@@ -18762,7 +18762,7 @@
         "tags": [
           "Consoles"
         ],
-        "summary": "GET /{id}/versions",
+        "summary": "List console versions",
         "security": [
           {
             "cookieAuth": []
@@ -18787,6 +18787,22 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
           }
         ],
         "responses": {
@@ -38767,7 +38783,7 @@
         "tags": [
           "Dashboards"
         ],
-        "summary": "GET /{id}/versions",
+        "summary": "List dashboard versions",
         "security": [
           {
             "cookieAuth": []
@@ -38792,6 +38808,22 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
           }
         ],
         "responses": {

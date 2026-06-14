@@ -2099,7 +2099,7 @@ app.openapi(
     method: "get",
     path: "/{id}/versions",
     tags: ["Dashboards"],
-    summary: "GET /{id}/versions",
+    summary: "List dashboard versions",
     security: AUTH_SECURITY,
     request: {
       params: z.object({
@@ -2107,6 +2107,16 @@ app.openapi(
           .string()
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      query: z.object({
+        limit: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+        offset: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "offset", in: "query" } }),
       }),
     },
     responses: { ...OPEN_RESPONSES },
