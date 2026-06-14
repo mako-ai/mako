@@ -8,26 +8,7 @@
  * as present and adds `billing`).
  */
 
-import { api } from "../api";
-
-/**
- * Throws on transport/HTTP error, otherwise returns the parsed `{ success, data }`
- * envelope. `data` is exposed as `unknown` so each caller asserts the frontend
- * domain type (the API DTO is a structural subset).
- */
-function unwrap(result: {
-  data?: unknown;
-  error?: unknown;
-  response: Response;
-}): { data?: unknown } {
-  if (result.error || !result.response.ok) {
-    const message =
-      (result.error as { error?: string } | undefined)?.error ||
-      `HTTP error! status: ${result.response.status}`;
-    throw new Error(message);
-  }
-  return (result.data ?? {}) as { data?: unknown };
-}
+import { api, unwrap } from "../api";
 
 // Types
 export interface WorkspaceBilling {

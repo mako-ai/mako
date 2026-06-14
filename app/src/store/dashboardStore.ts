@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { api, unwrap } from "../api";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
@@ -307,12 +308,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
           state.error[workspaceId] = null;
         });
         try {
-          const response = await apiClient.get<{
-            success: boolean;
+          const response = unwrap(
+            await api.GET("/api/workspaces/{workspaceId}/dashboards", {
+              params: { path: { workspaceId } },
+            }),
+          ) as {
             data?: Dashboard[];
             myDashboards?: any[];
             workspaceDashboards?: any[];
-          }>(`/workspaces/${workspaceId}/dashboards`);
+          };
 
           // Support both flat (legacy) and tree (new) response shapes
           let data: Dashboard[];
@@ -359,21 +363,23 @@ export const useDashboardStore = create<DashboardStoreState>()(
         options?: { signal?: AbortSignal },
       ) => {
         try {
-          const response = await apiClient.post<{
-            success: boolean;
-            data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards`, data, {
-            signal: options?.signal,
-          });
+          const response = unwrap(
+            await api.POST("/api/workspaces/{workspaceId}/dashboards", {
+              params: { path: { workspaceId } },
+              body: data as Record<string, unknown>,
+              signal: options?.signal,
+            }),
+          ) as { data?: Dashboard };
 
-          if (response.data) {
+          const created = response.data;
+          if (created) {
             set(state => {
               if (!state.dashboards[workspaceId]) {
                 state.dashboards[workspaceId] = [];
               }
-              state.dashboards[workspaceId].unshift(response.data);
+              state.dashboards[workspaceId].unshift(created);
             });
-            return response.data;
+            return created;
           }
           return null;
         } catch {
@@ -387,10 +393,12 @@ export const useDashboardStore = create<DashboardStoreState>()(
         data: Partial<Dashboard>,
       ) => {
         try {
-          const response = await apiClient.put<{
-            success: boolean;
-            data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards/${id}`, data);
+          const response = unwrap(
+            await api.PUT("/api/workspaces/{workspaceId}/dashboards/{id}", {
+              params: { path: { workspaceId, id } },
+              body: data as Record<string, unknown>,
+            }),
+          ) as { data?: Dashboard };
           set(state => {
             const list = state.dashboards[workspaceId];
             if (list) {
@@ -410,7 +418,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
       deleteDashboard: async (workspaceId: string, id: string) => {
         try {
-          await apiClient.delete(`/workspaces/${workspaceId}/dashboards/${id}`);
+          unwrap(
+            await api.DELETE("/api/workspaces/{workspaceId}/dashboards/{id}", {
+              params: { path: { workspaceId, id } },
+            }),
+          );
           set(state => {
             const list = state.dashboards[workspaceId];
             if (list) {
