@@ -1,6 +1,18 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { api, unwrap } from "../api";
+
+/**
+ * Typed base path per resource. Collaborator + sharing endpoints exist for all
+ * three resources, so these literal templates resolve to valid spec paths and
+ * give the typed client compile-time path/param checking.
+ */
+const RESOURCE_BASE = {
+  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}",
+  console: "/api/workspaces/{workspaceId}/consoles/{id}",
+  app: "/api/workspaces/{workspaceId}/apps/{id}",
+} as const;
 
 /**
  * Unified sharing store for dashboards, consoles and apps.
@@ -156,10 +168,11 @@ export const useShareStore = create<ShareStoreState>()(
         state.loadingCollaborators[key] = true;
       });
       try {
-        const response = await apiClient.get<{
-          success: boolean;
-          data: ShareCollaborator[];
-        }>(`${basePath(type, workspaceId, resourceId)}/collaborators`);
+        const response = unwrap(
+          await api.GET(`${RESOURCE_BASE[type]}/collaborators`, {
+            params: { path: { workspaceId, id: resourceId } },
+          }),
+        ) as { data?: ShareCollaborator[] };
         set(state => {
           state.collaborators[key] = response.data ?? [];
           state.loadingCollaborators[key] = false;
@@ -178,9 +191,11 @@ export const useShareStore = create<ShareStoreState>()(
 
     addCollaborator: async (type, workspaceId, resourceId, userId, role) => {
       try {
-        await apiClient.post(
-          `${basePath(type, workspaceId, resourceId)}/collaborators`,
-          { userId, role },
+        unwrap(
+          await api.POST(`${RESOURCE_BASE[type]}/collaborators`, {
+            params: { path: { workspaceId, id: resourceId } },
+            body: { userId, role },
+          }),
         );
         await get().loadCollaborators(type, workspaceId, resourceId);
         return { ok: true };
@@ -197,9 +212,11 @@ export const useShareStore = create<ShareStoreState>()(
       role,
     ) => {
       try {
-        await apiClient.patch(
-          `${basePath(type, workspaceId, resourceId)}/collaborators/${userId}`,
-          { role },
+        unwrap(
+          await api.PATCH(`${RESOURCE_BASE[type]}/collaborators/{userId}`, {
+            params: { path: { workspaceId, id: resourceId, userId } },
+            body: { role },
+          }),
         );
         const key = shareKey(type, resourceId);
         set(state => {
@@ -218,8 +235,10 @@ export const useShareStore = create<ShareStoreState>()(
 
     removeCollaborator: async (type, workspaceId, resourceId, userId) => {
       try {
-        await apiClient.delete(
-          `${basePath(type, workspaceId, resourceId)}/collaborators/${userId}`,
+        unwrap(
+          await api.DELETE(`${RESOURCE_BASE[type]}/collaborators/{userId}`, {
+            params: { path: { workspaceId, id: resourceId, userId } },
+          }),
         );
         const key = shareKey(type, resourceId);
         set(state => {
@@ -238,10 +257,12 @@ export const useShareStore = create<ShareStoreState>()(
 
     updateSharingSettings: async (type, workspaceId, resourceId, settings) => {
       try {
-        const response = await apiClient.patch<{
-          success: boolean;
-          data: SharingSettings;
-        }>(`${basePath(type, workspaceId, resourceId)}/sharing`, settings);
+        const response = unwrap(
+          await api.PATCH(`${RESOURCE_BASE[type]}/sharing`, {
+            params: { path: { workspaceId, id: resourceId } },
+            body: settings,
+          }),
+        ) as { data?: SharingSettings };
         return { ok: true, settings: response.data };
       } catch (error) {
         return {
