@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import type {
   NotificationDeliveryApi,
   NotificationResourceTypeApi,
@@ -60,13 +60,14 @@ export const useNotificationRuleStore = create<
 
     fetchRules: async (workspaceId, resourceType, resourceId) => {
       const key = resourceKey(resourceType, resourceId);
-      const res = await apiClient.get<{
-        success: boolean;
-        rules: NotificationRuleApi[];
-      }>(`/workspaces/${workspaceId}/notification-rules`, {
-        resourceType,
-        resourceId,
-      });
+      const res = unwrapBody(
+        await api.GET("/api/workspaces/{workspaceId}/notification-rules", {
+          params: {
+            path: { workspaceId },
+            query: { resourceType, resourceId },
+          },
+        }),
+      ) as { rules?: NotificationRuleApi[] };
       set(s => {
         s.rulesByKey[key] = res.rules || [];
       });
@@ -75,17 +76,23 @@ export const useNotificationRuleStore = create<
 
     fetchDeliveries: async (workspaceId, resourceType, resourceId, options) => {
       const key = resourceKey(resourceType, resourceId);
-      const params: Record<string, string> = {
-        resourceType,
-        resourceId,
-      };
-      if (options?.limit != null) {
-        params.limit = String(options.limit);
-      }
-      const res = await apiClient.get<{
-        success: boolean;
-        deliveries: NotificationDeliveryApi[];
-      }>(`/workspaces/${workspaceId}/notification-rules/deliveries`, params);
+      const res = unwrapBody(
+        await api.GET(
+          "/api/workspaces/{workspaceId}/notification-rules/deliveries",
+          {
+            params: {
+              path: { workspaceId },
+              query: {
+                resourceType,
+                resourceId,
+                ...(options?.limit != null
+                  ? { limit: String(options.limit) }
+                  : {}),
+              },
+            },
+          },
+        ),
+      ) as { deliveries?: NotificationDeliveryApi[] };
       const list = res.deliveries || [];
       if (!options?.skipCache) {
         set(s => {
@@ -96,11 +103,12 @@ export const useNotificationRuleStore = create<
     },
 
     createRule: async (workspaceId, body) => {
-      const res = await apiClient.post<{
-        success: boolean;
-        rule: NotificationRuleApi;
-        signingSecretOnce?: string;
-      }>(`/workspaces/${workspaceId}/notification-rules`, body);
+      const res = unwrapBody(
+        await api.POST("/api/workspaces/{workspaceId}/notification-rules", {
+          params: { path: { workspaceId } },
+          body,
+        }),
+      ) as { rule: NotificationRuleApi; signingSecretOnce?: string };
       const rt = res.rule.resourceType;
       const rid = res.rule.resourceId;
       const key = resourceKey(rt, rid);
@@ -112,11 +120,12 @@ export const useNotificationRuleStore = create<
     },
 
     updateRule: async (workspaceId, ruleId, body) => {
-      const res = await apiClient.patch<{
-        success: boolean;
-        rule: NotificationRuleApi;
-        signingSecretOnce?: string;
-      }>(`/workspaces/${workspaceId}/notification-rules/${ruleId}`, body);
+      const res = unwrapBody(
+        await api.PATCH(
+          "/api/workspaces/{workspaceId}/notification-rules/{ruleId}",
+          { params: { path: { workspaceId, ruleId } }, body },
+        ),
+      ) as { rule: NotificationRuleApi; signingSecretOnce?: string };
       const rt = res.rule.resourceType;
       const rid = res.rule.resourceId;
       const key = resourceKey(rt, rid);
@@ -128,8 +137,11 @@ export const useNotificationRuleStore = create<
     },
 
     deleteRule: async (workspaceId, ruleId) => {
-      await apiClient.delete(
-        `/workspaces/${workspaceId}/notification-rules/${ruleId}`,
+      unwrapBody(
+        await api.DELETE(
+          "/api/workspaces/{workspaceId}/notification-rules/{ruleId}",
+          { params: { path: { workspaceId, ruleId } } },
+        ),
       );
       set(s => {
         for (const k of Object.keys(s.rulesByKey)) {
@@ -139,9 +151,11 @@ export const useNotificationRuleStore = create<
     },
 
     testNotification: async (workspaceId, body) => {
-      await apiClient.post(
-        `/workspaces/${workspaceId}/notification-rules/test`,
-        body,
+      unwrapBody(
+        await api.POST(
+          "/api/workspaces/{workspaceId}/notification-rules/test",
+          { params: { path: { workspaceId } }, body },
+        ),
       );
     },
 
