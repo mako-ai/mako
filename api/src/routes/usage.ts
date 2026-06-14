@@ -13,27 +13,55 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { LlmUsage } from "../database/schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
-import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  AUTH_SECURITY,
+  STD_ERRORS,
+  createRouter,
+  jsonContent,
+  pathParam,
+  queryParam,
+} from "../openapi/core";
 
 const logger = loggers.api("usage");
 
 export const usageRoutes = createRouter();
 
-const WorkspaceParam = z.object({
-  workspaceId: z
-    .string()
-    .openapi({ param: { name: "workspaceId", in: "path" } }),
-});
+const WorkspaceParam = z.object({ workspaceId: pathParam("workspaceId") });
 
 const DateRangeQuery = z.object({
-  from: z
-    .string()
-    .optional()
-    .openapi({ param: { name: "from", in: "query" }, example: "2024-01-01" }),
-  to: z
-    .string()
-    .optional()
-    .openapi({ param: { name: "to", in: "query" }, example: "2024-12-31" }),
+  from: queryParam("from"),
+  to: queryParam("to"),
+});
+
+const UsageTotalsSchema = z
+  .object({
+    totalInputTokens: z.number(),
+    totalOutputTokens: z.number(),
+    totalCacheReadTokens: z.number(),
+    totalCacheWriteTokens: z.number(),
+    totalReasoningTokens: z.number(),
+    totalTokens: z.number(),
+    totalCostUsd: z.number(),
+    invocationCount: z.number(),
+  })
+  .openapi("UsageTotals");
+
+const UsageByUserSchema = UsageTotalsSchema.extend({
+  userId: z.string().nullable(),
+}).openapi("UsageByUser");
+
+const UsageByModelSchema = UsageTotalsSchema.extend({
+  modelId: z.string().nullable(),
+}).openapi("UsageByModel");
+
+const ChatInvocationTotalsSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheReadTokens: z.number(),
+  cacheWriteTokens: z.number(),
+  reasoningTokens: z.number(),
+  totalTokens: z.number(),
+  costUsd: z.number(),
 });
 
 usageRoutes.use("*", unifiedAuthMiddleware);
@@ -101,7 +129,10 @@ usageRoutes.openapi(
       "Total tokens and cost for the workspace, optionally date-filtered.",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam, query: DateRangeQuery },
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      200: jsonContent(UsageTotalsSchema, "Aggregate usage totals."),
+      ...STD_ERRORS,
+    },
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
@@ -145,6 +176,7 @@ usageRoutes.openapi(
           totalCostUsd: 0,
           invocationCount: 0,
         },
+        200,
       );
     } catch (err) {
       logger.error("Error fetching usage summary", { error: err });
@@ -161,7 +193,13 @@ usageRoutes.openapi(
     summary: "Usage breakdown by user",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam, query: DateRangeQuery },
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      200: jsonContent(
+        z.object({ users: z.array(UsageByUserSchema) }),
+        "Per-user usage breakdown.",
+      ),
+      ...STD_ERRORS,
+    },
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
@@ -208,7 +246,7 @@ usageRoutes.openapi(
         { $sort: { totalCostUsd: -1 } },
       ]);
 
-      return c.json({ users: results });
+      return c.json({ users: results }, 200);
     } catch (err) {
       logger.error("Error fetching usage by user", { error: err });
       return c.json({ error: "Internal server error" }, 500);
@@ -224,11 +262,19 @@ usageRoutes.openapi(
     summary: "Usage detail for a chat",
     security: AUTH_SECURITY,
     request: {
-      params: WorkspaceParam.extend({
-        chatId: z.string().openapi({ param: { name: "chatId", in: "path" } }),
-      }),
+      params: WorkspaceParam.extend({ chatId: pathParam("chatId") }),
     },
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      200: jsonContent(
+        z.object({
+          chatId: z.string(),
+          totals: ChatInvocationTotalsSchema,
+          invocations: z.array(z.record(z.string(), z.any())),
+        }),
+        "Per-chat usage detail.",
+      ),
+      ...STD_ERRORS,
+    },
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
@@ -268,11 +314,14 @@ usageRoutes.openapi(
         },
       );
 
-      return c.json({
-        chatId,
-        totals,
-        invocations: results,
-      });
+      return c.json(
+        {
+          chatId,
+          totals,
+          invocations: results,
+        },
+        200,
+      );
     } catch (err) {
       logger.error("Error fetching usage by chat", { error: err });
       return c.json({ error: "Internal server error" }, 500);
@@ -288,7 +337,13 @@ usageRoutes.openapi(
     summary: "Usage breakdown by model",
     security: AUTH_SECURITY,
     request: { params: WorkspaceParam, query: DateRangeQuery },
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      200: jsonContent(
+        z.object({ models: z.array(UsageByModelSchema) }),
+        "Per-model usage breakdown.",
+      ),
+      ...STD_ERRORS,
+    },
   }),
   async c => {
     const workspaceId = c.req.param("workspaceId");
@@ -335,7 +390,7 @@ usageRoutes.openapi(
         { $sort: { totalCostUsd: -1 } },
       ]);
 
-      return c.json({ models: results });
+      return c.json({ models: results }, 200);
     } catch (err) {
       logger.error("Error fetching usage by model", { error: err });
       return c.json({ error: "Internal server error" }, 500);

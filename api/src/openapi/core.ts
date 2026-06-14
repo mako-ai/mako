@@ -82,6 +82,40 @@ export function successEnvelope<T extends z.ZodType>(dataSchema: T) {
   return z.object({ success: z.literal(true), data: dataSchema });
 }
 
+/** `{ success: true, message }` — for write endpoints that return an ack. */
+export const MessageResponseSchema = z
+  .object({ success: z.literal(true), message: z.string() })
+  .openapi("MessageResponse");
+
+/** A `200` JSON response wrapping `data` in the success envelope. */
+export function dataResponse<T extends z.ZodType>(
+  dataSchema: T,
+  description = "Successful response",
+) {
+  return jsonContent(successEnvelope(dataSchema), description);
+}
+
+/** Declares a required path parameter as a string. */
+export function pathParam(name: string) {
+  return z.string().openapi({ param: { name, in: "path" } });
+}
+
+/** Declares an optional query parameter as a string. */
+export function queryParam(name: string) {
+  return z
+    .string()
+    .optional()
+    .openapi({ param: { name, in: "query" } });
+}
+
+/** A JSON request body for the given schema (required unless `optional`). */
+export function jsonBody<T extends z.ZodType>(schema: T, optional = false) {
+  return {
+    required: !optional,
+    content: { "application/json": { schema } },
+  };
+}
+
 /**
  * Generic success response (`200`) with an open JSON body. Used when wrapping an
  * existing handler whose payload is dynamic or not worth modelling field-by-field;
