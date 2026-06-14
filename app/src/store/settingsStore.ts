@@ -5,7 +5,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import type {
   AIModel,
   ModelListResponse,
@@ -71,10 +71,9 @@ export const useSettingsStore = create<SettingsState>()(
         const doFetch = async () => {
           set({ modelsLoading: true, modelsError: null });
           try {
-            const response = await apiClient.get<
+            const response = unwrapBody(await api.GET("/api/agent/models")) as
               | ModelListResponse
-              | { models: AIModel[]; recommendedModelId?: string | null }
-            >("/agent/models");
+              | { models: AIModel[]; recommendedModelId?: string | null };
 
             const models =
               "success" in response
@@ -143,9 +142,9 @@ export const useSettingsStore = create<SettingsState>()(
         const doFetch = async () => {
           set({ gatewayModelsLoading: true, gatewayModelsError: null });
           try {
-            const response = await apiClient.get<GatewayModelsResponse>(
-              "/agent/gateway-models",
-            );
+            const response = unwrapBody(
+              await api.GET("/api/agent/gateway-models"),
+            ) as GatewayModelsResponse;
             set({ gatewayModels: response.models || [] });
           } catch (error) {
             set({ gatewayModelsError: "Failed to load gateway models" });
@@ -166,9 +165,11 @@ export const useSettingsStore = create<SettingsState>()(
       fetchDisabledModels: async (workspaceId: string) => {
         set({ disabledModelsLoading: true, disabledModelsError: null });
         try {
-          const response = await apiClient.get<DisabledModelsResponse>(
-            `/workspaces/${workspaceId}/settings/models`,
-          );
+          const response = unwrapBody(
+            await api.GET("/api/workspaces/{id}/settings/models", {
+              params: { path: { id: workspaceId } },
+            }),
+          ) as DisabledModelsResponse;
           set({ disabledModelIds: response.disabledModelIds || [] });
         } catch (error) {
           set({ disabledModelsError: "Failed to load disabled models" });
@@ -181,9 +182,12 @@ export const useSettingsStore = create<SettingsState>()(
         disabledIds: string[],
       ): Promise<boolean> => {
         try {
-          await apiClient.put(`/workspaces/${workspaceId}/settings/models`, {
-            disabledModelIds: disabledIds,
-          });
+          unwrapBody(
+            await api.PUT("/api/workspaces/{id}/settings/models", {
+              params: { path: { id: workspaceId } },
+              body: { disabledModelIds: disabledIds },
+            }),
+          );
           set({ disabledModelIds: [...disabledIds] });
           return true;
         } catch (error) {
