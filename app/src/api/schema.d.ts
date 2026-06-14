@@ -3445,6 +3445,20 @@ export interface components {
             /** @example Error message */
             error?: string;
         };
+        Workspace: {
+            /** @example 507f1f77bcf86cd799439011 */
+            id?: string;
+            name: string;
+            slug: string;
+            role?: string;
+            /** Format: date-time */
+            createdAt?: string;
+            /** Format: date-time */
+            updatedAt?: string;
+            settings: {
+                [key: string]: unknown;
+            };
+        };
         Error: {
             success?: boolean;
             /** @example Human-readable error message */
@@ -7325,13 +7339,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
+            /** @description Workspaces for the user. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        /** @enum {boolean} */
+                        success: true;
+                        data: components["schemas"]["Workspace"][];
+                    };
                 };
             };
             /** @description Created */
@@ -7494,10 +7512,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    name: string;
+                    slug?: string;
                 };
             };
         };
@@ -7673,13 +7692,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
+            /** @description The active workspace, or null. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        /** @enum {boolean} */
+                        success: true;
+                        data: components["schemas"]["Workspace"] & (Record<string, never> | null);
+                    };
                 };
             };
             /** @description Created */
@@ -8192,13 +8215,17 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful response */
+            /** @description The workspace. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        /** @enum {boolean} */
+                        success: true;
+                        data: components["schemas"]["Workspace"];
+                    };
                 };
             };
             /** @description Created */
@@ -8366,7 +8393,10 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    name?: string;
+                    settings?: {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -9413,10 +9443,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    userId: string;
+                    /** @enum {string} */
+                    role: "admin" | "member" | "viewer";
                 };
             };
         };
@@ -9593,10 +9625,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    /** @enum {string} */
+                    role: "admin" | "member" | "viewer";
                 };
             };
         };
@@ -10119,10 +10152,12 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    email: string;
+                    /** @enum {string} */
+                    role: "admin" | "member" | "viewer";
                 };
             };
         };

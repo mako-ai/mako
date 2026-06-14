@@ -10,7 +10,46 @@ import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
 import { normalizeEmail } from "../utils/email.utils";
 import { loggers } from "../logging";
-import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  dataResponse,
+  jsonBody,
+  zDateTime,
+  zObjectId,
+} from "../openapi/core";
+
+const MemberRole = z.enum(["admin", "member", "viewer"]);
+const CreateWorkspaceBody = jsonBody(
+  z.object({ name: z.string(), slug: z.string().optional() }),
+);
+const UpdateWorkspaceBody = jsonBody(
+  z.object({
+    name: z.string().optional(),
+    settings: z.record(z.string(), z.any()).optional(),
+  }),
+  true,
+);
+const AddMemberBody = jsonBody(
+  z.object({ userId: z.string(), role: MemberRole }),
+);
+const UpdateMemberRoleBody = jsonBody(z.object({ role: MemberRole }));
+const CreateInviteBody = jsonBody(
+  z.object({ email: z.string(), role: MemberRole }),
+);
+
+const WorkspaceSchema = z
+  .object({
+    id: zObjectId(),
+    name: z.string(),
+    slug: z.string(),
+    role: z.string().optional(),
+    createdAt: zDateTime(),
+    updatedAt: zDateTime(),
+    settings: z.record(z.string(), z.any()),
+  })
+  .openapi("Workspace");
 
 const logger = loggers.workspace();
 
@@ -116,7 +155,10 @@ workspaceRoutes.openapi(
     summary: "List workspaces",
     security: AUTH_SECURITY,
     middleware: [unifiedAuthMiddleware] as const,
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: dataResponse(z.array(WorkspaceSchema), "Workspaces for the user."),
+    },
   }),
   async c => {
     try {
@@ -183,7 +225,7 @@ workspaceRoutes.openapi(
     summary: "Create a workspace",
     security: AUTH_SECURITY,
     middleware: [unifiedAuthMiddleware] as const,
-    request: { body: JsonBody },
+    request: { body: CreateWorkspaceBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -247,7 +289,13 @@ workspaceRoutes.openapi(
     summary: "Get the current workspace",
     security: AUTH_SECURITY,
     middleware: [unifiedAuthMiddleware, optionalWorkspace] as const,
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: dataResponse(
+        WorkspaceSchema.nullable(),
+        "The active workspace, or null.",
+      ),
+    },
   }),
   async c => {
     try {
@@ -448,7 +496,10 @@ workspaceRoutes.openapi(
     security: AUTH_SECURITY,
     middleware: [unifiedAuthMiddleware] as const,
     request: { params: IdParam },
-    responses: { ...OPEN_RESPONSES },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: dataResponse(WorkspaceSchema, "The workspace."),
+    },
   }),
   async c => {
     try {
@@ -535,7 +586,7 @@ workspaceRoutes.openapi(
       requireWorkspace,
       requireWorkspaceRole(["owner", "admin"]),
     ] as const,
-    request: { params: IdParam, body: JsonBody },
+    request: { params: IdParam, body: UpdateWorkspaceBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -853,7 +904,7 @@ workspaceRoutes.openapi(
       requireWorkspace,
       requireWorkspaceRole(["owner", "admin"]),
     ] as const,
-    request: { params: IdParam, body: JsonBody },
+    request: { params: IdParam, body: AddMemberBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -924,7 +975,7 @@ workspaceRoutes.openapi(
       requireWorkspace,
       requireWorkspaceRole(["owner", "admin"]),
     ] as const,
-    request: { params: IdUserParam, body: JsonBody },
+    request: { params: IdUserParam, body: UpdateMemberRoleBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
@@ -1063,7 +1114,7 @@ workspaceRoutes.openapi(
       requireWorkspace,
       requireWorkspaceRole(["owner", "admin"]),
     ] as const,
-    request: { params: IdParam, body: JsonBody },
+    request: { params: IdParam, body: CreateInviteBody },
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {

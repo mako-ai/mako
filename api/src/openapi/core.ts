@@ -101,6 +101,19 @@ export const MessageResponseSchema = z
   .object({ success: z.literal(true), message: z.string() })
   .openapi("MessageResponse");
 
+/**
+ * A Mongo `ObjectId` field. Handlers serialize these to strings over the wire
+ * (via `JSON`), but the in-handler value is an `ObjectId`. Using `z.any()` keeps
+ * the handler-return type check happy (no `.toString()` churn) while the
+ * `.openapi` override documents — and generates client types as — a `string`.
+ */
+export const zObjectId = () =>
+  z.any().openapi({ type: "string", example: "507f1f77bcf86cd799439011" });
+
+/** A `Date` field serialized to an ISO date-time string on the wire. */
+export const zDateTime = () =>
+  z.any().openapi({ type: "string", format: "date-time" });
+
 /** A `200` JSON response wrapping `data` in the success envelope. */
 export function dataResponse<T extends z.ZodType>(
   dataSchema: T,

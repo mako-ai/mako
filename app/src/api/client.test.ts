@@ -34,7 +34,7 @@ describe("typed API client", () => {
   });
 
   it("GET resolves the spec path and returns a typed body", async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_req: Request) =>
       jsonResponse({
         success: true,
         data: [
@@ -66,7 +66,9 @@ describe("typed API client", () => {
   });
 
   it("injects the active workspace id as x-workspace-id", async () => {
-    const fetchMock = vi.fn(async () => jsonResponse({ success: true }));
+    const fetchMock = vi.fn(async (_req: Request) =>
+      jsonResponse({ success: true }),
+    );
     const client = createApiClient(
       "https://test.local",
       fetchMock as unknown as typeof fetch,
