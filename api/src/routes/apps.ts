@@ -10,7 +10,6 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import type { Hono } from "hono";
 import { Types } from "mongoose";
 import { Readable } from "node:stream";
 import { nanoid } from "nanoid";
@@ -776,15 +775,15 @@ const loadAppById = async (c: AuthenticatedContext) => {
 // routes on the same instance. They accept a plain Hono; OpenAPIHono is
 // runtime-compatible, so we cast for the type boundary. These routes remain
 // functional but are not part of the generated OpenAPI document.
-registerCollaboratorRoutes(app as unknown as Hono, {
+registerCollaboratorRoutes(app, {
   resourceName: "App",
   load: loadAppById,
 });
-registerSharingSettingsRoutes(app as unknown as Hono, {
+registerSharingSettingsRoutes(app, {
   resourceName: "App",
   load: loadAppById,
 });
-registerPublicShareRoutes(app as unknown as Hono, {
+registerPublicShareRoutes(app, {
   resourceName: "App",
   load: loadAppById,
   getTitle: doc => (doc as unknown as IMakoApp).title,

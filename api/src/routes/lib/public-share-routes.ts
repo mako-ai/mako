@@ -12,7 +12,7 @@
 
 import crypto from "node:crypto";
 import bcrypt from "bcrypt";
-import type { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { loggers } from "../../logging";
 import type { AuthenticatedContext } from "../../middleware/workspace.middleware";
 import { canManageSharing } from "../../utils/resource-acl";
@@ -24,8 +24,39 @@ import {
   type IPublicShare,
 } from "../../database/workspace-schema";
 import type { ShareableDocument } from "./collaborator-routes";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  pathParam,
+  type AuthEnv,
+} from "../../openapi/core";
 
 const logger = loggers.api("public-share");
+
+const ShareIdParam = z.object({
+  workspaceId: pathParam("workspaceId"),
+  id: pathParam("id"),
+});
+const EnableShareBody = {
+  required: false,
+  content: {
+    "application/json": {
+      schema: z.object({ password: z.string().optional() }),
+    },
+  },
+};
+const UpdateShareBody = {
+  required: false,
+  content: {
+    "application/json": {
+      schema: z.object({
+        password: z.string().nullable().optional(),
+        rotateToken: z.boolean().optional(),
+        token: z.string().optional(),
+      }),
+    },
+  },
+};
 
 export type PublicShareDocument = ShareableDocument & {
   publicShare?: IPublicShare;
@@ -106,10 +137,11 @@ function serialize(publicShare?: IPublicShare) {
 }
 
 export function registerPublicShareRoutes(
-  app: Hono,
+  app: OpenAPIHono<AuthEnv>,
   options: PublicShareRouteOptions,
 ): void {
   const { resourceName, load, getTitle } = options;
+  const tag = `${resourceName}s`;
 
   const guard = async (c: AuthenticatedContext) => {
     const userId = c.get("user")?.id;
@@ -142,165 +174,212 @@ export function registerPublicShareRoutes(
   };
 
   // Enable public sharing (idempotent — keeps the existing token).
-  app.post("/:id/public-share", async (c: AuthenticatedContext) => {
-    try {
-      const result = await guard(c);
-      if (result.error) return result.error;
-      const { doc, userId } = result;
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/{id}/public-share",
+      tags: [tag],
+      summary: `Enable ${resourceName} public sharing`,
+      security: AUTH_SECURITY,
+      request: { params: ShareIdParam, body: EnableShareBody },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const result = await guard(c as AuthenticatedContext);
+        if (result.error) return result.error;
+        const { doc, userId } = result;
 
-      const body = await c.req.json().catch(() => ({}));
-      const password =
-        typeof body?.password === "string" && body.password.length > 0
-          ? body.password
-          : undefined;
+        const body = await c.req.json().catch(() => ({}));
+        const password =
+          typeof body?.password === "string" && body.password.length > 0
+            ? body.password
+            : undefined;
 
-      const existing = doc.publicShare;
-      doc.publicShare = {
-        enabled: true,
-        token:
-          existing?.token ||
-          (await generateShareToken(getTitle?.(doc), {
-            excludeId: doc._id,
-          })),
-        passwordHash: password
-          ? await hashSharePassword(password)
-          : (existing?.passwordHash ?? null),
-        passwordEncrypted: password
-          ? encrypt(password)
-          : (existing?.passwordEncrypted ?? null),
-        createdAt: existing?.createdAt || new Date(),
-        createdBy: existing?.createdBy || userId,
-        lastPublicRefreshAt: existing?.lastPublicRefreshAt,
-      };
-      doc.markModified("publicShare");
-      await doc.save();
+        const existing = doc.publicShare;
+        doc.publicShare = {
+          enabled: true,
+          token:
+            existing?.token ||
+            (await generateShareToken(getTitle?.(doc), {
+              excludeId: doc._id,
+            })),
+          passwordHash: password
+            ? await hashSharePassword(password)
+            : (existing?.passwordHash ?? null),
+          passwordEncrypted: password
+            ? encrypt(password)
+            : (existing?.passwordEncrypted ?? null),
+          createdAt: existing?.createdAt || new Date(),
+          createdBy: existing?.createdBy || userId,
+          lastPublicRefreshAt: existing?.lastPublicRefreshAt,
+        };
+        doc.markModified("publicShare");
+        await doc.save();
 
-      return c.json({ success: true, data: serialize(doc.publicShare) });
-    } catch (error) {
-      logger.error(`Error enabling public share for ${resourceName}`, {
-        error,
-      });
-      return c.json(
-        { success: false, error: "Failed to enable public sharing" },
-        500,
-      );
-    }
-  });
-
-  // Reveal the current password (owner/admin only).
-  app.get("/:id/public-share/password", async (c: AuthenticatedContext) => {
-    try {
-      const result = await guard(c);
-      if (result.error) return result.error;
-      const { doc } = result;
-
-      const encrypted = doc.publicShare?.passwordEncrypted;
-      if (!doc.publicShare?.enabled || !encrypted) {
-        // Includes passwords set before reveal support existed (hash only).
-        return c.json({ success: true, data: { password: null } });
-      }
-      return c.json({ success: true, data: { password: decrypt(encrypted) } });
-    } catch (error) {
-      logger.error(
-        `Error revealing public share password for ${resourceName}`,
-        {
+        return c.json({ success: true, data: serialize(doc.publicShare) });
+      } catch (error) {
+        logger.error(`Error enabling public share for ${resourceName}`, {
           error,
-        },
-      );
-      return c.json(
-        { success: false, error: "Failed to retrieve password" },
-        500,
-      );
-    }
-  });
-
-  // Update password / rotate token.
-  app.patch("/:id/public-share", async (c: AuthenticatedContext) => {
-    try {
-      const result = await guard(c);
-      if (result.error) return result.error;
-      const { doc } = result;
-
-      if (!doc.publicShare?.enabled) {
+        });
         return c.json(
-          { success: false, error: "Public sharing is not enabled" },
-          400,
+          { success: false, error: "Failed to enable public sharing" },
+          500,
         );
       }
+    },
+  );
 
-      const body = await c.req.json().catch(() => ({}));
+  // Reveal the current password (owner/admin only).
+  app.openapi(
+    createRoute({
+      method: "get",
+      path: "/{id}/public-share/password",
+      tags: [tag],
+      summary: `Reveal ${resourceName} public-share password`,
+      security: AUTH_SECURITY,
+      request: { params: ShareIdParam },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const result = await guard(c as AuthenticatedContext);
+        if (result.error) return result.error;
+        const { doc } = result;
 
-      if (body?.rotateToken === true) {
-        doc.publicShare.token = await generateShareToken(getTitle?.(doc), {
-          forceSuffix: true,
-          excludeId: doc._id,
+        const encrypted = doc.publicShare?.passwordEncrypted;
+        if (!doc.publicShare?.enabled || !encrypted) {
+          // Includes passwords set before reveal support existed (hash only).
+          return c.json({ success: true, data: { password: null } });
+        }
+        return c.json({
+          success: true,
+          data: { password: decrypt(encrypted) },
         });
-      } else if (typeof body?.token === "string") {
-        // Custom link name, slugified server-side.
-        const requested = slugify(body.token);
-        if (!requested || requested.length < 3) {
+      } catch (error) {
+        logger.error(
+          `Error revealing public share password for ${resourceName}`,
+          {
+            error,
+          },
+        );
+        return c.json(
+          { success: false, error: "Failed to retrieve password" },
+          500,
+        );
+      }
+    },
+  );
+
+  // Update password / rotate token.
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/{id}/public-share",
+      tags: [tag],
+      summary: `Update ${resourceName} public sharing`,
+      security: AUTH_SECURITY,
+      request: { params: ShareIdParam, body: UpdateShareBody },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const result = await guard(c as AuthenticatedContext);
+        if (result.error) return result.error;
+        const { doc } = result;
+
+        if (!doc.publicShare?.enabled) {
           return c.json(
-            {
-              success: false,
-              error: "Link name must contain at least 3 letters or digits",
-            },
+            { success: false, error: "Public sharing is not enabled" },
             400,
           );
         }
-        if (requested !== doc.publicShare.token) {
-          if (await isShareTokenTaken(requested, doc._id)) {
+
+        const body = await c.req.json().catch(() => ({}));
+
+        if (body?.rotateToken === true) {
+          doc.publicShare.token = await generateShareToken(getTitle?.(doc), {
+            forceSuffix: true,
+            excludeId: doc._id,
+          });
+        } else if (typeof body?.token === "string") {
+          // Custom link name, slugified server-side.
+          const requested = slugify(body.token);
+          if (!requested || requested.length < 3) {
             return c.json(
-              { success: false, error: "This link name is already in use" },
-              409,
+              {
+                success: false,
+                error: "Link name must contain at least 3 letters or digits",
+              },
+              400,
             );
           }
-          doc.publicShare.token = requested;
+          if (requested !== doc.publicShare.token) {
+            if (await isShareTokenTaken(requested, doc._id)) {
+              return c.json(
+                { success: false, error: "This link name is already in use" },
+                409,
+              );
+            }
+            doc.publicShare.token = requested;
+          }
         }
-      }
-      // password: string sets a new password; null removes it; undefined keeps.
-      if (typeof body?.password === "string" && body.password.length > 0) {
-        doc.publicShare.passwordHash = await hashSharePassword(body.password);
-        doc.publicShare.passwordEncrypted = encrypt(body.password);
-      } else if (body?.password === null) {
-        doc.publicShare.passwordHash = null;
-        doc.publicShare.passwordEncrypted = null;
-      }
+        // password: string sets a new password; null removes it; undefined keeps.
+        if (typeof body?.password === "string" && body.password.length > 0) {
+          doc.publicShare.passwordHash = await hashSharePassword(body.password);
+          doc.publicShare.passwordEncrypted = encrypt(body.password);
+        } else if (body?.password === null) {
+          doc.publicShare.passwordHash = null;
+          doc.publicShare.passwordEncrypted = null;
+        }
 
-      doc.markModified("publicShare");
-      await doc.save();
+        doc.markModified("publicShare");
+        await doc.save();
 
-      return c.json({ success: true, data: serialize(doc.publicShare) });
-    } catch (error) {
-      logger.error(`Error updating public share for ${resourceName}`, {
-        error,
-      });
-      return c.json(
-        { success: false, error: "Failed to update public sharing" },
-        500,
-      );
-    }
-  });
+        return c.json({ success: true, data: serialize(doc.publicShare) });
+      } catch (error) {
+        logger.error(`Error updating public share for ${resourceName}`, {
+          error,
+        });
+        return c.json(
+          { success: false, error: "Failed to update public sharing" },
+          500,
+        );
+      }
+    },
+  );
 
   // Disable and invalidate the link.
-  app.delete("/:id/public-share", async (c: AuthenticatedContext) => {
-    try {
-      const result = await guard(c);
-      if (result.error) return result.error;
-      const { doc } = result;
+  app.openapi(
+    createRoute({
+      method: "delete",
+      path: "/{id}/public-share",
+      tags: [tag],
+      summary: `Disable ${resourceName} public sharing`,
+      security: AUTH_SECURITY,
+      request: { params: ShareIdParam },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const result = await guard(c as AuthenticatedContext);
+        if (result.error) return result.error;
+        const { doc } = result;
 
-      doc.publicShare = undefined;
-      doc.markModified("publicShare");
-      await doc.save();
+        doc.publicShare = undefined;
+        doc.markModified("publicShare");
+        await doc.save();
 
-      return c.json({ success: true, data: { enabled: false } });
-    } catch (error) {
-      logger.error(`Error disabling public share for ${resourceName}`, {
-        error,
-      });
-      return c.json(
-        { success: false, error: "Failed to disable public sharing" },
-        500,
-      );
-    }
-  });
+        return c.json({ success: true, data: { enabled: false } });
+      } catch (error) {
+        logger.error(`Error disabling public share for ${resourceName}`, {
+          error,
+        });
+        return c.json(
+          { success: false, error: "Failed to disable public sharing" },
+          500,
+        );
+      }
+    },
+  );
 }

@@ -1,5 +1,5 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import type { Context, Hono } from "hono";
+import type { Context } from "hono";
 import { ConsoleManager } from "../utils/console-manager";
 import {
   unifiedAuthMiddleware,
@@ -181,11 +181,11 @@ const loadConsoleById = async (c: AuthenticatedContext) => {
   });
 };
 
-registerCollaboratorRoutes(consoleRoutes as unknown as Hono, {
+registerCollaboratorRoutes(consoleRoutes, {
   resourceName: "Console",
   load: loadConsoleById,
 });
-registerSharingSettingsRoutes(consoleRoutes as unknown as Hono, {
+registerSharingSettingsRoutes(consoleRoutes, {
   resourceName: "Console",
   load: loadConsoleById,
 });

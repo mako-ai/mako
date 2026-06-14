@@ -1,5 +1,4 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import type { Hono } from "hono";
 import {
   Dashboard,
   DashboardFolder,
@@ -2352,15 +2351,15 @@ const loadDashboardById = async (c: AuthenticatedContext) => {
   });
 };
 
-registerCollaboratorRoutes(app as unknown as Hono, {
+registerCollaboratorRoutes(app, {
   resourceName: "Dashboard",
   load: loadDashboardById,
 });
-registerSharingSettingsRoutes(app as unknown as Hono, {
+registerSharingSettingsRoutes(app, {
   resourceName: "Dashboard",
   load: loadDashboardById,
 });
-registerPublicShareRoutes(app as unknown as Hono, {
+registerPublicShareRoutes(app, {
   resourceName: "Dashboard",
   load: loadDashboardById,
   getTitle: doc => (doc as unknown as IDashboard).title,
