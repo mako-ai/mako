@@ -28826,7 +28826,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_flows_flowId_sync_cdc_schema_health: {
         parameters: {
-            query?: never;
+            query?: {
+                entity?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -29522,7 +29524,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_flows_flowId_schema: {
         parameters: {
-            query?: never;
+            query?: {
+                entity?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -30050,7 +30054,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_flows_flowId_history: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -30748,7 +30754,12 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_flows_flowId_webhook_events: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: string;
+                offset?: string;
+                status?: string;
+                applyStatus?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;

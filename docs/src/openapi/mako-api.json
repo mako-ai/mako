@@ -29267,6 +29267,14 @@
             "required": true,
             "name": "flowId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "entity",
+            "in": "query"
           }
         ],
         "responses": {
@@ -30075,6 +30083,14 @@
             "required": true,
             "name": "flowId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "entity",
+            "in": "query"
           }
         ],
         "responses": {
@@ -30692,6 +30708,14 @@
             "required": true,
             "name": "flowId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
           }
         ],
         "responses": {
@@ -31516,6 +31540,38 @@
             "required": true,
             "name": "flowId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "applyStatus",
+            "in": "query"
           }
         ],
         "responses": {

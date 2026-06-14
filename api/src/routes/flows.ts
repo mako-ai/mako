@@ -3308,6 +3308,12 @@ flowRoutes.openapi(
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
       }),
+      query: z.object({
+        entity: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "entity", in: "query" } }),
+      }),
     },
     responses: { ...OPEN_RESPONSES },
   }),
@@ -3647,6 +3653,12 @@ flowRoutes.openapi(
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
       }),
+      query: z.object({
+        entity: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "entity", in: "query" } }),
+      }),
     },
     responses: { ...OPEN_RESPONSES },
   }),
@@ -3901,6 +3913,12 @@ flowRoutes.openapi(
           .string()
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
+      }),
+      query: z.object({
+        limit: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
       }),
     },
     responses: { ...OPEN_RESPONSES },
@@ -4201,6 +4219,24 @@ flowRoutes.openapi(
           .string()
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
+      }),
+      query: z.object({
+        limit: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+        offset: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "offset", in: "query" } }),
+        status: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "status", in: "query" } }),
+        applyStatus: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "applyStatus", in: "query" } }),
       }),
     },
     responses: { ...OPEN_RESPONSES },
