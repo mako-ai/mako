@@ -443,19 +443,22 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
       duplicateDashboard: async (workspaceId: string, id: string) => {
         try {
-          const response = await apiClient.post<{
-            success: boolean;
-            data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards/${id}/duplicate`);
+          const response = unwrap(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/duplicate",
+              { params: { path: { workspaceId, id } } },
+            ),
+          ) as { data?: Dashboard };
 
-          if (response.data) {
+          const created = response.data;
+          if (created) {
             set(state => {
               if (!state.dashboards[workspaceId]) {
                 state.dashboards[workspaceId] = [];
               }
-              state.dashboards[workspaceId].unshift(response.data);
+              state.dashboards[workspaceId].unshift(created);
             });
-            return response.data;
+            return created;
           }
           return null;
         } catch {
@@ -485,16 +488,12 @@ export const useDashboardStore = create<DashboardStoreState>()(
         options?: { signal?: AbortSignal },
       ) => {
         try {
-          const response = await apiClient.get<{
-            success: boolean;
-            data: Dashboard;
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}`,
-            undefined,
-            {
+          const response = unwrap(
+            await api.GET("/api/workspaces/{workspaceId}/dashboards/{id}", {
+              params: { path: { workspaceId, id: dashboardId } },
               signal: options?.signal,
-            },
-          );
+            }),
+          ) as { data?: Dashboard };
 
           if (response.data) {
             const dashboard = response.data;
