@@ -17285,7 +17285,10 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_consoles_search: {
         parameters: {
-            query?: never;
+            query?: {
+                q?: string;
+                limit?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;

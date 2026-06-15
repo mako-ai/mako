@@ -816,6 +816,16 @@ consoleRoutes.openapi(
           .string()
           .openapi({ param: { name: "workspaceId", in: "path" } }),
       }),
+      query: z.object({
+        q: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "q", in: "query" } }),
+        limit: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "limit", in: "query" } }),
+      }),
     },
     responses: { ...OPEN_RESPONSES },
   }),
