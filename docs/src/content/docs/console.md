@@ -10,7 +10,7 @@ The Console is Mako's query editor. It connects to any database you've added and
 - **Multi-database**: One editor for PostgreSQL, MongoDB, BigQuery, MySQL, ClickHouse, SQLite, and more
 - **AI-assisted**: Ask questions in natural language, get working queries placed in your editor
 - **Saved queries**: Consoles persist in your workspace, organized in folders
-- **Shareable**: Share consoles with your team via the workspace
+- **Shareable**: Share with specific teammates as viewer/editor, or with the whole workspace (see [Sharing](#sharing))
 - **API access**: Execute saved consoles programmatically via REST API
 - **Scheduled queries**: Run saved consoles on cron schedules and inspect run history
 
@@ -42,6 +42,16 @@ Consoles can be organized into folders. Use the sidebar tree to drag and arrange
 Workspace admins can schedule a saved console to run automatically from the console header. Scheduled consoles use five-field cron expressions plus an IANA timezone, for example `0 0 * * *` with `UTC` for a daily midnight run.
 
 When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. Admins can also trigger a scheduled console manually with **Run now**. You can attach **notifications** to a schedule (email, webhook, or Slack) — see [Notifications](/notifications/).
+
+## Sharing
+
+Consoles use the same **Google Workspace-style** sharing model as [dashboards](/dashboards/#sharing--collaborators):
+
+- **Per-user collaborators** — add specific teammates as `viewer` (read-only) or `editor` (read + write) from the console's **Share** dialog.
+- **General access** — set the console to `private` (owner + collaborators only) or `workspace` (every member), with a `workspaceRole` of `viewer` or `editor` controlling what members can do.
+- Only the **owner**, or a workspace **owner/admin** for non-private consoles, can manage sharing.
+
+Unlike dashboards and apps, consoles do **not** support unauthenticated public links — they execute live queries against your databases, so access always requires workspace authentication.
 
 ## Console API
 

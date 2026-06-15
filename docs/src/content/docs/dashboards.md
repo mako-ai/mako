@@ -137,13 +137,24 @@ If another user holds the lock, a confirmation dialog offers to take over.
 
 ## Sharing & Collaborators
 
-Beyond the workspace-level `access` setting, dashboards support **per-user collaborators** granted explicit edit access:
+Dashboards, [consoles](/console/), and apps use a single **Google Workspace-style** sharing model, managed from each resource's **Share** dialog. Three layers stack on top of each other:
 
-- Each collaborator is added with the `editor` role, which allows them to read **and** write the dashboard regardless of the broader access level.
-- Collaborators are managed from the dashboard's **Share** dialog.
-- Only the dashboard **owner** or a workspace **owner/admin** can add or remove collaborators.
+1. **Owner** — the creator (`owner_id`, falling back to `createdBy`) always has full access and can manage sharing.
+2. **Per-user collaborators** (`sharedWith`) — specific users granted a `viewer` (read-only) or `editor` (read + write) role, independent of the resource's general access scope.
+3. **General access** (`access`) — `private` (only the owner + collaborators) or `workspace` (every workspace member). When `workspace`, the `workspaceRole` field sets the role members get: `viewer` (default) or `editor`. Workspace admins/owners always resolve to `editor`; the `viewer` member role caps them at read-only.
 
-Under the hood, collaborators are stored on the dashboard's `sharedWith` array (`{ userId, role: "editor", addedAt, addedBy }`), indexed for fast "shared with me" lookups.
+Access resolution is first-match-wins in that order (see `api/src/utils/resource-acl.ts`). Admins do **not** gain access to private resources they neither own nor are shared on — this preserves the privacy guarantee. Only the **owner**, or a workspace **owner/admin** for non-private resources, can change sharing settings or manage collaborators.
+
+Collaborators are stored on the resource's `sharedWith` array (`{ userId, role, addedAt, addedBy }`), indexed for fast "shared with me" lookups.
+
+### Public links (dashboards & apps)
+
+Dashboards and apps can be published as read-only **public links** at `/share/:token`, served without authentication:
+
+- Public links serve **materialized snapshots only** (the last-materialized Parquet artifacts), never live database connections.
+- An optional **password** protects the link. It is stored as a bcrypt hash, plus an AES-encrypted copy so the owner/admin can reveal it later in the UI.
+- Links get a readable workspace/title **slug** (with conflict suffixes), support inline rename, **token rotation**, and a throttled anonymous **refresh** endpoint.
+- Consoles do **not** support public links — they share via collaborators and workspace access only.
 
 ## Scheduled Refresh
 
