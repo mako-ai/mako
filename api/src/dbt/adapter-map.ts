@@ -14,6 +14,21 @@ import type {
   IDbtEnvironment,
 } from "../database/workspace-schema";
 
+/**
+ * A credential file the runner must materialize before invoking dbt. The
+ * content is written to `<runDir>/<filename>` with 0600 perms and its absolute
+ * path is exported as `envVar`, which the profile references via env_var().
+ * Used for adapters (BigQuery) whose secrets are a file/dict, not a scalar.
+ */
+export interface ProfileKeyfile {
+  /** Env var that will hold the absolute path to the written file. */
+  envVar: string;
+  /** Relative filename within the runner's ephemeral project dir. */
+  filename: string;
+  /** File content (never logged). */
+  content: string;
+}
+
 export interface RenderedProfile {
   /** profiles.yml text to write into the runner temp dir. */
   profilesYml: string;
@@ -21,6 +36,8 @@ export interface RenderedProfile {
   secretEnv: Record<string, string>;
   /** dbt adapter package, e.g. "dbt-postgres". */
   adapterPackage: string;
+  /** Credential files the runner writes to disk (0600) before running dbt. */
+  keyfiles: ProfileKeyfile[];
 }
 
 export const DBT_PROFILE_NAME = "mako";
@@ -31,6 +48,7 @@ interface AdapterEntry {
     connection: IDatabaseConnection,
     env: Pick<IDbtEnvironment, "targetSchema" | "threads">,
     secretEnv: Record<string, string>,
+    keyfiles: ProfileKeyfile[],
   ) => Record<string, unknown>;
 }
 
@@ -80,28 +98,52 @@ const ADAPTERS: Record<string, AdapterEntry> = {
   },
   bigquery: {
     adapterPackage: "dbt-bigquery",
-    renderTarget: (connection, env, secretEnv) => {
-      const c = connection.connection;
-      const serviceAccountJson = c.service_account_json ?? "";
-      let projectId = "";
-      try {
-        projectId =
-          (JSON.parse(serviceAccountJson) as { project_id?: string })
-            .project_id ?? "";
-      } catch {
-        // keyfile missing/invalid — dbt will surface a clear error
+    renderTarget: (connection, env, _secretEnv, keyfiles) => {
+      const c = connection.connection as Record<string, unknown>;
+      // Credentials may be stored as a JSON string or an already-parsed object
+      // (the BigQuery query driver accepts both — mirror that here).
+      const rawSa = c.service_account_json;
+      let keyfileContent = "";
+      let saProjectId: string | undefined;
+      if (typeof rawSa === "string") {
+        keyfileContent = rawSa;
+        try {
+          saProjectId = (JSON.parse(rawSa) as { project_id?: string })
+            .project_id;
+        } catch {
+          // invalid/missing keyfile — dbt surfaces a clear error at startup
+        }
+      } else if (rawSa && typeof rawSa === "object") {
+        keyfileContent = JSON.stringify(rawSa);
+        saProjectId = (rawSa as { project_id?: string }).project_id;
       }
+
+      // Prefer the connection's configured project (what the query driver uses
+      // via getProjectId), falling back to the service account's own project.
+      const project =
+        (typeof c.project_id === "string" && c.project_id) || saProjectId || "";
+      const location =
+        typeof c.location === "string" && c.location ? c.location : undefined;
+
+      // dbt-bigquery's `service-account-json`/`keyfile_json` wants a parsed
+      // dict, which can't be supplied via env_var without mangling the private
+      // key's newlines. Write the keyfile to a 0600 temp file and reference its
+      // path with `method: service-account` + `keyfile` instead.
+      const KEYFILE_ENV = "DBT_BQ_KEYFILE";
+      keyfiles.push({
+        envVar: KEYFILE_ENV,
+        filename: ".dbt-bq-keyfile.json",
+        content: keyfileContent,
+      });
+
       return {
         type: "bigquery",
-        method: "service-account-json",
-        project: projectId,
+        method: "service-account",
+        project,
         dataset: env.targetSchema,
         threads: env.threads,
-        keyfile_json: secretRef(
-          secretEnv,
-          "bq_keyfile_json",
-          serviceAccountJson,
-        ),
+        keyfile: `{{ env_var('${KEYFILE_ENV}') }}`,
+        ...(location ? { location } : {}),
       };
     },
   },
@@ -187,7 +229,13 @@ export function renderDbtProfile(
   }
 
   const secretEnv: Record<string, string> = {};
-  const target = adapter.renderTarget(connection, environment, secretEnv);
+  const keyfiles: ProfileKeyfile[] = [];
+  const target = adapter.renderTarget(
+    connection,
+    environment,
+    secretEnv,
+    keyfiles,
+  );
 
   const profile = {
     [DBT_PROFILE_NAME]: {
@@ -203,5 +251,6 @@ export function renderDbtProfile(
     profilesYml: yamlDump(profile, { lineWidth: 200 }),
     secretEnv,
     adapterPackage: adapter.adapterPackage,
+    keyfiles,
   };
 }

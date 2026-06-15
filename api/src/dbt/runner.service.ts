@@ -245,6 +245,21 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       "utf8",
     );
 
+    // Materialize credential files (e.g. BigQuery service-account JSON) with
+    // restrictive perms and export their absolute paths so the profile's
+    // env_var('...') keyfile references resolve. Contents are never logged.
+    const keyfileEnv: Record<string, string> = {};
+    for (const keyfile of request.profile.keyfiles ?? []) {
+      const safePath = ensureSafeRelativePath(keyfile.filename);
+      const absolute = join(projectDir, ...safePath.split("/"));
+      await mkdir(dirname(absolute), { recursive: true });
+      await writeFile(absolute, keyfile.content, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      keyfileEnv[keyfile.envVar] = absolute;
+    }
+
     // Seed prior artifacts into target/ for `dbt retry` (run_results.json is
     // what dbt reads to resume at the failed/skipped nodes).
     if (request.restoreTarget) {
@@ -280,6 +295,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     const childEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
       ...request.profile.secretEnv,
+      ...keyfileEnv,
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
       HOME: projectDir,
     };
