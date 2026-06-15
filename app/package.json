@@ -31,6 +31,7 @@
     "@streamdown/code": "^1.1.1",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@uwdata/mosaic-core": "^0.21.1",
+    "@xyflow/react": "^12.11.0",
     "ai": "6.0.196",
     "axios": "^1.6.2",
     "date-fns": "^4.1.0",

@@ -18,6 +18,7 @@ import { clientChartTools } from "./chart-tools";
 import { clientDashboardTools } from "./dashboard-tools";
 import { clientFlowTools } from "./flow-tools";
 import { clientAppTools } from "./app-tools";
+import { clientDbtTools } from "./dbt-tools";
 import { clientDataSourceTools } from "./data-source-tools";
 import { clientScreenshotTools } from "./screenshot-tools";
 import { clientPlanTools } from "./plan-tools";
@@ -52,6 +53,9 @@ export { clientFlowTools } from "./flow-tools";
 
 export { clientAppTools } from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
+
+export { clientDbtTools } from "./dbt-tools";
+export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";
 
@@ -98,6 +102,7 @@ export const clientAgentTools = {
   ...clientDashboardTools,
   ...clientFlowTools,
   ...clientAppTools,
+  ...clientDbtTools,
   ...clientDataSourceTools,
   ...clientPlanTools,
 };

@@ -16,6 +16,7 @@ export type ExpertiseModeId =
   | "dashboard"
   | "flow"
   | "app"
+  | "transform"
   | "explore";
 
 /**

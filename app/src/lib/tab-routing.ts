@@ -47,6 +47,10 @@ export const TAB_DEEP_LINK_PATTERNS = {
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
   members: null,
+  // dbt tabs are opened from the Transforms explorer; not deep-linkable yet.
+  "dbt-file": null,
+  "dbt-job": null,
+  "dbt-console": null,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -113,6 +117,10 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         ? `/settings/${tab.settingsSection}`
         : "/settings";
     case "members":
+      return null;
+    case "dbt-file":
+    case "dbt-job":
+    case "dbt-console":
       return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.

@@ -25,7 +25,7 @@ import {
   modeRegistry,
   defaultExpertiseMode,
   toolNamesForModes,
-  isExpertiseModeId,
+  resolveExpertiseModeId,
 } from "./registry";
 import {
   BASE_SYSTEM_PROMPT,
@@ -84,7 +84,8 @@ export function deriveModeState(
 
       if (toolName === "enable_mode") {
         const mode = (part.input as { mode?: unknown } | undefined)?.mode;
-        if (isExpertiseModeId(mode)) enabledModes.add(mode);
+        const resolved = resolveExpertiseModeId(mode);
+        if (resolved) enabledModes.add(resolved);
       } else if (toolName === "submit_plan") {
         planSubmitted = true;
         const decision = (part.output as { decision?: unknown } | undefined)

@@ -56,6 +56,18 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
   members: baseTab({ kind: "members" }),
+  "dbt-file": baseTab({
+    kind: "dbt-file",
+    metadata: { projectId: "proj-1", path: "models/stg.sql" },
+  }),
+  "dbt-job": baseTab({
+    kind: "dbt-job",
+    metadata: { projectId: "proj-1", jobId: "job-1" },
+  }),
+  "dbt-console": baseTab({
+    kind: "dbt-console",
+    metadata: { projectId: "proj-1" },
+  }),
 };
 
 const ALL_KINDS = Object.keys(FIXTURES) as Array<NonNullable<TabKind>>;

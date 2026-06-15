@@ -43,6 +43,8 @@ const DashboardsExplorer = lazy(loadDashboardsExplorer);
 const loadAppsExplorer = () => import("./components/AppsExplorer");
 const AppsExplorer = lazy(loadAppsExplorer);
 const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
+const loadDbtExplorer = () => import("./components/DbtExplorer");
+const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -453,6 +455,8 @@ function MainApp() {
         return <DashboardsExplorer />;
       case "apps":
         return <AppsExplorer />;
+      case "dbt":
+        return <DbtExplorer />;
       case "settings":
         return <SettingsExplorer />;
       default:
