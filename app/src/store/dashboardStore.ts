@@ -1,8 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
-import { api, unwrap } from "../api";
+import { api, unwrap, unwrapBody } from "../api";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
@@ -554,17 +553,58 @@ export const useDashboardStore = create<DashboardStoreState>()(
             version: dashboard.version,
             comment: comment ?? "",
           };
-          const response = await apiClient.patch<{
+          // Read the raw result instead of unwrapping: a 409 carries a
+          // structured VERSION_CONFLICT body that drives the conflict UI.
+          const result = await api.PATCH(
+            "/api/workspaces/{workspaceId}/dashboards/{id}",
+            {
+              params: { path: { workspaceId, id: dashboardId } },
+              body: payload,
+            },
+          );
+          if (result.error || !result.response.ok) {
+            const errBody = result.error as
+              | {
+                  code?: string;
+                  serverVersion?: number;
+                  data?: Dashboard;
+                  error?: string;
+                }
+              | undefined;
+            if (
+              result.response.status === 409 &&
+              errBody?.code === "VERSION_CONFLICT"
+            ) {
+              const serverData = errBody.data as Dashboard;
+              set(state => {
+                state.conflict = {
+                  dashboardId,
+                  serverVersion: errBody.serverVersion as number,
+                  serverDashboard: serverData,
+                  localDashboard: JSON.parse(
+                    JSON.stringify(state.openDashboards[dashboardId]),
+                  ),
+                };
+              });
+              return { ok: false };
+            }
+            return {
+              ok: false,
+              error: errBody?.error ?? "Failed to save dashboard",
+            };
+          }
+          const response = result.data as {
             success: boolean;
             data: Dashboard;
-          }>(`/workspaces/${workspaceId}/dashboards/${dashboardId}`, payload);
+          };
           if (response.data) {
+            const saved = response.data;
             set(state => {
               const local = state.openDashboards[dashboardId];
-              if (local && response.data) {
+              if (local) {
                 state.openDashboards[dashboardId] = {
-                  ...response.data,
-                  readOnly: local.readOnly ?? response.data.readOnly,
+                  ...saved,
+                  readOnly: local.readOnly ?? saved.readOnly,
                 };
                 state.savedStateHashes[dashboardId] = computeDashboardStateHash(
                   state.openDashboards[dashboardId],
@@ -574,28 +614,7 @@ export const useDashboardStore = create<DashboardStoreState>()(
           }
           return { ok: true };
         } catch (err: any) {
-          const status = err?.response?.status ?? err?.status;
-          if (
-            status === 409 &&
-            err?.response?.data?.code === "VERSION_CONFLICT"
-          ) {
-            const serverData = err.response.data.data as Dashboard;
-            set(state => {
-              state.conflict = {
-                dashboardId,
-                serverVersion: err.response.data.serverVersion,
-                serverDashboard: serverData,
-                localDashboard: JSON.parse(
-                  JSON.stringify(state.openDashboards[dashboardId]),
-                ),
-              };
-            });
-            return { ok: false };
-          }
-          const msg =
-            err?.response?.data?.error ??
-            err?.message ??
-            "Failed to save dashboard";
+          const msg = err?.message ?? "Failed to save dashboard";
           return { ok: false, error: msg };
         }
       },
@@ -609,15 +628,20 @@ export const useDashboardStore = create<DashboardStoreState>()(
         if (!dashboard) return { comment: null, diff: null };
         try {
           const definition = sanitizeEditableDashboardDefinition(dashboard);
-          const res = await apiClient.post<{
+          const res = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/version-comment",
+              {
+                params: { path: { workspaceId, id: dashboardId } },
+                body: { definition },
+                signal,
+              },
+            ),
+          ) as {
             success: boolean;
             comment: string | null;
             diff: string | null;
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/version-comment`,
-            { definition },
-            { signal },
-          );
+          };
           return res.success
             ? { comment: res.comment ?? null, diff: res.diff ?? null }
             : { comment: null, diff: null };
@@ -878,14 +902,18 @@ export const useDashboardStore = create<DashboardStoreState>()(
         options?: { signal?: AbortSignal },
       ) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization",
+              {
+                params: { path: { workspaceId, dashboardId } },
+                signal: options?.signal,
+              },
+            ),
+          ) as {
             success: boolean;
             data: DashboardMaterializationStatus;
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization`,
-            undefined,
-            { signal: options?.signal },
-          );
+          };
           if (!response.data) {
             return null;
           }
@@ -918,9 +946,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
         dashboardId: string,
         input = {},
       ) =>
-        await apiClient.post(
-          `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialize`,
-          input,
+        unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialize",
+            { params: { path: { workspaceId, dashboardId } }, body: input },
+          ),
         ),
 
       materializeDashboardDataSource: async (
@@ -929,9 +959,14 @@ export const useDashboardStore = create<DashboardStoreState>()(
         dataSourceId: string,
         input = {},
       ) =>
-        await apiClient.post(
-          `/workspaces/${workspaceId}/dashboards/${dashboardId}/data-sources/${dataSourceId}/materialize`,
-          input,
+        unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialize",
+            {
+              params: { path: { workspaceId, dashboardId, dataSourceId } },
+              body: input,
+            },
+          ),
         ),
 
       fetchMaterializationRuns: async (
@@ -940,14 +975,24 @@ export const useDashboardStore = create<DashboardStoreState>()(
         dataSourceId?: string,
       ) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            dataSourceId
+              ? await api.GET(
+                  "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/data-sources/{dataSourceId}/materialization/runs",
+                  {
+                    params: {
+                      path: { workspaceId, dashboardId, dataSourceId },
+                    },
+                  },
+                )
+              : await api.GET(
+                  "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization/runs",
+                  { params: { path: { workspaceId, dashboardId } } },
+                ),
+          ) as {
             success: boolean;
             data: MaterializationRunRecord[];
-          }>(
-            dataSourceId
-              ? `/workspaces/${workspaceId}/dashboards/${dashboardId}/data-sources/${dataSourceId}/materialization/runs`
-              : `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization/runs`,
-          );
+          };
           return response.data || [];
         } catch {
           return [];
@@ -960,12 +1005,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
         runId: string,
       ) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/dashboards/{dashboardId}/materialization/runs/{runId}",
+              { params: { path: { workspaceId, dashboardId, runId } } },
+            ),
+          ) as {
             success: boolean;
             data: MaterializationRunRecord;
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/materialization/runs/${runId}`,
-          );
+          };
           return response.data || null;
         } catch {
           return null;
@@ -982,21 +1030,24 @@ export const useDashboardStore = create<DashboardStoreState>()(
         options?: { signal?: AbortSignal },
       ) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/lock",
+              {
+                params: { path: { workspaceId, id: dashboardId } },
+                signal: options?.signal,
+              },
+            ),
+          ) as {
             success: boolean;
             data: Pick<Dashboard, "editLock">;
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`,
-            undefined,
-            {
-              signal: options?.signal,
-            },
-          );
+          };
           if (response.data) {
+            const locked = response.data;
             set(state => {
               const d = state.openDashboards[dashboardId];
               if (d) {
-                d.editLock = response.data.editLock;
+                d.editLock = locked.editLock;
               }
             });
           }
@@ -1016,13 +1067,18 @@ export const useDashboardStore = create<DashboardStoreState>()(
         userId: string,
       ) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/collaborators",
+              {
+                params: { path: { workspaceId, id: dashboardId } },
+                body: { userId },
+              },
+            ),
+          ) as {
             success: boolean;
             data: Dashboard["sharedWith"];
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/collaborators`,
-            { userId },
-          );
+          };
           set(state => {
             const d = state.openDashboards[dashboardId];
             if (d) d.sharedWith = response.data ?? [];
@@ -1042,12 +1098,15 @@ export const useDashboardStore = create<DashboardStoreState>()(
         userId: string,
       ) => {
         try {
-          const response = await apiClient.delete<{
+          const response = unwrapBody(
+            await api.DELETE(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/collaborators/{userId}",
+              { params: { path: { workspaceId, id: dashboardId, userId } } },
+            ),
+          ) as {
             success: boolean;
             data: Dashboard["sharedWith"];
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/collaborators/${userId}`,
-          );
+          };
           set(state => {
             const d = state.openDashboards[dashboardId];
             if (d) d.sharedWith = response?.data ?? [];
@@ -1079,19 +1138,27 @@ export const useDashboardStore = create<DashboardStoreState>()(
         options?: { signal?: AbortSignal },
       ) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/lock",
+              {
+                params: {
+                  path: { workspaceId, id: dashboardId },
+                  query: { force: "true" },
+                },
+                signal: options?.signal,
+              },
+            ),
+          ) as {
             success: boolean;
             data: Pick<Dashboard, "editLock">;
-          }>(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock?force=true`,
-            undefined,
-            { signal: options?.signal },
-          );
+          };
           if (response.data) {
+            const locked = response.data;
             set(state => {
               const d = state.openDashboards[dashboardId];
               if (d) {
-                d.editLock = response.data.editLock;
+                d.editLock = locked.editLock;
               }
             });
           }
@@ -1103,8 +1170,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
       releaseLock: async (workspaceId: string, dashboardId: string) => {
         try {
-          await apiClient.delete(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock`,
+          unwrapBody(
+            await api.DELETE(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/lock",
+              { params: { path: { workspaceId, id: dashboardId } } },
+            ),
           );
           set(state => {
             const d = state.openDashboards[dashboardId];
@@ -1119,8 +1189,11 @@ export const useDashboardStore = create<DashboardStoreState>()(
 
       heartbeatLock: async (workspaceId: string, dashboardId: string) => {
         try {
-          await apiClient.post(
-            `/workspaces/${workspaceId}/dashboards/${dashboardId}/lock/heartbeat`,
+          unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/dashboards/{id}/lock/heartbeat",
+              { params: { path: { workspaceId, id: dashboardId } } },
+            ),
           );
         } catch {
           // best-effort

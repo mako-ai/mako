@@ -16223,7 +16223,9 @@ export interface operations {
     };
     get_api_workspaces_workspaceId_consoles_content: {
         parameters: {
-            query?: never;
+            query?: {
+                id?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;
@@ -35390,7 +35392,9 @@ export interface operations {
     };
     post_api_workspaces_workspaceId_dashboards_id_lock: {
         parameters: {
-            query?: never;
+            query?: {
+                force?: string;
+            };
             header?: never;
             path: {
                 workspaceId: string;

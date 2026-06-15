@@ -14439,6 +14439,14 @@
             "required": true,
             "name": "workspaceId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "id",
+            "in": "query"
           }
         ],
         "responses": {
@@ -37208,6 +37216,14 @@
             "required": true,
             "name": "id",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "force",
+            "in": "query"
           }
         ],
         "requestBody": {

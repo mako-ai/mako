@@ -668,6 +668,9 @@ export const useConsoleStore = create<ConsoleStore>()(
           // another 409 and simply refresh the banner.
           const expectedDraftRevision =
             tab.remoteUpdate?.draftRevision ?? tab.draftRevision;
+          // The console save endpoint is an intentional plain-Hono catch-all
+          // (`PUT /:path{.+}`) that is not part of the documented OpenAPI
+          // surface, so it stays on the legacy client.
           const { status, body } =
             await apiClient.putWithStatus<ConsoleSaveResponse>(
               `/workspaces/${workspaceId}/consoles/${consoleId}`,
@@ -841,10 +844,11 @@ export const useConsoleStore = create<ConsoleStore>()(
         });
 
         try {
-          const res = await apiClient.get<ConsoleContentResponse>(
-            `/workspaces/${workspaceId}/consoles/content`,
-            { id: consoleId },
-          );
+          const res = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
+              params: { path: { workspaceId }, query: { id: consoleId } },
+            }),
+          ) as ConsoleContentResponse;
 
           if (res.success) {
             const content = res.content || "";
@@ -893,10 +897,11 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       reloadConsole: async (workspaceId, consoleId) => {
         try {
-          const res = await apiClient.get<ConsoleContentResponse>(
-            `/workspaces/${workspaceId}/consoles/content`,
-            { id: consoleId },
-          );
+          const res = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
+              params: { path: { workspaceId }, query: { id: consoleId } },
+            }),
+          ) as ConsoleContentResponse;
 
           if (res.success) {
             const content = res.content || "";
@@ -924,11 +929,12 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       fetchConsoleContent: async (workspaceId, consoleId, options) => {
         try {
-          const res = await apiClient.get<ConsoleContentResponse>(
-            `/workspaces/${workspaceId}/consoles/content`,
-            { id: consoleId },
-            { signal: options?.signal },
-          );
+          const res = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
+              params: { path: { workspaceId }, query: { id: consoleId } },
+              signal: options?.signal,
+            }),
+          ) as ConsoleContentResponse;
 
           if (res.success) {
             // Saved-ness comes from the SERVER's isSaved flag. The previous
@@ -983,10 +989,11 @@ export const useConsoleStore = create<ConsoleStore>()(
           return;
         }
         try {
-          const res = await apiClient.get<ConsoleContentResponse>(
-            `/workspaces/${workspaceId}/consoles/content`,
-            { id: consoleId },
-          );
+          const res = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
+              params: { path: { workspaceId }, query: { id: consoleId } },
+            }),
+          ) as ConsoleContentResponse;
           if (!res.success) return;
           // Re-check: the tab may have appeared while we fetched (e.g. the
           // legacy ui-intent poke and the in-band tool result both firing).
@@ -1024,10 +1031,11 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       fetchConsoleRunArtifact: async (workspaceId, consoleId) => {
         try {
-          const res = await apiClient.get<ConsoleContentResponse>(
-            `/workspaces/${workspaceId}/consoles/content`,
-            { id: consoleId },
-          );
+          const res = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/consoles/content", {
+              params: { path: { workspaceId }, query: { id: consoleId } },
+            }),
+          ) as ConsoleContentResponse;
           if (!res.success) return null;
           // Merge ONLY the run artifact; content/revision replication is
           // handled by the realtime revision sync (single guarded path).
@@ -1174,17 +1182,28 @@ export const useConsoleStore = create<ConsoleStore>()(
             localExecutionIds.add(options.executionId);
           }
 
-          const { status, body: res } = isLocal
-            ? await localAgentClient.postWithStatus<QueryExecuteResponse>(
+          let status: number;
+          let res: QueryExecuteResponse;
+          if (isLocal) {
+            const r =
+              await localAgentClient.postWithStatus<QueryExecuteResponse>(
                 "/execute",
                 payload,
                 { signal: options?.signal, alsoOk: [400, 403] },
-              )
-            : await apiClient.postWithStatus<QueryExecuteResponse>(
-                `/workspaces/${workspaceId}/execute`,
-                payload,
-                { signal: options?.signal, alsoOk: [400, 403] },
               );
+            status = r.status;
+            res = r.body;
+          } else {
+            // 400/403 carry a structured error body, so read the raw result
+            // rather than throwing on non-2xx.
+            const r = await api.POST("/api/workspaces/{workspaceId}/execute", {
+              params: { path: { workspaceId } },
+              body: payload,
+              signal: options?.signal,
+            });
+            status = r.response.status;
+            res = (r.data ?? r.error) as QueryExecuteResponse;
+          }
 
           if (status === 400 || status === 403) {
             return {
@@ -1217,10 +1236,12 @@ export const useConsoleStore = create<ConsoleStore>()(
               { executionId },
             );
           }
-          return await apiClient.post<QueryCancelResponse>(
-            `/workspaces/${workspaceId}/execute/cancel`,
-            { executionId },
-          );
+          return unwrapBody(
+            await api.POST("/api/workspaces/{workspaceId}/execute/cancel", {
+              params: { path: { workspaceId } },
+              body: { executionId },
+            }),
+          ) as QueryCancelResponse;
         } catch (e) {
           return {
             success: false,
@@ -1252,14 +1273,19 @@ export const useConsoleStore = create<ConsoleStore>()(
           versionCommentControllers.set(consoleId, controller);
 
           try {
-            const res = await apiClient.post<{
+            const res = unwrapBody(
+              await api.POST(
+                "/api/workspaces/{workspaceId}/consoles/{id}/version-comment",
+                {
+                  params: { path: { workspaceId, id: consoleId } },
+                  body: payload,
+                  signal: controller.signal,
+                },
+              ),
+            ) as {
               success: boolean;
               comment: string | null;
-            }>(
-              `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
-              payload,
-              { signal: controller.signal },
-            );
+            };
 
             if (res.success && res.comment && vm) {
               vm.updateVersion(versionId, {
@@ -1288,15 +1314,20 @@ export const useConsoleStore = create<ConsoleStore>()(
 
       generateSaveComment: async (workspaceId, consoleId, payload, signal) => {
         try {
-          const res = await apiClient.post<{
+          const res = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/consoles/{id}/version-comment",
+              {
+                params: { path: { workspaceId, id: consoleId } },
+                body: payload,
+                signal,
+              },
+            ),
+          ) as {
             success: boolean;
             comment: string | null;
             diff: string | null;
-          }>(
-            `/workspaces/${workspaceId}/consoles/${consoleId}/version-comment`,
-            payload,
-            { signal },
-          );
+          };
           return res.success
             ? { comment: res.comment ?? null, diff: res.diff ?? null }
             : { comment: null, diff: null };
@@ -1463,6 +1494,8 @@ export const useConsoleStore = create<ConsoleStore>()(
             // rejected with 409 draft_conflict instead of silently
             // overwriting another tab's / user's / the agent's work.
             const expectedDraftRevision = get().tabs[consoleId]?.draftRevision;
+            // Catch-all save endpoint (see note in resolveRemoteUpdateKeepMine);
+            // not in the documented OpenAPI surface, stays on the legacy client.
             const { status, body } =
               await apiClient.putWithStatus<ConsoleSaveResponse>(
                 `/workspaces/${workspaceId}/consoles/${consoleId}`,

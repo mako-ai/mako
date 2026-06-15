@@ -1442,6 +1442,12 @@ app.openapi(
           .openapi({ param: { name: "workspaceId", in: "path" } }),
         id: z.string().openapi({ param: { name: "id", in: "path" } }),
       }),
+      query: z.object({
+        force: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "force", in: "query" } }),
+      }),
       body: {
         required: false,
         content: {

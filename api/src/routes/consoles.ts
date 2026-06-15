@@ -274,6 +274,12 @@ consoleRoutes.openapi(
           .string()
           .openapi({ param: { name: "workspaceId", in: "path" } }),
       }),
+      query: z.object({
+        id: z
+          .string()
+          .optional()
+          .openapi({ param: { name: "id", in: "query" } }),
+      }),
     },
     responses: { ...OPEN_RESPONSES },
   }),
