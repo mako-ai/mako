@@ -569,7 +569,7 @@ dataSourceRoutes.get("/:id/entities", async c => {
     }
 
     // Try to get structured metadata first, fallback to flat list
-    let entityData: any;
+    let entityData: any[];
     if (typeof connector.getEntityMetadata === "function") {
       // Return structured metadata if available
       entityData = connector.getEntityMetadata();
@@ -580,6 +580,40 @@ dataSourceRoutes.get("/:id/entities", async c => {
         name: entity,
         label: entity.charAt(0).toUpperCase() + entity.slice(1),
       }));
+    }
+
+    // Enrich each entity (and sub-entity) with its field list from the
+    // connector schema so the UI can build schema-driven partition/cluster
+    // selectors (see 15-connector-agnostic.mdc). Sub-entities are resolved
+    // with the flattened `parent:Sub` key used elsewhere in the pipeline.
+    const attachFields = async (node: any, schemaKey: string) => {
+      try {
+        const schema = await connector.resolveSchema(schemaKey);
+        if (schema?.fields) {
+          node.fields = Object.entries(schema.fields).map(
+            ([name, field]) => ({ name, type: field.type }),
+          );
+        }
+      } catch {
+        // Skip entities where schema resolution fails; the UI falls back
+        // to system fields only.
+      }
+    };
+
+    try {
+      await Promise.all(
+        entityData.flatMap((node: any) => {
+          const subs = Array.isArray(node.subEntities) ? node.subEntities : [];
+          if (subs.length > 0) {
+            return subs.map((sub: any) =>
+              attachFields(sub, `${node.name}:${sub.name}`),
+            );
+          }
+          return [attachFields(node, node.name)];
+        }),
+      );
+    } catch {
+      // Never fail the entities endpoint because of schema enrichment.
     }
 
     return c.json({

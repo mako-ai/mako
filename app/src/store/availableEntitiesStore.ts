@@ -8,12 +8,19 @@ export interface ConnectorEntityLayoutSuggestion {
   clusterFields?: string[];
 }
 
+export interface ConnectorEntityField {
+  name: string;
+  type: string;
+}
+
 export interface ConnectorEntityMetadata {
   name: string;
   label?: string;
   description?: string;
   subEntities?: ConnectorEntityMetadata[];
   layoutSuggestion?: ConnectorEntityLayoutSuggestion;
+  /** Field list resolved from the connector schema (name + logical type). */
+  fields?: ConnectorEntityField[];
 }
 
 /** Older connectors may return a flat string list instead of metadata. */
@@ -25,6 +32,7 @@ export interface FlattenedConnectorEntity {
   partitionField: string;
   partitionGranularity: "day" | "hour" | "month" | "year";
   clusterFields: string[];
+  fields?: ConnectorEntityField[];
 }
 
 function fallbackLabel(name: string): string {
@@ -55,7 +63,8 @@ export function flattenConnectorEntities(
           label: sub.label || fallbackLabel(sub.name),
           partitionField: subLayout?.partitionField || "_syncedAt",
           partitionGranularity: subLayout?.partitionGranularity || "day",
-          clusterFields: [],
+          clusterFields: subLayout?.clusterFields ?? [],
+          fields: sub.fields ?? meta.fields,
         });
       }
       continue;
@@ -66,7 +75,8 @@ export function flattenConnectorEntities(
       label: meta.label || fallbackLabel(meta.name),
       partitionField: layout?.partitionField || "_syncedAt",
       partitionGranularity: layout?.partitionGranularity || "day",
-      clusterFields: [],
+      clusterFields: layout?.clusterFields ?? [],
+      fields: meta.fields,
     });
   }
 
