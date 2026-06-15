@@ -240,17 +240,22 @@ export default function PublicDashboardViewer({
   return (
     <Box
       sx={{
-        minHeight: "100vh",
+        height: "100vh",
+        overflowY: "auto",
         backgroundColor: "background.default",
         color: "text.primary",
       }}
     >
       <Box
         sx={{
+          position: "sticky",
+          top: 0,
+          zIndex: 1,
           px: 3,
           py: 2,
           borderBottom: "1px solid",
           borderColor: "divider",
+          backgroundColor: "background.default",
           display: "flex",
           alignItems: "center",
           gap: 2,
