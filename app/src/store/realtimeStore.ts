@@ -14,7 +14,7 @@
  */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import { getApiBasePath } from "../lib/api-base-path";
 import { realtimeClientId } from "../lib/realtime-client-id";
 import {
@@ -504,10 +504,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
         if (Object.keys(revisions).length === 0) return;
 
         try {
-          const res = await apiClient.post<ConsoleRevisionsSyncResponse>(
-            `/workspaces/${workspaceId}/consoles/revisions-sync`,
-            { revisions },
-          );
+          const res = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/consoles/revisions-sync",
+              { params: { path: { workspaceId } }, body: { revisions } },
+            ),
+          ) as ConsoleRevisionsSyncResponse;
           if (!res.success) return;
 
           const store = useConsoleStore.getState();
