@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
 import { get, set, del } from "idb-keyval";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import {
   isLocalConnectionId,
   localAgentClient,
@@ -291,13 +291,16 @@ export const useSchemaStore = create<SchemaState>()(
           });
 
           try {
-            const [res, localConnections] = await Promise.all([
-              apiClient.get<{
-                success: boolean;
-                data: Connection[];
-              }>(`/workspaces/${workspaceId}/databases`),
+            const [apiRes, localConnections] = await Promise.all([
+              api.GET("/api/workspaces/{workspaceId}/databases", {
+                params: { path: { workspaceId } },
+              }),
               fetchLocalConnections(),
             ]);
+            const res = unwrapBody(apiRes) as {
+              success: boolean;
+              data: Connection[];
+            };
 
             if (res.success) {
               const connections = mergeConnections(
@@ -342,10 +345,12 @@ export const useSchemaStore = create<SchemaState>()(
                   success: boolean;
                   data: TreeNode[];
                 }>(`/connections/${connectionId}/tree`)
-              : await apiClient.get<{
-                  success: boolean;
-                  data: TreeNode[];
-                }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
+              : (unwrapBody(
+                  await api.GET(
+                    "/api/workspaces/{workspaceId}/databases/{id}/tree",
+                    { params: { path: { workspaceId, id: connectionId } } },
+                  ),
+                ) as { success: boolean; data: TreeNode[] });
 
             const data = res.success ? (res.data as TreeNode[]) : [];
             set(s => {
@@ -398,13 +403,17 @@ export const useSchemaStore = create<SchemaState>()(
                   success: boolean;
                   data: TreeNode[];
                 }>(`/connections/${connectionId}/tree`, params)
-              : await apiClient.get<{
-                  success: boolean;
-                  data: TreeNode[];
-                }>(
-                  `/workspaces/${workspaceId}/databases/${connectionId}/tree`,
-                  params,
-                );
+              : (unwrapBody(
+                  await api.GET(
+                    "/api/workspaces/{workspaceId}/databases/{id}/tree",
+                    {
+                      params: {
+                        path: { workspaceId, id: connectionId },
+                        query: params,
+                      },
+                    },
+                  ),
+                ) as { success: boolean; data: TreeNode[] });
 
             const data = res.success ? (res.data as TreeNode[]) : [];
             set(s => {
@@ -447,12 +456,12 @@ export const useSchemaStore = create<SchemaState>()(
                   success: boolean;
                   data: AutocompleteSchema;
                 }>(`/connections/${connectionId}/autocomplete`)
-              : await apiClient.get<{
-                  success: boolean;
-                  data: AutocompleteSchema;
-                }>(
-                  `/workspaces/${workspaceId}/databases/${connectionId}/autocomplete`,
-                );
+              : (unwrapBody(
+                  await api.GET(
+                    "/api/workspaces/{workspaceId}/databases/{id}/autocomplete",
+                    { params: { path: { workspaceId, id: connectionId } } },
+                  ),
+                ) as { success: boolean; data: AutocompleteSchema });
 
             if (res.success && res.data) {
               const schema = res.data as AutocompleteSchema;
@@ -499,13 +508,18 @@ export const useSchemaStore = create<SchemaState>()(
           });
 
           try {
-            const params = new URLSearchParams();
-            // API still uses datasetId for backwards compatibility
-            params.set("datasetId", schemaId);
-            params.set("tableId", tableId);
-            params.set("limit", "500");
-
-            const res = await apiClient.get<{
+            const res = unwrapBody(
+              await api.GET(
+                "/api/workspaces/{workspaceId}/databases/{id}/autocomplete",
+                {
+                  params: {
+                    path: { workspaceId, id: connectionId },
+                    // API still uses datasetId for backwards compatibility
+                    query: { datasetId: schemaId, tableId, limit: "500" },
+                  },
+                },
+              ),
+            ) as {
               success: boolean;
               data: {
                 kind: "columns";
@@ -513,9 +527,7 @@ export const useSchemaStore = create<SchemaState>()(
                 tableId: string;
                 columns: ColumnInfo[];
               };
-            }>(
-              `/workspaces/${workspaceId}/databases/${connectionId}/autocomplete?${params.toString()}`,
-            );
+            };
 
             const columns = res.success
               ? (res.data as { columns: ColumnInfo[] }).columns || []
@@ -556,13 +568,16 @@ export const useSchemaStore = create<SchemaState>()(
         });
 
         try {
-          const [res, localConnections] = await Promise.all([
-            apiClient.get<{
-              success: boolean;
-              data: Connection[];
-            }>(`/workspaces/${workspaceId}/databases`),
+          const [apiRes, localConnections] = await Promise.all([
+            api.GET("/api/workspaces/{workspaceId}/databases", {
+              params: { path: { workspaceId } },
+            }),
             fetchLocalConnections(),
           ]);
+          const res = unwrapBody(apiRes) as {
+            success: boolean;
+            data: Connection[];
+          };
 
           if (res.success) {
             const connections = mergeConnections(
@@ -608,10 +623,12 @@ export const useSchemaStore = create<SchemaState>()(
                 success: boolean;
                 data: TreeNode[];
               }>(`/connections/${connectionId}/tree`)
-            : await apiClient.get<{
-                success: boolean;
-                data: TreeNode[];
-              }>(`/workspaces/${workspaceId}/databases/${connectionId}/tree`);
+            : (unwrapBody(
+                await api.GET(
+                  "/api/workspaces/{workspaceId}/databases/{id}/tree",
+                  { params: { path: { workspaceId, id: connectionId } } },
+                ),
+              ) as { success: boolean; data: TreeNode[] });
 
           const data = res.success ? (res.data as TreeNode[]) : [];
           set(s => {
@@ -698,9 +715,11 @@ export const useSchemaStore = create<SchemaState>()(
           ? await localAgentClient.delete<{ success: boolean }>(
               `/connections/${connectionId}`,
             )
-          : await apiClient.delete<{ success: boolean }>(
-              `/workspaces/${workspaceId}/databases/${connectionId}`,
-            );
+          : (unwrapBody(
+              await api.DELETE("/api/workspaces/{workspaceId}/databases/{id}", {
+                params: { path: { workspaceId, id: connectionId } },
+              }),
+            ) as { success: boolean });
 
         if (res.success) {
           // Clear cached data for this connection
@@ -726,13 +745,12 @@ export const useSchemaStore = create<SchemaState>()(
                 success: boolean;
                 error?: string;
               }>("/test-connection", payload)
-            : await apiClient.post<{
-                success: boolean;
-                error?: string;
-              }>(
-                `/workspaces/${workspaceId}/databases/test-connection`,
-                payload,
-              );
+            : (unwrapBody(
+                await api.POST(
+                  "/api/workspaces/{workspaceId}/databases/test-connection",
+                  { params: { path: { workspaceId } }, body: payload },
+                ),
+              ) as { success: boolean; error?: string });
           return res;
         } catch (error) {
           return {
@@ -750,10 +768,11 @@ export const useSchemaStore = create<SchemaState>()(
                 success: boolean;
                 data: unknown;
               }>(`/connections/${databaseId}`)
-            : await apiClient.get<{
-                success: boolean;
-                data: unknown;
-              }>(`/workspaces/${workspaceId}/databases/${databaseId}`);
+            : (unwrapBody(
+                await api.GET("/api/workspaces/{workspaceId}/databases/{id}", {
+                  params: { path: { workspaceId, id: databaseId } },
+                }),
+              ) as { success: boolean; data: unknown });
 
           return res.success ? res.data : null;
         } catch (error) {
@@ -782,19 +801,21 @@ export const useSchemaStore = create<SchemaState>()(
                 }>("/connections", payload);
           } else {
             res = databaseId
-              ? await apiClient.put<{
-                  success: boolean;
-                  data: unknown;
-                  error?: string;
-                }>(
-                  `/workspaces/${workspaceId}/databases/${databaseId}`,
-                  payload,
-                )
-              : await apiClient.post<{
-                  success: boolean;
-                  data: unknown;
-                  error?: string;
-                }>(`/workspaces/${workspaceId}/databases`, payload);
+              ? (unwrapBody(
+                  await api.PUT(
+                    "/api/workspaces/{workspaceId}/databases/{id}",
+                    {
+                      params: { path: { workspaceId, id: databaseId } },
+                      body: payload,
+                    },
+                  ),
+                ) as { success: boolean; data: unknown; error?: string })
+              : (unwrapBody(
+                  await api.POST("/api/workspaces/{workspaceId}/databases", {
+                    params: { path: { workspaceId } },
+                    body: payload,
+                  }),
+                ) as { success: boolean; data: unknown; error?: string });
           }
 
           if (res.success) {
@@ -817,11 +838,16 @@ export const useSchemaStore = create<SchemaState>()(
         // Local-agent connections expose collections through the schema tree
         // only; the flat collections endpoint is not implemented yet.
         if (isLocalConnectionId(connectionId)) return [];
-        const res = await apiClient.get<{
+        const res = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/databases/{id}/collections",
+            { params: { path: { workspaceId, id: connectionId } } },
+          ),
+        ) as {
           success: boolean;
           data: DatabaseCollectionInfo[];
           error?: string;
-        }>(`/workspaces/${workspaceId}/databases/${connectionId}/collections`);
+        };
 
         if (!res.success) {
           throw new Error(res.error || "Failed to fetch collections");
@@ -840,15 +866,20 @@ export const useSchemaStore = create<SchemaState>()(
             "Collection details are not supported for local connections yet",
           );
         }
-        const res = await apiClient.get<{
+        const res = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/databases/{id}/collections/{name}/info",
+            {
+              params: {
+                path: { workspaceId, id: connectionId, name: collectionName },
+              },
+            },
+          ),
+        ) as {
           success: boolean;
           data: unknown;
           error?: string;
-        }>(
-          `/workspaces/${workspaceId}/databases/${connectionId}/collections/${encodeURIComponent(
-            collectionName,
-          )}/info`,
-        );
+        };
 
         if (!res.success) {
           throw new Error(res.error || "Failed to fetch collection info");
@@ -859,11 +890,15 @@ export const useSchemaStore = create<SchemaState>()(
 
       fetchViews: async (workspaceId, connectionId) => {
         if (isLocalConnectionId(connectionId)) return [];
-        const res = await apiClient.get<{
+        const res = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/databases/{id}/views", {
+            params: { path: { workspaceId, id: connectionId } },
+          }),
+        ) as {
           success: boolean;
           data: DatabaseViewInfo[];
           error?: string;
-        }>(`/workspaces/${workspaceId}/databases/${connectionId}/views`);
+        };
 
         if (!res.success) {
           throw new Error(res.error || "Failed to fetch views");
@@ -892,13 +927,20 @@ export const useSchemaStore = create<SchemaState>()(
                 success: boolean;
                 data: { language: string; template: string };
               }>(`/connections/${connectionId}/console-template`, params)
-            : await apiClient.get<{
+            : (unwrapBody(
+                await api.GET(
+                  "/api/workspaces/{workspaceId}/databases/{id}/console-template",
+                  {
+                    params: {
+                      path: { workspaceId, id: connectionId },
+                      query: params,
+                    },
+                  },
+                ),
+              ) as {
                 success: boolean;
                 data: { language: string; template: string };
-              }>(
-                `/workspaces/${workspaceId}/databases/${connectionId}/console-template`,
-                params,
-              );
+              });
 
           if (res.success) {
             return res.data as { language: string; template: string };
@@ -927,14 +969,21 @@ export const useSchemaStore = create<SchemaState>()(
                 data?: { definition: string };
                 error?: string;
               }>(`/connections/${connectionId}/table-definition`, query)
-            : await apiClient.get<{
+            : (unwrapBody(
+                await api.GET(
+                  "/api/workspaces/{workspaceId}/databases/{id}/table-definition",
+                  {
+                    params: {
+                      path: { workspaceId, id: connectionId },
+                      query,
+                    },
+                  },
+                ),
+              ) as {
                 success: boolean;
                 data?: { definition: string };
                 error?: string;
-              }>(
-                `/workspaces/${workspaceId}/databases/${connectionId}/table-definition`,
-                query,
-              );
+              });
 
           if (res.success && res.data?.definition) {
             return { definition: res.data.definition };
@@ -969,7 +1018,17 @@ export const useSchemaStore = create<SchemaState>()(
           if (options?.schema) params.schema = options.schema;
           if (options?.database) params.database = options.database;
 
-          const res = await apiClient.get<{
+          const res = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/databases/{id}/table-exists",
+              {
+                params: {
+                  path: { workspaceId, id: connectionId },
+                  query: params,
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             data: {
               exists: boolean;
@@ -982,10 +1041,7 @@ export const useSchemaStore = create<SchemaState>()(
               message?: string;
             };
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/databases/${connectionId}/table-exists`,
-            params,
-          );
+          };
 
           if (res.success && res.data) {
             return {
