@@ -13,7 +13,7 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import {
   normalizeAppFiles,
   type AppDataBinding,
@@ -224,12 +224,16 @@ export const useAppStore = create<AppStore>()(
         state.error[workspaceId] = null;
       });
       try {
-        const res = await apiClient.get<{
+        const res = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps", {
+            params: { path: { workspaceId } },
+          }),
+        ) as {
           success: boolean;
           myApps: AppListItem[];
           workspaceApps: AppListItem[];
           error?: string;
-        }>(`/workspaces/${workspaceId}/apps`);
+        };
         set(state => {
           state.myApps[workspaceId] = res.myApps || [];
           state.workspaceApps[workspaceId] = res.workspaceApps || [];
@@ -246,9 +250,11 @@ export const useAppStore = create<AppStore>()(
 
     fetchApp: async (workspaceId, appId) => {
       try {
-        const res = await apiClient.get<{ success: boolean; app: AppEntity }>(
-          `/workspaces/${workspaceId}/apps/${appId}`,
-        );
+        const res = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/apps/{id}", {
+            params: { path: { workspaceId, id: appId } },
+          }),
+        ) as { success: boolean; app: AppEntity };
         if (!res.success || !res.app) return null;
         set(state => {
           state.openApps[appId] = res.app;
@@ -266,10 +272,12 @@ export const useAppStore = create<AppStore>()(
       try {
         const { createAppScaffold } = await import("@mako/schemas");
         const scaffold = createAppScaffold(title || "Untitled App");
-        const res = await apiClient.post<{ success: boolean; app: AppEntity }>(
-          `/workspaces/${workspaceId}/apps`,
-          scaffold,
-        );
+        const res = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/apps", {
+            params: { path: { workspaceId } },
+            body: scaffold,
+          }),
+        ) as { success: boolean; app: AppEntity };
         if (!res.success || !res.app) return null;
         set(state => {
           state.openApps[res.app._id] = res.app;
@@ -284,7 +292,11 @@ export const useAppStore = create<AppStore>()(
 
     deleteApp: async (workspaceId, appId) => {
       try {
-        await apiClient.delete(`/workspaces/${workspaceId}/apps/${appId}`);
+        unwrapBody(
+          await api.DELETE("/api/workspaces/{workspaceId}/apps/{id}", {
+            params: { path: { workspaceId, id: appId } },
+          }),
+        );
         set(state => {
           delete state.openApps[appId];
           delete state.previewNonce[appId];
@@ -301,18 +313,20 @@ export const useAppStore = create<AppStore>()(
       const appEntity = get().openApps[appId];
       if (!appEntity) return;
       try {
-        const res = await apiClient.put<{ success: boolean; app: AppEntity }>(
-          `/workspaces/${workspaceId}/apps/${appId}`,
-          {
-            title: appEntity.title,
-            description: appEntity.description,
-            runtime: appEntity.runtime,
-            entrypoint: appEntity.entrypoint,
-            files: appEntity.files,
-            dependencies: appEntity.dependencies,
-            dataBindings: appEntity.dataBindings,
-          },
-        );
+        const res = unwrapBody(
+          await api.PUT("/api/workspaces/{workspaceId}/apps/{id}", {
+            params: { path: { workspaceId, id: appId } },
+            body: {
+              title: appEntity.title,
+              description: appEntity.description,
+              runtime: appEntity.runtime,
+              entrypoint: appEntity.entrypoint,
+              files: appEntity.files,
+              dependencies: appEntity.dependencies,
+              dataBindings: appEntity.dataBindings,
+            },
+          }),
+        ) as { success: boolean; app: AppEntity };
         if (res.success && res.app) {
           set(state => {
             const current = state.openApps[appId];
@@ -368,9 +382,11 @@ export const useAppStore = create<AppStore>()(
       if (!moved) return;
 
       try {
-        await apiClient.put<{ success: boolean; app: AppEntity }>(
-          `/workspaces/${workspaceId}/apps/${appId}`,
-          { access },
+        unwrapBody(
+          await api.PUT("/api/workspaces/{workspaceId}/apps/{id}", {
+            params: { path: { workspaceId, id: appId } },
+            body: { access },
+          }),
         );
       } catch {
         // Revert to server truth on failure.
@@ -536,21 +552,23 @@ export const useAppStore = create<AppStore>()(
         };
       }
       try {
-        const { status, body } =
-          await apiClient.postWithStatus<QueryExecuteResponse>(
-            `/workspaces/${workspaceId}/execute`,
-            {
-              connectionId: binding.connectionId,
-              query: binding.code,
-              databaseId: binding.databaseId,
-              databaseName: binding.databaseName,
-              mode: "preview",
-              source: "app_runtime",
-            },
-            { alsoOk: [400, 403] },
-          );
-        if (status === 400 || status === 403 || !body.success) {
-          return { success: false, error: body.error || "Query failed" };
+        // 400/403 carry a structured error body (validation / permission), so
+        // read the parsed body regardless of HTTP status instead of throwing.
+        const result = await api.POST("/api/workspaces/{workspaceId}/execute", {
+          params: { path: { workspaceId } },
+          body: {
+            connectionId: binding.connectionId,
+            query: binding.code,
+            databaseId: binding.databaseId,
+            databaseName: binding.databaseName,
+            mode: "preview",
+            source: "app_runtime",
+          },
+        });
+        const status = result.response.status;
+        const body = (result.data ?? result.error) as QueryExecuteResponse;
+        if (status === 400 || status === 403 || !body?.success) {
+          return { success: false, error: body?.error || "Query failed" };
         }
         return { success: true, rows: body.rows || [] };
       } catch (e) {
@@ -564,7 +582,6 @@ export const useAppStore = create<AppStore>()(
     materializeBinding: async (workspaceId, appId, bindingId, options) => {
       const signal = options?.signal;
       const timeoutMs = options?.timeoutMs ?? MATERIALIZE_DEFAULT_TIMEOUT_MS;
-      const base = `/workspaces/${workspaceId}/apps/${appId}/bindings/${bindingId}`;
 
       // Mirror the server-reported status onto the open app so UI chips
       // (binding editor, explorer) update live while the build runs.
@@ -592,17 +609,22 @@ export const useAppStore = create<AppStore>()(
       };
 
       try {
-        const res = await apiClient.post<{
+        const res = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/apps/{id}/bindings/{bindingId}/materialize",
+            {
+              params: { path: { workspaceId, id: appId, bindingId } },
+              body: options?.force ? { force: true } : undefined,
+              signal,
+            },
+          ),
+        ) as {
           success: boolean;
           queued?: boolean;
           status?: { status: string; error?: string };
           app?: AppEntity;
           error?: string;
-        }>(
-          `${base}/materialize`,
-          options?.force ? { force: true } : undefined,
-          { signal },
-        );
+        };
         if (!res.success) {
           const error =
             res.status?.error || res.error || "Materialization failed";
@@ -630,10 +652,18 @@ export const useAppStore = create<AppStore>()(
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
           await abortableSleep(MATERIALIZE_POLL_INTERVAL_MS, signal);
-          const poll = await apiClient.get<{
+          const poll = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/apps/{id}/bindings/{bindingId}/materialization",
+              {
+                params: { path: { workspaceId, id: appId, bindingId } },
+                signal,
+              },
+            ),
+          ) as {
             success: boolean;
             data?: BindingMaterializationStatus;
-          }>(`${base}/materialization`, undefined, { signal });
+          };
           const data = poll.data;
           if (!data) continue;
           setLocalStatus(data.status, data.error);
