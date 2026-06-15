@@ -98,6 +98,11 @@ export function tabRevealTarget(
     case "members":
       // No sidebar tree row.
       return null;
+    case "dbt-file":
+    case "dbt-job":
+      // dbt tabs live in the Transforms explorer; no stable reveal id yet
+      // (mirrors tab-routing.ts — not deep-linkable yet).
+      return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;
