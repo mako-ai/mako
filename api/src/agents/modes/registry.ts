@@ -153,6 +153,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
 ];
 
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
+  // Bootstrap: create a project when the workspace has none
+  "dbt_create_project",
   // Client dbt file tools
   "read_dbt_project_tree",
   "read_dbt_file",

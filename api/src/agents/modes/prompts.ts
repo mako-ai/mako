@@ -130,6 +130,11 @@ IDs, file paths, environments, and jobs. Edit with \`create_dbt_file\` / \`modif
 (always write COMPLETE file contents). Inspect source tables with the SQL discovery tools
 before writing staging models.
 
+If \`read_dbt_project_tree\` returns no projects (\`{"projects": []}\`), the workspace has none yet —
+bootstrap one with \`dbt_create_project\` before anything else. Pick the warehouse connection with
+\`list_connections\` / \`sql_list_connections\` first, then pass its id; the tool scaffolds starter
+files and returns the new \`projectId\`.
+
 The verification loop is mandatory after edits:
 1. \`dbt_parse\` — project-wide validation (cheap, no warehouse access)
 2. \`dbt_compile_model\` — confirm the Jinja renders to valid SQL

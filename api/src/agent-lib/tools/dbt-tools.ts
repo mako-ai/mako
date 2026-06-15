@@ -17,7 +17,13 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
-import { DbtJob, DbtProject, DbtRun } from "../../database/workspace-schema";
+import {
+  DatabaseConnection,
+  DbtFile,
+  DbtJob,
+  DbtProject,
+  DbtRun,
+} from "../../database/workspace-schema";
 import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
@@ -27,6 +33,11 @@ import {
   DbtCommandValidationError,
   parseDbtCommands,
 } from "../../dbt/commands";
+import {
+  DBT_COMPATIBLE_CONNECTION_TYPES,
+  isDbtCompatibleConnectionType,
+} from "../../dbt/adapter-map";
+import { buildStarterScaffold } from "../../dbt/scaffold";
 import { validateScheduledConsoleSchedule } from "../../services/scheduled-query-schedule.service";
 import type { DbtLogLine } from "../../dbt/runner.service";
 
@@ -107,6 +118,122 @@ export const createDbtServerTools = (workspaceId: string) => {
   };
 
   return {
+    dbt_create_project: tool({
+      description:
+        "Initialize a new dbt project in this workspace. Use this when " +
+        'read_dbt_project_tree returns no projects ({"projects": []}) and you ' +
+        "need to start building transforms. Creates the project with one " +
+        "environment pointing at a warehouse connection, scaffolds starter " +
+        "files (dbt_project.yml, example model, schema.yml), and returns the " +
+        "projectId to pass to every other dbt tool. Pick the warehouse " +
+        "connection with list_connections / sql_list_connections first.",
+      inputSchema: z.object({
+        name: z
+          .string()
+          .min(1)
+          .max(128)
+          .describe("Project name, e.g. 'analytics'"),
+        connectionId: z
+          .string()
+          .describe(
+            "DatabaseConnection id for the warehouse dbt builds into " +
+              "(from list_connections / sql_list_connections). Must be a " +
+              `dbt-compatible type: ${DBT_COMPATIBLE_CONNECTION_TYPES.join(", ")}.`,
+          ),
+        targetSchema: z
+          .string()
+          .min(1)
+          .max(128)
+          .default("dbt_dev")
+          .describe("Schema/dataset dbt builds into (default dbt_dev)"),
+        environmentName: z
+          .string()
+          .min(1)
+          .max(64)
+          .default("dev")
+          .describe("Environment name (default dev)"),
+        dbtVersion: z.string().max(16).optional(),
+      }),
+      execute: async ({
+        name,
+        connectionId,
+        targetSchema,
+        environmentName,
+        dbtVersion,
+      }) => {
+        try {
+          if (!Types.ObjectId.isValid(connectionId)) {
+            return { success: false, error: "Invalid connection id" };
+          }
+          const connection = await DatabaseConnection.findOne({
+            _id: new Types.ObjectId(connectionId),
+            workspaceId: new Types.ObjectId(workspaceId),
+          }).select("type");
+          if (!connection) {
+            return {
+              success: false,
+              error: "Connection not found or access denied",
+            };
+          }
+          if (!isDbtCompatibleConnectionType(connection.type)) {
+            return {
+              success: false,
+              error:
+                `Connection type "${connection.type}" is not dbt-compatible. ` +
+                `Supported: ${DBT_COMPATIBLE_CONNECTION_TYPES.join(", ")}`,
+            };
+          }
+
+          const project = await DbtProject.create({
+            workspaceId: new Types.ObjectId(workspaceId),
+            name,
+            dbtVersion: dbtVersion ?? "1.9",
+            environments: [
+              {
+                name: environmentName,
+                connectionId: connection._id,
+                targetSchema,
+                threads: 4,
+              },
+            ],
+            defaultEnvironment: environmentName,
+            createdBy: "agent",
+          });
+
+          const scaffold = buildStarterScaffold(name);
+          await DbtFile.insertMany(
+            scaffold.map(file => ({
+              workspaceId: project.workspaceId,
+              projectId: project._id,
+              path: file.path,
+              content: file.content,
+              updatedBy: "agent",
+            })),
+          );
+
+          return {
+            success: true,
+            projectId: project._id.toString(),
+            name: project.name,
+            environment: environmentName,
+            targetSchema,
+            scaffoldedFiles: scaffold.map(file => file.path),
+            message:
+              "Project created. Call read_dbt_project_tree to see the " +
+              "scaffolded files, then build your models.",
+          };
+        } catch (error) {
+          if ((error as { code?: number }).code === 11000) {
+            return {
+              success: false,
+              error: "A dbt project with this name already exists",
+            };
+          }
+          return toolError(error, "Failed to create dbt project");
+        }
+      },
+    }),
+
     dbt_parse: tool({
       description:
         "Validate the entire dbt project (dbt parse): catches Jinja errors, " +
