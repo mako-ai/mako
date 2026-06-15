@@ -1,6 +1,5 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
 import { api, unwrap } from "../api";
 
 /**
@@ -12,6 +11,15 @@ const RESOURCE_BASE = {
   dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}",
   console: "/api/workspaces/{workspaceId}/consoles/{id}",
   app: "/api/workspaces/{workspaceId}/apps/{id}",
+} as const;
+
+/**
+ * Public links are only supported for dashboards and apps (not consoles), so
+ * these literal templates resolve to valid spec paths for the typed client.
+ */
+const PUBLIC_SHARE_BASE = {
+  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}/public-share",
+  app: "/api/workspaces/{workspaceId}/apps/{id}/public-share",
 } as const;
 
 /**
@@ -46,20 +54,6 @@ export interface SharingSettings {
 }
 
 type Result = { ok: boolean; error?: string };
-
-function basePath(
-  type: ShareResourceType,
-  workspaceId: string,
-  resourceId: string,
-): string {
-  const segment =
-    type === "dashboard"
-      ? "dashboards"
-      : type === "console"
-        ? "consoles"
-        : "apps";
-  return `/workspaces/${workspaceId}/${segment}/${resourceId}`;
-}
 
 export function shareKey(type: ShareResourceType, resourceId: string): string {
   return `${type}:${resourceId}`;
@@ -273,14 +267,16 @@ export const useShareStore = create<ShareStoreState>()(
     },
 
     enablePublicShare: async (type, workspaceId, resourceId, password) => {
+      if (type === "console") {
+        return { ok: false, error: "Public sharing is not supported here" };
+      }
       try {
-        const response = await apiClient.post<{
-          success: boolean;
-          data: PublicShareInfo;
-        }>(
-          `${basePath(type, workspaceId, resourceId)}/public-share`,
-          password ? { password } : {},
-        );
+        const response = unwrap(
+          await api.POST(PUBLIC_SHARE_BASE[type], {
+            params: { path: { workspaceId, id: resourceId } },
+            body: password ? { password } : {},
+          }),
+        ) as { data?: PublicShareInfo };
         return { ok: true, publicShare: response.data };
       } catch (error) {
         return {
@@ -291,11 +287,16 @@ export const useShareStore = create<ShareStoreState>()(
     },
 
     updatePublicShare: async (type, workspaceId, resourceId, changes) => {
+      if (type === "console") {
+        return { ok: false, error: "Public sharing is not supported here" };
+      }
       try {
-        const response = await apiClient.patch<{
-          success: boolean;
-          data: PublicShareInfo;
-        }>(`${basePath(type, workspaceId, resourceId)}/public-share`, changes);
+        const response = unwrap(
+          await api.PATCH(PUBLIC_SHARE_BASE[type], {
+            params: { path: { workspaceId, id: resourceId } },
+            body: changes,
+          }),
+        ) as { data?: PublicShareInfo };
         return { ok: true, publicShare: response.data };
       } catch (error) {
         return {
@@ -306,9 +307,14 @@ export const useShareStore = create<ShareStoreState>()(
     },
 
     disablePublicShare: async (type, workspaceId, resourceId) => {
+      if (type === "console") {
+        return { ok: false, error: "Public sharing is not supported here" };
+      }
       try {
-        await apiClient.delete(
-          `${basePath(type, workspaceId, resourceId)}/public-share`,
+        unwrap(
+          await api.DELETE(PUBLIC_SHARE_BASE[type], {
+            params: { path: { workspaceId, id: resourceId } },
+          }),
         );
         return { ok: true };
       } catch (error) {
@@ -320,11 +326,15 @@ export const useShareStore = create<ShareStoreState>()(
     },
 
     getPublicSharePassword: async (type, workspaceId, resourceId) => {
+      if (type === "console") {
+        return { ok: false, error: "Public sharing is not supported here" };
+      }
       try {
-        const response = await apiClient.get<{
-          success: boolean;
-          data: { password: string | null };
-        }>(`${basePath(type, workspaceId, resourceId)}/public-share/password`);
+        const response = unwrap(
+          await api.GET(`${PUBLIC_SHARE_BASE[type]}/password`, {
+            params: { path: { workspaceId, id: resourceId } },
+          }),
+        ) as { data?: { password: string | null } };
         return { ok: true, password: response.data?.password ?? null };
       } catch (error) {
         return {
