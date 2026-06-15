@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createApiClient } from "./client";
+import { unwrap, unwrapBody } from "./result";
 
 /**
  * Tests for the spec-typed API client: correct URL/method construction,
@@ -105,5 +106,47 @@ describe("typed API client", () => {
     const request = fetchMock.mock.calls[0][0] as Request;
     expect(request.method).toBe("PUT");
     expect(JSON.parse(captured.body ?? "{}")).toEqual({ content: "# Prompt" });
+  });
+
+  it("unwrap surfaces structured API errors with codes", () => {
+    expect(() =>
+      unwrap({
+        error: {
+          success: false,
+          error: "Preview queries require confirmation",
+          code: "PREVIEW_BLOCKED",
+        },
+        response: jsonResponse({}, 400),
+      }),
+    ).toThrow("Preview queries require confirmation (PREVIEW_BLOCKED)");
+  });
+
+  it("unwrapBody surfaces validation issue messages instead of generic HTTP text", () => {
+    expect(() =>
+      unwrapBody({
+        error: { issues: [{ message: "Name is required" }] },
+        response: jsonResponse({}, 400),
+      }),
+    ).toThrow("Name is required");
+  });
+
+  it("unwrap includes otherwise unknown error envelopes", () => {
+    expect(() =>
+      unwrap({
+        error: { failure: { id: "abc123" } },
+        response: jsonResponse({}, 500),
+      }),
+    ).toThrow('Request failed with response: {"failure":{"id":"abc123"}}');
+  });
+
+  it("unwrapBody gives explicit context when an error body is empty", () => {
+    expect(() =>
+      unwrapBody({
+        response: new Response(null, {
+          status: 502,
+          statusText: "Bad Gateway",
+        }),
+      }),
+    ).toThrow("Request failed with 502 Bad Gateway and no error body");
   });
 });
