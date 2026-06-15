@@ -51,12 +51,12 @@ const leaks = gated.filter(
 console.log("Plan-gate active tools:", gated.length);
 console.log("Plan-gate mutation leaks:", leaks);
 
-// Default state (no plan submitted): mutating sql tools AND submit_plan are
+// Default state (no plan submitted): mutating query tools AND submit_plan are
 // both active — the model decides per request whether to plan first.
 const defaultActive = new Set(
   computeActiveTools(
     {
-      enabledModes: new Set(["sql"]),
+      enabledModes: new Set(["query"]),
       planSubmitted: false,
       planApproved: false,
     },
@@ -64,7 +64,7 @@ const defaultActive = new Set(
   ),
 );
 console.log(
-  "Default/sql has sql_execute_query + modify_console + submit_plan?",
+  "Default/query has sql_execute_query + modify_console + submit_plan?",
   defaultActive.has("sql_execute_query"),
   defaultActive.has("modify_console"),
   defaultActive.has("submit_plan"),
@@ -73,12 +73,16 @@ console.log(
 // Approved plan: full tools again.
 const approvedActive = new Set(
   computeActiveTools(
-    { enabledModes: new Set(["sql"]), planSubmitted: true, planApproved: true },
+    {
+      enabledModes: new Set(["query"]),
+      planSubmitted: true,
+      planApproved: true,
+    },
     allToolNames,
   ),
 );
 console.log(
-  "Approved/sql has sql_execute_query?",
+  "Approved/query has sql_execute_query?",
   approvedActive.has("sql_execute_query"),
 );
 

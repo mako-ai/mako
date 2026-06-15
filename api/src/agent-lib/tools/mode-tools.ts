@@ -22,7 +22,7 @@ import type { ExpertiseModeId, ModeState } from "../../agents/modes/types";
 
 const enableModeSchema = z.object({
   mode: z
-    .enum(["sql", "dashboard", "flow", "app", "explore"])
+    .enum(["query", "dashboard", "flow", "app", "explore"])
     .describe(
       "Which expertise mode to enable. Loads that mode's tools and guidance.",
     ),

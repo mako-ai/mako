@@ -2,7 +2,7 @@ import { PLAN_GATE_ALLOWED_TOOL_NAMES } from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import type { AgentMode, ExpertiseModeId } from "./types";
 import {
-  SQL_MODE_SYSTEM_PROMPT,
+  QUERY_MODE_SYSTEM_PROMPT,
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
   APP_MODE_SYSTEM_PROMPT,
@@ -36,7 +36,7 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   "get_version_snapshot",
 ];
 
-const SQL_MODE_TOOL_NAMES: string[] = [
+const QUERY_MODE_TOOL_NAMES: string[] = [
   // Client console tools
   "read_console",
   "modify_console",
@@ -171,13 +171,13 @@ const EXPLORE_MODE_TOOL_NAMES: string[] = [
 ];
 
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
-  sql: {
-    id: "sql",
-    name: "Console / SQL",
+  query: {
+    id: "query",
+    name: "Query",
     routingPrompt:
       "Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses.",
-    systemPrompt: SQL_MODE_SYSTEM_PROMPT,
-    toolNames: SQL_MODE_TOOL_NAMES,
+    systemPrompt: QUERY_MODE_SYSTEM_PROMPT,
+    toolNames: QUERY_MODE_TOOL_NAMES,
     trajectories: [
       "Discover the relevant connection and tables",
       "Draft the query in a console",
@@ -255,7 +255,7 @@ export function defaultExpertiseMode(
   if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
-  return "sql";
+  return "query";
 }
 
 /** Names of the tools unlocked by the given enabled expertise modes. */
