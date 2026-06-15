@@ -35,6 +35,9 @@ based on what the user is currently looking at — you can switch or add modes a
 - \`app\` — build React apps wired to workspace data: edit files, add dependencies, create data
   bindings. Enable ONLY when the user explicitly mentions building an app, a React app, a
   page/screen/component, installing a library, or references something visible in the active app.
+- \`transform\` — build and run dbt transformations: edit dbt project files (models, schema.yml,
+  sources), compile, test, and run models/jobs against the warehouse. Enable when the user
+  mentions dbt, transforms, models, staging/marts, \`ref()\`/\`source()\`, or running a dbt job.
 - \`explore\` — read-only research across connections, consoles, dashboards, and memory. Enable
   when you need to investigate before committing to an action.
 
@@ -119,7 +122,7 @@ For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, mate
 Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
 system skill.`;
 
-export const DBT_MODE_SYSTEM_PROMPT = `## dbt Mode
+export const TRANSFORM_MODE_SYSTEM_PROMPT = `## Transform (dbt) Mode
 
 dbt projects are virtual filesystems edited through tools; runs execute dbt Core against the
 project's warehouse environments (dev/prod). Start with \`read_dbt_project_tree\` to get project
@@ -133,9 +136,20 @@ The verification loop is mandatory after edits:
 3. \`dbt_run_model\` — build the model + its tests on the dev environment and report
    row counts and test results to the user
 
-Never run \`dbt_run_job\` (full jobs, possibly prod) without the user explicitly confirming the
-job. For conventions (staging/marts layout, ref()/source(), materializations, incremental
-models, snapshots, schema.yml tests), load the \`dbt\` system skill.`;
+\`dbt_compile_model\` and \`dbt_run_model\` accept dbt selectors, not just a single node:
+use graph operators and methods like \`+stg_orders\` (upstream), \`stg_orders+\` (downstream),
+\`tag:nightly\`, \`path:models/staging\`, and \`state:modified+\` to target sets of nodes.
+
+Use \`dbt_show\` to preview the rows a model would return (bounded SELECT, no writes) when you
+want to validate output, not just that it compiles.
+
+Jobs: create or edit saved jobs with \`dbt_create_job\` / \`dbt_update_job\` (add a cron schedule
+only when the user asks for a recurring run). Trigger a saved job with \`dbt_run_job\` — never run
+a job (possibly prod) without the user explicitly confirming it. \`dbt_run_job\` only QUEUES the
+run; always follow up with \`dbt_get_run\` to report whether it actually passed or failed.
+
+For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
+snapshots, schema.yml tests), load the \`dbt\` system skill.`;
 
 export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 

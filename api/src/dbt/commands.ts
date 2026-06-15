@@ -20,6 +20,7 @@ const ALLOWED_SUBCOMMANDS = new Set([
   "docs",
   "deps",
   "retry",
+  "show",
 ]);
 
 /** Flags that take a value (the next token is consumed as the value). */
@@ -30,6 +31,8 @@ const VALUE_FLAGS = new Set([
   "--selector",
   "--threads",
   "--vars",
+  "--limit",
+  "--output",
 ]);
 
 /** Boolean flags. */

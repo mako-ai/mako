@@ -29,6 +29,16 @@ describe("parseDbtCommand", () => {
     ).toEqual(["run", "--select", "stg_orders", "--exclude", "stg_users"]);
   });
 
+  it("accepts `show` with --select and --limit (preview tool)", () => {
+    expect(parseDbtCommand("show --select stg_orders --limit 5").argv).toEqual([
+      "show",
+      "--select",
+      "stg_orders",
+      "--limit",
+      "5",
+    ]);
+  });
+
   it("accepts allowed boolean flags", () => {
     expect(parseDbtCommand("build --full-refresh --fail-fast").argv).toEqual([
       "build",

@@ -6,7 +6,7 @@ import {
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
   APP_MODE_SYSTEM_PROMPT,
-  DBT_MODE_SYSTEM_PROMPT,
+  TRANSFORM_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
 } from "./prompts";
 
@@ -152,18 +152,22 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "mongo_execute_query",
 ];
 
-const DBT_MODE_TOOL_NAMES: string[] = [
+const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   // Client dbt file tools
   "read_dbt_project_tree",
   "read_dbt_file",
   "create_dbt_file",
   "modify_dbt_file",
   "delete_dbt_file",
-  // Server dbt verification tools
+  // Server dbt verification + execution tools
   "dbt_parse",
   "dbt_compile_model",
   "dbt_run_model",
   "dbt_run_job",
+  "dbt_get_run",
+  "dbt_show",
+  "dbt_create_job",
+  "dbt_update_job",
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",
@@ -246,13 +250,13 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Edit app files and verify the preview builds without errors",
     ],
   },
-  dbt: {
-    id: "dbt",
-    name: "dbt Transforms",
+  transform: {
+    id: "transform",
+    name: "Transforms",
     routingPrompt:
-      "Build and run dbt models: edit project files, compile, test, and run transformations against the warehouse.",
-    systemPrompt: DBT_MODE_SYSTEM_PROMPT,
-    toolNames: DBT_MODE_TOOL_NAMES,
+      "Build and run dbt transformations: edit project files, compile, test, and run models against the warehouse.",
+    systemPrompt: TRANSFORM_MODE_SYSTEM_PROMPT,
+    toolNames: TRANSFORM_MODE_TOOL_NAMES,
     trajectories: [
       "Inspect the source tables for the model",
       "Write the model SQL + schema.yml entries",
@@ -279,6 +283,27 @@ export function isExpertiseModeId(value: unknown): value is ExpertiseModeId {
 }
 
 /**
+ * Legacy mode ids → current ids. Existing chats persist `enable_mode` tool
+ * calls; `deriveModeState` replays them, so a rename must keep resolving the
+ * old id (e.g. the dbt mode was renamed to "transform").
+ */
+const LEGACY_MODE_ALIASES: Record<string, ExpertiseModeId> = {
+  dbt: "transform",
+};
+
+/**
+ * Resolve a (possibly legacy) mode id to a current `ExpertiseModeId`, or
+ * `undefined` if it is not a known mode.
+ */
+export function resolveExpertiseModeId(
+  value: unknown,
+): ExpertiseModeId | undefined {
+  if (typeof value !== "string") return undefined;
+  const resolved = LEGACY_MODE_ALIASES[value] ?? value;
+  return isExpertiseModeId(resolved) ? resolved : undefined;
+}
+
+/**
  * Pick the expertise mode to enable by default for a fresh request, based on
  * what the user is currently looking at. This replaces PostHog's small-model
  * router with a zero-cost heuristic; a model router can be layered on later.
@@ -291,7 +316,9 @@ export function defaultExpertiseMode(
   if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
   if (view === "app" || tabKind === "app") return "app";
-  if (tabKind === "dbt-file" || tabKind === "dbt-job") return "dbt";
+  if (view === "dbt" || tabKind === "dbt-file" || tabKind === "dbt-job") {
+    return "transform";
+  }
   return "query";
 }
 
