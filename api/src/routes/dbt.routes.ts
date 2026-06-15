@@ -25,7 +25,11 @@ import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
 } from "../dbt/adapter-map";
-import { DbtCommandValidationError, parseDbtCommands } from "../dbt/commands";
+import {
+  DbtCommandValidationError,
+  parseDbtCommand,
+  parseDbtCommands,
+} from "../dbt/commands";
 import { buildStarterScaffold } from "../dbt/scaffold";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
@@ -879,9 +883,58 @@ dbtRoutes.get(
 const adhocSchema = z.object({
   select: z.string().min(1).max(256).optional(),
   environment: z.string().min(1).optional(),
+  /** Slim CI: resolve unselected refs against the last prod manifest. */
+  defer: z.boolean().optional(),
+});
+
+const commandSchema = z.object({
+  command: z.string().min(1).max(512),
+  environment: z.string().min(1).optional(),
+  defer: z.boolean().optional(),
 });
 
 const SELECT_PATTERN = /^[\w.+@:*\-/]+$/;
+
+/**
+ * Read the project's last production manifest for `--defer --state`, or
+ * `undefined` when defer is off / no prod build exists yet. Never throws —
+ * a missing manifest just disables defer for this invocation.
+ */
+async function loadDeferState(project: {
+  lastProdManifestKey?: string;
+}): Promise<Buffer | undefined> {
+  const key = project.lastProdManifestKey;
+  if (!key) return undefined;
+  try {
+    const stream = await getDashboardArtifactStore().openReadStream(key);
+    if (!stream) return undefined;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } catch (error) {
+    logger.warn("Failed to load defer state manifest", { error, key });
+    return undefined;
+  }
+}
+
+/**
+ * Prepend a warning when defer was requested but no prod manifest exists, so
+ * the UI doesn't silently run without `--defer`. Mutates and returns `logs`.
+ */
+function noteDeferUnavailable<
+  T extends { ts: Date; level: string; line: string },
+>(logs: T[], deferRequested: boolean, deferState: Buffer | undefined): T[] {
+  if (deferRequested && !deferState) {
+    logs.unshift({
+      ts: new Date(),
+      level: "warn",
+      line: "Defer requested but this project has no production manifest yet — ran without --defer. Run the prod environment once to enable defer.",
+    } as T);
+  }
+  return logs;
+}
 
 dbtRoutes.post(
   "/projects/:projectId/compile",
@@ -897,17 +950,19 @@ dbtRoutes.post(
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
       }
-      const { select, environment } = parsed.data;
+      const { select, environment, defer } = parsed.data;
       if (select && !SELECT_PATTERN.test(select)) {
         return badRequest(c, "Invalid --select value");
       }
       const command = select ? `compile --select ${select}` : "parse";
+      const deferState = defer ? await loadDeferState(project) : undefined;
       const result = await runAdhocDbtCommand({
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
         command,
         select,
+        deferState,
         timeoutMs: 3 * 60 * 1000,
       });
       return c.json({
@@ -916,7 +971,7 @@ dbtRoutes.post(
           ok: result.success,
           exitCode: result.exitCode,
           compiledSql: result.compiledSql,
-          logs: result.logs,
+          logs: noteDeferUnavailable(result.logs, !!defer, deferState),
         },
       });
     } catch (error) {
@@ -937,16 +992,18 @@ dbtRoutes.post(
       if (!parsed.success || !parsed.data.select) {
         return badRequest(c, "select is required");
       }
-      const { select, environment } = parsed.data;
+      const { select, environment, defer } = parsed.data;
       if (!SELECT_PATTERN.test(select)) {
         return badRequest(c, "Invalid --select value");
       }
+      const deferState = defer ? await loadDeferState(project) : undefined;
       const result = await runAdhocDbtCommand({
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
         command: `build --select ${select}`,
         select,
+        deferState,
         timeoutMs: 5 * 60 * 1000,
       });
       return c.json({
@@ -955,11 +1012,65 @@ dbtRoutes.post(
           ok: result.success,
           exitCode: result.exitCode,
           stepResults: result.stepResults,
-          logs: result.logs,
+          logs: noteDeferUnavailable(result.logs, !!defer, deferState),
         },
       });
     } catch (error) {
       return serverError(c, error, "Failed to run dbt model");
+    }
+  },
+);
+
+// Free-form command bar (dbt Cloud parity). The command is tokenized and
+// validated against the same allowlist as stored jobs before it reaches the
+// runner, so no extra CLI surface (--profiles-dir, shell metachars) leaks in.
+dbtRoutes.post(
+  "/projects/:projectId/command",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const parsed = commandSchema.safeParse(
+        await c.req.json().catch(() => ({})),
+      );
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const { command, environment, defer } = parsed.data;
+      // Accept an optional leading "dbt" so users can paste full commands.
+      const normalized = command.trim().replace(/^dbt\s+/i, "");
+      let validated;
+      try {
+        validated = parseDbtCommand(normalized);
+      } catch (error) {
+        if (error instanceof DbtCommandValidationError) {
+          return badRequest(c, error.message);
+        }
+        throw error;
+      }
+      const deferState = defer ? await loadDeferState(project) : undefined;
+      const result = await runAdhocDbtCommand({
+        workspaceId: project.workspaceId.toString(),
+        projectId: project._id.toString(),
+        environmentName: environment,
+        command: normalized,
+        deferState,
+        timeoutMs: 9 * 60 * 1000,
+      });
+      return c.json({
+        success: true,
+        result: {
+          ok: result.success,
+          exitCode: result.exitCode,
+          subcommand: validated.subcommand,
+          stepResults: result.stepResults,
+          logs: noteDeferUnavailable(result.logs, !!defer, deferState),
+        },
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to run dbt command");
     }
   },
 );

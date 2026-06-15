@@ -8,11 +8,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
+  Checkbox,
   CircularProgress,
+  FormControlLabel,
   MenuItem,
   Select,
   Tab,
   Tabs,
+  Tooltip,
   Typography,
   useTheme,
 } from "@mui/material";
@@ -99,6 +102,7 @@ export default function DbtFileEditor({
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [environment, setEnvironment] = useState<string>("");
+  const [defer, setDefer] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelTab, setPanelTab] = useState<"compiled" | "results" | "logs">(
     "compiled",
@@ -169,11 +173,20 @@ export default function DbtFileEditor({
       projectId,
       modelName,
       environment || undefined,
+      defer,
     );
     setCompileResult(result);
     if (result && !result.ok) setPanelTab("logs");
     setBusy(null);
-  }, [workspaceId, projectId, modelName, environment, compileModel, saveNow]);
+  }, [
+    workspaceId,
+    projectId,
+    modelName,
+    environment,
+    defer,
+    compileModel,
+    saveNow,
+  ]);
 
   const handleRunModel = useCallback(async () => {
     if (!workspaceId || !modelName) return;
@@ -192,11 +205,20 @@ export default function DbtFileEditor({
       projectId,
       modelName,
       environment || undefined,
+      defer,
     );
     setRunResult(result);
     if (result && !result.ok) setPanelTab("logs");
     setBusy(null);
-  }, [workspaceId, projectId, modelName, environment, runModel, saveNow]);
+  }, [
+    workspaceId,
+    projectId,
+    modelName,
+    environment,
+    defer,
+    runModel,
+    saveNow,
+  ]);
 
   if (!file?.loaded) {
     return (
@@ -269,6 +291,23 @@ export default function DbtFileEditor({
                 </MenuItem>
               ))}
             </Select>
+            <Tooltip title="Resolve unselected refs against the last prod build (dbt --defer)">
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={defer}
+                    onChange={e => setDefer(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+                    Defer
+                  </Typography>
+                }
+                sx={{ mr: 0 }}
+              />
+            </Tooltip>
             <Button
               size="small"
               variant="outlined"

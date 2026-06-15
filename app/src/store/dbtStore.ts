@@ -107,6 +107,14 @@ export interface DbtRunModelResult {
   logs: DbtRunLogLine[];
 }
 
+export interface DbtCommandRunResult {
+  ok: boolean;
+  exitCode: number;
+  subcommand: string;
+  stepResults: DbtStepResult[];
+  logs: DbtRunLogLine[];
+}
+
 export interface DbtLineageNode {
   id: string;
   name: string;
@@ -241,13 +249,22 @@ interface DbtActions {
     projectId: string,
     select: string | undefined,
     environment?: string,
+    defer?: boolean,
   ) => Promise<DbtCompileResult | null>;
   runModel: (
     workspaceId: string,
     projectId: string,
     select: string,
     environment?: string,
+    defer?: boolean,
   ) => Promise<DbtRunModelResult | null>;
+  runCommand: (
+    workspaceId: string,
+    projectId: string,
+    command: string,
+    environment?: string,
+    defer?: boolean,
+  ) => Promise<DbtCommandRunResult | null>;
   fetchLineage: (
     workspaceId: string,
     projectId: string,
@@ -713,7 +730,13 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
-    compileModel: async (workspaceId, projectId, select, environment) => {
+    compileModel: async (
+      workspaceId,
+      projectId,
+      select,
+      environment,
+      defer,
+    ) => {
       try {
         const response = await apiClient.post<{
           success: boolean;
@@ -721,6 +744,7 @@ export const useDbtStore = create<DbtStore>()(
         }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/compile`, {
           ...(select ? { select } : {}),
           ...(environment ? { environment } : {}),
+          ...(defer ? { defer } : {}),
         });
         return response.compile ?? null;
       } catch (error) {
@@ -738,7 +762,7 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
-    runModel: async (workspaceId, projectId, select, environment) => {
+    runModel: async (workspaceId, projectId, select, environment, defer) => {
       try {
         const response = await apiClient.post<{
           success: boolean;
@@ -746,6 +770,7 @@ export const useDbtStore = create<DbtStore>()(
         }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/run-select`, {
           select,
           ...(environment ? { environment } : {}),
+          ...(defer ? { defer } : {}),
         });
         return response.run ?? null;
       } catch (error) {
@@ -758,6 +783,34 @@ export const useDbtStore = create<DbtStore>()(
               ts: new Date().toISOString(),
               level: "error",
               line: errMessage(error, "Run failed"),
+            },
+          ],
+        };
+      }
+    },
+
+    runCommand: async (workspaceId, projectId, command, environment, defer) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          result: DbtCommandRunResult;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/command`, {
+          command,
+          ...(environment ? { environment } : {}),
+          ...(defer ? { defer } : {}),
+        });
+        return response.result ?? null;
+      } catch (error) {
+        return {
+          ok: false,
+          exitCode: 1,
+          subcommand: "",
+          stepResults: [],
+          logs: [
+            {
+              ts: new Date().toISOString(),
+              level: "error",
+              line: errMessage(error, "Command failed"),
             },
           ],
         };

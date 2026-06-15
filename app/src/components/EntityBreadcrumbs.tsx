@@ -120,6 +120,8 @@ function segmentsForTab(
     }
     case "dbt-job":
       return plain(["Transforms", "Jobs", tab.title || "Job"]);
+    case "dbt-console":
+      return plain(["Transforms", tab.title || "Console"]);
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       // Runtime still degrades gracefully for stale persisted tabs.

@@ -50,6 +50,7 @@ export const TAB_DEEP_LINK_PATTERNS = {
   // dbt tabs are opened from the Transforms explorer; not deep-linkable yet.
   "dbt-file": null,
   "dbt-job": null,
+  "dbt-console": null,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -119,6 +120,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
       return null;
     case "dbt-file":
     case "dbt-job":
+    case "dbt-console":
       return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.

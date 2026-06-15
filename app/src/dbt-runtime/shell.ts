@@ -41,6 +41,27 @@ export function focusDbtFileTab(projectId: string, path: string): string {
   return tabId;
 }
 
+/** Open (or focus) the project Console tab (command bar + problems). */
+export function focusDbtConsoleTab(projectId: string, title: string): string {
+  const consoleStore = useConsoleStore.getState();
+  const existingTab = Object.values(consoleStore.tabs).find(
+    (tab: { kind?: string; metadata?: { projectId?: string } }) =>
+      tab.kind === "dbt-console" && tab.metadata?.projectId === projectId,
+  );
+
+  const tabId =
+    existingTab?.id ??
+    consoleStore.openTab({
+      title,
+      content: "",
+      kind: "dbt-console",
+      metadata: { projectId },
+    });
+
+  consoleStore.setActiveTab(tabId);
+  return tabId;
+}
+
 /** Open (or focus) the job view tab (run history + edit) for a dbt job. */
 export function focusDbtJobTab(
   projectId: string,

@@ -129,6 +129,11 @@ export async function runAdhocDbtCommand(params: {
   command: string;
   /** Used to extract compiled SQL from the manifest after compile. */
   select?: string;
+  /**
+   * Prod manifest.json for Slim CI. When set, the command runs with
+   * `--defer --state <dir>` so unselected refs resolve to the prod build.
+   */
+  deferState?: Buffer;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<AdhocDbtResult> {
@@ -144,6 +149,7 @@ export async function runAdhocDbtCommand(params: {
     profile: snapshot.profile,
     commands: [parsed],
     dbtVersion: snapshot.project.dbtVersion,
+    deferState: params.deferState,
     commandTimeoutMs: params.timeoutMs ?? 5 * 60 * 1000,
     signal: params.signal,
   });

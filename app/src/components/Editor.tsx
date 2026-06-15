@@ -64,6 +64,7 @@ import AppBindingEditor from "./AppBindingEditor";
 import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
+import DbtConsoleView from "./DbtConsoleView";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -2240,6 +2241,10 @@ function Editor({
                   <DbtJobView
                     projectId={tab.metadata?.projectId as string}
                     jobId={tab.metadata?.jobId as string}
+                  />
+                ) : tab.kind === "dbt-console" ? (
+                  <DbtConsoleView
+                    projectId={tab.metadata?.projectId as string}
                   />
                 ) : tab.kind === "dashboard-data-source" ? (
                   <DashboardDataSourceEditor

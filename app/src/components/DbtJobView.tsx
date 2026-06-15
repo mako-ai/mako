@@ -3,22 +3,12 @@
  * the job edit form (commands list + schedule, pattern: ScheduleConsoleModal).
  */
 
-import {
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
   Chip,
   CircularProgress,
-  Tab,
-  Tabs,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -51,8 +41,6 @@ import {
   type DbtRunItem,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
-
-const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
 type SchedulePreset = "hourly" | "daily" | "every6h" | "weekly" | "custom";
 
@@ -116,6 +104,11 @@ function relativeTime(iso?: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function absoluteTime(iso?: string): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString();
+}
+
 export default function DbtJobView({
   projectId,
   jobId,
@@ -151,7 +144,6 @@ export default function DbtJobView({
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [viewTab, setViewTab] = useState<"runs" | "lineage">("runs");
   const logScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Edit-form state
@@ -334,81 +326,131 @@ export default function DbtJobView({
     );
   }
 
-  const topBar = (
+  const commandSummary = job.commands
+    .map(command => `dbt ${command}`)
+    .join(" → ");
+  const scheduleSummary = job.schedule?.cron
+    ? `${job.schedule.cron} ${job.schedule.timezone}`
+    : "manual";
+
+  const header = (
     <Box
       sx={{
-        display: "flex",
-        alignItems: "center",
-        gap: 1,
-        px: 1.5,
-        py: 0.75,
         borderBottom: "1px solid",
         borderColor: "divider",
         backgroundColor: "background.paper",
       }}
     >
-      <Typography variant="subtitle2" sx={{ flexShrink: 0 }}>
-        {job.name}
-      </Typography>
-      <Chip label={job.environment} size="small" variant="outlined" />
-      {!job.enabled && (
+      {/* Line 1 — identity + actions */}
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          gap: 1,
+          px: 1.5,
+          pt: 0.75,
+          pb: editing ? 0.75 : 0.25,
+        }}
+      >
+        <Typography
+          variant="subtitle2"
+          sx={{
+            minWidth: 0,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {job.name}
+        </Typography>
         <Chip
-          label="disabled"
+          label={job.environment}
           size="small"
-          color="warning"
           variant="outlined"
+          sx={{ flexShrink: 0 }}
         />
-      )}
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}
-      >
-        {job.commands.map(command => `dbt ${command}`).join(" → ")}
-        {job.schedule?.cron
-          ? ` · ${job.schedule.cron} ${job.schedule.timezone}`
-          : " · manual"}
-      </Typography>
-      {runningRun ? (
+        {!job.enabled && (
+          <Chip
+            label="disabled"
+            size="small"
+            color="warning"
+            variant="outlined"
+            sx={{ flexShrink: 0 }}
+          />
+        )}
+        {editing && (
+          <Chip
+            label="editing"
+            size="small"
+            color="info"
+            variant="outlined"
+            sx={{ flexShrink: 0 }}
+          />
+        )}
+        <Box sx={{ flex: 1 }} />
+        {!editing &&
+          (runningRun ? (
+            <Button
+              size="small"
+              color="warning"
+              variant="outlined"
+              startIcon={<StopIcon size={14} />}
+              onClick={handleStop}
+            >
+              Stop
+            </Button>
+          ) : (
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={<RunIcon size={14} />}
+              onClick={handleRunNow}
+            >
+              Run now
+            </Button>
+          ))}
         <Button
           size="small"
-          color="warning"
           variant="outlined"
-          startIcon={<StopIcon size={14} />}
-          onClick={handleStop}
+          startIcon={<EditIcon size={14} />}
+          onClick={editing ? () => setEditing(false) : beginEdit}
         >
-          Stop
+          {editing ? "Cancel" : "Edit"}
         </Button>
-      ) : (
-        <Button
-          size="small"
-          variant="contained"
-          startIcon={<RunIcon size={14} />}
-          onClick={handleRunNow}
-        >
-          Run now
-        </Button>
+        {!editing && (
+          <Tooltip title="Refresh">
+            <IconButton size="small" onClick={handleRefresh}>
+              <RefreshIcon size={16} />
+            </IconButton>
+          </Tooltip>
+        )}
+      </Box>
+      {/* Line 2 — muted command + schedule summary (view mode only) */}
+      {!editing && (
+        <Box sx={{ display: "flex", px: 1.5, pb: 0.5 }}>
+          <Tooltip title={`${commandSummary} · ${scheduleSummary}`}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{
+                minWidth: 0,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {commandSummary} · {scheduleSummary}
+            </Typography>
+          </Tooltip>
+        </Box>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<EditIcon size={14} />}
-        onClick={editing ? () => setEditing(false) : beginEdit}
-      >
-        {editing ? "Cancel" : "Edit"}
-      </Button>
-      <Tooltip title="Refresh">
-        <IconButton size="small" onClick={handleRefresh}>
-          <RefreshIcon size={16} />
-        </IconButton>
-      </Tooltip>
     </Box>
   );
 
   if (editing) {
     return (
       <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-        {topBar}
+        {header}
         <Box sx={{ flex: 1, overflow: "auto", p: 2, maxWidth: 560 }}>
           <TextField
             fullWidth
@@ -500,7 +542,15 @@ export default function DbtJobView({
             Add command
           </Button>
 
-          <Box sx={{ mb: 2 }}>
+          <Box
+            sx={{
+              mb: 2,
+              p: 1.5,
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+            }}
+          >
             <FormControlLabel
               control={
                 <Switch
@@ -578,21 +628,27 @@ export default function DbtJobView({
                     Invalid cron expression
                   </Typography>
                 )}
+                <FormControlLabel
+                  control={
+                    <Switch
+                      size="small"
+                      checked={formEnabled}
+                      onChange={e => setFormEnabled(e.target.checked)}
+                    />
+                  }
+                  label="Schedule enabled"
+                  sx={{ display: "block", mt: 1 }}
+                />
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block" }}
+                >
+                  Turn off to keep the schedule but pause automatic runs.
+                </Typography>
               </Box>
             )}
           </Box>
-
-          <FormControlLabel
-            control={
-              <Switch
-                size="small"
-                checked={formEnabled}
-                onChange={e => setFormEnabled(e.target.checked)}
-              />
-            }
-            label="Enabled"
-            sx={{ display: "block", mb: 1 }}
-          />
 
           <Tooltip title="Run with --defer --state against the last successful prod manifest. Use with `--select state:modified+` to build only what changed (Slim CI).">
             <FormControlLabel
@@ -627,66 +683,59 @@ export default function DbtJobView({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {topBar}
-      <Tabs
-        value={viewTab}
-        onChange={(_e, value) => setViewTab(value)}
-        sx={{
-          minHeight: 32,
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Tab label="Runs" value="runs" sx={{ minHeight: 32, py: 0 }} />
-        <Tab label="Lineage" value="lineage" sx={{ minHeight: 32, py: 0 }} />
-      </Tabs>
-      {viewTab === "lineage" ? (
-        <Box sx={{ flex: 1, minHeight: 0 }}>
-          <Suspense
-            fallback={
-              <Box sx={{ p: 3, display: "flex", justifyContent: "center" }}>
-                <CircularProgress size={20} />
-              </Box>
-            }
-          >
-            <DbtLineageView projectId={projectId} />
-          </Suspense>
-        </Box>
-      ) : (
-        <Box sx={{ flex: 1, minHeight: 0 }}>
-          <PanelGroup direction="horizontal">
-            {/* Run history */}
-            <Panel defaultSize={25} minSize={15}>
-              <Box
-                sx={{
-                  height: "100%",
-                  overflow: "auto",
-                  borderRight: "1px solid",
-                  borderColor: "divider",
-                }}
-              >
-                {jobRuns.length === 0 ? (
-                  <Box sx={{ p: 2 }}>
-                    <Typography variant="caption" color="text.secondary">
-                      No runs yet. Press Run now to start one.
-                    </Typography>
-                  </Box>
-                ) : (
-                  jobRuns.map(run => (
+      {header}
+      <Box sx={{ flex: 1, minHeight: 0 }}>
+        <PanelGroup direction="horizontal">
+          {/* Run history */}
+          <Panel defaultSize={25} minSize={15}>
+            <Box
+              sx={{
+                height: "100%",
+                overflow: "auto",
+                borderRight: "1px solid",
+                borderColor: "divider",
+              }}
+            >
+              {jobRuns.length === 0 ? (
+                <Box sx={{ p: 2 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    No runs yet. Press Run now to start one.
+                  </Typography>
+                </Box>
+              ) : (
+                jobRuns.map(run => {
+                  const isSelected = run._id === selectedRunId;
+                  const isActive =
+                    run.status === "running" || run.status === "queued";
+                  const select = () => setSelectedRunId(run._id);
+                  return (
                     <Box
                       key={run._id}
-                      onClick={() => setSelectedRunId(run._id)}
+                      role="button"
+                      tabIndex={0}
+                      onClick={select}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          select();
+                        }
+                      }}
+                      title={absoluteTime(run.createdAt)}
                       sx={{
                         px: 1.5,
                         py: 0.75,
                         cursor: "pointer",
                         borderBottom: "1px solid",
                         borderColor: "divider",
-                        backgroundColor:
-                          run._id === selectedRunId
-                            ? "action.selected"
-                            : "transparent",
+                        backgroundColor: isSelected
+                          ? "action.selected"
+                          : "transparent",
                         "&:hover": { backgroundColor: "action.hover" },
+                        "&:focus-visible": {
+                          outline: "2px solid",
+                          outlineColor: "primary.main",
+                          outlineOffset: "-2px",
+                        },
                       }}
                     >
                       <Box
@@ -705,249 +754,302 @@ export default function DbtJobView({
                             flexShrink: 0,
                           }}
                         />
-                        <Typography variant="caption" sx={{ flex: 1 }}>
-                          {relativeTime(run.createdAt)}
-                        </Typography>
-                        <Chip
-                          label={run.trigger}
-                          size="small"
-                          variant="outlined"
-                          sx={{ height: 16, fontSize: "0.6rem" }}
-                        />
-                      </Box>
-                      <Typography
-                        variant="caption"
-                        sx={{ color: statusColor(run.status) }}
-                      >
-                        {run.status}
-                        {run.durationMs !== undefined
-                          ? ` · ${formatDuration(run.durationMs)}`
-                          : ""}
-                      </Typography>
-                    </Box>
-                  ))
-                )}
-              </Box>
-            </Panel>
-            <PanelResizeHandle
-              style={{ width: 4, background: "var(--mui-palette-divider)" }}
-            />
-            {/* Run details */}
-            <Panel defaultSize={75} minSize={30}>
-              {!selectedRun && !selectedRunListItem ? (
-                <Box sx={{ p: 2 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    Select a run to see details.
-                  </Typography>
-                </Box>
-              ) : (
-                <Box
-                  sx={{
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                  }}
-                >
-                  {/* Summary strip */}
-                  <Box
-                    sx={{
-                      display: "flex",
-                      gap: 2,
-                      alignItems: "center",
-                      px: 1.5,
-                      py: 0.75,
-                      borderBottom: "1px solid",
-                      borderColor: "divider",
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        color: statusColor(
-                          (selectedStatus ?? "queued") as DbtRunItem["status"],
-                        ),
-                        fontWeight: 600,
-                      }}
-                    >
-                      {selectedStatus}
-                      {selectedStatus === "running" && (
-                        <CircularProgress size={10} sx={{ ml: 0.5 }} />
-                      )}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {(selectedRun ?? selectedRunListItem)?.commands
-                        .map(command => `dbt ${command}`)
-                        .join(" → ")}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {formatDuration(
-                        (selectedRun ?? selectedRunListItem)?.durationMs,
-                      )}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {(selectedRun ?? selectedRunListItem)?.trigger} ·{" "}
-                      {(selectedRun ?? selectedRunListItem)?.triggeredBy}
-                    </Typography>
-                    {(selectedRun ?? selectedRunListItem)?.error && (
-                      <Typography variant="caption" color="error">
-                        {(selectedRun ?? selectedRunListItem)?.error}
-                      </Typography>
-                    )}
-                    {selectedStatus === "error" && (
-                      <Tooltip title="Re-run only the failed/skipped nodes">
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          startIcon={<RetryIcon size={14} />}
-                          onClick={handleRetry}
-                          sx={{ ml: "auto" }}
-                        >
-                          Retry from failure
-                        </Button>
-                      </Tooltip>
-                    )}
-                  </Box>
-
-                  {/* Models table */}
-                  {(selectedRun?.stepResults?.length ?? 0) > 0 && (
-                    <Box
-                      sx={{
-                        maxHeight: "40%",
-                        overflow: "auto",
-                        borderBottom: "1px solid",
-                        borderColor: "divider",
-                      }}
-                    >
-                      <Box
-                        component="table"
-                        sx={{
-                          width: "100%",
-                          fontSize: "0.75rem",
-                          borderCollapse: "collapse",
-                          "& td, & th": {
-                            borderBottom: "1px solid",
-                            borderColor: "divider",
-                            p: 0.5,
-                            textAlign: "left",
-                          },
-                        }}
-                      >
-                        <thead>
-                          <tr>
-                            <th>Node</th>
-                            <th>Type</th>
-                            <th>Status</th>
-                            <th>Time</th>
-                            <th>Rows</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {selectedRun?.stepResults?.map(step => (
-                            <Box
-                              component="tr"
-                              key={step.uniqueId}
-                              sx={{
-                                color:
-                                  step.status === "error" ||
-                                  step.status === "fail"
-                                    ? "error.main"
-                                    : step.status === "warn"
-                                      ? "warning.main"
-                                      : "inherit",
-                              }}
-                            >
-                              <td>{step.name}</td>
-                              <td>{step.resourceType}</td>
-                              <td>
-                                {step.status}
-                                {step.message &&
-                                (step.status === "error" ||
-                                  step.status === "fail" ||
-                                  step.status === "warn" ||
-                                  step.resourceType === "source")
-                                  ? ` — ${step.message}`
-                                  : ""}
-                              </td>
-                              <td>
-                                {(step.executionTimeMs / 1000).toFixed(2)}s
-                              </td>
-                              <td>{step.rowsAffected ?? ""}</td>
-                              <td>
-                                {step.resourceType === "model" && (
-                                  <Tooltip title="Open model">
-                                    <IconButton
-                                      size="small"
-                                      onClick={() =>
-                                        focusDbtFileTab(
-                                          projectId,
-                                          `models/${step.name}.sql`,
-                                        )
-                                      }
-                                    >
-                                      <ModelIcon size={12} />
-                                    </IconButton>
-                                  </Tooltip>
-                                )}
-                              </td>
-                            </Box>
-                          ))}
-                        </tbody>
-                      </Box>
-                    </Box>
-                  )}
-
-                  {/* Logs */}
-                  <Box
-                    ref={logScrollRef}
-                    sx={{
-                      flex: 1,
-                      minHeight: 0,
-                      overflow: "auto",
-                      fontFamily: "monospace",
-                      fontSize: "0.72rem",
-                      p: 1,
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
-                    {(selectedRun?.logs ?? []).length === 0 ? (
-                      <Typography variant="caption" color="text.secondary">
-                        {selectedStatus === "queued"
-                          ? "Run queued…"
-                          : "No logs."}
-                      </Typography>
-                    ) : (
-                      selectedRun?.logs.map((log, index) => (
-                        <Box
-                          key={index}
-                          component="div"
+                        <Typography
+                          variant="caption"
                           sx={{
-                            color:
-                              log.level === "error"
-                                ? "error.main"
-                                : log.level === "warn"
-                                  ? "warning.main"
-                                  : "text.primary",
+                            flex: 1,
+                            fontWeight: 600,
+                            color: statusColor(run.status),
+                            textTransform: "capitalize",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 0.5,
                           }}
                         >
-                          <Box
-                            component="span"
-                            sx={{ color: "text.secondary", mr: 1 }}
-                          >
-                            {new Date(log.ts).toLocaleTimeString()}
-                          </Box>
-                          {log.line}
-                        </Box>
-                      ))
-                    )}
-                  </Box>
-                </Box>
+                          {run.status}
+                          {isActive && <CircularProgress size={9} />}
+                        </Typography>
+                        {run.durationMs !== undefined && (
+                          <Typography variant="caption" color="text.secondary">
+                            {formatDuration(run.durationMs)}
+                          </Typography>
+                        )}
+                      </Box>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.5,
+                          mt: 0.25,
+                        }}
+                      >
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ flex: 1 }}
+                        >
+                          {relativeTime(run.createdAt)}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontSize: "0.65rem" }}
+                        >
+                          {run.trigger}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  );
+                })
               )}
-            </Panel>
-          </PanelGroup>
-        </Box>
-      )}
+            </Box>
+          </Panel>
+          <PanelResizeHandle
+            style={{ width: 4, background: "var(--mui-palette-divider)" }}
+          />
+          {/* Run details */}
+          <Panel defaultSize={75} minSize={30}>
+            {!selectedRun && !selectedRunListItem ? (
+              <Box sx={{ p: 2 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Select a run to see details.
+                </Typography>
+              </Box>
+            ) : (
+              <Box
+                sx={{
+                  height: "100%",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                {/* Summary strip */}
+                <Box
+                  sx={{
+                    display: "flex",
+                    gap: 2,
+                    alignItems: "center",
+                    px: 1.5,
+                    py: 0.75,
+                    borderBottom: "1px solid",
+                    borderColor: "divider",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    icon={
+                      selectedStatus === "running" ||
+                      selectedStatus === "queued" ? (
+                        <CircularProgress size={10} />
+                      ) : undefined
+                    }
+                    label={selectedStatus ?? "queued"}
+                    sx={{
+                      height: 20,
+                      textTransform: "capitalize",
+                      fontWeight: 600,
+                      color: statusColor(
+                        (selectedStatus ?? "queued") as DbtRunItem["status"],
+                      ),
+                      borderColor: statusColor(
+                        (selectedStatus ?? "queued") as DbtRunItem["status"],
+                      ),
+                    }}
+                  />
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    title={absoluteTime(
+                      (selectedRun ?? selectedRunListItem)?.createdAt,
+                    )}
+                  >
+                    {relativeTime(
+                      (selectedRun ?? selectedRunListItem)?.createdAt,
+                    )}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{
+                      fontFamily: "monospace",
+                      maxWidth: 360,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={(selectedRun ?? selectedRunListItem)?.commands
+                      .map(command => `dbt ${command}`)
+                      .join(" → ")}
+                  >
+                    {(selectedRun ?? selectedRunListItem)?.commands
+                      .map(command => `dbt ${command}`)
+                      .join(" → ")}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {formatDuration(
+                      (selectedRun ?? selectedRunListItem)?.durationMs,
+                    )}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {(selectedRun ?? selectedRunListItem)?.trigger} ·{" "}
+                    {(selectedRun ?? selectedRunListItem)?.triggeredBy}
+                  </Typography>
+                  {(selectedRun ?? selectedRunListItem)?.error && (
+                    <Typography variant="caption" color="error">
+                      {(selectedRun ?? selectedRunListItem)?.error}
+                    </Typography>
+                  )}
+                  {selectedStatus === "error" && (
+                    <Tooltip title="Re-run only the failed/skipped nodes">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<RetryIcon size={14} />}
+                        onClick={handleRetry}
+                        sx={{ ml: "auto" }}
+                      >
+                        Retry from failure
+                      </Button>
+                    </Tooltip>
+                  )}
+                </Box>
+
+                {/* Models table */}
+                {(selectedRun?.stepResults?.length ?? 0) > 0 && (
+                  <Box
+                    sx={{
+                      maxHeight: "40%",
+                      overflow: "auto",
+                      borderBottom: "1px solid",
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Box
+                      component="table"
+                      sx={{
+                        width: "100%",
+                        fontSize: "0.75rem",
+                        borderCollapse: "collapse",
+                        "& td, & th": {
+                          borderBottom: "1px solid",
+                          borderColor: "divider",
+                          p: 0.5,
+                          textAlign: "left",
+                        },
+                      }}
+                    >
+                      <thead>
+                        <tr>
+                          <th>Node</th>
+                          <th>Type</th>
+                          <th>Status</th>
+                          <th>Time</th>
+                          <th>Rows</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedRun?.stepResults?.map(step => (
+                          <Box
+                            component="tr"
+                            key={step.uniqueId}
+                            sx={{
+                              color:
+                                step.status === "error" ||
+                                step.status === "fail"
+                                  ? "error.main"
+                                  : step.status === "warn"
+                                    ? "warning.main"
+                                    : "inherit",
+                            }}
+                          >
+                            <td>{step.name}</td>
+                            <td>{step.resourceType}</td>
+                            <td>
+                              {step.status}
+                              {step.message &&
+                              (step.status === "error" ||
+                                step.status === "fail" ||
+                                step.status === "warn" ||
+                                step.resourceType === "source")
+                                ? ` — ${step.message}`
+                                : ""}
+                            </td>
+                            <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
+                            <td>{step.rowsAffected ?? ""}</td>
+                            <td>
+                              {step.resourceType === "model" && (
+                                <Tooltip title="Open model">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() =>
+                                      focusDbtFileTab(
+                                        projectId,
+                                        `models/${step.name}.sql`,
+                                      )
+                                    }
+                                  >
+                                    <ModelIcon size={12} />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                            </td>
+                          </Box>
+                        ))}
+                      </tbody>
+                    </Box>
+                  </Box>
+                )}
+
+                {/* Logs */}
+                <Box
+                  ref={logScrollRef}
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflow: "auto",
+                    fontFamily: "monospace",
+                    fontSize: "0.72rem",
+                    p: 1,
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {(selectedRun?.logs ?? []).length === 0 ? (
+                    <Typography variant="caption" color="text.secondary">
+                      {selectedStatus === "queued" ? "Run queued…" : "No logs."}
+                    </Typography>
+                  ) : (
+                    selectedRun?.logs.map((log, index) => (
+                      <Box
+                        key={index}
+                        component="div"
+                        sx={{
+                          color:
+                            log.level === "error"
+                              ? "error.main"
+                              : log.level === "warn"
+                                ? "warning.main"
+                                : "text.primary",
+                        }}
+                      >
+                        <Box
+                          component="span"
+                          sx={{ color: "text.secondary", mr: 1 }}
+                        >
+                          {new Date(log.ts).toLocaleTimeString()}
+                        </Box>
+                        {log.line}
+                      </Box>
+                    ))
+                  )}
+                </Box>
+              </Box>
+            )}
+          </Panel>
+        </PanelGroup>
+      </Box>
     </Box>
   );
 }

@@ -38,6 +38,7 @@ import {
   FilePlus as NewFileIcon,
   Settings as EditProjectIcon,
   MoreVertical as KebabIcon,
+  Terminal as ConsoleIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -49,7 +50,11 @@ import {
   type DbtJobItem,
   type DbtProjectItem,
 } from "../store/dbtStore";
-import { focusDbtFileTab, focusDbtJobTab } from "../dbt-runtime/shell";
+import {
+  focusDbtConsoleTab,
+  focusDbtFileTab,
+  focusDbtJobTab,
+} from "../dbt-runtime/shell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 
@@ -429,6 +434,24 @@ export function DbtExplorer() {
       }
 
       if (parsed.kind === "project") {
+        const project = projects.find(p => p._id === parsed.projectId);
+        items.push(
+          <MenuItem
+            key="open-console"
+            onClick={() => {
+              focusDbtConsoleTab(
+                parsed.projectId,
+                `${project?.name ?? "dbt"} console`,
+              );
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <ConsoleIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Open console
+          </MenuItem>,
+        );
         items.push(
           <MenuItem
             key="edit-project"
@@ -485,7 +508,7 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [handleItemClick, openEditProject],
+    [handleItemClick, openEditProject, projects],
   );
 
   // Hover kebab: same actions as the right-click menu, but discoverable.
