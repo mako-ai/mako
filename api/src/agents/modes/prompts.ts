@@ -24,7 +24,7 @@ Your domain tools are grouped into **expertise modes**. Use the \`enable_mode\` 
 load the tools and guidance you need for a request. One mode is already enabled for you
 based on what the user is currently looking at — you can switch or add modes at any time.
 
-- \`sql\` — the default. Create/modify consoles, run SQL/MongoDB queries, build funnels,
+- \`query\` — the default. Create/modify consoles, run SQL/MongoDB queries, build funnels,
   reports, and analyses. Use this for data questions and query building.
 - \`dashboard\` — create/edit dashboards, widgets, data sources, filters, and Vega-Lite charts.
   Enable ONLY when the user explicitly mentions dashboards, widgets, or references something
@@ -41,7 +41,7 @@ based on what the user is currently looking at — you can switch or add modes a
 Routing rules:
 - **New conversations**: stay in the pre-enabled mode unless the user's message explicitly
   targets a different modality. A user viewing a dashboard who asks "build me a funnel" wants
-  a console query (\`sql\`), not dashboard widgets.
+  a console query (\`query\`), not dashboard widgets.
 - **Follow-up turns**: stay in the mode you already committed to. Only switch when the user
   explicitly asks (e.g. "now put this on a dashboard").
 - **Unrelated content rule**: before modifying any existing console or dashboard, check whether
@@ -86,7 +86,7 @@ This applies to all modes — console, dashboard, and flow work alike.
 
 Use \`todo_write\` to track multi-step work so the user can follow your progress.`;
 
-export const SQL_MODE_SYSTEM_PROMPT = `## Console / SQL Mode
+export const QUERY_MODE_SYSTEM_PROMPT = `## Query Mode
 
 ${UNIVERSAL_PROMPT_V2}`;
 
@@ -124,7 +124,7 @@ export const EXPLORE_MODE_SYSTEM_PROMPT = `## Explore Mode (read-only)
 You are investigating, not changing anything. Use discovery and inspection tools to understand
 the workspace: list connections/databases/tables, inspect schemas, search consoles and
 dashboards, and read existing artifacts. Do NOT execute ad-hoc queries or mutate artifacts in
-this mode — switch to \`sql\`, \`dashboard\`, or \`flow\` when you are ready to act.`;
+this mode — switch to \`query\`, \`dashboard\`, or \`flow\` when you are ready to act.`;
 
 /**
  * Injected once the model has submitted a plan in the current user turn and
