@@ -1,8 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
-import { api } from "../api";
+import { api, unwrapBody } from "../api";
 
 export interface ConnectorType {
   type: string;
@@ -96,9 +95,11 @@ export const useConnectorCatalogStore = create<CatalogState>()(
         });
 
         try {
-          const json = await apiClient.get<
-            CatalogResponse<ConnectorSchemaResponse>
-          >(`/connectors/${type}/schema`);
+          const json = unwrapBody(
+            await api.GET("/api/connectors/{type}/schema", {
+              params: { path: { type } },
+            }),
+          ) as CatalogResponse<ConnectorSchemaResponse>;
           if (json.success) {
             set(state => {
               state.schemas[type] = json.data;
