@@ -8,9 +8,12 @@ import {
   Chip,
   Alert,
 } from "@mui/material";
-import { RefreshCw as RefreshIcon } from "lucide-react";
+import { RefreshCw as RefreshIcon, Share2 as ShareIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
+import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
+import ShareDialog from "./ShareDialog";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 import {
   ensureBindingLoaded,
@@ -29,7 +32,10 @@ import {
  */
 export default function AppRenderer({ appId }: { appId: string }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
+  const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const workspaceId = currentWorkspace?.id;
+  const [shareOpen, setShareOpen] = useState(false);
 
   const appEntity = useAppStore(s => s.openApps[appId]);
   const previewNonce = useAppStore(s => s.previewNonce[appId] ?? 0);
@@ -236,12 +242,36 @@ export default function AppRenderer({ appId }: { appId: string }) {
           label={appEntity.runtime === "cdn" ? "CDN preview" : "WebContainer"}
         />
         <Box sx={{ flex: 1 }} />
+        <Tooltip title="Share">
+          <IconButton size="small" onClick={() => setShareOpen(true)}>
+            <ShareIcon size={18} strokeWidth={1.5} />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Rebuild preview">
           <IconButton size="small" onClick={() => bumpPreview(appId)}>
             <RefreshIcon size={18} strokeWidth={1.5} />
           </IconButton>
         </Tooltip>
       </Box>
+
+      <ShareDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        resourceType="app"
+        resourceId={appId}
+        resourceName={appEntity.title}
+        ownerId={appEntity.owner_id ?? appEntity.createdBy}
+        access={appEntity.access}
+        workspaceRole={appEntity.workspaceRole ?? "viewer"}
+        publicShare={appEntity.publicShare ?? { enabled: false }}
+        canManage={
+          (appEntity.owner_id ?? appEntity.createdBy) === user?.id ||
+          isWorkspaceAdmin
+        }
+        onSharingChanged={changes =>
+          useAppStore.getState().applySharingChanges(appId, changes)
+        }
+      />
 
       {errors.length > 0 && (
         <Alert severity="error" sx={{ borderRadius: 0, py: 0.25 }}>

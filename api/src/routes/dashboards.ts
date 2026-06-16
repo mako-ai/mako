@@ -35,6 +35,11 @@ import {
 } from "../services/entity-version.service";
 import { generateDashboardVersionComment } from "../services/version-comment.service";
 import { getDashboardChatPrompts } from "../services/dashboard-version-context.service";
+import {
+  registerCollaboratorRoutes,
+  registerSharingSettingsRoutes,
+} from "./lib/collaborator-routes";
+import { registerPublicShareRoutes } from "./lib/public-share-routes";
 
 const logger = loggers.api("dashboards");
 
@@ -209,6 +214,21 @@ function sanitizeDashboardResponse<
   },
 >(dashboard: T): T {
   delete dashboard.materializationMode;
+  // Never leak the password hash; expose only safe public-share metadata.
+  const loose = dashboard as Record<string, any>;
+  if (loose.publicShare && typeof loose.publicShare === "object") {
+    const ps = loose.publicShare as Record<string, unknown>;
+    if (ps.enabled && ps.token) {
+      loose.publicShare = {
+        enabled: true,
+        token: ps.token,
+        hasPassword: !!ps.passwordHash,
+        createdAt: ps.createdAt,
+      };
+    } else {
+      delete loose.publicShare;
+    }
+  }
   dashboard.materializationSchedule = normalizeDashboardMaterializationSchedule(
     dashboard.materializationSchedule as
       | Record<string, unknown>
@@ -488,7 +508,12 @@ app.get("/:id", async (c: AuthenticatedContext) => {
 
     const memberRole = c.get("memberRole");
     const isAdmin = memberRole === "owner" || memberRole === "admin";
-    const readOnly = !DashboardManager.canWrite(dashboard, userId, isAdmin);
+    const readOnly = !DashboardManager.canWrite(
+      dashboard,
+      userId,
+      isAdmin,
+      memberRole,
+    );
 
     const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
     normalizeDashboardWidgetLayouts(plain);
@@ -536,7 +561,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
     }
     const memberRole = c.get("memberRole");
     const isAdmin = memberRole === "owner" || memberRole === "admin";
-    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
       return c.json(
         {
           success: false,
@@ -617,7 +642,7 @@ app.put("/:id", async (c: AuthenticatedContext) => {
         );
       }
     }
-    if (body.access !== undefined) {
+    if (body.access !== undefined || body.workspaceRole !== undefined) {
       // Changing visibility is owner/admin-only — collaborators can edit
       // content but must not be able to re-scope who can see the dashboard.
       if (!DashboardManager.isOwner(dashboard, userId) && !isAdmin) {
@@ -629,7 +654,12 @@ app.put("/:id", async (c: AuthenticatedContext) => {
           403,
         );
       }
-      updateFields.access = body.access;
+      if (body.access !== undefined) {
+        updateFields.access = body.access;
+      }
+      if (body.workspaceRole === "viewer" || body.workspaceRole === "editor") {
+        updateFields.workspaceRole = body.workspaceRole;
+      }
     }
 
     // Atomic optimistic concurrency update
@@ -741,7 +771,7 @@ app.patch("/:id", async (c: AuthenticatedContext) => {
     }
     const memberRole = c.get("memberRole");
     const isAdmin = memberRole === "owner" || memberRole === "admin";
-    if (!DashboardManager.canWrite(existing, userId, isAdmin)) {
+    if (!DashboardManager.canWrite(existing, userId, isAdmin, memberRole)) {
       return c.json(
         {
           success: false,
@@ -1062,7 +1092,7 @@ app.delete("/:id", async (c: AuthenticatedContext) => {
     }
     const memberRole = c.get("memberRole");
     const isAdmin = memberRole === "owner" || memberRole === "admin";
-    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
       return c.json(
         {
           success: false,
@@ -1625,7 +1655,7 @@ app.patch("/:id/move", async (c: AuthenticatedContext) => {
 
     const memberRole = c.get("memberRole");
     const isAdmin = memberRole === "owner" || memberRole === "admin";
-    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
       return c.json({ success: false, error: "Access denied" }, 403);
     }
 
@@ -1780,7 +1810,7 @@ app.post("/:id/versions/:version/restore", async (c: AuthenticatedContext) => {
 
     const memberRole = c.get("memberRole");
     const isAdmin = memberRole === "owner" || memberRole === "admin";
-    if (!DashboardManager.canWrite(dashboard, userId, isAdmin)) {
+    if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
       return c.json(
         { success: false, error: "You do not have write access" },
         403,
@@ -1845,179 +1875,30 @@ app.post("/:id/versions/:version/restore", async (c: AuthenticatedContext) => {
   }
 });
 
-// ── Collaborators (per-user editor access) ──
+// ── Sharing (collaborators, general access, public link) ──
 
-async function loadDashboardForCollaborators(c: AuthenticatedContext) {
+const loadDashboardById = async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId");
   const id = c.req.param("id");
-  if (!Types.ObjectId.isValid(id)) {
-    return {
-      error: c.json({ success: false, error: "Invalid dashboard ID" }, 400),
-    };
-  }
-  const dashboard = await Dashboard.findOne({
+  if (!Types.ObjectId.isValid(id)) return null;
+  return Dashboard.findOne({
     _id: new Types.ObjectId(id),
     workspaceId: new Types.ObjectId(workspaceId),
   });
-  if (!dashboard) {
-    return {
-      error: c.json({ success: false, error: "Dashboard not found" }, 404),
-    };
-  }
-  return { dashboard, workspaceId };
-}
+};
 
-/**
- * Only the owner or a workspace admin/owner may manage collaborators.
- */
-function canManageCollaborators(
-  dashboard: IDashboard,
-  userId: string,
-  memberRole?: string,
-): boolean {
-  if (DashboardManager.isOwner(dashboard, userId)) return true;
-  return memberRole === "owner" || memberRole === "admin";
-}
-
-// GET collaborators - anyone who can read the dashboard can see the list
-app.get("/:id/collaborators", async (c: AuthenticatedContext) => {
-  try {
-    const userId = c.get("user")?.id;
-    if (!userId) {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-    const result = await loadDashboardForCollaborators(c);
-    if (result.error) return result.error;
-    const { dashboard, workspaceId } = result;
-
-    if (!DashboardManager.canRead(dashboard, userId)) {
-      return c.json({ success: false, error: "Access denied" }, 403);
-    }
-
-    const members = await workspaceService.getMembers(workspaceId);
-    const emailByUserId = new Map<string, string>(
-      members.map((m: any) => [
-        (m.userId?._id || m.userId)?.toString(),
-        m.userId?.email || "",
-      ]),
-    );
-
-    const collaborators = (dashboard.sharedWith || []).map(s => ({
-      userId: s.userId,
-      role: s.role,
-      email: emailByUserId.get(s.userId) || "",
-      addedAt: s.addedAt,
-    }));
-
-    return c.json({ success: true, data: collaborators });
-  } catch (error) {
-    logger.error("Error listing dashboard collaborators", { error });
-    return c.json(
-      { success: false, error: "Failed to list collaborators" },
-      500,
-    );
-  }
+registerCollaboratorRoutes(app, {
+  resourceName: "Dashboard",
+  load: loadDashboardById,
 });
-
-// POST collaborator - add an editor (owner/admin only)
-app.post("/:id/collaborators", async (c: AuthenticatedContext) => {
-  try {
-    const userId = c.get("user")?.id;
-    if (!userId) {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-    const result = await loadDashboardForCollaborators(c);
-    if (result.error) return result.error;
-    const { dashboard, workspaceId } = result;
-
-    const memberRole = c.get("memberRole");
-    if (!canManageCollaborators(dashboard, userId, memberRole)) {
-      return c.json(
-        { success: false, error: "Only the owner or an admin can share" },
-        403,
-      );
-    }
-
-    const body = await c.req.json().catch(() => ({}));
-    const targetUserId = String(body?.userId || "").trim();
-    if (!targetUserId) {
-      return c.json({ success: false, error: "userId is required" }, 400);
-    }
-
-    if (DashboardManager.isOwner(dashboard, targetUserId)) {
-      return c.json(
-        { success: false, error: "Owner already has full access" },
-        400,
-      );
-    }
-
-    const members = await workspaceService.getMembers(workspaceId);
-    const isMember = members.some(
-      (m: any) => (m.userId?._id || m.userId)?.toString() === targetUserId,
-    );
-    if (!isMember) {
-      return c.json(
-        { success: false, error: "User is not a member of this workspace" },
-        400,
-      );
-    }
-
-    const alreadyShared = (dashboard.sharedWith || []).some(
-      s => s.userId === targetUserId,
-    );
-    if (!alreadyShared) {
-      dashboard.sharedWith = [
-        ...(dashboard.sharedWith || []),
-        {
-          userId: targetUserId,
-          role: "editor",
-          addedAt: new Date(),
-          addedBy: userId,
-        },
-      ];
-      await dashboard.save();
-    }
-
-    return c.json({ success: true, data: dashboard.sharedWith });
-  } catch (error) {
-    logger.error("Error adding dashboard collaborator", { error });
-    return c.json({ success: false, error: "Failed to add collaborator" }, 500);
-  }
+registerSharingSettingsRoutes(app, {
+  resourceName: "Dashboard",
+  load: loadDashboardById,
 });
-
-// DELETE collaborator - revoke access (owner/admin only)
-app.delete("/:id/collaborators/:userId", async (c: AuthenticatedContext) => {
-  try {
-    const userId = c.get("user")?.id;
-    if (!userId) {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-    const result = await loadDashboardForCollaborators(c);
-    if (result.error) return result.error;
-    const { dashboard } = result;
-
-    const memberRole = c.get("memberRole");
-    if (!canManageCollaborators(dashboard, userId, memberRole)) {
-      return c.json(
-        { success: false, error: "Only the owner or an admin can share" },
-        403,
-      );
-    }
-
-    const targetUserId = c.req.param("userId");
-    dashboard.sharedWith = (dashboard.sharedWith || []).filter(
-      s => s.userId !== targetUserId,
-    );
-    await dashboard.save();
-
-    return c.json({ success: true, data: dashboard.sharedWith });
-  } catch (error) {
-    logger.error("Error removing dashboard collaborator", { error });
-    return c.json(
-      { success: false, error: "Failed to remove collaborator" },
-      500,
-    );
-  }
+registerPublicShareRoutes(app, {
+  resourceName: "Dashboard",
+  load: loadDashboardById,
+  getTitle: doc => (doc as unknown as IDashboard).title,
 });
 
 export const dashboardRoutes = app;

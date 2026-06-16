@@ -2985,11 +2985,37 @@ const Chat: React.FC<ChatProps> = ({
   sendMessageRef.current = sendMessage;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // Refs so the stable submit/drain callbacks can react to a pending plan
+  // without taking it as a dependency.
+  const pendingInteractiveToolRef = useRef(pendingInteractiveTool);
+  pendingInteractiveToolRef.current = pendingInteractiveTool;
+  const resolveInteractiveToolRef = useRef(handleResolveInteractiveTool);
+  resolveInteractiveToolRef.current = handleResolveInteractiveTool;
+
+  // A pending plan parks the turn on a deferred `submit_plan` tool call, so a
+  // plain chat message can't advance it. Treat the message as plan feedback
+  // ("reply in chat to iterate") — resolve the tool with `request_changes` so
+  // the agent revises the plan instead of the message getting stuck in queue.
+  const sendAsPlanFeedbackIfPending = (text: string): boolean => {
+    const pendingPlan = pendingInteractiveToolRef.current;
+    if (pendingPlan?.toolName !== "submit_plan") return false;
+    const feedback = text.trim();
+    if (!feedback) return false;
+    resolveInteractiveToolRef.current({
+      tool: pendingPlan.toolName,
+      toolCallId: pendingPlan.toolCallId,
+      output: {
+        success: true,
+        decision: "request_changes",
+        feedback,
+      } satisfies SubmitPlanOutput as unknown as Record<string, unknown>,
+    });
+    return true;
+  };
 
   const tryDrainQueuedPromptRef = useRef<() => void>(() => {});
   tryDrainQueuedPromptRef.current = () => {
     if (
-      isLoadingRef.current ||
       manualStopRequestedRef.current ||
       // Don't auto-fire the next queued prompt into a failed turn. The error
       // (e.g. usage_limit_exceeded) stays on screen; dismissing it via
@@ -2997,7 +3023,24 @@ const Chat: React.FC<ChatProps> = ({
       status === "error" ||
       queuedPromptsRef.current.length === 0 ||
       // Don't drain the head item while the user is editing it in the composer.
-      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current ||
+      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current
+    ) {
+      return;
+    }
+
+    // A pending plan blocks the turn on a deferred tool call, so the head item
+    // can't be a normal message. Drain it as plan feedback instead of letting
+    // it sit blocked behind the "Approve & run" card.
+    if (pendingInteractiveToolRef.current?.toolName === "submit_plan") {
+      const [head, ...remaining] = queuedPromptsRef.current;
+      if (!sendAsPlanFeedbackIfPending(head.text)) return;
+      queuedPromptsRef.current = remaining;
+      setQueuedPrompts(remaining);
+      return;
+    }
+
+    if (
+      isLoadingRef.current ||
       autoSendWhenComplete({ messages: messagesRef.current }) ||
       hasPendingAssistantToolCalls(messagesRef.current)
     ) {
@@ -3054,6 +3097,12 @@ const Chat: React.FC<ChatProps> = ({
     capturedDashboardIdRef.current = dashboardId;
     const consoleId = capturedConsoleIdRef.current;
 
+    // Replying while a plan is pending iterates on the plan rather than queuing
+    // a message that can't be processed until the plan resolves.
+    if (sendAsPlanFeedbackIfPending(text)) {
+      return;
+    }
+
     if (isLoadingRef.current) {
       trackEvent("ai_chat_message_queued", {
         model: modelIdRef.current,
@@ -3084,7 +3133,7 @@ const Chat: React.FC<ChatProps> = ({
 
   useEffect(() => {
     tryDrainQueuedPromptRef.current();
-  }, [isLoading, status, activeClientToolCallCount]);
+  }, [isLoading, status, activeClientToolCallCount, pendingInteractiveTool]);
 
   // Belt-and-suspenders: useChat `id` resets hook state on chatId change.
   useEffect(() => {
@@ -3420,7 +3469,13 @@ const Chat: React.FC<ChatProps> = ({
           only shows a read-only summary once the user has responded. */}
       {pendingInteractiveTool && (
         <Box
-          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          sx={{
+            mx: 1,
+            mt: 1,
+            // Dock onto the composer when alone; leave a gap when the queue
+            // card sits between this and the composer.
+            mb: queuedPrompts.length > 0 ? 1 : -0.5,
+          }}
           key={pendingInteractiveTool.toolCallId}
         >
           {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (

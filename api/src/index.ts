@@ -41,6 +41,7 @@ import { billingRoutes } from "./routes/billing";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook";
 import { dashboardRoutes } from "./routes/dashboards";
 import { appRoutes } from "./routes/apps";
+import { publicShareRoutes } from "./routes/public-share";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
@@ -167,6 +168,8 @@ app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
   dashboardMaterializationRoutes,
 );
+// Intentionally public: token-gated read-only shares (dashboards + apps).
+app.route("/api/share", publicShareRoutes);
 app.route("/api/agent", agentRoutes);
 app.route("/api/admin", adminRoutes);
 app.route("/api/connectors", connectorRoutes);

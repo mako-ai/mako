@@ -69,12 +69,21 @@ export interface Dashboard
   /** false = draft (auto-save enabled), true = saved (no auto-save) */
   isSaved?: boolean;
   access: "private" | "workspace";
-  /** Per-user collaborators with explicit edit access. */
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: "viewer" | "editor";
+  /** Per-user collaborators (viewer/editor). */
   sharedWith?: Array<{
     userId: string;
-    role: "editor";
+    role: "viewer" | "editor";
     addedAt?: string;
   }>;
+  /** Public link sharing metadata (no secrets). */
+  publicShare?: {
+    enabled: boolean;
+    token?: string;
+    hasPassword?: boolean;
+    createdAt?: string;
+  };
   owner_id?: string;
   createdBy: string;
   readOnly?: boolean;
