@@ -13,7 +13,12 @@
     "worker:dev": "tsx watch src/worker.ts",
     "migrate:workspaces": "tsx src/migrations/migrate-to-workspaces.ts",
     "openapi:generate": "tsx src/openapi/generate-cli.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
     "test": "tsx src/openapi/core.test.ts && tsx src/openapi/openapi.test.ts && tsx src/dbt/warm-dir-cache.test.ts",
+    "test:pg": "tsx src/db/ids.test.ts && tsx src/db/repositories.test.ts && tsx src/db/persistence.routes.test.ts",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"
   },
@@ -46,6 +51,7 @@
     "cron-parser": "^5.3.0",
     "diff": "^9.0.0",
     "dotenv": "^16.5.0",
+    "drizzle-orm": "^0.45.2",
     "express-rate-limit": "^7.5.0",
     "google-auth-library": "^10.4.0",
     "hono": "^4.7.11",
@@ -87,6 +93,7 @@
     "@typescript-eslint/eslint-plugin": "^8.34.0",
     "@typescript-eslint/parser": "^8.34.0",
     "copyfiles": "^2.4.1",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^8.57.1",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"

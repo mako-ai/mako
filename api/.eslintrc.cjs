@@ -12,7 +12,13 @@ module.exports = {
   ],
   // `scripts/` holds tsx-run dev utilities outside the build tsconfig project,
   // so the type-aware parser cannot lint them.
-  ignorePatterns: ['dist', '.eslintrc.cjs', 'node_modules', 'scripts'],
+  ignorePatterns: [
+    'dist',
+    '.eslintrc.cjs',
+    'drizzle.config.ts',
+    'node_modules',
+    'scripts',
+  ],
   parser: '@typescript-eslint/parser',
   parserOptions: {
     ecmaVersion: 'latest',
