@@ -43,6 +43,21 @@ Workspace admins can schedule a saved console to run automatically from the cons
 
 When a console is scheduled, Mako stores the next run time and executes it through Inngest. The schedule panel shows the latest run status, duration, row count, consecutive failures, and recent run history. Admins can also trigger a scheduled console manually with **Run now**. You can attach **notifications** to a schedule (email, webhook, or Slack) — see [Notifications](/notifications/).
 
+## Live Editing & Streaming
+
+When the agent edits a console, changes are applied **server-side to the authoritative draft** and any open windows update live — you don't have to be the one driving the chat to see the edit land.
+
+Edits are **incremental, not all-or-nothing**. `modify_console` supports four actions:
+
+- **`patch`** — replace a specific 1-indexed, inclusive line range (preferred for small edits, e.g. changing a single `WHERE` clause). Produces a tight, reviewable diff instead of rewriting the whole query.
+- **`replace`** — swap the full content.
+- **`insert`** — add content at a position.
+- **`append`** — add to the end.
+
+The agent reads the current content with `read_console` (which returns line-numbered text) to target the right range before patching. If a console is read-only to the agent (a workspace console it doesn't own, and it isn't an admin), modification is rejected and it creates a copy instead.
+
+Tool inputs stream as they generate, so edit cards reflect work in progress rather than blocking on a spinner until the full payload arrives.
+
 ## Sharing
 
 Consoles use the same **Google Workspace-style** sharing model as [dashboards](/dashboards/#sharing--collaborators):

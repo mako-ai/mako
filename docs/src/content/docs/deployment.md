@@ -64,6 +64,7 @@ Set these in Cloud Run's environment configuration (or via `cloud-run-env.yaml`)
 | `SESSION_SECRET`               | Yes         | Session security                         |
 | `BASE_URL`                     | Yes         | Public URL (e.g., `https://app.mako.ai`) |
 | `CLIENT_URL`                   | Yes         | Same as BASE_URL for Cloud Run           |
+| `REDIS_URL`                    | Optional    | Redis pub/sub for resumable streams and realtime — **required when running more than one API instance**; in-process otherwise |
 | `AI_GATEWAY_API_KEY`           | Required    | AI features (Vercel AI Gateway)          |
 | `OPENAI_API_KEY`               | Optional    | Text embeddings only                     |
 | `GOOGLE_CLIENT_ID` + `SECRET`  | Optional    | Google OAuth                             |

@@ -84,31 +84,38 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 
 Every turn, Mako injects a compact index of every skill plus the top-3 auto-retrieved bodies (entity overlap 0.6 + semantic similarity 0.4). See [Skills](/skills/) for the full model, admin UI, and REST API.
 
-## Multi-Agent Architecture
+## Expertise Modes
 
-Different contexts activate different specialized agents:
+Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A set of core tools (memory, skills, search, version history, mode-switching) is always available regardless of mode.
 
-### Console Agent (default)
+On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms** — otherwise **Query**. The agent then switches as the task demands.
 
-Active when you're working in a console tab. This is the core SQL client experience — schema discovery, query writing, execution, and console delivery.
+| Mode | Does |
+|------|------|
+| **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses |
+| **Dashboard** | Create and edit dashboards, widgets, data sources, filters, and charts |
+| **Sync Flow** | Configure database-to-database sync flows, query templates, and schema mapping |
+| **React App** | Build React apps wired to workspace data — edit files, add dependencies, create data bindings |
+| **Transforms** | Build and run dbt transformations — edit project files, compile, test, and run models against the warehouse |
+| **Explore** | Read-only investigation across connections, consoles, dashboards, and memory |
 
-### Flow Agent
+`Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`).
 
-Active in the flow editor. Helps configure database-to-database sync flows — inspects source and destination schemas, writes extraction queries with template placeholders, and validates before applying.
+### Plan Gate
 
-### Dashboard Agent
+There is no user-facing plan/agent toggle. The model decides when planning is worthwhile: the moment it calls `submit_plan` in a turn, mutating tools are hard-gated until you approve the plan. Read-only and lifecycle tools stay available throughout.
 
-Active when working on a dashboard. Dashboards combine saved queries (consoles) into interactive visualizations powered by in-browser DuckDB and Vega-Lite charts.
+### Dashboard specifics
 
-Key capabilities:
-- **Data sources** — create dashboard-local query definitions materialized into a local DuckDB instance
-- **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local data
-- **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
+Dashboards combine saved queries (consoles) into interactive visualizations powered by in-browser DuckDB and Vega-Lite charts:
+
+- **Data sources** — dashboard-local query definitions materialized into a local DuckDB instance
+- **Widgets** — charts (Vega-Lite), KPI cards, and data tables querying the local data
+- **Cross-filtering** — clicking a bar or slice in one chart filters all others automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
-- **Debugging & Guardrails** — enforces cross-filter diagnosis and source-query edit safety, verifying causes before modifying charts or retrying broken SQL edits.
-- **Multi-dashboard** — multiple dashboards can be open simultaneously, each with its own isolated DuckDB instance
+- **Multi-dashboard** — multiple dashboards open simultaneously, each with its own isolated DuckDB instance
 
-The agent handles edit-mode locking, so concurrent users cannot conflict.
+Edit-mode locking is handled automatically so concurrent users cannot conflict.
 
 ## Visual Inspection
 
