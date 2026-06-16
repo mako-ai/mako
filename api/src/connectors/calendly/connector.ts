@@ -499,12 +499,14 @@ export class CalendlyConnector extends BaseConnector {
       };
 
       if (entity === "scheduled_events") {
-        params.sort = "created_at:asc";
+        // Calendly only supports sorting scheduled_events by start_time.
+        params.sort = "start_time:asc";
         if (since instanceof Date) {
           params.min_start_time = since.toISOString();
         }
       } else if (entity === "event_types") {
-        params.sort = "created_at:asc";
+        // Calendly only reliably supports sorting event_types by name.
+        params.sort = "name:asc";
       }
 
       const page = await this.fetchPage(path, params);
@@ -606,7 +608,8 @@ export class CalendlyConnector extends BaseConnector {
       const params: Record<string, string | number | undefined> = {
         count: MAX_PAGE_LIMIT,
         organization: organization_uri,
-        sort: "created_at:asc",
+        // Calendly only supports sorting scheduled_events by start_time.
+        sort: "start_time:asc",
         page_token: eventsCursor,
       };
       if (since instanceof Date) {
