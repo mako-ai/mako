@@ -93,6 +93,76 @@ interface ScreenshotVisionAttachment {
 const MAX_SCREENSHOT_VISION_ATTACHMENTS = 6;
 const MAX_SCREENSHOT_VISION_BYTES = 2_000_000;
 
+// Keep the SSE connection warm during long silent gaps.
+//
+// While a server-side tool runs (e.g. a multi-minute `dbt build`) the AI SDK
+// emits the `tool-input-available` chunk and then sends nothing on the wire
+// until the tool resolves. Edge proxies (Cloudflare's origin idle timeout is
+// ~100s with no bytes) terminate a connection that goes quiet for too long —
+// which drops the live stream and strands the in-flight tool card on
+// "Running…" in the browser. Emitting an SSE comment line on a fixed interval
+// keeps bytes flowing without affecting the protocol: lines beginning with
+// `:` are comments per the SSE spec and are ignored by the AI SDK's stream
+// parser. We wrap only the live client-facing branch; the tee'd
+// resumable-stream copy is untouched, so keepalives are never buffered or
+// replayed on reconnect.
+const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
+
+function withSseKeepAlive(
+  response: Response,
+  intervalMs = SSE_KEEPALIVE_INTERVAL_MS,
+): Response {
+  if (!response.body) return response;
+
+  const encoder = new TextEncoder();
+  const reader = response.body.getReader();
+  let keepAlive: ReturnType<typeof setInterval> | null = null;
+
+  const stopKeepAlive = () => {
+    if (keepAlive) {
+      clearInterval(keepAlive);
+      keepAlive = null;
+    }
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          // Controller already closed/errored — stop pinging.
+          stopKeepAlive();
+        }
+      }, intervalMs);
+    },
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          stopKeepAlive();
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        stopKeepAlive();
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      stopKeepAlive();
+      void reader.cancel(reason);
+    },
+  });
+
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 function estimateDataUrlBytes(dataUrl: string): number {
   const commaIndex = dataUrl.indexOf(",");
   if (commaIndex === -1) return dataUrl.length;
@@ -921,7 +991,7 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
 
       // Return native AI SDK UI message stream response (for useChat compatibility)
       // Using AI SDK best practice: save once at the end with all messages
-      return result.toUIMessageStreamResponse({
+      const streamResponse = result.toUIMessageStreamResponse({
         originalMessages: segmentUiMessages,
         generateMessageId: () => new ObjectId().toString(),
         // Forward reasoning tokens from models that support extended thinking
@@ -1257,6 +1327,8 @@ agentRoutes.post("/chat", async (c: AuthenticatedContext) => {
           });
         },
         });
+
+      return withSseKeepAlive(streamResponse);
       };
 
       /**
