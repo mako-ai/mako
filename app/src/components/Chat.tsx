@@ -77,6 +77,7 @@ import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
+import { DbtRunCard } from "./DbtRunCard";
 import { PlanCard } from "./PlanCard";
 import {
   focusPlanTab,
@@ -912,6 +913,32 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
               }
               if (rawState !== "output-error") {
                 return null;
+              }
+            }
+
+            // Async dbt builds: once dbt_run_model has dispatched a run (output
+            // carries a runId), render a live run card that self-polls the run
+            // — decoupled from the agent turn, so it keeps updating after the
+            // turn ends and resumes on chat reload. While the dispatch is still
+            // in flight, or if it errored without a runId, fall through to the
+            // generic card.
+            if (
+              toolName === "dbt_run_model" &&
+              rawState === "output-available"
+            ) {
+              const dbtOutput = cardOutput as { runId?: string } | undefined;
+              const dbtInput = part.input as
+                | { projectId?: string; model?: string }
+                | undefined;
+              if (dbtOutput?.runId && dbtInput?.projectId) {
+                return (
+                  <DbtRunCard
+                    key={key}
+                    runId={dbtOutput.runId}
+                    projectId={dbtInput.projectId}
+                    label={dbtInput.model}
+                  />
+                );
               }
             }
             return (
