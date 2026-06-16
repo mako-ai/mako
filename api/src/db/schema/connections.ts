@@ -8,7 +8,6 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-import { users } from "./auth";
 import { workspaces } from "./workspaces";
 
 /**
@@ -44,9 +43,7 @@ export const databaseConnections = pgTable(
     // Encrypted credential blob (string leaves are AES-256-CBC ciphertext).
     connection: jsonb("connection").$type<Record<string, unknown>>().notNull(),
     isDemo: boolean("is_demo").notNull().default(false),
-    createdBy: uuid("created_by")
-      .notNull()
-      .references(() => users.id),
+    createdBy: uuid("created_by").notNull(),
     lastConnectedAt: timestamp("last_connected_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -80,9 +77,8 @@ export const connectors = pgTable(
     // References database_connections.id (uuid[]).
     targetDatabases: uuid("target_databases").array(),
     isActive: boolean("is_active").notNull().default(true),
-    createdBy: uuid("created_by")
-      .notNull()
-      .references(() => users.id),
+    // No user FK: connectors can be created by the `system`/`agent` sentinels.
+    createdBy: uuid("created_by").notNull(),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

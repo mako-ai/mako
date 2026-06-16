@@ -10,7 +10,6 @@ import {
   vector,
 } from "drizzle-orm/pg-core";
 
-import { users } from "./auth";
 import { databaseConnections } from "./connections";
 import { workspaces } from "./workspaces";
 
@@ -32,7 +31,7 @@ export const consoleFolders = pgTable(
     name: text("name").notNull(),
     parentId: uuid("parent_id"),
     access: text("access").$type<"private" | "workspace">(),
-    ownerId: uuid("owner_id").references(() => users.id),
+    ownerId: uuid("owner_id"),
     isPrivate: boolean("is_private"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -90,8 +89,9 @@ export const savedConsoles = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     executionCount: integer("execution_count").notNull().default(0),
     lastExecutedAt: timestamp("last_executed_at", { withTimezone: true }),
-    createdBy: uuid("created_by").references(() => users.id),
-    ownerId: uuid("owner_id").references(() => users.id),
+    // Creator/owner are mapped user uuids without a hard FK (legacy sentinels).
+    createdBy: uuid("created_by"),
+    ownerId: uuid("owner_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

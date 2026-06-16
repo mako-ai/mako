@@ -1,5 +1,5 @@
 {
-  "id": "10fdf309-3113-450e-82db-2fe9260bbb0a",
+  "id": "a70afef4-9c2b-42da-95f6-e9058cc6c7ae",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -526,19 +526,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "workspace_api_keys_created_by_users_id_fk": {
-          "name": "workspace_api_keys_created_by_users_id_fk",
-          "tableFrom": "workspace_api_keys",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -652,19 +639,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "workspace_invites_invited_by_users_id_fk": {
-          "name": "workspace_invites_invited_by_users_id_fk",
-          "tableFrom": "workspace_invites",
-          "tableTo": "users",
-          "columnsFrom": [
-            "invited_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -884,21 +858,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "workspaces_created_by_users_id_fk": {
-          "name": "workspaces_created_by_users_id_fk",
-          "tableFrom": "workspaces",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1022,19 +982,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "connectors_created_by_users_id_fk": {
-          "name": "connectors_created_by_users_id_fk",
-          "tableFrom": "connectors",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1141,19 +1088,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "database_connections_created_by_users_id_fk": {
-          "name": "database_connections_created_by_users_id_fk",
-          "tableFrom": "database_connections",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -1269,19 +1203,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "console_folders_owner_id_users_id_fk": {
-          "name": "console_folders_owner_id_users_id_fk",
-          "tableFrom": "console_folders",
-          "tableTo": "users",
-          "columnsFrom": [
-            "owner_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -1569,32 +1490,6 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
-        },
-        "saved_consoles_created_by_users_id_fk": {
-          "name": "saved_consoles_created_by_users_id_fk",
-          "tableFrom": "saved_consoles",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "saved_consoles_owner_id_users_id_fk": {
-          "name": "saved_consoles_owner_id_users_id_fk",
-          "tableFrom": "saved_consoles",
-          "tableTo": "users",
-          "columnsFrom": [
-            "owner_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1727,19 +1622,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "chat_attachments_created_by_users_id_fk": {
-          "name": "chat_attachments_created_by_users_id_fk",
-          "tableFrom": "chat_attachments",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -1893,32 +1775,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "chats_pinned_console_id_saved_consoles_id_fk": {
-          "name": "chats_pinned_console_id_saved_consoles_id_fk",
-          "tableFrom": "chats",
-          "tableTo": "saved_consoles",
-          "columnsFrom": [
-            "pinned_console_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "chats_created_by_users_id_fk": {
-          "name": "chats_created_by_users_id_fk",
-          "tableFrom": "chats",
-          "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },

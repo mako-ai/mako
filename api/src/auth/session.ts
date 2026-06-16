@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
-import { Session, User, ISession, IUser } from "../database/schema";
+import { ISession, IUser } from "../database/schema";
+import { getSessionStore } from "./session-store";
 
 /**
  * Session configuration
@@ -93,8 +94,8 @@ class SessionManager {
     const sessionId = generateSessionId();
     const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
 
-    await Session.create({
-      _id: sessionId,
+    await getSessionStore().create({
+      id: sessionId,
       userId,
       expiresAt,
       activeWorkspaceId: attributes.activeWorkspaceId,
@@ -120,7 +121,9 @@ class SessionManager {
       return { session: null, user: null };
     }
 
-    const sessionDoc = await Session.findById(sessionId).lean<ISession>();
+    const store = getSessionStore();
+    const { session: sessionDoc, user: userDoc } =
+      await store.findWithUser(sessionId);
     if (!sessionDoc) {
       return { session: null, user: null };
     }
@@ -128,15 +131,13 @@ class SessionManager {
     // Check if session is expired
     if (sessionDoc.expiresAt < new Date()) {
       // Delete expired session
-      await Session.deleteOne({ _id: sessionId });
+      await store.delete(sessionId);
       return { session: null, user: null };
     }
 
-    // Get user
-    const userDoc = await User.findById(sessionDoc.userId).lean<IUser>();
     if (!userDoc) {
       // User no longer exists, delete orphaned session
-      await Session.deleteOne({ _id: sessionId });
+      await store.delete(sessionId);
       return { session: null, user: null };
     }
 
@@ -147,21 +148,21 @@ class SessionManager {
     if (timeRemaining < SESSION_REFRESH_THRESHOLD_MS) {
       // Refresh session
       const newExpiresAt = new Date(Date.now() + SESSION_DURATION_MS);
-      await Session.updateOne({ _id: sessionId }, { expiresAt: newExpiresAt });
+      await store.updateExpiry(sessionId, newExpiresAt);
       sessionDoc.expiresAt = newExpiresAt;
       fresh = true;
     }
 
     return {
       session: {
-        id: sessionDoc._id,
+        id: sessionDoc.id,
         userId: sessionDoc.userId,
         expiresAt: sessionDoc.expiresAt,
         activeWorkspaceId: sessionDoc.activeWorkspaceId,
         fresh,
       },
       user: {
-        id: userDoc._id,
+        id: userDoc.id,
         email: userDoc.email,
       },
     };
@@ -171,14 +172,14 @@ class SessionManager {
    * Invalidate (delete) a session
    */
   async invalidateSession(sessionId: string): Promise<void> {
-    await Session.deleteOne({ _id: sessionId });
+    await getSessionStore().delete(sessionId);
   }
 
   /**
    * Invalidate all sessions for a user
    */
   async invalidateUserSessions(userId: string): Promise<void> {
-    await Session.deleteMany({ userId });
+    await getSessionStore().deleteAllForUser(userId);
   }
 
   /**
@@ -188,14 +189,11 @@ class SessionManager {
     sessionId: string,
     attributes: Partial<SessionAttributes>,
   ): Promise<void> {
-    const updateFields: Record<string, any> = {};
-
     if (attributes.activeWorkspaceId !== undefined) {
-      updateFields.activeWorkspaceId = attributes.activeWorkspaceId;
-    }
-
-    if (Object.keys(updateFields).length > 0) {
-      await Session.updateOne({ _id: sessionId }, updateFields);
+      await getSessionStore().setActiveWorkspace(
+        sessionId,
+        attributes.activeWorkspaceId,
+      );
     }
   }
 
@@ -249,10 +247,7 @@ class SessionManager {
    * Delete expired sessions (for cleanup)
    */
   async deleteExpiredSessions(): Promise<number> {
-    const result = await Session.deleteMany({
-      expiresAt: { $lte: new Date() },
-    });
-    return result.deletedCount;
+    return getSessionStore().deleteExpired();
   }
 }
 

@@ -2,12 +2,7 @@ import bcrypt from "bcrypt";
 import { randomInt } from "crypto";
 import { v4 as uuidv4 } from "uuid";
 import { sessionManager, ValidatedSession, ValidatedUser } from "./session";
-import {
-  User,
-  OAuthAccount,
-  EmailVerification,
-  Session,
-} from "../database/schema";
+import { User, OAuthAccount, EmailVerification } from "../database/schema";
 import type { OAuthProvider } from "./arctic";
 import { workspaceService } from "../services/workspace.service";
 import { emailService } from "../services/email.service";
@@ -642,7 +637,7 @@ export class AuthService {
     await EmailVerification.deleteOne({ _id: verification._id });
 
     // Invalidate all existing sessions for this user (security measure)
-    await Session.deleteMany({ userId: user._id });
+    await sessionManager.invalidateUserSessions(user._id);
 
     return { success: true };
   }

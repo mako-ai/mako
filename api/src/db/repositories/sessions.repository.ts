@@ -50,6 +50,18 @@ export const sessionsRepository = {
       .where(eq(sessions.id, id));
   },
 
+  async setActiveWorkspaceForUser(
+    userId: string,
+    activeWorkspaceId: string | null,
+  ): Promise<number> {
+    const result = await getDb()
+      .update(sessions)
+      .set({ activeWorkspaceId })
+      .where(eq(sessions.userId, userId))
+      .returning({ id: sessions.id });
+    return result.length;
+  },
+
   async delete(id: string): Promise<void> {
     await getDb().delete(sessions).where(eq(sessions.id, id));
   },

@@ -10,8 +10,6 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-import { users } from "./auth";
-import { savedConsoles } from "./consoles";
 import { workspaces } from "./workspaces";
 
 /**
@@ -57,18 +55,14 @@ export const chats = pgTable(
     threadId: text("thread_id"),
     messages: jsonb("messages").$type<ChatMessage[]>().notNull().default([]),
     activeAgent: text("active_agent").$type<"mongo" | "bigquery" | "triage">(),
-    pinnedConsoleId: uuid("pinned_console_id").references(
-      () => savedConsoles.id,
-      { onDelete: "set null" },
-    ),
+    // Soft reference (was an untyped string in Mongo); no FK.
+    pinnedConsoleId: uuid("pinned_console_id"),
     activeStreamId: text("active_stream_id"),
     systemPrompt: text("system_prompt"),
     workspacePrompt: text("workspace_prompt"),
     usage: jsonb("usage"),
     titleGenerated: boolean("title_generated").notNull().default(false),
-    createdBy: uuid("created_by")
-      .notNull()
-      .references(() => users.id),
+    createdBy: uuid("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -90,9 +84,7 @@ export const chatAttachments = pgTable(
       .notNull()
       .references(() => workspaces.id, { onDelete: "cascade" }),
     chatId: uuid("chat_id").references(() => chats.id, { onDelete: "cascade" }),
-    createdBy: uuid("created_by")
-      .notNull()
-      .references(() => users.id),
+    createdBy: uuid("created_by").notNull(),
     storageKey: text("storage_key").notNull(),
     mediaType: text("media_type"),
     filename: text("filename"),

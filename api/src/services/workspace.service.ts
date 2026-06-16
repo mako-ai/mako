@@ -8,6 +8,7 @@ import {
   IWorkspaceInvite,
 } from "../database/workspace-schema";
 import { Session, User } from "../database/schema";
+import { getSessionStore } from "../auth/session-store";
 import { v4 as uuidv4 } from "uuid";
 import { emailService } from "./email.service";
 import {
@@ -68,11 +69,19 @@ export class WorkspaceService {
       await member.save({ session });
 
       // Update user's active workspace in session
-      await Session.updateMany(
-        { userId },
-        { activeWorkspaceId: workspace._id.toString() },
-        { session },
-      );
+      const sessionStore = getSessionStore();
+      if (sessionStore.backend === "mongo") {
+        await Session.updateMany(
+          { userId },
+          { activeWorkspaceId: workspace._id.toString() },
+          { session },
+        );
+      } else {
+        await sessionStore.setActiveWorkspaceForUser(
+          userId,
+          workspace._id.toString(),
+        );
+      }
 
       await session.commitTransaction();
       return workspace;
@@ -466,12 +475,12 @@ export class WorkspaceService {
     }
 
     // Update all user sessions
-    const result = await Session.updateMany(
-      { userId },
-      { activeWorkspaceId: workspaceId },
+    const modified = await getSessionStore().setActiveWorkspaceForUser(
+      userId,
+      workspaceId,
     );
 
-    return result.modifiedCount > 0;
+    return modified > 0;
   }
 
   /**
@@ -575,11 +584,19 @@ export class WorkspaceService {
       await member.save({ session });
 
       // Update user's active workspace in session
-      await Session.updateMany(
-        { userId },
-        { activeWorkspaceId: workspace._id.toString() },
-        { session },
-      );
+      const sessionStore = getSessionStore();
+      if (sessionStore.backend === "mongo") {
+        await Session.updateMany(
+          { userId },
+          { activeWorkspaceId: workspace._id.toString() },
+          { session },
+        );
+      } else {
+        await sessionStore.setActiveWorkspaceForUser(
+          userId,
+          workspace._id.toString(),
+        );
+      }
 
       await session.commitTransaction();
       return { workspace, created: true };

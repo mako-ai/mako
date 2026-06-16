@@ -24,12 +24,24 @@
  * any code holding an ObjectId can compute its Postgres key locally and back.
  */
 
+import { v5 as uuidv5 } from "uuid";
+
 const OBJECT_ID_RE = /^[0-9a-f]{24}$/i;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The 8-hex (4-byte) zero pad appended to an ObjectId to fill 16 bytes. */
 const OBJECT_ID_PAD = "00000000";
+
+/**
+ * Fixed namespace for hashing legacy non-standard identifiers (nanoids,
+ * sentinels like `"system"`/`"agent"`) into stable uuids. Real Mongo data is
+ * heterogeneous: not every `_id`/reference is an ObjectId or uuid. UUIDv5 is
+ * deterministic, so a legacy id and every reference to it hash to the SAME
+ * uuid — foreign keys still line up without a mapping table (the trade-off vs.
+ * the ObjectId padding is that v5 hashing is one-way, which is fine for these).
+ */
+const LEGACY_ID_NAMESPACE = "6f1a7b54-8b1e-4c2a-9d3f-0a1b2c3d4e5f";
 
 function formatHexAsUuid(hex32: string): string {
   return [
@@ -90,14 +102,16 @@ export function isObjectIdDerivedUuid(uuid: string): boolean {
 }
 
 /**
- * Normalize any legacy Mongo `_id`/reference to its Postgres uuid string.
+ * Normalize any legacy Mongo `_id`/reference to a Postgres uuid string. Total:
+ * every input yields a valid uuid.
  *
- * Accepts:
- *   - an ObjectId hex (24 chars)           -> padded uuid
- *   - an existing uuid (e.g. `User._id`)   -> returned unchanged (lowercased)
+ *   - ObjectId hex (24 chars)            -> reversible padded uuid
+ *   - existing uuid (e.g. `User._id`)    -> unchanged (lowercased)
+ *   - anything else (nanoid, "system",   -> deterministic UUIDv5 hash
+ *     "agent", legacy short ids)
  *
- * Anything else (e.g. a 64-hex session id, or a semantic key) is returned
- * unchanged — those columns are typed `text`, not `uuid`.
+ * Note: 64-hex session ids are stored in a `text` column and must NOT be passed
+ * here — use them verbatim.
  */
 export function toPgId(value: string): string {
   const v = String(value);
@@ -107,7 +121,7 @@ export function toPgId(value: string): string {
   if (UUID_RE.test(v)) {
     return v.toLowerCase();
   }
-  return v;
+  return uuidv5(v, LEGACY_ID_NAMESPACE);
 }
 
 /** Null-safe {@link toPgId}. */

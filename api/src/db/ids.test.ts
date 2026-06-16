@@ -68,10 +68,17 @@ function testToPgIdConvertsObjectId() {
   assert.equal(toPgId(oid), objectIdToUuid(oid));
 }
 
-function testToPgIdPassthroughForSessionId() {
-  // 64-hex session ids are stored in a `text` column, never converted.
-  const sessionId = "a".repeat(64);
-  assert.equal(toPgId(sessionId), sessionId);
+function testToPgIdHashesLegacyIds() {
+  // Legacy nanoid / sentinel ids hash to a stable, valid uuid (UUIDv5).
+  const nanoid = "165tpi4r5ozyuv9";
+  const mapped = toPgId(nanoid);
+  assert.ok(isUuid(mapped), "legacy id must map to a valid uuid");
+  assert.equal(toPgId(nanoid), mapped, "hashing must be deterministic");
+  // Distinct legacy ids map to distinct uuids; references resolve consistently.
+  assert.notEqual(toPgId("system"), toPgId("agent"));
+  assert.equal(toPgId("system"), toPgId("system"));
+  // Hashed uuids are not ObjectId-derived (so they aren't reversed by mistake).
+  assert.ok(!isObjectIdDerivedUuid(mapped));
 }
 
 function testToPgIdOrNull() {
@@ -109,7 +116,7 @@ function main() {
   testCaseInsensitiveAndUppercase();
   testToPgIdPassthroughForUuid();
   testToPgIdConvertsObjectId();
-  testToPgIdPassthroughForSessionId();
+  testToPgIdHashesLegacyIds();
   testToPgIdOrNull();
   testRejections();
   testPredicates();

@@ -32,6 +32,7 @@ import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
 import { webhookRoutes } from "./webhooks";
+import { pgPersistenceRoutes } from "./pg-persistence.routes";
 
 /**
  * Mounts every REST router onto the provided Hono app.
@@ -89,4 +90,6 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
   app.route("/api", webhookRoutes);
   app.route("/api/webhooks/stripe", stripeWebhookRoutes);
+  // Postgres-backed metadata read API (Drizzle migration target).
+  app.route("/api/pg", pgPersistenceRoutes);
 }

@@ -44,9 +44,9 @@ export const workspaces = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
-    createdBy: uuid("created_by")
-      .notNull()
-      .references(() => users.id),
+    // `created_by` is a mapped user uuid but intentionally has no FK: legacy
+    // data may attribute creation to deleted users or sentinels (system/agent).
+    createdBy: uuid("created_by").notNull(),
     settings: jsonb("settings").$type<WorkspaceSettings>(),
     billing: jsonb("billing").$type<WorkspaceBilling>(),
     selfDirective: text("self_directive").notNull().default(""),
@@ -97,9 +97,7 @@ export const workspaceInvites = pgTable(
     email: text("email").notNull(),
     token: text("token").notNull(),
     role: text("role").$type<"admin" | "member" | "viewer">().notNull(),
-    invitedBy: uuid("invited_by")
-      .notNull()
-      .references(() => users.id),
+    invitedBy: uuid("invited_by").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -122,7 +120,7 @@ export const workspaceApiKeys = pgTable(
     name: text("name").notNull(),
     keyHash: text("key_hash").notNull(),
     prefix: text("prefix").notNull(),
-    createdBy: uuid("created_by").references(() => users.id),
+    createdBy: uuid("created_by"),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
