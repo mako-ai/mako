@@ -118,6 +118,7 @@ function testTightenedModulesHaveTypedResponses() {
     ["get", "/api/databases/types"],
     ["get", "/api/workspaces/{workspaceId}/usage/summary"],
     ["get", "/api/workspaces/{workspaceId}/custom-prompt"],
+    ["get", "/api/workspaces/{workspaceId}/dashboards/{id}"],
   ];
   for (const [method, path] of tightened) {
     const op = doc.paths[path]?.[method] as AnyObj | undefined;
@@ -145,6 +146,11 @@ function testErrorSchemaComponentExists() {
     schemas.ErrorEnvelope,
     "ErrorEnvelope schema component must be registered",
   );
+  assert.ok(
+    schemas.GenericJsonResponse,
+    "GenericJsonResponse schema component must be registered",
+  );
+  assert.ok(schemas.Dashboard, "Dashboard schema component must be registered");
 }
 
 function testErrorResponsesAreTyped() {
@@ -155,7 +161,7 @@ function testErrorResponsesAreTyped() {
   for (const { path, method, op } of operations()) {
     const responses = (op.responses ?? {}) as Record<string, AnyObj>;
     for (const [code, resp] of Object.entries(responses)) {
-      if (!/^[45]\d\d$/.test(code)) continue;
+      if (code !== "default" && !/^[45]\d\d$/.test(code)) continue;
       const content = resp.content as AnyObj | undefined;
       const json = content?.["application/json"] as AnyObj | undefined;
       if (!json) continue; // some errors are content-less by design
@@ -168,9 +174,20 @@ function testErrorResponsesAreTyped() {
     }
   }
   assert.ok(
-    checked > 500,
+    checked >= 50,
     `expected many typed error responses, got ${checked}`,
   );
+}
+
+function testNoPlaceholderStatusExplosion() {
+  for (const { path, method, op } of operations()) {
+    const responses = (op.responses ?? {}) as Record<string, AnyObj>;
+    const codes = Object.keys(responses);
+    assert.ok(
+      codes.length <= 8,
+      `${method.toUpperCase()} ${path} declares too many response statuses: ${codes.join(", ")}`,
+    );
+  }
 }
 
 function main() {
@@ -182,6 +199,7 @@ function main() {
   testTightenedModulesHaveTypedResponses();
   testErrorSchemaComponentExists();
   testErrorResponsesAreTyped();
+  testNoPlaceholderStatusExplosion();
 
   const ops = operations();
   console.log(

@@ -40,13 +40,241 @@ import {
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
-import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  dataResponse,
+  errorJson,
+  zDateTime,
+  zObjectId,
+} from "../openapi/core";
 
 const logger = loggers.api("dashboards");
 
 const app = createRouter();
 
 const DASHBOARD_QUERY_LANGUAGES = new Set(["sql", "javascript", "mongodb"]);
+
+const JsonObjectSchema = z.record(z.string(), z.unknown());
+
+const DashboardQuerySchema = z.object({
+  connectionId: zObjectId(),
+  language: z.enum(["sql", "javascript", "mongodb"]),
+  code: z.string(),
+  databaseId: z.string().optional(),
+  databaseName: z.string().optional(),
+  mongoOptions: z
+    .object({
+      collection: z.string().optional(),
+      operation: z
+        .enum([
+          "find",
+          "aggregate",
+          "insertMany",
+          "updateMany",
+          "deleteMany",
+          "findOne",
+          "updateOne",
+          "deleteOne",
+        ])
+        .optional(),
+    })
+    .optional(),
+});
+
+const DashboardDataSourceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  tableRef: z.string(),
+  query: DashboardQuerySchema,
+  origin: z
+    .object({
+      type: z.enum(["saved_console", "local"]),
+      consoleId: zObjectId().optional(),
+      consoleName: z.string().optional(),
+      importedAt: zDateTime().optional(),
+    })
+    .optional(),
+  timeDimension: z.string().optional(),
+  rowLimit: z.number().optional(),
+  computedColumns: z
+    .array(
+      z.object({
+        name: z.string(),
+        expression: z.string(),
+        type: z.enum(["quantitative", "temporal", "nominal", "ordinal"]),
+      }),
+    )
+    .optional(),
+  cache: z
+    .object({
+      lastRefreshedAt: zDateTime().optional(),
+      rowCount: z.number().optional(),
+      byteSize: z.number().optional(),
+      parquetArtifactKey: z.string().optional(),
+      definitionHash: z.string().optional(),
+      artifactRevision: z.string().optional(),
+      parquetVersion: z.string().optional(),
+      parquetBuiltAt: zDateTime().optional(),
+      parquetBuildStatus: z
+        .enum(["missing", "queued", "building", "ready", "error"])
+        .nullable()
+        .optional(),
+      parquetLastError: z.string().optional(),
+      parquetUrl: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+});
+
+const DashboardRelationshipSchema = z.object({
+  id: z.string(),
+  from: z.object({ dataSourceId: z.string(), column: z.string() }),
+  to: z.object({ dataSourceId: z.string(), column: z.string() }),
+  type: z.enum(["one-to-one", "one-to-many", "many-to-one", "many-to-many"]),
+});
+
+const DashboardLayoutCellSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+  minW: z.number().optional(),
+  minH: z.number().optional(),
+  custom: z.boolean().optional(),
+});
+
+const DashboardWidgetSchema = z.object({
+  id: z.string(),
+  title: z.string().optional(),
+  type: z.enum(["chart", "kpi", "table"]),
+  dataSourceId: z.string(),
+  localSql: z.string(),
+  vegaLiteSpec: JsonObjectSchema.optional(),
+  kpiConfig: z
+    .object({
+      valueField: z.string().optional(),
+      format: z.string().optional(),
+      comparisonField: z.string().optional(),
+      comparisonLabel: z.string().optional(),
+    })
+    .optional(),
+  tableConfig: z
+    .object({
+      columns: z.array(z.string()).optional(),
+      pageSize: z.number().optional(),
+    })
+    .optional(),
+  crossFilter: z.object({
+    enabled: z.boolean(),
+    fields: z.array(z.string()).optional(),
+  }),
+  layouts: z.object({
+    lg: DashboardLayoutCellSchema,
+    md: DashboardLayoutCellSchema.optional(),
+    sm: DashboardLayoutCellSchema.optional(),
+    xs: DashboardLayoutCellSchema.optional(),
+  }),
+});
+
+const DashboardGlobalFilterSchema = z.object({
+  id: z.string(),
+  type: z.enum(["date-range", "select", "multi-select", "search"]),
+  label: z.string(),
+  dataSourceId: z.string(),
+  column: z.string(),
+  config: JsonObjectSchema,
+  layout: z.object({ order: z.number(), width: z.number().optional() }),
+});
+
+const DashboardResponseSchema = z
+  .object({
+    _id: zObjectId(),
+    workspaceId: zObjectId(),
+    title: z.string(),
+    description: z.string().optional(),
+    dataSources: z.array(DashboardDataSourceSchema),
+    relationships: z.array(DashboardRelationshipSchema),
+    widgets: z.array(DashboardWidgetSchema),
+    globalFilters: z.array(DashboardGlobalFilterSchema),
+    crossFilter: z.object({
+      enabled: z.boolean(),
+      resolution: z.enum(["intersect", "union"]),
+      engine: z.enum(["mosaic", "legacy"]).optional(),
+    }),
+    materializationSchedule: z.object({
+      enabled: z.boolean(),
+      cron: z.string().nullable(),
+      timezone: z.string().optional(),
+      dataFreshnessTtlMs: z.number().nullable().optional(),
+    }),
+    layout: z.object({
+      columns: z.number(),
+      rowHeight: z.number(),
+    }),
+    cache: z
+      .object({
+        lastRefreshedAt: zDateTime().optional(),
+      })
+      .optional(),
+    snapshots: z
+      .record(
+        z.string(),
+        z.object({
+          version: z.string(),
+          generatedAt: zDateTime(),
+          rowCount: z.number(),
+          rows: z.array(JsonObjectSchema),
+          fields: z.array(z.object({ name: z.string(), type: z.string() })),
+        }),
+      )
+      .optional(),
+    version: z.number(),
+    editLock: z
+      .object({
+        userId: z.string(),
+        userName: z.string(),
+        lockedAt: zDateTime(),
+        expiresAt: zDateTime(),
+      })
+      .nullable()
+      .optional(),
+    folderId: zObjectId().optional(),
+    access: z.enum(["private", "workspace"]),
+    workspaceRole: z.enum(["viewer", "editor"]).optional(),
+    sharedWith: z
+      .array(
+        z.object({
+          userId: z.string(),
+          role: z.enum(["viewer", "editor"]),
+          addedAt: zDateTime().optional(),
+        }),
+      )
+      .optional(),
+    publicShare: z
+      .object({
+        enabled: z.boolean(),
+        token: z.string().optional(),
+        hasPassword: z.boolean().optional(),
+        createdAt: zDateTime().optional(),
+      })
+      .optional(),
+    owner_id: z.string().optional(),
+    createdBy: z.string(),
+    createdAt: zDateTime(),
+    updatedAt: zDateTime(),
+    readOnly: z.boolean().optional(),
+  })
+  .openapi("Dashboard");
+
+const DashboardReadResponses = {
+  200: dataResponse(DashboardResponseSchema, "Dashboard details."),
+  401: errorJson("Authentication required"),
+  403: errorJson("Access denied"),
+  404: errorJson("Dashboard not found"),
+  500: errorJson("Internal server error"),
+};
 
 function buildDashboardSnapshot(
   doc: IDashboard | Record<string, any>,
@@ -544,7 +772,7 @@ app.openapi(
         id: z.string().openapi({ param: { name: "id", in: "path" } }),
       }),
     },
-    responses: { ...OPEN_RESPONSES },
+    responses: DashboardReadResponses,
   }),
   async c => {
     try {
@@ -580,15 +808,18 @@ app.openapi(
       const plain = dashboard.toObject ? dashboard.toObject() : dashboard;
       normalizeDashboardWidgetLayouts(plain);
 
-      return c.json({
-        success: true,
-        data: {
-          ...sanitizeDashboardResponse(
-            await hydrateDashboardArtifactUrls(plain as any),
-          ),
-          readOnly,
+      return c.json(
+        {
+          success: true as const,
+          data: {
+            ...sanitizeDashboardResponse(
+              await hydrateDashboardArtifactUrls(plain as any),
+            ),
+            readOnly,
+          },
         },
-      });
+        200,
+      );
     } catch (error) {
       logger.error("Error getting dashboard", { error });
       return c.json(

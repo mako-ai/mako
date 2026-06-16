@@ -143,15 +143,41 @@ export function jsonBody<T extends z.ZodType>(schema: T, optional = false) {
   };
 }
 
-/**
- * Generic success response (`200`) with an open JSON body. Used when wrapping an
- * existing handler whose payload is dynamic or not worth modelling field-by-field;
- * the route contract, params/query validation, and status codes are still typed.
- */
-export const okJson = jsonContent(z.any(), "Successful response");
+export const GenericJsonResponseSchema = z
+  .any()
+  .openapi("GenericJsonResponse", {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      success: {
+        type: "boolean",
+        description: "Whether the request succeeded.",
+      },
+      data: {
+        description: "Endpoint-specific response payload.",
+      },
+      message: {
+        type: "string",
+        example: "Operation completed",
+      },
+      error: {
+        type: "string",
+        example: "Error message",
+      },
+    },
+  });
 
-/** Generic `201 Created` response with an open JSON body. */
-export const createdJson = jsonContent(z.any(), "Created");
+/**
+ * Generic success response (`200`) with the common API envelope fields. Used
+ * only where a route has not yet been modelled field-by-field.
+ */
+export const okJson = jsonContent(
+  GenericJsonResponseSchema,
+  "Successful response",
+);
+
+/** Generic `201 Created` response with the common API envelope fields. */
+export const createdJson = jsonContent(GenericJsonResponseSchema, "Created");
 
 /** `204 No Content` response. */
 export const noContentResponse = { description: "No content" };
@@ -173,36 +199,26 @@ export const STD_ERRORS = {
 /** Convenience: `{ 200: okJson, ...STD_ERRORS }`. */
 export const STD_RESPONSES = { 200: okJson, ...STD_ERRORS };
 
-/**
- * Permissive response set (open JSON body for every common status) used when
- * wrapping an existing handler whose return shapes/statuses are dynamic. This
- * documents the route, validates request params/query/body, and keeps the
- * handler body untouched (preserving runtime behaviour). Error bodies follow
- * the shared `{ success: false, error }` envelope at runtime; richer per-field
- * response typing is applied module-by-module (see connectors/database-schemas).
- */
-const err = (description: string) =>
-  jsonContent(ErrorEnvelopeSchema, description);
-
+/** Shared fallback for routes that have not yet modelled each error status. */
 export const OPEN_RESPONSES = {
-  200: jsonContent(z.any(), "Successful response"),
-  201: jsonContent(z.any(), "Created"),
-  202: jsonContent(z.any(), "Accepted"),
+  200: okJson,
+  201: createdJson,
+  202: jsonContent(GenericJsonResponseSchema, "Accepted"),
   204: { description: "No content" },
-  206: jsonContent(z.any(), "Partial content"),
-  400: err("Invalid request"),
-  401: err("Authentication required"),
-  402: err("Payment required"),
-  403: err("Forbidden"),
-  404: err("Not found"),
-  409: err("Conflict"),
-  410: err("Gone"),
-  416: err("Range not satisfiable"),
-  422: err("Unprocessable entity"),
-  429: err("Too many requests"),
-  500: err("Internal server error"),
-  502: err("Bad gateway"),
-  503: err("Service unavailable"),
+  206: jsonContent(GenericJsonResponseSchema, "Partial content"),
+  400: jsonContent(ErrorEnvelopeSchema, "Invalid request"),
+  401: jsonContent(ErrorEnvelopeSchema, "Authentication required"),
+  402: jsonContent(ErrorEnvelopeSchema, "Payment required"),
+  403: jsonContent(ErrorEnvelopeSchema, "Forbidden"),
+  404: jsonContent(ErrorEnvelopeSchema, "Not found"),
+  409: jsonContent(ErrorEnvelopeSchema, "Conflict"),
+  410: jsonContent(ErrorEnvelopeSchema, "Gone"),
+  416: jsonContent(ErrorEnvelopeSchema, "Range not satisfiable"),
+  422: jsonContent(ErrorEnvelopeSchema, "Unprocessable entity"),
+  429: jsonContent(ErrorEnvelopeSchema, "Too many requests"),
+  500: jsonContent(ErrorEnvelopeSchema, "Internal server error"),
+  502: jsonContent(ErrorEnvelopeSchema, "Bad gateway"),
+  503: jsonContent(ErrorEnvelopeSchema, "Service unavailable"),
 };
 
 /** Security requirement: session cookie OR workspace API key. */
