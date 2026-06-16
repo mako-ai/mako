@@ -185,28 +185,46 @@ router.post("/webhooks/:workspaceId/:flowId", async c => {
       return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
     }
 
-    // Non-CDC flows: early entity filter + enqueue via Inngest (existing path)
+    // Non-CDC flows: early entity filter + enqueue via Inngest (existing path).
+    // A single webhook can fan out into multiple entities (e.g. Calendly
+    // invitee.created -> invitees + scheduled_events), so only drop when NONE
+    // of the emitted entities are enabled for this flow.
     const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
     if (mapping) {
-      const baseEntity = mapping.entity.split(":")[0];
       const { entities: configuredEntities } = resolveConfiguredEntities(flow);
-      const hasSubTypes = configuredEntities.some(e =>
-        e.startsWith(baseEntity + ":"),
-      );
-      if (
-        !hasSubTypes &&
-        !isEntityEnabledForFlow(flow, mapping.entity, baseEntity)
-      ) {
+      const emittedEntities = (
+        connector.extractWebhookCdcRecords(event, webhookEvent.eventType) ?? []
+      ).map(record => {
+        const payload = (record.payload || {}) as Record<string, unknown>;
+        if (record.entity === "activities" && payload._type) {
+          return `activities:${payload._type}`;
+        }
+        return record.entity;
+      });
+      // Fall back to the mapped entity for connectors that don't emit CDC records.
+      if (emittedEntities.length === 0) {
+        emittedEntities.push(mapping.entity);
+      }
+
+      const anyEnabled = emittedEntities.some(entity => {
+        const baseEntity = entity.split(":")[0];
+        const hasSubTypes = configuredEntities.some(e =>
+          e.startsWith(baseEntity + ":"),
+        );
+        return hasSubTypes || isEntityEnabledForFlow(flow, entity, baseEntity);
+      });
+
+      if (!anyEnabled) {
         await WebhookEvent.updateOne(
           { _id: webhookEvent._id },
           {
             $set: {
               status: "completed",
               applyStatus: "dropped",
-              entity: mapping.entity,
+              entity: emittedEntities[0],
               applyError: {
                 code: "ENTITY_DISABLED",
-                message: `Entity ${mapping.entity} is disabled or not selected in flow configuration`,
+                message: `No enabled entity (${emittedEntities.join(", ")}) for this event in flow configuration`,
               },
               processedAt: new Date(),
               processingDurationMs:
