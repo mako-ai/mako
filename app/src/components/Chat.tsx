@@ -2558,6 +2558,72 @@ const Chat: React.FC<ChatProps> = ({
     status === "submitted" ||
     activeClientToolCallCount > 0;
   isLoadingRef.current = isLoading;
+
+  // Rescue tool cards orphaned by a clean stream end.
+  //
+  // A tool card's "Running…" status is derived purely from the AI SDK tool
+  // part `state` — it only resolves once a terminal `output-available` /
+  // `output-error` chunk arrives. `onError` patches stuck parts when the
+  // stream *throws* (e.g. a 524), and the history-load path rewrites them when
+  // a chat is reopened. But with resumable streams a long server-side tool can
+  // outlive the edge proxy's idle timeout: the SSE connection is closed, the
+  // SDK silently reconnects, the reconnect returns 204 ("nothing streaming"),
+  // and `status` settles back to "ready" without any error ever surfacing. The
+  // live in-memory message then keeps a tool part frozen at "input-available"
+  // → a permanent "Running…" card that also blocks the composer (the SDK won't
+  // accept a new message until every tool call is settled).
+  //
+  // Once the turn has settled (`status === "ready"`) and no client-side tool is
+  // still executing, any non-terminal tool part on the last assistant message
+  // is orphaned. Patch it to an error so the card resolves and input unblocks.
+  // Mirrors the `onError` rescue; uses `setMessages` (not `addToolOutput`) so
+  // it does not feed back into `sendAutomaticallyWhen` and kick off a new turn.
+  useEffect(() => {
+    if (status !== "ready" || activeClientToolCallCount > 0) return;
+    if (activeClientToolCallsRef.current.size > 0) return;
+    setMessages(prev => {
+      const lastIndex = prev.length - 1;
+      const last = prev[lastIndex];
+      if (!last || last.role !== "assistant") return prev;
+      const hasPending = last.parts?.some(p => {
+        const pt = p.type as string;
+        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+        const s = (p as Record<string, unknown>).state as string;
+        return (
+          s !== "output-available" && s !== "output-error" && s !== "error"
+        );
+      });
+      if (!hasPending) return prev;
+      return prev.map((msg, i) => {
+        if (i !== lastIndex) return msg;
+        return {
+          ...msg,
+          parts: msg.parts.map(p => {
+            const pt = p.type as string;
+            if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+            const s = (p as Record<string, unknown>).state as string;
+            if (
+              s === "output-available" ||
+              s === "output-error" ||
+              s === "error"
+            ) {
+              return p;
+            }
+            return {
+              ...p,
+              state: "error" as const,
+              output: {
+                success: false,
+                error:
+                  "Interrupted — stream disconnected before tool completed",
+              },
+            };
+          }) as any,
+        };
+      });
+    });
+  }, [status, activeClientToolCallCount, setMessages]);
+
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
   useRenderCount("Chat", {
