@@ -11,6 +11,7 @@ import { realtimeRoutes } from "./routes/realtime";
 import { dataSourceRoutes } from "./routes/sources";
 import { customPromptRoutes } from "./routes/custom-prompt";
 import { skillsRoutes } from "./routes/skills";
+import { dbtRoutes } from "./routes/dbt.routes";
 import { chatsRoutes } from "./routes/chats";
 import { chatImagesRoutes } from "./routes/chat-images";
 import { agentRoutes } from "./routes/agent.routes";
@@ -40,6 +41,8 @@ import { usageRoutes } from "./routes/usage";
 import { billingRoutes } from "./routes/billing";
 import { stripeWebhookRoutes } from "./routes/stripe-webhook";
 import { dashboardRoutes } from "./routes/dashboards";
+import { appRoutes } from "./routes/apps";
+import { publicShareRoutes } from "./routes/public-share";
 import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
 import { scheduledQueryRoutes } from "./routes/scheduled-queries";
 import { notificationRulesRoutes } from "./routes/notification-rules";
@@ -131,6 +134,37 @@ app.get("/health", c => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+// Frontend build version - public, used by long-lived clients (especially the
+// desktop app) to detect that their loaded bundle is stale and prompt a
+// reload. The build ID is emitted into public/version.json by the Vite build
+// (git SHA in CI), so it is always in sync with the bundle shipped in this
+// image. Falls back to "dev" locally where no version.json exists.
+let cachedBuildId: string | null = null;
+function getFrontendBuildId(): string {
+  if (cachedBuildId === null) {
+    try {
+      const versionPath = path.join(process.cwd(), "public", "version.json");
+      const parsed = JSON.parse(fs.readFileSync(versionPath, "utf8")) as {
+        buildId?: unknown;
+      };
+      cachedBuildId =
+        typeof parsed.buildId === "string" && parsed.buildId
+          ? parsed.buildId
+          : "dev";
+    } catch {
+      cachedBuildId = "dev";
+    }
+  }
+  return cachedBuildId;
+}
+
+app.get("/api/version", c => {
+  // no-store: this endpoint exists to detect new deploys, so neither the
+  // browser nor any CDN in front may ever serve a cached response.
+  c.header("Cache-Control", "no-store");
+  return c.json({ buildId: getFrontendBuildId() });
+});
+
 // API routes
 app.route("/api/auth", authRoutes);
 app.route("/api/workspaces", workspaceRoutes);
@@ -142,6 +176,7 @@ app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
 app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
 app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
 app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
+app.route("/api/workspaces/:workspaceId/dbt", dbtRoutes);
 // Connectors routes
 app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
 app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
@@ -161,10 +196,13 @@ if (process.env.NODE_ENV !== "production") {
 app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
 app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
 app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
+app.route("/api/workspaces/:workspaceId/apps", appRoutes);
 app.route(
   "/api/workspaces/:workspaceId/dashboards/:dashboardId",
   dashboardMaterializationRoutes,
 );
+// Intentionally public: token-gated read-only shares (dashboards + apps).
+app.route("/api/share", publicShareRoutes);
 app.route("/api/agent", agentRoutes);
 app.route("/api/admin", adminRoutes);
 app.route("/api/connectors", connectorRoutes);
@@ -213,6 +251,9 @@ app.use("*", async (c, next) => {
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
       const content = fs.readFileSync(indexPath, "utf8");
+      // index.html must always be revalidated so a reload after a deploy
+      // picks up the new bundle (stale-client detection depends on this).
+      c.header("Cache-Control", "no-cache");
       return c.html(content);
     }
   }
@@ -222,13 +263,21 @@ app.use("*", async (c, next) => {
     const ext = path.extname(filePath);
     const contentType = getContentType(ext);
     const content = fs.readFileSync(filePath);
-    return c.body(content, { headers: { "Content-Type": contentType } });
+    // Vite assets are content-hashed, so they can be cached forever; anything
+    // else (index.html handled above) gets revalidation.
+    const cacheControl = requestPath.startsWith("/assets/")
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+    return c.body(content, {
+      headers: { "Content-Type": contentType, "Cache-Control": cacheControl },
+    });
   }
 
   // Fallback to index.html for SPA routing
   const indexPath = path.join(publicPath, "index.html");
   if (fs.existsSync(indexPath)) {
     const content = fs.readFileSync(indexPath, "utf8");
+    c.header("Cache-Control", "no-cache");
     return c.html(content);
   }
 

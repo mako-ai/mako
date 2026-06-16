@@ -16,6 +16,8 @@ import {
   Plug as DataSourceIcon,
   ArrowLeftRight as FlowsIcon,
   ChartPie as DashboardIcon,
+  AppWindow as AppsIcon,
+  GitBranch as TransformsIcon,
   CircleUserRound as UserIcon,
   MessageCircleMore as ChatIcon,
 } from "lucide-react";
@@ -58,6 +60,8 @@ type NavigationView =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "apps"
+  | "dbt"
   | "settings"
   | "views";
 
@@ -66,8 +70,10 @@ const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
     { view: "databases", icon: DatabaseIcon, label: "Databases" },
     { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
     { view: "flows", icon: FlowsIcon, label: "Flows" },
+    { view: "dbt", icon: TransformsIcon, label: "Transforms" },
     { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
     { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
+    { view: "apps", icon: AppsIcon, label: "Apps" },
   ];
 
 const bottomNavigationItems: {
@@ -145,6 +151,8 @@ function Sidebar() {
       view === "connectors" ||
       view === "flows" ||
       view === "dashboards" ||
+      view === "apps" ||
+      view === "dbt" ||
       view === "settings"
     ) {
       startTransition(() => {
@@ -155,6 +163,8 @@ function Sidebar() {
             | "connectors"
             | "flows"
             | "dashboards"
+            | "apps"
+            | "dbt"
             | "settings",
         );
 

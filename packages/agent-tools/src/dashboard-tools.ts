@@ -109,15 +109,6 @@ const getDashboardStateSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
 });
 
-const getDataPreviewSchema = z.object({
-  dashboardId: z.string().describe("Dashboard ID"),
-  dataSourceId: z.string().describe("Data source ID"),
-  sql: z
-    .string()
-    .optional()
-    .describe("SQL to run. Defaults to SELECT * LIMIT 10"),
-});
-
 const addGlobalFilterSchema = z.object({
   dashboardId: z.string().describe("Dashboard ID"),
   type: z.enum(["date-range", "select", "multi-select", "search"]),
@@ -251,15 +242,6 @@ const createDashboardSchema = z.object({
   description: z.string().optional().describe("Brief description"),
 });
 
-const previewDataSourceSchema = z.object({
-  dashboardId: z.string().describe("Dashboard ID"),
-  dataSourceId: z.string().describe("Dashboard data source ID"),
-  sql: z
-    .string()
-    .optional()
-    .describe("Optional SQL to run against the local DuckDB table"),
-});
-
 export const clientDashboardTools = {
   // Client-side visual inspection tool (capture_screenshot)
   ...clientScreenshotTools,
@@ -363,17 +345,6 @@ export const clientDashboardTools = {
       "global filters, relationships, and materialization schedule. " +
       "Also includes truncated sample rows and widget snapshots.",
     inputSchema: getDashboardStateSchema,
-  }),
-  preview_data_source: tool({
-    description:
-      "Run a SQL query against a dashboard-local data source in DuckDB. " +
-      "Useful for understanding the loaded data before creating charts.",
-    inputSchema: previewDataSourceSchema,
-  }),
-  get_data_preview: tool({
-    description:
-      "Legacy alias for preview_data_source. Runs SQL against the loaded DuckDB table.",
-    inputSchema: getDataPreviewSchema,
   }),
   add_global_filter: tool({
     description:

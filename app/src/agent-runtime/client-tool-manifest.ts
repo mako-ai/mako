@@ -25,12 +25,20 @@ export type AgentToolDomain =
   | "chart"
   | "dashboard"
   | "flow"
+  | "app"
+  | "dbt"
   | "search"
   | "memory"
   | "database"
   | "plan";
 
-export type ClientToolExecutor = "console" | "dashboard" | "flow";
+export type ClientToolExecutor =
+  | "console"
+  | "dashboard"
+  | "flow"
+  | "app"
+  | "dbt"
+  | "data";
 
 export interface ToolUiConfig {
   getLabel: (input?: unknown) => string;
@@ -335,24 +343,6 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
-  preview_data_source: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Previewing data",
-    icon: "eye",
-    preview: { field: "sql", language: "sql" },
-  },
-  get_data_preview: {
-    domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
-    longRunning: true,
-    getLabel: () => "Previewing data",
-    icon: "eye",
-    preview: { field: "sql", language: "sql" },
-  },
   add_global_filter: {
     domain: "dashboard",
     execution: "client",
@@ -397,6 +387,245 @@ export const AGENT_TOOL_MANIFEST = {
     clientExecutor: "dashboard",
     getLabel: () => "Reading chart template",
     icon: "eye",
+  },
+  list_open_apps: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: () => "Listing open apps",
+    icon: "list",
+  },
+  open_app: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: () => "Opening app",
+    icon: "external-link",
+  },
+  create_app: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const title = (input as Record<string, unknown>)?.title;
+      return title ? `Creating app "${title}"` : "Creating app";
+    },
+    icon: "plus",
+  },
+  get_app_state: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: () => "Reading app state",
+    icon: "eye",
+  },
+  app_read_file: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Reading ${path}` : "Reading file";
+    },
+    icon: "eye",
+  },
+  app_write_file: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Writing ${path}` : "Writing file";
+    },
+    icon: "pencil",
+    preview: { field: "contents", language: "typescript" },
+  },
+  app_delete_file: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Deleting ${path}` : "Deleting file";
+    },
+    icon: "trash",
+  },
+  app_rename_file: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: () => "Renaming file",
+    icon: "pencil",
+  },
+  app_add_dependency: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Adding dependency ${name}` : "Adding dependency";
+    },
+    icon: "plus",
+  },
+  app_remove_dependency: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Removing dependency ${name}` : "Removing dependency";
+    },
+    icon: "trash",
+  },
+  app_create_data_binding: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Binding data "${name}"` : "Creating data binding";
+    },
+    icon: "database",
+    preview: { field: "code", language: "sql" },
+  },
+  materialize_binding: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Materializing "${name}"` : "Materializing binding";
+    },
+    icon: "database",
+  },
+  list_data_sources: {
+    domain: "database",
+    execution: "client",
+    clientExecutor: "data",
+    getLabel: () => "Listing data sources",
+    icon: "list",
+  },
+  inspect_data_source: {
+    domain: "database",
+    execution: "client",
+    clientExecutor: "data",
+    longRunning: true,
+    getLabel: input => {
+      const ds = (input as Record<string, unknown>)?.dataSource;
+      return ds ? `Inspecting "${ds}"` : "Inspecting data source";
+    },
+    icon: "search",
+  },
+  query_duckdb: {
+    domain: "database",
+    execution: "client",
+    clientExecutor: "data",
+    longRunning: true,
+    getLabel: () => "Running DuckDB query",
+    icon: "play",
+    preview: { field: "sql", language: "sql" },
+  },
+  run_app: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: () => "Rebuilding app preview",
+    icon: "play",
+  },
+  read_dbt_project_tree: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    getLabel: () => "Reading dbt project tree",
+    icon: "list",
+  },
+  read_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Reading ${path}` : "Reading dbt file";
+    },
+    icon: "eye",
+  },
+  create_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Creating ${path}` : "Creating dbt file";
+    },
+    icon: "plus",
+    preview: { field: "contents", language: "sql" },
+  },
+  modify_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing dbt file";
+    },
+    icon: "pencil",
+    preview: { field: "contents", language: "sql" },
+  },
+  delete_dbt_file: {
+    domain: "dbt",
+    execution: "client",
+    clientExecutor: "dbt",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Deleting ${path}` : "Deleting dbt file";
+    },
+    icon: "trash",
+  },
+  dbt_parse: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Validating dbt project",
+    icon: "shield-check",
+  },
+  dbt_compile_model: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const model = (input as Record<string, unknown>)?.model;
+      return model ? `Compiling ${model}` : "Compiling model";
+    },
+    icon: "shield-check",
+  },
+  dbt_run_model: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const model = (input as Record<string, unknown>)?.model;
+      return model ? `Building ${model}` : "Building model";
+    },
+    icon: "play",
+  },
+  dbt_run_job: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const jobName = (input as Record<string, unknown>)?.jobName;
+      return jobName ? `Running job "${jobName}"` : "Running dbt job";
+    },
+    icon: "play",
   },
   search_consoles: {
     domain: "search",
@@ -615,6 +844,18 @@ export const DASHBOARD_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const CONSOLE_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "console",
+);
+
+export const APP_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "app",
+);
+
+export const DBT_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "dbt",
+);
+
+export const DATA_SOURCE_EXECUTOR_TOOL_NAMES = createToolNameSet(
+  entry => entry.execution === "client" && entry.clientExecutor === "data",
 );
 
 export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(

@@ -1,0 +1,14 @@
+{
+  "name": "mako-realtime-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Manual end-to-end harness for the realtime console sync (two browser windows + scripted agent via mock AI gateway). Not part of the workspace build or CI.",
+  "scripts": {
+    "gateway": "node mock-gateway.mjs",
+    "all": "node run-all.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

@@ -60,7 +60,7 @@ import DashboardCodeEditor from "./dashboard/DashboardCodeEditor";
 import DataSourcePanel from "./dashboard/DataSourcePanel";
 import AddWidgetDialog from "./dashboard/AddWidgetDialog";
 import DashboardSettingsDialog from "./dashboard/DashboardSettingsDialog";
-import DashboardShareDialog from "./dashboard/DashboardShareDialog";
+import ShareDialog from "./ShareDialog";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import WidgetInspector from "./dashboard/WidgetInspector";
 import { SaveCommentDialog } from "./SaveCommentDialog";
@@ -616,10 +616,24 @@ const DashboardCanvas: React.FC<DashboardCanvasProps> = ({
         onClose={() => setSettingsOpen(false)}
         dashboardId={dashboardId}
       />
-      <DashboardShareDialog
+      <ShareDialog
         open={shareOpen}
         onClose={() => setShareOpen(false)}
-        dashboardId={dashboardId}
+        resourceType="dashboard"
+        resourceId={dashboardId}
+        resourceName={dashboard.title}
+        ownerId={dashboard.owner_id ?? dashboard.createdBy}
+        access={dashboard.access}
+        workspaceRole={dashboard.workspaceRole ?? "viewer"}
+        publicShare={dashboard.publicShare ?? { enabled: false }}
+        canManage={canManageShare}
+        onSharingChanged={changes => {
+          if (dashboardId) {
+            useDashboardStore
+              .getState()
+              .applySharingChanges(dashboardId, changes);
+          }
+        }}
       />
       <Dialog open={!!conflict} maxWidth="sm" fullWidth>
         <DialogTitle>Save Conflict</DialogTitle>

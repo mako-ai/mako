@@ -53,7 +53,13 @@ export interface AgentContext {
    */
   chatId?: string;
   /** What the user is currently looking at (the active editor tab's kind) */
-  activeView?: "console" | "dashboard" | "flow-editor" | "empty";
+  activeView?:
+    | "console"
+    | "dashboard"
+    | "flow-editor"
+    | "app"
+    | "dbt"
+    | "empty";
   /**
    * Which left-pane explorer is currently open and visible, or `null` if the
    * left pane is collapsed. Use this when guiding the user to a specific

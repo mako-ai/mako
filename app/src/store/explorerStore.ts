@@ -34,6 +34,14 @@ interface ExplorerState {
     expandedFolders: ExpandedMap;
   };
 
+  app: {
+    expandedFolders: ExpandedMap;
+  };
+
+  dbt: {
+    expandedFolders: ExpandedMap;
+  };
+
   view: {
     expandedCollections: ExpandedMap;
   };
@@ -65,6 +73,16 @@ interface ExplorerActions {
   expandDashboardFolder: (folderKey: string) => void;
   isDashboardFolderExpanded: (folderKey: string) => boolean;
 
+  // App explorer
+  toggleAppFolder: (folderKey: string) => void;
+  expandAppFolder: (folderKey: string) => void;
+  isAppFolderExpanded: (folderKey: string) => boolean;
+
+  // dbt explorer
+  toggleDbtFolder: (folderKey: string) => void;
+  expandDbtFolder: (folderKey: string) => void;
+  isDbtFolderExpanded: (folderKey: string) => boolean;
+
   // View explorer
   toggleCollection: (collectionName: string) => void;
   expandCollection: (collectionName: string) => void;
@@ -88,6 +106,12 @@ const createInitialState = (): ExplorerState => ({
     expandedFolders: {},
   },
   dashboard: {
+    expandedFolders: {},
+  },
+  app: {
+    expandedFolders: {},
+  },
+  dbt: {
     expandedFolders: {},
   },
   view: {
@@ -177,6 +201,30 @@ export const useExplorerStore = create<ExplorerStore>()(
       isDashboardFolderExpanded: folderKey =>
         !!get().dashboard.expandedFolders[folderKey],
 
+      toggleAppFolder: folderKey =>
+        set(state => {
+          toggleKey(state.app.expandedFolders, folderKey);
+        }),
+
+      expandAppFolder: folderKey =>
+        set(state => {
+          state.app.expandedFolders[folderKey] = true;
+        }),
+
+      isAppFolderExpanded: folderKey => !!get().app.expandedFolders[folderKey],
+
+      toggleDbtFolder: folderKey =>
+        set(state => {
+          toggleKey(state.dbt.expandedFolders, folderKey);
+        }),
+
+      expandDbtFolder: folderKey =>
+        set(state => {
+          state.dbt.expandedFolders[folderKey] = true;
+        }),
+
+      isDbtFolderExpanded: folderKey => !!get().dbt.expandedFolders[folderKey],
+
       toggleCollection: collectionName =>
         set(state => {
           toggleKey(state.view.expandedCollections, collectionName);
@@ -241,6 +289,16 @@ export const useExplorerStore = create<ExplorerStore>()(
             );
           } else {
             s.dashboard = { expandedFolders: {} };
+          }
+          if (s?.app) {
+            s.app.expandedFolders = migrateArray(s.app.expandedFolders);
+          } else {
+            s.app = { expandedFolders: {} };
+          }
+          if (s?.dbt) {
+            s.dbt.expandedFolders = migrateArray(s.dbt.expandedFolders);
+          } else {
+            s.dbt = { expandedFolders: {} };
           }
           if (s?.view) {
             s.view.expandedCollections = migrateArray(

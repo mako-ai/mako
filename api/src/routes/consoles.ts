@@ -47,6 +47,11 @@ import {
   validateScheduledConsoleSchedule,
 } from "../services/scheduled-query-schedule.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { buildConsoleWriteGuard } from "../services/console-save-guards";
+import {
+  registerCollaboratorRoutes,
+  registerSharingSettingsRoutes,
+} from "./lib/collaborator-routes";
 
 /**
  * Map console language to query language for tracking
@@ -114,15 +119,17 @@ consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
           403,
         );
       }
+      c.set("memberRole", "admin");
     } else if (user) {
       // For session auth, verify user has access to this workspace
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
+      const member = await workspaceService.getMember(workspaceId, user.id);
+      if (!member) {
         return c.json(
           { success: false, error: "Access denied to workspace" },
           403,
         );
       }
+      c.set("memberRole", member.role);
     } else {
       // Neither API key nor session auth succeeded - reject request
       return c.json({ success: false, error: "Unauthorized" }, 401);
@@ -160,6 +167,26 @@ async function verifyWorkspaceAccess(
 
 consoleRoutes.use("/:id/schedule", requireWorkspaceAdmin);
 consoleRoutes.use("/:id/schedule/*", requireWorkspaceAdmin);
+
+// ── Sharing (collaborators + general access) ──
+const loadConsoleById = async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  const id = c.req.param("id");
+  if (!Types.ObjectId.isValid(id)) return null;
+  return SavedConsole.findOne({
+    _id: new Types.ObjectId(id),
+    workspaceId: new Types.ObjectId(workspaceId),
+  });
+};
+
+registerCollaboratorRoutes(consoleRoutes, {
+  resourceName: "Console",
+  load: loadConsoleById,
+});
+registerSharingSettingsRoutes(consoleRoutes, {
+  resourceName: "Console",
+  load: loadConsoleById,
+});
 
 // GET /api/workspaces/:workspaceId/consoles - List all consoles (tree structure) for workspace
 consoleRoutes.get("/", async (c: Context) => {
@@ -258,7 +285,7 @@ consoleRoutes.get("/content", async (c: Context) => {
     const isAdmin = member?.role === "owner" || member?.role === "admin";
 
     const readOnly = fullConsole
-      ? !ConsoleManager.canWrite(fullConsole, user.id, isAdmin)
+      ? !ConsoleManager.canWrite(fullConsole, user.id, isAdmin, member?.role)
       : false;
 
     // Resolve owner display name
@@ -282,6 +309,8 @@ consoleRoutes.get("/content", async (c: Context) => {
       chartSpec: consoleData.chartSpec,
       resultsViewMode: consoleData.resultsViewMode,
       access: consoleAccess,
+      workspaceRole: fullConsole?.workspaceRole ?? "viewer",
+      sharedWith: fullConsole?.sharedWith ?? [],
       owner_id: ownerId,
       ownerDisplayName,
       readOnly,
@@ -382,6 +411,10 @@ consoleRoutes.post("/revisions-sync", async (c: Context) => {
         databaseId: doc.databaseId,
         databaseName: doc.databaseName,
         version: doc.version ?? 1,
+        // Server truth for draft-vs-saved: clients use this to keep the
+        // tab's autosave eligibility correct (drafts autosave, saved
+        // consoles don't). Missing on legacy docs ⇒ treated as saved.
+        isSaved: doc.isSaved ?? true,
         lastRun: doc.lastRun,
       });
     }
@@ -886,7 +919,12 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       });
       if (
         existingById &&
-        !ConsoleManager.canWrite(existingById, user.id, isAdminPut)
+        !ConsoleManager.canWrite(
+          existingById,
+          user.id,
+          isAdminPut,
+          memberPut?.role,
+        )
       ) {
         return c.json(
           {
@@ -911,9 +949,6 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         body.expectedVersion >= 1
           ? (body.expectedVersion as number)
           : undefined;
-      const useVersionGuard =
-        expectedVersion !== undefined && existingById !== null;
-
       // Realtime sync (issue #475): `clientId` identifies the writing tab
       // (or `agent:<chatId>`) so subscribers can suppress their own echoes;
       // `expectedDraftRevision` makes draft auto-saves revision-checked so a
@@ -947,17 +982,19 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         _id: new Types.ObjectId(pathOrId),
         workspaceId: new Types.ObjectId(workspaceId),
       };
-      // The guard is applied atomically in the update filter (not as a
-      // read-then-write check). With the guard active we must not upsert:
-      // a version mismatch would otherwise insert a duplicate document.
-      const guardedFilter: Record<string, unknown> = useVersionGuard
-        ? {
-            ...idFilter,
-            // Legacy documents predating the version field count as version 1.
-            version:
-              expectedVersion === 1 ? { $in: [1, null] } : expectedVersion,
-          }
-        : idFilter;
+      // Explicit saves are guarded on BOTH counters when the client sent
+      // them: `version` catches concurrent explicit saves, `draftRevision`
+      // catches everything else that moves the draft (agent modify_console,
+      // another tab's autosave) — without it a stale window's Cmd+S passes
+      // the version guard and silently reverts those edits. See
+      // console-save-guards.ts for the atomic-filter / no-upsert semantics.
+      const { filter: guardedFilter, guardActive: saveGuardActive } =
+        buildConsoleWriteGuard({
+          baseFilter: idFilter,
+          docExists: existingById !== null,
+          expectedVersion,
+          expectedDraftRevision,
+        });
       const versionConflictResponse = async () => {
         const current = await SavedConsole.findOne(idFilter);
         return c.json(
@@ -966,6 +1003,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             error: "version_conflict",
             versionConflict: {
               currentVersion: current?.version ?? 1,
+              // Both bases are needed to retry an "Overwrite with mine":
+              // the retried save must pass BOTH guards.
+              currentDraftRevision: current?.draftRevision ?? 1,
               content: current?.code ?? "",
               name: current?.name,
               updatedAt: current?.updatedAt,
@@ -1057,7 +1097,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: !useVersionGuard, new: true },
+          { upsert: !saveGuardActive, new: true },
         );
         if (!result) {
           return versionConflictResponse();
@@ -1142,7 +1182,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
             $inc: { version: 1, draftRevision: 1 },
             $setOnInsert: setOnInsertFields,
           },
-          { upsert: !useVersionGuard, new: true },
+          { upsert: !saveGuardActive, new: true },
         );
         if (!result) {
           return versionConflictResponse();
@@ -1239,20 +1279,14 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         setOnInsertFields.name = "Untitled";
       }
 
-      const useDraftGuard =
-        expectedDraftRevision !== undefined && existingById !== null;
-      // Applied atomically in the update filter. With the guard active we
-      // must not upsert: a revision mismatch would insert a duplicate doc.
-      const draftFilter: Record<string, unknown> = useDraftGuard
-        ? {
-            ...idFilter,
-            // Legacy documents predating the field count as revision 1.
-            draftRevision:
-              expectedDraftRevision === 1
-                ? { $in: [1, null] }
-                : expectedDraftRevision,
-          }
-        : idFilter;
+      const { filter: draftFilter, guardActive: useDraftGuard } =
+        buildConsoleWriteGuard({
+          baseFilter: idFilter,
+          docExists: existingById !== null,
+          // Draft autosaves are deliberately NOT version-guarded (that
+          // counter belongs to explicit saves).
+          expectedDraftRevision,
+        });
 
       const result = await SavedConsole.findOneAndUpdate(
         draftFilter,
@@ -1504,7 +1538,12 @@ consoleRoutes.patch("/:id/rename", async (c: Context) => {
       });
       if (
         existing &&
-        !ConsoleManager.canWrite(existing, user.id, isAdminRename)
+        !ConsoleManager.canWrite(
+          existing,
+          user.id,
+          isAdminRename,
+          memberRename?.role,
+        )
       ) {
         return c.json(
           {
@@ -1896,7 +1935,12 @@ consoleRoutes.patch("/:id/move", async (c: Context) => {
       });
       if (
         existing &&
-        !ConsoleManager.canWrite(existing, user.id, isAdminMove)
+        !ConsoleManager.canWrite(
+          existing,
+          user.id,
+          isAdminMove,
+          memberMove?.role,
+        )
       ) {
         return c.json(
           { success: false, error: "Cannot move a read-only console" },
@@ -2656,7 +2700,12 @@ consoleRoutes.get("/:id/details", async (c: Context) => {
     const isAdminDetail =
       memberDetail?.role === "owner" || memberDetail?.role === "admin";
     const readOnly = user?.id
-      ? !ConsoleManager.canWrite(savedConsole, user.id, isAdminDetail)
+      ? !ConsoleManager.canWrite(
+          savedConsole,
+          user.id,
+          isAdminDetail,
+          memberDetail?.role,
+        )
       : false;
 
     let ownerDisplayName: string | undefined;
@@ -2831,7 +2880,7 @@ consoleRoutes.post("/:id/versions/:version/restore", async (c: Context) => {
 
     const member = await workspaceService.getMember(workspaceId, user.id);
     const isAdmin = member?.role === "owner" || member?.role === "admin";
-    if (!ConsoleManager.canWrite(consoleDoc, user.id, isAdmin)) {
+    if (!ConsoleManager.canWrite(consoleDoc, user.id, isAdmin, member?.role)) {
       return c.json(
         { success: false, error: "You do not have write access" },
         403,

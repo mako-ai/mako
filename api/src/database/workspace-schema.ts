@@ -340,6 +340,40 @@ export interface IConsoleFolder extends Document {
 export type ConsoleAccessLevel = "private" | "workspace";
 
 /**
+ * Google Workspace-style sharing primitives, shared by dashboards, consoles
+ * and apps.
+ *
+ * - `sharedWith` entries grant a specific user `viewer` (read) or `editor`
+ *   (read + write) access regardless of the resource's `access` scope.
+ * - `workspaceRole` is the role every workspace member gets when the
+ *   resource's `access` is "workspace" (workspace members with the `viewer`
+ *   member role are always capped to viewer).
+ * - `publicShare` (dashboards + apps only) exposes the resource read-only at
+ *   /share/:token, optionally protected by a bcrypt-hashed password. Public
+ *   viewers only ever see materialized snapshot artifacts — never live data.
+ */
+export type ResourceShareRole = "viewer" | "editor";
+
+export interface IResourceShareEntry {
+  userId: string;
+  role: ResourceShareRole;
+  addedAt: Date;
+  addedBy?: string;
+}
+
+export interface IPublicShare {
+  enabled: boolean;
+  token?: string;
+  passwordHash?: string | null;
+  /** AES-encrypted copy so owners/admins can reveal the password in the UI. */
+  passwordEncrypted?: string | null;
+  createdAt?: Date;
+  createdBy?: string;
+  /** Throttle marker for the anonymous "Refresh data" action (dashboards). */
+  lastPublicRefreshAt?: Date;
+}
+
+/**
  * SavedConsole model interface
  *
  * Consoles can be:
@@ -388,6 +422,10 @@ export interface ISavedConsole extends Document {
   isPrivate: boolean;
   isSaved: boolean; // true = explicitly saved, false/undefined = draft
   access: ConsoleAccessLevel;
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: ResourceShareRole;
+  /** Per-user collaborators (viewer/editor), independent of `access`. */
+  sharedWith?: IResourceShareEntry[];
   owner_id: string;
   schedule?: {
     cron: string;
@@ -1432,6 +1470,32 @@ ConsoleFolderSchema.index({ workspaceId: 1, ownerId: 1, isPrivate: 1 });
 ConsoleFolderSchema.index({ workspaceId: 1, access: 1 });
 
 /**
+ * Shared sharing sub-schemas (dashboards, consoles, apps).
+ */
+const ResourceShareEntrySchema = new Schema<IResourceShareEntry>(
+  {
+    userId: { type: String, required: true },
+    role: { type: String, enum: ["viewer", "editor"], default: "editor" },
+    addedAt: { type: Date, default: Date.now },
+    addedBy: { type: String },
+  },
+  { _id: false },
+);
+
+const PublicShareSchema = new Schema<IPublicShare>(
+  {
+    enabled: { type: Boolean, default: false },
+    token: { type: String },
+    passwordHash: { type: String, default: null },
+    passwordEncrypted: { type: String, default: null },
+    createdAt: { type: Date },
+    createdBy: { type: String },
+    lastPublicRefreshAt: { type: Date },
+  },
+  { _id: false },
+);
+
+/**
  * SavedConsole Schema
  */
 const SavedConsoleSchema = new Schema<ISavedConsole>(
@@ -1527,6 +1591,15 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: String,
       enum: ["private", "workspace"],
       default: "private",
+    },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
+    sharedWith: {
+      type: [ResourceShareEntrySchema],
+      default: [],
     },
     owner_id: {
       type: String,
@@ -1625,6 +1698,7 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
 
 // Indexes
 SavedConsoleSchema.index({ workspaceId: 1, folderId: 1 });
+SavedConsoleSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 SavedConsoleSchema.index({ workspaceId: 1, createdBy: 1, isPrivate: 1 });
 SavedConsoleSchema.index({ workspaceId: 1, isSaved: 1 }); // For filtering saved vs draft consoles
 SavedConsoleSchema.index({ connectionId: 1 }, { sparse: true }); // Sparse index since connectionId is optional
@@ -2996,16 +3070,15 @@ export interface IDashboard extends Document {
 
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: ResourceShareRole;
   /**
-   * Per-user collaborators granted explicit edit access, independent of the
-   * `access` level. Anyone listed here can read + write the dashboard.
+   * Per-user collaborators (viewer/editor), independent of the `access`
+   * level. Editors can read + write; viewers can only read.
    */
-  sharedWith?: Array<{
-    userId: string;
-    role: "editor";
-    addedAt: Date;
-    addedBy?: string;
-  }>;
+  sharedWith?: IResourceShareEntry[];
+  /** Public link sharing (read-only, snapshot data, optional password). */
+  publicShare?: IPublicShare;
   owner_id?: string;
   createdBy: string;
   createdAt: Date;
@@ -3335,17 +3408,16 @@ const DashboardSchema = new Schema<IDashboard>(
       enum: ["private", "workspace"],
       default: "private",
     },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
     sharedWith: {
-      type: [
-        {
-          userId: { type: String, required: true },
-          role: { type: String, enum: ["editor"], default: "editor" },
-          addedAt: { type: Date, default: Date.now },
-          addedBy: { type: String },
-        },
-      ],
+      type: [ResourceShareEntrySchema],
       default: [],
     },
+    publicShare: { type: PublicShareSchema, default: undefined },
     owner_id: { type: String },
     createdBy: { type: String, required: true },
   },
@@ -3359,6 +3431,10 @@ DashboardSchema.index({ workspaceId: 1 });
 DashboardSchema.index({ workspaceId: 1, createdBy: 1 });
 DashboardSchema.index({ workspaceId: 1, access: 1, owner_id: 1 });
 DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
+DashboardSchema.index(
+  { "publicShare.token": 1 },
+  { unique: true, sparse: true },
+);
 
 /**
  * DashboardFolder Schema
@@ -3423,7 +3499,7 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard";
+export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -3448,7 +3524,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard"],
+      enum: ["console", "dashboard", "dbt-file"],
       required: true,
     },
     entityId: {
@@ -3568,6 +3644,203 @@ export const Dashboard = mongoose.model<IDashboard>(
 );
 
 /**
+ * MakoApp — a workspace-scoped React app (Lovable / v0 style) that runs inside
+ * Mako with first-class access to workspace database connections via data
+ * bindings. The app body is a virtual filesystem (`files`) + npm dependency
+ * manifest (`dependencies`) + `dataBindings`. See `@mako/schemas` AppDefinition.
+ */
+export interface IMakoAppFile {
+  path: string;
+  contents: string;
+}
+
+export interface IMakoAppBindingMaterializationRun {
+  at: Date;
+  status: "ready" | "error";
+  rowCount?: number;
+  byteSize?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface IMakoAppBindingCache {
+  parquetArtifactKey?: string;
+  definitionHash?: string;
+  artifactRevision?: string;
+  parquetBuildStatus?:
+    | "missing"
+    | "queued"
+    | "building"
+    | "ready"
+    | "error"
+    | null;
+  /**
+   * Heartbeat for the current build. Refreshed periodically while a build is
+   * queued/running so stuck "building" statuses can be detected and recovered.
+   */
+  parquetBuildStatusAt?: Date | null;
+  parquetLastError?: string | null;
+  rowCount?: number;
+  byteSize?: number;
+  lastRefreshedAt?: Date;
+  parquetBuiltAt?: Date;
+  history?: IMakoAppBindingMaterializationRun[];
+}
+
+export interface IMakoAppDataBinding {
+  id: string;
+  name: string;
+  connectionId: string;
+  language: "sql" | "javascript" | "mongodb";
+  code: string;
+  databaseId?: string;
+  databaseName?: string;
+  materialization: "live" | "parquet";
+  cache?: IMakoAppBindingCache;
+}
+
+export interface IMakoApp extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  title: string;
+  description?: string;
+  template: string;
+  runtime: "cdn" | "webcontainer";
+  entrypoint: string;
+  files: IMakoAppFile[];
+  dependencies: Record<string, string>;
+  dataBindings: IMakoAppDataBinding[];
+  version: number;
+  access: "private" | "workspace";
+  /** Role granted to workspace members when access is "workspace". */
+  workspaceRole?: ResourceShareRole;
+  /** Per-user collaborators (viewer/editor), independent of `access`. */
+  sharedWith?: IResourceShareEntry[];
+  /** Public link sharing (read-only, snapshot data, optional password). */
+  publicShare?: IPublicShare;
+  owner_id?: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MakoAppFileSchema = new Schema<IMakoAppFile>(
+  {
+    path: { type: String, required: true },
+    contents: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const MakoAppBindingMaterializationRunSchema =
+  new Schema<IMakoAppBindingMaterializationRun>(
+    {
+      at: { type: Date, required: true },
+      status: { type: String, enum: ["ready", "error"], required: true },
+      rowCount: { type: Number },
+      byteSize: { type: Number },
+      durationMs: { type: Number },
+      error: { type: String },
+    },
+    { _id: false },
+  );
+
+const MakoAppBindingCacheSchema = new Schema<IMakoAppBindingCache>(
+  {
+    parquetArtifactKey: { type: String },
+    definitionHash: { type: String },
+    artifactRevision: { type: String },
+    parquetBuildStatus: {
+      type: String,
+      enum: ["missing", "queued", "building", "ready", "error", null],
+      default: null,
+    },
+    parquetBuildStatusAt: { type: Date, default: null },
+    parquetLastError: { type: String, default: null },
+    rowCount: { type: Number },
+    byteSize: { type: Number },
+    lastRefreshedAt: { type: Date },
+    parquetBuiltAt: { type: Date },
+    history: {
+      type: [MakoAppBindingMaterializationRunSchema],
+      default: undefined,
+    },
+  },
+  { _id: false },
+);
+
+const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
+  {
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    connectionId: { type: String, required: true },
+    language: {
+      type: String,
+      enum: ["sql", "javascript", "mongodb"],
+      default: "sql",
+    },
+    code: { type: String, default: "" },
+    databaseId: { type: String },
+    databaseName: { type: String },
+    materialization: {
+      type: String,
+      enum: ["live", "parquet"],
+      default: "live",
+    },
+    cache: { type: MakoAppBindingCacheSchema, default: undefined },
+  },
+  { _id: false },
+);
+
+const MakoAppSchema = new Schema<IMakoApp>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+      index: true,
+    },
+    title: { type: String, required: true },
+    description: { type: String },
+    template: { type: String, default: "react-ts" },
+    runtime: {
+      type: String,
+      enum: ["cdn", "webcontainer"],
+      default: "cdn",
+    },
+    entrypoint: { type: String, default: "src/App.tsx" },
+    files: { type: [MakoAppFileSchema], default: [] },
+    dependencies: { type: Schema.Types.Mixed, default: {} },
+    dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
+    version: { type: Number, default: 1 },
+    access: {
+      type: String,
+      enum: ["private", "workspace"],
+      default: "private",
+    },
+    workspaceRole: {
+      type: String,
+      enum: ["viewer", "editor"],
+      default: "viewer",
+    },
+    sharedWith: {
+      type: [ResourceShareEntrySchema],
+      default: [],
+    },
+    publicShare: { type: PublicShareSchema, default: undefined },
+    owner_id: { type: String, index: true },
+    createdBy: { type: String, required: true },
+  },
+  { timestamps: true },
+);
+
+MakoAppSchema.index({ workspaceId: 1, updatedAt: -1 });
+MakoAppSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
+MakoAppSchema.index({ "publicShare.token": 1 }, { unique: true, sparse: true });
+
+export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
+
+/**
  * Skill — workspace-scoped knowledge + procedure primitive.
  *
  * See GitHub issue #365. A skill is a named, conditional playbook with:
@@ -3678,10 +3951,7 @@ const RealtimePresenceSchema = new Schema<IRealtimePresence>(
   { collection: "realtime_presence" },
 );
 
-RealtimePresenceSchema.index(
-  { workspaceId: 1, clientId: 1 },
-  { unique: true },
-);
+RealtimePresenceSchema.index({ workspaceId: 1, clientId: 1 }, { unique: true });
 // TTL reaper: connections that stop heartbeating disappear automatically.
 RealtimePresenceSchema.index({ lastSeenAt: 1 }, { expireAfterSeconds: 90 });
 
@@ -3689,3 +3959,338 @@ export const RealtimePresence = mongoose.model<IRealtimePresence>(
   "RealtimePresence",
   RealtimePresenceSchema,
 );
+
+/**
+ * dbt — workspace-scoped dbt Core projects ("dbt Cloud replica").
+ *
+ * A project is a virtual filesystem in Mongo (one DbtFile doc per file)
+ * materialized to a temp dir at run time by api/src/dbt/runner.service.ts.
+ * Jobs hold command lists + cron schedules (claim pattern mirrors
+ * SavedConsole.scheduledRun); runs are the per-execution records with
+ * capped logs and parsed run_results.json step results.
+ */
+
+export interface IDbtEnvironment {
+  /** Environment name, e.g. "dev" or "prod". Unique within the project. */
+  name: string;
+  /** DatabaseConnection id used as the warehouse target. */
+  connectionId: Types.ObjectId;
+  /** Target schema (dataset for BigQuery) dbt builds into. */
+  targetSchema: string;
+  /** dbt threads; default low (4) — prod container is memory-constrained. */
+  threads: number;
+  /** dbt vars passed as --vars for every command in this environment. */
+  vars?: Record<string, unknown>;
+}
+
+export interface IDbtProject extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  /** Pinned dbt-core minor version, e.g. "1.9". Informational for now. */
+  dbtVersion: string;
+  environments: IDbtEnvironment[];
+  defaultEnvironment: string;
+  /**
+   * Artifact-store key of the last successful prod manifest.json. This is
+   * the state artifact for --defer / state:modified+ (Slim CI, later phase).
+   */
+  lastProdManifestKey?: string;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
+  {
+    name: { type: String, required: true, trim: true },
+    connectionId: {
+      type: Schema.Types.ObjectId,
+      ref: "DatabaseConnection",
+      required: true,
+    },
+    targetSchema: { type: String, required: true, trim: true },
+    threads: { type: Number, default: 4, min: 1, max: 16 },
+    vars: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
+const DbtProjectSchema = new Schema<IDbtProject>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true },
+    dbtVersion: { type: String, default: "1.9" },
+    environments: { type: [DbtEnvironmentSchema], default: [] },
+    defaultEnvironment: { type: String, default: "dev" },
+    lastProdManifestKey: { type: String },
+    createdBy: { type: String, required: true },
+  },
+  { collection: "dbt_projects", timestamps: true },
+);
+
+DbtProjectSchema.index({ workspaceId: 1, name: 1 }, { unique: true });
+DbtProjectSchema.index({ workspaceId: 1, updatedAt: -1 });
+
+export const DbtProject = mongoose.model<IDbtProject>(
+  "DbtProject",
+  DbtProjectSchema,
+);
+
+export interface IDbtFile extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  /** POSIX path relative to project root, e.g. "models/staging/stg_x.sql". */
+  path: string;
+  content: string;
+  updatedBy: string;
+  is_deleted: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtFileSchema = new Schema<IDbtFile>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    path: { type: String, required: true, trim: true },
+    content: { type: String, default: "" },
+    updatedBy: { type: String, required: true },
+    is_deleted: { type: Boolean, default: false },
+  },
+  { collection: "dbt_files", timestamps: true },
+);
+
+DbtFileSchema.index({ projectId: 1, path: 1 }, { unique: true });
+DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
+
+export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
+
+export interface IDbtJob extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  name: string;
+  /** Environment name from the project's environments list. */
+  environment: string;
+  /** Validated against the dbt command allowlist (api/src/dbt/commands.ts). */
+  commands: string[];
+  schedule?: {
+    cron: string;
+    timezone: string;
+  };
+  /** Mirrors SavedConsole.scheduledRun so the optimistic claim transfers. */
+  scheduledRun?: {
+    nextAt?: Date;
+    lastAt?: Date;
+    lastStatus?: "success" | "error";
+    lastError?: string;
+    lastDurationMs?: number;
+    runCount: number;
+    consecutiveFailures: number;
+  };
+  enabled: boolean;
+  /** Reserved for Slim CI (--defer against the stored prod manifest). */
+  deferToProduction: boolean;
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtJobSchema = new Schema<IDbtJob>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true },
+    environment: { type: String, required: true },
+    commands: { type: [String], default: [] },
+    schedule: {
+      cron: { type: String },
+      timezone: { type: String },
+    },
+    scheduledRun: {
+      nextAt: { type: Date },
+      lastAt: { type: Date },
+      lastStatus: { type: String, enum: ["success", "error"] },
+      lastError: { type: String },
+      lastDurationMs: { type: Number },
+      runCount: { type: Number, default: 0 },
+      consecutiveFailures: { type: Number, default: 0 },
+    },
+    enabled: { type: Boolean, default: true },
+    deferToProduction: { type: Boolean, default: false },
+    createdBy: { type: String, required: true },
+  },
+  { collection: "dbt_jobs", timestamps: true },
+);
+
+DbtJobSchema.index({ workspaceId: 1, projectId: 1 });
+DbtJobSchema.index({ "scheduledRun.nextAt": 1, enabled: 1 }, { sparse: true });
+
+export const DbtJob = mongoose.model<IDbtJob>("DbtJob", DbtJobSchema);
+
+export type DbtRunStatus =
+  | "queued"
+  | "running"
+  | "success"
+  | "error"
+  | "cancelled";
+
+export interface IDbtRunLogLine {
+  ts: Date;
+  level: string;
+  line: string;
+}
+
+export interface IDbtRunStepResult {
+  uniqueId: string;
+  name: string;
+  resourceType: string;
+  status: string;
+  executionTimeMs: number;
+  rowsAffected?: number;
+  message?: string;
+}
+
+export interface IDbtRun extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  jobId?: Types.ObjectId;
+  environment: string;
+  commands: string[];
+  status: DbtRunStatus;
+  trigger: "schedule" | "manual" | "agent";
+  /** User id for manual triggers, "scheduler" / "agent" otherwise. */
+  triggeredBy: string;
+  startedAt?: Date;
+  completedAt?: Date;
+  durationMs?: number;
+  /** Capped, batch-written log lines (parsed from --log-format json). */
+  logs: IDbtRunLogLine[];
+  /** Parsed from run_results.json after each command. */
+  stepResults: IDbtRunStepResult[];
+  artifactKeys: {
+    manifest?: string;
+    runResults?: string;
+    catalog?: string;
+    sources?: string;
+  };
+  /** Set on retry runs: the run this was retried from. */
+  retryOfRunId?: Types.ObjectId;
+  /**
+   * Artifact keys restored into target/ before commands run (retry-from-
+   * failure: run_results.json drives `dbt retry`).
+   */
+  restoreArtifactKeys?: {
+    runResults?: string;
+    manifest?: string;
+  };
+  error?: string;
+  inngestRunId?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtRunSchema = new Schema<IDbtRun>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    jobId: { type: Schema.Types.ObjectId, ref: "DbtJob" },
+    environment: { type: String, required: true },
+    commands: { type: [String], default: [] },
+    status: {
+      type: String,
+      enum: ["queued", "running", "success", "error", "cancelled"],
+      default: "queued",
+      required: true,
+    },
+    trigger: {
+      type: String,
+      enum: ["schedule", "manual", "agent"],
+      required: true,
+    },
+    triggeredBy: { type: String, required: true },
+    startedAt: { type: Date },
+    completedAt: { type: Date },
+    durationMs: { type: Number },
+    logs: {
+      type: [
+        new Schema<IDbtRunLogLine>(
+          {
+            ts: { type: Date, required: true },
+            level: { type: String, default: "info" },
+            line: { type: String, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    stepResults: {
+      type: [
+        new Schema<IDbtRunStepResult>(
+          {
+            uniqueId: { type: String, required: true },
+            name: { type: String, required: true },
+            resourceType: { type: String, default: "model" },
+            status: { type: String, required: true },
+            executionTimeMs: { type: Number, default: 0 },
+            rowsAffected: { type: Number },
+            message: { type: String },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    artifactKeys: {
+      manifest: { type: String },
+      runResults: { type: String },
+      catalog: { type: String },
+      sources: { type: String },
+    },
+    retryOfRunId: { type: Schema.Types.ObjectId, ref: "DbtRun" },
+    restoreArtifactKeys: {
+      runResults: { type: String },
+      manifest: { type: String },
+    },
+    error: { type: String },
+    inngestRunId: { type: String },
+  },
+  { collection: "dbt_runs", timestamps: true },
+);
+
+DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
+DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
+
+export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);

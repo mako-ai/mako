@@ -25,6 +25,10 @@ import type {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useConsoleStore } from "../store/consoleStore";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 
 interface FlowTreeNode extends ResourceTreeNode {
@@ -253,6 +257,8 @@ export function FlowsExplorer() {
     return null;
   }, [activeTabId, tabs]);
 
+  const reveal = useExplorerRevealStore(selectRevealFor("flows"));
+
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
     const flowNode = node as FlowTreeNode;
     if (flowNode.itemType === "scheduled-query") {
@@ -361,6 +367,8 @@ export function FlowsExplorer() {
             sections={sections}
             mode="sidebar"
             activeItemId={activeItemId}
+            revealNodeId={reveal?.nodeId}
+            revealNonce={reveal?.nonce}
             getItemIcon={getItemIcon}
             enableDragDrop={false}
             enableRename={false}

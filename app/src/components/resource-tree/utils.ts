@@ -38,6 +38,30 @@ export type ResourceTreeDropResolution =
 export const getFolderDropTargetId = (folderId: string) =>
   `__folder_content_${folderId}`;
 
+/**
+ * Whether a sidebar tree row should render with the "active entity" highlight
+ * (i.e. its tab is the focused one).
+ *
+ * REGRESSION GUARD: this is the single source of truth for the sidebar
+ * active-row highlight and MUST be applied to BOTH folder and file rows in
+ * `ResourceTree`. Several entities open from a *directory* row — an app, a
+ * Postgres table/view (its caret browses the schema while its name opens the
+ * data tab) — so if folder rows skip this check, an open app/table leaves its
+ * sidebar row un-highlighted. A previous regression did exactly that for apps.
+ * See `ResourceTree.tsx` and `ResourceTree.highlight.test.ts`.
+ */
+export function isSidebarRowActive(options: {
+  mode: "sidebar" | "picker";
+  activeItemId: string | null | undefined;
+  nodeId: string;
+}): boolean {
+  return (
+    options.mode === "sidebar" &&
+    !!options.activeItemId &&
+    options.activeItemId === options.nodeId
+  );
+}
+
 export function findNodeById<TNode extends ResourceTreeLikeNode>(
   nodes: TNode[],
   id: string,

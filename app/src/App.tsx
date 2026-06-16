@@ -27,6 +27,8 @@ import {
   useUIStore,
 } from "./store/uiStore";
 import { useConsoleStore } from "./store/consoleStore";
+import { useExplorerRevealStore } from "./store/explorerRevealStore";
+import { tabRevealTarget } from "./lib/explorer-reveal";
 import Chat from "./components/Chat";
 import DatabaseExplorer, {
   type CollectionInfo,
@@ -38,6 +40,11 @@ import { FlowsExplorer } from "./components/FlowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
 const DashboardsExplorer = lazy(loadDashboardsExplorer);
+const loadAppsExplorer = () => import("./components/AppsExplorer");
+const AppsExplorer = lazy(loadAppsExplorer);
+const PublicSharePage = lazy(() => import("./pages/PublicSharePage"));
+const loadDbtExplorer = () => import("./components/DbtExplorer");
+const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
 import { WorkspaceProvider } from "./contexts/workspace-context";
@@ -53,6 +60,7 @@ import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { useAuth } from "./contexts/auth-context";
 import { OnboardingFlow } from "./components/OnboardingFlow";
+import { UpdateNotification } from "./components/UpdateNotification";
 
 // Draggable divider between a fixed-width side pane and the flexible center.
 // Resizing changes the side pane's pixel width directly (not a percentage),
@@ -98,6 +106,8 @@ type SidePane = "left" | "right";
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const activeTabId = useConsoleStore(state => state.activeTabId);
+  const requestReveal = useExplorerRevealStore(state => state.requestReveal);
   const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
   const closeLeftPane = useUIStore(state => state.closeLeftPane);
   const closeRightPane = useUIStore(state => state.closeRightPane);
@@ -167,6 +177,30 @@ function MainApp() {
     (side: SidePane, e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
 
+      // Capture the pointer so move/up events keep flowing to the divider even
+      // when the cursor crosses an iframe (e.g. the app preview), which would
+      // otherwise swallow them and freeze the drag.
+      const divider = e.currentTarget;
+      try {
+        divider.setPointerCapture(e.pointerId);
+      } catch {
+        // Pointer may already be gone (e.g. released between events).
+      }
+
+      // Belt-and-suspenders for browsers with flaky pointer capture across
+      // (cross-origin) iframes: make iframes transparent to pointer events
+      // for the duration of the drag.
+      const iframes = Array.from(document.querySelectorAll("iframe"));
+      const savedPointerEvents = iframes.map(f => f.style.pointerEvents);
+      iframes.forEach(f => {
+        f.style.pointerEvents = "none";
+      });
+      const restoreIframes = () => {
+        iframes.forEach((f, i) => {
+          f.style.pointerEvents = savedPointerEvents[i];
+        });
+      };
+
       const container = panelContainerRef.current;
       const containerWidth = container
         ? container.clientWidth
@@ -214,6 +248,8 @@ function MainApp() {
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        restoreIframes();
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
 
@@ -239,6 +275,7 @@ function MainApp() {
       document.body.style.userSelect = "none";
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
     },
     [closeLeftPane, closeRightPane, leftPaneOpen, rightPaneOpen, setPaneWidths],
   );
@@ -387,6 +424,20 @@ function MainApp() {
     [openOrFocusConsoleTab],
   );
 
+  // When the focused tab changes, scroll the sidebar explorer to its row —
+  // but only when that explorer is already the one on screen. If the user is
+  // looking at a different explorer (or the pane is collapsed), leave it as is.
+  useEffect(() => {
+    if (!activeTabId) return;
+    const tab = useConsoleStore.getState().tabs[activeTabId];
+    const target = tabRevealTarget(tab);
+    if (!target) return;
+    const { leftPane, leftPaneOpen: paneOpen } = useUIStore.getState();
+    if (paneOpen && leftPane === target.explorer) {
+      requestReveal(target.explorer, target.nodeId);
+    }
+  }, [activeTabId, requestReveal]);
+
   // Left pane content renderer
   const renderLeftPane = () => {
     switch (activeView) {
@@ -402,6 +453,10 @@ function MainApp() {
         return <FlowsExplorer />;
       case "dashboards":
         return <DashboardsExplorer />;
+      case "apps":
+        return <AppsExplorer />;
+      case "dbt":
+        return <DbtExplorer />;
       case "settings":
         return <SettingsExplorer />;
       default:
@@ -702,9 +757,37 @@ function App() {
     <>
       <PageViewTracker />
       <DesktopAuthResume />
+      <UpdateNotification />
       <Routes>
         {/* Invite route - no authentication required */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* Public share viewer - no authentication required. The optional
+            first segment is the workspace slug (cosmetic only). */}
+        {["/share/:token", "/share/:workspaceSlug/:token"].map(path => (
+          <Route
+            key={path}
+            path={path}
+            element={
+              <Suspense
+                fallback={
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      height: "100vh",
+                    }}
+                  >
+                    <CircularProgress />
+                  </Box>
+                }
+              >
+                <PublicSharePage />
+              </Suspense>
+            }
+          />
+        ))}
 
         {/* Desktop sign-in handoff - renders for both authed and unauthed users */}
         <Route path="/desktop-auth" element={<DesktopAuthPage />} />

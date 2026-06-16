@@ -43,8 +43,11 @@ import {
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
   ChartPie as DashboardIcon,
+  AppWindow as AppIcon,
+  FileCode as AppFileIcon,
+  Database as DatabaseIcon,
   Table as TableDataIcon,
-  ChevronRight as BreadcrumbChevronIcon,
+  ClipboardList as PlanIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -55,7 +58,16 @@ import ConnectorTab from "./ConnectorTab";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { FlowEditor } from "./FlowEditor";
 import DashboardCanvas from "./DashboardCanvas";
+import AppRenderer from "./AppRenderer";
+import AppFileEditor from "./AppFileEditor";
+import AppBindingEditor from "./AppBindingEditor";
+import PlanDocumentTab from "./PlanDocumentTab";
+import DbtFileEditor from "./DbtFileEditor";
+import DbtJobView from "./DbtJobView";
+import DbtConsoleView from "./DbtConsoleView";
+import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
+import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import ScheduleConsoleModal from "./ScheduleConsoleModal";
 import ConsoleRemoteUpdateBanner from "./ConsoleRemoteUpdateBanner";
 import ScheduledRunsPanel from "./ScheduledRunsPanel";
@@ -73,7 +85,9 @@ import { useUIStore } from "../store/uiStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useDatabaseCatalogStore } from "../store/databaseCatalogStore";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
+import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
@@ -279,6 +293,7 @@ function Editor({
   resultsContextRef,
 }: EditorProps = {}) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const [tabResults, setTabResults] = useState<
     Record<string, QueryResult | null>
@@ -408,6 +423,14 @@ function Editor({
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [versionHistoryTabId, setVersionHistoryTabId] = useState<string | null>(
     null,
+  );
+
+  // Unified share dialog state (consoles)
+  const [shareConsoleTabId, setShareConsoleTabId] = useState<string | null>(
+    null,
+  );
+  const shareConsoleTab = useConsoleStore(s =>
+    shareConsoleTabId ? s.tabs[shareConsoleTabId] : undefined,
   );
   const [versionHistoryEntityType, setVersionHistoryEntityType] = useState<
     "console" | "dashboard"
@@ -1859,9 +1882,14 @@ function Editor({
   const handleVersionConflictOverwrite = async () => {
     if (!pendingSaveData || !versionConflictData) return;
     const { tabId, content, path, comment } = pendingSaveData;
-    // Fast-forward to the server's version so the retried save passes the
-    // guard (unless someone saves yet again in the meantime).
+    // Fast-forward to the server's bases so the retried save passes BOTH
+    // guards (unless someone saves yet again in the meantime).
     updateVersion(tabId, versionConflictData.currentVersion);
+    if (typeof versionConflictData.currentDraftRevision === "number") {
+      useConsoleStore
+        .getState()
+        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
+    }
     setVersionConflictData(null);
     const success = await executeConsoleSave(
       tabId,
@@ -1886,6 +1914,11 @@ function Editor({
     });
     updateContent(tabId, serverContent);
     updateVersion(tabId, versionConflictData.currentVersion);
+    if (typeof versionConflictData.currentDraftRevision === "number") {
+      useConsoleStore
+        .getState()
+        .updateDraftRevision(tabId, versionConflictData.currentDraftRevision);
+    }
     const currentTab = tabs[tabId];
     const newHash = computeConsoleStateHash(
       serverContent,
@@ -2029,8 +2062,17 @@ function Editor({
                               )
                             ) : tab.kind === "dashboard" ? (
                               <DashboardIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app" ? (
+                              <AppIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app-file" ? (
+                              <AppFileIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "app-binding" ||
+                              tab.kind === "dashboard-data-source" ? (
+                              <DatabaseIcon size={18} strokeWidth={1.5} />
                             ) : tab.kind === "table-data" ? (
                               <TableDataIcon size={18} strokeWidth={1.5} />
+                            ) : tab.kind === "plan" ? (
+                              <PlanIcon size={18} strokeWidth={1.5} />
                             ) : connectionIconUrl ? (
                               <Box
                                 component="img"
@@ -2090,69 +2132,20 @@ function Editor({
             </DndContext>
           </Box>
 
-          {/* Breadcrumb path (Cursor-style) — only for console tabs */}
+          {/* Breadcrumb path (Cursor-style) — one consistent bar for every
+              tab kind. Views that embed their own actions in the bar
+              (table data, app files/bindings, dashboard data sources)
+              render EntityBreadcrumbs themselves. */}
           {(() => {
             const activeTab = activeConsoleId ? tabs[activeConsoleId] : null;
-            if (activeTab?.kind !== "console") return null;
-            const filePath = activeTab.filePath;
-            const isUnsaved = !filePath;
-            const segments = isUnsaved
-              ? ["Unsaved console"]
-              : [
-                  activeTab.access === "workspace"
-                    ? "Workspace"
-                    : "My Consoles",
-                  ...filePath.split("/").filter(Boolean),
-                ];
-            return (
-              <Box
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  minHeight: 22,
-                  px: 1.5,
-                  py: 0.25,
-                  backgroundColor: "background.paper",
-                  color: "text.secondary",
-                  fontSize: "0.75rem",
-                  overflow: "hidden",
-                  whiteSpace: "nowrap",
-                  gap: 0.25,
-                }}
-              >
-                {segments.map((segment, index) => (
-                  <Box
-                    key={`${index}-${segment}`}
-                    component="span"
-                    sx={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 0.25,
-                      minWidth: 0,
-                    }}
-                  >
-                    {index > 0 && (
-                      <BreadcrumbChevronIcon
-                        size={12}
-                        strokeWidth={2}
-                        style={{ flexShrink: 0, opacity: 0.6 }}
-                      />
-                    )}
-                    <Box
-                      component="span"
-                      sx={{
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontStyle: isUnsaved ? "italic" : "normal",
-                      }}
-                    >
-                      {segment}
-                    </Box>
-                  </Box>
-                ))}
-              </Box>
-            );
+            if (!activeTab) return null;
+            const rendersOwnBreadcrumbs =
+              activeTab.kind === "table-data" ||
+              activeTab.kind === "app-file" ||
+              activeTab.kind === "app-binding" ||
+              activeTab.kind === "dashboard-data-source";
+            if (rendersOwnBreadcrumbs) return null;
+            return <EntityBreadcrumbs tabId={activeTab.id} />;
           })()}
 
           {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
@@ -2221,6 +2214,44 @@ function Editor({
                       });
                     }}
                   />
+                ) : tab.kind === "app" ? (
+                  <AppRenderer appId={tab.metadata?.appId as string} />
+                ) : tab.kind === "app-file" ? (
+                  <AppFileEditor
+                    tabId={tab.id}
+                    appId={tab.metadata?.appId as string}
+                    path={tab.metadata?.path as string}
+                  />
+                ) : tab.kind === "app-binding" ? (
+                  <AppBindingEditor
+                    tabId={tab.id}
+                    appId={tab.metadata?.appId as string}
+                    bindingId={tab.metadata?.bindingId as string}
+                  />
+                ) : tab.kind === "plan" ? (
+                  <PlanDocumentTab
+                    toolCallId={tab.metadata?.toolCallId as string}
+                  />
+                ) : tab.kind === "dbt-file" ? (
+                  <DbtFileEditor
+                    projectId={tab.metadata?.projectId as string}
+                    path={tab.metadata?.path as string}
+                  />
+                ) : tab.kind === "dbt-job" ? (
+                  <DbtJobView
+                    projectId={tab.metadata?.projectId as string}
+                    jobId={tab.metadata?.jobId as string}
+                  />
+                ) : tab.kind === "dbt-console" ? (
+                  <DbtConsoleView
+                    projectId={tab.metadata?.projectId as string}
+                  />
+                ) : tab.kind === "dashboard-data-source" ? (
+                  <DashboardDataSourceEditor
+                    tabId={tab.id}
+                    dashboardId={tab.metadata?.dashboardId as string}
+                    dataSourceId={tab.metadata?.dataSourceId as string}
+                  />
                 ) : (
                   /* Console tab: editor + results split */
                   <React.Profiler
@@ -2256,10 +2287,26 @@ function Editor({
                                     tab.id,
                                   );
                               }}
+                              onKeepMine={() => {
+                                if (!currentWorkspace?.id) return;
+                                // Use the LIVE Monaco buffer, not the store
+                                // copy — it may lag keystrokes by a debounce.
+                                const live =
+                                  consoleRefs.current[
+                                    tab.id
+                                  ]?.current?.getCurrentContent().content;
+                                void useConsoleStore
+                                  .getState()
+                                  .resolveRemoteUpdateKeepMine(
+                                    currentWorkspace.id,
+                                    tab.id,
+                                    live ?? tab.content,
+                                  );
+                              }}
                               onDismiss={() =>
                                 useConsoleStore
                                   .getState()
-                                  .setRemoteUpdate(tab.id, null)
+                                  .dismissRemoteUpdate(tab.id)
                               }
                               onCloseTab={() =>
                                 useConsoleStore.getState().closeTab(tab.id)
@@ -2328,6 +2375,8 @@ function Editor({
                                 setVersionHistoryOpen(true);
                               }}
                               historyAvailable={tab.isSaved}
+                              onShareClick={() => setShareConsoleTabId(tab.id)}
+                              shareAvailable={tab.isSaved}
                               schedule={tab.schedule}
                               onCreateSchedule={() =>
                                 handleOpenScheduleModal(tab.id, "create")
@@ -2653,6 +2702,27 @@ function Editor({
           onRestore={() => {
             if (currentWorkspace && versionHistoryTabId) {
               reloadConsole(currentWorkspace.id, versionHistoryTabId);
+            }
+          }}
+        />
+      )}
+
+      {shareConsoleTab && (
+        <ShareDialog
+          open={!!shareConsoleTabId}
+          onClose={() => setShareConsoleTabId(null)}
+          resourceType="console"
+          resourceId={shareConsoleTab.id}
+          resourceName={shareConsoleTab.title}
+          ownerId={shareConsoleTab.owner_id}
+          access={shareConsoleTab.access ?? "private"}
+          workspaceRole={shareConsoleTab.workspaceRole ?? "viewer"}
+          canManage={shareConsoleTab.owner_id === user?.id || isWorkspaceAdmin}
+          onSharingChanged={changes => {
+            if (changes.access && shareConsoleTabId) {
+              useConsoleStore
+                .getState()
+                .updateAccess(shareConsoleTabId, changes.access);
             }
           }}
         />

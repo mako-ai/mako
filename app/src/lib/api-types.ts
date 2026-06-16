@@ -34,6 +34,8 @@ export interface ConsoleContentResponse {
   chartSpec?: Record<string, unknown>;
   resultsViewMode?: "table" | "json" | "chart";
   access?: "private" | "workspace";
+  workspaceRole?: "viewer" | "editor";
+  sharedWith?: Array<{ userId: string; role: "viewer" | "editor" }>;
   owner_id?: string;
   readOnly?: boolean;
   /** Optimistic-concurrency base; echoed back as expectedVersion on save. */
@@ -61,6 +63,11 @@ export interface ConsoleContentResponse {
 
 export interface ConsoleVersionConflict {
   currentVersion: number;
+  /**
+   * Draft-revision base at conflict time. A retried "overwrite with mine"
+   * must fast-forward to BOTH bases to pass the explicit save's dual guard.
+   */
+  currentDraftRevision?: number;
   content: string;
   name?: string;
   updatedAt?: string;
@@ -103,6 +110,8 @@ export interface ConsoleRevisionSyncEntry {
   databaseId?: string;
   databaseName?: string;
   version?: number;
+  /** Server truth for draft-vs-saved (drives autosave eligibility). */
+  isSaved?: boolean;
   lastRun?: ConsoleLastRun;
 }
 

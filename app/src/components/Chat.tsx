@@ -78,6 +78,12 @@ import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
 import { PlanCard } from "./PlanCard";
+import {
+  focusPlanTab,
+  syncPlanTabTitle,
+  usePlanStore,
+  type PartialSubmitPlanInput,
+} from "../store/planStore";
 import type {
   AskClarifyingQuestionsInput,
   AskClarifyingQuestionsOutput,
@@ -101,9 +107,15 @@ import { consumePendingScreenshotVisionAttachments } from "../agent-runtime/scre
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
+  APP_EXECUTOR_TOOL_NAMES,
+  DBT_EXECUTOR_TOOL_NAMES,
+  DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
+import { executeAppAgentTool } from "../app-runtime/agent-tools";
+import { executeDbtAgentTool } from "../dbt-runtime/agent-tools";
+import { executeDataSourceTool } from "../agent-runtime/data-source-tools";
 import { UpgradePrompt } from "./UpgradePrompt";
 import {
   onRenderDebug,
@@ -892,6 +904,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 return (
                   <PlanCard
                     key={key}
+                    toolCallId={toolCallId}
                     input={part.input as SubmitPlanInput}
                     output={part.output as SubmitPlanOutput}
                   />
@@ -2072,6 +2085,126 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
+        // --- React App tools (client-side) ---
+        if (APP_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeAppTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+
+          // Fire-and-forget, same rationale as dashboard tools above: never
+          // await client work inside onToolCall or the SSE finish chunk stalls.
+          void (async () => {
+            try {
+              const appToolOutput = await executeAppAgentTool(toolName, input, {
+                executionId: activeAppTool.executionId,
+                signal: activeAppTool.abortController.signal,
+              });
+
+              if (activeAppTool.abortController.signal.aborted) return;
+
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                appToolOutput ?? {
+                  success: false,
+                  error: `App tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (appError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeAppTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  appError instanceof Error
+                    ? appError.message
+                    : "App tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- dbt tools (client-side) ---
+        if (DBT_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeDbtTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          // Fire-and-forget, same rationale as app tools above.
+          void (async () => {
+            try {
+              const dbtToolOutput = await executeDbtAgentTool(toolName, input);
+              if (activeDbtTool.abortController.signal.aborted) return;
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                dbtToolOutput ?? {
+                  success: false,
+                  error: `dbt tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dbtError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDbtTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  dbtError instanceof Error
+                    ? dbtError.message
+                    : "dbt tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- Shared data source tools (apps + dashboards) ---
+        if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeDataTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          void (async () => {
+            try {
+              const output = await executeDataSourceTool(toolName, input);
+              if (activeDataTool.abortController.signal.aborted) return;
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                output ?? {
+                  success: false,
+                  error: `Data source tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dataError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDataTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  dataError instanceof Error
+                    ? dataError.message
+                    : "Data source tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
         // Handle flow agent client-side tools
         // get_form_state - Return current form configuration
         if (toolName === "get_form_state") {
@@ -2479,6 +2612,51 @@ const Chat: React.FC<ChatProps> = ({
     };
   }, [chatId, currentWorkspace?.id]);
 
+  // In-band console opening: when a create_console / open_console tool
+  // result streams in (state "output-available"), open the console tab in
+  // THIS window. The chat stream is resumable, so unlike the legacy
+  // chat.ui-intent realtime poke this survives SSE drops, reconnects and
+  // page refreshes — the replayed part triggers the same idempotent open.
+  // Tool call ids seen in RESTORED history are pre-seeded into this set by
+  // loadSession (reopening a chat must not re-open every console it ever
+  // touched — the dedicated consoles-restore payload handles that).
+  const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    handledConsoleOpenToolCallIdsRef.current = new Set();
+  }, [chatId]);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    for (const part of last.parts ?? []) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        state?: string;
+        toolCallId?: string;
+        output?: { success?: boolean; consoleId?: string };
+      };
+      const toolName =
+        p.type === "dynamic-tool"
+          ? p.toolName
+          : p.type?.startsWith("tool-")
+            ? p.type.slice("tool-".length)
+            : undefined;
+      if (toolName !== "create_console" && toolName !== "open_console") {
+        continue;
+      }
+      if (p.state !== "output-available") continue;
+      const consoleId = p.output?.consoleId;
+      if (!p.toolCallId || !p.output?.success || !consoleId) continue;
+      if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
+      handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
+      void useConsoleStore
+        .getState()
+        .openConsoleFromServer(workspaceId, consoleId);
+    }
+  }, [messages, currentWorkspace?.id]);
+
   // Load messages when selecting an existing chat from history
   useEffect(() => {
     // Flipped when this effect is superseded (chat switched / unmount) so a
@@ -2629,6 +2807,19 @@ const Chat: React.FC<ChatProps> = ({
                 parts,
               };
             }) || [];
+
+          // Restored tool parts must not re-trigger the in-band console
+          // opener (only LIVE streamed results should); the consoles-restore
+          // payload below already reopens what matters.
+          for (const msg of convertedMessages) {
+            for (const part of msg.parts ?? []) {
+              const toolCallId = (part as { toolCallId?: string }).toolCallId;
+              if (toolCallId) {
+                handledConsoleOpenToolCallIdsRef.current.add(toolCallId);
+              }
+            }
+          }
+
           setMessages(convertedMessages);
 
           // Restore consoles that were modified by the agent in this chat
@@ -2786,17 +2977,81 @@ const Chat: React.FC<ChatProps> = ({
       ) {
         continue;
       }
-      if (part.state !== "input-available") continue;
+      // submit_plan also surfaces while its input is still streaming so the
+      // plan tab and dock card can render the plan as the model writes it.
+      const isStreamingPlan =
+        partType === "tool-submit_plan" && part.state === "input-streaming";
+      if (part.state !== "input-available" && !isStreamingPlan) continue;
       return {
         toolName: partType.slice("tool-".length) as
           | "ask_clarifying_questions"
           | "submit_plan",
         toolCallId: (part.toolCallId as string) || "",
         input: part.input,
+        streaming: isStreamingPlan,
       };
     }
     return null;
   }, [messages]);
+
+  // While a submit_plan awaits review (input fully available, unresolved),
+  // the chat composer becomes the plan-iteration channel: a sent message is
+  // routed to the tool output as request_changes feedback instead of a normal
+  // user message. Ref keeps handleChatSubmit's identity stable (perf rules).
+  const pendingPlanToolCallIdRef = useRef<string | null>(null);
+  pendingPlanToolCallIdRef.current =
+    pendingInteractiveTool?.toolName === "submit_plan" &&
+    !pendingInteractiveTool.streaming
+      ? pendingInteractiveTool.toolCallId
+      : null;
+
+  // Pending submit_plan: register the plan + its resolver in planStore and
+  // auto-open the main-view plan tab (once per toolCallId, as soon as
+  // streaming starts). While the input streams, each delta only does a cheap
+  // store write (setStreamingInput) — no tab re-open, no resolver churn. The
+  // resolver re-registers whenever handleResolveInteractiveTool changes so it
+  // always settles the tool through the live useChat instance.
+  const autoOpenedPlanTabsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (
+      !pendingInteractiveTool ||
+      pendingInteractiveTool.toolName !== "submit_plan"
+    ) {
+      return;
+    }
+    const { toolCallId, streaming } = pendingInteractiveTool;
+    if (!toolCallId) return;
+
+    const planStore = usePlanStore.getState();
+    if (streaming) {
+      planStore.setStreamingInput(
+        toolCallId,
+        chatId,
+        pendingInteractiveTool.input as PartialSubmitPlanInput | undefined,
+      );
+    } else {
+      const input = pendingInteractiveTool.input as SubmitPlanInput;
+      planStore.registerPlan(toolCallId, chatId, input);
+      planStore.registerResolver(toolCallId, output => {
+        handleResolveInteractiveTool({
+          tool: "submit_plan",
+          toolCallId,
+          output: output as unknown as Record<string, unknown>,
+        });
+      });
+    }
+
+    if (!autoOpenedPlanTabsRef.current.has(toolCallId)) {
+      autoOpenedPlanTabsRef.current.add(toolCallId);
+      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
+      focusPlanTab(toolCallId, chatId, title || "Plan");
+    } else {
+      // Keep the tab title in sync as the title streams in / finalizes
+      // (no-op unless it actually changed).
+      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
+      if (title) syncPlanTabTitle(toolCallId, chatId, title);
+    }
+  }, [pendingInteractiveTool, chatId, handleResolveInteractiveTool]);
 
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
@@ -2896,6 +3151,26 @@ const Chat: React.FC<ChatProps> = ({
         );
       }
       return;
+    }
+
+    // Conversational plan iteration (Cursor-style): while a submitted plan is
+    // awaiting review, the typed message becomes request_changes feedback on
+    // the plan — including the current draft, so manual edits made in the
+    // plan tab flow back — instead of a normal user message.
+    const pendingPlanToolCallId = pendingPlanToolCallIdRef.current;
+    if (pendingPlanToolCallId) {
+      const planStore = usePlanStore.getState();
+      const planEntry = planStore.plans[pendingPlanToolCallId];
+      const feedback = text.trim();
+      if (planEntry?.status === "pending" && feedback) {
+        trackEvent("ai_plan_feedback_sent", { model: modelIdRef.current });
+        planStore.resolvePlan(
+          pendingPlanToolCallId,
+          "request_changes",
+          feedback,
+        );
+        return;
+      }
     }
 
     capturedConsoleIdRef.current = activeConsoleIdRef.current;
@@ -3276,11 +3551,16 @@ const Chat: React.FC<ChatProps> = ({
           only shows a read-only summary once the user has responded. */}
       {pendingInteractiveTool && (
         <Box
-          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          sx={
+            pendingInteractiveTool.toolName === "ask_clarifying_questions"
+              ? { mx: 2.25, mt: 1, mb: -1 }
+              : { mx: 1, mt: 1, mb: -0.5 }
+          }
           key={pendingInteractiveTool.toolCallId}
         >
           {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
             <ClarifyingQuestionsCard
+              docked
               input={
                 pendingInteractiveTool.input as AskClarifyingQuestionsInput
               }
@@ -3294,13 +3574,15 @@ const Chat: React.FC<ChatProps> = ({
             />
           ) : (
             <PlanCard
-              input={pendingInteractiveTool.input as SubmitPlanInput}
-              onResolve={output =>
-                handleResolveInteractiveTool({
-                  tool: pendingInteractiveTool.toolName,
-                  toolCallId: pendingInteractiveTool.toolCallId,
-                  output: output as unknown as Record<string, unknown>,
-                })
+              toolCallId={pendingInteractiveTool.toolCallId}
+              chatId={chatId}
+              streaming={pendingInteractiveTool.streaming}
+              // While streaming the input is partial — the card reads live
+              // data from planStore instead (fed by setStreamingInput).
+              input={
+                pendingInteractiveTool.streaming
+                  ? undefined
+                  : (pendingInteractiveTool.input as SubmitPlanInput)
               }
             />
           )}

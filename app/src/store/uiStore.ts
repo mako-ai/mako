@@ -216,6 +216,8 @@ export type ActiveExplorer =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "apps"
+  | "dbt"
   | "settings"
   | null;
 
@@ -225,6 +227,8 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "connectors",
   "flows",
   "dashboards",
+  "apps",
+  "dbt",
   "settings",
 ]);
 

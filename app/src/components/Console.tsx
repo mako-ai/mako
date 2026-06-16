@@ -37,6 +37,7 @@ import {
   Copy as CopyIcon,
   FolderInput as MoveIcon,
   Clock3 as ScheduleIcon,
+  Share2 as Share2Icon,
 } from "lucide-react";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
@@ -111,6 +112,10 @@ interface ConsoleProps {
    * callers that already gate via `onHistoryClick` keep working.
    */
   historyAvailable?: boolean;
+  /** Opens the unified ShareDialog for this console. */
+  onShareClick?: () => void;
+  /** When false, the share button renders disabled (unsaved drafts). */
+  shareAvailable?: boolean;
   enableVersionControl?: boolean;
   schedule?: {
     cron: string;
@@ -118,6 +123,15 @@ interface ConsoleProps {
   };
   onCreateSchedule?: () => void;
   onUpdateSchedule?: () => void;
+  /**
+   * Surface this console UI is rendering. "console" (default) is a saved query
+   * console; "data-source" reuses the same toolbar/editor for an app/dashboard
+   * data source (run/save/connection are identical; callers supply
+   * `headerExtras` for surface-specific controls like materialization).
+   */
+  variant?: "console" | "data-source";
+  /** Extra controls rendered inline in the left toolbar group. */
+  headerExtras?: React.ReactNode;
 }
 
 export interface ConsoleRef {
@@ -166,11 +180,16 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     filePath,
     onHistoryClick,
     historyAvailable = true,
+    onShareClick,
+    shareAvailable = true,
     enableVersionControl = false,
     schedule,
     onCreateSchedule,
     onUpdateSchedule,
+    variant = "console",
+    headerExtras,
   } = props;
+  void variant;
 
   const editorRef = useRef<any>(null);
   const diffEditorRef = useRef<any>(null);
@@ -676,10 +695,17 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
 
         const currentContent = model.getValue();
 
-        // Auto-save new consoles created with content (e.g., by agent create_console)
-        // Skip if console is already explicitly saved (isSaved=true)
+        // Mount-autosave is ONLY for drafts that have never synced with the
+        // server (no draftRevision — e.g. legacy localStorage-restored tabs
+        // whose server doc may not exist). Re-saving an already-synced draft
+        // on every mount used to bump draftRevision with identical content,
+        // which made every OTHER window's revision base stale and dead-ended
+        // their autosaves in 409s. Agent-created consoles arrive with a
+        // server revision, so they never take this path either.
+        const mountTab = useConsoleStore.getState().tabs[consoleId];
         if (
           !isSaved &&
+          mountTab?.draftRevision === undefined &&
           currentWorkspace?.id &&
           consoleId &&
           currentContent.trim()
@@ -1214,6 +1240,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
             </Box>
           )}
 
+          {headerExtras}
+
           {enableVersionControl && (
             <>
               <Divider orientation="vertical" flexItem />
@@ -1279,6 +1307,26 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                       disabled={isDiffMode || !historyAvailable}
                     >
                       <HistoryIcon strokeWidth={2} size={22} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
+
+              {onShareClick && (
+                <Tooltip
+                  title={
+                    shareAvailable
+                      ? "Share"
+                      : "Save this console before sharing it"
+                  }
+                >
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={onShareClick}
+                      disabled={isDiffMode || !shareAvailable}
+                    >
+                      <Share2Icon strokeWidth={2} size={22} />
                     </IconButton>
                   </span>
                 </Tooltip>
