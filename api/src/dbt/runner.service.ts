@@ -298,6 +298,16 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       ...keyfileEnv,
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
       HOME: projectDir,
+      // HOME points at the throwaway project dir to isolate dbt's profile and
+      // config, but that also relocates uv's cache for the `uvx` dev path
+      // (resolveDbtBin) into a dir we delete after every command — forcing a
+      // full dbt-core + adapter re-download (~20s and ~1GB) on every parse/
+      // compile/show/build. Pin uv's cache to a stable shared location so the
+      // first command warms it and the rest reuse it (~2s). Respect an
+      // operator-provided UV_CACHE_DIR if set. No effect in production, which
+      // runs a baked venv via DBT_VENV_BIN rather than uvx.
+      UV_CACHE_DIR:
+        process.env.UV_CACHE_DIR ?? join(tmpdir(), "mako-dbt-uv-cache"),
     };
 
     // Install packages first when declared. The executor runs one runDbt per
