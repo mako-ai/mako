@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { connectDatabase } from "./database/schema";
+import { closePostgres, getPostgresUrl, pingPostgres } from "./db";
 import { registerApiRoutes } from "./routes/register-routes";
 import { getOpenApiDocument } from "./openapi";
 import type { AuthEnv } from "./openapi/core";
@@ -283,6 +284,19 @@ async function main(): Promise<void> {
     throw error;
   }
 
+  // Verify the Postgres metadata store when it backs any domain (fail fast).
+  if (process.env.AUTH_PERSISTENCE === "postgres") {
+    try {
+      await pingPostgres();
+      logger.info("Connected to Postgres metadata store", {
+        url: getPostgresUrl().replace(/:\/\/[^@]*@/, "://***@"),
+      });
+    } catch (error) {
+      logger.error("Failed to connect to Postgres metadata store", { error });
+      throw error;
+    }
+  }
+
   // Log Inngest configuration status (after logging is initialized)
   logInngestStatus();
 
@@ -385,6 +399,10 @@ async function gracefulShutdown(
       await mongoose.connection.close();
       logger.info("Mongoose connection closed");
     }
+
+    // Close the Postgres metadata pool (no-op if it was never opened)
+    await closePostgres();
+    logger.info("Postgres pool closed");
   } catch (error) {
     logger.error("Error during graceful shutdown", { error });
     exitCode = 1;
