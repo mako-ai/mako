@@ -15,6 +15,8 @@
     "openapi:generate": "tsx src/openapi/generate-cli.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:backfill": "tsx src/db/backfill.ts",
+    "db:verify": "tsx src/db/verify.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test": "tsx src/openapi/core.test.ts && tsx src/openapi/openapi.test.ts && tsx src/dbt/warm-dir-cache.test.ts",
