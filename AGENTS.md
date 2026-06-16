@@ -69,6 +69,38 @@ Email/password registration normally requires email verification before login
 setting `emailVerified: true` directly; if you create another account manually,
 flip `emailVerified` in the DB to log in.
 
+### Postgres metadata store (Drizzle) — in-progress Mongo → Postgres migration
+
+A Drizzle ORM persistence layer (`api/src/db/`) is being introduced as the
+migration target for Mako's own metadata (auth, workspaces, connections,
+consoles, chats, queries). It runs **alongside** Mongo; both stores coexist
+during the gradual cutover.
+
+- **Local Postgres** is not preinstalled on the VM. Install + start a cluster:
+  ```bash
+  sudo apt-get install -y postgresql postgresql-contrib postgresql-16-pgvector
+  initdb -D "$HOME/pgdata" -U postgres --auth=trust   # /usr/lib/postgresql/16/bin
+  pg_ctl -D "$HOME/pgdata" -o "-p 5432 -c unix_socket_directories=/tmp" start
+  createdb -h 127.0.0.1 -U postgres mako_dev
+  ```
+- **Connection string:** `POSTGRES_URL` (falls back to `PG_DATABASE_URL`, then a
+  local default `postgres://postgres@127.0.0.1:5432/mako_dev`). TLS auto-enables
+  for non-local hosts (set this to the Neon URL in prod).
+- **Migrations (drizzle-kit):**
+  ```bash
+  pnpm --filter api run db:generate   # after editing src/db/schema/*
+  pnpm --filter api run db:migrate    # apply (creates uuid-ossp + vector exts)
+  ```
+- **Backfill from Mongo:** `BACKFILL_MONGO_URL=$DEV_DATABASE_URL POSTGRES_URL=...
+  pnpm --filter api exec tsx src/db/backfill.ts` (idempotent; dependency-ordered).
+- **ID mapping:** ObjectIds map to reversible padded uuids; legacy nanoids /
+  sentinels (`system`/`agent`) hash via UUIDv5 (`api/src/db/ids.ts`).
+- **Auth/session cutover flag:** `AUTH_PERSISTENCE=postgres` switches the session
+  store to Postgres (default `mongo`). Run the backfill first so users/sessions
+  exist in PG.
+- **PG-backed read API:** mounted at `/api/pg` (`/api/pg/health` is public).
+- **PG tests:** `pnpm --filter api run test:pg` (needs a running Postgres).
+
 ### Misc caveats
 
 - No `docker-compose.yml` is committed, so `pnpm docker:*` scripts don't work
