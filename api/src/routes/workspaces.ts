@@ -1,20 +1,81 @@
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import {
   requireWorkspace,
   requireWorkspaceRole,
   optionalWorkspace,
-  AuthenticatedContext,
 } from "../middleware/workspace.middleware";
 import { Types } from "mongoose";
 import { Workspace } from "../database/workspace-schema";
 import { normalizeEmail } from "../utils/email.utils";
 import { loggers } from "../logging";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  dataResponse,
+  jsonBody,
+  zDateTime,
+  zObjectId,
+} from "../openapi/core";
+
+const MemberRole = z.enum(["admin", "member", "viewer"]);
+const CreateWorkspaceBody = jsonBody(
+  z.object({ name: z.string(), slug: z.string().optional() }),
+);
+const UpdateWorkspaceBody = jsonBody(
+  z.object({
+    name: z.string().optional(),
+    settings: z.record(z.string(), z.any()).optional(),
+  }),
+  true,
+);
+const AddMemberBody = jsonBody(
+  z.object({ userId: z.string(), role: MemberRole }),
+);
+const UpdateMemberRoleBody = jsonBody(z.object({ role: MemberRole }));
+const CreateInviteBody = jsonBody(
+  z.object({ email: z.string(), role: MemberRole }),
+);
+
+const WorkspaceSchema = z
+  .object({
+    id: zObjectId(),
+    name: z.string(),
+    slug: z.string(),
+    role: z.string().optional(),
+    createdAt: zDateTime(),
+    updatedAt: zDateTime(),
+    settings: z.record(z.string(), z.any()),
+  })
+  .openapi("Workspace");
 
 const logger = loggers.workspace();
 
-export const workspaceRoutes = new Hono();
+export const workspaceRoutes = createRouter();
+
+const IdParam = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
+const TokenParam = z.object({
+  token: z.string().openapi({ param: { name: "token", in: "path" } }),
+});
+const IdUserParam = IdParam.extend({
+  userId: z.string().openapi({ param: { name: "userId", in: "path" } }),
+});
+const IdInviteParam = IdParam.extend({
+  inviteId: z.string().openapi({ param: { name: "inviteId", in: "path" } }),
+});
+const IdKeyParam = IdParam.extend({
+  keyId: z.string().openapi({ param: { name: "keyId", in: "path" } }),
+});
+const JsonBody = {
+  required: false,
+  content: {
+    "application/json": { schema: z.record(z.string(), z.any()) },
+  },
+};
 
 type WorkspaceMemberResponseSource = {
   _id: unknown;
@@ -32,18 +93,24 @@ function serializeWorkspaceMember(member: WorkspaceMemberResponseSource) {
   return {
     id: member._id,
     userId: populatedUser?._id ?? member.userId,
-    email:
-      typeof populatedUser?.email === "string" ? populatedUser.email : "",
+    email: typeof populatedUser?.email === "string" ? populatedUser.email : "",
     role: member.role,
     joinedAt: member.joinedAt,
   };
 }
 
 // Get pending invitations for current user's email
-workspaceRoutes.get(
-  "/pending-invites",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/pending-invites",
+    tags: ["Workspaces"],
+    summary: "List pending invites for the current user",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       if (!user) {
@@ -80,10 +147,20 @@ workspaceRoutes.get(
 );
 
 // Get all workspaces for current user
-workspaceRoutes.get(
-  "/",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/",
+    tags: ["Workspaces"],
+    summary: "List workspaces",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    responses: {
+      ...OPEN_RESPONSES,
+      200: dataResponse(z.array(WorkspaceSchema), "Workspaces for the user."),
+    },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       const workspace = c.get("workspace");
@@ -140,10 +217,18 @@ workspaceRoutes.get(
 );
 
 // Create new workspace
-workspaceRoutes.post(
-  "/",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/",
+    tags: ["Workspaces"],
+    summary: "Create a workspace",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    request: { body: CreateWorkspaceBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       const body = await c.req.json();
@@ -196,11 +281,23 @@ workspaceRoutes.post(
 );
 
 // Get current workspace
-workspaceRoutes.get(
-  "/current",
-  unifiedAuthMiddleware,
-  optionalWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/current",
+    tags: ["Workspaces"],
+    summary: "Get the current workspace",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, optionalWorkspace] as const,
+    responses: {
+      ...OPEN_RESPONSES,
+      200: dataResponse(
+        WorkspaceSchema.nullable(),
+        "The active workspace, or null.",
+      ),
+    },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const memberRole = c.get("memberRole");
@@ -242,65 +339,85 @@ workspaceRoutes.get(
 
 // Get invite details (public endpoint - no auth required)
 // NOTE: This route MUST be defined before /:id to avoid being matched as a workspace ID
-workspaceRoutes.get("/invites/:token", async c => {
-  try {
-    const token = c.req.param("token");
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/invites/{token}",
+    tags: ["Workspaces"],
+    summary: "Get invite details (public)",
+    security: [],
+    request: { params: TokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
 
-    const invite = await workspaceService.getInviteByToken(token);
+      const invite = await workspaceService.getInviteByToken(token);
 
-    if (!invite) {
+      if (!invite) {
+        return c.json(
+          {
+            success: false,
+            error: "Invalid or expired invitation",
+          },
+          404,
+        );
+      }
+
+      // Check if invite is expired
+      if (invite.expiresAt < new Date()) {
+        return c.json(
+          {
+            success: false,
+            error: "This invitation has expired",
+          },
+          410,
+        );
+      }
+
+      // Return invite details without sensitive data
+      const workspace = invite.workspaceId as any;
+      const inviter = invite.invitedBy as any;
+
+      return c.json({
+        success: true,
+        data: {
+          workspaceName: workspace?.name || "Unknown Workspace",
+          inviterEmail: inviter?.email || "Unknown",
+          inviteeEmail: invite.email,
+          role: invite.role,
+          expiresAt: invite.expiresAt,
+        },
+      });
+    } catch (error) {
+      logger.error("Error getting invite", { error });
       return c.json(
         {
           success: false,
-          error: "Invalid or expired invitation",
+          error:
+            error instanceof Error ? error.message : "Failed to get invite",
         },
-        404,
+        500,
       );
     }
-
-    // Check if invite is expired
-    if (invite.expiresAt < new Date()) {
-      return c.json(
-        {
-          success: false,
-          error: "This invitation has expired",
-        },
-        410,
-      );
-    }
-
-    // Return invite details without sensitive data
-    const workspace = invite.workspaceId as any;
-    const inviter = invite.invitedBy as any;
-
-    return c.json({
-      success: true,
-      data: {
-        workspaceName: workspace?.name || "Unknown Workspace",
-        inviterEmail: inviter?.email || "Unknown",
-        inviteeEmail: invite.email,
-        role: invite.role,
-        expiresAt: invite.expiresAt,
-      },
-    });
-  } catch (error) {
-    logger.error("Error getting invite", { error });
-    return c.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : "Failed to get invite",
-      },
-      500,
-    );
-  }
-});
+  },
+);
 
 // Accept invite (requires auth, enforces email matching)
 // NOTE: This route MUST be defined before /:id to avoid being matched as a workspace ID
-workspaceRoutes.post(
-  "/invites/:token/accept",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/invites/{token}/accept",
+    tags: ["Workspaces"],
+    summary: "Accept a workspace invite",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    request: { params: TokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       if (!user) {
@@ -370,10 +487,21 @@ workspaceRoutes.post(
 );
 
 // Get specific workspace
-workspaceRoutes.get(
-  "/:id",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}",
+    tags: ["Workspaces"],
+    summary: "Get a workspace",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    request: { params: IdParam },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: dataResponse(WorkspaceSchema, "The workspace."),
+    },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       const authenticatedWorkspace = c.get("workspace");
@@ -446,12 +574,22 @@ workspaceRoutes.get(
 );
 
 // Update workspace
-workspaceRoutes.put(
-  "/:id",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}",
+    tags: ["Workspaces"],
+    summary: "Update a workspace",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: UpdateWorkspaceBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -509,12 +647,22 @@ workspaceRoutes.put(
 // the list of super-admin-curated models the workspace has explicitly opted
 // out of. An empty blocklist means every curated model is available, so
 // models the platform adds later automatically appear in the chat dropdown.
-workspaceRoutes.put(
-  "/:id/settings/models",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/settings/models",
+    tags: ["Workspaces"],
+    summary: "Update the workspace model blocklist",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: JsonBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -571,11 +719,18 @@ workspaceRoutes.put(
 );
 
 // Get the workspace's AI model blocklist.
-workspaceRoutes.get(
-  "/:id/settings/models",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/settings/models",
+    tags: ["Workspaces"],
+    summary: "Get the workspace model blocklist",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const disabledModelIds = workspace.settings?.disabledModelIds ?? [];
@@ -591,12 +746,22 @@ workspaceRoutes.get(
 );
 
 // Delete workspace
-workspaceRoutes.delete(
-  "/:id",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}",
+    tags: ["Workspaces"],
+    summary: "Delete a workspace",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner"]),
+    ] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -628,10 +793,18 @@ workspaceRoutes.delete(
 );
 
 // Switch active workspace
-workspaceRoutes.post(
-  "/:id/switch",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/switch",
+    tags: ["Workspaces"],
+    summary: "Switch the active workspace",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       const authenticatedWorkspace = c.get("workspace");
@@ -678,11 +851,18 @@ workspaceRoutes.post(
 );
 
 // Get workspace members
-workspaceRoutes.get(
-  "/:id/members",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/members",
+    tags: ["Workspaces"],
+    summary: "List workspace members",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -712,12 +892,22 @@ workspaceRoutes.get(
 );
 
 // Add member to workspace
-workspaceRoutes.post(
-  "/:id/members",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/members",
+    tags: ["Workspaces"],
+    summary: "Add a workspace member",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: AddMemberBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -773,12 +963,22 @@ workspaceRoutes.post(
 );
 
 // Update member role
-workspaceRoutes.put(
-  "/:id/members/:userId",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/members/{userId}",
+    tags: ["Workspaces"],
+    summary: "Update a member's role",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdUserParam, body: UpdateMemberRoleBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -843,12 +1043,22 @@ workspaceRoutes.put(
 );
 
 // Remove member from workspace
-workspaceRoutes.delete(
-  "/:id/members/:userId",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/members/{userId}",
+    tags: ["Workspaces"],
+    summary: "Remove a workspace member",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdUserParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -892,12 +1102,22 @@ workspaceRoutes.delete(
 );
 
 // Create workspace invite
-workspaceRoutes.post(
-  "/:id/invites",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/invites",
+    tags: ["Workspaces"],
+    summary: "Create a workspace invite",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: CreateInviteBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       const workspace = c.get("workspace");
@@ -962,12 +1182,22 @@ workspaceRoutes.post(
 );
 
 // Get pending invites
-workspaceRoutes.get(
-  "/:id/invites",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/invites",
+    tags: ["Workspaces"],
+    summary: "List pending workspace invites",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -1003,12 +1233,22 @@ workspaceRoutes.get(
 );
 
 // Cancel invite
-workspaceRoutes.delete(
-  "/:id/invites/:inviteId",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/invites/{inviteId}",
+    tags: ["Workspaces"],
+    summary: "Cancel a workspace invite",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdInviteParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -1045,12 +1285,22 @@ workspaceRoutes.delete(
 // API Key Management Routes
 
 // GET /api/workspaces/:id/api-keys - List API keys
-workspaceRoutes.get(
-  "/:id/api-keys",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/api-keys",
+    tags: ["Workspaces"],
+    summary: "List workspace API keys",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");
@@ -1089,12 +1339,22 @@ workspaceRoutes.get(
 );
 
 // POST /api/workspaces/:id/api-keys - Create new API key
-workspaceRoutes.post(
-  "/:id/api-keys",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/api-keys",
+    tags: ["Workspaces"],
+    summary: "Create a workspace API key",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdParam, body: JsonBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const user = c.get("user");
@@ -1170,12 +1430,22 @@ workspaceRoutes.post(
 );
 
 // DELETE /api/workspaces/:id/api-keys/:keyId - Delete API key
-workspaceRoutes.delete(
-  "/:id/api-keys/:keyId",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/api-keys/{keyId}",
+    tags: ["Workspaces"],
+    summary: "Delete a workspace API key",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: { params: IdKeyParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const workspaceId = c.req.param("id");

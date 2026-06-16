@@ -1,4 +1,5 @@
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { Types } from "mongoose";
 import {
   Flow,
@@ -15,13 +16,25 @@ import {
 } from "../sync-cdc/entity-selection";
 import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import type { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { enrichContextWithWorkspace, loggers } from "../logging";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  type AuthEnv,
+} from "../openapi/core";
 
 const logger = loggers.inngest("webhook");
 
-const router = new Hono();
+const router = createRouter();
+
+const WebhookParam = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+  flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
+});
 
 function isCdcFlow(
   flow: { syncEngine?: string; tableDestination?: { connectionId?: unknown } },
@@ -35,7 +48,7 @@ function isCdcFlow(
 }
 
 async function requireWebhookTestAccess(
-  c: AuthenticatedContext,
+  c: Context<AuthEnv>,
   workspaceId: string,
 ) {
   const authenticatedWorkspace = c.get("workspace");
@@ -74,236 +87,263 @@ async function requireWebhookTestAccess(
  * Non-CDC (legacy SQL) flows: saves WebhookEvent and enqueues via Inngest
  * for immediate processing (unchanged).
  */
-router.post("/webhooks/:workspaceId/:flowId", async c => {
-  const { workspaceId, flowId } = c.req.param();
+router.openapi(
+  createRoute({
+    method: "post",
+    path: "/webhooks/{workspaceId}/{flowId}",
+    tags: ["Webhooks"],
+    summary: "Receive an inbound connector webhook",
+    description:
+      "Inbound webhook receiver for connector flows. Public — authenticated via the connector's signature, not session/API key.",
+    security: [],
+    request: { params: WebhookParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { workspaceId, flowId } = c.req.param();
 
-  logger.debug("Webhook received", { workspaceId, flowId });
+    logger.debug("Webhook received", { workspaceId, flowId });
 
-  const rawBodyBuffer = Buffer.from(await c.req.arrayBuffer());
-  const rawBodyText = rawBodyBuffer.toString("utf8");
-  const headers = c.req.header();
+    const rawBodyBuffer = Buffer.from(await c.req.arrayBuffer());
+    const rawBodyText = rawBodyBuffer.toString("utf8");
+    const headers = c.req.header();
 
-  try {
-    const flow = await Flow.findOne({
-      _id: flowId,
-      workspaceId: workspaceId,
-      type: "webhook",
-    });
-
-    if (!flow) {
-      logger.warn("Webhook received for invalid flow", { flowId });
-      return c.json({ error: "Invalid webhook endpoint" }, 404);
-    }
-
-    if (!flow.webhookConfig?.enabled) {
-      logger.warn("Webhook received for disabled flow", { flowId });
-      return c.json({ error: "Webhook endpoint disabled" }, 403);
-    }
-
-    const dataSource = await DataSource.findById(flow.dataSourceId);
-    if (!dataSource) {
-      return c.json({ error: "Data source not found" }, 404);
-    }
-
-    const connector = connectorRegistry.getConnector(dataSource);
-    if (!connector) {
-      return c.json(
-        { error: `Connector not found for type: ${dataSource.type}` },
-        500,
-      );
-    }
-
-    let event: any;
-
-    if (connector.supportsWebhooks()) {
-      const verificationResult = await connector.verifyWebhook({
-        payload: rawBodyText,
-        headers: headers,
-        secret: flow.webhookConfig.secret,
+    try {
+      const flow = await Flow.findOne({
+        _id: flowId,
+        workspaceId: workspaceId,
+        type: "webhook",
       });
 
-      if (!verificationResult.valid) {
-        logger.error("Webhook signature verification failed", {
-          error: verificationResult.error,
-        });
+      if (!flow) {
+        logger.warn("Webhook received for invalid flow", { flowId });
+        return c.json({ error: "Invalid webhook endpoint" }, 404);
+      }
+
+      if (!flow.webhookConfig?.enabled) {
+        logger.warn("Webhook received for disabled flow", { flowId });
+        return c.json({ error: "Webhook endpoint disabled" }, 403);
+      }
+
+      const dataSource = await DataSource.findById(flow.dataSourceId);
+      if (!dataSource) {
+        return c.json({ error: "Data source not found" }, 404);
+      }
+
+      const connector = connectorRegistry.getConnector(dataSource);
+      if (!connector) {
         return c.json(
-          { error: verificationResult.error || "Invalid signature" },
-          400,
+          { error: `Connector not found for type: ${dataSource.type}` },
+          500,
         );
       }
 
-      event = verificationResult.event;
-    } else {
-      try {
-        event = JSON.parse(rawBodyText);
-      } catch (e) {
-        logger.error("Invalid JSON payload", { error: e });
-        return c.json({ error: "Invalid JSON payload" }, 400);
-      }
-    }
+      let event: any;
 
-    const webhookEvent = new WebhookEvent({
-      flowId,
-      workspaceId,
-      eventId: event.id || uuidv4(),
-      eventType:
-        event.type ||
-        event.event_type ||
-        event.action ||
-        (event.event?.object_type && event.event?.action
-          ? `${event.event.object_type}.${event.event.action}`
-          : "unknown"),
-      receivedAt: new Date(),
-      status: "pending",
-      attempts: 0,
-      rawPayload: event,
-      signature: JSON.stringify(headers),
-    });
+      if (connector.supportsWebhooks()) {
+        const verificationResult = await connector.verifyWebhook({
+          payload: rawBodyText,
+          headers: headers,
+          secret: flow.webhookConfig.secret,
+        });
 
-    await webhookEvent.save();
-
-    await Flow.updateOne(
-      { _id: flowId },
-      {
-        $set: { "webhookConfig.lastReceivedAt": new Date() },
-        $inc: { "webhookConfig.totalReceived": 1 },
-      },
-    );
-
-    // CDC flows: save and return. The 2-min cron handles ingest + materialization.
-    const destConn = flow.destinationDatabaseId
-      ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-          .select("type")
-          .lean()
-      : null;
-
-    if (isCdcFlow(flow, destConn?.type)) {
-      logger.info("Webhook saved for CDC cron ingest", {
-        eventId: webhookEvent.eventId,
-        flowId,
-      });
-      return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
-    }
-
-    // Non-CDC flows: early entity filter + enqueue via Inngest (existing path).
-    // A single webhook can fan out into multiple entities (e.g. Calendly
-    // invitee.created -> invitees + scheduled_events), so only drop when NONE
-    // of the emitted entities are enabled for this flow.
-    const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
-    if (mapping) {
-      const { entities: configuredEntities } = resolveConfiguredEntities(flow);
-      const emittedEntities = (
-        connector.extractWebhookCdcRecords(event, webhookEvent.eventType) ?? []
-      ).map(record => {
-        const payload = (record.payload || {}) as Record<string, unknown>;
-        if (record.entity === "activities" && payload._type) {
-          return `activities:${payload._type}`;
+        if (!verificationResult.valid) {
+          logger.error("Webhook signature verification failed", {
+            error: verificationResult.error,
+          });
+          return c.json(
+            { error: verificationResult.error || "Invalid signature" },
+            400,
+          );
         }
-        return record.entity;
-      });
-      // Fall back to the mapped entity for connectors that don't emit CDC records.
-      if (emittedEntities.length === 0) {
-        emittedEntities.push(mapping.entity);
+
+        event = verificationResult.event;
+      } else {
+        try {
+          event = JSON.parse(rawBodyText);
+        } catch (e) {
+          logger.error("Invalid JSON payload", { error: e });
+          return c.json({ error: "Invalid JSON payload" }, 400);
+        }
       }
 
-      const anyEnabled = emittedEntities.some(entity => {
-        const baseEntity = entity.split(":")[0];
-        const hasSubTypes = configuredEntities.some(e =>
-          e.startsWith(baseEntity + ":"),
-        );
-        return hasSubTypes || isEntityEnabledForFlow(flow, entity, baseEntity);
+      const webhookEvent = new WebhookEvent({
+        flowId,
+        workspaceId,
+        eventId: event.id || uuidv4(),
+        eventType:
+          event.type ||
+          event.event_type ||
+          event.action ||
+          (event.event?.object_type && event.event?.action
+            ? `${event.event.object_type}.${event.event.action}`
+            : "unknown"),
+        receivedAt: new Date(),
+        status: "pending",
+        attempts: 0,
+        rawPayload: event,
+        signature: JSON.stringify(headers),
       });
 
-      if (!anyEnabled) {
+      await webhookEvent.save();
+
+      await Flow.updateOne(
+        { _id: flowId },
+        {
+          $set: { "webhookConfig.lastReceivedAt": new Date() },
+          $inc: { "webhookConfig.totalReceived": 1 },
+        },
+      );
+
+      // CDC flows: save and return. The 2-min cron handles ingest + materialization.
+      const destConn = flow.destinationDatabaseId
+        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
+            .select("type")
+            .lean()
+        : null;
+
+      if (isCdcFlow(flow, destConn?.type)) {
+        logger.info("Webhook saved for CDC cron ingest", {
+          eventId: webhookEvent.eventId,
+          flowId,
+        });
+        return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
+      }
+
+      // Non-CDC flows: early entity filter + enqueue via Inngest (existing path).
+      // A single webhook can fan out into multiple entities (e.g. Calendly
+      // invitee.created -> invitees + scheduled_events), so only drop when NONE
+      // of the emitted entities are enabled for this flow.
+      const mapping = connector.getWebhookEventMapping(webhookEvent.eventType);
+      if (mapping) {
+        const { entities: configuredEntities } =
+          resolveConfiguredEntities(flow);
+        const emittedEntities = (
+          connector.extractWebhookCdcRecords(event, webhookEvent.eventType) ?? []
+        ).map(record => {
+          const payload = (record.payload || {}) as Record<string, unknown>;
+          if (record.entity === "activities" && payload._type) {
+            return `activities:${payload._type}`;
+          }
+          return record.entity;
+        });
+        // Fall back to the mapped entity for connectors that don't emit CDC records.
+        if (emittedEntities.length === 0) {
+          emittedEntities.push(mapping.entity);
+        }
+
+        const anyEnabled = emittedEntities.some(entity => {
+          const baseEntity = entity.split(":")[0];
+          const hasSubTypes = configuredEntities.some(e =>
+            e.startsWith(baseEntity + ":"),
+          );
+          return (
+            hasSubTypes || isEntityEnabledForFlow(flow, entity, baseEntity)
+          );
+        });
+
+        if (!anyEnabled) {
+          await WebhookEvent.updateOne(
+            { _id: webhookEvent._id },
+            {
+              $set: {
+                status: "completed",
+                applyStatus: "dropped",
+                entity: emittedEntities[0],
+                applyError: {
+                  code: "ENTITY_DISABLED",
+                  message: `No enabled entity (${emittedEntities.join(", ")}) for this event in flow configuration`,
+                },
+                processedAt: new Date(),
+                processingDurationMs:
+                  Date.now() - webhookEvent.receivedAt.getTime(),
+              },
+              $unset: { appliedAt: "" },
+            },
+          );
+          return c.json(
+            { received: true, eventId: webhookEvent.eventId, dropped: true },
+            200,
+          );
+        }
+      }
+
+      try {
+        await enqueueWebhookProcess({
+          flowId,
+          workspaceId,
+          eventId: webhookEvent.eventId,
+          flow: {
+            syncEngine: flow.syncEngine,
+            destinationDatabaseId: flow.destinationDatabaseId,
+            tableDestination: flow.tableDestination,
+          },
+          destinationTypeHint: destConn?.type,
+        });
+      } catch (enqueueError) {
         await WebhookEvent.updateOne(
           { _id: webhookEvent._id },
           {
             $set: {
-              status: "completed",
-              applyStatus: "dropped",
-              entity: emittedEntities[0],
-              applyError: {
-                code: "ENTITY_DISABLED",
-                message: `No enabled entity (${emittedEntities.join(", ")}) for this event in flow configuration`,
-              },
+              status: "failed",
+              applyStatus: "failed",
               processedAt: new Date(),
-              processingDurationMs:
-                Date.now() - webhookEvent.receivedAt.getTime(),
+              applyError: {
+                code: "ENQUEUE_FAILED",
+                message:
+                  enqueueError instanceof Error
+                    ? enqueueError.message
+                    : String(enqueueError),
+              },
+              error: {
+                message:
+                  enqueueError instanceof Error
+                    ? enqueueError.message
+                    : String(enqueueError),
+              },
             },
-            $unset: { appliedAt: "" },
           },
         );
-        return c.json(
-          { received: true, eventId: webhookEvent.eventId, dropped: true },
-          200,
-        );
+
+        logger.error("Failed to enqueue webhook event for processing", {
+          flowId,
+          eventId: webhookEvent.eventId,
+          error:
+            enqueueError instanceof Error
+              ? enqueueError.message
+              : String(enqueueError),
+        });
+
+        return c.json({ received: false, eventId: webhookEvent.eventId }, 200);
       }
-    }
 
-    try {
-      await enqueueWebhookProcess({
-        flowId,
-        workspaceId,
-        eventId: webhookEvent.eventId,
-        flow: {
-          syncEngine: flow.syncEngine,
-          destinationDatabaseId: flow.destinationDatabaseId,
-          tableDestination: flow.tableDestination,
-        },
-        destinationTypeHint: destConn?.type,
-      });
-    } catch (enqueueError) {
-      await WebhookEvent.updateOne(
-        { _id: webhookEvent._id },
-        {
-          $set: {
-            status: "failed",
-            applyStatus: "failed",
-            processedAt: new Date(),
-            applyError: {
-              code: "ENQUEUE_FAILED",
-              message:
-                enqueueError instanceof Error
-                  ? enqueueError.message
-                  : String(enqueueError),
-            },
-            error: {
-              message:
-                enqueueError instanceof Error
-                  ? enqueueError.message
-                  : String(enqueueError),
-            },
-          },
-        },
+      return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
+    } catch (error) {
+      logger.error("Webhook handler error", { error });
+      return c.json(
+        { received: false, error: "Internal processing error" },
+        200,
       );
-
-      logger.error("Failed to enqueue webhook event for processing", {
-        flowId,
-        eventId: webhookEvent.eventId,
-        error:
-          enqueueError instanceof Error
-            ? enqueueError.message
-            : String(enqueueError),
-      });
-
-      return c.json({ received: false, eventId: webhookEvent.eventId }, 200);
     }
-
-    return c.json({ received: true, eventId: webhookEvent.eventId }, 200);
-  } catch (error) {
-    logger.error("Webhook handler error", { error });
-    return c.json({ received: false, error: "Internal processing error" }, 200);
-  }
-});
+  },
+);
 
 /**
  * Test webhook endpoint
  * Sends a test event to verify webhook configuration
  */
-router.post(
-  "/webhooks/:workspaceId/:flowId/test",
-  unifiedAuthMiddleware,
-  async (c: AuthenticatedContext) => {
+router.openapi(
+  createRoute({
+    method: "post",
+    path: "/webhooks/{workspaceId}/{flowId}/test",
+    tags: ["Webhooks"],
+    summary: "Send a test webhook event",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware] as const,
+    request: { params: WebhookParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const { workspaceId, flowId } = c.req.param();
 
     try {

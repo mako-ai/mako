@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 
 export interface ConnectorType {
   type: string;
@@ -59,18 +59,20 @@ export const useConnectorCatalogStore = create<CatalogState>()(
           state.error = null;
         });
         try {
-          const data =
-            await apiClient.get<CatalogResponse<ConnectorType[]>>(
-              "/connectors/types",
-            );
-          if (data.success) {
+          // Spec-typed call: path, and the `{ success, data }` response shape
+          // (including each connector's fields) are checked against the
+          // backend OpenAPI document at compile time.
+          const { data, error } = await api.GET("/api/connectors/types");
+          if (!error && data?.success) {
             set(state => {
               state.types = data.data;
               state.loading = false;
             });
           } else {
             set(state => {
-              state.error = data.error || "Failed to load connector types";
+              state.error =
+                (error as { error?: string } | undefined)?.error ||
+                "Failed to load connector types";
               state.loading = false;
             });
           }
@@ -93,9 +95,11 @@ export const useConnectorCatalogStore = create<CatalogState>()(
         });
 
         try {
-          const json = await apiClient.get<
-            CatalogResponse<ConnectorSchemaResponse>
-          >(`/connectors/${type}/schema`);
+          const json = unwrapBody(
+            await api.GET("/api/connectors/{type}/schema", {
+              params: { path: { type } },
+            }),
+          ) as CatalogResponse<ConnectorSchemaResponse>;
           if (json.success) {
             set(state => {
               state.schemas[type] = json.data;

@@ -5,12 +5,13 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import { RunNotificationTemplate } from "../emails/RunNotificationEmail";
 import type { NotificationOutboundPayload } from "../services/flow-run-notification.types";
 import { renderEmail } from "../emails/render";
+import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 
-const devEmailPreviewRoutes = new Hono();
+const devEmailPreviewRoutes = createRouter();
 
 /**
  * Resolve the local PNG that the prod email URL points at, so the browser
@@ -57,12 +58,33 @@ function sampleRunNotificationPayload(
   };
 }
 
-devEmailPreviewRoutes.get("/run-notification", async c => {
-  const raw = c.req.query("trigger") ?? "success";
-  const trigger = raw === "failure" ? "failure" : "success";
-  const payload = sampleRunNotificationPayload(trigger);
-  const { html } = await renderEmail(RunNotificationTemplate, payload);
-  return c.html(inlineLogoForPreview(html));
-});
+devEmailPreviewRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/run-notification",
+    tags: ["Development"],
+    summary: "Preview the run-notification email (dev only)",
+    security: [],
+    request: {
+      query: z.object({
+        trigger: z.enum(["success", "failure"]).optional(),
+      }),
+    },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: {
+        description: "Rendered email HTML.",
+        content: { "text/html": { schema: z.string() } },
+      },
+    },
+  }),
+  async c => {
+    const raw = c.req.query("trigger") ?? "success";
+    const trigger = raw === "failure" ? "failure" : "success";
+    const payload = sampleRunNotificationPayload(trigger);
+    const { html } = await renderEmail(RunNotificationTemplate, payload);
+    return c.html(inlineLogoForPreview(html));
+  },
+);
 
 export { devEmailPreviewRoutes };

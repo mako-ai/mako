@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import type {
   ApiKey,
   ApiKeyCreateResponse,
@@ -47,9 +47,11 @@ export const useApiKeyStore = create<ApiKeyStore>()(
       });
 
       try {
-        const response = await apiClient.get<ApiKeyListResponse>(
-          `/workspaces/${workspaceId}/api-keys`,
-        );
+        const response = unwrapBody(
+          await api.GET("/api/workspaces/{id}/api-keys", {
+            params: { path: { id: workspaceId } },
+          }),
+        ) as ApiKeyListResponse;
         const apiKeys = response.apiKeys || [];
         set(state => {
           state.keys[workspaceId] = apiKeys;
@@ -77,10 +79,12 @@ export const useApiKeyStore = create<ApiKeyStore>()(
       });
 
       try {
-        const response = await apiClient.post<ApiKeyCreateResponse>(
-          `/workspaces/${workspaceId}/api-keys`,
-          { name },
-        );
+        const response = unwrapBody(
+          await api.POST("/api/workspaces/{id}/api-keys", {
+            params: { path: { id: workspaceId } },
+            body: { name },
+          }),
+        ) as ApiKeyCreateResponse;
 
         if (response.success && response.apiKey) {
           const newKey = response.apiKey;
@@ -113,9 +117,11 @@ export const useApiKeyStore = create<ApiKeyStore>()(
       });
 
       try {
-        const response = await apiClient.delete<ApiKeyDeleteResponse>(
-          `/workspaces/${workspaceId}/api-keys/${keyId}`,
-        );
+        const response = unwrapBody(
+          await api.DELETE("/api/workspaces/{id}/api-keys/{keyId}", {
+            params: { path: { id: workspaceId, keyId } },
+          }),
+        ) as ApiKeyDeleteResponse;
 
         if (response.success) {
           set(state => {

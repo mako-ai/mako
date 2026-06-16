@@ -11,7 +11,7 @@
  *   DELETE /:id/collaborators/:userId    — remove (owner/admin)
  */
 
-import type { Hono } from "hono";
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import type { Document } from "mongoose";
 import { loggers } from "../../logging";
 import { workspaceService } from "../../services/workspace.service";
@@ -26,8 +26,46 @@ import {
   getResourceOwnerId,
   type ShareableResourceLike,
 } from "../../utils/resource-acl";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  pathParam,
+  type AuthEnv,
+} from "../../openapi/core";
 
 const logger = loggers.api("collaborators");
+
+const ShareRole = z.enum(["viewer", "editor"]);
+const IdParam = z.object({
+  workspaceId: pathParam("workspaceId"),
+  id: pathParam("id"),
+});
+const IdUserParam = IdParam.extend({ userId: pathParam("userId") });
+const SharingBody = {
+  required: false,
+  content: {
+    "application/json": {
+      schema: z.object({
+        access: z.enum(["private", "workspace"]).optional(),
+        workspaceRole: ShareRole.optional(),
+      }),
+    },
+  },
+};
+const AddCollaboratorBody = {
+  required: false,
+  content: {
+    "application/json": {
+      schema: z.object({ userId: z.string(), role: ShareRole.optional() }),
+    },
+  },
+};
+const UpdateCollaboratorBody = {
+  required: false,
+  content: {
+    "application/json": { schema: z.object({ role: ShareRole.optional() }) },
+  },
+};
 
 export type ShareableDocument = Document &
   Omit<ShareableResourceLike, "sharedWith"> & {
@@ -58,277 +96,339 @@ function parseRole(value: unknown): ResourceShareRole {
  * consoles and apps.
  */
 export function registerSharingSettingsRoutes(
-  app: Hono,
+  app: OpenAPIHono<AuthEnv>,
   options: CollaboratorRouteOptions,
 ): void {
   const { resourceName, load } = options;
+  const tag = `${resourceName}s`;
 
-  app.patch("/:id/sharing", async (c: AuthenticatedContext) => {
-    try {
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-      const doc = await load(c);
-      if (!doc) {
-        return c.json(
-          { success: false, error: `${resourceName} not found` },
-          404,
-        );
-      }
-      const memberRole = c.get("memberRole");
-      if (!canManageSharing(doc, userId, memberRole)) {
-        return c.json(
-          {
-            success: false,
-            error: "Only the owner or an admin can change sharing settings",
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/{id}/sharing",
+      tags: [tag],
+      summary: `Update ${resourceName} general access`,
+      security: AUTH_SECURITY,
+      request: { params: IdParam, body: SharingBody },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const userId = c.get("user")?.id;
+        if (!userId) {
+          return c.json({ success: false, error: "Unauthorized" }, 401);
+        }
+        const doc = await load(c as AuthenticatedContext);
+        if (!doc) {
+          return c.json(
+            { success: false, error: `${resourceName} not found` },
+            404,
+          );
+        }
+        const memberRole = c.get("memberRole");
+        if (!canManageSharing(doc, userId, memberRole)) {
+          return c.json(
+            {
+              success: false,
+              error: "Only the owner or an admin can change sharing settings",
+            },
+            403,
+          );
+        }
+
+        const body = await c.req.json().catch(() => ({}));
+        const access = body?.access;
+        const workspaceRole = body?.workspaceRole;
+
+        if (access === "private" || access === "workspace") {
+          (doc as any).access = access;
+          // Consoles keep a deprecated isPrivate mirror; harmless elsewhere
+          // (mongoose strict mode drops unknown paths).
+          (doc as any).isPrivate = access === "private";
+        }
+        if (workspaceRole === "viewer" || workspaceRole === "editor") {
+          (doc as any).workspaceRole = workspaceRole;
+        }
+        await doc.save();
+
+        return c.json({
+          success: true,
+          data: {
+            access: (doc as any).access,
+            workspaceRole: (doc as any).workspaceRole ?? "viewer",
           },
-          403,
+        });
+      } catch (error) {
+        logger.error(`Error updating ${resourceName} sharing settings`, {
+          error,
+        });
+        return c.json(
+          { success: false, error: "Failed to update sharing settings" },
+          500,
         );
       }
-
-      const body = await c.req.json().catch(() => ({}));
-      const access = body?.access;
-      const workspaceRole = body?.workspaceRole;
-
-      if (access === "private" || access === "workspace") {
-        (doc as any).access = access;
-        // Consoles keep a deprecated isPrivate mirror; harmless elsewhere
-        // (mongoose strict mode drops unknown paths).
-        (doc as any).isPrivate = access === "private";
-      }
-      if (workspaceRole === "viewer" || workspaceRole === "editor") {
-        (doc as any).workspaceRole = workspaceRole;
-      }
-      await doc.save();
-
-      return c.json({
-        success: true,
-        data: {
-          access: (doc as any).access,
-          workspaceRole: (doc as any).workspaceRole ?? "viewer",
-        },
-      });
-    } catch (error) {
-      logger.error(`Error updating ${resourceName} sharing settings`, {
-        error,
-      });
-      return c.json(
-        { success: false, error: "Failed to update sharing settings" },
-        500,
-      );
-    }
-  });
+    },
+  );
 }
 
 export function registerCollaboratorRoutes(
-  app: Hono,
+  app: OpenAPIHono<AuthEnv>,
   options: CollaboratorRouteOptions,
 ): void {
   const { resourceName, load } = options;
+  const tag = `${resourceName}s`;
 
-  app.get("/:id/collaborators", async (c: AuthenticatedContext) => {
-    try {
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-      const doc = await load(c);
-      if (!doc) {
+  app.openapi(
+    createRoute({
+      method: "get",
+      path: "/{id}/collaborators",
+      tags: [tag],
+      summary: `List ${resourceName} collaborators`,
+      security: AUTH_SECURITY,
+      request: { params: IdParam },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const userId = c.get("user")?.id;
+        if (!userId) {
+          return c.json({ success: false, error: "Unauthorized" }, 401);
+        }
+        const doc = await load(c as AuthenticatedContext);
+        if (!doc) {
+          return c.json(
+            { success: false, error: `${resourceName} not found` },
+            404,
+          );
+        }
+        const memberRole = c.get("memberRole");
+        if (!canReadResource(doc, userId, memberRole)) {
+          return c.json({ success: false, error: "Access denied" }, 403);
+        }
+
+        const workspaceId = c.req.param("workspaceId") as string;
+        const members = await workspaceService.getMembers(workspaceId);
+        const emailByUserId = new Map<string, string>(
+          members.map((m: any) => [
+            (m.userId?._id || m.userId)?.toString(),
+            m.userId?.email || "",
+          ]),
+        );
+
+        const collaborators = (doc.sharedWith || []).map(s => ({
+          userId: s.userId,
+          role: s.role,
+          email: emailByUserId.get(s.userId) || "",
+          addedAt: s.addedAt,
+        }));
+
+        return c.json({ success: true, data: collaborators });
+      } catch (error) {
+        logger.error(`Error listing ${resourceName} collaborators`, { error });
         return c.json(
-          { success: false, error: `${resourceName} not found` },
-          404,
+          { success: false, error: "Failed to list collaborators" },
+          500,
         );
       }
-      const memberRole = c.get("memberRole");
-      if (!canReadResource(doc, userId, memberRole)) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
+    },
+  );
 
-      const workspaceId = c.req.param("workspaceId");
-      const members = await workspaceService.getMembers(workspaceId);
-      const emailByUserId = new Map<string, string>(
-        members.map((m: any) => [
-          (m.userId?._id || m.userId)?.toString(),
-          m.userId?.email || "",
-        ]),
-      );
+  app.openapi(
+    createRoute({
+      method: "post",
+      path: "/{id}/collaborators",
+      tags: [tag],
+      summary: `Add a ${resourceName} collaborator`,
+      security: AUTH_SECURITY,
+      request: { params: IdParam, body: AddCollaboratorBody },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const userId = c.get("user")?.id;
+        if (!userId) {
+          return c.json({ success: false, error: "Unauthorized" }, 401);
+        }
+        const doc = await load(c as AuthenticatedContext);
+        if (!doc) {
+          return c.json(
+            { success: false, error: `${resourceName} not found` },
+            404,
+          );
+        }
+        const memberRole = c.get("memberRole");
+        if (!canManageSharing(doc, userId, memberRole)) {
+          return c.json(
+            { success: false, error: "Only the owner or an admin can share" },
+            403,
+          );
+        }
 
-      const collaborators = (doc.sharedWith || []).map(s => ({
-        userId: s.userId,
-        role: s.role,
-        email: emailByUserId.get(s.userId) || "",
-        addedAt: s.addedAt,
-      }));
+        const body = await c.req.json().catch(() => ({}));
+        const targetUserId = String(body?.userId || "").trim();
+        const role = parseRole(body?.role);
+        if (!targetUserId) {
+          return c.json({ success: false, error: "userId is required" }, 400);
+        }
 
-      return c.json({ success: true, data: collaborators });
-    } catch (error) {
-      logger.error(`Error listing ${resourceName} collaborators`, { error });
-      return c.json(
-        { success: false, error: "Failed to list collaborators" },
-        500,
-      );
-    }
-  });
+        if (getResourceOwnerId(doc) === targetUserId) {
+          return c.json(
+            { success: false, error: "Owner already has full access" },
+            400,
+          );
+        }
 
-  app.post("/:id/collaborators", async (c: AuthenticatedContext) => {
-    try {
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-      const doc = await load(c);
-      if (!doc) {
+        const workspaceId = c.req.param("workspaceId") as string;
+        const members = await workspaceService.getMembers(workspaceId);
+        const isMember = members.some(
+          (m: any) => (m.userId?._id || m.userId)?.toString() === targetUserId,
+        );
+        if (!isMember) {
+          return c.json(
+            { success: false, error: "User is not a member of this workspace" },
+            400,
+          );
+        }
+
+        const existing = (doc.sharedWith || []).find(
+          s => s.userId === targetUserId,
+        );
+        if (existing) {
+          if (existing.role !== role) {
+            existing.role = role;
+            doc.markModified("sharedWith");
+            await doc.save();
+          }
+        } else {
+          doc.sharedWith = [
+            ...(doc.sharedWith || []),
+            {
+              userId: targetUserId,
+              role,
+              addedAt: new Date(),
+              addedBy: userId,
+            },
+          ];
+          await doc.save();
+        }
+
+        return c.json({ success: true, data: doc.sharedWith });
+      } catch (error) {
+        logger.error(`Error adding ${resourceName} collaborator`, { error });
         return c.json(
-          { success: false, error: `${resourceName} not found` },
-          404,
+          { success: false, error: "Failed to add collaborator" },
+          500,
         );
       }
-      const memberRole = c.get("memberRole");
-      if (!canManageSharing(doc, userId, memberRole)) {
-        return c.json(
-          { success: false, error: "Only the owner or an admin can share" },
-          403,
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "patch",
+      path: "/{id}/collaborators/{userId}",
+      tags: [tag],
+      summary: `Update a ${resourceName} collaborator's role`,
+      security: AUTH_SECURITY,
+      request: { params: IdUserParam, body: UpdateCollaboratorBody },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const userId = c.get("user")?.id;
+        if (!userId) {
+          return c.json({ success: false, error: "Unauthorized" }, 401);
+        }
+        const doc = await load(c as AuthenticatedContext);
+        if (!doc) {
+          return c.json(
+            { success: false, error: `${resourceName} not found` },
+            404,
+          );
+        }
+        const memberRole = c.get("memberRole");
+        if (!canManageSharing(doc, userId, memberRole)) {
+          return c.json(
+            { success: false, error: "Only the owner or an admin can share" },
+            403,
+          );
+        }
+
+        const targetUserId = c.req.param("userId");
+        const body = await c.req.json().catch(() => ({}));
+        const role = parseRole(body?.role);
+
+        const entry = (doc.sharedWith || []).find(
+          s => s.userId === targetUserId,
         );
-      }
-
-      const body = await c.req.json().catch(() => ({}));
-      const targetUserId = String(body?.userId || "").trim();
-      const role = parseRole(body?.role);
-      if (!targetUserId) {
-        return c.json({ success: false, error: "userId is required" }, 400);
-      }
-
-      if (getResourceOwnerId(doc) === targetUserId) {
-        return c.json(
-          { success: false, error: "Owner already has full access" },
-          400,
-        );
-      }
-
-      const workspaceId = c.req.param("workspaceId");
-      const members = await workspaceService.getMembers(workspaceId);
-      const isMember = members.some(
-        (m: any) => (m.userId?._id || m.userId)?.toString() === targetUserId,
-      );
-      if (!isMember) {
-        return c.json(
-          { success: false, error: "User is not a member of this workspace" },
-          400,
-        );
-      }
-
-      const existing = (doc.sharedWith || []).find(
-        s => s.userId === targetUserId,
-      );
-      if (existing) {
-        if (existing.role !== role) {
-          existing.role = role;
+        if (!entry) {
+          return c.json(
+            { success: false, error: "Collaborator not found" },
+            404,
+          );
+        }
+        if (entry.role !== role) {
+          entry.role = role;
           doc.markModified("sharedWith");
           await doc.save();
         }
-      } else {
-        doc.sharedWith = [
-          ...(doc.sharedWith || []),
-          {
-            userId: targetUserId,
-            role,
-            addedAt: new Date(),
-            addedBy: userId,
-          },
-        ];
+
+        return c.json({ success: true, data: doc.sharedWith });
+      } catch (error) {
+        logger.error(`Error updating ${resourceName} collaborator`, { error });
+        return c.json(
+          { success: false, error: "Failed to update collaborator" },
+          500,
+        );
+      }
+    },
+  );
+
+  app.openapi(
+    createRoute({
+      method: "delete",
+      path: "/{id}/collaborators/{userId}",
+      tags: [tag],
+      summary: `Remove a ${resourceName} collaborator`,
+      security: AUTH_SECURITY,
+      request: { params: IdUserParam },
+      responses: { ...OPEN_RESPONSES },
+    }),
+    async c => {
+      try {
+        const userId = c.get("user")?.id;
+        if (!userId) {
+          return c.json({ success: false, error: "Unauthorized" }, 401);
+        }
+        const doc = await load(c as AuthenticatedContext);
+        if (!doc) {
+          return c.json(
+            { success: false, error: `${resourceName} not found` },
+            404,
+          );
+        }
+        const memberRole = c.get("memberRole");
+        if (!canManageSharing(doc, userId, memberRole)) {
+          return c.json(
+            { success: false, error: "Only the owner or an admin can share" },
+            403,
+          );
+        }
+
+        const targetUserId = c.req.param("userId");
+        doc.sharedWith = (doc.sharedWith || []).filter(
+          s => s.userId !== targetUserId,
+        );
         await doc.save();
-      }
 
-      return c.json({ success: true, data: doc.sharedWith });
-    } catch (error) {
-      logger.error(`Error adding ${resourceName} collaborator`, { error });
-      return c.json(
-        { success: false, error: "Failed to add collaborator" },
-        500,
-      );
-    }
-  });
-
-  app.patch("/:id/collaborators/:userId", async (c: AuthenticatedContext) => {
-    try {
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-      const doc = await load(c);
-      if (!doc) {
+        return c.json({ success: true, data: doc.sharedWith });
+      } catch (error) {
+        logger.error(`Error removing ${resourceName} collaborator`, { error });
         return c.json(
-          { success: false, error: `${resourceName} not found` },
-          404,
+          { success: false, error: "Failed to remove collaborator" },
+          500,
         );
       }
-      const memberRole = c.get("memberRole");
-      if (!canManageSharing(doc, userId, memberRole)) {
-        return c.json(
-          { success: false, error: "Only the owner or an admin can share" },
-          403,
-        );
-      }
-
-      const targetUserId = c.req.param("userId");
-      const body = await c.req.json().catch(() => ({}));
-      const role = parseRole(body?.role);
-
-      const entry = (doc.sharedWith || []).find(s => s.userId === targetUserId);
-      if (!entry) {
-        return c.json({ success: false, error: "Collaborator not found" }, 404);
-      }
-      if (entry.role !== role) {
-        entry.role = role;
-        doc.markModified("sharedWith");
-        await doc.save();
-      }
-
-      return c.json({ success: true, data: doc.sharedWith });
-    } catch (error) {
-      logger.error(`Error updating ${resourceName} collaborator`, { error });
-      return c.json(
-        { success: false, error: "Failed to update collaborator" },
-        500,
-      );
-    }
-  });
-
-  app.delete("/:id/collaborators/:userId", async (c: AuthenticatedContext) => {
-    try {
-      const userId = c.get("user")?.id;
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-      const doc = await load(c);
-      if (!doc) {
-        return c.json(
-          { success: false, error: `${resourceName} not found` },
-          404,
-        );
-      }
-      const memberRole = c.get("memberRole");
-      if (!canManageSharing(doc, userId, memberRole)) {
-        return c.json(
-          { success: false, error: "Only the owner or an admin can share" },
-          403,
-        );
-      }
-
-      const targetUserId = c.req.param("userId");
-      doc.sharedWith = (doc.sharedWith || []).filter(
-        s => s.userId !== targetUserId,
-      );
-      await doc.save();
-
-      return c.json({ success: true, data: doc.sharedWith });
-    } catch (error) {
-      logger.error(`Error removing ${resourceName} collaborator`, { error });
-      return c.json(
-        { success: false, error: "Failed to remove collaborator" },
-        500,
-      );
-    }
-  });
+    },
+  );
 }

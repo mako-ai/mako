@@ -9,7 +9,7 @@
  * and authorize the definition.
  */
 
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import { Types } from "mongoose";
 import { Readable } from "node:stream";
 import { nanoid } from "nanoid";
@@ -40,10 +40,29 @@ import {
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("apps");
 
-const app = new Hono();
+const app = createRouter();
+
+const WorkspaceParam = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+});
+const AppIdParam = WorkspaceParam.extend({
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
+const BindingParam = AppIdParam.extend({
+  bindingId: z.string().openapi({ param: { name: "bindingId", in: "path" } }),
+});
+const AppBody = {
+  required: false,
+  content: {
+    "application/json": { schema: z.record(z.string(), z.any()) },
+  },
+};
 
 interface AppListItem {
   id: string;
@@ -149,7 +168,7 @@ function serializeApp(doc: IMakoApp) {
 app.use("*", unifiedAuthMiddleware);
 
 app.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
+  const workspaceId = c.req.param("workspaceId") as string;
   if (workspaceId) {
     if (!Types.ObjectId.isValid(workspaceId)) {
       return c.json(
@@ -242,266 +261,330 @@ async function validateDataBindings(
 }
 
 // GET / — list apps split into mine vs workspace-shared
-app.get("/", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const userId = c.get("user")?.id;
-    const memberRole = c.get("memberRole");
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/",
+    tags: ["Apps"],
+    summary: "List apps",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const userId = c.get("user")?.id;
+      const memberRole = c.get("memberRole");
 
-    const docs = await MakoApp.find({
-      workspaceId: new Types.ObjectId(workspaceId),
-      $or: [
-        { owner_id: userId },
-        { access: "workspace" },
-        { "sharedWith.userId": userId },
-      ],
-    })
-      .sort({ updatedAt: -1 })
-      .lean<IMakoApp[]>();
+      const docs = await MakoApp.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+        $or: [
+          { owner_id: userId },
+          { access: "workspace" },
+          { "sharedWith.userId": userId },
+        ],
+      })
+        .sort({ updatedAt: -1 })
+        .lean<IMakoApp[]>();
 
-    // Mirror dashboards: section is determined by access, not ownership.
-    // Workspace-shared apps live under "Workspace" for everyone (owner
-    // included) so sharing an app visibly moves it between sections.
-    const myApps: AppListItem[] = [];
-    const workspaceApps: AppListItem[] = [];
-    for (const doc of docs) {
-      const item = toListItem(doc, userId, memberRole);
-      if (doc.access === "workspace") workspaceApps.push(item);
-      else if (doc.owner_id === userId) myApps.push(item);
-      // Privately-shared collaborator apps: show under Workspace section.
-      else workspaceApps.push(item);
+      // Mirror dashboards: section is determined by access, not ownership.
+      // Workspace-shared apps live under "Workspace" for everyone (owner
+      // included) so sharing an app visibly moves it between sections.
+      const myApps: AppListItem[] = [];
+      const workspaceApps: AppListItem[] = [];
+      for (const doc of docs) {
+        const item = toListItem(doc, userId, memberRole);
+        if (doc.access === "workspace") workspaceApps.push(item);
+        else if (doc.owner_id === userId) myApps.push(item);
+        // Privately-shared collaborator apps: show under Workspace section.
+        else workspaceApps.push(item);
+      }
+
+      return c.json({ success: true, myApps, workspaceApps });
+    } catch (error) {
+      logger.error("Error listing apps", { error });
+      return c.json({ success: false, error: "Failed to list apps" }, 500);
     }
-
-    return c.json({ success: true, myApps, workspaceApps });
-  } catch (error) {
-    logger.error("Error listing apps", { error });
-    return c.json({ success: false, error: "Failed to list apps" }, 500);
-  }
-});
+  },
+);
 
 // POST / — create
-app.post("/", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const userId = c.get("user")?.id ?? "system";
-    const body = await c.req.json();
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/",
+    tags: ["Apps"],
+    summary: "Create an app",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam, body: AppBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const userId = c.get("user")?.id ?? "system";
+      const body = await c.req.json();
 
-    const parsed = AppDefinitionSchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json(
-        {
-          success: false,
-          error: parsed.error.issues[0]?.message ?? "Invalid app",
-        },
-        400,
-      );
-    }
-    const def = parsed.data;
-
-    const bindingCheck = await validateDataBindings(
-      workspaceId,
-      def.dataBindings,
-    );
-    if (!bindingCheck.ok) {
-      return c.json({ success: false, error: bindingCheck.error }, 400);
-    }
-
-    const created = await MakoApp.create({
-      workspaceId: new Types.ObjectId(workspaceId),
-      title: def.title,
-      description: def.description,
-      template: def.template,
-      runtime: def.runtime,
-      entrypoint: def.entrypoint,
-      files: normalizeAppFiles(def.files),
-      dependencies: def.dependencies,
-      dataBindings: def.dataBindings,
-      access: "private",
-      owner_id: userId,
-      createdBy: userId,
-      version: 1,
-    });
-
-    return c.json({ success: true, app: serializeApp(created) }, 201);
-  } catch (error) {
-    logger.error("Error creating app", { error });
-    return c.json({ success: false, error: "Failed to create app" }, 500);
-  }
-});
-
-// GET /:id — full app
-app.get("/:id", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const id = c.req.param("id");
-    const userId = c.get("user")?.id;
-
-    if (!Types.ObjectId.isValid(id)) {
-      return c.json({ success: false, error: "Invalid app ID" }, 400);
-    }
-
-    const doc = await MakoApp.findOne({
-      _id: new Types.ObjectId(id),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    const memberRole = c.get("memberRole");
-    if (!canRead(doc, userId, memberRole)) {
-      return c.json({ success: false, error: "Access denied" }, 403);
-    }
-
-    return c.json({
-      success: true,
-      app: serializeApp(doc),
-      readOnly: !canManage(doc, userId, memberRole),
-    });
-  } catch (error) {
-    logger.error("Error fetching app", { error });
-    return c.json({ success: false, error: "Failed to fetch app" }, 500);
-  }
-});
-
-// PUT /:id — update definition
-app.put("/:id", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const id = c.req.param("id");
-    const userId = c.get("user")?.id;
-
-    if (!Types.ObjectId.isValid(id)) {
-      return c.json({ success: false, error: "Invalid app ID" }, 400);
-    }
-
-    const doc = await MakoApp.findOne({
-      _id: new Types.ObjectId(id),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    const memberRole = c.get("memberRole");
-    if (!canManage(doc, userId, memberRole)) {
-      return c.json({ success: false, error: "Access denied" }, 403);
-    }
-
-    const body = (await c.req.json()) as Record<string, unknown>;
-
-    if (typeof body.title === "string" && body.title.trim()) {
-      doc.title = body.title.trim();
-    }
-    if (typeof body.description === "string") {
-      doc.description = body.description;
-    }
-    if (typeof body.template === "string") {
-      doc.template = body.template;
-    }
-    if (body.runtime === "cdn" || body.runtime === "webcontainer") {
-      doc.runtime = body.runtime;
-    }
-    if (typeof body.entrypoint === "string") {
-      doc.entrypoint = body.entrypoint;
-    }
-    if (Array.isArray(body.files)) {
-      doc.files = normalizeAppFiles(
-        body.files as { path: string; contents: string }[],
-      );
-    }
-    if (body.dependencies && typeof body.dependencies === "object") {
-      doc.dependencies = body.dependencies as Record<string, string>;
-    }
-    if (Array.isArray(body.dataBindings)) {
-      const bindings = body.dataBindings as Array<Record<string, any>>;
-      const bindingCheck = await validateDataBindings(workspaceId, bindings);
-      if (!bindingCheck.ok) {
-        return c.json({ success: false, error: bindingCheck.error }, 400);
-      }
-      // Cache is server-owned: preserve the existing materialized cache by id;
-      // never trust client-provided cache. Take only the query definition.
-      const existingById = new Map(doc.dataBindings.map(b => [b.id, b]));
-      doc.dataBindings = bindings.map(b => {
-        const id = b.id || nanoid(10);
-        const prior = existingById.get(id);
-        return {
-          id,
-          name: b.name,
-          connectionId: b.connectionId,
-          language: b.language || "sql",
-          code: b.code ?? "",
-          databaseId: b.databaseId,
-          databaseName: b.databaseName,
-          materialization: b.materialization === "parquet" ? "parquet" : "live",
-          cache: prior?.cache,
-        };
-      }) as IMakoApp["dataBindings"];
-    }
-    const wantsAccessChange =
-      (body.access === "private" || body.access === "workspace") &&
-      body.access !== doc.access;
-    const wantsWorkspaceRoleChange =
-      (body.workspaceRole === "viewer" || body.workspaceRole === "editor") &&
-      body.workspaceRole !== (doc.workspaceRole ?? "viewer");
-    if (wantsAccessChange || wantsWorkspaceRoleChange) {
-      if (!canManageSharing(doc, userId, memberRole)) {
+      const parsed = AppDefinitionSchema.safeParse(body);
+      if (!parsed.success) {
         return c.json(
           {
             success: false,
-            error: "Only the owner or an admin can change sharing settings",
+            error: parsed.error.issues[0]?.message ?? "Invalid app",
           },
-          403,
+          400,
         );
       }
-      if (wantsAccessChange) {
-        doc.access = body.access as "private" | "workspace";
+      const def = parsed.data;
+
+      const bindingCheck = await validateDataBindings(
+        workspaceId,
+        def.dataBindings,
+      );
+      if (!bindingCheck.ok) {
+        return c.json({ success: false, error: bindingCheck.error }, 400);
       }
-      if (wantsWorkspaceRoleChange) {
-        doc.workspaceRole = body.workspaceRole as "viewer" | "editor";
-      }
+
+      const created = await MakoApp.create({
+        workspaceId: new Types.ObjectId(workspaceId),
+        title: def.title,
+        description: def.description,
+        template: def.template,
+        runtime: def.runtime,
+        entrypoint: def.entrypoint,
+        files: normalizeAppFiles(def.files),
+        dependencies: def.dependencies,
+        dataBindings: def.dataBindings,
+        access: "private",
+        owner_id: userId,
+        createdBy: userId,
+        version: 1,
+      });
+
+      return c.json({ success: true, app: serializeApp(created) }, 201);
+    } catch (error) {
+      logger.error("Error creating app", { error });
+      return c.json({ success: false, error: "Failed to create app" }, 500);
     }
+  },
+);
 
-    doc.version += 1;
-    await doc.save();
+// GET /:id — full app
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}",
+    tags: ["Apps"],
+    summary: "Get an app",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
 
-    return c.json({ success: true, app: serializeApp(doc) });
-  } catch (error) {
-    logger.error("Error updating app", { error });
-    return c.json({ success: false, error: "Failed to update app" }, 500);
-  }
-});
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      const memberRole = c.get("memberRole");
+      if (!canRead(doc, userId, memberRole)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      return c.json({
+        success: true,
+        app: serializeApp(doc),
+        readOnly: !canManage(doc, userId, memberRole),
+      });
+    } catch (error) {
+      logger.error("Error fetching app", { error });
+      return c.json({ success: false, error: "Failed to fetch app" }, 500);
+    }
+  },
+);
+
+// PUT /:id — update definition
+app.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}",
+    tags: ["Apps"],
+    summary: "Update an app",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam, body: AppBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      const memberRole = c.get("memberRole");
+      if (!canManage(doc, userId, memberRole)) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const body = (await c.req.json()) as Record<string, unknown>;
+
+      if (typeof body.title === "string" && body.title.trim()) {
+        doc.title = body.title.trim();
+      }
+      if (typeof body.description === "string") {
+        doc.description = body.description;
+      }
+      if (typeof body.template === "string") {
+        doc.template = body.template;
+      }
+      if (body.runtime === "cdn" || body.runtime === "webcontainer") {
+        doc.runtime = body.runtime;
+      }
+      if (typeof body.entrypoint === "string") {
+        doc.entrypoint = body.entrypoint;
+      }
+      if (Array.isArray(body.files)) {
+        doc.files = normalizeAppFiles(
+          body.files as { path: string; contents: string }[],
+        );
+      }
+      if (body.dependencies && typeof body.dependencies === "object") {
+        doc.dependencies = body.dependencies as Record<string, string>;
+      }
+      if (Array.isArray(body.dataBindings)) {
+        const bindings = body.dataBindings as Array<Record<string, any>>;
+        const bindingCheck = await validateDataBindings(workspaceId, bindings);
+        if (!bindingCheck.ok) {
+          return c.json({ success: false, error: bindingCheck.error }, 400);
+        }
+        // Cache is server-owned: preserve the existing materialized cache by id;
+        // never trust client-provided cache. Take only the query definition.
+        const existingById = new Map(doc.dataBindings.map(b => [b.id, b]));
+        doc.dataBindings = bindings.map(b => {
+          const id = b.id || nanoid(10);
+          const prior = existingById.get(id);
+          return {
+            id,
+            name: b.name,
+            connectionId: b.connectionId,
+            language: b.language || "sql",
+            code: b.code ?? "",
+            databaseId: b.databaseId,
+            databaseName: b.databaseName,
+            materialization:
+              b.materialization === "parquet" ? "parquet" : "live",
+            cache: prior?.cache,
+          };
+        }) as IMakoApp["dataBindings"];
+      }
+      const wantsAccessChange =
+        (body.access === "private" || body.access === "workspace") &&
+        body.access !== doc.access;
+      const wantsWorkspaceRoleChange =
+        (body.workspaceRole === "viewer" || body.workspaceRole === "editor") &&
+        body.workspaceRole !== (doc.workspaceRole ?? "viewer");
+      if (wantsAccessChange || wantsWorkspaceRoleChange) {
+        if (!canManageSharing(doc, userId, memberRole)) {
+          return c.json(
+            {
+              success: false,
+              error: "Only the owner or an admin can change sharing settings",
+            },
+            403,
+          );
+        }
+        if (wantsAccessChange) {
+          doc.access = body.access as "private" | "workspace";
+        }
+        if (wantsWorkspaceRoleChange) {
+          doc.workspaceRole = body.workspaceRole as "viewer" | "editor";
+        }
+      }
+
+      doc.version += 1;
+      await doc.save();
+
+      return c.json({ success: true, app: serializeApp(doc) });
+    } catch (error) {
+      logger.error("Error updating app", { error });
+      return c.json({ success: false, error: "Failed to update app" }, 500);
+    }
+  },
+);
 
 // DELETE /:id
-app.delete("/:id", async (c: AuthenticatedContext) => {
-  try {
-    const workspaceId = c.req.param("workspaceId");
-    const id = c.req.param("id");
-    const userId = c.get("user")?.id;
+app.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}",
+    tags: ["Apps"],
+    summary: "Delete an app",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
 
-    if (!Types.ObjectId.isValid(id)) {
-      return c.json({ success: false, error: "Invalid app ID" }, 400);
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      await doc.deleteOne();
+      return c.json({ success: true });
+    } catch (error) {
+      logger.error("Error deleting app", { error });
+      return c.json({ success: false, error: "Failed to delete app" }, 500);
     }
-
-    const doc = await MakoApp.findOne({
-      _id: new Types.ObjectId(id),
-      workspaceId: new Types.ObjectId(workspaceId),
-    });
-    if (!doc) return c.json({ success: false, error: "App not found" }, 404);
-    if (!canManage(doc, userId, c.get("memberRole"))) {
-      return c.json({ success: false, error: "Access denied" }, 403);
-    }
-
-    await doc.deleteOne();
-    return c.json({ success: true });
-  } catch (error) {
-    logger.error("Error deleting app", { error });
-    return c.json({ success: false, error: "Failed to delete app" }, 500);
-  }
-});
+  },
+);
 
 // POST /:id/bindings/:bindingId/materialize — queue the Parquet build.
 // Returns immediately: the build runs in the background (Inngest). Clients
 // poll GET .../materialization until the status is ready/error.
-app.post(
-  "/:id/bindings/:bindingId/materialize",
-  async (c: AuthenticatedContext) => {
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/bindings/{bindingId}/materialize",
+    tags: ["Apps"],
+    summary: "Materialize an app data binding",
+    security: AUTH_SECURITY,
+    request: { params: BindingParam, body: AppBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
-      const workspaceId = c.req.param("workspaceId");
+      const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
       const bindingId = c.req.param("bindingId");
       const userId = c.get("user")?.id;
@@ -555,11 +638,19 @@ app.post(
 );
 
 // GET /:id/bindings/:bindingId/materialization — build status (for polling)
-app.get(
-  "/:id/bindings/:bindingId/materialization",
-  async (c: AuthenticatedContext) => {
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/bindings/{bindingId}/materialization",
+    tags: ["Apps"],
+    summary: "Get app binding materialization status",
+    security: AUTH_SECURITY,
+    request: { params: BindingParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
-      const workspaceId = c.req.param("workspaceId");
+      const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
       const bindingId = c.req.param("bindingId");
       const userId = c.get("user")?.id;
@@ -596,11 +687,32 @@ app.get(
 );
 
 // GET /:id/bindings/:bindingId/materialization/artifact — stream the Parquet
-app.get(
-  "/:id/bindings/:bindingId/materialization/artifact",
-  async (c: AuthenticatedContext) => {
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/bindings/{bindingId}/materialization/artifact",
+    tags: ["Apps"],
+    summary: "Stream an app binding artifact",
+    security: AUTH_SECURITY,
+    request: {
+      params: BindingParam,
+      query: z.object({ rev: z.string().optional() }),
+    },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: {
+        description: "Parquet artifact bytes.",
+        content: {
+          "application/vnd.apache.parquet": {
+            schema: z.string().openapi({ format: "binary" }),
+          },
+        },
+      },
+    },
+  }),
+  async c => {
     try {
-      const workspaceId = c.req.param("workspaceId");
+      const workspaceId = c.req.param("workspaceId") as string;
       const id = c.req.param("id");
       const bindingId = c.req.param("bindingId");
       const userId = c.get("user")?.id;
@@ -635,16 +747,11 @@ app.get(
           ? "private, max-age=86400, immutable"
           : "private, no-store";
 
-      return new Response(
-        Readable.toWeb(stream as Readable) as ReadableStream,
-        {
-          headers: {
-            "Content-Type": "application/vnd.apache.parquet",
-            "X-Row-Count": String(info.rowCount ?? 0),
-            "Cache-Control": cacheControl,
-          },
-        },
-      );
+      return c.body(Readable.toWeb(stream as Readable) as ReadableStream, 200, {
+        "Content-Type": "application/vnd.apache.parquet",
+        "X-Row-Count": String(info.rowCount ?? 0),
+        "Cache-Control": cacheControl,
+      });
     } catch (error) {
       logger.error("Error serving app binding artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
@@ -655,7 +762,7 @@ app.get(
 // ── Sharing (collaborators, general access, public link) ──
 
 const loadAppById = async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId");
+  const workspaceId = c.req.param("workspaceId") as string;
   const id = c.req.param("id");
   if (!Types.ObjectId.isValid(id)) return null;
   return MakoApp.findOne({
@@ -664,6 +771,10 @@ const loadAppById = async (c: AuthenticatedContext) => {
   });
 };
 
+// These shared helpers register additional (collaborator/sharing/public-share)
+// routes on the same instance. They accept a plain Hono; OpenAPIHono is
+// runtime-compatible, so we cast for the type boundary. These routes remain
+// functional but are not part of the generated OpenAPI document.
 registerCollaboratorRoutes(app, {
   resourceName: "App",
   load: loadAppById,

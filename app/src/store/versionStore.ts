@@ -1,5 +1,11 @@
 import { create } from "zustand";
-import { apiClient } from "../lib/api-client";
+import { api, unwrap } from "../api";
+
+/** Typed versions base path per entity type. */
+const VERSION_BASE = {
+  console: "/api/workspaces/{workspaceId}/consoles/{id}/versions",
+  dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}/versions",
+} as const;
 
 export interface VersionListItem {
   version: number;
@@ -44,15 +50,6 @@ interface VersionStoreState {
   clearHistory: (entityId: string) => void;
 }
 
-function buildBasePath(
-  workspaceId: string,
-  entityType: "console" | "dashboard",
-  entityId: string,
-) {
-  const collection = entityType === "console" ? "consoles" : "dashboards";
-  return `/workspaces/${workspaceId}/${collection}/${entityId}/versions`;
-}
-
 export const useVersionStore = create<VersionStoreState>((set, get) => ({
   versions: {},
   totals: {},
@@ -63,24 +60,26 @@ export const useVersionStore = create<VersionStoreState>((set, get) => ({
     set(state => ({ loading: { ...state.loading, [key]: true } }));
 
     try {
-      const params: Record<string, string> = {};
-      if (opts?.limit) params.limit = String(opts.limit);
-      if (opts?.offset) params.offset = String(opts.offset);
-
-      const data = await apiClient.get<{
-        success: boolean;
-        versions: VersionListItem[];
-        total: number;
-      }>(buildBasePath(workspaceId, entityType, entityId), params);
+      const data = unwrap(
+        await api.GET(VERSION_BASE[entityType], {
+          params: {
+            path: { workspaceId, id: entityId },
+            query: {
+              ...(opts?.limit ? { limit: String(opts.limit) } : {}),
+              ...(opts?.offset ? { offset: String(opts.offset) } : {}),
+            },
+          },
+        }),
+      ) as { versions?: VersionListItem[]; total?: number };
 
       set(state => {
         const existing = opts?.offset ? (state.versions[key] ?? []) : [];
         return {
           versions: {
             ...state.versions,
-            [key]: [...existing, ...data.versions],
+            [key]: [...existing, ...(data.versions ?? [])],
           },
-          totals: { ...state.totals, [key]: data.total },
+          totals: { ...state.totals, [key]: data.total ?? 0 },
           loading: { ...state.loading, [key]: false },
         };
       });
@@ -91,11 +90,14 @@ export const useVersionStore = create<VersionStoreState>((set, get) => ({
 
   fetchVersion: async (workspaceId, entityType, entityId, version) => {
     try {
-      const data = await apiClient.get<{
-        success: boolean;
-        version: VersionDetail;
-      }>(`${buildBasePath(workspaceId, entityType, entityId)}/${version}`);
-      return data.version;
+      const data = unwrap(
+        await api.GET(`${VERSION_BASE[entityType]}/{version}`, {
+          params: {
+            path: { workspaceId, id: entityId, version: String(version) },
+          },
+        }),
+      ) as { version?: VersionDetail };
+      return data.version ?? null;
     } catch {
       return null;
     }
@@ -109,9 +111,13 @@ export const useVersionStore = create<VersionStoreState>((set, get) => ({
     comment,
   ) => {
     try {
-      await apiClient.post(
-        `${buildBasePath(workspaceId, entityType, entityId)}/${version}/restore`,
-        { comment: comment ?? "" },
+      unwrap(
+        await api.POST(`${VERSION_BASE[entityType]}/{version}/restore`, {
+          params: {
+            path: { workspaceId, id: entityId, version: String(version) },
+          },
+          body: { comment: comment ?? "" },
+        }),
       );
       // Refresh the version list
       await get().fetchVersionHistory(workspaceId, entityType, entityId);

@@ -1,9 +1,16 @@
 import fs, { promises as fsPromises } from "fs";
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { Types } from "mongoose";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  createRouter,
+  type AuthEnv,
+} from "../openapi/core";
 import { workspaceService } from "../services/workspace.service";
 import { DashboardManager } from "../utils/dashboard-manager";
 import {
@@ -25,7 +32,30 @@ import {
 } from "../services/dashboard-artifact-store.service";
 
 const logger = loggers.api("dashboard-materialization");
-const app = new Hono();
+const app = createRouter();
+
+const BaseParam = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+  dashboardId: z
+    .string()
+    .openapi({ param: { name: "dashboardId", in: "path" } }),
+});
+const DataSourceParam = BaseParam.extend({
+  dataSourceId: z
+    .string()
+    .openapi({ param: { name: "dataSourceId", in: "path" } }),
+});
+const RunIdParam = BaseParam.extend({
+  runId: z.string().openapi({ param: { name: "runId", in: "path" } }),
+});
+const MatBody = {
+  required: false,
+  content: {
+    "application/json": { schema: z.record(z.string(), z.any()) },
+  },
+};
 
 function nodeStreamToWeb(
   nodeStream: NodeJS.ReadableStream,
@@ -125,7 +155,7 @@ app.use("*", async (c: AuthenticatedContext, next) => {
   await next();
 });
 
-async function getScopedDashboardOrResponse(c: AuthenticatedContext) {
+async function getScopedDashboardOrResponse(c: Context<AuthEnv>) {
   const workspaceId = c.req.param("workspaceId");
   const dashboardId = c.req.param("dashboardId");
   const dashboard = await getDashboardForMaterialization({
@@ -144,77 +174,109 @@ async function getScopedDashboardOrResponse(c: AuthenticatedContext) {
   return dashboard;
 }
 
-app.get("/materialization", async (c: AuthenticatedContext) => {
-  try {
-    const dashboard = await getScopedDashboardOrResponse(c);
-    if (dashboard instanceof Response) {
-      return dashboard;
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/materialization",
+    tags: ["Dashboards"],
+    summary: "Get dashboard materialization status",
+    security: AUTH_SECURITY,
+    request: { params: BaseParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const dashboard = await getScopedDashboardOrResponse(c);
+      if (dashboard instanceof Response) {
+        return dashboard;
+      }
+
+      return c.json({
+        success: true,
+        data: await buildDashboardMaterializationStatus(dashboard),
+      });
+    } catch (error) {
+      logger.error("Failed to get dashboard materialization status", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get materialization status",
+        },
+        500,
+      );
     }
+  },
+);
 
-    return c.json({
-      success: true,
-      data: await buildDashboardMaterializationStatus(dashboard),
-    });
-  } catch (error) {
-    logger.error("Failed to get dashboard materialization status", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to get materialization status",
-      },
-      500,
-    );
-  }
-});
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/materialize",
+    tags: ["Dashboards"],
+    summary: "Materialize a dashboard",
+    security: AUTH_SECURITY,
+    request: { params: BaseParam, body: MatBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const dashboard = await getScopedDashboardOrResponse(c);
+      if (dashboard instanceof Response) {
+        return dashboard;
+      }
 
-app.post("/materialize", async (c: AuthenticatedContext) => {
-  try {
-    const dashboard = await getScopedDashboardOrResponse(c);
-    if (dashboard instanceof Response) {
-      return dashboard;
+      const body = await c.req.json().catch(() => ({}));
+      const force = body?.force === true;
+      const dataSourceIds = Array.isArray(body?.dataSourceIds)
+        ? body.dataSourceIds.filter(
+            (value: unknown) => typeof value === "string",
+          )
+        : undefined;
+
+      const queueResult = await queueDashboardArtifactRefresh({
+        dashboardId: dashboard._id.toString(),
+        workspaceId: dashboard.workspaceId.toString(),
+        dataSourceIds,
+        force,
+        triggerType: "manual",
+      });
+      return c.json({
+        success: true,
+        queued: queueResult.queued,
+        alreadyRunning: !queueResult.queued,
+        dataSourceIds: queueResult.dataSourceIds,
+        activeRunIds: queueResult.activeRunIds || [],
+      });
+    } catch (error) {
+      logger.error("Failed to materialize dashboard", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to materialize dashboard",
+        },
+        500,
+      );
     }
+  },
+);
 
-    const body = await c.req.json().catch(() => ({}));
-    const force = body?.force === true;
-    const dataSourceIds = Array.isArray(body?.dataSourceIds)
-      ? body.dataSourceIds.filter((value: unknown) => typeof value === "string")
-      : undefined;
-
-    const queueResult = await queueDashboardArtifactRefresh({
-      dashboardId: dashboard._id.toString(),
-      workspaceId: dashboard.workspaceId.toString(),
-      dataSourceIds,
-      force,
-      triggerType: "manual",
-    });
-    return c.json({
-      success: true,
-      queued: queueResult.queued,
-      alreadyRunning: !queueResult.queued,
-      dataSourceIds: queueResult.dataSourceIds,
-      activeRunIds: queueResult.activeRunIds || [],
-    });
-  } catch (error) {
-    logger.error("Failed to materialize dashboard", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to materialize dashboard",
-      },
-      500,
-    );
-  }
-});
-
-app.get(
-  "/data-sources/:dataSourceId/materialization",
-  async (c: AuthenticatedContext) => {
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/data-sources/{dataSourceId}/materialization",
+    tags: ["Dashboards"],
+    summary: "Get data source materialization status",
+    security: AUTH_SECURITY,
+    request: { params: DataSourceParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const dashboard = await getScopedDashboardOrResponse(c);
       if (dashboard instanceof Response) {
@@ -268,9 +330,17 @@ app.get(
   },
 );
 
-app.post(
-  "/data-sources/:dataSourceId/materialize",
-  async (c: AuthenticatedContext) => {
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/data-sources/{dataSourceId}/materialize",
+    tags: ["Dashboards"],
+    summary: "Materialize a dashboard data source",
+    security: AUTH_SECURITY,
+    request: { params: DataSourceParam, body: MatBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const dashboard = await getScopedDashboardOrResponse(c);
       if (dashboard instanceof Response) {
@@ -323,76 +393,112 @@ app.post(
   },
 );
 
-app.get("/materialization/runs", async (c: AuthenticatedContext) => {
-  try {
-    const dashboard = await getScopedDashboardOrResponse(c);
-    if (dashboard instanceof Response) {
-      return dashboard;
-    }
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/materialization/runs",
+    tags: ["Dashboards"],
+    summary: "List materialization runs",
+    security: AUTH_SECURITY,
+    request: {
+      params: BaseParam,
+      query: z.object({ limit: z.string().optional() }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const dashboard = await getScopedDashboardOrResponse(c);
+      if (dashboard instanceof Response) {
+        return dashboard;
+      }
 
-    const limit = Number(c.req.query("limit") || 100);
-    return c.json({
-      success: true,
-      data: await listMaterializationRuns({
-        workspaceId: dashboard.workspaceId.toString(),
-        dashboardId: dashboard._id.toString(),
-        limit: Number.isFinite(limit) ? limit : 100,
-      }),
-    });
-  } catch (error) {
-    logger.error("Failed to get materialization runs", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to get materialization runs",
-      },
-      500,
-    );
-  }
-});
-
-app.get("/materialization/runs/:runId", async (c: AuthenticatedContext) => {
-  try {
-    const dashboard = await getScopedDashboardOrResponse(c);
-    if (dashboard instanceof Response) {
-      return dashboard;
-    }
-
-    const run = await getMaterializationRunByRunId({
-      workspaceId: dashboard.workspaceId.toString(),
-      dashboardId: dashboard._id.toString(),
-      runId: c.req.param("runId"),
-    });
-
-    if (!run) {
+      const limit = Number(c.req.query("limit") || 100);
+      return c.json({
+        success: true,
+        data: await listMaterializationRuns({
+          workspaceId: dashboard.workspaceId.toString(),
+          dashboardId: dashboard._id.toString(),
+          limit: Number.isFinite(limit) ? limit : 100,
+        }),
+      });
+    } catch (error) {
+      logger.error("Failed to get materialization runs", { error });
       return c.json(
-        { success: false, error: "Materialization run not found" },
-        404,
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get materialization runs",
+        },
+        500,
       );
     }
+  },
+);
 
-    return c.json({ success: true, data: run });
-  } catch (error) {
-    logger.error("Failed to get materialization run", { error });
-    return c.json(
-      {
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to get materialization run",
-      },
-      500,
-    );
-  }
-});
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/materialization/runs/{runId}",
+    tags: ["Dashboards"],
+    summary: "Get a materialization run",
+    security: AUTH_SECURITY,
+    request: { params: RunIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const dashboard = await getScopedDashboardOrResponse(c);
+      if (dashboard instanceof Response) {
+        return dashboard;
+      }
 
-app.get(
-  "/data-sources/:dataSourceId/materialization/runs",
-  async (c: AuthenticatedContext) => {
+      const run = await getMaterializationRunByRunId({
+        workspaceId: dashboard.workspaceId.toString(),
+        dashboardId: dashboard._id.toString(),
+        runId: c.req.param("runId"),
+      });
+
+      if (!run) {
+        return c.json(
+          { success: false, error: "Materialization run not found" },
+          404,
+        );
+      }
+
+      return c.json({ success: true, data: run });
+    } catch (error) {
+      logger.error("Failed to get materialization run", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to get materialization run",
+        },
+        500,
+      );
+    }
+  },
+);
+
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/data-sources/{dataSourceId}/materialization/runs",
+    tags: ["Dashboards"],
+    summary: "List data source materialization runs",
+    security: AUTH_SECURITY,
+    request: {
+      params: DataSourceParam,
+      query: z.object({ limit: z.string().optional() }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const dashboard = await getScopedDashboardOrResponse(c);
       if (dashboard instanceof Response) {
@@ -428,9 +534,30 @@ app.get(
   },
 );
 
-app.get(
-  "/data-sources/:dataSourceId/materialization/artifact",
-  async (c: AuthenticatedContext) => {
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/data-sources/{dataSourceId}/materialization/artifact",
+    tags: ["Dashboards"],
+    summary: "Stream a materialized data source artifact",
+    security: AUTH_SECURITY,
+    request: {
+      params: DataSourceParam,
+      query: z.object({ rev: z.string().optional() }),
+    },
+    responses: {
+      ...OPEN_RESPONSES,
+      200: {
+        description: "Parquet artifact bytes.",
+        content: {
+          "application/vnd.apache.parquet": {
+            schema: z.string().openapi({ format: "binary" }),
+          },
+        },
+      },
+    },
+  }),
+  async c => {
     try {
       const dashboard = await getScopedDashboardOrResponse(c);
       if (dashboard instanceof Response) {

@@ -7,7 +7,8 @@
  * When BILLING_ENABLED is false, all endpoints return a "billing disabled" response.
  */
 
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -21,10 +22,37 @@ import {
   PortalUnavailableError,
 } from "../billing/billing.service";
 import { loggers, enrichContextWithWorkspace } from "../logging";
+import {
+  AUTH_SECURITY,
+  OPEN_RESPONSES,
+  STD_ERRORS,
+  createRouter,
+  jsonContent,
+  pathParam,
+  type AuthEnv,
+} from "../openapi/core";
 
 const logger = loggers.api("billing");
 
-export const billingRoutes = new Hono();
+export const billingRoutes = createRouter();
+
+const WorkspaceParam = z.object({ workspaceId: pathParam("workspaceId") });
+const RedirectUrlBody = {
+  required: false,
+  content: {
+    "application/json": {
+      schema: z.object({
+        successUrl: z.string().url().optional(),
+        cancelUrl: z.string().url().optional(),
+        returnUrl: z.string().url().optional(),
+      }),
+    },
+  },
+};
+const StripeUrlResponse = jsonContent(
+  z.object({ url: z.string().url() }),
+  "Stripe-hosted URL to redirect the user to.",
+);
 
 billingRoutes.use("*", unifiedAuthMiddleware);
 
@@ -56,7 +84,7 @@ billingRoutes.use("*", async (c: AuthenticatedContext, next) => {
 });
 
 async function assertOwnerOrAdminBillingAccess(
-  c: AuthenticatedContext,
+  c: Context<AuthEnv>,
   workspaceId: string,
 ) {
   const user = c.get("user");
@@ -81,175 +109,212 @@ async function assertOwnerOrAdminBillingAccess(
 /**
  * GET /status -- current billing plan, usage, and subscription info
  */
-billingRoutes.get("/status", async (c: AuthenticatedContext) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) {
-    return c.json({ error: "Missing workspaceId" }, 400);
-  }
+billingRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/status",
+    tags: ["Billing"],
+    summary: "Get billing status",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId) {
+      return c.json({ error: "Missing workspaceId" }, 400);
+    }
 
-  if (!isBillingEnabled()) {
-    return c.json({
-      billingEnabled: false,
-      plan: "free",
-      subscriptionStatus: null,
-      currentUsageUsd: 0,
-      usageQuotaUsd: 0,
-      hardLimitUsd: null,
-      invocationCount: 0,
-      totalTokens: 0,
-      currentPeriodStart: null,
-      currentPeriodEnd: null,
-      hasStripeCustomer: false,
-      hasSubscription: false,
-    });
-  }
+    if (!isBillingEnabled()) {
+      return c.json({
+        billingEnabled: false,
+        plan: "free",
+        subscriptionStatus: null,
+        currentUsageUsd: 0,
+        usageQuotaUsd: 0,
+        hardLimitUsd: null,
+        invocationCount: 0,
+        totalTokens: 0,
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        hasStripeCustomer: false,
+        hasSubscription: false,
+      });
+    }
 
-  try {
-    const status = await getBillingStatus(workspaceId);
-    return c.json({ billingEnabled: true, ...status });
-  } catch (err) {
-    logger.error("Error fetching billing status", { error: err });
-    return c.json({ error: "Internal server error" }, 500);
-  }
-});
+    try {
+      const status = await getBillingStatus(workspaceId);
+      return c.json({ billingEnabled: true, ...status });
+    } catch (err) {
+      logger.error("Error fetching billing status", { error: err });
+      return c.json({ error: "Internal server error" }, 500);
+    }
+  },
+);
 
 /**
  * POST /checkout -- create a Stripe Checkout Session for Pro upgrade
  * Body: { successUrl: string, cancelUrl: string }
  */
-billingRoutes.post("/checkout", async (c: AuthenticatedContext) => {
-  if (!isBillingEnabled()) {
-    return c.json({ error: "Billing is not enabled" }, 400);
-  }
-
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) {
-    return c.json({ error: "Missing workspaceId" }, 400);
-  }
-  const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
-  if (roleError) {
-    return roleError;
-  }
-
-  const user = c.get("user");
-  if (!user) {
-    return c.json({ error: "Session auth required for checkout" }, 401);
-  }
-
-  let body: { successUrl?: string; cancelUrl?: string } = {};
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: "Invalid request body" }, 400);
-  }
-
-  const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-  const successUrl = body.successUrl || `${clientUrl}/settings?billing=success`;
-  const cancelUrl = body.cancelUrl || `${clientUrl}/settings?billing=cancel`;
-
-  const allowedOrigin = new URL(clientUrl).origin;
-  try {
-    if (new URL(successUrl).origin !== allowedOrigin) {
-      return c.json({ error: "Invalid successUrl" }, 400);
-    }
-    if (new URL(cancelUrl).origin !== allowedOrigin) {
-      return c.json({ error: "Invalid cancelUrl" }, 400);
-    }
-  } catch {
-    return c.json({ error: "Invalid redirect URL" }, 400);
-  }
-
-  try {
-    const workspace = await Workspace.findById(workspaceId);
-    if (!workspace) {
-      return c.json({ error: "Workspace not found" }, 404);
+billingRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/checkout",
+    tags: ["Billing"],
+    summary: "Create a checkout session",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam, body: RedirectUrlBody },
+    responses: { 200: StripeUrlResponse, ...STD_ERRORS },
+  }),
+  async c => {
+    if (!isBillingEnabled()) {
+      return c.json({ error: "Billing is not enabled" }, 400);
     }
 
-    const subStatus = workspace.billing?.subscriptionStatus;
-    if (
-      workspace.billing?.plan === "pro" &&
-      (subStatus === "active" || subStatus === "trialing")
-    ) {
-      return c.json({ error: "Workspace already has an active Pro plan" }, 400);
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId) {
+      return c.json({ error: "Missing workspaceId" }, 400);
+    }
+    const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
+    if (roleError) {
+      return roleError;
     }
 
-    const userDoc = await User.findById(user.id);
-    const email = userDoc?.email || "";
+    const user = c.get("user");
+    if (!user) {
+      return c.json({ error: "Session auth required for checkout" }, 401);
+    }
 
-    const url = await createCheckoutSession(
-      workspace,
-      email,
-      successUrl,
-      cancelUrl,
-    );
+    let body: { successUrl?: string; cancelUrl?: string } = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid request body" }, 400);
+    }
 
-    return c.json({ url });
-  } catch (err) {
-    logger.error("Error creating checkout session", { error: err });
-    return c.json({ error: "Failed to create checkout session" }, 500);
-  }
-});
+    const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+    const successUrl =
+      body.successUrl || `${clientUrl}/settings?billing=success`;
+    const cancelUrl = body.cancelUrl || `${clientUrl}/settings?billing=cancel`;
+
+    const allowedOrigin = new URL(clientUrl).origin;
+    try {
+      if (new URL(successUrl).origin !== allowedOrigin) {
+        return c.json({ error: "Invalid successUrl" }, 400);
+      }
+      if (new URL(cancelUrl).origin !== allowedOrigin) {
+        return c.json({ error: "Invalid cancelUrl" }, 400);
+      }
+    } catch {
+      return c.json({ error: "Invalid redirect URL" }, 400);
+    }
+
+    try {
+      const workspace = await Workspace.findById(workspaceId);
+      if (!workspace) {
+        return c.json({ error: "Workspace not found" }, 404);
+      }
+
+      const subStatus = workspace.billing?.subscriptionStatus;
+      if (
+        workspace.billing?.plan === "pro" &&
+        (subStatus === "active" || subStatus === "trialing")
+      ) {
+        return c.json(
+          { error: "Workspace already has an active Pro plan" },
+          400,
+        );
+      }
+
+      const userDoc = await User.findById(user.id);
+      const email = userDoc?.email || "";
+
+      const url = await createCheckoutSession(
+        workspace,
+        email,
+        successUrl,
+        cancelUrl,
+      );
+
+      return c.json({ url }, 200);
+    } catch (err) {
+      logger.error("Error creating checkout session", { error: err });
+      return c.json({ error: "Failed to create checkout session" }, 500);
+    }
+  },
+);
 
 /**
  * POST /portal -- create a Stripe Customer Portal session
  * Body: { returnUrl?: string }
  */
-billingRoutes.post("/portal", async (c: AuthenticatedContext) => {
-  if (!isBillingEnabled()) {
-    return c.json({ error: "Billing is not enabled" }, 400);
-  }
-
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) {
-    return c.json({ error: "Missing workspaceId" }, 400);
-  }
-  const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
-  if (roleError) {
-    return roleError;
-  }
-
-  const user = c.get("user");
-  if (!user) {
-    return c.json({ error: "Session auth required for portal" }, 401);
-  }
-
-  let body: { returnUrl?: string } = {};
-  try {
-    body = await c.req.json();
-  } catch {
-    // ok, use default
-  }
-
-  const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-  const returnUrl = body.returnUrl || `${clientUrl}/settings`;
-
-  const allowedOrigin = new URL(clientUrl).origin;
-  try {
-    if (new URL(returnUrl).origin !== allowedOrigin) {
-      return c.json({ error: "Invalid returnUrl" }, 400);
-    }
-  } catch {
-    return c.json({ error: "Invalid redirect URL" }, 400);
-  }
-
-  try {
-    const workspace = await Workspace.findById(workspaceId);
-    if (!workspace) {
-      return c.json({ error: "Workspace not found" }, 404);
+billingRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/portal",
+    tags: ["Billing"],
+    summary: "Create a billing portal session",
+    security: AUTH_SECURITY,
+    request: { params: WorkspaceParam, body: RedirectUrlBody },
+    responses: { 200: StripeUrlResponse, ...STD_ERRORS },
+  }),
+  async c => {
+    if (!isBillingEnabled()) {
+      return c.json({ error: "Billing is not enabled" }, 400);
     }
 
-    if (!workspace.billing?.stripeCustomerId) {
-      return c.json({ error: "No billing account to manage" }, 400);
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId) {
+      return c.json({ error: "Missing workspaceId" }, 400);
+    }
+    const roleError = await assertOwnerOrAdminBillingAccess(c, workspaceId);
+    if (roleError) {
+      return roleError;
     }
 
-    const url = await createPortalSession(workspace, returnUrl);
-
-    return c.json({ url });
-  } catch (err) {
-    if (err instanceof PortalUnavailableError) {
-      return c.json({ error: "No billing account to manage" }, 400);
+    const user = c.get("user");
+    if (!user) {
+      return c.json({ error: "Session auth required for portal" }, 401);
     }
-    logger.error("Error creating portal session", { error: err });
-    return c.json({ error: "Failed to create portal session" }, 500);
-  }
-});
+
+    let body: { returnUrl?: string } = {};
+    try {
+      body = await c.req.json();
+    } catch {
+      // ok, use default
+    }
+
+    const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+    const returnUrl = body.returnUrl || `${clientUrl}/settings`;
+
+    const allowedOrigin = new URL(clientUrl).origin;
+    try {
+      if (new URL(returnUrl).origin !== allowedOrigin) {
+        return c.json({ error: "Invalid returnUrl" }, 400);
+      }
+    } catch {
+      return c.json({ error: "Invalid redirect URL" }, 400);
+    }
+
+    try {
+      const workspace = await Workspace.findById(workspaceId);
+      if (!workspace) {
+        return c.json({ error: "Workspace not found" }, 404);
+      }
+
+      if (!workspace.billing?.stripeCustomerId) {
+        return c.json({ error: "No billing account to manage" }, 400);
+      }
+
+      const url = await createPortalSession(workspace, returnUrl);
+
+      return c.json({ url }, 200);
+    } catch (err) {
+      if (err instanceof PortalUnavailableError) {
+        return c.json({ error: "No billing account to manage" }, 400);
+      }
+      logger.error("Error creating portal session", { error: err });
+      return c.json({ error: "Failed to create portal session" }, 500);
+    }
+  },
+);

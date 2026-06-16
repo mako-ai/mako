@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import { z } from "zod";
 import { createValidatedStorage, errorSchema } from "./store-validation";
 
@@ -637,11 +637,15 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/flows", {
+              params: { path: { workspaceId } },
+            }),
+          ) as {
             success: boolean;
             data: Flow[];
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows`);
+          };
 
           if (response.success) {
             set(state => {
@@ -701,11 +705,16 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST("/api/workspaces/{workspaceId}/flows", {
+              params: { path: { workspaceId } },
+              body: data,
+            }),
+          ) as {
             success: boolean;
             data: Flow;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows`, data);
+          };
 
           if (response.success) {
             const newFlow = response.data;
@@ -742,11 +751,16 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.put<{
+          const response = unwrapBody(
+            await api.PUT("/api/workspaces/{workspaceId}/flows/{flowId}", {
+              params: { path: { workspaceId, flowId } },
+              body: data,
+            }),
+          ) as {
             success: boolean;
             data: Flow;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}`, data);
+          };
 
           if (response.success) {
             set(state => {
@@ -778,11 +792,15 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.delete<{
+          const response = unwrapBody(
+            await api.DELETE("/api/workspaces/{workspaceId}/flows/{flowId}", {
+              params: { path: { workspaceId, flowId } },
+            }),
+          ) as {
             success: boolean;
             error?: string;
             message?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}`);
+          };
 
           if (response.success) {
             set(state => {
@@ -817,11 +835,16 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/toggle",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             data: { enabled: boolean; message: string };
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/toggle`);
+          };
 
           if (response.success) {
             set(state => {
@@ -855,12 +878,16 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST("/api/workspaces/{workspaceId}/flows/{flowId}/run", {
+              params: { path: { workspaceId, flowId } },
+            }),
+          ) as {
             success: boolean;
             message?: string;
             data?: any;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/run`);
+          };
 
           if (response.success) {
             // Refresh flow data to get updated status
@@ -887,15 +914,21 @@ export const useFlowStore = create<FlowStore>()(
 
         try {
           const flow = get().flows[workspaceId]?.find(f => f._id === flowId);
-          const endpoint =
+          const response = unwrapBody(
             flow?.syncEngine === "cdc"
-              ? `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`
-              : `/workspaces/${workspaceId}/flows/${flowId}/backfill`;
-          const response = await apiClient.post<{
+              ? await api.POST(
+                  "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/backfill/start",
+                  { params: { path: { workspaceId, flowId } } },
+                )
+              : await api.POST(
+                  "/api/workspaces/{workspaceId}/flows/{flowId}/backfill",
+                  { params: { path: { workspaceId, flowId } } },
+                ),
+          ) as {
             success: boolean;
             message?: string;
             error?: string;
-          }>(endpoint);
+          };
 
           if (response.success) {
             await get().refresh(workspaceId);
@@ -915,12 +948,18 @@ export const useFlowStore = create<FlowStore>()(
 
       setSyncEngine: async (workspaceId, flowId, syncEngine) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-engine",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: { syncEngine },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-engine`, {
-            syncEngine,
-          });
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to update sync engine");
           }
@@ -936,13 +975,18 @@ export const useFlowStore = create<FlowStore>()(
 
       startCdcBackfill: async (workspaceId, flowId, entities) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/backfill/start",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: entities?.length ? { entities } : undefined,
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/start`,
-            entities?.length ? { entities } : undefined,
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC backfill");
           }
@@ -957,18 +1001,23 @@ export const useFlowStore = create<FlowStore>()(
 
       resetCdcEntityColumn: async (workspaceId, flowId, params) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/reset-column",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: {
+                  entity: params.entity,
+                  column: params.column,
+                  forceReplay: params.forceReplay !== false,
+                  startBackfill: params.startBackfill !== false,
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reset-column`,
-            {
-              entity: params.entity,
-              column: params.column,
-              forceReplay: params.forceReplay !== false,
-              startBackfill: params.startBackfill !== false,
-            },
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to reset column");
           }
@@ -983,13 +1032,18 @@ export const useFlowStore = create<FlowStore>()(
 
       resetCdcEntityTable: async (workspaceId, flowId, entity) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/reset-entity",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: { entity },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reset-entity`,
-            { entity },
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to reset entity table");
           }
@@ -1004,12 +1058,15 @@ export const useFlowStore = create<FlowStore>()(
 
       startCdcStream: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/stream/start",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/stream/start`,
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to start CDC stream");
           }
@@ -1024,12 +1081,15 @@ export const useFlowStore = create<FlowStore>()(
 
       pauseCdcStream: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/stream/pause",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/stream/pause`,
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to pause CDC stream");
           }
@@ -1044,10 +1104,15 @@ export const useFlowStore = create<FlowStore>()(
 
       pauseCdcFlow: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/pause",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/pause`);
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to pause CDC flow");
           }
@@ -1062,12 +1127,15 @@ export const useFlowStore = create<FlowStore>()(
 
       cancelCdcBackfill: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/backfill/cancel",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/backfill/cancel`,
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to cancel CDC backfill");
           }
@@ -1082,10 +1150,15 @@ export const useFlowStore = create<FlowStore>()(
 
       resumeCdcFlow: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/resume",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/resume`);
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to resume CDC flow");
           }
@@ -1100,13 +1173,21 @@ export const useFlowStore = create<FlowStore>()(
 
       resyncCdcFlow: async (workspaceId, flowId, options) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/resync",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: {
+                  deleteDestination: options?.deleteDestination === true,
+                  clearWebhookEvents: options?.clearWebhookEvents === true,
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/resync`, {
-            deleteDestination: options?.deleteDestination === true,
-            clearWebhookEvents: options?.clearWebhookEvents === true,
-          });
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to resync CDC flow");
           }
@@ -1121,15 +1202,23 @@ export const useFlowStore = create<FlowStore>()(
 
       recoverCdcFlow: async (workspaceId, flowId, options) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/recover",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: {
+                  retryFailedMaterialization:
+                    options?.retryFailedMaterialization !== false,
+                  resumeBackfill: options?.resumeBackfill !== false,
+                  entity: options?.entity,
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover`, {
-            retryFailedMaterialization:
-              options?.retryFailedMaterialization !== false,
-            resumeBackfill: options?.resumeBackfill !== false,
-            entity: options?.entity,
-          });
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to recover CDC flow");
           }
@@ -1144,17 +1233,22 @@ export const useFlowStore = create<FlowStore>()(
 
       recoverCdcStream: async (workspaceId, flowId, options) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/recover-stream",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: {
+                  retryFailedMaterialization:
+                    options?.retryFailedMaterialization !== false,
+                  entity: options?.entity,
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover-stream`,
-            {
-              retryFailedMaterialization:
-                options?.retryFailedMaterialization !== false,
-              entity: options?.entity,
-            },
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to recover CDC stream");
           }
@@ -1169,12 +1263,15 @@ export const useFlowStore = create<FlowStore>()(
 
       recoverCdcBackfill: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/recover-backfill",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/recover-backfill`,
-          );
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to recover CDC backfill");
           }
@@ -1189,12 +1286,15 @@ export const useFlowStore = create<FlowStore>()(
 
       reprocessStaleEvents: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/reprocess-stale",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/reprocess-stale`,
-          );
+          };
           if (!response.success) {
             throw new Error(
               response.error || "Failed to reprocess stale events",
@@ -1211,15 +1311,18 @@ export const useFlowStore = create<FlowStore>()(
 
       retryFailedCdcMaterialization: async (workspaceId, flowId, entity) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/materialize/retry-failed",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: { entity },
+              },
+            ),
+          ) as {
             success: boolean;
             error?: string;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/materialize/retry-failed`,
-            {
-              entity,
-            },
-          );
+          };
           if (!response.success) {
             throw new Error(
               response.error || "Failed to retry failed CDC materialization",
@@ -1237,11 +1340,16 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchCdcStatus: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/status",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             data: CdcStatus;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/status`);
+          };
           return response.success ? response.data : null;
         } catch (error) {
           set(state => {
@@ -1253,12 +1361,15 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchCdcDestinationCounts: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/destination-counts",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             data: Record<string, number | null>;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/destination-counts`,
-          );
+          };
           return response.success ? response.data : null;
         } catch {
           return null;
@@ -1267,7 +1378,14 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchEntitySchema: async (workspaceId, flowId, entity) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/schema",
+              {
+                params: { path: { workspaceId, flowId }, query: { entity } },
+              },
+            ),
+          ) as {
             success: boolean;
             data: {
               entity: string;
@@ -1276,9 +1394,7 @@ export const useFlowStore = create<FlowStore>()(
                 { type: string; nullable?: boolean; required?: boolean }
               >;
             };
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/schema?entity=${encodeURIComponent(entity)}`,
-          );
+          };
           return response.success ? response.data : null;
         } catch {
           return null;
@@ -1287,8 +1403,17 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchEntitySchemaHealth: async (workspaceId, flowId, entity) => {
         try {
-          const query = entity ? `?entity=${encodeURIComponent(entity)}` : "";
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/sync-cdc/schema-health",
+              {
+                params: {
+                  path: { workspaceId, flowId },
+                  query: entity ? { entity } : {},
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             data: {
               entities: Array<{
@@ -1303,9 +1428,7 @@ export const useFlowStore = create<FlowStore>()(
               }>;
               hasDrift: boolean;
             };
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/sync-cdc/schema-health${query}`,
-          );
+          };
           return response.success ? response.data : null;
         } catch {
           return null;
@@ -1314,12 +1437,21 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchFlowHistory: async (workspaceId: string, flowId: string, limit) => {
         try {
-          const params = limit ? { limit: String(limit) } : undefined;
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/history",
+              {
+                params: {
+                  path: { workspaceId, flowId },
+                  query: limit ? { limit: String(limit) } : {},
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             data: { history: FlowExecutionHistory[] };
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/history`, params);
+          };
 
           if (response.success) {
             set(state => {
@@ -1353,11 +1485,15 @@ export const useFlowStore = create<FlowStore>()(
         });
 
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/connectors", {
+              params: { path: { workspaceId } },
+            }),
+          ) as {
             success: boolean;
             data: ConnectorInfo[];
             error?: string;
-          }>(`/workspaces/${workspaceId}/connectors`);
+          };
 
           if (response.success) {
             return response.data || [];
@@ -1377,10 +1513,15 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchWebhookStats: async (workspaceId: string, flowId: string) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/stats",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             data: WebhookStats;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/stats`);
+          };
 
           return response.success ? response.data : null;
         } catch (error) {
@@ -1397,23 +1538,30 @@ export const useFlowStore = create<FlowStore>()(
         filters,
       ) => {
         try {
-          const params = new URLSearchParams({
-            limit: String(limit),
-            offset: String(offset),
-          });
-          if (filters?.status) params.set("status", filters.status);
-          if (filters?.applyStatus) {
-            params.set("applyStatus", filters.applyStatus);
-          }
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events",
+              {
+                params: {
+                  path: { workspaceId, flowId },
+                  query: {
+                    limit: String(limit),
+                    offset: String(offset),
+                    ...(filters?.status ? { status: filters.status } : {}),
+                    ...(filters?.applyStatus
+                      ? { applyStatus: filters.applyStatus }
+                      : {}),
+                  },
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             data: {
               total: number;
               events: WebhookEvent[];
             };
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events?${params}`,
-          );
+          };
 
           return response.success ? response.data : null;
         } catch (error) {
@@ -1424,12 +1572,15 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchWebhookEventDetails: async (workspaceId, flowId, eventId) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/{eventId}",
+              { params: { path: { workspaceId, flowId, eventId } } },
+            ),
+          ) as {
             success: boolean;
             data: unknown;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}`,
-          );
+          };
 
           return response.success ? response.data : null;
         } catch (error) {
@@ -1440,12 +1591,15 @@ export const useFlowStore = create<FlowStore>()(
 
       retryAllFailedWebhookEvents: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/retry-all-failed",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             data: { retried: number; total: number };
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/retry-all-failed`,
-          );
+          };
           return response.success ? response.data : null;
         } catch (error) {
           console.error("Failed to retry all failed webhook events:", error);
@@ -1455,9 +1609,12 @@ export const useFlowStore = create<FlowStore>()(
 
       retryWebhookEvent: async (workspaceId, flowId, eventId) => {
         try {
-          const response = await apiClient.post<{ success: boolean }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/webhook/events/${eventId}/retry`,
-          );
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/events/{eventId}/retry",
+              { params: { path: { workspaceId, flowId, eventId } } },
+            ),
+          ) as { success: boolean };
           return response.success;
         } catch (error) {
           console.error("Failed to retry webhook event:", error);
@@ -1467,15 +1624,23 @@ export const useFlowStore = create<FlowStore>()(
 
       provisionFlowWebhook: async (workspaceId, flowId, options) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/webhook/provision",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: {
+                  verifySsl: options?.verifySsl,
+                  events: options?.events,
+                  publicBaseUrl: options?.publicBaseUrl,
+                },
+              },
+            ),
+          ) as {
             success: boolean;
             data: ProvisionedWebhook;
             error?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/webhook/provision`, {
-            verifySsl: options?.verifySsl,
-            events: options?.events,
-            publicBaseUrl: options?.publicBaseUrl,
-          });
+          };
           if (!response.success) {
             throw new Error(response.error || "Failed to provision webhook");
           }
@@ -1488,10 +1653,14 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchFlowDetails: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET("/api/workspaces/{workspaceId}/flows/{flowId}", {
+              params: { path: { workspaceId, flowId } },
+            }),
+          ) as {
             success: boolean;
             data: Flow;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}`);
+          };
 
           return response.success ? response.data : null;
         } catch (error) {
@@ -1502,10 +1671,15 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchFlowStatus: async (workspaceId, flowId) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/status",
+              { params: { path: { workspaceId, flowId } } },
+            ),
+          ) as {
             success: boolean;
             data: FlowStatusResponse;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/status`);
+          };
 
           return response.success ? response.data : null;
         } catch (error) {
@@ -1516,12 +1690,15 @@ export const useFlowStore = create<FlowStore>()(
 
       fetchExecutionDetails: async (workspaceId, flowId, executionId) => {
         try {
-          const response = await apiClient.get<{
+          const response = unwrapBody(
+            await api.GET(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/executions/{executionId}",
+              { params: { path: { workspaceId, flowId, executionId } } },
+            ),
+          ) as {
             success: boolean;
             data: ExecutionDetails;
-          }>(
-            `/workspaces/${workspaceId}/flows/${flowId}/executions/${executionId}`,
-          );
+          };
 
           return response.success ? response.data : null;
         } catch (error) {
@@ -1532,12 +1709,18 @@ export const useFlowStore = create<FlowStore>()(
 
       cancelFlowExecution: async (workspaceId, flowId, executionId) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/{flowId}/cancel",
+              {
+                params: { path: { workspaceId, flowId } },
+                body: { executionId },
+              },
+            ),
+          ) as {
             success: boolean;
             message?: string;
-          }>(`/workspaces/${workspaceId}/flows/${flowId}/cancel`, {
-            executionId,
-          });
+          };
           return response.success;
         } catch (error) {
           console.error("Failed to cancel flow execution", error);
@@ -1547,7 +1730,15 @@ export const useFlowStore = create<FlowStore>()(
 
       validateDbQuery: async (workspaceId, connectionId, query, database) => {
         try {
-          const response = await apiClient.post<{
+          const response = unwrapBody(
+            await api.POST(
+              "/api/workspaces/{workspaceId}/flows/validate-query",
+              {
+                params: { path: { workspaceId } },
+                body: { connectionId, query, database },
+              },
+            ),
+          ) as {
             success: boolean;
             data?: {
               columns?: Array<{ name: string; type: string }>;
@@ -1568,11 +1759,7 @@ export const useFlowStore = create<FlowStore>()(
               errors: string[];
               suggestedFixes?: string[];
             };
-          }>(`/workspaces/${workspaceId}/flows/validate-query`, {
-            connectionId,
-            query,
-            database,
-          });
+          };
 
           if (response.success && response.data) {
             return {

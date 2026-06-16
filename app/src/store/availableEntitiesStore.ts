@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 
 export interface ConnectorEntityLayoutSuggestion {
   partitionField?: string;
@@ -123,9 +123,12 @@ export const useAvailableEntitiesStore = create<AvailableEntitiesState>()(
       });
 
       try {
-        const json = await apiClient.get<
-          ApiResponse<AvailableConnectorEntity[]>
-        >(`/workspaces/${workspaceId}/connectors/${connectorId}/entities`);
+        const json = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/connectors/{id}/entities",
+            { params: { path: { workspaceId, id: connectorId } } },
+          ),
+        ) as ApiResponse<AvailableConnectorEntity[]>;
         if (json.success) {
           const list: AvailableConnectorEntity[] = json.data || [];
           set(state => {

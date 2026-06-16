@@ -8,6 +8,7 @@
     "build": "pnpm run lint && tsc --noEmit && vite build",
     "test:unit": "vitest run",
     "typecheck": "tsc --noEmit",
+    "generate:api-types": "openapi-typescript ../docs/src/openapi/mako-api.json -o src/api/schema.d.ts",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"
@@ -43,6 +44,7 @@
     "mui-chips-input": "^9.0.0",
     "nanoid": "^5.1.7",
     "openai": "^4.103.0",
+    "openapi-fetch": "^0.17.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-grid-layout": "^2.2.2",
@@ -72,6 +74,7 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^5.2.0",
     "eslint-plugin-react-refresh": "^0.4.20",
+    "openapi-typescript": "^7.13.0",
     "react-scan": "^0.5.3",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.2.2",

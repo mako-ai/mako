@@ -6,7 +6,7 @@
  */
 
 import { create } from "zustand";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 
 export interface BillingStatus {
   billingEnabled: boolean;
@@ -56,9 +56,11 @@ export const useBillingStore = create<BillingState>()(set => ({
       error: null,
     }));
     try {
-      const data = await apiClient.get<BillingStatus>(
-        `/workspaces/${workspaceId}/billing/status`,
-      );
+      const data = unwrapBody(
+        await api.GET("/api/workspaces/{workspaceId}/billing/status", {
+          params: { path: { workspaceId } },
+        }),
+      ) as BillingStatus;
       set({ workspaceId, status: data, isLoading: false });
     } catch (err) {
       set({
@@ -78,10 +80,12 @@ export const useBillingStore = create<BillingState>()(set => ({
   ) => {
     set({ error: null });
     try {
-      const result = await apiClient.post<{ url: string }>(
-        `/workspaces/${workspaceId}/billing/checkout`,
-        { successUrl, cancelUrl },
-      );
+      const result = unwrapBody(
+        await api.POST("/api/workspaces/{workspaceId}/billing/checkout", {
+          params: { path: { workspaceId } },
+          body: { successUrl, cancelUrl },
+        }),
+      ) as { url: string };
       return result.url;
     } catch (err) {
       set({
@@ -94,10 +98,12 @@ export const useBillingStore = create<BillingState>()(set => ({
   createPortalSession: async (workspaceId: string, returnUrl?: string) => {
     set({ error: null });
     try {
-      const result = await apiClient.post<{ url: string }>(
-        `/workspaces/${workspaceId}/billing/portal`,
-        { returnUrl },
-      );
+      const result = unwrapBody(
+        await api.POST("/api/workspaces/{workspaceId}/billing/portal", {
+          params: { path: { workspaceId } },
+          body: { returnUrl },
+        }),
+      ) as { url: string };
       return result.url;
     } catch (err) {
       set({

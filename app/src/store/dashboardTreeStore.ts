@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import {
   findById,
   removeById,
@@ -143,11 +143,15 @@ export const useDashboardTreeStore = create<DashboardTreeState>()(
         state.error[workspaceId] = null;
       });
       try {
-        const data = await apiClient.get<{
+        const data = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/dashboards", {
+            params: { path: { workspaceId } },
+          }),
+        ) as {
           success: boolean;
           myDashboards?: DashboardEntry[];
           workspaceDashboards?: DashboardEntry[];
-        }>(`/workspaces/${workspaceId}/dashboards`);
+        };
 
         set(state => {
           state.myDashboards[workspaceId] = data.myDashboards ?? [];
@@ -195,9 +199,14 @@ export const useDashboardTreeStore = create<DashboardTreeState>()(
       });
 
       try {
-        await apiClient.patch(
-          `/workspaces/${workspaceId}/dashboards/${itemId}/move`,
-          { folderId: targetFolderId, access },
+        unwrapBody(
+          await api.PATCH(
+            "/api/workspaces/{workspaceId}/dashboards/{id}/move",
+            {
+              params: { path: { workspaceId, id: itemId } },
+              body: { folderId: targetFolderId, access },
+            },
+          ),
         );
       } catch {
         await get().refresh(workspaceId);
@@ -223,9 +232,14 @@ export const useDashboardTreeStore = create<DashboardTreeState>()(
       });
 
       try {
-        await apiClient.patch(
-          `/workspaces/${workspaceId}/dashboards/folders/${folderId}/move`,
-          { parentId, access },
+        unwrapBody(
+          await api.PATCH(
+            "/api/workspaces/{workspaceId}/dashboards/folders/{id}/move",
+            {
+              params: { path: { workspaceId, id: folderId } },
+              body: { parentId, access },
+            },
+          ),
         );
       } catch {
         await get().refresh(workspaceId);
@@ -269,14 +283,15 @@ export const useDashboardTreeStore = create<DashboardTreeState>()(
       });
 
       try {
-        const res = await apiClient.post<{
+        const res = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/dashboards/folders", {
+            params: { path: { workspaceId } },
+            body: { name, parentId, access: resolvedAccess },
+          }),
+        ) as {
           success: boolean;
           data: { id: string; name: string };
-        }>(`/workspaces/${workspaceId}/dashboards/folders`, {
-          name,
-          parentId,
-          access: resolvedAccess,
-        });
+        };
 
         const realId = res.data?.id;
         if (realId) {
@@ -318,14 +333,23 @@ export const useDashboardTreeStore = create<DashboardTreeState>()(
       });
 
       try {
-        const endpoint = isDirectory
-          ? `/workspaces/${workspaceId}/dashboards/folders/${itemId}/rename`
-          : `/workspaces/${workspaceId}/dashboards/${itemId}`;
-
         if (isDirectory) {
-          await apiClient.patch(endpoint, { name });
+          unwrapBody(
+            await api.PATCH(
+              "/api/workspaces/{workspaceId}/dashboards/folders/{id}/rename",
+              {
+                params: { path: { workspaceId, id: itemId } },
+                body: { name },
+              },
+            ),
+          );
         } else {
-          await apiClient.put(endpoint, { title: name });
+          unwrapBody(
+            await api.PUT("/api/workspaces/{workspaceId}/dashboards/{id}", {
+              params: { path: { workspaceId, id: itemId } },
+              body: { title: name },
+            }),
+          );
         }
       } catch {
         await get().refresh(workspaceId);
@@ -338,10 +362,20 @@ export const useDashboardTreeStore = create<DashboardTreeState>()(
       });
 
       try {
-        const endpoint = isDirectory
-          ? `/workspaces/${workspaceId}/dashboards/folders/${itemId}`
-          : `/workspaces/${workspaceId}/dashboards/${itemId}`;
-        await apiClient.delete(endpoint);
+        if (isDirectory) {
+          unwrapBody(
+            await api.DELETE(
+              "/api/workspaces/{workspaceId}/dashboards/folders/{id}",
+              { params: { path: { workspaceId, id: itemId } } },
+            ),
+          );
+        } else {
+          unwrapBody(
+            await api.DELETE("/api/workspaces/{workspaceId}/dashboards/{id}", {
+              params: { path: { workspaceId, id: itemId } },
+            }),
+          );
+        }
       } catch {
         await get().refresh(workspaceId);
       }
