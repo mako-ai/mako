@@ -1,0 +1,233 @@
+---
+title: "How to Connect to SQL Server from Go"
+description: "Connect to Microsoft SQL Server from Go with the official microsoft/go-mssqldb driver. Working code for the URL DSN, @p1 named parameters, the LastInsertId trap, the encrypt default, named instances, Azure AD auth, and connection pooling."
+database: "mssql"
+category: "how-to"
+tags: ["sqlserver", "mssql", "go", "golang", "go-mssqldb", "database-sql", "connection"]
+date: "2026-06-16"
+---
+
+Connecting to Microsoft SQL Server from Go has settled on a single official driver: `microsoft/go-mssqldb`. It is a pure Go implementation of the TDS protocol that plugs into the standard `database/sql` interface, so the connection mechanics look familiar if you have used any other Go SQL driver. What does not carry over is the parameter syntax, the way you retrieve a generated ID, and the encryption defaults. Those three are where most first connections go wrong, so this guide covers them in detail.
+
+## The driver
+
+| Driver | Import path | Interface | Version (as of June 2026) |
+|---|---|---|---|
+| microsoft/go-mssqldb | `github.com/microsoft/go-mssqldb` | `database/sql` | v1.10.0 |
+
+There used to be two relevant packages. The original `denisenkom/go-mssqldb` is now in maintenance only (last release v0.12.3, October 2022) and its README points to the Microsoft fork. The Microsoft fork is the one to use: it is actively maintained, requires Go 1.17 or newer, and adds Azure AD / Microsoft Entra authentication through a sub-package. There is no cgo dependency, so cross-compilation and minimal container images work without a C toolchain.
+
+```sh
+go get github.com/microsoft/go-mssqldb
+```
+
+The driver registers itself with `database/sql` under the name `sqlserver` via a blank import:
+
+```go
+import (
+	"database/sql"
+
+	_ "github.com/microsoft/go-mssqldb"
+)
+```
+
+## Connect
+
+The recommended DSN is a URL. The driver also accepts ADO and ODBC style connection strings, but the URL form is the easiest to read and the one most examples use:
+
+```go
+package main
+
+import (
+	"context"
+	"database/sql"
+	"log"
+	"time"
+
+	_ "github.com/microsoft/go-mssqldb"
+)
+
+func main() {
+	dsn := "sqlserver://appuser:secret@127.0.0.1:1433?database=mydb&encrypt=true&app+name=myservice"
+
+	db, err := sql.Open("sqlserver", dsn)
+	if err != nil {
+		log.Fatal(err) // only DSN parse errors surface here
+	}
+	defer db.Close()
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatal(err) // the real connection error shows up here
+	}
+	log.Println("connected")
+}
+```
+
+`sql.Open` does not open a connection. It validates the DSN and returns a pool handle. The first real network round trip happens on `PingContext` or your first query, so ping at startup if you want connection failures to surface immediately rather than on the first request. Pass the database with the `database` query parameter; putting it in the URL path is for the named-instance form described below.
+
+## Parameters use @p1, not ? or $1
+
+This is the difference that trips up everyone coming from MySQL or PostgreSQL drivers. The `sqlserver` driver does not accept `?` placeholders. It expects SQL Server's own syntax: positional `@p1` through `@pN`, or named parameters with `sql.Named`.
+
+Positional:
+
+```go
+var name string
+var price float64
+err := db.QueryRowContext(ctx,
+	"SELECT name, price FROM products WHERE id = @p1",
+	42,
+).Scan(&name, &price)
+```
+
+Named, which reads better when a value is used more than once:
+
+```go
+rows, err := db.QueryContext(ctx,
+	"SELECT id, name FROM products WHERE category = @cat AND price < @max",
+	sql.Named("cat", "tools"),
+	sql.Named("max", 100),
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer rows.Close()
+
+for rows.Next() {
+	var id int
+	var name string
+	if err := rows.Scan(&id, &name); err != nil {
+		log.Fatal(err)
+	}
+	log.Println(id, name)
+}
+if err := rows.Err(); err != nil { // catches errors mid-iteration
+	log.Fatal(err)
+}
+```
+
+Two loop habits worth keeping: `defer rows.Close()` so a connection is not held when you return early, and check `rows.Err()` after the loop because `rows.Next()` returning `false` can mean either "done" or "failed".
+
+## LastInsertId does not work
+
+The other SQL Server specific trap. Calling `result.LastInsertId()` returns an error, not an ID:
+
+```
+LastInsertId is not supported. Please use the OUTPUT clause or add
+`select ID = convert(bigint, SCOPE_IDENTITY())` to the end of your query.
+```
+
+This is by design. SQL Server does not hand back generated keys the way MySQL does, so the driver refuses to guess. Retrieve the new ID explicitly. The cleanest way is an `OUTPUT` clause read with `QueryRow`:
+
+```go
+var newID int64
+err := db.QueryRowContext(ctx,
+	"INSERT INTO products (name, price) OUTPUT INSERTED.id VALUES (@p1, @p2)",
+	"Hammer", 19.99,
+).Scan(&newID)
+```
+
+`OUTPUT INSERTED.id` returns the generated value as a result set, so you treat the insert as a query. `SCOPE_IDENTITY()` works too, but `OUTPUT` is safe in the presence of triggers and handles multi-row inserts.
+
+## The encrypt default is weaker than you expect
+
+The Microsoft .NET and ODBC drivers default to encrypting connections. This Go driver does not. With `encrypt` unset, only the login packet is encrypted and the rest of the session travels in clear text. The accepted values:
+
+| `encrypt` value | Behavior |
+|---|---|
+| `false` / `optional` (default) | Only the login packet is encrypted |
+| `true` / `mandatory` | The whole session is encrypted; a valid server certificate is required |
+| `strict` | Full end-to-end TDS 8 encryption |
+| `disable` | No encryption at all |
+
+For anything beyond a local connection, set `encrypt=true`. If the server uses a self-signed certificate (common in development) the handshake will fail with a certificate error; add `trustservercertificate=true` to skip verification. Use that flag in development only, never against a production or Azure SQL endpoint, since it removes protection against a man-in-the-middle. Azure SQL Database always requires encryption and presents a valid certificate, so `encrypt=true` alone is correct there.
+
+```go
+dsn := "sqlserver://appuser:secret@db.example.com?database=mydb&encrypt=true"
+```
+
+## Named instances and ports
+
+SQL Server often runs as a named instance rather than on the default port 1433. Two ways to reach one. Give an explicit port if you know it:
+
+```
+sqlserver://user:pass@host:1455?database=mydb
+```
+
+Or name the instance in the URL path and let the driver discover the port through the SQL Server Browser service:
+
+```
+sqlserver://user:pass@host/SQLEXPRESS?database=mydb
+```
+
+The path form requires the SQL Server Browser service to be running on the host and UDP port 1434 to be reachable. If discovery fails, fall back to specifying the port directly.
+
+## Connection pooling
+
+`*sql.DB` is a pool and is safe for concurrent use, so create one at startup and share it. The defaults are unbounded open connections and two idle connections, which is rarely what you want against SQL Server. Size the pool against the server's connection limits and your process count:
+
+```go
+db.SetMaxOpenConns(25)              // ceiling on concurrent connections
+db.SetMaxIdleConns(25)              // keep idle ones ready, match MaxOpenConns
+db.SetConnMaxLifetime(5 * time.Minute) // recycle before the server drops them
+```
+
+Remember the total connection count is `MaxOpenConns` multiplied by the number of running processes. A handful of replicas with a high cap can exhaust the server's worker threads, so coordinate the value with your deployment topology.
+
+## Context and cancellation
+
+Use the `...Context` methods everywhere so a cancelled request or an expired deadline actually stops the work on the server rather than leaving it running:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+var total int
+err := db.QueryRowContext(ctx, "SELECT count(*) FROM orders").Scan(&total)
+```
+
+The driver also recommends leaving `connection timeout` at 0 in the DSN and managing all timeouts through context, which keeps timeout handling in one place.
+
+## Azure AD / Microsoft Entra authentication
+
+For Azure SQL Database with Entra authentication instead of SQL logins, import the `azuread` sub-package, which registers a separate driver named `azuresql`:
+
+```go
+import (
+	"database/sql"
+
+	_ "github.com/microsoft/go-mssqldb/azuread"
+)
+
+// ...
+db, err := sql.Open("azuresql",
+	"sqlserver://your-server.database.windows.net?database=mydb&fedauth=ActiveDirectoryDefault")
+```
+
+`ActiveDirectoryDefault` walks the standard Azure credential chain (environment variables, managed identity, Azure CLI login), which is the right choice for code that runs both locally and on Azure infrastructure. Other `fedauth` modes cover managed identity, service principals, and interactive login.
+
+## Common errors
+
+| Error | Likely cause |
+|---|---|
+| `LastInsertId is not supported` | Calling `result.LastInsertId()`; use `OUTPUT INSERTED` or `SCOPE_IDENTITY()` instead |
+| `mssql: Login failed for user '...'` | Wrong credentials, or the login lacks access to the target database |
+| `TLS Handshake failed: ... certificate signed by unknown authority` | `encrypt=true` against a self-signed cert; add `trustservercertificate=true` in development |
+| `Unable to open tcp connection ... connectex: ... refused` | Server not listening on that host/port, or TCP/IP disabled in SQL Server Configuration Manager |
+| `Cannot open database "..." requested by the login` | The `database` parameter names a database the login cannot reach |
+| `sql: converting argument ... unsupported` / parameter not found | Used `?` or `$1` placeholders; switch to `@p1` or `sql.Named` |
+
+## Where Mako fits
+
+Once the connection works, you still have to explore the schema and get your queries right before wiring them into Go, and SQL Server's `@p1` parameters and `OUTPUT` clauses are easy to get subtly wrong in a code editor. Mako connects to SQL Server (and PostgreSQL, MySQL, ClickHouse, BigQuery, and more) with AI-powered autocomplete, so you can draft and test the exact statements your service will run. It is a read and query tool, not a schema-management GUI, so `CREATE`/`ALTER` work stays in SSMS, Azure Data Studio, or your migration tool.
+
+For loading data first, see our [import CSV to SQL Server](/guides/import-csv-to-mssql) and [import JSON to SQL Server](/guides/import-json-to-mssql) guides. To connect from other languages, see [connect to SQL Server from Python](/guides/mssql/connect-from-python) and [connect to SQL Server from Node.js](/guides/mssql/connect-from-node). For a desktop client, see our [SQL Server GUI client](/guides/mssql-gui-client) guide.
+
+Mako connects to SQL Server with AI-powered autocomplete. Try it free at mako.ai.
