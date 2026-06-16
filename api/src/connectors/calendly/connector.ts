@@ -23,6 +23,9 @@ const logger = loggers.connector("calendly");
 const DEFAULT_BASE_URL = "https://api.calendly.com";
 const MAX_PAGE_LIMIT = 100;
 const WEBHOOK_MAX_SKEW_SECONDS = 3 * 60;
+// Number of scheduled_events whose invitees we fetch concurrently per wave.
+// Kept small so executeWithRetry's 429 backoff stays effective.
+const INVITEES_CONCURRENCY = 8;
 
 const SUPPORTED_WEBHOOK_EVENTS = [
   "invitee.created",
@@ -573,12 +576,21 @@ export class CalendlyConnector extends BaseConnector {
 
     let eventsCursor =
       (state?.metadata?.eventsCursor as string | undefined) ?? undefined;
-    let currentEventUri =
-      (state?.metadata?.currentEventUri as string | undefined) ?? undefined;
-    let inviteesCursor =
-      (state?.metadata?.inviteesCursor as string | undefined) ?? undefined;
-    let pendingEvents =
-      (state?.metadata?.pendingEvents as string[] | undefined) ?? [];
+    // Normalize pendingEvents: current shape is { uri, total }, but legacy
+    // in-flight checkpoints stored a plain string[]. Accept both so a backfill
+    // mid-flight across a deploy doesn't break.
+    let pendingEvents: { uri: string; total?: number }[] = (
+      (state?.metadata?.pendingEvents as
+        | (string | { uri: string; total?: number })[]
+        | undefined) ?? []
+    ).map(ev => (typeof ev === "string" ? { uri: ev } : ev));
+    // Legacy state may have an in-progress event; requeue it (full re-drain).
+    const legacyEventUri = state?.metadata?.currentEventUri as
+      | string
+      | undefined;
+    if (legacyEventUri) {
+      pendingEvents = [{ uri: legacyEventUri }, ...pendingEvents];
+    }
     let recordCount = state?.totalProcessed ?? 0;
     let iterations = 0;
 
@@ -617,7 +629,7 @@ export class CalendlyConnector extends BaseConnector {
       }
       const page = await this.fetchPage("/scheduled_events", params);
       const base = this.getBaseUrl();
-      const uris: string[] = [];
+      const events: { uri: string; total?: number }[] = [];
       for (const item of page.collection) {
         const uri =
           typeof (item as { uri?: unknown }).uri === "string"
@@ -630,75 +642,76 @@ export class CalendlyConnector extends BaseConnector {
           });
           continue;
         }
-        uris.push(uri);
+        const counter = (item as { invitees_counter?: { total?: unknown } })
+          .invitees_counter;
+        const total =
+          typeof counter?.total === "number" ? counter.total : undefined;
+        events.push({ uri, total });
       }
-      pendingEvents = [...pendingEvents, ...uris];
+      pendingEvents = [...pendingEvents, ...events];
       eventsCursor = page.pagination.next_page_token ?? undefined;
     };
 
-    while (iterations < maxIterations) {
-      if (!currentEventUri) {
-        if (pendingEvents.length === 0) {
-          if (eventsCursor === undefined && iterations > 0) {
-            return {
-              totalProcessed: recordCount,
-              hasMore: false,
-              iterationsInChunk: iterations,
-              metadata: {
-                eventsCursor: null,
-                currentEventUri: null,
-                inviteesCursor: null,
-                pendingEvents: [],
-              },
-            };
-          }
-          await loadMoreEvents();
-          iterations++;
-          if (pendingEvents.length === 0 && !eventsCursor) {
-            return {
-              totalProcessed: recordCount,
-              hasMore: false,
-              iterationsInChunk: iterations,
-              metadata: {
-                eventsCursor: null,
-                currentEventUri: null,
-                inviteesCursor: null,
-                pendingEvents: [],
-              },
-            };
-          }
-          continue;
+    // Fetch every invitee page for a single event (most events are 1 page).
+    const drainInvitees = async (
+      eventUri: string,
+    ): Promise<Record<string, unknown>[]> => {
+      const records: Record<string, unknown>[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await fetchInviteesPage(eventUri, cursor);
+        for (const item of page.collection) {
+          records.push(withId(item as Record<string, unknown>));
         }
-        currentEventUri = pendingEvents.shift();
-        inviteesCursor = undefined;
+        cursor = page.pagination.next_page_token ?? undefined;
+      } while (cursor);
+      return records;
+    };
+
+    const finished = (): FetchState => ({
+      totalProcessed: recordCount,
+      hasMore: false,
+      iterationsInChunk: iterations,
+      metadata: {
+        eventsCursor: null,
+        pendingEvents: [],
+      },
+    });
+
+    while (iterations < maxIterations) {
+      if (pendingEvents.length === 0) {
+        if (eventsCursor === undefined && iterations > 0) {
+          return finished();
+        }
+        await loadMoreEvents();
+        iterations++;
+        if (pendingEvents.length === 0 && !eventsCursor) {
+          return finished();
+        }
+        continue;
       }
 
-      const page = await fetchInviteesPage(
-        currentEventUri as string,
-        inviteesCursor,
-      );
-      iterations++;
+      // Take a wave, skipping events known to have zero invitees (no API call).
+      const wave: string[] = [];
+      while (wave.length < INVITEES_CONCURRENCY && pendingEvents.length > 0) {
+        const ev = pendingEvents.shift() as { uri: string; total?: number };
+        if (ev.total === 0) continue;
+        wave.push(ev.uri);
+      }
+      if (wave.length === 0) continue;
 
-      const records = page.collection.map(item =>
-        withId(item as Record<string, unknown>),
-      );
+      const results = await Promise.all(wave.map(uri => drainInvitees(uri)));
+      iterations += wave.length;
+
+      const records = results.flat();
       if (records.length > 0) {
         await onBatch(records);
         recordCount += records.length;
         onProgress?.(recordCount, undefined);
       }
-
-      inviteesCursor = page.pagination.next_page_token ?? undefined;
-
-      if (!inviteesCursor) {
-        currentEventUri = undefined;
-      }
-
-      await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
     }
 
-    const exhausted =
-      !currentEventUri && pendingEvents.length === 0 && !eventsCursor;
+    const exhausted = pendingEvents.length === 0 && !eventsCursor;
 
     return {
       totalProcessed: recordCount,
@@ -707,14 +720,10 @@ export class CalendlyConnector extends BaseConnector {
       metadata: exhausted
         ? {
             eventsCursor: null,
-            currentEventUri: null,
-            inviteesCursor: null,
             pendingEvents: [],
           }
         : {
             eventsCursor: eventsCursor ?? null,
-            currentEventUri: currentEventUri ?? null,
-            inviteesCursor: inviteesCursor ?? null,
             pendingEvents,
           },
     };
