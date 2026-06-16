@@ -24,6 +24,16 @@ import {
   type DbtLogLine,
 } from "../../dbt/runner.service";
 import { triggerDbtJobRun } from "../../dbt/dbt-run.service";
+import {
+  computePackagesHash,
+  loadDbtCaches,
+  saveParseCache,
+  savePackagesCache,
+} from "../../dbt/dbt-cache.service";
+import {
+  warmDirsEnabled,
+  withProjectDir,
+} from "../../dbt/workspace-dir.service";
 import { getNextScheduledConsoleRunAt } from "../../services/scheduled-query-schedule.service";
 import { getDashboardArtifactStore } from "../../services/dashboard-artifact-store.service";
 
@@ -212,19 +222,69 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           runInfo.deferStateKey ?? undefined,
         );
 
+        // Warm caches: skip a full re-parse (and `dbt deps` when packages are
+        // unchanged) by seeding the previous command/run's state. Best-effort.
+        const cacheScope = {
+          workspaceId: data.workspaceId,
+          projectId: data.projectId,
+          environment: runInfo.environment,
+        };
+        const packagesHash = computePackagesHash(snapshot.files);
+        const caches = await loadDbtCaches(cacheScope, packagesHash);
+
         try {
-          const result = await runDbt({
-            files: snapshot.files,
-            profile: snapshot.profile,
-            commands: [parsed],
-            dbtVersion: snapshot.project.dbtVersion,
-            // Cloud Run services deploy with --timeout=3600; leave buffer for
-            // snapshot loading + artifact upload within the step request.
-            commandTimeoutMs: 50 * 60 * 1000,
-            restoreTarget,
-            deferState,
-            onLog: logWriter.onLog,
-          });
+          // Deploy builds run in a warm dir (role=run), separate from the
+          // interactive (adhoc) dir so the two never block each other. The
+          // artifact caches above seed a cold instance; thereafter target/ and
+          // dbt_packages/ stay warm on disk across steps and runs.
+          const runOnce = (workingDir?: string) =>
+            runDbt({
+              files: snapshot.files,
+              profile: snapshot.profile,
+              commands: [parsed],
+              dbtVersion: snapshot.project.dbtVersion,
+              // Cloud Run services deploy with --timeout=3600; leave buffer for
+              // snapshot loading + artifact upload within the step request.
+              commandTimeoutMs: 50 * 60 * 1000,
+              restoreTarget,
+              deferState,
+              seedPartialParse: caches.partialParse,
+              seedPackagesArchive: caches.packages,
+              skipDeps: caches.packagesFresh,
+              packagesHash,
+              workingDir,
+              onLog: logWriter.onLog,
+            });
+
+          let result: Awaited<ReturnType<typeof runDbt>> | undefined;
+          if (warmDirsEnabled()) {
+            try {
+              result = await withProjectDir(
+                { ...cacheScope, role: "run" },
+                dir => runOnce(dir),
+              );
+            } catch (warmError) {
+              logger.warn(
+                "Warm dir run failed; falling back to throwaway dir",
+                {
+                  error: String(warmError),
+                },
+              );
+            }
+          }
+          if (!result) result = await runOnce(undefined);
+
+          // Persist refreshed caches for the next command/run.
+          if (result.artifacts.partialParse) {
+            await saveParseCache(cacheScope, result.artifacts.partialParse);
+          }
+          if (result.artifacts.packagesArchive && packagesHash) {
+            await savePackagesCache(
+              cacheScope,
+              result.artifacts.packagesArchive,
+              packagesHash,
+            );
+          }
 
           const commandResult = result.commandResults[0];
           const stepResults = [

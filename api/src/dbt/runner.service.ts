@@ -8,9 +8,17 @@
  */
 
 import { spawn } from "child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "fs/promises";
 import { tmpdir } from "os";
-import { dirname, join, normalize, sep } from "path";
+import { dirname, join, normalize, relative, sep } from "path";
 import { loggers } from "../logging";
 import type { ParsedDbtCommand } from "./commands";
 import type { RenderedProfile } from "./adapter-map";
@@ -46,6 +54,34 @@ export interface DbtRunRequest {
    * `--select state:modified+` only builds what changed.
    */
   deferState?: Buffer;
+  /**
+   * dbt's partial-parse manifest from a previous run. Seeded into
+   * target/partial_parse.msgpack so dbt re-parses only changed files. dbt
+   * validates it against file checksums + config and full-parses on mismatch,
+   * so a stale buffer is always safe.
+   */
+  seedPartialParse?: Buffer;
+  /**
+   * tgz of a previously-installed dbt_packages/ (+ package-lock.yml). Extracted
+   * into the project dir before commands so `dbt deps` can be skipped.
+   */
+  seedPackagesArchive?: Buffer;
+  /**
+   * Skip `dbt deps` (used together with seedPackagesArchive when the cached
+   * packages tree is still valid for the current packages.yml).
+   */
+  skipDeps?: boolean;
+  /**
+   * Reuse a stable warm directory instead of a throwaway temp dir. The caller
+   * owns its lifecycle (serialization + eviction); runDbt syncs files in place
+   * (write-if-changed + delete reconciliation) and does NOT delete it on exit.
+   */
+  workingDir?: string;
+  /**
+   * Hash of the dependency declarations. With a warm `workingDir`, lets runDbt
+   * skip `dbt deps` when the on-disk dbt_packages/ tree already matches.
+   */
+  packagesHash?: string | null;
   signal?: AbortSignal;
   onLog?: (line: DbtLogLine) => void;
 }
@@ -78,6 +114,10 @@ export interface DbtRunResult {
     catalog?: Buffer;
     /** Written by `dbt source freshness`. */
     sources?: Buffer;
+    /** dbt's partial-parse manifest — cache for the next run's parse. */
+    partialParse?: Buffer;
+    /** tgz of dbt_packages/ — only present when `dbt deps` ran this command. */
+    packagesArchive?: Buffer;
   };
 }
 
@@ -143,6 +183,147 @@ async function readArtifact(
     return await readFile(join(projectDir, "target", name));
   } catch {
     return undefined;
+  }
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Run `tar` as a subprocess; rejects on non-zero exit. */
+function runTar(args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("tar", args, {
+      cwd,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("close", code => {
+      if (code === 0) resolve();
+      else reject(new Error(`tar exited ${code}: ${stderr.slice(0, 500)}`));
+    });
+  });
+}
+
+/** gzip-tar the given entries (those that exist) under projectDir into a Buffer. */
+async function archiveEntries(
+  projectDir: string,
+  entries: string[],
+): Promise<Buffer | undefined> {
+  const present: string[] = [];
+  for (const entry of entries) {
+    if (await pathExists(join(projectDir, entry))) present.push(entry);
+  }
+  if (present.length === 0) return undefined;
+  const tarPath = join(projectDir, ".mako-cache-out.tgz");
+  try {
+    await runTar(["-czf", tarPath, ...present], projectDir);
+    return await readFile(tarPath);
+  } catch (error) {
+    logger.warn("Failed to archive dbt cache entries", {
+      error: String(error),
+    });
+    return undefined;
+  } finally {
+    await rm(tarPath, { force: true }).catch(() => {});
+  }
+}
+
+/** Extract a gzip-tar buffer into projectDir. Best-effort. */
+async function extractArchive(
+  buffer: Buffer,
+  projectDir: string,
+): Promise<void> {
+  const tarPath = join(projectDir, ".mako-cache-in.tgz");
+  try {
+    await writeFile(tarPath, buffer);
+    await runTar(["-xzf", tarPath], projectDir);
+  } finally {
+    await rm(tarPath, { force: true }).catch(() => {});
+  }
+}
+
+/** Write only when content differs — avoids needless mtime bumps that would
+ * defeat dbt's checksum-based partial parsing in a warm dir. */
+async function writeFileIfChanged(
+  absolute: string,
+  content: string,
+  mode?: number,
+): Promise<void> {
+  try {
+    const existing = await readFile(absolute, "utf8");
+    if (existing === content) return;
+  } catch {
+    // Missing — fall through to write.
+  }
+  await mkdir(dirname(absolute), { recursive: true });
+  await writeFile(
+    absolute,
+    content,
+    mode ? { encoding: "utf8", mode } : "utf8",
+  );
+}
+
+// Top-level entries dbt (or we) own — never pruned during reconciliation.
+const RECONCILE_PRESERVED_DIRS = new Set([
+  "target",
+  "dbt_packages",
+  "logs",
+  "state",
+]);
+const RECONCILE_PRESERVED_FILES = new Set(["profiles.yml", "package-lock.yml"]);
+
+async function listFilesRecursive(
+  root: string,
+  current: string,
+  out: string[],
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(current, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const abs = join(current, entry.name);
+    const rel = relative(root, abs).split(sep).join("/");
+    const top = rel.split("/")[0];
+    if (RECONCILE_PRESERVED_DIRS.has(top)) continue;
+    if (entry.isDirectory()) {
+      await listFilesRecursive(root, abs, out);
+    } else if (entry.isFile()) {
+      out.push(rel);
+    }
+  }
+}
+
+/**
+ * Delete files in a warm dir that are no longer part of the project snapshot
+ * (e.g. a model the user deleted), so a stale file can never be built. Keeps
+ * dbt-owned dirs, profiles.yml, keyfiles, and our dotfiles.
+ */
+async function reconcileWarmDir(
+  projectDir: string,
+  keep: Set<string>,
+): Promise<void> {
+  const present: string[] = [];
+  await listFilesRecursive(projectDir, projectDir, present);
+  for (const rel of present) {
+    if (keep.has(rel)) continue;
+    if (RECONCILE_PRESERVED_FILES.has(rel)) continue;
+    if (rel.startsWith(".")) continue; // our markers / cache scratch
+    await rm(join(projectDir, ...rel.split("/")), { force: true }).catch(
+      () => {},
+    );
   }
 }
 
@@ -223,42 +404,103 @@ function execDbtCommand(params: {
 }
 
 /**
+ * Sync a dbt project onto disk: project files + profiles.yml + credential
+ * keyfiles (0600). Writes only changed files (so warm dirs keep dbt's
+ * checksum-based partial parsing valid) and, when `reconcile` is set, prunes
+ * files no longer in the snapshot so a deleted model can never be built.
+ *
+ * Returns the keyfile env map (absolute paths the profile's env_var()
+ * references resolve to). Shared by {@link runDbt} (subprocess) and the
+ * resident engine's prepare so both operate on an identical tree.
+ */
+export async function materializeDbtProject(
+  projectDir: string,
+  params: {
+    files: Array<{ path: string; content: string }>;
+    profile: RenderedProfile;
+    reconcile?: boolean;
+  },
+): Promise<{ keyfileEnv: Record<string, string> }> {
+  // Preserve list for reconciliation (profiles.yml + every snapshot file +
+  // keyfiles get added below).
+  const keep = new Set<string>(["profiles.yml"]);
+
+  for (const file of params.files) {
+    const safePath = ensureSafeRelativePath(file.path);
+    keep.add(safePath);
+    await writeFileIfChanged(
+      join(projectDir, ...safePath.split("/")),
+      file.content,
+    );
+  }
+  await writeFileIfChanged(
+    join(projectDir, "profiles.yml"),
+    params.profile.profilesYml,
+  );
+
+  // Credential files (e.g. BigQuery service-account JSON) with restrictive
+  // perms; their absolute paths are exported so env_var() keyfile refs resolve.
+  const keyfileEnv: Record<string, string> = {};
+  for (const keyfile of params.profile.keyfiles ?? []) {
+    const safePath = ensureSafeRelativePath(keyfile.filename);
+    keep.add(safePath);
+    const absolute = join(projectDir, ...safePath.split("/"));
+    await writeFileIfChanged(absolute, keyfile.content, 0o600);
+    keyfileEnv[keyfile.envVar] = absolute;
+  }
+
+  if (params.reconcile) await reconcileWarmDir(projectDir, keep);
+  return { keyfileEnv };
+}
+
+/**
+ * Seed artifact-store caches into a cold project dir so the resident engine's
+ * first parse is incremental (partial-parse manifest) and package-aware
+ * (dbt_packages/ present, so `dbt parse` resolves package macros without a
+ * `dbt deps` install). No-op when the dir already has fresher on-disk state.
+ */
+export async function seedDbtCaches(
+  projectDir: string,
+  caches: { partialParse?: Buffer; packagesArchive?: Buffer },
+): Promise<void> {
+  if (caches.partialParse) {
+    const pp = join(projectDir, "target", "partial_parse.msgpack");
+    if (!(await pathExists(pp))) {
+      await mkdir(join(projectDir, "target"), { recursive: true });
+      await writeFile(pp, caches.partialParse).catch(() => {});
+    }
+  }
+  if (
+    caches.packagesArchive &&
+    !(await pathExists(join(projectDir, "dbt_packages")))
+  ) {
+    await extractArchive(caches.packagesArchive, projectDir).catch(() => {});
+  }
+}
+
+/**
  * Materialize project files + profiles.yml into a temp dir, run each
  * pre-validated command in order (stopping at the first failure), collect
  * target/ artifacts, and always clean up the temp dir.
  */
 export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
-  const projectDir = await mkdtemp(join(tmpdir(), "mako-dbt-"));
+  // A caller-provided warm dir is reused across runs (caller owns its
+  // lifecycle); otherwise use a throwaway temp dir we clean up on exit.
+  const ownsDir = !request.workingDir;
+  const projectDir =
+    request.workingDir ?? (await mkdtemp(join(tmpdir(), "mako-dbt-")));
   const commandResults: DbtCommandResult[] = [];
   const artifacts: DbtRunResult["artifacts"] = {};
 
   try {
-    for (const file of request.files) {
-      const safePath = ensureSafeRelativePath(file.path);
-      const absolute = join(projectDir, ...safePath.split("/"));
-      await mkdir(dirname(absolute), { recursive: true });
-      await writeFile(absolute, file.content, "utf8");
-    }
-    await writeFile(
-      join(projectDir, "profiles.yml"),
-      request.profile.profilesYml,
-      "utf8",
-    );
-
-    // Materialize credential files (e.g. BigQuery service-account JSON) with
-    // restrictive perms and export their absolute paths so the profile's
-    // env_var('...') keyfile references resolve. Contents are never logged.
-    const keyfileEnv: Record<string, string> = {};
-    for (const keyfile of request.profile.keyfiles ?? []) {
-      const safePath = ensureSafeRelativePath(keyfile.filename);
-      const absolute = join(projectDir, ...safePath.split("/"));
-      await mkdir(dirname(absolute), { recursive: true });
-      await writeFile(absolute, keyfile.content, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      keyfileEnv[keyfile.envVar] = absolute;
-    }
+    // Sync project files + profiles.yml + keyfiles into the dir (write-if-
+    // changed + delete reconciliation for warm dirs). Shared with the resident
+    // engine's prepare so both see an identical on-disk tree.
+    const { keyfileEnv } = await materializeDbtProject(projectDir, {
+      files: request.files,
+      profile: request.profile,
+      reconcile: !ownsDir,
+    });
 
     // Seed prior artifacts into target/ for `dbt retry` (run_results.json is
     // what dbt reads to resume at the failed/skipped nodes).
@@ -287,6 +529,25 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       await writeFile(join(stateDir, "manifest.json"), request.deferState);
     }
 
+    // Warm dbt's parser: seed the previous run's partial-parse manifest so
+    // only changed files are re-parsed. dbt self-invalidates on checksum /
+    // config mismatch, so a stale buffer just triggers a full parse. In a warm
+    // dir the on-disk manifest is fresher than any seed, so only seed when the
+    // dir is cold (no existing manifest).
+    if (request.seedPartialParse) {
+      const partialParsePath = join(
+        projectDir,
+        "target",
+        "partial_parse.msgpack",
+      );
+      if (!(await pathExists(partialParsePath))) {
+        await mkdir(join(projectDir, "target"), { recursive: true });
+        await writeFile(partialParsePath, request.seedPartialParse).catch(
+          () => {},
+        );
+      }
+    }
+
     const resolved = resolveDbtBin(
       request.profile.adapterPackage,
       request.dbtVersion,
@@ -302,41 +563,81 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
 
     // Install packages first when declared. The executor runs one runDbt per
     // command, each in its own temp dir, so deps must be (re)installed here
-    // before any command that depends on package macros can compile.
+    // before any command that depends on package macros can compile — unless
+    // we can restore a cached dbt_packages/ tree and skip the network install.
     if (projectHasPackages(request.files)) {
-      const depsLogLines: DbtLogLine[] = [];
-      const onDepsLog = (line: DbtLogLine) => {
-        depsLogLines.push(line);
-        request.onLog?.(line);
-      };
-      onDepsLog({ ts: new Date(), level: "info", line: "$ dbt deps" });
-      const depsExit = await execDbtCommand({
-        bin: resolved.bin,
-        args: [
-          ...resolved.prefixArgs,
-          "deps",
-          "--profiles-dir",
-          projectDir,
-          "--project-dir",
-          projectDir,
-          "--log-format",
-          "json",
-          "--no-use-colors",
-        ],
-        cwd: projectDir,
-        env: childEnv,
-        timeoutMs: request.commandTimeoutMs ?? 9 * 60 * 1000,
-        signal: request.signal,
-        onLog: onDepsLog,
-      });
-      if (depsExit !== 0) {
-        commandResults.push({
-          command: "deps",
-          exitCode: depsExit,
-          logLines: depsLogLines,
-          runResults: undefined,
+      const packagesMarker = join(projectDir, ".mako_packages_hash");
+
+      // Warm dir already has a matching dbt_packages/ tree → skip deps with no
+      // network call and no extract.
+      let warmFresh = false;
+      if (!ownsDir && request.packagesHash) {
+        const markerHash = await readFile(packagesMarker, "utf8")
+          .then(value => value.trim())
+          .catch(() => undefined);
+        warmFresh =
+          markerHash === request.packagesHash &&
+          (await pathExists(join(projectDir, "dbt_packages")));
+      }
+
+      let packagesSeeded = false;
+      if (!warmFresh && request.seedPackagesArchive) {
+        try {
+          await extractArchive(request.seedPackagesArchive, projectDir);
+          packagesSeeded = true;
+        } catch (error) {
+          logger.warn("Failed to seed dbt_packages cache; running dbt deps", {
+            error: String(error),
+          });
+        }
+      }
+
+      const skipDeps =
+        warmFresh || (request.skipDeps === true && packagesSeeded);
+      if (!skipDeps) {
+        const depsLogLines: DbtLogLine[] = [];
+        const onDepsLog = (line: DbtLogLine) => {
+          depsLogLines.push(line);
+          request.onLog?.(line);
+        };
+        onDepsLog({ ts: new Date(), level: "info", line: "$ dbt deps" });
+        const depsExit = await execDbtCommand({
+          bin: resolved.bin,
+          args: [
+            ...resolved.prefixArgs,
+            "deps",
+            "--profiles-dir",
+            projectDir,
+            "--project-dir",
+            projectDir,
+            "--log-format",
+            "json",
+            "--no-use-colors",
+          ],
+          cwd: projectDir,
+          env: childEnv,
+          timeoutMs: request.commandTimeoutMs ?? 9 * 60 * 1000,
+          signal: request.signal,
+          onLog: onDepsLog,
         });
-        return { success: false, commandResults, artifacts };
+        if (depsExit !== 0) {
+          commandResults.push({
+            command: "deps",
+            exitCode: depsExit,
+            logLines: depsLogLines,
+            runResults: undefined,
+          });
+          return { success: false, commandResults, artifacts };
+        }
+        // Freshly installed — archive so the next run can skip the install.
+        artifacts.packagesArchive = await archiveEntries(projectDir, [
+          "dbt_packages",
+          "package-lock.yml",
+        ]);
+        // Warm dir: record the hash so subsequent runs skip deps entirely.
+        if (!ownsDir && request.packagesHash) {
+          await writeFile(packagesMarker, request.packagesHash).catch(() => {});
+        }
       }
     }
 
@@ -426,10 +727,17 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     artifacts.runResults = await readArtifact(projectDir, "run_results.json");
     artifacts.catalog = await readArtifact(projectDir, "catalog.json");
     artifacts.sources = await readArtifact(projectDir, "sources.json");
+    artifacts.partialParse = await readArtifact(
+      projectDir,
+      "partial_parse.msgpack",
+    );
 
     return { success, commandResults, artifacts };
   } finally {
-    await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    // Only delete throwaway dirs. Warm dirs are owned by the caller and reused.
+    if (ownsDir) {
+      await rm(projectDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

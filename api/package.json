@@ -5,9 +5,10 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "pnpm run lint && cd ../packages/schemas && node ../../api/node_modules/typescript/bin/tsc && cd ../../api && node ./node_modules/typescript/bin/tsc -p tsconfig.build.json && copyfiles -u 1 'src/**/*.svg' 'src/agent-skills/**/*.md' dist",
+    "build": "pnpm run lint && cd ../packages/schemas && node ../../api/node_modules/typescript/bin/tsc && cd ../../api && node ./node_modules/typescript/bin/tsc -p tsconfig.build.json && copyfiles -u 1 'src/**/*.svg' 'src/agent-skills/**/*.md' 'src/**/*.py' dist",
     "start": "tsx src/index.ts",
     "sync": "tsx src/sync/cli.ts",
+    "seed:dbt-demo": "tsx src/scripts/seed-dbt-engine-demo.ts",
     "worker": "tsx src/worker.ts",
     "worker:dev": "tsx watch src/worker.ts",
     "migrate:workspaces": "tsx src/migrations/migrate-to-workspaces.ts",

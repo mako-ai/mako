@@ -10,6 +10,7 @@
 
 import { existsSync } from "fs";
 import { spawnSync } from "child_process";
+import { dirname, join } from "path";
 
 export const DEFAULT_DBT_CORE_VERSION = "1.9.10";
 
@@ -79,5 +80,73 @@ export function resolveDbtBin(
     "No dbt binary available. Set DBT_VENV_BIN to a dbt executable " +
       "(production image bakes one at /opt/dbt/bin/dbt) or install uv " +
       "(https://docs.astral.sh/uv/) so the runner can use `uvx` locally.",
+  );
+}
+
+function dbtCoreVersionFor(
+  adapterPackage: string,
+  dbtVersion?: string,
+): string {
+  if (adapterPackage === "dbt-mysql") return "1.7.19";
+  return dbtVersion && dbtVersion.split(".").length >= 3
+    ? dbtVersion
+    : DEFAULT_DBT_CORE_VERSION;
+}
+
+/**
+ * Resolve how to launch the resident dbt engine (a long-lived Python process
+ * running `enginePath`), mirroring {@link resolveDbtBin}'s resolution order so
+ * the engine uses the SAME dbt-core + adapter as the subprocess path.
+ *
+ *   1. DBT_ENGINE_PYTHON_CMD — JSON array override (tests / custom infra);
+ *      enginePath is appended.
+ *   2. The baked venv's python (sibling of DBT_VENV_BIN) in production.
+ *   3. `uv run` dev fallback with dbt-core + the adapter injected.
+ */
+export function resolveDbtEnginePython(
+  adapterPackage: string,
+  dbtVersion: string | undefined,
+  enginePath: string,
+): ResolvedDbtBin {
+  const override = process.env.DBT_ENGINE_PYTHON_CMD;
+  if (override) {
+    const parts = JSON.parse(override) as string[];
+    return { bin: parts[0], prefixArgs: [...parts.slice(1), enginePath] };
+  }
+
+  const venvBin =
+    adapterPackage === "dbt-mysql"
+      ? process.env.DBT_MYSQL_VENV_BIN
+      : process.env.DBT_VENV_BIN;
+  if (venvBin) {
+    const python = join(dirname(venvBin), "python");
+    if (!existsSync(python)) {
+      throw new Error(
+        `dbt venv python "${python}" does not exist (check DBT_VENV_BIN)`,
+      );
+    }
+    return { bin: python, prefixArgs: [enginePath] };
+  }
+
+  if (isUvxAvailable()) {
+    const coreVersion = dbtCoreVersionFor(adapterPackage, dbtVersion);
+    return {
+      bin: "uv",
+      prefixArgs: [
+        "run",
+        "--no-project",
+        "--with",
+        `dbt-core==${coreVersion}`,
+        "--with",
+        adapterPackage,
+        "python",
+        enginePath,
+      ],
+    };
+  }
+
+  throw new Error(
+    "No Python available for the dbt engine. Set DBT_VENV_BIN " +
+      "(production bakes /opt/dbt/bin/python) or install uv for local dev.",
   );
 }
