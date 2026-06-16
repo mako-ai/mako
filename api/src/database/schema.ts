@@ -313,16 +313,13 @@ const OAuthAccountSchema = new Schema<IOAuthAccount>(
 OAuthAccountSchema.index({ provider: 1, providerUserId: 1 }, { unique: true });
 OAuthAccountSchema.index({ userId: 1 });
 
-// Dual-write users to Postgres after every save while the Postgres auth
-// backend is active (gradual Mongo -> Postgres migration). Lazy import keeps
-// the db/repository layer out of this module's load path.
-UserSchema.post("save", function (doc: IUser) {
-  if (process.env.AUTH_PERSISTENCE !== "postgres") {
-    return;
-  }
-  void import("../auth/user-mirror").then(({ mirrorUserToPostgres }) =>
-    mirrorUserToPostgres(doc),
-  );
+// Dual-write users to Postgres after every save during the gradual Mongo ->
+// Postgres migration. Lazy import keeps the db/repository layer out of this
+// module's load path; the mirror is best-effort and no-ops unless dual-write
+// is enabled.
+UserSchema.post("save", async function (doc: IUser) {
+  const { mirrorUser } = await import("../db/dual-write");
+  await mirrorUser(doc);
 });
 
 // Models - use existing model if already compiled (prevents hot reload issues)

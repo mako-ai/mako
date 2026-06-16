@@ -3487,6 +3487,52 @@ const DashboardFolderSchema = new Schema<IDashboardFolder>(
 
 DashboardFolderSchema.index({ workspaceId: 1, parentId: 1 });
 
+// Dual-write hooks (gradual Mongo -> Postgres migration). Best-effort mirrors
+// of tenancy + connection writes; lazy import avoids pulling the db layer into
+// this module's load path, and each mirror no-ops unless dual-write is enabled.
+WorkspaceSchema.post("save", async function (doc: IWorkspace) {
+  const { mirrorWorkspace } = await import("../db/dual-write");
+  await mirrorWorkspace({
+    _id: doc._id,
+    name: doc.name,
+    slug: doc.slug,
+    createdBy: doc.createdBy,
+    settings: doc.settings,
+    billing: doc.billing,
+    selfDirective: doc.selfDirective,
+  });
+});
+
+WorkspaceMemberSchema.post("save", async function (doc: IWorkspaceMember) {
+  const { mirrorWorkspaceMember } = await import("../db/dual-write");
+  await mirrorWorkspaceMember({
+    workspaceId: doc.workspaceId,
+    userId: doc.userId,
+    role: doc.role,
+    isDefaultMembership: doc.isDefaultMembership,
+  });
+});
+
+DatabaseConnectionSchema.post(
+  "save",
+  async function (doc: IDatabaseConnection) {
+    const { mirrorDatabaseConnection } = await import("../db/dual-write");
+    // toObject with getters yields the decrypted credential blob; the
+    // repository re-encrypts on write.
+    const plain = doc.toObject({ getters: true }) as IDatabaseConnection;
+    await mirrorDatabaseConnection({
+      _id: doc._id,
+      workspaceId: doc.workspaceId,
+      name: doc.name,
+      type: doc.type,
+      connection: plain.connection as Record<string, unknown>,
+      isDemo: doc.isDemo,
+      createdBy: doc.createdBy,
+      lastConnectedAt: doc.lastConnectedAt,
+    });
+  },
+);
+
 // Models
 export const Workspace = mongoose.model<IWorkspace>(
   "Workspace",
