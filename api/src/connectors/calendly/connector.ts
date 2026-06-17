@@ -590,14 +590,30 @@ export class CalendlyConnector extends BaseConnector {
     const { onBatch, onProgress, since, state } = options;
     const maxIterations = options.maxIterations ?? 10;
 
-    let eventsCursor =
-      (state?.metadata?.eventsCursor as string | undefined) ?? undefined;
-    // Normalize pendingEvents: current shape is { uri, total }, but legacy
-    // in-flight checkpoints stored a plain string[]. Accept both so a backfill
-    // mid-flight across a deploy doesn't break.
-    let pendingEvents: { uri: string; total?: number }[] = (
+    // Keyset pagination over /scheduled_events by start_time, instead of the
+    // opaque page_token. Calendly re-anchors next_page_token on every call, so a
+    // token parked while we drain a page's invitees becomes invalid by the time
+    // we redeem it. min_start_time + sort=start_time:asc is stable and
+    // resume-safe.
+    let eventsMinStart =
+      (state?.metadata?.eventsMinStart as string | undefined) ??
+      (since instanceof Date ? since.toISOString() : undefined);
+    // URIs of events at exactly eventsMinStart already queued. min_start_time is
+    // inclusive, so these reappear on the next page and must be skipped.
+    let eventsBoundaryUris =
+      (state?.metadata?.eventsBoundaryUris as string[] | undefined) ?? [];
+    let eventsDone =
+      (state?.metadata?.eventsDone as boolean | undefined) ?? false;
+    // Normalize pendingEvents: current shape is { uri, total, start_time }, but
+    // legacy in-flight checkpoints stored a plain string[] or { uri, total }.
+    // Accept all so a backfill mid-flight across a deploy doesn't break.
+    let pendingEvents: {
+      uri: string;
+      total?: number;
+      start_time?: string;
+    }[] = (
       (state?.metadata?.pendingEvents as
-        | (string | { uri: string; total?: number })[]
+        | (string | { uri: string; total?: number; start_time?: string })[]
         | undefined) ?? []
     ).map(ev => (typeof ev === "string" ? { uri: ev } : ev));
     // Legacy state may have an in-progress event; requeue it (full re-drain).
@@ -638,14 +654,14 @@ export class CalendlyConnector extends BaseConnector {
         organization: organization_uri,
         // Calendly only supports sorting scheduled_events by start_time.
         sort: "start_time:asc",
-        page_token: eventsCursor,
       };
-      if (since instanceof Date) {
-        params.min_start_time = since.toISOString();
+      if (eventsMinStart) {
+        params.min_start_time = eventsMinStart;
       }
       const page = await this.fetchPage("/scheduled_events", params);
       const base = this.getBaseUrl();
-      const events: { uri: string; total?: number }[] = [];
+      const pageEvents: { uri: string; total?: number; start_time?: string }[] =
+        [];
       for (const item of page.collection) {
         const uri =
           typeof (item as { uri?: unknown }).uri === "string"
@@ -662,10 +678,52 @@ export class CalendlyConnector extends BaseConnector {
           .invitees_counter;
         const total =
           typeof counter?.total === "number" ? counter.total : undefined;
-        events.push({ uri, total });
+        const startTime =
+          typeof (item as { start_time?: unknown }).start_time === "string"
+            ? (item as { start_time: string }).start_time
+            : undefined;
+        pageEvents.push({ uri, total, start_time: startTime });
       }
-      pendingEvents = [...pendingEvents, ...events];
-      eventsCursor = page.pagination.next_page_token ?? undefined;
+
+      // Skip boundary events already queued from the previous page (inclusive
+      // min_start_time re-returns them).
+      const boundary = new Set(eventsBoundaryUris);
+      const fresh = pageEvents.filter(ev => !boundary.has(ev.uri));
+      pendingEvents = [...pendingEvents, ...fresh];
+
+      // Last page (short read) means the listing is exhausted.
+      if (page.collection.length < MAX_PAGE_LIMIT) {
+        eventsDone = true;
+        return;
+      }
+
+      // Advance the keyset to the max start_time on this page.
+      let maxStart: string | undefined;
+      for (const ev of pageEvents) {
+        if (ev.start_time && (!maxStart || ev.start_time > maxStart)) {
+          maxStart = ev.start_time;
+        }
+      }
+      if (!maxStart) {
+        // Cannot key off start_time (shouldn't happen for real events). Stop
+        // rather than risk an infinite loop.
+        eventsDone = true;
+        return;
+      }
+      if (maxStart !== eventsMinStart) {
+        eventsMinStart = maxStart;
+        eventsBoundaryUris = pageEvents
+          .filter(ev => ev.start_time === maxStart)
+          .map(ev => ev.uri);
+      } else {
+        // Whole page shares the boundary start_time (>100 events at the same
+        // instant). Nudge +1ms to guarantee forward progress; same-ms overflow
+        // beyond a page is negligible for real calendars.
+        eventsMinStart = new Date(
+          new Date(maxStart).getTime() + 1,
+        ).toISOString();
+        eventsBoundaryUris = [];
+      }
     };
 
     // Fetch every invitee page for a single event (most events are 1 page).
@@ -707,19 +765,21 @@ export class CalendlyConnector extends BaseConnector {
       hasMore: false,
       iterationsInChunk: iterations,
       metadata: {
-        eventsCursor: null,
+        eventsMinStart: null,
+        eventsBoundaryUris: [],
+        eventsDone: true,
         pendingEvents: [],
       },
     });
 
     while (iterations < maxIterations) {
       if (pendingEvents.length === 0) {
-        if (eventsCursor === undefined && iterations > 0) {
+        if (eventsDone) {
           return finished();
         }
         await loadMoreEvents();
         iterations++;
-        if (pendingEvents.length === 0 && !eventsCursor) {
+        if (pendingEvents.length === 0 && eventsDone) {
           return finished();
         }
         continue;
@@ -745,7 +805,7 @@ export class CalendlyConnector extends BaseConnector {
       }
     }
 
-    const exhausted = pendingEvents.length === 0 && !eventsCursor;
+    const exhausted = pendingEvents.length === 0 && eventsDone;
 
     return {
       totalProcessed: recordCount,
@@ -753,11 +813,15 @@ export class CalendlyConnector extends BaseConnector {
       iterationsInChunk: iterations,
       metadata: exhausted
         ? {
-            eventsCursor: null,
+            eventsMinStart: null,
+            eventsBoundaryUris: [],
+            eventsDone: true,
             pendingEvents: [],
           }
         : {
-            eventsCursor: eventsCursor ?? null,
+            eventsMinStart: eventsMinStart ?? null,
+            eventsBoundaryUris,
+            eventsDone,
             pendingEvents,
           },
     };
