@@ -59,9 +59,7 @@ interface LoadedConsole {
   doc: ISavedConsole;
 }
 
-type LoadResult =
-  | LoadedConsole
-  | { error: string };
+type LoadResult = LoadedConsole | { error: string };
 
 function isLoadError(r: LoadResult): r is { error: string } {
   return (r as { error?: string }).error !== undefined;
@@ -180,9 +178,7 @@ export function createServerConsoleTools({
           return {
             success: false,
             error:
-              error instanceof Error
-                ? error.message
-                : "Failed to read console",
+              error instanceof Error ? error.message : "Failed to read console",
           };
         }
       },
@@ -198,16 +194,16 @@ export function createServerConsoleTools({
 
           // Some tool-calling models serialize numeric/nullable fields as
           // strings; coerce so those calls aren't rejected.
-          const coerceOptionalNumber = (
-            raw: unknown,
-          ): number | undefined => {
+          const coerceOptionalNumber = (raw: unknown): number | undefined => {
             if (raw === undefined || raw === null) return undefined;
-            if (typeof raw === "number")
-              {return Number.isFinite(raw) ? raw : undefined;}
+            if (typeof raw === "number") {
+              return Number.isFinite(raw) ? raw : undefined;
+            }
             if (typeof raw === "string") {
               const trimmed = raw.trim();
-              if (trimmed === "" || trimmed.toLowerCase() === "null")
-                {return undefined;}
+              if (trimmed === "" || trimmed.toLowerCase() === "null") {
+                return undefined;
+              }
               const parsed = Number(trimmed);
               return Number.isFinite(parsed) ? parsed : undefined;
             }
@@ -266,6 +262,9 @@ export function createServerConsoleTools({
             const setFields: Record<string, unknown> = {
               code: newContent,
               updatedAt: new Date(),
+              // Mark agent origin so a reconnecting client surfaces this as a
+              // reviewable diff even if it missed the realtime poke.
+              lastDraftOrigin: "agent",
             };
             if (title) setFields.name = title;
 
@@ -274,9 +273,7 @@ export function createServerConsoleTools({
                 _id: doc._id,
                 workspaceId: new Types.ObjectId(workspaceId),
                 draftRevision:
-                  currentRevision === 1
-                    ? { $in: [1, null] }
-                    : currentRevision,
+                  currentRevision === 1 ? { $in: [1, null] } : currentRevision,
               },
               { $set: setFields, $inc: { draftRevision: 1 } },
               { new: true },
@@ -366,6 +363,7 @@ export function createServerConsoleTools({
             access: "private",
             isSaved: false,
             draftRevision: 1,
+            lastDraftOrigin: "agent",
             executionCount: 0,
           });
 
@@ -399,7 +397,12 @@ export function createServerConsoleTools({
       description:
         "Attach a console to a database connection, or change its current attachment (applied server-side; open windows update live). Use this when you need to run queries against a different database than what the console is currently attached to. After setting the connection, you can use run_console to execute queries against that database.",
       inputSchema: setConsoleConnectionSchema,
-      execute: async ({ consoleId, connectionId, databaseId, databaseName }) => {
+      execute: async ({
+        consoleId,
+        connectionId,
+        databaseId,
+        databaseName,
+      }) => {
         try {
           const loaded = await loadConsole(consoleId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
@@ -496,9 +499,7 @@ export function createServerConsoleTools({
           return {
             success: false,
             error:
-              error instanceof Error
-                ? error.message
-                : "Failed to open console",
+              error instanceof Error ? error.message : "Failed to open console",
           };
         }
       },
@@ -516,7 +517,8 @@ export function createServerConsoleTools({
         if (!doc.code?.trim()) {
           return {
             success: false,
-            error: "Console is empty. Write a query first using modify_console.",
+            error:
+              "Console is empty. Write a query first using modify_console.",
           };
         }
         if (!doc.connectionId) {

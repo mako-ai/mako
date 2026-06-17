@@ -48,7 +48,11 @@ import {
   ConsoleModification,
 } from "../hooks/useMonacoConsole";
 import ConsoleInfoModal from "./ConsoleInfoModal";
-import { useConsoleStore, markUserEditActivity } from "../store/consoleStore";
+import {
+  useConsoleStore,
+  markUserEditActivity,
+  getPendingAgentReview,
+} from "../store/consoleStore";
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 import { ConnectionSelector } from "./ConnectionSelector";
@@ -153,6 +157,12 @@ export interface ConsoleRef {
   canUndo: boolean;
   canRedo: boolean;
   showDiff: (modification: ConsoleModification) => void;
+  /**
+   * Show an agent (modify_console) edit as a reviewable Accept/Reject diff.
+   * The proposed content is the server-authoritative copy; the editor keeps
+   * the pre-agent baseline until the user resolves the review.
+   */
+  showRemoteDiff: (proposedContent: string) => void;
   focus: () => void;
 }
 
@@ -197,6 +207,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
   const autoSaveConsole = useConsoleStore(state => state.autoSaveConsole);
+  const resolveAgentReview = useConsoleStore(state => state.resolveAgentReview);
   const tabs = useConsoleStore(state => state.tabs);
 
   // Get tab state for savedStateHash (used for dirty tracking)
@@ -240,6 +251,13 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const [modifiedContent, setModifiedContent] = useState("");
   const [pendingModification, setPendingModification] =
     useState<ConsoleModification | null>(null);
+  // True while the active diff is an agent (modify_console) edit awaiting
+  // review — resolved against the server draft via the console store rather
+  // than the legacy local-modification path.
+  const isRemoteDiffRef = useRef(false);
+  // Flips true once Monaco has mounted; used to surface a pending agent diff
+  // when this tab becomes active after the edit landed in the background.
+  const [editorMounted, setEditorMounted] = useState(false);
   // Editor key to force remount when needed
   const [editorKey, setEditorKey] = useState(0);
 
@@ -647,6 +665,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       editorRef.current = editor;
       monacoRef.current = monaco;
       setMonacoInstance(monaco);
+      setEditorMounted(true);
 
       // Always connect editor to the hook (needed for AI modifications)
       setEditor(editor);
@@ -851,6 +870,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         setOriginalContent(currentContent);
       }
 
+      isRemoteDiffRef.current = false;
       setModifiedContent(newContent);
       setPendingModification(modification);
       setIsDiffMode(true);
@@ -858,8 +878,58 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     [getFullEditorContent, isDiffMode],
   );
 
+  // Surface an agent (modify_console) edit as a reviewable diff. The change is
+  // already persisted to the server draft; the editor keeps the pre-agent
+  // baseline (originalContent) until the user accepts/rejects. Cumulative
+  // agent edits preserve the baseline and just refresh the modified side.
+  const showRemoteDiff = useCallback(
+    (proposedContent: string) => {
+      if (!isDiffMode) {
+        setOriginalContent(getFullEditorContent());
+      }
+      isRemoteDiffRef.current = true;
+      setPendingModification(null);
+      setModifiedContent(proposedContent);
+      setIsDiffMode(true);
+    },
+    [getFullEditorContent, isDiffMode],
+  );
+
   // Accept the changes
   const acceptChanges = useCallback(() => {
+    // Agent diff: the server already holds the proposed content — adopt it in
+    // the editor and let the store reconcile revision/baseline.
+    if (isRemoteDiffRef.current) {
+      const proposed = modifiedContent;
+      const base = originalContent;
+      setIsDiffMode(false);
+      setEditorKey(prev => prev + 1);
+      isRemoteDiffRef.current = false;
+      isProgrammaticUpdateRef.current = true;
+      lastInitialContentRef.current = proposed;
+      setPendingModification(null);
+      setOriginalContent("");
+      setModifiedContent("");
+
+      if (enableVersionControl) {
+        saveUserEdit(base, "Before AI modification");
+        saveUserEdit(proposed, "AI modification");
+      }
+
+      setTimeout(() => {
+        const model = editorRef.current?.getModel();
+        if (model && model.getValue() !== proposed) {
+          model.setValue(proposed);
+        }
+        isProgrammaticUpdateRef.current = false;
+      }, 100);
+
+      if (currentWorkspace?.id) {
+        void resolveAgentReview(currentWorkspace.id, consoleId, "accept");
+      }
+      return;
+    }
+
     if (pendingModification && modifiedContent) {
       setIsDiffMode(false);
       setEditorKey(prev => prev + 1);
@@ -929,10 +999,38 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     databaseName,
     isSaved,
     autoSaveConsole,
+    resolveAgentReview,
   ]);
 
   // Reject the changes and restore the original baseline
   const rejectChanges = useCallback(() => {
+    // Agent diff: the server holds the agent's content — restore the editor to
+    // the pre-agent baseline and let the store revert the server draft.
+    if (isRemoteDiffRef.current) {
+      const base = originalContent;
+      setIsDiffMode(false);
+      setEditorKey(prev => prev + 1);
+      isRemoteDiffRef.current = false;
+      isProgrammaticUpdateRef.current = true;
+      lastInitialContentRef.current = base;
+      setPendingModification(null);
+      setOriginalContent("");
+      setModifiedContent("");
+
+      setTimeout(() => {
+        const model = editorRef.current?.getModel();
+        if (model && model.getValue() !== base) {
+          model.setValue(base);
+        }
+        isProgrammaticUpdateRef.current = false;
+      }, 100);
+
+      if (currentWorkspace?.id) {
+        void resolveAgentReview(currentWorkspace.id, consoleId, "reject");
+      }
+      return;
+    }
+
     // Restore editor content to original baseline and sync store
     if (originalContent && onContentChange) {
       onContentChange(originalContent);
@@ -942,7 +1040,25 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
     setPendingModification(null);
     setOriginalContent("");
     setModifiedContent("");
-  }, [originalContent, onContentChange]);
+  }, [
+    originalContent,
+    onContentChange,
+    currentWorkspace,
+    consoleId,
+    resolveAgentReview,
+  ]);
+
+  // Surface a pending agent diff when this tab mounts/activates after the edit
+  // landed while it was in the background (the dispatch from beginAgentReview
+  // is idempotent and won't re-fire once a review is recorded, so a freshly
+  // mounted editor pulls the proposal from the store itself).
+  useEffect(() => {
+    if (!editorMounted || isDiffMode) return;
+    const review = getPendingAgentReview(consoleId);
+    if (review) {
+      showRemoteDiff(review.proposedContent);
+    }
+  }, [editorMounted, isDiffMode, consoleId, showRemoteDiff]);
 
   // DiffEditor mount handler - set up CMD+Enter and store ref
   const handleDiffEditorDidMount = useCallback(
@@ -1012,6 +1128,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       canUndo,
       canRedo,
       showDiff,
+      showRemoteDiff,
       focus: () => {
         if (isDiffMode && diffEditorRef.current) {
           diffEditorRef.current.getModifiedEditor()?.focus();
@@ -1030,6 +1147,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
       canUndo,
       canRedo,
       showDiff,
+      showRemoteDiff,
       isDiffMode,
     ],
   );

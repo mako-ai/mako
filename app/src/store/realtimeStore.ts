@@ -21,6 +21,7 @@ import {
   useConsoleStore,
   hasUnsavedLocalEdits,
   hasBlockedDraftSave,
+  hasPendingAgentReview,
 } from "./consoleStore";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
@@ -122,6 +123,17 @@ const DEFERRED_RESYNC_MS = 3_500;
 /** Last known writer per console (from pokes) — labels the dirty affordance. */
 const lastUpdatedByConsole = new Map<string, string>();
 
+/**
+ * Consoles whose most recent poke was an agent (modify_console) edit. The
+ * poke only carries metadata; origin is known here but the authoritative
+ * content arrives later via the pull (syncRevisions). This bridges the two:
+ * when the pulled copy lands, an agent-origin console is routed into the
+ * Monaco diff review (beginAgentReview) instead of being applied silently.
+ * Consumed on pull; a console already under review stays in review until the
+ * user accepts/rejects (tracked by consoleStore.hasPendingAgentReview).
+ */
+const agentOriginConsoles = new Set<string>();
+
 function isConsoleTabKind(kind: string | undefined): boolean {
   return kind === undefined || kind === "console";
 }
@@ -188,6 +200,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
 
       const tab = useConsoleStore.getState().tabs[event.consoleId];
       if (!tab) return; // not open in this window — nothing to update
+
+      // Remember agent-origin edits on OPEN consoles so the pull routes them
+      // into the diff review (editor keeps the baseline until accept/reject).
+      if (event.origin === "agent") {
+        agentOriginConsoles.add(event.consoleId);
+      }
+
       // A tab that never synced (no draftRevision) counts as revision 0 so
       // even the server's first revision is pulled.
       if ((tab.draftRevision ?? 0) >= event.draftRevision) return; // stale
@@ -515,6 +534,28 @@ export const useRealtimeStore = create<RealtimeStore>()(
           const store = useConsoleStore.getState();
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
+
+            // Agent (modify_console) edits surface as a Monaco Accept/Reject
+            // diff instead of being applied silently. Route the pulled copy
+            // into the review when:
+            //   - the latest live poke for this console was the agent's, OR
+            //   - the console is already mid-review (cumulative agent edits /
+            //     unrelated re-syncs keep refreshing the diff, never the
+            //     buffer), OR
+            //   - the synced copy itself says the last write was the agent's
+            //     (reconnect/reload after a MISSED poke — the durable signal).
+            // beginAgentReview no-ops when the proposed content already
+            // matches the tab, so non-content bumps never spuriously trigger.
+            const isAgentEdit =
+              agentOriginConsoles.has(entry.id) ||
+              hasPendingAgentReview(entry.id) ||
+              entry.lastDraftOrigin === "agent";
+            if (isAgentEdit) {
+              agentOriginConsoles.delete(entry.id);
+              store.beginAgentReview(entry);
+              continue;
+            }
+
             const decision = decideRemoteApply({
               tabExists: Boolean(tab),
               tabRevision: tab?.draftRevision,

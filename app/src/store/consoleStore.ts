@@ -117,6 +117,27 @@ interface ConsoleActions {
    */
   fastForwardRemoteConsoleEntry: (entry: ConsoleRevisionSyncEntry) => void;
   /**
+   * Start (or update) a Monaco diff review for an agent (modify_console)
+   * edit. The change is already persisted to the server draft; this surfaces
+   * it for Accept/Reject review instead of applying it silently. The editor
+   * keeps the pre-agent baseline until resolveAgentReview runs. Cumulative
+   * agent edits update the diff's "modified" side while preserving the
+   * original baseline. No-op when the proposed content already matches the
+   * tab (nothing to review).
+   */
+  beginAgentReview: (entry: ConsoleRevisionSyncEntry) => void;
+  /**
+   * Resolve a pending agent diff review. "accept" adopts the agent's content
+   * locally (the server already holds it); "reject" reverts the server draft
+   * back to the pre-agent baseline with a revision-checked write. The editor
+   * buffer is restored by the Console component; this syncs store + server.
+   */
+  resolveAgentReview: (
+    workspaceId: string,
+    consoleId: string,
+    action: "accept" | "reject",
+  ) => Promise<void>;
+  /**
    * Resolve the remote-update affordance: refetch the server copy, apply it
    * (discarding local unsaved edits).
    */
@@ -322,6 +343,36 @@ export const hasRecentUserEdit = (consoleId: string): boolean => {
   return at !== undefined && Date.now() - at < USER_EDIT_RECENCY_MS;
 };
 
+/**
+ * Consoles whose latest agent (modify_console) edit is awaiting user review
+ * in the Monaco diff view. modify_console runs server-side (issue #475) and
+ * the change is already persisted to the draft, but instead of silently
+ * replacing the editor we surface it as an Accept/Reject diff (the pre-#475
+ * UX). While a console is under review the realtime layer routes further
+ * server copies into the diff rather than applying them, and the editor keeps
+ * the pre-agent baseline until the user resolves the review. Keyed by
+ * consoleId; module-level (non-reactive) like the autosave bookkeeping.
+ */
+export interface PendingAgentReview {
+  /** Store content before the agent's first edit (restored on reject). */
+  baseContent: string;
+  /** Draft revision the tab held before the agent's first edit. */
+  baseRevision: number;
+  /** Latest agent-proposed content (the diff's "modified" side). */
+  proposedContent: string;
+  /** Server draft revision carrying the proposed content. */
+  proposedRevision: number;
+}
+
+const pendingAgentReviews = new Map<string, PendingAgentReview>();
+
+export const hasPendingAgentReview = (consoleId: string): boolean =>
+  pendingAgentReviews.has(consoleId);
+
+export const getPendingAgentReview = (
+  consoleId: string,
+): PendingAgentReview | undefined => pendingAgentReviews.get(consoleId);
+
 /** A draft autosave is queued (debounce window) but not yet persisted. */
 export const hasPendingDraftSave = (consoleId: string): boolean =>
   draftSaveTimers.has(consoleId);
@@ -467,6 +518,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         }
 
         cancelAutoSave(id);
+        pendingAgentReviews.delete(id);
 
         set(state => {
           delete state.tabs[id];
@@ -630,6 +682,152 @@ export const useConsoleStore = create<ConsoleStore>()(
         });
         blockedDraftSaves.delete(entry.id);
         lastSavedContentHash.set(entry.id, newStateHash);
+      },
+
+      beginAgentReview: entry => {
+        const tab = get().tabs[entry.id];
+        if (!tab) return;
+        const existing = pendingAgentReviews.get(entry.id);
+        // Nothing to review: the proposed content already matches the tab
+        // (e.g. a stale re-sync after the user just accepted, or an echo).
+        if (!existing && tab.content === entry.content) return;
+        // Idempotent: same proposal already on screen — don't re-dispatch
+        // (avoids resetting the diff scroll on every unrelated poke).
+        if (
+          existing &&
+          existing.proposedRevision === entry.draftRevision &&
+          existing.proposedContent === entry.content
+        ) {
+          return;
+        }
+        // Preserve the true baseline across cumulative agent edits: only the
+        // FIRST edit captures the pre-agent content/revision.
+        const baseContent = existing?.baseContent ?? tab.content;
+        const baseRevision = existing?.baseRevision ?? tab.draftRevision ?? 0;
+        pendingAgentReviews.set(entry.id, {
+          baseContent,
+          baseRevision,
+          proposedContent: entry.content,
+          proposedRevision: entry.draftRevision,
+        });
+        // A rename is metadata, not part of the content diff: apply it
+        // immediately (mirrors applyRemoteConsoleUpdate/fastForward) so the tab
+        // title tracks the server. The Accept/Reject controls govern only the
+        // code shown in the diff; content + draftRevision stay on the baseline
+        // until the user resolves the review.
+        const proposedName = entry.name;
+        if (proposedName && proposedName !== tab.title) {
+          set(state => {
+            const t = state.tabs[entry.id];
+            if (t) t.title = proposedName;
+          });
+        }
+        // Push the proposal into the mounted Monaco editor as a diff. The
+        // store content/revision stay on the baseline until the user
+        // resolves the review (Editor.tsx listens).
+        window.dispatchEvent(
+          new CustomEvent("console-agent-diff", {
+            detail: { consoleId: entry.id, content: entry.content },
+          }),
+        );
+      },
+
+      resolveAgentReview: async (workspaceId, consoleId, action) => {
+        const review = pendingAgentReviews.get(consoleId);
+        if (!review) return;
+        pendingAgentReviews.delete(consoleId);
+        const tab = get().tabs[consoleId];
+        if (!tab) return;
+
+        if (action === "accept") {
+          // The server already holds the proposed content at proposedRevision;
+          // adopt it locally so the tab mirrors the server and autosave stays
+          // quiet. The editor buffer is set to the proposal by Console.
+          const newStateHash = computeConsoleStateHash(
+            review.proposedContent,
+            tab.connectionId,
+            tab.databaseId,
+            tab.databaseName,
+          );
+          set(state => {
+            const t = state.tabs[consoleId];
+            if (!t) return;
+            t.content = review.proposedContent;
+            t.draftRevision = review.proposedRevision;
+            if (t.isSaved) t.savedStateHash = newStateHash;
+            t.remoteUpdate = null;
+          });
+          blockedDraftSaves.delete(consoleId);
+          lastSavedContentHash.set(consoleId, newStateHash);
+          return;
+        }
+
+        // Reject: the agent's content is persisted on the server draft, so a
+        // plain local restore would reappear on the next revision sync. Write
+        // the pre-agent baseline back with a revision-checked PUT targeting
+        // the proposed revision the server currently holds.
+        const baseStateHash = computeConsoleStateHash(
+          review.baseContent,
+          tab.connectionId,
+          tab.databaseId,
+          tab.databaseName,
+        );
+        set(state => {
+          const t = state.tabs[consoleId];
+          if (!t) return;
+          t.content = review.baseContent;
+          t.remoteUpdate = null;
+        });
+        try {
+          // Same intentional catch-all save endpoint as autosave / keep-mine
+          // (not in the documented OpenAPI surface) — stays on legacy client.
+          // Keep the current title (any agent rename already applied and is not
+          // part of the rejected content diff).
+          const { status, body } =
+            await apiClient.putWithStatus<ConsoleSaveResponse>(
+              `/workspaces/${workspaceId}/consoles/${consoleId}`,
+              {
+                content: review.baseContent,
+                title: tab.title,
+                connectionId: cloudSafeConnectionId(tab.connectionId),
+                databaseId: tab.databaseId,
+                databaseName: tab.databaseName,
+                clientId: realtimeClientId,
+                expectedDraftRevision: review.proposedRevision,
+              },
+              { alsoOk: [409] },
+            );
+
+          if (status === 409 && body.draftConflict) {
+            // Someone wrote concurrently after the agent. If they happened to
+            // land on our baseline, just fast-forward; otherwise surface the
+            // standard remote-update affordance instead of silently fighting.
+            if (body.draftConflict.content === review.baseContent) {
+              get().updateDraftRevision(
+                consoleId,
+                body.draftConflict.currentDraftRevision,
+              );
+              lastSavedContentHash.set(consoleId, baseStateHash);
+            } else {
+              get().setRemoteUpdate(consoleId, {
+                draftRevision: body.draftConflict.currentDraftRevision,
+                kind: "updated",
+              });
+            }
+            return;
+          }
+
+          if (body.success) {
+            if (typeof body.draftRevision === "number") {
+              get().updateDraftRevision(consoleId, body.draftRevision);
+            }
+            blockedDraftSaves.delete(consoleId);
+            lastSavedContentHash.set(consoleId, baseStateHash);
+          }
+        } catch (_e) {
+          // Best-effort: the revision base is unchanged, so the next sync
+          // re-surfaces the agent edit for review rather than losing data.
+        }
       },
 
       applyRemoteConsoleUpdate: async (workspaceId, consoleId) => {
