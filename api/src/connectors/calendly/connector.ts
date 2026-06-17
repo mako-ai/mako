@@ -264,6 +264,12 @@ export class CalendlyConnector extends BaseConnector {
           (status !== undefined && status >= 500 && status < 600);
 
         if (!retryable || attempt >= maxRetries) {
+          // Surface Calendly's actual error body (parameter + message) instead
+          // of the opaque "Request failed with status code 400". Keep it an
+          // axios error so callers can still inspect error.response.status.
+          if (axios.isAxiosError(error)) {
+            error.message = formatCalendlyApiError(error);
+          }
           throw error;
         }
 
@@ -285,6 +291,16 @@ export class CalendlyConnector extends BaseConnector {
         attempt++;
       }
     }
+  }
+
+  // Calendly requires count in [1, 100]. `batchSize ?? getBatchSize()` is not
+  // enough because `??` lets a 0 through, which Calendly rejects with a 400.
+  private resolvePageCount(batchSize?: number): number {
+    const requested =
+      typeof batchSize === "number" && batchSize > 0
+        ? batchSize
+        : this.getBatchSize();
+    return Math.min(Math.max(requested, 1), MAX_PAGE_LIMIT);
   }
 
   private async getCurrentUser(): Promise<{
@@ -496,7 +512,7 @@ export class CalendlyConnector extends BaseConnector {
 
     while (iterations < maxIterations) {
       const params: Record<string, string | number | undefined> = {
-        count: Math.min(batchSize ?? this.getBatchSize(), MAX_PAGE_LIMIT),
+        count: this.resolvePageCount(batchSize),
         page_token: cursor,
         organization,
       };
@@ -603,7 +619,7 @@ export class CalendlyConnector extends BaseConnector {
     ): Promise<CalendlyListResponse> => {
       const path = `${this.toRelativePath(eventUri)}/invitees`;
       const params: Record<string, string | number> = {
-        count: Math.min(options.batchSize ?? this.getBatchSize(), MAX_PAGE_LIMIT),
+        count: this.resolvePageCount(options.batchSize),
       };
       if (cursor) params.page_token = cursor;
       const response = await this.executeWithRetry(() =>
@@ -653,13 +669,31 @@ export class CalendlyConnector extends BaseConnector {
     };
 
     // Fetch every invitee page for a single event (most events are 1 page).
+    // A single event that Calendly rejects (e.g. deleted/canceled event ->
+    // 400/404) must not kill the whole concurrent wave / backfill: skip it and
+    // log. Anything else (auth, 429-exhausted, 5xx) still propagates.
     const drainInvitees = async (
       eventUri: string,
     ): Promise<Record<string, unknown>[]> => {
       const records: Record<string, unknown>[] = [];
       let cursor: string | undefined;
       do {
-        const page = await fetchInviteesPage(eventUri, cursor);
+        let page: CalendlyListResponse;
+        try {
+          page = await fetchInviteesPage(eventUri, cursor);
+        } catch (error) {
+          const status = axios.isAxiosError(error)
+            ? error.response?.status
+            : undefined;
+          if (status === 400 || status === 404) {
+            logger.warn("Skipping invitees for unreadable scheduled_event", {
+              event: this.toRelativePath(eventUri),
+              detail: formatCalendlyApiError(error),
+            });
+            return records;
+          }
+          throw error;
+        }
         for (const item of page.collection) {
           records.push(withId(item as Record<string, unknown>));
         }
