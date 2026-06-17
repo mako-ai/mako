@@ -107,6 +107,12 @@ export interface DbtCommandResult {
 export interface DbtRunResult {
   success: boolean;
   commandResults: DbtCommandResult[];
+  /**
+   * Whether materialization wrote or pruned any project file this run. False
+   * means the warm dir was already in sync, so the parse cache the caller
+   * seeded is still current and need not be re-uploaded.
+   */
+  projectChanged: boolean;
   /** Raw artifact contents collected from target/ after the last command. */
   artifacts: {
     manifest?: Buffer;
@@ -253,15 +259,16 @@ async function extractArchive(
 }
 
 /** Write only when content differs — avoids needless mtime bumps that would
- * defeat dbt's checksum-based partial parsing in a warm dir. */
+ * defeat dbt's checksum-based partial parsing in a warm dir. Returns true when
+ * it actually wrote (i.e. content changed or the file was missing). */
 async function writeFileIfChanged(
   absolute: string,
   content: string,
   mode?: number,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const existing = await readFile(absolute, "utf8");
-    if (existing === content) return;
+    if (existing === content) return false;
   } catch {
     // Missing — fall through to write.
   }
@@ -271,6 +278,7 @@ async function writeFileIfChanged(
     content,
     mode ? { encoding: "utf8", mode } : "utf8",
   );
+  return true;
 }
 
 // Top-level entries dbt (or we) own — never pruned during reconciliation.
@@ -314,9 +322,10 @@ async function listFilesRecursive(
 async function reconcileWarmDir(
   projectDir: string,
   keep: Set<string>,
-): Promise<void> {
+): Promise<boolean> {
   const present: string[] = [];
   await listFilesRecursive(projectDir, projectDir, present);
+  let deleted = false;
   for (const rel of present) {
     if (keep.has(rel)) continue;
     if (RECONCILE_PRESERVED_FILES.has(rel)) continue;
@@ -324,7 +333,9 @@ async function reconcileWarmDir(
     await rm(join(projectDir, ...rel.split("/")), { force: true }).catch(
       () => {},
     );
+    deleted = true;
   }
+  return deleted;
 }
 
 function execDbtCommand(params: {
@@ -410,8 +421,11 @@ function execDbtCommand(params: {
  * files no longer in the snapshot so a deleted model can never be built.
  *
  * Returns the keyfile env map (absolute paths the profile's env_var()
- * references resolve to). Shared by {@link runDbt} (subprocess) and the
- * resident engine's prepare so both operate on an identical tree.
+ * references resolve to) and `changed` — whether any file was written or
+ * pruned this call. `changed` lets callers skip redundant work (e.g. re-saving
+ * the parse cache) when a warm dir was already in sync. Shared by
+ * {@link runDbt} (subprocess) and the resident engine's prepare so both
+ * operate on an identical tree.
  */
 export async function materializeDbtProject(
   projectDir: string,
@@ -420,23 +434,32 @@ export async function materializeDbtProject(
     profile: RenderedProfile;
     reconcile?: boolean;
   },
-): Promise<{ keyfileEnv: Record<string, string> }> {
+): Promise<{ keyfileEnv: Record<string, string>; changed: boolean }> {
   // Preserve list for reconciliation (profiles.yml + every snapshot file +
   // keyfiles get added below).
   const keep = new Set<string>(["profiles.yml"]);
+  let changed = false;
 
   for (const file of params.files) {
     const safePath = ensureSafeRelativePath(file.path);
     keep.add(safePath);
-    await writeFileIfChanged(
-      join(projectDir, ...safePath.split("/")),
-      file.content,
-    );
+    if (
+      await writeFileIfChanged(
+        join(projectDir, ...safePath.split("/")),
+        file.content,
+      )
+    ) {
+      changed = true;
+    }
   }
-  await writeFileIfChanged(
-    join(projectDir, "profiles.yml"),
-    params.profile.profilesYml,
-  );
+  if (
+    await writeFileIfChanged(
+      join(projectDir, "profiles.yml"),
+      params.profile.profilesYml,
+    )
+  ) {
+    changed = true;
+  }
 
   // Credential files (e.g. BigQuery service-account JSON) with restrictive
   // perms; their absolute paths are exported so env_var() keyfile refs resolve.
@@ -445,12 +468,16 @@ export async function materializeDbtProject(
     const safePath = ensureSafeRelativePath(keyfile.filename);
     keep.add(safePath);
     const absolute = join(projectDir, ...safePath.split("/"));
-    await writeFileIfChanged(absolute, keyfile.content, 0o600);
+    if (await writeFileIfChanged(absolute, keyfile.content, 0o600)) {
+      changed = true;
+    }
     keyfileEnv[keyfile.envVar] = absolute;
   }
 
-  if (params.reconcile) await reconcileWarmDir(projectDir, keep);
-  return { keyfileEnv };
+  if (params.reconcile && (await reconcileWarmDir(projectDir, keep))) {
+    changed = true;
+  }
+  return { keyfileEnv, changed };
 }
 
 /**
@@ -496,11 +523,14 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     // Sync project files + profiles.yml + keyfiles into the dir (write-if-
     // changed + delete reconciliation for warm dirs). Shared with the resident
     // engine's prepare so both see an identical on-disk tree.
-    const { keyfileEnv } = await materializeDbtProject(projectDir, {
-      files: request.files,
-      profile: request.profile,
-      reconcile: !ownsDir,
-    });
+    const { keyfileEnv, changed: projectChanged } = await materializeDbtProject(
+      projectDir,
+      {
+        files: request.files,
+        profile: request.profile,
+        reconcile: !ownsDir,
+      },
+    );
 
     // Seed prior artifacts into target/ for `dbt retry` (run_results.json is
     // what dbt reads to resume at the failed/skipped nodes).
@@ -637,7 +667,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
             logLines: depsLogLines,
             runResults: undefined,
           });
-          return { success: false, commandResults, artifacts };
+          return { success: false, commandResults, artifacts, projectChanged };
         }
         // Freshly installed — archive so the next run can skip the install.
         artifacts.packagesArchive = await archiveEntries(projectDir, [
@@ -742,7 +772,7 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       "partial_parse.msgpack",
     );
 
-    return { success, commandResults, artifacts };
+    return { success, commandResults, artifacts, projectChanged };
   } finally {
     // Only delete throwaway dirs. Warm dirs are owned by the caller and reused.
     if (ownsDir) {

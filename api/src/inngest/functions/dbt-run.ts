@@ -275,7 +275,13 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           if (!result) result = await runOnce(undefined);
 
           // Persist refreshed caches for the next command/run.
-          if (result.artifacts.partialParse) {
+          // Skip the re-upload when nothing changed (the seeded cache is still
+          // current); the msgpack's embedded timestamps would otherwise make
+          // every hourly run re-push an effectively identical blob.
+          if (
+            result.artifacts.partialParse &&
+            (result.projectChanged || !caches.partialParse)
+          ) {
             await saveParseCache(cacheScope, result.artifacts.partialParse);
           }
           if (result.artifacts.packagesArchive && packagesHash) {

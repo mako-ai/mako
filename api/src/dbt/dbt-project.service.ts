@@ -223,7 +223,12 @@ export async function runAdhocDbtCommand(params: {
           logs: [],
           stepResults: [],
           compiledSql: engineResult.compiled_sql ?? undefined,
-          raw: { success: true, commandResults: [], artifacts: {} },
+          raw: {
+            success: true,
+            commandResults: [],
+            artifacts: {},
+            projectChanged: false,
+          },
         };
       }
       logger.warn("dbt engine compile failed; falling back to subprocess", {
@@ -269,7 +274,14 @@ export async function runAdhocDbtCommand(params: {
   }
   if (!raw) raw = await runOnce(undefined);
 
-  if (raw.artifacts.partialParse) {
+  // Only re-upload the parse cache when something actually changed (or the
+  // store had no cache yet). A no-change run leaves the seeded cache current,
+  // so skip the redundant upload — the msgpack's embedded timestamps would
+  // otherwise make every run look "new".
+  if (
+    raw.artifacts.partialParse &&
+    (raw.projectChanged || !caches.partialParse)
+  ) {
     await saveParseCache(cacheScope, raw.artifacts.partialParse);
   }
   if (raw.artifacts.packagesArchive && packagesHash) {
