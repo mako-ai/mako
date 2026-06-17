@@ -101,6 +101,7 @@ export function tabRevealTarget(
     case "dbt-file":
     case "dbt-job":
     case "dbt-console":
+    case "dbt-runs":
       // dbt tabs live in the Transforms explorer; no stable reveal id yet
       // (mirrors tab-routing.ts — not deep-linkable yet).
       return null;

@@ -3,12 +3,11 @@
  * the job edit form (commands list + schedule, pattern: ScheduleConsoleModal).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -29,18 +28,11 @@ import {
   RefreshCw as RefreshIcon,
   Plus as AddIcon,
   Trash2 as RemoveIcon,
-  FileCode as ModelIcon,
-  RotateCcw as RetryIcon,
 } from "lucide-react";
-import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { CronExpressionParser } from "cron-parser";
 import { useWorkspace } from "../contexts/workspace-context";
-import {
-  useDbtStore,
-  type DbtJobItem,
-  type DbtRunItem,
-} from "../store/dbtStore";
-import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
+import DbtRunHistory from "./DbtRunHistory";
 
 type SchedulePreset = "hourly" | "daily" | "every6h" | "weekly" | "custom";
 
@@ -70,45 +62,6 @@ function presetFromCron(cron: string): SchedulePreset {
   return "custom";
 }
 
-function statusColor(status: DbtRunItem["status"]): string {
-  switch (status) {
-    case "running":
-      return "primary.main";
-    case "success":
-      return "success.main";
-    case "error":
-      return "error.main";
-    case "cancelled":
-      return "warning.main";
-    default:
-      return "text.secondary";
-  }
-}
-
-function formatDuration(ms?: number): string {
-  if (ms === undefined || ms === null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
-}
-
-function relativeTime(iso?: string): string {
-  if (!iso) return "—";
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const minutes = Math.floor(diffMs / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function absoluteTime(iso?: string): string {
-  if (!iso) return "";
-  return new Date(iso).toLocaleString();
-}
-
 export default function DbtJobView({
   projectId,
   jobId,
@@ -122,14 +75,11 @@ export default function DbtJobView({
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const jobs = useDbtStore(s => s.jobsByProject[projectId]);
   const runs = useDbtStore(s => s.runsByProject[projectId]);
-  const runDetails = useDbtStore(s => s.runDetails);
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
   const fetchRuns = useDbtStore(s => s.fetchRuns);
-  const fetchRunDetails = useDbtStore(s => s.fetchRunDetails);
   const triggerJob = useDbtStore(s => s.triggerJob);
   const cancelRun = useDbtStore(s => s.cancelRun);
-  const retryRun = useDbtStore(s => s.retryRun);
   const saveJob = useDbtStore(s => s.saveJob);
 
   const job = useMemo(
@@ -144,7 +94,6 @@ export default function DbtJobView({
 
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const logScrollRef = useRef<HTMLDivElement | null>(null);
 
   // Edit-form state
   const [formName, setFormName] = useState("");
@@ -189,44 +138,9 @@ export default function DbtJobView({
     }
   }, [selectedRunId, jobRuns]);
 
-  const selectedRun = selectedRunId ? runDetails[selectedRunId] : undefined;
-  const selectedRunListItem = jobRuns.find(run => run._id === selectedRunId);
-  const selectedStatus = selectedRun?.status ?? selectedRunListItem?.status;
   const runningRun = jobRuns.find(
     run => run.status === "running" || run.status === "queued",
   );
-
-  // Fetch details when selection changes; poll every 2s while running.
-  useEffect(() => {
-    if (!workspaceId || !selectedRunId) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const poll = async () => {
-      const details = await fetchRunDetails(
-        workspaceId,
-        projectId,
-        selectedRunId,
-      );
-      if (stopped) return;
-      if (details?.status === "running" || details?.status === "queued") {
-        timer = setTimeout(() => void poll(), 2000);
-      }
-    };
-    void poll();
-
-    return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [workspaceId, projectId, selectedRunId, fetchRunDetails]);
-
-  // Auto-scroll logs while running.
-  useEffect(() => {
-    if (selectedStatus === "running" && logScrollRef.current) {
-      logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight;
-    }
-  }, [selectedRun?.logs.length, selectedStatus]);
 
   const handleRunNow = useCallback(async () => {
     if (!workspaceId) return;
@@ -239,12 +153,6 @@ export default function DbtJobView({
     await cancelRun(workspaceId, projectId, runningRun._id);
     await fetchRuns(workspaceId, projectId, jobId);
   }, [workspaceId, projectId, jobId, runningRun, cancelRun, fetchRuns]);
-
-  const handleRetry = useCallback(async () => {
-    if (!workspaceId || !selectedRunId) return;
-    const runId = await retryRun(workspaceId, projectId, selectedRunId, jobId);
-    if (runId) setSelectedRunId(runId);
-  }, [workspaceId, projectId, jobId, selectedRunId, retryRun]);
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) void fetchRuns(workspaceId, projectId, jobId);
@@ -685,370 +593,14 @@ export default function DbtJobView({
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {header}
       <Box sx={{ flex: 1, minHeight: 0 }}>
-        <PanelGroup direction="horizontal">
-          {/* Run history */}
-          <Panel defaultSize={25} minSize={15}>
-            <Box
-              sx={{
-                height: "100%",
-                overflow: "auto",
-                borderRight: "1px solid",
-                borderColor: "divider",
-              }}
-            >
-              {jobRuns.length === 0 ? (
-                <Box sx={{ p: 2 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    No runs yet. Press Run now to start one.
-                  </Typography>
-                </Box>
-              ) : (
-                jobRuns.map(run => {
-                  const isSelected = run._id === selectedRunId;
-                  const isActive =
-                    run.status === "running" || run.status === "queued";
-                  const select = () => setSelectedRunId(run._id);
-                  return (
-                    <Box
-                      key={run._id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={select}
-                      onKeyDown={e => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          select();
-                        }
-                      }}
-                      title={absoluteTime(run.createdAt)}
-                      sx={{
-                        px: 1.5,
-                        py: 0.75,
-                        cursor: "pointer",
-                        borderBottom: "1px solid",
-                        borderColor: "divider",
-                        backgroundColor: isSelected
-                          ? "action.selected"
-                          : "transparent",
-                        "&:hover": { backgroundColor: "action.hover" },
-                        "&:focus-visible": {
-                          outline: "2px solid",
-                          outlineColor: "primary.main",
-                          outlineOffset: "-2px",
-                        },
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.75,
-                        }}
-                      >
-                        <Box
-                          sx={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            backgroundColor: statusColor(run.status),
-                            flexShrink: 0,
-                          }}
-                        />
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            flex: 1,
-                            fontWeight: 600,
-                            color: statusColor(run.status),
-                            textTransform: "capitalize",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 0.5,
-                          }}
-                        >
-                          {run.status}
-                          {isActive && <CircularProgress size={9} />}
-                        </Typography>
-                        {run.durationMs !== undefined && (
-                          <Typography variant="caption" color="text.secondary">
-                            {formatDuration(run.durationMs)}
-                          </Typography>
-                        )}
-                      </Box>
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.5,
-                          mt: 0.25,
-                        }}
-                      >
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ flex: 1 }}
-                        >
-                          {relativeTime(run.createdAt)}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ fontSize: "0.65rem" }}
-                        >
-                          {run.trigger}
-                        </Typography>
-                      </Box>
-                    </Box>
-                  );
-                })
-              )}
-            </Box>
-          </Panel>
-          <PanelResizeHandle
-            style={{ width: 4, background: "var(--mui-palette-divider)" }}
-          />
-          {/* Run details */}
-          <Panel defaultSize={75} minSize={30}>
-            {!selectedRun && !selectedRunListItem ? (
-              <Box sx={{ p: 2 }}>
-                <Typography variant="caption" color="text.secondary">
-                  Select a run to see details.
-                </Typography>
-              </Box>
-            ) : (
-              <Box
-                sx={{
-                  height: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                {/* Summary strip */}
-                <Box
-                  sx={{
-                    display: "flex",
-                    gap: 2,
-                    alignItems: "center",
-                    px: 1.5,
-                    py: 0.75,
-                    borderBottom: "1px solid",
-                    borderColor: "divider",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <Chip
-                    size="small"
-                    variant="outlined"
-                    icon={
-                      selectedStatus === "running" ||
-                      selectedStatus === "queued" ? (
-                        <CircularProgress size={10} />
-                      ) : undefined
-                    }
-                    label={selectedStatus ?? "queued"}
-                    sx={{
-                      height: 20,
-                      textTransform: "capitalize",
-                      fontWeight: 600,
-                      color: statusColor(
-                        (selectedStatus ?? "queued") as DbtRunItem["status"],
-                      ),
-                      borderColor: statusColor(
-                        (selectedStatus ?? "queued") as DbtRunItem["status"],
-                      ),
-                    }}
-                  />
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    title={absoluteTime(
-                      (selectedRun ?? selectedRunListItem)?.createdAt,
-                    )}
-                  >
-                    {relativeTime(
-                      (selectedRun ?? selectedRunListItem)?.createdAt,
-                    )}
-                  </Typography>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{
-                      fontFamily: "monospace",
-                      maxWidth: 360,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                    title={(selectedRun ?? selectedRunListItem)?.commands
-                      .map(command => `dbt ${command}`)
-                      .join(" → ")}
-                  >
-                    {(selectedRun ?? selectedRunListItem)?.commands
-                      .map(command => `dbt ${command}`)
-                      .join(" → ")}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {formatDuration(
-                      (selectedRun ?? selectedRunListItem)?.durationMs,
-                    )}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {(selectedRun ?? selectedRunListItem)?.trigger} ·{" "}
-                    {(selectedRun ?? selectedRunListItem)?.triggeredBy}
-                  </Typography>
-                  {(selectedRun ?? selectedRunListItem)?.error && (
-                    <Typography variant="caption" color="error">
-                      {(selectedRun ?? selectedRunListItem)?.error}
-                    </Typography>
-                  )}
-                  {selectedStatus === "error" && (
-                    <Tooltip title="Re-run only the failed/skipped nodes">
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        startIcon={<RetryIcon size={14} />}
-                        onClick={handleRetry}
-                        sx={{ ml: "auto" }}
-                      >
-                        Retry from failure
-                      </Button>
-                    </Tooltip>
-                  )}
-                </Box>
-
-                {/* Models table */}
-                {(selectedRun?.stepResults?.length ?? 0) > 0 && (
-                  <Box
-                    sx={{
-                      maxHeight: "40%",
-                      overflow: "auto",
-                      borderBottom: "1px solid",
-                      borderColor: "divider",
-                    }}
-                  >
-                    <Box
-                      component="table"
-                      sx={{
-                        width: "100%",
-                        fontSize: "0.75rem",
-                        borderCollapse: "collapse",
-                        "& td, & th": {
-                          borderBottom: "1px solid",
-                          borderColor: "divider",
-                          p: 0.5,
-                          textAlign: "left",
-                        },
-                      }}
-                    >
-                      <thead>
-                        <tr>
-                          <th>Node</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                          <th>Time</th>
-                          <th>Rows</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedRun?.stepResults?.map(step => (
-                          <Box
-                            component="tr"
-                            key={step.uniqueId}
-                            sx={{
-                              color:
-                                step.status === "error" ||
-                                step.status === "fail"
-                                  ? "error.main"
-                                  : step.status === "warn"
-                                    ? "warning.main"
-                                    : "inherit",
-                            }}
-                          >
-                            <td>{step.name}</td>
-                            <td>{step.resourceType}</td>
-                            <td>
-                              {step.status}
-                              {step.message &&
-                              (step.status === "error" ||
-                                step.status === "fail" ||
-                                step.status === "warn" ||
-                                step.resourceType === "source")
-                                ? ` — ${step.message}`
-                                : ""}
-                            </td>
-                            <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-                            <td>{step.rowsAffected ?? ""}</td>
-                            <td>
-                              {step.resourceType === "model" && (
-                                <Tooltip title="Open model">
-                                  <IconButton
-                                    size="small"
-                                    onClick={() =>
-                                      focusDbtFileTab(
-                                        projectId,
-                                        `models/${step.name}.sql`,
-                                      )
-                                    }
-                                  >
-                                    <ModelIcon size={12} />
-                                  </IconButton>
-                                </Tooltip>
-                              )}
-                            </td>
-                          </Box>
-                        ))}
-                      </tbody>
-                    </Box>
-                  </Box>
-                )}
-
-                {/* Logs */}
-                <Box
-                  ref={logScrollRef}
-                  sx={{
-                    flex: 1,
-                    minHeight: 0,
-                    overflow: "auto",
-                    fontFamily: "monospace",
-                    fontSize: "0.72rem",
-                    p: 1,
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {(selectedRun?.logs ?? []).length === 0 ? (
-                    <Typography variant="caption" color="text.secondary">
-                      {selectedStatus === "queued" ? "Run queued…" : "No logs."}
-                    </Typography>
-                  ) : (
-                    selectedRun?.logs.map((log, index) => (
-                      <Box
-                        key={index}
-                        component="div"
-                        sx={{
-                          color:
-                            log.level === "error"
-                              ? "error.main"
-                              : log.level === "warn"
-                                ? "warning.main"
-                                : "text.primary",
-                        }}
-                      >
-                        <Box
-                          component="span"
-                          sx={{ color: "text.secondary", mr: 1 }}
-                        >
-                          {new Date(log.ts).toLocaleTimeString()}
-                        </Box>
-                        {log.line}
-                      </Box>
-                    ))
-                  )}
-                </Box>
-              </Box>
-            )}
-          </Panel>
-        </PanelGroup>
+        <DbtRunHistory
+          workspaceId={workspaceId}
+          projectId={projectId}
+          runs={jobRuns}
+          selectedRunId={selectedRunId}
+          onSelectRun={setSelectedRunId}
+          emptyHint="No runs yet. Press Run now to start one."
+        />
       </Box>
     </Box>
   );

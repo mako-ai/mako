@@ -5,6 +5,7 @@ import { useConsoleStore } from "../store/consoleStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { useAppStore } from "../store/appStore";
 import { useDashboardStore } from "../store/dashboardStore";
+import { useDbtStore } from "../store/dbtStore";
 import { useUIStore } from "../store/uiStore";
 import { useExplorerRevealStore } from "../store/explorerRevealStore";
 import { tabRevealTarget } from "../lib/explorer-reveal";
@@ -25,6 +26,7 @@ interface EntityContext {
   dashboardDataSourceName?: string;
   appTitle?: string;
   appBindingName?: string;
+  dbtProjectName?: string;
 }
 
 /**
@@ -116,12 +118,23 @@ function segmentsForTab(
       return plain(["Plans", tab.title || "Plan"]);
     case "dbt-file": {
       const path = (tab.metadata?.path as string | undefined) || "";
-      return plain(["Transforms", ...path.split("/").filter(Boolean)]);
+      return plain([
+        "Transforms",
+        ctx.dbtProjectName,
+        ...path.split("/").filter(Boolean),
+      ]);
     }
     case "dbt-job":
-      return plain(["Transforms", "Jobs", tab.title || "Job"]);
+      return plain([
+        "Transforms",
+        ctx.dbtProjectName,
+        "Jobs",
+        tab.title || "Job",
+      ]);
     case "dbt-console":
-      return plain(["Transforms", tab.title || "Console"]);
+      return plain(["Transforms", ctx.dbtProjectName, tab.title || "Console"]);
+    case "dbt-runs":
+      return plain(["Transforms", ctx.dbtProjectName, tab.title || "Runs"]);
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       // Runtime still degrades gracefully for stale persisted tabs.
@@ -184,6 +197,18 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
       : undefined,
   );
 
+  const dbtProjectId = tab?.metadata?.projectId as string | undefined;
+  const isDbtTab =
+    tab?.kind === "dbt-file" ||
+    tab?.kind === "dbt-job" ||
+    tab?.kind === "dbt-console" ||
+    tab?.kind === "dbt-runs";
+  const dbtProjectName = useDbtStore(s =>
+    isDbtTab && dbtProjectId
+      ? s.projects.find(p => p._id === dbtProjectId)?.name
+      : undefined,
+  );
+
   const dashboardId = tab?.metadata?.dashboardId as string | undefined;
   const dataSourceId = tab?.metadata?.dataSourceId as string | undefined;
   const dashboardTitle = useDashboardStore(s =>
@@ -206,6 +231,7 @@ function EntityBreadcrumbs({ tabId, trailing }: EntityBreadcrumbsProps) {
     dashboardDataSourceName,
     appTitle,
     appBindingName,
+    dbtProjectName,
   });
 
   return (

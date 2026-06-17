@@ -23,7 +23,8 @@ export type TabKind =
   | "plan"
   | "dbt-file"
   | "dbt-job"
-  | "dbt-console";
+  | "dbt-console"
+  | "dbt-runs";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its

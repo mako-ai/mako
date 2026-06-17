@@ -51,6 +51,7 @@ export const TAB_DEEP_LINK_PATTERNS = {
   "dbt-file": null,
   "dbt-job": null,
   "dbt-console": null,
+  "dbt-runs": null,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -121,6 +122,7 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
     case "dbt-file":
     case "dbt-job":
     case "dbt-console":
+    case "dbt-runs":
       return null;
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.

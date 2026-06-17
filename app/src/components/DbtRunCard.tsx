@@ -22,9 +22,11 @@ import {
   Square as StopIcon,
   ChevronRight as ChevronRightIcon,
   ChevronDown as ChevronDownIcon,
+  ExternalLink as OpenIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtRunItem } from "../store/dbtStore";
+import { focusDbtRunsTab } from "../dbt-runtime/shell";
 
 interface DbtRunCardProps {
   runId: string;
@@ -197,6 +199,17 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
             {formatDuration(run.durationMs)}
           </Box>
         )}
+        <Tooltip title="Open in Transforms → Runs">
+          <IconButton
+            size="small"
+            onClick={event => {
+              event.stopPropagation();
+              focusDbtRunsTab(projectId, "Runs", runId);
+            }}
+          >
+            <OpenIcon size={13} />
+          </IconButton>
+        </Tooltip>
         <Chip
           size="small"
           variant="outlined"
