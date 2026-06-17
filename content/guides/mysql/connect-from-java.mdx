@@ -1,0 +1,180 @@
+---
+title: "How to Connect to MySQL from Java"
+description: "Connect to MySQL from Java with MySQL Connector/J: DriverManager, PreparedStatement, HikariCP pooling, SSL, time zones, and the errors you actually hit in production."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "java", "jdbc", "connector-j", "hikaricp", "connection"]
+date: "2026-06-17"
+---
+
+Java connects to MySQL through JDBC, and the driver is MySQL Connector/J (`com.mysql:mysql-connector-j`). It is Oracle's official Type 4 (pure Java) driver and the one almost every Java app uses, including under Spring, Hibernate, and jOOQ. This guide shows the raw JDBC connection first, then HikariCP pooling, then the MySQL-specific traps around time zones, authentication, and SSL.
+
+## The driver and its Maven coordinates
+
+Connector/J moved its Maven coordinates a few years ago. The old `mysql:mysql-connector-java` is deprecated; the current artifact is `com.mysql:mysql-connector-j`. If you copy a dependency block from an old answer, you may pull a years-old driver without realizing it.
+
+Maven:
+
+```xml
+<dependency>
+  <groupId>com.mysql</groupId>
+  <artifactId>mysql-connector-j</artifactId>
+  <version>9.7.0</version>
+</dependency>
+```
+
+Gradle:
+
+```groovy
+implementation 'com.mysql:mysql-connector-j:9.7.0'
+```
+
+Connector/J 9.7 is a JDBC Type 4 driver compatible with the JDBC 4.2 specification and works with MySQL 8.0 and higher (as of June 2026). It will also talk to MySQL 5.7, but 5.7 itself reached end of life, so new work should assume 8.x. As with all modern JDBC drivers, you do not need `Class.forName("com.mysql.cj.jdbc.Driver")`; the driver self-registers. The `cj` in the class name is the current driver package, replacing the legacy `com.mysql.jdbc.Driver`.
+
+## The basic connection
+
+```java
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
+public class Example {
+    public static void main(String[] args) throws Exception {
+        String url = "jdbc:mysql://localhost:3306/mydb";
+        String user = "app_user";
+        String password = "secret";
+
+        try (Connection conn = DriverManager.getConnection(url, user, password)) {
+            String sql = "SELECT id, email FROM users WHERE created_at > ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setObject(1, java.time.LocalDate.of(2026, 1, 1));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        System.out.println(rs.getLong("id") + " " + rs.getString("email"));
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+The same JDBC fundamentals apply as with any database: close `Connection`, `PreparedStatement`, and `ResultSet` with try-with-resources or leak them, use `?` placeholders rather than string concatenation, and remember parameters are 1-based.
+
+## The connection URL and the parameters that matter
+
+```
+jdbc:mysql://host:port/database?param1=value1&param2=value2
+```
+
+A realistic production URL:
+
+```
+jdbc:mysql://db.example.com:3306/mydb?useSSL=true&requireSSL=true&connectionTimeZone=UTC&rewriteBatchedStatements=true&connectTimeout=10000
+```
+
+The ones that bite people:
+
+- **`connectionTimeZone`** (called `serverTimezone` in older driver versions). If the server and JVM disagree about time zone and you do not set this, Connector/J historically threw `The server time zone value '...' is unrecognized or represents more than one time zone`. Setting `connectionTimeZone=UTC` (and storing UTC) is the clean answer. This is the single most common first-connection failure with MySQL from Java.
+- **`rewriteBatchedStatements=true`** turns `addBatch()`/`executeBatch()` into a single multi-row statement. Without it, batching sends one round trip per row and the speedup mostly evaporates.
+- **`connectTimeout`** (milliseconds here, unlike pgJDBC's seconds) caps the initial connect. The default waits a long time on a dead host.
+
+## Use a connection pool (HikariCP)
+
+`DriverManager.getConnection` authenticates a brand-new connection every call. Under load you pool instead. HikariCP is the standard choice and Spring Boot's default.
+
+```xml
+<dependency>
+  <groupId>com.zaxxer</groupId>
+  <artifactId>HikariCP</artifactId>
+  <version>7.1.0</version>
+</dependency>
+```
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
+HikariConfig config = new HikariConfig();
+config.setJdbcUrl("jdbc:mysql://localhost:3306/mydb?connectionTimeZone=UTC");
+config.setUsername("app_user");
+config.setPassword("secret");
+config.setMaximumPoolSize(10);
+config.setMaxLifetime(1_800_000); // 30 min
+
+try (HikariDataSource ds = new HikariDataSource(config)) {
+    try (Connection conn = ds.getConnection()) {
+        // borrowed; close() returns it to the pool
+    }
+}
+```
+
+MySQL's default `max_connections` is commonly 151. As with any database, total pool size summed across every running app instance must stay under that ceiling, or new instances get `Too many connections`. A small pool usually beats a large one. Set `maxLifetime` below MySQL's `wait_timeout` (default 28800 seconds, but managed hosts often set it far lower) so Hikari retires a connection before the server kills it for being idle, which otherwise surfaces as `CommunicationsException: The last packet successfully received from the server was ... ago`.
+
+## Authentication: caching_sha2_password
+
+MySQL 8 changed the default authentication plugin from `mysql_native_password` to `caching_sha2_password`, and MySQL 9 removed `mysql_native_password` entirely. Connector/J 9.x supports `caching_sha2_password`, but two things commonly go wrong:
+
+- Over a non-TLS connection, `caching_sha2_password` requires the server's RSA public key to exchange the password securely. If you connect without SSL and without `allowPublicKeyRetrieval=true`, you get `Public Key Retrieval is not allowed`. The right fix is to use SSL (which removes the need for key retrieval); enabling `allowPublicKeyRetrieval=true` on an unencrypted connection exposes the password exchange and should be a local-dev-only shortcut.
+- An old driver paired with an 8.x/9.x server can fail because the legacy driver does not know the new plugin. The fix is upgrading the driver, not downgrading the server's security.
+
+## SSL / TLS
+
+Recent Connector/J defaults `sslMode` to `PREFERRED`, meaning it uses TLS if the server offers it but silently falls back to plaintext if not. For production you want that to be non-optional:
+
+```
+jdbc:mysql://db.example.com:3306/mydb?sslMode=VERIFY_IDENTITY
+```
+
+| sslMode | Encrypts | Verifies CA | Verifies hostname |
+|---|---|---|---|
+| `DISABLED` | No | No | No |
+| `PREFERRED` | If available | No | No |
+| `REQUIRED` | Yes | No | No |
+| `VERIFY_CA` | Yes | Yes | No |
+| `VERIFY_IDENTITY` | Yes | Yes | Yes |
+
+`REQUIRED` stops plaintext but not an active man-in-the-middle, because it does not check the certificate. `VERIFY_IDENTITY` is the production setting. You supply the trust material through a Java truststore (`trustCertificateKeyStoreUrl`) or the JVM default.
+
+## Transactions
+
+Connections default to autocommit. For atomic multi-statement work, turn it off and commit or roll back explicitly:
+
+```java
+try (Connection conn = ds.getConnection()) {
+    conn.setAutoCommit(false);
+    try (PreparedStatement debit = conn.prepareStatement(
+             "UPDATE accounts SET balance = balance - ? WHERE id = ?");
+         PreparedStatement credit = conn.prepareStatement(
+             "UPDATE accounts SET balance = balance + ? WHERE id = ?")) {
+        debit.setBigDecimal(1, amount); debit.setLong(2, from); debit.executeUpdate();
+        credit.setBigDecimal(1, amount); credit.setLong(2, to); credit.executeUpdate();
+        conn.commit();
+    } catch (Exception e) {
+        conn.rollback();
+        throw e;
+    }
+}
+```
+
+One MySQL caveat: DDL statements (`CREATE TABLE`, `ALTER TABLE`) cause an implicit commit, so you cannot roll them back as part of a transaction the way you can in PostgreSQL. Keep schema changes out of your application transactions.
+
+## Errors you will actually hit
+
+| Error | Cause | Fix |
+|---|---|---|
+| `The server time zone value '...' is unrecognized` | JVM/server time-zone mismatch | Set `connectionTimeZone=UTC` in the URL |
+| `Public Key Retrieval is not allowed` | `caching_sha2_password` over plaintext, no key retrieval | Use SSL; avoid `allowPublicKeyRetrieval=true` outside local dev |
+| `Access denied for user 'x'@'host'` | Wrong password or the account is not allowed from your host | Check credentials and the user's host pattern in `mysql.user` |
+| `Too many connections` | Pool size summed across instances exceeds `max_connections` | Lower `maximumPoolSize`; raise server limit only if justified |
+| `CommunicationsException: last packet ... ago` | Server closed an idle connection the pool reused | Set `maxLifetime` below `wait_timeout` |
+| `No suitable driver found for jdbc:mysql:...` | Driver not on the classpath | Confirm `com.mysql:mysql-connector-j` resolved and is not test-scoped |
+
+## After you connect
+
+Once the connection works, the work moves to the SQL itself: inspecting tables, eyeballing results, confirming inserts. You can do that from the `mysql` CLI, a GUI client (compared in [Best MySQL GUI Clients](/guides/mysql-gui-client)), or Mako. For loading data, see [Import CSV to MySQL](/guides/import-csv-to-mysql) and [Import JSON to MySQL](/guides/import-json-to-mysql). When you start writing analytical queries, [MySQL window functions](/guides/mysql/window-functions), [JSON queries](/guides/mysql/json-queries), and the [joins guide](/guides/mysql/joins-guide) cover the high-payoff parts of SQL.
+
+Version notes (as of June 2026): MySQL Connector/J is at 9.7.x under the `com.mysql:mysql-connector-j` coordinates; HikariCP is at 7.x. Connector/J 8.x is still supported if you are pinned to it.
+
+Mako connects to MySQL with AI-powered autocomplete for writing queries. Try it free at mako.ai.
