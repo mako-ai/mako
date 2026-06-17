@@ -15,7 +15,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   disposeAllEngines,
   engineCompile,
@@ -26,41 +26,48 @@ import {
 const ENABLED = process.env.RUN_DBT_ENGINE_CONTRACT === "1";
 
 describe.skipIf(!ENABLED)("dbt engine contract (real dbt-core 1.9.10)", () => {
-  process.env.DBT_ENGINE_ENABLED = "true";
-  process.env.DBT_ENGINE_PYTHON_CMD = JSON.stringify([
-    "uv",
-    "run",
-    "--no-project",
-    "--python",
-    "3.11",
-    "--with",
-    "dbt-core==1.9.10",
-    "--with",
-    "dbt-duckdb==1.9.4",
-    "python",
-  ]);
-
-  const dir = mkdtempSync(join(tmpdir(), "dbt-engine-contract-"));
-  mkdirSync(join(dir, "models"), { recursive: true });
-  writeFileSync(
-    join(dir, "dbt_project.yml"),
-    'name: probe\nprofile: probe\nversion: "1.0"\nconfig-version: 2\nmodel-paths: ["models"]\n',
-  );
-  writeFileSync(
-    join(dir, "profiles.yml"),
-    `probe:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: ${dir}/probe.duckdb\n      threads: 1\n`,
-  );
-  writeFileSync(
-    join(dir, "models", "my_model.sql"),
-    "select 1 as id, 2 as val\n",
-  );
-
   const ctx = {
     adapterPackage: "dbt-duckdb",
     dbtVersion: "1.9.10",
     connectionEnv: {},
   };
-  const session = { key: "contract:probe:dev", projectDir: dir };
+  // Assigned in beforeAll so the env mutation + fixture writes never run during
+  // vitest's collection phase when the suite is skipped (avoids leaking
+  // DBT_ENGINE_ENABLED into other API tests sharing the process).
+  let session: { key: string; projectDir: string };
+
+  beforeAll(() => {
+    process.env.DBT_ENGINE_ENABLED = "true";
+    process.env.DBT_ENGINE_PYTHON_CMD = JSON.stringify([
+      "uv",
+      "run",
+      "--no-project",
+      "--python",
+      "3.11",
+      "--with",
+      "dbt-core==1.9.10",
+      "--with",
+      "dbt-duckdb==1.9.4",
+      "python",
+    ]);
+
+    const dir = mkdtempSync(join(tmpdir(), "dbt-engine-contract-"));
+    mkdirSync(join(dir, "models"), { recursive: true });
+    writeFileSync(
+      join(dir, "dbt_project.yml"),
+      'name: probe\nprofile: probe\nversion: "1.0"\nconfig-version: 2\nmodel-paths: ["models"]\n',
+    );
+    writeFileSync(
+      join(dir, "profiles.yml"),
+      `probe:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: ${dir}/probe.duckdb\n      threads: 1\n`,
+    );
+    writeFileSync(
+      join(dir, "models", "my_model.sql"),
+      "select 1 as id, 2 as val\n",
+    );
+
+    session = { key: "contract:probe:dev", projectDir: dir };
+  });
 
   afterAll(() => disposeAllEngines());
 
