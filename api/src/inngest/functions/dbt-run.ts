@@ -263,11 +263,25 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                 { ...cacheScope, role: "run" },
                 dir => runOnce(dir),
               );
+              // Positive signal so warm-dir engagement on the executor is
+              // observable; pairs with the fallback warn for a success rate.
+              logger.info("dbt warm dir used", {
+                event: "dbt_warm_dir",
+                outcome: "hit",
+                role: "run",
+                projectId: cacheScope.projectId,
+                environment: cacheScope.environment,
+              });
             } catch (warmError) {
               logger.warn(
                 "Warm dir run failed; falling back to throwaway dir",
                 {
+                  event: "dbt_warm_dir",
+                  outcome: "fallback",
+                  role: "run",
                   error: String(warmError),
+                  projectId: cacheScope.projectId,
+                  environment: cacheScope.environment,
                 },
               );
             }

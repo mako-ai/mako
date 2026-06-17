@@ -214,8 +214,14 @@ export async function runAdhocDbtCommand(params: {
         },
       );
       if (engineResult.ok) {
-        logger.debug("dbt engine compile hit", {
+        // info (not debug) so the hit rate is visible in prod once the engine
+        // flag is on — pairs with the fallback warns below for a hit/miss rate.
+        logger.info("dbt engine compile hit", {
+          event: "dbt_engine_compile",
+          outcome: "hit",
           elapsedMs: engineResult.elapsed_ms,
+          projectId: cacheScope.projectId,
+          environment: cacheScope.environment,
         });
         return {
           success: true,
@@ -232,11 +238,21 @@ export async function runAdhocDbtCommand(params: {
         };
       }
       logger.warn("dbt engine compile failed; falling back to subprocess", {
+        event: "dbt_engine_compile",
+        outcome: "fallback",
+        reason: "compile_failed",
         error: engineResult.error,
+        projectId: cacheScope.projectId,
+        environment: cacheScope.environment,
       });
     } catch (error) {
       logger.warn("dbt engine unavailable; falling back to subprocess", {
+        event: "dbt_engine_compile",
+        outcome: "fallback",
+        reason: "unavailable",
         error: String(error),
+        projectId: cacheScope.projectId,
+        environment: cacheScope.environment,
       });
     }
   }
@@ -266,9 +282,23 @@ export async function runAdhocDbtCommand(params: {
       raw = await withProjectDir({ ...cacheScope, role: "adhoc" }, dir =>
         runOnce(dir),
       );
+      // Positive signal so warm-dir engagement is observable, not faith-based:
+      // (hit count) vs the fallback warn below gives the warm-dir success rate.
+      logger.info("dbt warm dir used", {
+        event: "dbt_warm_dir",
+        outcome: "hit",
+        role: "adhoc",
+        projectId: cacheScope.projectId,
+        environment: cacheScope.environment,
+      });
     } catch (error) {
       logger.warn("Warm dir run failed; falling back to throwaway dir", {
+        event: "dbt_warm_dir",
+        outcome: "fallback",
+        role: "adhoc",
         error: String(error),
+        projectId: cacheScope.projectId,
+        environment: cacheScope.environment,
       });
     }
   }
