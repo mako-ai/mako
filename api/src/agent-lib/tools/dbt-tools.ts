@@ -27,6 +27,7 @@ import {
 import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
+  reconcileStaleQueuedRun,
   triggerDbtJobRun,
   triggerDbtRun,
 } from "../../dbt/dbt-run.service";
@@ -501,8 +502,14 @@ export const createDbtServerTools = (workspaceId: string) => {
 
           const deadline = Date.now() + Math.min(waitMs ?? 0, MAX_RUN_WAIT_MS);
 
-          let run = await DbtRun.findOne(query).sort({ createdAt: -1 }).lean();
-          if (!run) return { success: false, error: "Run not found" };
+          let found = await DbtRun.findOne(query)
+            .sort({ createdAt: -1 })
+            .lean();
+          if (!found) return { success: false, error: "Run not found" };
+          // A run stuck in "queued" past the watchdog deadline is finalized as
+          // an error here, so a never-picked-up run terminates the wait loop
+          // instead of spinning to the full budget.
+          let run = await reconcileStaleQueuedRun(found);
 
           // Bounded server-side wait: re-read until terminal, the budget
           // elapses, or the turn is aborted. Keepalives keep the SSE warm.
@@ -512,8 +519,9 @@ export const createDbtServerTools = (workspaceId: string) => {
             !abortSignal?.aborted
           ) {
             await sleep(RUN_POLL_INTERVAL_MS, abortSignal);
-            run = await DbtRun.findOne(query).sort({ createdAt: -1 }).lean();
-            if (!run) return { success: false, error: "Run not found" };
+            found = await DbtRun.findOne(query).sort({ createdAt: -1 }).lean();
+            if (!found) return { success: false, error: "Run not found" };
+            run = await reconcileStaleQueuedRun(found);
           }
 
           return {

@@ -34,6 +34,8 @@ import { buildStarterScaffold } from "../dbt/scaffold";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
+  reconcileStaleQueuedRun,
+  reconcileStaleQueuedRuns,
   requestDbtRunCancel,
   triggerDbtJobRun,
   triggerDbtRunRetry,
@@ -726,7 +728,10 @@ dbtRoutes.get("/projects/:projectId/runs", async (c: AuthenticatedContext) => {
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
-    return c.json({ success: true, runs });
+    // Finalize any run stuck in "queued" past the worker-pickup deadline so the
+    // history never shows a perpetually-queued run.
+    const reconciled = await reconcileStaleQueuedRuns(runs);
+    return c.json({ success: true, runs: reconciled });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt runs");
   }
@@ -744,13 +749,16 @@ dbtRoutes.get(
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
-      const run = await DbtRun.findOne({
+      const found = await DbtRun.findOne({
         _id: new Types.ObjectId(runId),
         projectId: project._id,
       }).lean();
-      if (!run) {
+      if (!found) {
         return c.json({ success: false, error: "Run not found" }, 404);
       }
+      // Finalize a stuck-queued run before returning so the poller (DbtRunCard /
+      // Runs view) sees a terminal error instead of spinning on "queued".
+      const run = await reconcileStaleQueuedRun(found);
       // logsSince = number of log lines the client already has (cursor).
       const logsSince = Number(c.req.query("logsSince")) || 0;
       const logs = run.logs ?? [];

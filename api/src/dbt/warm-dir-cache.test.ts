@@ -20,6 +20,7 @@ import { join } from "path";
 import { selectWarmDirsToReap } from "./workspace-dir.service";
 import { computePackagesHash } from "./dbt-cache.service";
 import { writeFileIfChanged } from "./runner.service";
+import { isStaleQueued } from "./dbt-run.service";
 
 const HOUR = 60 * 60 * 1000;
 const noLocks = () => false;
@@ -139,6 +140,60 @@ function testPackagesHash() {
   assert.notEqual(h1, other, "different declarations → different hash");
 }
 
+function testStaleQueuedWatchdog() {
+  const now = 1_000_000_000;
+  const timeout = 3 * 60 * 1000;
+  const oid = (s: string) => ({ toString: () => s }) as never;
+
+  assert.equal(
+    isStaleQueued(
+      { _id: oid("a"), status: "queued", createdAt: new Date(now - 10_000) },
+      now,
+      timeout,
+    ),
+    false,
+    "fresh queued run is not stale",
+  );
+  assert.equal(
+    isStaleQueued(
+      {
+        _id: oid("b"),
+        status: "queued",
+        createdAt: new Date(now - 4 * 60_000),
+      },
+      now,
+      timeout,
+    ),
+    true,
+    "queued past the deadline is stale",
+  );
+  assert.equal(
+    isStaleQueued(
+      {
+        _id: oid("c"),
+        status: "queued",
+        createdAt: new Date(now - 4 * 60_000),
+        startedAt: new Date(now - 3 * 60_000),
+      },
+      now,
+      timeout,
+    ),
+    false,
+    "a run that has startedAt was claimed → never stale",
+  );
+  for (const status of ["running", "success", "error", "cancelled"]) {
+    assert.equal(
+      isStaleQueued(
+        { _id: oid("d"), status, createdAt: new Date(now - 4 * 60_000) },
+        now,
+        timeout,
+      ),
+      false,
+      `non-queued status (${status}) is never stale`,
+    );
+  }
+}
+
 async function testWriteFileIfChanged(dir: string) {
   const missing = join(dir, "new.txt");
   assert.equal(
@@ -181,6 +236,7 @@ async function main() {
   testNeverReapsLockedDir();
   testCountCapAndTtlDeduped();
   testPackagesHash();
+  testStaleQueuedWatchdog();
 
   const dir = mkdtempSync(join(tmpdir(), "mako-wfc-"));
   try {
@@ -190,7 +246,7 @@ async function main() {
   }
 
   console.log(
-    "warm-dir-cache.test: OK — reaper policy, packages hash, change-detection",
+    "warm-dir-cache.test: OK — reaper policy, packages hash, change-detection, queue watchdog",
   );
   process.exit(0);
 }
