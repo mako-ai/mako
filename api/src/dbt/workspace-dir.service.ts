@@ -24,12 +24,29 @@
  * use (optionally seeded from the artifact-store cache).
  */
 
-import { mkdir } from "fs/promises";
+import { mkdir, readdir, rm, stat, utimes } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import { loggers } from "../logging";
+
+const logger = loggers.app();
 
 const WARM_ROOT =
   process.env.DBT_WARM_DIR_ROOT ?? join(tmpdir(), "mako-dbt-warm");
+
+/**
+ * Bound how much warm state accumulates per instance. Warm dirs live in /tmp
+ * (tmpfs on Cloud Run, so RAM-backed), and nothing else deletes them, so a
+ * long-lived instance would otherwise grow a dir per project it ever served.
+ */
+const MAX_WARM_DIRS = Number(process.env.DBT_WARM_DIR_MAX ?? "40");
+/** Idle warm dirs untouched for longer than this are reaped (default 24h). */
+const WARM_DIR_TTL_MS = Number(
+  process.env.DBT_WARM_DIR_TTL_MS ?? String(24 * 60 * 60 * 1000),
+);
+/** Minimum gap between opportunistic sweeps within one process. */
+const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+let lastSweepAt = 0;
 
 /** Escape hatch: set DBT_DISABLE_WARM_DIR=true to force throwaway temp dirs. */
 export function warmDirsEnabled(): boolean {
@@ -61,6 +78,83 @@ function dirFor(scope: ProjectDirScope): string {
 // Per-dir promise chain: each acquirer waits on the previous holder's release.
 const locks = new Map<string, Promise<void>>();
 
+/** Enumerate warm leaf dirs (WARM_ROOT/<ws>/<project>/<env__role>) + mtime. */
+async function listWarmLeafDirs(): Promise<
+  Array<{ dir: string; mtimeMs: number }>
+> {
+  const leaves: Array<{ dir: string; mtimeMs: number }> = [];
+  let workspaces: string[];
+  try {
+    workspaces = await readdir(WARM_ROOT);
+  } catch {
+    return leaves; // root not created yet
+  }
+  for (const ws of workspaces) {
+    let projects: string[];
+    try {
+      projects = await readdir(join(WARM_ROOT, ws));
+    } catch {
+      continue;
+    }
+    for (const proj of projects) {
+      const projDir = join(WARM_ROOT, ws, proj);
+      let envs: string[];
+      try {
+        envs = await readdir(projDir);
+      } catch {
+        continue;
+      }
+      for (const env of envs) {
+        const dir = join(projDir, env);
+        try {
+          const s = await stat(dir);
+          if (s.isDirectory()) leaves.push({ dir, mtimeMs: s.mtimeMs });
+        } catch {
+          // raced removal — ignore
+        }
+      }
+    }
+  }
+  return leaves;
+}
+
+/**
+ * Best-effort, throttled reaping of idle warm dirs so tmpfs can't grow
+ * unbounded on a long-lived instance. Evicts by TTL and a count cap (LRU).
+ * Never touches a dir that currently holds a lock (an in-flight command), so
+ * it can't corrupt a live run; idle dirs only lose a re-warmable cache.
+ */
+async function maybeSweepWarmDirs(): Promise<void> {
+  const now = Date.now();
+  if (now - lastSweepAt < SWEEP_INTERVAL_MS) return;
+  lastSweepAt = now;
+
+  try {
+    const idle = (await listWarmLeafDirs())
+      .filter(l => !locks.has(l.dir))
+      .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+
+    const toRemove = new Set<string>();
+    const overflow = Math.max(0, idle.length - MAX_WARM_DIRS);
+    idle.slice(0, overflow).forEach(l => toRemove.add(l.dir)); // count cap
+    for (const l of idle) {
+      if (now - l.mtimeMs > WARM_DIR_TTL_MS) toRemove.add(l.dir); // ttl
+    }
+
+    let removed = 0;
+    for (const dir of toRemove) {
+      if (locks.has(dir)) continue; // re-check immediately before removal
+      await rm(dir, { recursive: true, force: true });
+      removed += 1;
+    }
+    if (removed > 0) {
+      logger.debug("Reaped idle dbt warm dirs", { removed });
+    }
+  } catch (error) {
+    logger.warn("dbt warm-dir sweep failed", { error: String(error) });
+  }
+}
+
 /**
  * Run `fn` with exclusive access to the project's warm directory. Serializes
  * concurrent callers for the same dir within this process.
@@ -82,6 +176,10 @@ export async function withProjectDir<T>(
   await previous;
   try {
     await mkdir(dir, { recursive: true });
+    // Touch mtime so the count-cap LRU reflects "last acquired", not just
+    // last dbt write, then opportunistically reap other idle dirs.
+    await utimes(dir, new Date(), new Date()).catch(() => {});
+    void maybeSweepWarmDirs();
     return await fn(dir);
   } finally {
     release();

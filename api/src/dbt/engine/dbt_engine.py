@@ -15,7 +15,7 @@ Sessions are keyed by an opaque string (the supervisor uses project+env). The
 supervisor owns the on-disk working directory; this process only reads it.
 
 All assumptions here were verified against dbt-core 1.9.10 + dbt-duckdb 1.9.4
-(see api/src/dbt/engine/__tests__ contract test).
+(see api/src/dbt/dbt-engine.contract.test.ts).
 """
 
 import json
