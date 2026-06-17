@@ -27,7 +27,9 @@ import {
 import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
+  reconcileStaleQueuedRun,
   triggerDbtJobRun,
+  triggerDbtRun,
 } from "../../dbt/dbt-run.service";
 import {
   DbtCommandValidationError,
@@ -59,6 +61,30 @@ function toolError(error: unknown, fallback: string) {
     success: false,
     error: error instanceof Error ? error.message : fallback,
   };
+}
+
+/** Upper bound on dbt_get_run's server-side wait, well under proxy timeouts. */
+const MAX_RUN_WAIT_MS = 90_000;
+/** Cadence for the dbt_get_run wait loop — mirrors the IDE run-detail poll. */
+const RUN_POLL_INTERVAL_MS = 2_000;
+
+/** Sleep that resolves early when the turn is aborted (chat Stop). */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Keep tool outputs small: errors + warnings + last few info lines. */
@@ -316,9 +342,12 @@ export const createDbtServerTools = (workspaceId: string) => {
         "against the project's dev environment (or the given environment). " +
         "This WRITES to the warehouse target schema. `model` accepts a node " +
         "name (stg_orders) or a dbt selector with graph operators/methods " +
-        "(stg_orders+, +marts.orders, tag:nightly, state:modified+). Returns " +
-        "per-node status, timing, rows affected, and test pass/fail outcomes. " +
-        "Use this as the final verification after compile succeeds.",
+        "(stg_orders+, +marts.orders, tag:nightly, state:modified+). " +
+        "Runs ASYNCHRONOUSLY in the runner and returns a `runId` immediately " +
+        "(it does NOT block until the build finishes). Poll `dbt_get_run` " +
+        "with that `runId` (pass `waitMs`) to get per-node status, timing, " +
+        "rows affected, and test pass/fail outcomes. Use this as the final " +
+        "verification after compile succeeds.",
       inputSchema: z.object({
         projectId: projectIdField,
         model: z
@@ -339,19 +368,30 @@ export const createDbtServerTools = (workspaceId: string) => {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
-          await assertProject(projectId);
-          const result = await runAdhocDbtCommand({
+          const project = await assertProject(projectId);
+          // Dispatch to the async runner instead of blocking the chat turn for
+          // the full build. The build executes in the Inngest worker
+          // (decoupled from this SSE connection), so it survives proxy idle
+          // timeouts and API restarts. The agent verifies the outcome by
+          // polling dbt_get_run; the chat renders a live run card from runId.
+          const run = await triggerDbtRun({
             workspaceId,
             projectId,
-            environmentName: environment,
-            command: `build --select ${model}`,
-            select: model,
-            timeoutMs: 5 * 60 * 1000,
+            environment: environment ?? project.defaultEnvironment,
+            commands: [`build --select ${model}`],
+            trigger: "agent",
+            triggeredBy: "agent",
           });
           return {
-            success: result.success,
-            stepResults: result.stepResults,
-            logs: summarizeLogs(result.logs),
+            success: true,
+            runId: run._id.toString(),
+            status: run.status,
+            environment: run.environment,
+            commands: run.commands,
+            message:
+              "Build started in the runner. Poll dbt_get_run with this runId " +
+              "(pass waitMs) until status is success/error. The user sees " +
+              "live progress in the run card.",
           };
         } catch (error) {
           return toolError(error, "Failed to run model");
@@ -405,18 +445,34 @@ export const createDbtServerTools = (workspaceId: string) => {
     dbt_get_run: tool({
       description:
         "Read the status, step results, and logs of a dbt run — use this " +
-        "AFTER dbt_run_job to see whether the run passed or failed (the " +
-        "trigger only queues it). Pass `runId` for a specific run, or `jobId` " +
-        "to get that job's most recent run.",
+        "AFTER dbt_run_model or dbt_run_job to see whether the run passed or " +
+        "failed (those only queue it). Pass `runId` for a specific run, or " +
+        "`jobId` to get that job's most recent run. Pass `waitMs` to block " +
+        "server-side until the run reaches a terminal status (success/error/" +
+        "cancelled) or the wait elapses — call it ONCE with waitMs ~90000 " +
+        "after dbt_run_model; if it returns still running, tell the user the " +
+        "build is in progress and stop (the run card shows live progress).",
       inputSchema: z.object({
         projectId: projectIdField,
-        runId: z.string().optional().describe("dbt run ID (from dbt_run_job)"),
+        runId: z
+          .string()
+          .optional()
+          .describe("dbt run ID (from dbt_run_model / dbt_run_job)"),
         jobId: z
           .string()
           .optional()
           .describe("dbt job ID — returns the latest run for this job"),
+        waitMs: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            "If set, wait up to this many ms (capped at 90000) for the run " +
+              "to finish before returning. Use ~90000 once after dbt_run_model.",
+          ),
       }),
-      execute: async ({ projectId, runId, jobId }) => {
+      execute: async ({ projectId, runId, jobId, waitMs }, { abortSignal }) => {
         try {
           const project = await assertProject(projectId);
           if (!runId && !jobId) {
@@ -439,10 +495,34 @@ export const createDbtServerTools = (workspaceId: string) => {
             query.jobId = new Types.ObjectId(jobId);
           }
 
-          const run = await DbtRun.findOne(query)
+          const isTerminal = (status: string) =>
+            status === "success" ||
+            status === "error" ||
+            status === "cancelled";
+
+          const deadline = Date.now() + Math.min(waitMs ?? 0, MAX_RUN_WAIT_MS);
+
+          let found = await DbtRun.findOne(query)
             .sort({ createdAt: -1 })
             .lean();
-          if (!run) return { success: false, error: "Run not found" };
+          if (!found) return { success: false, error: "Run not found" };
+          // A run stuck in "queued" past the watchdog deadline is finalized as
+          // an error here, so a never-picked-up run terminates the wait loop
+          // instead of spinning to the full budget.
+          let run = await reconcileStaleQueuedRun(found);
+
+          // Bounded server-side wait: re-read until terminal, the budget
+          // elapses, or the turn is aborted. Keepalives keep the SSE warm.
+          while (
+            !isTerminal(run.status) &&
+            Date.now() + RUN_POLL_INTERVAL_MS <= deadline &&
+            !abortSignal?.aborted
+          ) {
+            await sleep(RUN_POLL_INTERVAL_MS, abortSignal);
+            found = await DbtRun.findOne(query).sort({ createdAt: -1 }).lean();
+            if (!found) return { success: false, error: "Run not found" };
+            run = await reconcileStaleQueuedRun(found);
+          }
 
           return {
             success: true,

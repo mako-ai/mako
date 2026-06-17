@@ -28,6 +28,7 @@ import {
   type DbtRunModelResult,
   type DbtRunLogLine,
 } from "../store/dbtStore";
+import EntityBreadcrumbs from "./EntityBreadcrumbs";
 
 function languageForDbtPath(path: string): string {
   if (path.endsWith(".sql")) return "sql";
@@ -81,9 +82,11 @@ function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
 }
 
 export default function DbtFileEditor({
+  tabId,
   projectId,
   path,
 }: {
+  tabId: string;
   projectId: string;
   path: string;
 }) {
@@ -257,76 +260,62 @@ export default function DbtFileEditor({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
-      {/* Breadcrumb + actions */}
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          minHeight: 30,
-          px: 1.5,
-          py: 0.25,
-          backgroundColor: "background.paper",
-          color: "text.secondary",
-          fontSize: "0.75rem",
-          borderBottom: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Box sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>
-          {project?.name ?? "dbt"} / {path}
-          {file.dirty ? " •" : ""}
-        </Box>
-        {modelName && (
-          <>
-            <Select
-              size="small"
-              value={environment}
-              onChange={e => setEnvironment(e.target.value)}
-              sx={{ fontSize: "0.75rem", minWidth: 90 }}
-            >
-              {(project?.environments ?? []).map(env => (
-                <MenuItem key={env.name} value={env.name}>
-                  {env.name}
-                </MenuItem>
-              ))}
-            </Select>
-            <Tooltip title="Resolve unselected refs against the last prod build (dbt --defer)">
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={defer}
-                    onChange={e => setDefer(e.target.checked)}
-                  />
-                }
-                label={
-                  <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
-                    Defer
-                  </Typography>
-                }
-                sx={{ mr: 0 }}
-              />
-            </Tooltip>
-            <Button
-              size="small"
-              variant="outlined"
-              disabled={busy !== null}
-              onClick={handleCompile}
-            >
-              {busy === "compile" ? "Compiling…" : "Compile"}
-            </Button>
-            <Button
-              size="small"
-              variant="contained"
-              disabled={busy !== null}
-              onClick={handleRunModel}
-            >
-              {busy === "run" ? "Running…" : "Run model"}
-            </Button>
-          </>
-        )}
-      </Box>
+      {/* Single bar: breadcrumb (workspace › Transforms › project › path) with
+          the model actions in the trailing slot. */}
+      <EntityBreadcrumbs
+        tabId={tabId}
+        trailing={
+          modelName ? (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Select
+                size="small"
+                value={environment}
+                onChange={e => setEnvironment(e.target.value)}
+                sx={{ fontSize: "0.75rem", minWidth: 90 }}
+              >
+                {(project?.environments ?? []).map(env => (
+                  <MenuItem key={env.name} value={env.name}>
+                    {env.name}
+                  </MenuItem>
+                ))}
+              </Select>
+              <Tooltip title="Resolve unselected refs against the last prod build (dbt --defer)">
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={defer}
+                      onChange={e => setDefer(e.target.checked)}
+                    />
+                  }
+                  label={
+                    <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+                      Defer
+                    </Typography>
+                  }
+                  sx={{ mr: 0 }}
+                />
+              </Tooltip>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={busy !== null}
+                onClick={handleCompile}
+              >
+                {busy === "compile" ? "Compiling…" : "Compile"}
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                disabled={busy !== null}
+                onClick={handleRunModel}
+              >
+                {busy === "run" ? "Running…" : "Run model"}
+              </Button>
+            </Box>
+          ) : undefined
+        }
+      />
 
       <Box sx={{ flex: 1, minHeight: 0 }}>
         {panelOpen ? (

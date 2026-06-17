@@ -166,7 +166,14 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
+      # Inngest routes a sent event to an environment by its EVENT KEY, not by
+      # INNGEST_ENV / the x-inngest-env header. Branch environments share a single
+      # "Branch Environments" event key; pairing it with INNGEST_ENV=pr-<n> routes
+      # events to that branch env. Using the production event key here would make
+      # event-triggered functions (e.g. dbt/run.requested) escape to prod and the
+      # branch executor never fires (runs stuck "queued"). Falls back to the prod
+      # key only if the branch key secret is unset, to avoid breaking deploys.
+      INNGEST_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY || vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -198,6 +205,11 @@ jobs:
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
     steps:
+      - name: Warn if branch Inngest event key is missing
+        if: ${{ secrets.INNGEST_BRANCH_EVENT_KEY == '' }}
+        run: |
+          echo "::warning title=Inngest branch event key missing::INNGEST_BRANCH_EVENT_KEY is not set — preview events fall back to the PRODUCTION event key and route to the prod Inngest env, so event-triggered functions (e.g. dbt runs) will NOT fire on this preview (they stay 'queued'). Add the Branch Environments event key as a repo secret to enable event-driven flows on previews."
+
       - name: Set PR-specific variables
         id: pr-vars
         run: |

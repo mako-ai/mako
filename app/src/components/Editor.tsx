@@ -65,6 +65,7 @@ import PlanDocumentTab from "./PlanDocumentTab";
 import DbtFileEditor from "./DbtFileEditor";
 import DbtJobView from "./DbtJobView";
 import DbtConsoleView from "./DbtConsoleView";
+import DbtRunsView from "./DbtRunsView";
 import DashboardDataSourceEditor from "./DashboardDataSourceEditor";
 import TableDataView from "./TableDataView";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -2143,7 +2144,9 @@ function Editor({
               activeTab.kind === "table-data" ||
               activeTab.kind === "app-file" ||
               activeTab.kind === "app-binding" ||
-              activeTab.kind === "dashboard-data-source";
+              activeTab.kind === "dashboard-data-source" ||
+              activeTab.kind === "dbt-file" ||
+              activeTab.kind === "dbt-runs";
             if (rendersOwnBreadcrumbs) return null;
             return <EntityBreadcrumbs tabId={activeTab.id} />;
           })()}
@@ -2234,6 +2237,7 @@ function Editor({
                   />
                 ) : tab.kind === "dbt-file" ? (
                   <DbtFileEditor
+                    tabId={tab.id}
                     projectId={tab.metadata?.projectId as string}
                     path={tab.metadata?.path as string}
                   />
@@ -2245,6 +2249,12 @@ function Editor({
                 ) : tab.kind === "dbt-console" ? (
                   <DbtConsoleView
                     projectId={tab.metadata?.projectId as string}
+                  />
+                ) : tab.kind === "dbt-runs" ? (
+                  <DbtRunsView
+                    tabId={tab.id}
+                    projectId={tab.metadata?.projectId as string}
+                    focusRunId={tab.metadata?.focusRunId as string | undefined}
                   />
                 ) : tab.kind === "dashboard-data-source" ? (
                   <DashboardDataSourceEditor

@@ -68,6 +68,10 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
     kind: "dbt-console",
     metadata: { projectId: "proj-1" },
   }),
+  "dbt-runs": baseTab({
+    kind: "dbt-runs",
+    metadata: { projectId: "proj-1" },
+  }),
 };
 
 const ALL_KINDS = Object.keys(FIXTURES) as Array<NonNullable<TabKind>>;

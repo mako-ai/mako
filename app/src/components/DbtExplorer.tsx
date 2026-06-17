@@ -39,6 +39,7 @@ import {
   Settings as EditProjectIcon,
   MoreVertical as KebabIcon,
   Terminal as ConsoleIcon,
+  History as RunsIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -54,6 +55,7 @@ import {
   focusDbtConsoleTab,
   focusDbtFileTab,
   focusDbtJobTab,
+  focusDbtRunsTab,
 } from "../dbt-runtime/shell";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
@@ -66,6 +68,7 @@ import ExplorerShell from "./ExplorerShell";
 const FILE_SEP = "::file::";
 const DIR_SEP = "::dir::";
 const JOB_SEP = "::job::";
+const RUNS_SEP = "::runs::";
 const JOBS_DIR = "__jobs";
 
 const DBT_COMPATIBLE_TYPES = new Set([
@@ -85,12 +88,16 @@ function dirname(path: string): string {
 }
 
 interface ParsedNode {
-  kind: "project" | "dir" | "file" | "job";
+  kind: "project" | "dir" | "file" | "job" | "runs";
   projectId: string;
   path: string;
 }
 
 function parseNodeId(id: string): ParsedNode {
+  if (id.includes(RUNS_SEP)) {
+    const [projectId] = id.split(RUNS_SEP);
+    return { kind: "runs", projectId, path: "" };
+  }
   if (id.includes(JOB_SEP)) {
     const [projectId, path] = id.split(JOB_SEP);
     return { kind: "job", projectId, path };
@@ -217,6 +224,9 @@ export function DbtExplorer() {
     if (activeTab?.kind === "dbt-job") {
       return `${activeTab.metadata?.projectId}${JOB_SEP}${activeTab.metadata?.jobId}`;
     }
+    if (activeTab?.kind === "dbt-runs") {
+      return `${activeTab.metadata?.projectId}${RUNS_SEP}`;
+    }
     return null;
   }, [activeTab]);
 
@@ -297,6 +307,12 @@ export function DbtExplorer() {
               isDirectory: false,
             })),
           });
+          children.push({
+            id: `${project._id}${RUNS_SEP}`,
+            name: "Runs",
+            path: "runs",
+            isDirectory: false,
+          });
         }
         return {
           id: project._id,
@@ -355,6 +371,8 @@ export function DbtExplorer() {
           j => j._id === parsed.path,
         );
         focusDbtJobTab(parsed.projectId, parsed.path, job?.name ?? node.name);
+      } else if (parsed.kind === "runs") {
+        focusDbtRunsTab(parsed.projectId, "Runs");
       }
     },
     [jobsByProject],
@@ -383,6 +401,9 @@ export function DbtExplorer() {
     }
     if (parsed.kind === "job") {
       return <JobIcon size={16} strokeWidth={1.5} />;
+    }
+    if (parsed.kind === "runs") {
+      return <RunsIcon size={16} strokeWidth={1.5} />;
     }
     return undefined;
   }, []);
@@ -514,7 +535,7 @@ export function DbtExplorer() {
   // Hover kebab: same actions as the right-click menu, but discoverable.
   const getRightAdornment = useCallback((node: ResourceTreeNode) => {
     const parsed = parseNodeId(node.id);
-    if (parsed.kind === "dir") return null;
+    if (parsed.kind === "dir" || parsed.kind === "runs") return null;
     return (
       <IconButton
         size="small"

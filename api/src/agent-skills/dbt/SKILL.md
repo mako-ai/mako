@@ -117,10 +117,17 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
    malformed schema.yml without touching the warehouse.
 2. `dbt_compile_model` — renders the Jinja; read the compiled SQL to confirm
    it targets the right relations.
-3. `dbt_run_model` on dev — reports per-node status, timing, rows affected,
-   and test outcomes. Surface these to the user.
+3. `dbt_run_model` on dev — runs ASYNCHRONOUSLY in the runner and returns a
+   `runId` immediately (it does NOT wait for the build). Then call
+   `dbt_get_run({ runId, waitMs: 90000 })` ONCE to wait for the result:
+   - terminal (`success`/`error`) → surface per-node status, timing, rows
+     affected, and test outcomes to the user.
+   - still `running`/`queued` after the wait → tell the user the build is
+     still in progress (the run card shows live logs/status); do NOT keep
+     polling in a tight loop. Poll again only if the user asks.
 4. Preview built tables with `sql_execute_query`
-   (`select * from <dev_schema>.<model> limit 100`).
+   (`select * from <dev_schema>.<model> limit 100`) — only after the run
+   reaches `success`.
 
 ## Environments and jobs
 

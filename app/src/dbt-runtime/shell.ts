@@ -62,6 +62,42 @@ export function focusDbtConsoleTab(projectId: string, title: string): string {
   return tabId;
 }
 
+/**
+ * Open (or focus) the project-wide Runs tab (run history + live logs for every
+ * run, including ad-hoc agent/editor runs that have no jobId). When `runId` is
+ * given, the Runs view selects that run on open (used by the chat run card).
+ */
+export function focusDbtRunsTab(
+  projectId: string,
+  title: string,
+  runId?: string,
+): string {
+  const consoleStore = useConsoleStore.getState();
+  const existingTab = Object.values(consoleStore.tabs).find(
+    (tab: { kind?: string; metadata?: { projectId?: string } }) =>
+      tab.kind === "dbt-runs" && tab.metadata?.projectId === projectId,
+  );
+
+  const tabId =
+    existingTab?.id ??
+    consoleStore.openTab({
+      title,
+      content: "",
+      kind: "dbt-runs",
+      metadata: { projectId, focusRunId: runId },
+    });
+
+  // If re-focusing an existing tab with a new target run, update the metadata
+  // so DbtRunsView can react and select it. updateMetadata replaces the whole
+  // object, so pass the full set.
+  if (existingTab && runId) {
+    consoleStore.updateMetadata(tabId, { projectId, focusRunId: runId });
+  }
+
+  consoleStore.setActiveTab(tabId);
+  return tabId;
+}
+
 /** Open (or focus) the job view tab (run history + edit) for a dbt job. */
 export function focusDbtJobTab(
   projectId: string,
