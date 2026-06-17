@@ -110,6 +110,12 @@ Key capabilities:
 
 The agent handles edit-mode locking, so concurrent users cannot conflict.
 
+### Transform Agent
+
+Active in the [Transforms](/transforms/) section. Builds and runs dbt models against the warehouse: it edits project files (`create_dbt_file` / `modify_dbt_file`), then verifies with a mandatory loop — `dbt_parse` (catches bad refs and undeclared sources without touching the warehouse) → `dbt_compile_model` (renders the Jinja) → `dbt_run_model` (runs `dbt build --select`, which executes the model **and** its tests on `dev`).
+
+It can also create and update jobs, but only triggers a job (`dbt_run_job`) after explicit user confirmation. Ad-hoc builds always default to the `dev` environment.
+
 ## Visual Inspection
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
