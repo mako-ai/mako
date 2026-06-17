@@ -12,6 +12,7 @@ import {
   Flow,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "../services/database-connection.service";
+import { getConnectionStore } from "../db/connection-store";
 import {
   queryExecutionService,
   QueryLanguage,
@@ -998,10 +999,10 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Invalid database ID" }, 400);
       }
 
-      const database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(databaseId),
-        workspaceId: workspace._id,
-      });
+      const database = await getConnectionStore().findInWorkspace(
+        databaseId,
+        String(workspace._id),
+      );
 
       if (!database) {
         return c.json({ success: false, error: "Database not found" }, 404);
@@ -1888,11 +1889,11 @@ workspaceExecuteRoutes.openapi(
         );
       }
 
-      // Find the database connection
-      database = await DatabaseConnection.findOne({
-        _id: new Types.ObjectId(effectiveConnectionId),
-        workspaceId: workspace._id,
-      });
+      // Find the database connection (Mongo or Postgres, per CONNECTIONS_PERSISTENCE)
+      database = await getConnectionStore().findInWorkspace(
+        String(effectiveConnectionId),
+        String(workspace._id),
+      );
 
       if (!database) {
         return c.json(

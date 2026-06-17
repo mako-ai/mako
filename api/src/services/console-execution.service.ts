@@ -13,11 +13,11 @@
 import { Types } from "mongoose";
 import {
   SavedConsole,
-  DatabaseConnection,
   type ISavedConsole,
   type IDatabaseConnection,
 } from "../database/workspace-schema";
 import { databaseConnectionService } from "./database-connection.service";
+import { getConnectionStore } from "../db/connection-store";
 import {
   queryExecutionService,
   type QueryLanguage,
@@ -153,18 +153,14 @@ export async function executeSavedConsole(
   }
 
   if (!savedConsole.connectionId) {
-    return fail(
-      "Console has no associated database connection",
-      savedConsole,
-    );
+    return fail("Console has no associated database connection", savedConsole);
   }
 
-  const database: IDatabaseConnection | null = await DatabaseConnection.findOne(
-    {
-      _id: savedConsole.connectionId,
-      workspaceId: new Types.ObjectId(workspaceId),
-    },
-  );
+  const database: IDatabaseConnection | null =
+    await getConnectionStore().findInWorkspace(
+      String(savedConsole.connectionId),
+      workspaceId,
+    );
   if (!database) {
     return fail("Associated database not found or access denied", savedConsole);
   }
