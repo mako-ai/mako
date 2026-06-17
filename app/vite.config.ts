@@ -41,6 +41,13 @@ export default defineConfig(({ mode }) => {
       emitVersionJson(buildId),
     ],
     envDir: "..",
+    // Disable MUI X telemetry at build time too: @mui/x-telemetry reads
+    // process.env.MUI_X_TELEMETRY_DISABLED directly (true = disabled), and this
+    // replacement is applied to the bundled dependency code. Reinforces the
+    // runtime global flag set in index.html / main.tsx.
+    define: {
+      "process.env.MUI_X_TELEMETRY_DISABLED": JSON.stringify("true"),
+    },
     server: {
       port: 5173,
       allowedHosts: true,

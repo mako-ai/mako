@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      Disable all MUI X telemetry. Set before any module script loads so the
+      flag is in place before @mui/x-* evaluates. @mui/x-telemetry reads
+      globalThis.__MUI_X_TELEMETRY_DISABLED__ first (true = disabled).
+      Reinforced at runtime in main.tsx and at build time in vite.config.ts.
+    -->
+    <script>
+      window.__MUI_X_TELEMETRY_DISABLED__ = true;
+    </script>
+
     <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/logo192.png" />
     <title>Mako</title>

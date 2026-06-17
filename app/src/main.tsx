@@ -3,12 +3,23 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import { BrowserRouter } from "react-router-dom";
 import CssBaseline from "@mui/material/CssBaseline";
-import { LicenseInfo } from "@mui/x-license";
+import { LicenseInfo, muiXTelemetrySettings } from "@mui/x-license";
 import { enableMapSet } from "immer";
 import App from "./App.tsx";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/auth-context.tsx";
 import { initializeStoreVersion } from "./store/lib/storeVersion";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __MUI_X_TELEMETRY_DISABLED__: boolean | undefined;
+}
+
+// Disable all MUI X telemetry. The global flag is also set in index.html (before
+// any module loads) and via vite.config.ts at build time; this is the runtime
+// belt-and-suspenders for the bundled @mui/x-* code.
+globalThis.__MUI_X_TELEMETRY_DISABLED__ = true;
+muiXTelemetrySettings.disableTelemetry();
 
 // Set MUI X Premium license key
 LicenseInfo.setLicenseKey(import.meta.env.VITE_MUI_LICENSE_KEY || "");
