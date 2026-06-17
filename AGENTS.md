@@ -76,6 +76,10 @@ migration target for Mako's own metadata (auth, workspaces, connections,
 consoles, chats, queries). It runs **alongside** Mongo; both stores coexist
 during the gradual cutover.
 
+> **Full handoff doc & deploy runbook:** [`api/src/db/README.md`](api/src/db/README.md)
+> — motivation, status table, per-domain cutover playbook, TODO, and the safe
+> rollout/rollback sequence. Read it before continuing the migration or deploying.
+
 - **Local Postgres** is not preinstalled on the VM. Install + start a cluster:
   ```bash
   sudo apt-get install -y postgresql postgresql-contrib postgresql-16-pgvector
