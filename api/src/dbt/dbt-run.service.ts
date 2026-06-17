@@ -19,16 +19,23 @@ import { loggers } from "../logging";
 const logger = loggers.api("dbt-run");
 
 /**
- * How long a run may sit in "queued" before the read-side watchdog declares it
- * failed. The executor claims a run within seconds; anything still queued past
- * this window means the Inngest worker never picked it up (unavailable, or — on
- * branch/preview envs — "dbt/run.requested" events not routed to this env). We
- * never want the UI to spin on "queued" forever, so we finalize it as an error.
+ * How long an ad-hoc run may sit in "queued" before the read-side watchdog
+ * declares it failed. With no sibling run executing for the project, the
+ * executor claims a run within seconds, so anything still queued past this
+ * window (and with nothing running ahead of it) means the event was never
+ * delivered — worker down, or events not routed to this env (branch/preview).
+ *
+ * This is a fast, interactive complement to the cron `dbtRunSweeperFunction`,
+ * which is the authoritative backstop (6h) and the only path that finalizes
+ * *scheduled* job runs (it also mirrors job-health stats). We intentionally do
+ * NOT fast-fail job runs here to avoid that stat drift.
  */
-const QUEUE_TIMEOUT_MS = Number(process.env.DBT_QUEUE_TIMEOUT_MS) || 3 * 60_000;
+const QUEUE_TIMEOUT_MS = Number(process.env.DBT_QUEUE_TIMEOUT_MS) || 5 * 60_000;
 
 type ReconcilableRun = {
   _id: Types.ObjectId;
+  projectId?: Types.ObjectId;
+  jobId?: Types.ObjectId;
   status: string;
   createdAt?: Date;
   startedAt?: Date;
@@ -47,16 +54,34 @@ export function isStaleQueued(
 }
 
 /**
- * Finalize a run that has been stuck in "queued" past QUEUE_TIMEOUT_MS as an
- * error, so callers never observe a perpetually-queued run. The update is
- * guarded on `status: "queued"` — mutually exclusive with the executor's
- * `mark-running` claim — so a run that the worker grabs at the last moment is
- * left untouched. Returns the (possibly patched) run for immediate display.
+ * Finalize an ad-hoc run stuck in "queued" past QUEUE_TIMEOUT_MS as an error,
+ * so the run card / Runs view never spin forever on a lost event. Guards:
+ *
+ *  - **Ad-hoc only.** Scheduled job runs (jobId set) are left to the cron
+ *    sweeper, which mirrors job-health stats; failing them here would drift.
+ *  - **No sibling executing.** The executor serializes per project
+ *    (concurrency limit 1 / projectId), so a queued run with a peer already
+ *    `running` is legitimately waiting its turn — never fail those.
+ *  - **Guarded write** on `status: "queued"`, mutually exclusive with the
+ *    executor's `mark-running` claim, so a last-moment pickup is never clobbered.
+ *
+ * Returns the (possibly patched) run for immediate display.
  */
 export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
   run: T,
 ): Promise<T> {
   if (!isStaleQueued(run)) return run;
+  // Scheduled job runs are the cron sweeper's responsibility (+ stat mirroring).
+  if (run.jobId) return run;
+  // Still waiting behind the per-project concurrency lock? Not a lost event.
+  if (run.projectId) {
+    const peerRunning = await DbtRun.exists({
+      projectId: run.projectId,
+      status: "running",
+      _id: { $ne: run._id },
+    });
+    if (peerRunning) return run;
+  }
 
   const completedAt = new Date();
   const error =
