@@ -482,6 +482,9 @@ consoleRoutes.openapi(
           // tab's autosave eligibility correct (drafts autosave, saved
           // consoles don't). Missing on legacy docs ⇒ treated as saved.
           isSaved: doc.isSaved ?? true,
+          // Lets the client route an agent edit into the diff-review flow even
+          // when the live poke was missed (reconnect/reload). Undefined ⇒ user.
+          lastDraftOrigin: doc.lastDraftOrigin,
           lastRun: doc.lastRun,
         });
       }
@@ -1289,6 +1292,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           databaseId: body.databaseId,
           isSaved: true,
           updatedAt: now,
+          // User-initiated write: clears any prior agent origin so a later
+          // reconnect doesn't re-surface this as an agent diff.
+          lastDraftOrigin: "user",
         };
         if (body.chartSpec !== undefined) setFields.chartSpec = body.chartSpec;
         if (body.resultsViewMode !== undefined) {
@@ -1358,6 +1364,9 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
         databaseName: body.databaseName,
         databaseId: body.databaseId,
         updatedAt: now,
+        // User-initiated write (autosave / explicit save / agent-edit revert):
+        // clears any prior agent origin so reconnect won't re-surface a diff.
+        lastDraftOrigin: "user",
       };
 
       // Only update name if explicitly provided

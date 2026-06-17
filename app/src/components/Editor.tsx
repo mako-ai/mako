@@ -794,6 +794,25 @@ function Editor({
     };
   }, []);
 
+  // Agent (modify_console) edits arrive server-authoritative (issue #475) but
+  // are surfaced as a reviewable Accept/Reject diff instead of replacing the
+  // buffer silently. consoleStore.beginAgentReview dispatches this with the
+  // proposed content; the editor keeps the pre-agent baseline until resolved.
+  useEffect(() => {
+    const handleAgentDiff = (event: Event) => {
+      const { consoleId, content } = (
+        event as CustomEvent<{ consoleId: string; content: string }>
+      ).detail;
+      if (!consoleId) return;
+      consoleRefs.current[consoleId]?.current?.showRemoteDiff(content);
+    };
+
+    window.addEventListener("console-agent-diff", handleAgentDiff);
+    return () => {
+      window.removeEventListener("console-agent-diff", handleAgentDiff);
+    };
+  }, []);
+
   // Listen for console execution events from AI (run_console tool)
   useEffect(() => {
     const handleExecutionStart = (event: Event) => {

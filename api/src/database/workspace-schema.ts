@@ -455,6 +455,14 @@ export interface ISavedConsole extends Document {
    */
   draftRevision: number;
   /**
+   * Who produced the most recent content-bearing draft write: "agent"
+   * (modify_console / create_console) or "user" (autosave, explicit save).
+   * Lets reconnecting clients surface an agent edit as a reviewable diff even
+   * when the live `console.updated` poke was missed (the revision sync echoes
+   * this back). Undefined on legacy docs ⇒ treated as a user edit.
+   */
+  lastDraftOrigin?: "user" | "agent";
+  /**
    * Latest run artifact (server-side run_console / console execution).
    * Persisted so results survive a detached agent session — when the user
    * reopens the console, the results are still there. sampleRows is capped
@@ -1663,6 +1671,13 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
     draftRevision: {
       type: Number,
       default: 1,
+    },
+    // Origin of the latest content-bearing draft write ("agent" | "user").
+    // Drives reconnect-safe agent diff review; undefined ⇒ treated as "user".
+    lastDraftOrigin: {
+      type: String,
+      enum: ["user", "agent"],
+      required: false,
     },
     // Latest server-side run artifact. Schema.Types.Mixed members are
     // size-capped by the writer (console-execution.service.ts).

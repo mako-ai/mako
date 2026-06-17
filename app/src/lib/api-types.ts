@@ -112,6 +112,12 @@ export interface ConsoleRevisionSyncEntry {
   version?: number;
   /** Server truth for draft-vs-saved (drives autosave eligibility). */
   isSaved?: boolean;
+  /**
+   * Who produced the latest draft write ("agent" | "user"). Lets the client
+   * surface an agent edit as a reviewable diff on reconnect/reload even when
+   * the live `console.updated` poke was missed. Undefined ⇒ treated as user.
+   */
+  lastDraftOrigin?: "user" | "agent";
   lastRun?: ConsoleLastRun;
 }
 
