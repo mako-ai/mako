@@ -119,6 +119,33 @@ async function listWarmLeafDirs(): Promise<
 }
 
 /**
+ * Pure eviction policy: given the warm leaves + their mtimes, decide which to
+ * reap. Idle (unlocked) dirs only; evict by count cap (LRU, oldest first) and
+ * TTL. Extracted from the sweep so it can be unit-tested without touching fs.
+ */
+export function selectWarmDirsToReap(
+  leaves: Array<{ dir: string; mtimeMs: number }>,
+  opts: {
+    now: number;
+    maxDirs: number;
+    ttlMs: number;
+    isLocked: (dir: string) => boolean;
+  },
+): string[] {
+  const idle = leaves
+    .filter(l => !opts.isLocked(l.dir))
+    .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+
+  const toRemove = new Set<string>();
+  const overflow = Math.max(0, idle.length - opts.maxDirs);
+  idle.slice(0, overflow).forEach(l => toRemove.add(l.dir)); // count cap
+  for (const l of idle) {
+    if (opts.now - l.mtimeMs > opts.ttlMs) toRemove.add(l.dir); // ttl
+  }
+  return [...toRemove];
+}
+
+/**
  * Best-effort, throttled reaping of idle warm dirs so tmpfs can't grow
  * unbounded on a long-lived instance. Evicts by TTL and a count cap (LRU).
  * Never touches a dir that currently holds a lock (an in-flight command), so
@@ -130,22 +157,32 @@ async function maybeSweepWarmDirs(): Promise<void> {
   lastSweepAt = now;
 
   try {
-    const idle = (await listWarmLeafDirs())
-      .filter(l => !locks.has(l.dir))
-      .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
-
-    const toRemove = new Set<string>();
-    const overflow = Math.max(0, idle.length - MAX_WARM_DIRS);
-    idle.slice(0, overflow).forEach(l => toRemove.add(l.dir)); // count cap
-    for (const l of idle) {
-      if (now - l.mtimeMs > WARM_DIR_TTL_MS) toRemove.add(l.dir); // ttl
-    }
+    const toRemove = selectWarmDirsToReap(await listWarmLeafDirs(), {
+      now,
+      maxDirs: MAX_WARM_DIRS,
+      ttlMs: WARM_DIR_TTL_MS,
+      isLocked: dir => locks.has(dir),
+    });
 
     let removed = 0;
     for (const dir of toRemove) {
-      if (locks.has(dir)) continue; // re-check immediately before removal
-      await rm(dir, { recursive: true, force: true });
-      removed += 1;
+      // Claim the lock SYNCHRONOUSLY before deleting: the has()-check and the
+      // set() below run in a single tick with no await between them, so no
+      // withProjectDir can interleave and start using the dir mid-rm. Any
+      // acquirer that arrives after chains on our gate and waits for the rm.
+      if (locks.has(dir)) continue;
+      let release: () => void = () => {};
+      const gate = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      locks.set(dir, gate);
+      try {
+        await rm(dir, { recursive: true, force: true });
+        removed += 1;
+      } finally {
+        release();
+        if (locks.get(dir) === gate) locks.delete(dir);
+      }
     }
     if (removed > 0) {
       logger.debug("Reaped idle dbt warm dirs", { removed });

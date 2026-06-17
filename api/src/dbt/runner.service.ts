@@ -261,7 +261,7 @@ async function extractArchive(
 /** Write only when content differs — avoids needless mtime bumps that would
  * defeat dbt's checksum-based partial parsing in a warm dir. Returns true when
  * it actually wrote (i.e. content changed or the file was missing). */
-async function writeFileIfChanged(
+export async function writeFileIfChanged(
   absolute: string,
   content: string,
   mode?: number,
