@@ -74,6 +74,11 @@ class EngineProcess {
   /** For LRU eviction. */
   lastUsed = Date.now();
 
+  /** True when no request is in flight — safe to evict/dispose. */
+  get isIdle(): boolean {
+    return this.pending.size === 0;
+  }
+
   constructor(
     private readonly adapterPackage: string,
     private readonly dbtVersion: string | undefined,
@@ -228,12 +233,15 @@ function engineFor(ctx: EngineContext): EngineProcess {
   const key = poolKey(ctx);
   let engine = pool.get(key);
   if (!engine) {
-    // Evict the least-recently-used process if at capacity.
+    // Evict the least-recently-used *idle* process if at capacity. Never evict
+    // an engine with an in-flight request — disposing it would abort live work
+    // and force a subprocess fallback mid-compile. If every engine is busy we
+    // let the pool temporarily exceed MAX_ENGINES rather than kill active work.
     if (pool.size >= MAX_ENGINES) {
       let lruKey: string | undefined;
       let lruAt = Infinity;
       for (const [k, e] of pool) {
-        if (e.lastUsed < lruAt) {
+        if (e.isIdle && e.lastUsed < lruAt) {
           lruAt = e.lastUsed;
           lruKey = k;
         }

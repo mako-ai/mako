@@ -36,10 +36,14 @@ const WARM_ROOT =
 
 /**
  * Bound how much warm state accumulates per instance. Warm dirs live in /tmp
- * (tmpfs on Cloud Run, so RAM-backed), and nothing else deletes them, so a
- * long-lived instance would otherwise grow a dir per project it ever served.
+ * (tmpfs on Cloud Run, so RAM-backed), and each can hold 100s of MB
+ * (`dbt_packages/` + `target/`), so the cap is intentionally conservative to
+ * avoid OOMing a memory-limited instance. Evicted dirs re-seed cheaply from the
+ * cross-instance artifact cache, so a low cap costs little. Raise
+ * `DBT_WARM_DIR_MAX` on roomy instances; lower it (or 0/`DBT_DISABLE_WARM_DIR`)
+ * on tight ones.
  */
-const MAX_WARM_DIRS = Number(process.env.DBT_WARM_DIR_MAX ?? "40");
+const MAX_WARM_DIRS = Number(process.env.DBT_WARM_DIR_MAX ?? "12");
 /** Idle warm dirs untouched for longer than this are reaped (default 24h). */
 const WARM_DIR_TTL_MS = Number(
   process.env.DBT_WARM_DIR_TTL_MS ?? String(24 * 60 * 60 * 1000),

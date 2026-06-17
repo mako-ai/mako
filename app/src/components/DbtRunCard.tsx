@@ -36,6 +36,9 @@ interface DbtRunCardProps {
 }
 
 const ACTIVE_POLL_INTERVAL_MS = 2_000;
+// Give up polling only after sustained fetch failures (~20s of transient
+// errors) so a brief network blip doesn't permanently freeze a live card.
+const MAX_POLL_ERRORS = 10;
 const MAX_VISIBLE_LOGS = 200;
 
 function statusColor(status: DbtRunItem["status"] | undefined): string {
@@ -86,13 +89,24 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
     if (!workspaceId) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveErrors = 0;
 
     const poll = async () => {
       const details = await fetchRunDetails(workspaceId, projectId, runId);
       if (stopped) return;
-      if (details?.status === "running" || details?.status === "queued") {
-        timer = setTimeout(() => void poll(), ACTIVE_POLL_INTERVAL_MS);
+      const status = details?.status;
+      // Stop only on a confirmed terminal status. A transient fetch failure
+      // returns null — keep polling (bounded) instead of freezing on "running".
+      if (
+        status === "success" ||
+        status === "error" ||
+        status === "cancelled"
+      ) {
+        return;
       }
+      if (!details && ++consecutiveErrors >= MAX_POLL_ERRORS) return;
+      if (details) consecutiveErrors = 0;
+      timer = setTimeout(() => void poll(), ACTIVE_POLL_INTERVAL_MS);
     };
     void poll();
 

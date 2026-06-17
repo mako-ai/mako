@@ -24,6 +24,10 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useDbtStore, type DbtRunItem } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 
+// Stop polling only after sustained fetch failures (~20s) so a transient blip
+// doesn't permanently freeze the detail panel on a non-terminal status.
+const MAX_POLL_ERRORS = 10;
+
 function statusColor(status: DbtRunItem["status"]): string {
   switch (status) {
     case "running":
@@ -116,6 +120,7 @@ export default function DbtRunHistory({
     if (!workspaceId || !selectedRunId) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveErrors = 0;
 
     const poll = async () => {
       const details = await fetchRunDetails(
@@ -124,9 +129,19 @@ export default function DbtRunHistory({
         selectedRunId,
       );
       if (stopped) return;
-      if (details?.status === "running" || details?.status === "queued") {
-        timer = setTimeout(() => void poll(), 2000);
+      const status = details?.status;
+      // Stop only on a confirmed terminal status. A transient fetch failure
+      // returns null — keep polling (bounded) rather than freezing on "running".
+      if (
+        status === "success" ||
+        status === "error" ||
+        status === "cancelled"
+      ) {
+        return;
       }
+      if (!details && ++consecutiveErrors >= MAX_POLL_ERRORS) return;
+      if (details) consecutiveErrors = 0;
+      timer = setTimeout(() => void poll(), 2000);
     };
     void poll();
 
