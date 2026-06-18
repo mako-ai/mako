@@ -17,6 +17,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { Refresh as RefreshIcon } from "@mui/icons-material";
@@ -67,6 +68,7 @@ export default function SettingsAdmin() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [hardRefreshing, setHardRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -112,6 +114,38 @@ export default function SettingsAdmin() {
       setRefreshError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleHardRefresh = async () => {
+    setHardRefreshing(true);
+    setRefreshError(null);
+    setRefreshNotice(null);
+    try {
+      const res = await apiJson<{
+        success: boolean;
+        refreshed?: {
+          models: number;
+          pricedModels: number;
+          droppedEntries?: number;
+        };
+        error?: string;
+      }>("/api/admin/catalog/hard-refresh", { method: "POST" });
+      if (!res.success) {
+        setRefreshError(res.error ?? "Unknown error");
+      } else if (res.refreshed) {
+        const dropped = res.refreshed.droppedEntries ?? 0;
+        setRefreshNotice(
+          `Hard refresh complete (${res.refreshed.models} models, ${res.refreshed.pricedModels} priced${
+            dropped ? `, ${dropped} invalid rows skipped` : ""
+          })`,
+        );
+      }
+      await loadCatalog();
+    } catch (err) {
+      setRefreshError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHardRefreshing(false);
     }
   };
 
@@ -218,22 +252,47 @@ export default function SettingsAdmin() {
             <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
               Refresh catalog
             </Typography>
-            <Button
-              variant="contained"
-              size="small"
-              disableElevation
-              startIcon={
-                refreshing ? <CircularProgress size={14} /> : <RefreshIcon />
-              }
-              onClick={handleRefresh}
-              disabled={refreshing}
-            >
-              Refresh from AI Gateway
-            </Button>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Button
+                variant="contained"
+                size="small"
+                disableElevation
+                startIcon={
+                  refreshing ? <CircularProgress size={14} /> : <RefreshIcon />
+                }
+                onClick={handleRefresh}
+                disabled={refreshing || hardRefreshing}
+              >
+                Refresh from AI Gateway
+              </Button>
+              <Tooltip title="Bypasses per-row validation (skips only malformed models) and clears all gateway caches. Use when new models aren't appearing.">
+                <span>
+                  <Button
+                    variant="outlined"
+                    color="warning"
+                    size="small"
+                    startIcon={
+                      hardRefreshing ? (
+                        <CircularProgress size={14} color="inherit" />
+                      ) : (
+                        <RefreshIcon />
+                      )
+                    }
+                    onClick={handleHardRefresh}
+                    disabled={refreshing || hardRefreshing}
+                  >
+                    Hard refresh
+                  </Button>
+                </span>
+              </Tooltip>
+            </Box>
           </Box>
           <Typography variant="body2" color="text.secondary">
             Pulls the latest model list + pricing from the Vercel AI Gateway.
-            Any validation errors are shown below.
+            Any validation errors are shown below. <strong>Hard refresh</strong>{" "}
+            validates each model row independently — dropping only malformed
+            rows instead of skipping the whole snapshot — and clears every
+            gateway cache, so use it when new models aren&apos;t showing up.
           </Typography>
           {data?.gatewayFetchedAt && (
             <Typography

@@ -12,6 +12,7 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { requireSuperAdmin } from "../auth/super-admin";
 import { loggers } from "../logging";
 import {
+  adminHardRefreshCatalog,
   adminRefreshCatalog,
   getAdminCatalogView,
   setCuratedDefaults,
@@ -94,6 +95,28 @@ adminRoutes.openapi(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/catalog/hard-refresh
+// Resilient refresh: drops only malformed upstream rows (instead of skipping
+// the whole snapshot) and busts BOTH the catalog and gateway-models caches.
+// ---------------------------------------------------------------------------
+adminRoutes.post("/catalog/hard-refresh", async c => {
+  const result = await adminHardRefreshCatalog();
+  if (!result.ok) {
+    return c.json({ success: false, error: result.error }, 502);
+  }
+  const view = await getAdminCatalogView();
+  return c.json({
+    success: true,
+    refreshed: {
+      models: result.models,
+      pricedModels: result.pricedModels,
+      droppedEntries: result.droppedEntries,
+    },
+    ...view,
+  });
+});
 
 // ---------------------------------------------------------------------------
 // PUT /api/admin/catalog/models/:modelId
