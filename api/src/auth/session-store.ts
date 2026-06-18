@@ -1,5 +1,10 @@
 import { Session, User, ISession, IUser } from "../database/schema";
-import { isObjectIdDerivedUuid, toPgIdOrNull, uuidToObjectId } from "../db/ids";
+import {
+  isObjectIdDerivedUuid,
+  toPgId,
+  toPgIdOrNull,
+  uuidToObjectId,
+} from "../db/ids";
 import { sessionsRepository } from "../db/repositories";
 import { loggers } from "../logging";
 
@@ -136,6 +141,13 @@ function workspaceUuidToHex(
   return isObjectIdDerivedUuid(value) ? uuidToObjectId(value) : value;
 }
 
+async function legacyUserIdForPgUser(user: StoredUser): Promise<string> {
+  const mongoUser = await User.findOne({ email: user.email })
+    .select({ _id: 1 })
+    .lean<Pick<IUser, "_id">>();
+  return mongoUser?._id ?? user.id;
+}
+
 class PostgresSessionStore implements SessionStore {
   readonly backend = "postgres" as const;
 
@@ -147,7 +159,7 @@ class PostgresSessionStore implements SessionStore {
   }): Promise<void> {
     await sessionsRepository.create({
       id: input.id,
-      userId: input.userId,
+      userId: toPgId(input.userId),
       expiresAt: input.expiresAt,
       activeWorkspaceId: toPgIdOrNull(input.activeWorkspaceId),
     });
@@ -174,14 +186,15 @@ class PostgresSessionStore implements SessionStore {
         user: null,
       };
     }
+    const legacyUserId = await legacyUserIdForPgUser(row.user);
     return {
       session: {
         id: row.session.id,
-        userId: row.session.userId,
+        userId: legacyUserId,
         expiresAt: row.session.expiresAt,
         activeWorkspaceId: workspaceUuidToHex(row.session.activeWorkspaceId),
       },
-      user: { id: row.user.id, email: row.user.email },
+      user: { id: legacyUserId, email: row.user.email },
     };
   }
 
@@ -204,7 +217,7 @@ class PostgresSessionStore implements SessionStore {
     activeWorkspaceId: string | undefined,
   ): Promise<number> {
     return sessionsRepository.setActiveWorkspaceForUser(
-      userId,
+      toPgId(userId),
       toPgIdOrNull(activeWorkspaceId),
     );
   }
@@ -214,7 +227,7 @@ class PostgresSessionStore implements SessionStore {
   }
 
   async deleteAllForUser(userId: string): Promise<void> {
-    await sessionsRepository.deleteAllForUser(userId);
+    await sessionsRepository.deleteAllForUser(toPgId(userId));
   }
 
   async deleteExpired(now: Date = new Date()): Promise<number> {
