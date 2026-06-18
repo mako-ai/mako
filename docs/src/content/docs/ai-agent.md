@@ -28,6 +28,7 @@ The console is a full SQL editor — not a chat window with code blocks you copy
 - **Reads before writing** — always checks the current console state before modifying
 - **Supports patching** — for small edits (adding a WHERE clause, fixing a column name), it patches specific lines instead of replacing everything
 - **Multiple consoles** — each query gets its own tab, organized by topic
+- **Reviewable edits** — agent edits to an existing console arrive as a Monaco Accept/Reject diff rather than overwriting your buffer. Your editor keeps the pre-agent baseline until you resolve the review: **Accept** adopts the agent's version, **Reject** reverts it. Cumulative edits across a turn diff against the original baseline, and a pending review re-surfaces if you reload or reconnect mid-edit. (Renames apply immediately as metadata, not part of the content diff.)
 
 ## Multi-Database Support
 
