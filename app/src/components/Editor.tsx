@@ -1170,7 +1170,7 @@ function Editor({
   };
 
   const handleDownloadResults = useCallback(
-    (tabId: string, format: "csv" | "ndjson") => {
+    async (tabId: string, format: "csv" | "ndjson") => {
       const tab = tabs[tabId];
       if (!currentWorkspace) {
         setErrorMessage("No workspace selected");
@@ -1185,47 +1185,72 @@ function Editor({
       }
 
       const action = `${getApiBasePath(import.meta.env.VITE_API_URL)}/workspaces/${currentWorkspace.id}/execute/export`;
-      const iframe = document.createElement("iframe");
-      iframe.name = `download-frame-${Date.now()}`;
-      iframe.style.display = "none";
-      document.body.appendChild(iframe);
-
-      const form = document.createElement("form");
-      form.method = "POST";
-      form.action = action;
-      form.target = iframe.name;
-      form.style.display = "none";
-
-      const appendField = (name: string, value?: string) => {
-        if (value === undefined || value === null) {
-          return;
-        }
-        const input = document.createElement("input");
-        input.type = "hidden";
-        input.name = name;
-        input.value = value;
-        form.appendChild(input);
-      };
-
-      appendField("connectionId", tab.connectionId);
-      appendField("databaseId", tab.databaseId);
-      appendField("databaseName", tab.databaseName);
-      appendField("query", tab.content);
-      appendField("format", format);
-      appendField("filename", tab.title || "query-results");
-
-      document.body.appendChild(form);
-      form.submit();
+      const baseName = tab.title || "query-results";
 
       setSnackbarMessage(
-        format === "csv" ? "CSV download started" : "NDJSON download started",
+        format === "csv" ? "Preparing CSV…" : "Preparing NDJSON…",
       );
       setSnackbarOpen(true);
 
-      window.setTimeout(() => {
-        form.remove();
-        iframe.remove();
-      }, 60000);
+      try {
+        // We use fetch (not a hidden-iframe form POST) so that server-side
+        // errors — preview-safety rejections, BigQuery auth/permission
+        // failures, etc. — surface to the user instead of being swallowed
+        // by an invisible iframe that always shows a "download started" toast.
+        const response = await fetch(action, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            connectionId: tab.connectionId,
+            databaseId: tab.databaseId,
+            databaseName: tab.databaseName,
+            query: tab.content,
+            format,
+            filename: baseName,
+          }),
+        });
+
+        if (!response.ok) {
+          let message = `Export failed (HTTP ${response.status})`;
+          try {
+            const errorBody = await response.json();
+            if (errorBody?.error) {
+              message = errorBody.error;
+            }
+          } catch {
+            const text = await response.text().catch(() => "");
+            if (text) message = text;
+          }
+          setSnackbarOpen(false);
+          setErrorMessage(message);
+          setErrorModalOpen(true);
+          return;
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${baseName}.${format === "csv" ? "csv" : "ndjson"}`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+
+        setSnackbarMessage(
+          format === "csv" ? "CSV downloaded" : "NDJSON downloaded",
+        );
+        setSnackbarOpen(true);
+      } catch (error) {
+        setSnackbarOpen(false);
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "Failed to download query results",
+        );
+        setErrorModalOpen(true);
+      }
     },
     [currentWorkspace, tabs],
   );
@@ -2570,7 +2595,7 @@ function Editor({
                                     handleNextResultsPage(tab.id)
                                   }
                                   onDownload={format =>
-                                    handleDownloadResults(tab.id, format)
+                                    void handleDownloadResults(tab.id, format)
                                   }
                                 />
                               )}
