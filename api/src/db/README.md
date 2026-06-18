@@ -38,21 +38,76 @@ risk a hard break.
 
 | Domain | PG schema | Repository | Backfill | Dual-write (Mongo→PG) | Reads cut over |
 |---|---|---|---|---|---|
-| **auth – users** | ✅ | ✅ | ✅ | ✅ (post-save hook) | ✅ via session validation |
+| **auth – users** | ✅ | ✅ | ✅ | ✅ (post-save hook) | partial: session validation only |
 | **auth – sessions** | ✅ | ✅ | ✅ | n/a (PG-authoritative when flag on) | ✅ (`AUTH_PERSISTENCE=postgres`) |
-| auth – oauth/email-verif/desktop codes | ✅ | partial | ✅ | ❌ (backfill only) | ❌ |
-| **workspaces + members** | ✅ | ✅ | ✅ | ✅ (post-save hooks) | ❌ (reads still Mongo) |
+| auth – oauth/email-verif | ✅ | partial | ✅ | ❌ (backfill only) | ❌ |
+| auth – desktop codes | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **workspaces + members** | ✅ | ✅ (members only) | ✅ | ✅ (post-save hooks) | ❌ (reads still Mongo) |
 | workspace invites / api keys | ✅ | partial | ✅ | ❌ | ❌ |
 | **connections (`database_connections`)** | ✅ | ✅ | ✅ | ✅ (post-save hook) | ✅ for query execution (`CONNECTIONS_PERSISTENCE=postgres`) |
 | connectors | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **consoles (folders + saved_consoles)** | ✅ | ✅ | ✅ | ❌ | ❌ (only `/api/pg` demo) |
 | **chats (+ attachments, llm_usage)** | ✅ | ✅ | ✅ | ❌ | ❌ (only `/api/pg` demo) |
 | **query_executions** | ✅ | ✅ | ✅ | ❌ | ❌ (only `/api/pg` demo) |
+| entity_versions (console/dashboard history) | ❌ | ❌ | ❌ | ❌ | ❌ |
 | dashboards, apps, skills, dbt, notifications, flows, **CDC**, etc. | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 "Reads cut over" = the live app reads this domain from Postgres when the flag is
 on. Everything not cut over still reads Mongo, so the app is fully functional at
 every step.
+
+### 2.1 What is cleanly migratable today
+
+Treat a domain as clean only when it has **schema + backfill + dual-write + a live
+read seam/flag**. A table plus a successful backfill is not enough.
+
+The clean first migration unit is:
+
+1. `users` as a dependency of sessions (not full auth yet).
+2. `sessions` via `AUTH_PERSISTENCE=postgres`.
+3. `workspaces` and `workspace_members` as dependencies for access checks (not
+   full workspace CRUD yet).
+4. `database_connections` for query execution via
+   `CONNECTIONS_PERSISTENCE=postgres`.
+
+Everything else with a PG table is currently **schema/backfill validation only**,
+not production cutover work. In particular, the console/chats/query rows that
+were backfilled into Neon prove the current schema can ingest a snapshot, but
+they will drift because their live write paths still use Mongo only.
+
+### 2.2 Dependency graph
+
+```text
+users
+  ├─ sessions
+  ├─ oauth_accounts
+  ├─ desktop_auth_codes
+  └─ workspace_members
+
+workspaces
+  ├─ workspace_members
+  ├─ workspace_invites
+  ├─ workspace_api_keys
+  ├─ database_connections
+  │   ├─ saved_consoles
+  │   ├─ query_executions
+  │   └─ connectors.target_databases
+  ├─ console_folders
+  │   └─ saved_consoles
+  ├─ chats
+  │   └─ chat_attachments
+  ├─ llm_usage
+  └─ query_executions
+
+saved_consoles
+  ├─ query_executions
+  └─ entity_versions (Mongo only today; hard blocker for console history)
+```
+
+Console cutover depends on more than `saved_consoles`: it also needs
+`console_folders`, `database_connections`, `entity_versions`, realtime
+`draftRevision` semantics, optimistic `version` guards, query execution stats,
+and scheduled-query state.
 
 ---
 
@@ -130,6 +185,18 @@ pnpm --filter api run test:pg       # ids + repositories + OpenAPI e2e tests (ne
 `db:backfill` accepts `--domains=auth,workspaces,connections,consoles,chats,queries`
 (default = all, in dependency order). `db:verify` accepts `--sample=N`.
 
+Backfill semantics:
+
+- `db:backfill` is idempotent in the **insert-only** sense. Rows are inserted
+  with `onConflictDoNothing`, so rerunning it will not duplicate data.
+- It does **not** refresh existing PG rows. If Mongo changed after the first
+  backfill, rerunning the current script only catches newly missing rows; it
+  will not update edited rows or propagate deletes.
+- Therefore, backfill is not a substitute for dual-write. For mutable domains
+  (consoles, chats, connectors, usage, query history, invites, API keys), add
+  dual-write or an upsert/reconciliation mode before treating a backfill as a
+  real cutover step.
+
 ---
 
 ## 6. Local dev quickstart
@@ -146,9 +213,9 @@ export PGBIN=/usr/lib/postgresql/16/bin
 export POSTGRES_URL="postgres://postgres@127.0.0.1:5432/mako_dev"
 pnpm --filter api run db:migrate
 
-# 3. (Optional) backfill real data from the dev Mongo, then verify
+# 3. (Optional) backfill cutover-ready data from the dev Mongo, then verify
 export BACKFILL_MONGO_URL="$DEV_DATABASE_URL"
-pnpm --filter api run db:backfill
+pnpm --filter api run db:backfill -- --domains=auth,workspaces,connections
 pnpm --filter api run db:verify --sample=100   # expect 0 mismatch / 0 missing
 
 # 4. Run the app against PG-backed auth + connections
@@ -205,32 +272,55 @@ both stores in sync).
 ## 8. Roadmap
 
 - **Phase 1 (done):** schema + migrations + id mapping + repositories +
-  backfill + verify; auth/session read cutover; users/workspaces/connections
-  dual-write; connection resolution (query execution) read cutover; `/api/pg`
-  read API; lifecycle wiring.
-- **Phase 2 (next):** finish dual-write for the remaining migrated domains
-  (consoles, chats, queries, connectors, oauth, invites, api keys); add their
-  read seams + flags; route the remaining `DatabaseConnection.findById` reads
-  (dbt, dashboards, apps, flows) through `connection-store`.
-- **Phase 3:** TTL sweeper (Inngest cron), pgvector embedding backfill + search
-  cutover, Drizzle transactions for multi-table writes, fuller auth cutover
-  (read users from PG in `AuthService`).
-- **Phase 4:** model + migrate the long tail (dashboards, apps, skills, dbt,
-  notifications, entity versions, realtime presence, model catalog).
-- **Phase 5 (last):** sync/CDC (`cdc_*`, webhook events, flow executions).
+  backfill + verify; session store read/write seam; users/workspaces/members/
+  connections dual-write; connection resolution read seam for query execution;
+  `/api/pg` read API; Neon branch automation.
+- **Phase 2 (safe foundation cutover):** enable and harden only the domains that
+  are already dependency-complete: `AUTH_PERSISTENCE=postgres` for sessions and
+  `CONNECTIONS_PERSISTENCE=postgres` for query execution. Route remaining
+  non-CDC `DatabaseConnection.findById` reads through `connection-store`.
+- **Phase 3 (complete auth + tenancy):** add repositories/read seams/dual-write
+  for OAuth accounts, email verifications, desktop auth codes, workspace invites,
+  and normalized workspace API keys. Decouple API-key auth from embedded
+  `Workspace.apiKeys`.
+- **Phase 4 (consoles + versions):** add SQL `entity_versions`, backfill it, add
+  dual-write for `ConsoleFolder`, `SavedConsole`, and `EntityVersion`, preserve
+  `version` + `draftRevision` write guards, and only then cut over console reads
+  and writes. Backfill `description_embedding` before semantic search cutover.
+- **Phase 5 (chats + usage + query history):** add dual-write/read seams for
+  chats, chat attachments, LLM usage, and query executions. Fix field parity for
+  usage/query analytics and wire Postgres retention crons.
+- **Phase 6:** model + migrate the long tail (dashboards, apps, skills, dbt,
+  notifications, realtime presence, model catalog).
+- **Phase 7 (last):** sync/CDC (`cdc_*`, webhook events, flow executions).
 
 ---
 
 ## 9. TODO (actionable, what remains)
 
+- [ ] **Next:** route all remaining non-CDC `DatabaseConnection.find*` reads
+      through `connection-store`, then verify `CONNECTIONS_PERSISTENCE=postgres`
+      covers every normal app query path.
+- [ ] Add a focused CI/staging drift gate for the clean foundation domains:
+      `auth,workspaces,connections`.
+- [ ] Harden `AUTH_PERSISTENCE=postgres` with a session expiry cron using
+      `sessionsRepository.deleteExpired()`.
+- [ ] Complete API key migration before broader workspace cutover: repository,
+      dual-write for create/revoke/last-used updates, and API-key auth reads from
+      `workspace_api_keys` instead of embedded Mongo `Workspace.apiKeys`.
+- [ ] Start console cutover only after the foundation/API-key work: design SQL
+      `entity_versions` first, then console dual-write and route parity.
 - [ ] Dual-write hooks for: `Connector`, `SavedConsole`, `ConsoleFolder`, `Chat`,
       `ChatAttachment`, `LlmUsage`, `QueryExecution`, `OAuthAccount`,
       `WorkspaceInvite`, `Workspace.apiKeys`. (Only User/Workspace/Member/
       DatabaseConnection dual-write today.)
-- [ ] Repositories for `Connector`, oauth/invites/api-keys (CRUD).
+- [ ] Backfill + repository + read seam for `desktop_auth_codes`.
+- [ ] Repositories for `Connector`, oauth/email-verification/invites/api-keys
+      (CRUD).
 - [ ] Read seams + flags for consoles, chats, queries; then cut over the live
       routes (`routes/consoles.ts`, `routes/chats.ts`, `agent-thread.service.ts`,
       `query-execution.service.ts`).
+- [ ] Add PG `entity_versions` before any console version/history cutover.
 - [ ] Route remaining `DatabaseConnection.findById` reads through
       `connection-store` (dbt, dashboards, apps, flows — **excluding** sync/CDC).
 - [ ] TTL replacement: Inngest cron calling `sessionsRepository.deleteExpired()`
@@ -246,7 +336,7 @@ both stores in sync).
       bypass sites (migrations, embeddings, some sync) as their domains migrate.
 - [ ] CI: add `drizzle-kit check` drift gate and run `db:verify` in a staging job
       before flipping prod flags.
-- [ ] Long tail + CDC schema/migration (phases 4–5).
+- [ ] Long tail + CDC schema/migration (phases 6–7).
 - [ ] Polymorphic refs (notification rules, entity versions) need a
       discriminator column design when those tables are added.
 
@@ -318,22 +408,32 @@ The real deploy path is `.github/workflows/deploy-app.yml` (not `deploy.sh`):
 
 ### 10.4 Safe rollout sequence (zero-downtime, reversible)
 
-Do this once when first introducing Postgres to an environment:
+Do this when first introducing Postgres to an environment. Only backfill domains
+that are cutover-ready; a successful full backfill is useful for schema
+validation, but not production migration progress for domains without dual-write
+and feature parity.
 
 1. **Deploy code with all flags OFF.** Nothing changes at runtime. Confirm
    `GET /api/pg/health` returns `{ ok: true }` (proves connectivity).
 2. **Run migrations:** `POSTGRES_URL=… pnpm --filter api run db:migrate`.
-3. **Turn on dual-write:** set `POSTGRES_DUAL_WRITE=true` and redeploy. New writes
-   now mirror to PG. Bake.
-4. **Backfill history:**
-   `BACKFILL_MONGO_URL=<source> POSTGRES_URL=<target> pnpm --filter api run db:backfill`.
+3. **Turn on dual-write for the domains that have it:** set
+   `POSTGRES_DUAL_WRITE=true` and redeploy. Today this mirrors users,
+   workspaces, workspace members, and database connections only.
+4. **Backfill the clean foundation domains:**
+   `BACKFILL_MONGO_URL=<source> POSTGRES_URL=<target> pnpm --filter api run db:backfill -- --domains=auth,workspaces,connections`.
    Prefer a Mongo **read replica**/snapshot as the source for prod.
 5. **Verify parity:** `pnpm --filter api run db:verify --sample=200` → must be
-   **0 mismatch / 0 missing** before flipping reads.
+   **0 mismatch / 0 missing** for the domains being flipped. Do not treat
+   console/chat/query verification as a cutover gate until those domains have
+   dual-write and read/write parity.
 6. **Flip reads, one domain at a time:** set `AUTH_PERSISTENCE=postgres`, redeploy,
    watch; then `CONNECTIONS_PERSISTENCE=postgres`, redeploy, watch.
 7. **Rollback** = set the flag back to `mongo` and redeploy (instant; both stores
    are in sync via dual-write).
+
+Do **not** cut over consoles, chats, usage, query history, connectors, OAuth,
+invites, or API keys from the current implementation. Those domains need the
+missing work listed in §8–§9 first.
 
 ### 10.5 Deploying from your machine (manual)
 
@@ -346,7 +446,7 @@ export DATABASE_URL="<staging mongo>"
 export POSTGRES_URL="<neon branch url>"
 export BACKFILL_MONGO_URL="$DATABASE_URL"
 pnpm --filter api run db:migrate
-pnpm --filter api run db:backfill
+pnpm --filter api run db:backfill -- --domains=auth,workspaces,connections
 pnpm --filter api run db:verify --sample=200   # gate: must be clean
 # then run the app with flags to smoke test
 AUTH_PERSISTENCE=postgres CONNECTIONS_PERSISTENCE=postgres POSTGRES_DUAL_WRITE=true pnpm dev
@@ -359,7 +459,9 @@ AUTH_PERSISTENCE=postgres CONNECTIONS_PERSISTENCE=postgres POSTGRES_DUAL_WRITE=t
   pings PG at startup and fails fast — so a misconfig is caught immediately, not
   silently).
 - ✅ Dual-write is **best-effort** (logs, never throws) — a PG hiccup can't break a
-  Mongo write. Drift is reconciled by re-running backfill + verify.
+  Mongo write. For cutover domains, repair drift with domain-specific upsert/
+  reconciliation plus `db:verify`; the current insert-only backfill only fills
+  missing rows.
 - ✅ `db:migrate` and `db:backfill` are idempotent.
 - ✅ Cutover is per-domain and instantly reversible via flags.
 - ⚠️ `ENCRYPTION_KEY` must match across stores or connection credentials won't
