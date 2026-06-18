@@ -194,6 +194,8 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         type: "string",
         required: false,
         placeholder: "default",
+        helperText:
+          "Leave empty to browse all databases and switch between them (cluster mode)",
       },
       {
         name: "username",
