@@ -4182,7 +4182,10 @@ export class DatabaseConnectionService {
    * Supports both connection string and individual fields
    * Includes timeout and keep_alive settings for resilience
    */
-  private buildClickHouseClientConfig(database: IDatabaseConnection): {
+  private buildClickHouseClientConfig(
+    database: IDatabaseConnection,
+    databaseNameOverride?: string,
+  ): {
     url: string;
     username: string;
     password: string;
@@ -4206,6 +4209,11 @@ export class DatabaseConnectionService {
       const parsed = this.parseClickHouseConnectionString(
         conn.connectionString,
       );
+      // In cluster mode the active database is chosen per-query (e.g. from the
+      // console picker), so it must take precedence over the connection string.
+      if (databaseNameOverride) {
+        parsed.database = databaseNameOverride;
+      }
       return { ...parsed, ...baseConfig };
     }
 
@@ -4219,7 +4227,7 @@ export class DatabaseConnectionService {
       url: `${host}:${conn.port || 8123}`,
       username: conn.username || "default",
       password: conn.password || "",
-      database: conn.database || "default",
+      database: databaseNameOverride || conn.database || "default",
       ...baseConfig,
     };
   }
@@ -4285,7 +4293,13 @@ export class DatabaseConnectionService {
         return { success: false, error: "Query cancelled" };
       }
 
-      const config = this.buildClickHouseClientConfig(database);
+      // Honor a per-query database selection (cluster mode) so unqualified
+      // table references resolve against the chosen database, not just the
+      // connection's default.
+      const config = this.buildClickHouseClientConfig(
+        database,
+        options?.databaseName,
+      );
 
       // Track running query for cancellation
       if (executionId) {
