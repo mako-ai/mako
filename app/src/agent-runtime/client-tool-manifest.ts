@@ -108,6 +108,18 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Executing console query",
     icon: "play",
   },
+  check_query_status: {
+    domain: "console",
+    execution: "server",
+    getLabel: () => "Checking query status",
+    icon: "clock",
+  },
+  cancel_query: {
+    domain: "console",
+    execution: "server",
+    getLabel: () => "Cancelling query",
+    icon: "trash",
+  },
   sql_execute_query: {
     domain: "database",
     execution: "server",

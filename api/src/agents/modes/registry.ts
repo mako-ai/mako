@@ -46,6 +46,8 @@ const QUERY_MODE_TOOL_NAMES: string[] = [
   "set_console_connection",
   "open_console",
   "run_console",
+  "check_query_status",
+  "cancel_query",
   // Chart + screenshot
   "modify_chart_spec",
   "get_chart_template",

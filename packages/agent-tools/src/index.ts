@@ -34,6 +34,8 @@ export {
   setConsoleConnectionSchema,
   openConsoleSchema,
   runConsoleSchema,
+  checkQueryStatusSchema,
+  cancelQueryStatusSchema,
 } from "./console-tools";
 export type {
   ModifyConsoleInput,
@@ -43,6 +45,8 @@ export type {
   SetConsoleConnectionInput,
   OpenConsoleInput,
   RunConsoleInput,
+  CheckQueryStatusInput,
+  CancelQueryStatusInput,
 } from "./console-tools";
 
 export { clientChartTools } from "./chart-tools";

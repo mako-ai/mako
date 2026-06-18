@@ -1018,7 +1018,7 @@ async function executeQueryImpl(
       return {
         success: false,
         status: "timeout",
-        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s. The query may be valid but slow. Consider: (1) Add LIMIT for exploration, (2) Narrow date range, (3) Write the full query to console and use run_console to execute in the UI where there's no timeout.`,
+        message: `Query timed out after ${AGENT_QUERY_TIMEOUT_MS / 1000}s (this is a short timeout for quick exploration only). The query may be valid but slow. Either: (1) Add LIMIT / narrow the date range to make it fast enough to test here, OR (2) for a genuinely long query, write the full query into a console (create_console / modify_console) and run it with run_console — that path is resumable: it keeps running server-side past the timeout and you poll check_query_status for the result.`,
         sqlDialect: dialect,
       };
     }

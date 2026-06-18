@@ -22,6 +22,8 @@ import {
   setConsoleConnectionSchema,
   openConsoleSchema,
   runConsoleSchema,
+  checkQueryStatusSchema,
+  cancelQueryStatusSchema,
   applyModification,
   buildModificationDiff,
   type ConsoleModification,
@@ -34,15 +36,26 @@ import {
 import { ConsoleManager } from "../../utils/console-manager";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
-import { executeSavedConsole } from "../../services/console-execution.service";
+import {
+  startDetachedConsoleRun,
+  cancelDetachedConsoleRun,
+} from "../../services/console-execution.service";
 import type { AgentToolExecutionContext } from "../../agents/types";
-import { databaseConnectionService } from "../../services/database-connection.service";
+import {
+  QUERY_SOFT_TIMEOUT_MS,
+  QUERY_POLL_BACKOFF_MS,
+  QUERY_POLL_WINDOW_MS,
+} from "../../config/long-running-queries";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
 
-const RUN_CONSOLE_TIMEOUT_MS = 120_000;
 const RUN_PREVIEW_MAX_ROWS = 50;
+
+/** First poll backoff hint surfaced to the agent (seconds). */
+const FIRST_POLL_BACKOFF_S = Math.round(
+  (QUERY_POLL_BACKOFF_MS[0] ?? 30_000) / 1000,
+);
 
 const consoleManager = new ConsoleManager();
 
@@ -507,7 +520,8 @@ export function createServerConsoleTools({
 
     run_console: tool({
       description:
-        "Execute the query currently in a console (runs server-side against the console's attached connection; results appear in open windows and are saved on the console). Use this AFTER modify_console to get results. The console must be connected to a database.",
+        "Execute the query currently in a console (runs server-side against the console's attached connection; results appear in open windows and are saved on the console). Use this AFTER modify_console to get results. The console must be connected to a database. " +
+        'The query runs as a detached server-side task: if it finishes quickly you get the rows back immediately; if it is still running after a short soft timeout you get { status: "running", executionId } and the query KEEPS RUNNING — poll check_query_status to fetch the result, and cancel_query to stop it.',
       inputSchema: runConsoleSchema,
       execute: async ({ consoleId }) => {
         const loaded = await loadConsole(consoleId);
@@ -529,47 +543,28 @@ export function createServerConsoleTools({
           };
         }
 
-        // Cancellation: register with the turn's execution registry so an
-        // explicit Stop (or turn abort) cancels the database query, plus a
-        // hard timeout.
+        // Register with the turn's execution registry so an explicit Stop (or
+        // turn abort) during THIS turn cancels the query. We deliberately do
+        // NOT release it on the soft-timeout path: the detached task outlives
+        // the tool call, and across later turns it is cancelled by executionId
+        // via cancel_query.
         const executionId =
           executionContext?.createExecutionId("run_console") ??
           `run_console_${Date.now()}`;
         executionContext?.registerExecution(executionId);
-        const timeoutController = new AbortController();
-        const timeoutId = setTimeout(() => {
-          timeoutController.abort("query-timeout");
-          void databaseConnectionService.cancelQuery(executionId);
-        }, RUN_CONSOLE_TIMEOUT_MS);
 
+        let started: Awaited<ReturnType<typeof startDetachedConsoleRun>>;
         try {
-          const result = await executeSavedConsole({
+          started = await startDetachedConsoleRun({
             workspaceId,
             consoleId,
             userId: userId ?? "agent",
             source: "agent",
             executionId,
-            signal: executionContext?.signal ?? timeoutController.signal,
+            signal: executionContext?.signal,
           });
-
-          if (!result.success) {
-            const timedOut = timeoutController.signal.aborted;
-            return {
-              success: false,
-              error: timedOut
-                ? `Query timed out after ${RUN_CONSOLE_TIMEOUT_MS / 1000}s. The query may be too complex or the database is under heavy load.`
-                : result.error || "Query execution failed.",
-            };
-          }
-
-          return {
-            success: true,
-            rowCount: result.rowCount,
-            preview: result.rows.slice(0, RUN_PREVIEW_MAX_ROWS),
-            durationMs: result.durationMs,
-            message: `Query executed successfully. ${result.rowCount} row(s) returned.`,
-          };
         } catch (error) {
+          executionContext?.releaseExecution(executionId);
           return {
             success: false,
             error:
@@ -577,9 +572,181 @@ export function createServerConsoleTools({
                 ? error.message
                 : "Query execution failed unexpectedly.",
           };
-        } finally {
-          clearTimeout(timeoutId);
+        }
+
+        if (!started.started) {
           executionContext?.releaseExecution(executionId);
+          return { success: false, error: started.error };
+        }
+
+        // Await up to the soft timeout. If the query finishes, return rows as
+        // before; otherwise leave it running and tell the agent to poll.
+        const TIMED_OUT = Symbol("soft-timeout");
+        let softTimer: ReturnType<typeof setTimeout> | undefined;
+        const softTimeout = new Promise<typeof TIMED_OUT>(resolve => {
+          softTimer = setTimeout(
+            () => resolve(TIMED_OUT),
+            QUERY_SOFT_TIMEOUT_MS,
+          );
+        });
+
+        try {
+          const outcome = await Promise.race([started.completion, softTimeout]);
+
+          if (outcome === TIMED_OUT) {
+            return {
+              success: true,
+              status: "running" as const,
+              executionId,
+              consoleId,
+              elapsedMs: QUERY_SOFT_TIMEOUT_MS,
+              message:
+                `Query is still running after ${Math.round(QUERY_SOFT_TIMEOUT_MS / 1000)}s and keeps running server-side. ` +
+                `Poll check_query_status (consoleId="${consoleId}", executionId="${executionId}") after ~${FIRST_POLL_BACKOFF_S}s to get the result. Do not re-run the query.`,
+            };
+          }
+
+          // Completed within the soft timeout — release the turn registration.
+          executionContext?.releaseExecution(executionId);
+
+          if (outcome.status === "cancelled") {
+            return {
+              success: false,
+              status: "cancelled" as const,
+              error: outcome.error || "Query was cancelled.",
+            };
+          }
+          if (!outcome.success) {
+            return {
+              success: false,
+              error: outcome.error || "Query execution failed.",
+            };
+          }
+          return {
+            success: true,
+            status: "success" as const,
+            rowCount: outcome.rowCount,
+            preview: outcome.rows.slice(0, RUN_PREVIEW_MAX_ROWS),
+            durationMs: outcome.durationMs,
+            message: `Query executed successfully. ${outcome.rowCount} row(s) returned.`,
+          };
+        } finally {
+          if (softTimer) clearTimeout(softTimer);
+        }
+      },
+    }),
+
+    check_query_status: tool({
+      description:
+        'Poll the status of a console query started with run_console (DB-backed, works across server instances). Returns { status: "running", elapsedMs } while it runs, { status: "success", rowCount, preview } when it finishes, { status: "error", error }, or { status: "cancelled" }. ' +
+        'After run_console returns status="running", auto-poll this with backoff (~' +
+        QUERY_POLL_BACKOFF_MS.map(ms => `${Math.round(ms / 1000)}s`).join("/") +
+        `) for up to ~${Math.round(QUERY_POLL_WINDOW_MS / 60_000)} min. If it is still running after that, ask the user (ask_clarifying_questions) whether to keep waiting, cancel (cancel_query), or run smaller batches. Never silently re-run the query.`,
+      inputSchema: checkQueryStatusSchema,
+      execute: async ({ consoleId, executionId }) => {
+        const loaded = await loadConsole(consoleId);
+        if (isLoadError(loaded)) return { success: false, ...loaded };
+        const { doc } = loaded;
+
+        const lastRun = doc.lastRun;
+        if (!lastRun) {
+          return {
+            success: false,
+            error:
+              "No run found for this console yet. Use run_console to execute the query first.",
+          };
+        }
+
+        // If the caller pinned an executionId, only report when it matches the
+        // console's latest run (a newer run supersedes the one being polled).
+        if (
+          executionId &&
+          lastRun.executionId &&
+          lastRun.executionId !== executionId
+        ) {
+          return {
+            success: true,
+            status: "superseded" as const,
+            message:
+              "A newer run has started on this console; the execution you polled is no longer the latest. Re-run or check the latest run instead.",
+            latestExecutionId: lastRun.executionId,
+            latestStatus: lastRun.status,
+          };
+        }
+
+        if (lastRun.status === "running") {
+          const startedAtMs = lastRun.startedAt
+            ? new Date(lastRun.startedAt).getTime()
+            : new Date(lastRun.at).getTime();
+          return {
+            success: true,
+            status: "running" as const,
+            executionId: lastRun.executionId,
+            elapsedMs: Math.max(0, Date.now() - startedAtMs),
+            message:
+              "Still running. Keep polling with backoff, or escalate to the user after the poll window.",
+          };
+        }
+
+        if (lastRun.status === "success") {
+          return {
+            success: true,
+            status: "success" as const,
+            rowCount: lastRun.rowCount ?? 0,
+            durationMs: lastRun.durationMs,
+            preview: (lastRun.sampleRows ?? []).slice(0, RUN_PREVIEW_MAX_ROWS),
+            message: `Query finished: ${lastRun.rowCount ?? 0} row(s).`,
+          };
+        }
+
+        if (lastRun.status === "cancelled") {
+          return {
+            success: true,
+            status: "cancelled" as const,
+            error: lastRun.error || "Query was cancelled.",
+          };
+        }
+
+        return {
+          success: false,
+          status: "error" as const,
+          error: lastRun.error || "Query failed.",
+        };
+      },
+    }),
+
+    cancel_query: tool({
+      description:
+        'Cancel a console query that is still running (started with run_console and currently status="running"). Aborts the detached server-side task and issues the engine-native cancel (Postgres pid, Mongo session, ClickHouse query_id, MSSQL request, BigQuery job). Use this when the user chooses to stop waiting.',
+      inputSchema: cancelQueryStatusSchema,
+      execute: async ({ consoleId, executionId }) => {
+        const loaded = await loadConsole(consoleId);
+        if (isLoadError(loaded)) return { success: false, ...loaded };
+
+        try {
+          const result = await cancelDetachedConsoleRun(executionId);
+          if (!result.success) {
+            return {
+              success: false,
+              error:
+                result.error ||
+                "Query not found or already completed (it may have just finished — check_query_status to confirm).",
+            };
+          }
+          return {
+            success: true,
+            message:
+              "Cancellation requested. The query is being stopped; check_query_status will report it as cancelled or completed.",
+          };
+        } catch (error) {
+          logger.warn("cancel_query failed", { error, consoleId, executionId });
+          return {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Failed to cancel query.",
+          };
         }
       },
     }),

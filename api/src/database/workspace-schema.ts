@@ -470,7 +470,7 @@ export interface ISavedConsole extends Document {
    */
   lastRun?: {
     at: Date;
-    status: "success" | "error";
+    status: "running" | "success" | "error" | "cancelled";
     rowCount?: number;
     durationMs: number;
     error?: string;
@@ -478,6 +478,10 @@ export interface ISavedConsole extends Document {
     fields?: unknown;
     runBy: string;
     source: string;
+    /** Detached-run correlation: when the (still-running) task started. */
+    startedAt?: Date;
+    /** Detached-run correlation: id used to poll/cancel this execution. */
+    executionId?: string;
   };
   is_deleted?: boolean;
   deletedAt?: Date;
@@ -1685,7 +1689,11 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
       type: new Schema(
         {
           at: { type: Date, required: true },
-          status: { type: String, enum: ["success", "error"], required: true },
+          status: {
+            type: String,
+            enum: ["running", "success", "error", "cancelled"],
+            required: true,
+          },
           rowCount: { type: Number },
           durationMs: { type: Number, required: true },
           error: { type: String },
@@ -1693,6 +1701,8 @@ const SavedConsoleSchema = new Schema<ISavedConsole>(
           fields: { type: Schema.Types.Mixed },
           runBy: { type: String, required: true },
           source: { type: String, required: true },
+          startedAt: { type: Date },
+          executionId: { type: String },
         },
         { _id: false },
       ),
