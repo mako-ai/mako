@@ -124,6 +124,8 @@ export interface ConsoleTab {
     error?: string;
     sampleRows?: Record<string, unknown>[];
     fields?: unknown;
+    /** Origin of the run ("agent", "user", …) — drives results catch-up. */
+    source?: string;
   } | null;
   schedule?: {
     cron: string;

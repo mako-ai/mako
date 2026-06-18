@@ -849,34 +849,54 @@ function Editor({
     };
   }, []);
 
-  // Detached-return path: a console opened with a persisted server-side run
-  // artifact (agent ran it while no window was attached) renders those
-  // results without re-running. In-memory results always win.
+  // Persisted server-side run artifact (tab.lastRun) -> results panel.
+  //
+  // Two cases, both driven by the revision sync that keeps tab.lastRun fresh:
+  //   1. Detached return: a console opened with a persisted artifact (the agent
+  //      ran it while no window was attached) renders results without re-running.
+  //   2. Missed live event catch-up: the agent ran the console while this window
+  //      was backgrounded/disconnected, so the ephemeral console.run.completed
+  //      event never landed — but the reconnect sync refreshed tab.lastRun. Show
+  //      the newer agent run instead of leaving stale results on screen.
+  //
+  // In-memory results from a LOCAL run always win: they hold the full row set
+  // while the artifact is capped (~50 rows), so we only override a displayed
+  // result for AGENT runs that are strictly newer than what's shown. The live
+  // console-execution-result path already handles connected windows; this is the
+  // durable backstop for when that event is missed.
   useEffect(() => {
     for (const tab of consoleTabs) {
       const lastRun = tab.lastRun;
       if (!lastRun || lastRun.status !== "success" || !lastRun.sampleRows) {
         continue;
       }
-      if (tabResults[tab.id] !== undefined) continue;
-      setTabResults(prev =>
-        prev[tab.id] !== undefined
-          ? prev
-          : {
-              ...prev,
-              [tab.id]: {
-                results: lastRun.sampleRows ?? [],
-                executedAt: lastRun.at,
-                resultCount:
-                  lastRun.rowCount ?? lastRun.sampleRows?.length ?? 0,
-                executionTime: lastRun.durationMs,
-                fields: (lastRun.fields as QueryResult["fields"]) ?? null,
-                pageInfo: null,
-              } as QueryResult,
-            },
-      );
+      const lastRunAt = new Date(lastRun.at).getTime();
+      setTabResults(prev => {
+        const shown = prev[tab.id];
+        if (shown !== undefined) {
+          // Only catch up agent runs (the user never holds full agent results
+          // locally) that are strictly newer than the displayed run. Never
+          // clobber an equal/older artifact or a local run's full results.
+          const shownAt = shown?.executedAt
+            ? new Date(shown.executedAt).getTime()
+            : NaN;
+          if (lastRun.source !== "agent" || !(lastRunAt > shownAt)) {
+            return prev;
+          }
+        }
+        return {
+          ...prev,
+          [tab.id]: {
+            results: lastRun.sampleRows ?? [],
+            executedAt: lastRun.at,
+            resultCount: lastRun.rowCount ?? lastRun.sampleRows?.length ?? 0,
+            executionTime: lastRun.durationMs,
+            fields: (lastRun.fields as QueryResult["fields"]) ?? null,
+            pageInfo: null,
+          } as QueryResult,
+        };
+      });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [consoleTabs]);
 
   /* ------------------------ Console Actions ------------------------ */
