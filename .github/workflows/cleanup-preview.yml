@@ -21,6 +21,12 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       SERVICE_NAME: mako-pr-${{ github.event.pull_request.number }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_ORG_ID: ${{ secrets.NEON_ORG_ID }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      NEON_DATABASE_NAME: ${{ vars.NEON_DATABASE_NAME || 'neondb' }}
+      NEON_ROLE_NAME: ${{ vars.NEON_ROLE_NAME || 'neondb_owner' }}
+      NEON_POOLED: ${{ vars.NEON_POOLED || 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -78,6 +84,10 @@ jobs:
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             --fail-with-body || echo "KV entry not found or already deleted"
 
+      - name: Delete Neon branch
+        continue-on-error: true
+        run: node scripts/neon.mjs delete-pr
+
       - name: Check for ephemeral database
         id: check-migrations
         run: |
@@ -128,6 +138,7 @@ jobs:
             | Cloud Run Service | Deleted |
             | Docker Images | Deleted |
             | Cloudflare KV Entry | Removed |
+            | Neon Branch | Deleted |
             ${hadEphemeralDb ? '| Ephemeral Database | Dropped |' : ''}
 
             PR was ${status.toLowerCase()}.

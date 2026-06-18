@@ -79,6 +79,7 @@ web_modules/
 .env.production.local
 .env.production
 .env.local
+.env.neon.local
 env.yaml
 
 # parcel-bundler cache (https://parceljs.org/)

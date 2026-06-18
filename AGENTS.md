@@ -89,7 +89,13 @@ during the gradual cutover.
   ```
 - **Connection string:** `POSTGRES_URL` (falls back to `PG_DATABASE_URL`, then a
   local default `postgres://postgres@127.0.0.1:5432/mako_dev`). TLS auto-enables
-  for non-local hosts (set this to the Neon URL in prod).
+  for non-local hosts. Neon is the target host; use `pnpm neon:local` to create
+  a personal `local-<git user>` Neon branch and `pnpm neon:local:reset` to reset
+  it from the default/prod Neon branch.
+- **Neon secrets:** `NEON_API_KEY`, `NEON_ORG_ID`, and `NEON_PROJECT_ID` are
+  backed up with `pnpm neon:secrets:push` and restored with
+  `pnpm neon:secrets:pull`. CI creates `pr-<number>` Neon branches for previews,
+  migrates them, and deletes them on PR cleanup.
 - **Migrations (drizzle-kit):**
   ```bash
   pnpm --filter api run db:generate   # after editing src/db/schema/*

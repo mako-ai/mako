@@ -96,6 +96,12 @@ Mongoose post-save hooks that dual-write live in `database/schema.ts` (User) and
 | `POSTGRES_URL` | `postgres://postgres@127.0.0.1:5432/mako_dev` | PG connection string (set to Neon in prod). `PG_DATABASE_URL` is an alias. |
 | `POSTGRES_MAX_POOL_SIZE` | `10` | pg pool size |
 | `POSTGRES_SSL` | auto | TLS auto-enabled for non-local hosts; set `false` to force off |
+| `NEON_API_KEY` | — | Neon API token used by CI/local scripts to create branches and connection strings |
+| `NEON_ORG_ID` | — | Neon organization id; backed up in Google Secret Manager for recovery |
+| `NEON_PROJECT_ID` | — | Neon project id used by branch automation |
+| `NEON_DATABASE_NAME` | `neondb` | Database name for generated connection URIs |
+| `NEON_ROLE_NAME` | `neondb_owner` | Role name for generated connection URIs |
+| `NEON_POOLED` | `true` | Generate pooled Neon connection URIs |
 | `POSTGRES_DUAL_WRITE` | unset | `true` → mirror all dual-written domains to PG |
 | `AUTH_PERSISTENCE` | `mongo` | `postgres` → sessions read/write from PG (implies users dual-write) + startup ping |
 | `CONNECTIONS_PERSISTENCE` | `mongo` | `postgres` → query execution resolves connections from PG |
@@ -153,6 +159,26 @@ pnpm dev
 ```
 
 Health: `GET http://localhost:8080/health` and `GET http://localhost:8080/api/pg/health`.
+
+### Neon local branch workflow
+
+If `NEON_API_KEY`, `NEON_ORG_ID`, and `NEON_PROJECT_ID` are present in `.env`,
+you can work against a personal Neon branch instead of a local Postgres:
+
+```bash
+# Creates/reuses local-<git email/user/whoami>, writes .env.neon.local, runs migrations
+pnpm neon:local
+
+# Resets that local branch from the Neon default/prod branch, then reruns migrations
+pnpm neon:local:reset
+
+# Use the generated connection for the app shell
+set -a && . ./.env.neon.local && set +a
+pnpm dev
+```
+
+The generated `.env.neon.local` is ignored by git. Override the branch name with
+`NEON_BRANCH_NAME=<name>` when needed.
 
 ---
 
@@ -218,9 +244,8 @@ both stores in sync).
       the password check still reads the Mongo user; sessions + user mirror are PG).
 - [ ] Consolidate the `databaseConnectionService.getMainConnection()` native-Mongo
       bypass sites (migrations, embeddings, some sync) as their domains migrate.
-- [ ] CI: spin an ephemeral Postgres for `test:pg`; add `drizzle-kit check` drift
-      gate; run `db:verify` in a staging job before flipping prod flags.
-- [ ] Deploy pipeline: add the `db:migrate` step + `POSTGRES_URL` env (see §10).
+- [ ] CI: add `drizzle-kit check` drift gate and run `db:verify` in a staging job
+      before flipping prod flags.
 - [ ] Long tail + CDC schema/migration (phases 4–5).
 - [ ] Polymorphic refs (notification rules, entity versions) need a
       discriminator column design when those tables are added.
@@ -231,7 +256,7 @@ both stores in sync).
 
 ### 10.1 Provision Postgres (Neon)
 
-1. Create a Neon project/database; copy the pooled connection string.
+1. Create a Neon project/database.
 2. Enable extensions (the migrate runner also does this, but confirm the role can):
    `CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`
 3. TLS is auto-enabled for non-local hosts; no extra config needed (set
@@ -239,37 +264,54 @@ both stores in sync).
 
 ### 10.2 Secrets / env to add
 
-Add to the relevant GitHub **environment** secrets (`production` and `pr-*`/staging):
+Back up the Neon credentials in Google Secret Manager from your local `.env`:
 
-- `POSTGRES_URL` — the Neon connection string (use a **branch** DB for staging/PRs).
-- Flags are plain env (default off): `AUTH_PERSISTENCE`, `CONNECTIONS_PERSISTENCE`,
-  `POSTGRES_DUAL_WRITE`.
+```bash
+# Optional when your active gcloud project is not the Mako project:
+export GCP_SECRET_PROJECT_ID="<google-cloud-project-id>"
+pnpm neon:secrets:push
+```
+
+Recover them on a new machine with:
+
+```bash
+pnpm neon:secrets:pull
+```
+
+Add these GitHub **environment** secrets to `production` and the preview/staging
+environment used by PR deploys:
+
+- `NEON_API_KEY`
+- `NEON_ORG_ID`
+- `NEON_PROJECT_ID`
+
+Optional GitHub vars:
+
+- `NEON_DATABASE_NAME` (defaults to `neondb`)
+- `NEON_ROLE_NAME` (defaults to `neondb_owner`)
+- `NEON_POOLED` (defaults to `true`)
+- `POSTGRES_DUAL_WRITE`, `AUTH_PERSISTENCE`, `CONNECTIONS_PERSISTENCE`
+  (default off / Mongo-backed reads)
 
 `ENCRYPTION_KEY` already exists and **must be identical** to the one Mongo uses
 (connection credentials are encrypted with it).
 
 ### 10.3 Wire into the GitHub Actions workflow
 
-The real deploy path is `.github/workflows/deploy-app.yml` (not `deploy.sh`).
-Two edits per deploy job (`deploy-preview` and `deploy-production`):
+The real deploy path is `.github/workflows/deploy-app.yml` (not `deploy.sh`):
 
-1. Pass the new env to Cloud Run in the `gcloud run deploy` step:
-   ```
-   --set-env-vars POSTGRES_URL=${POSTGRES_URL} \
-   --set-env-vars POSTGRES_DUAL_WRITE=${POSTGRES_DUAL_WRITE} \
-   --set-env-vars AUTH_PERSISTENCE=${AUTH_PERSISTENCE} \
-   --set-env-vars CONNECTIONS_PERSISTENCE=${CONNECTIONS_PERSISTENCE} \
-   ```
-   and add them to the job-level `env:` block (from secrets/vars).
-2. Add a **Drizzle migrate** step next to the existing `pnpm run migrate`
-   (which is the *Mongo* migration runner — keep it):
-   ```yaml
-   - name: Run Postgres (Drizzle) migrations
-     env:
-       POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-     run: pnpm --filter api run db:migrate
-   ```
-   `db:migrate` is idempotent and safe to run on every deploy.
+- PR previews run `node scripts/neon.mjs create-pr`, creating/reusing a
+  `pr-<number>` Neon branch with a read-write compute and a generated pooled
+  `POSTGRES_URL`.
+- PR previews run `pnpm --filter api run db:migrate` against that branch before
+  Cloud Run deploy.
+- Production deploys on `master` resolve the Neon default branch connection with
+  `node scripts/neon.mjs default-connection` and run Drizzle migrations before
+  Cloud Run deploy.
+- Cloud Run receives `POSTGRES_URL`, `POSTGRES_DUAL_WRITE`, `AUTH_PERSISTENCE`,
+  and `CONNECTIONS_PERSISTENCE`.
+- `.github/workflows/cleanup-preview.yml` deletes `pr-<number>` when the PR is
+  closed/merged.
 
 > Backfill is **not** part of the deploy step — it's a one-time/periodic data
 > operation you run deliberately (§10.4), not on every push.
