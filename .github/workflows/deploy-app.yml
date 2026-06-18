@@ -206,9 +206,16 @@ jobs:
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
     steps:
       - name: Warn if branch Inngest event key is missing
-        if: ${{ secrets.INNGEST_BRANCH_EVENT_KEY == '' }}
+        # NOTE: the `secrets` context is NOT allowed in `if:` conditionals — it
+        # makes the whole workflow file invalid (every run fails at 0s with no
+        # jobs, blocking ALL deploys). Surface the secret via step `env` and do
+        # the emptiness check in bash instead.
+        env:
+          INNGEST_BRANCH_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY }}
         run: |
-          echo "::warning title=Inngest branch event key missing::INNGEST_BRANCH_EVENT_KEY is not set — preview events fall back to the PRODUCTION event key and route to the prod Inngest env, so event-triggered functions (e.g. dbt runs) will NOT fire on this preview (they stay 'queued'). Add the Branch Environments event key as a repo secret to enable event-driven flows on previews."
+          if [ -z "${INNGEST_BRANCH_EVENT_KEY}" ]; then
+            echo "::warning title=Inngest branch event key missing::INNGEST_BRANCH_EVENT_KEY is not set — preview events fall back to the PRODUCTION event key and route to the prod Inngest env, so event-triggered functions (e.g. dbt runs) will NOT fire on this preview (they stay 'queued'). Add the Branch Environments event key as a repo secret to enable event-driven flows on previews."
+          fi
 
       - name: Set PR-specific variables
         id: pr-vars
