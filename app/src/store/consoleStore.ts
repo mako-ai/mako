@@ -710,18 +710,20 @@ export const useConsoleStore = create<ConsoleStore>()(
           proposedContent: entry.content,
           proposedRevision: entry.draftRevision,
         });
-        // A rename is metadata, not part of the content diff: apply it
-        // immediately (mirrors applyRemoteConsoleUpdate/fastForward) so the tab
-        // title tracks the server. The Accept/Reject controls govern only the
-        // code shown in the diff; content + draftRevision stay on the baseline
-        // until the user resolves the review.
+        // A rename and the run artifact are metadata, not part of the content
+        // diff: apply them immediately (mirrors applyRemoteConsoleUpdate/
+        // fastForward) so the tab title tracks the server and an agent run that
+        // accompanied this edit (modify_console + run_console) surfaces its
+        // results without waiting for the user to resolve the diff. The
+        // Accept/Reject controls govern only the code shown in the diff;
+        // content + draftRevision stay on the baseline until the user resolves.
         const proposedName = entry.name;
-        if (proposedName && proposedName !== tab.title) {
-          set(state => {
-            const t = state.tabs[entry.id];
-            if (t) t.title = proposedName;
-          });
-        }
+        set(state => {
+          const t = state.tabs[entry.id];
+          if (!t) return;
+          if (proposedName && proposedName !== t.title) t.title = proposedName;
+          if (entry.lastRun) t.lastRun = entry.lastRun;
+        });
         // Push the proposal into the mounted Monaco editor as a diff. The
         // store content/revision stay on the baseline until the user
         // resolves the review (Editor.tsx listens).
