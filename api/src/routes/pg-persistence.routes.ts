@@ -10,6 +10,7 @@ import {
   queriesRepository,
   workspacesRepository,
 } from "../db";
+import { toPgId } from "../db/ids";
 import {
   AUTH_SECURITY,
   AuthEnv,
@@ -114,15 +115,20 @@ const pgWorkspaceVerify: MiddlewareHandler<AuthEnv> = async (c, next) => {
   }
   const user = c.get("user");
   const workspace = c.get("workspace");
+  const pgWorkspaceId = toPgId(workspaceId);
 
   if (workspace) {
-    if (workspace._id?.toString() !== workspaceId) {
+    const authorizedWorkspaceId = workspace._id?.toString();
+    if (
+      !authorizedWorkspaceId ||
+      toPgId(authorizedWorkspaceId) !== pgWorkspaceId
+    ) {
       return c.json({ success: false, error: "API key not authorized" }, 403);
     }
   } else if (user) {
     const hasAccess = await workspacesRepository.hasAccess(
-      workspaceId,
-      user.id,
+      pgWorkspaceId,
+      toPgId(user.id),
     );
     if (!hasAccess) {
       return c.json({ success: false, error: "Access denied" }, 403);
@@ -182,7 +188,9 @@ export function createPgPersistenceRoutes(
     }),
     async c => {
       const { workspaceId } = c.req.valid("param");
-      const rows = await connectionsRepository.listForWorkspace(workspaceId);
+      const rows = await connectionsRepository.listForWorkspace(
+        toPgId(workspaceId),
+      );
       const data = rows.map(r => ({
         id: r.id,
         name: r.name,
@@ -211,7 +219,9 @@ export function createPgPersistenceRoutes(
     }),
     async c => {
       const { workspaceId } = c.req.valid("param");
-      const rows = await consolesRepository.listForWorkspace(workspaceId);
+      const rows = await consolesRepository.listForWorkspace(
+        toPgId(workspaceId),
+      );
       return c.json({ success: true as const, data: rows }, 200);
     },
   );
@@ -231,7 +241,7 @@ export function createPgPersistenceRoutes(
     }),
     async c => {
       const { workspaceId } = c.req.valid("param");
-      const rows = await chatsRepository.listForWorkspace(workspaceId);
+      const rows = await chatsRepository.listForWorkspace(toPgId(workspaceId));
       return c.json({ success: true as const, data: rows }, 200);
     },
   );
@@ -251,8 +261,9 @@ export function createPgPersistenceRoutes(
     }),
     async c => {
       const { workspaceId, chatId } = c.req.valid("param");
-      const chat = await chatsRepository.findById(chatId);
-      if (!chat || chat.workspaceId !== workspaceId) {
+      const pgWorkspaceId = toPgId(workspaceId);
+      const chat = await chatsRepository.findById(toPgId(chatId));
+      if (!chat || chat.workspaceId !== pgWorkspaceId) {
         return c.json({ success: false, error: "Chat not found" }, 404);
       }
       return c.json(
@@ -286,7 +297,9 @@ export function createPgPersistenceRoutes(
     }),
     async c => {
       const { workspaceId } = c.req.valid("param");
-      const rows = await queriesRepository.listForWorkspace(workspaceId);
+      const rows = await queriesRepository.listForWorkspace(
+        toPgId(workspaceId),
+      );
       return c.json({ success: true as const, data: rows }, 200);
     },
   );
