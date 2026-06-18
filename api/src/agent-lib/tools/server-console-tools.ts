@@ -44,7 +44,7 @@ import type { AgentToolExecutionContext } from "../../agents/types";
 import {
   QUERY_SOFT_TIMEOUT_MS,
   QUERY_POLL_BACKOFF_MS,
-  QUERY_POLL_WINDOW_MS,
+  QUERY_HARD_MAX_EXECUTION_MS,
 } from "../../config/long-running-queries";
 import { loggers } from "../../logging";
 
@@ -641,7 +641,7 @@ export function createServerConsoleTools({
         'Poll the status of a console query started with run_console (DB-backed, works across server instances). Returns { status: "running", elapsedMs } while it runs, { status: "success", rowCount, preview } when it finishes, { status: "error", error }, or { status: "cancelled" }. ' +
         'After run_console returns status="running", auto-poll this with backoff (~' +
         QUERY_POLL_BACKOFF_MS.map(ms => `${Math.round(ms / 1000)}s`).join("/") +
-        `) for up to ~${Math.round(QUERY_POLL_WINDOW_MS / 60_000)} min. If it is still running after that, ask the user (ask_clarifying_questions) whether to keep waiting, cancel (cancel_query), or run smaller batches. Never silently re-run the query.`,
+        `) until it finishes. The query is automatically aborted server-side at a hard cap (~${Math.round(QUERY_HARD_MAX_EXECUTION_MS / 60_000)} min); if that happens, rewrite it into smaller/narrower queries rather than retrying as-is. Never silently re-run the query while it is still running.`,
       inputSchema: checkQueryStatusSchema,
       execute: async ({ consoleId, executionId }) => {
         const loaded = await loadConsole(consoleId);

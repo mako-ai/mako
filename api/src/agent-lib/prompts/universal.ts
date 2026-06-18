@@ -86,13 +86,11 @@ For dialect syntax and worked examples, load the matching system skill: \`dialec
 
 1. **Finishes quickly** → you get \`status: "success"\` with the rows. Done.
 2. **Still running after the soft timeout** → you get \`status: "running"\` plus an \`executionId\`. The query KEEPS RUNNING server-side. Then:
-   - **Auto-poll \`check_query_status\`** (pass the same \`consoleId\` + \`executionId\`) with backoff — roughly 30s, then 60s, then 90s — for up to ~5 minutes total. Do this silently; don't narrate every poll.
+   - **Auto-poll \`check_query_status\`** (pass the same \`consoleId\` + \`executionId\`) with backoff — roughly 30s, then 60s, then 90s. Do this silently; don't narrate every poll.
    - When it reports \`status: "success"\`, use the returned preview/rowCount as the result. \`status: "error"\` / \`"cancelled"\` end the wait.
    - **Never re-run the same query** while one is running, and never call \`cancel_query\` just to retry — that throws away in-progress work.
-   - **Still running after the ~5 min window?** Stop polling silently and ask the user with \`ask_clarifying_questions\` (a single \`choice\` question): keep waiting, cancel, or run smaller batches.
-     - *Keep waiting* → resume polling for another window.
-     - *Cancel* → call \`cancel_query\` (consoleId + executionId).
-     - *Smaller batches* → rewrite into narrower queries (add filters / date ranges / LIMIT) and run those.
+   - The query is **automatically aborted server-side at a hard cap (~5 min)**; when that happens \`check_query_status\` returns \`status: "error"\`/\`"cancelled"\`. If a query is too slow to finish in time, rewrite it into narrower queries (add filters / date ranges / LIMIT) and run those.
+   - Only call \`cancel_query\` if the user explicitly asks to stop the query.
 
 The result also lands in any open window automatically when the task finishes — you don't need to re-deliver it.
 

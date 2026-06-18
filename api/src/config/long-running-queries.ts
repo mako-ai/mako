@@ -57,18 +57,12 @@ export const QUERY_POLL_BACKOFF_MS = envIntList(
 );
 
 /**
- * How long the agent auto-polls silently before escalating to the user
- * (keep waiting / cancel / run smaller batches). "Keep waiting" resets it.
- */
-export const QUERY_POLL_WINDOW_MS = envInt("QUERY_POLL_WINDOW_MS", 300_000);
-
-/**
  * Server-side hard ceiling: a detached run is aborted (task + engine-native
- * cancel) once it exceeds this, so a runaway query cannot run forever. Also
- * used as the BigQuery job poll ceiling so the detached BQ poll runs long
- * instead of capping at the interactive 5-minute default.
+ * cancel) once it exceeds this, so no query can run forever. This is an
+ * absolute cap applied uniformly to every engine; it is also used as the
+ * BigQuery job poll ceiling so the detached BQ poll respects the same limit.
  */
 export const QUERY_HARD_MAX_EXECUTION_MS = envInt(
   "QUERY_HARD_MAX_EXECUTION_MS",
-  30 * 60_000,
+  5 * 60_000,
 );
