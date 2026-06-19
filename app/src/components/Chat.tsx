@@ -1048,7 +1048,7 @@ interface QueuedPromptListProps {
   prompts: QueuedPrompt[];
   editingId: string | null;
   onStartEdit: (id: string) => void;
-  onPromote: (id: string) => void;
+  onSendNow: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
@@ -1056,7 +1056,7 @@ interface QueuedPromptRowProps {
   prompt: QueuedPrompt;
   isEditing: boolean;
   onStartEdit: (id: string) => void;
-  onPromote: (id: string) => void;
+  onSendNow: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
@@ -1075,7 +1075,7 @@ const QueuedPromptRow = React.memo(
     prompt,
     isEditing,
     onStartEdit,
-    onPromote,
+    onSendNow,
     onRemove,
   }: QueuedPromptRowProps) => {
     const imageCount = prompt.files?.length ?? 0;
@@ -1153,15 +1153,17 @@ const QueuedPromptRow = React.memo(
           >
             <Pencil size={14} />
           </IconButton>
-          <IconButton
-            type="button"
-            aria-label="Send queued prompt next"
-            onClick={() => onPromote(prompt.id)}
-            size="small"
-            sx={QUEUED_ROW_ACTION_BTN_SX}
-          >
-            <ArrowUp size={14} />
-          </IconButton>
+          <Tooltip title="Send now (interrupts the running chat)">
+            <IconButton
+              type="button"
+              aria-label="Send now (interrupts the running chat)"
+              onClick={() => onSendNow(prompt.id)}
+              size="small"
+              sx={QUEUED_ROW_ACTION_BTN_SX}
+            >
+              <ArrowUp size={14} />
+            </IconButton>
+          </Tooltip>
           <IconButton
             type="button"
             aria-label="Remove queued prompt"
@@ -1183,7 +1185,7 @@ const QueuedPromptList = React.memo(
     prompts,
     editingId,
     onStartEdit,
-    onPromote,
+    onSendNow,
     onRemove,
   }: QueuedPromptListProps) => {
     const [expanded, setExpanded] = useState(true);
@@ -1246,7 +1248,7 @@ const QueuedPromptList = React.memo(
                 prompt={prompt}
                 isEditing={prompt.id === editingId}
                 onStartEdit={onStartEdit}
-                onPromote={onPromote}
+                onSendNow={onSendNow}
                 onRemove={onRemove}
               />
             ))}
@@ -1883,6 +1885,9 @@ const Chat: React.FC<ChatProps> = ({
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
   const editingPromptIdRef = useRef<string | null>(null);
   editingPromptIdRef.current = editingPromptId;
+  // Id of a prompt the user force-sent (top arrow). Once the interrupted turn
+  // settles, the drain sends it immediately, bypassing the normal busy guards.
+  const pendingForcePromptIdRef = useRef<string | null>(null);
   const editingPrompt = useMemo(
     () => queuedPrompts.find(prompt => prompt.id === editingPromptId) ?? null,
     [queuedPrompts, editingPromptId],
@@ -2548,7 +2553,47 @@ const Chat: React.FC<ChatProps> = ({
     [addToolOutput],
   );
 
-  const handleStop = useCallback(() => {
+  // Aborting mid-stream can leave assistant tool calls stuck in
+  // "input-available"/"input-streaming" (their output never arrives). The AI
+  // SDK blocks the next sendMessage until every tool call is settled, so patch
+  // any dangling ones to "error" — otherwise a force-send after an interrupt
+  // would hang.
+  const settleDanglingAssistantToolCalls = useCallback(() => {
+    setMessages(prev =>
+      prev.map(msg => {
+        if (msg.role !== "assistant") return msg;
+        const hasPending = msg.parts?.some(p => {
+          const pt = p.type as string;
+          if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+          const s = (p as Record<string, unknown>).state as string;
+          return s !== "output-available" && s !== "error";
+        });
+        if (!hasPending) return msg;
+        return {
+          ...msg,
+          parts: msg.parts.map(p => {
+            const pt = p.type as string;
+            if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+            const s = (p as Record<string, unknown>).state as string;
+            if (s === "output-available" || s === "error") return p;
+            return {
+              ...p,
+              state: "error" as const,
+              output: {
+                success: false,
+                error: "Tool cancelled (chat stopped)",
+              },
+            };
+          }) as any,
+        };
+      }),
+    );
+  }, [setMessages]);
+
+  // Interrupt the in-flight turn: abort client tools, abort server-side
+  // generation, and settle every dangling tool call. Does NOT touch the queue
+  // so callers can choose to clear it (manual stop) or keep it (force-send).
+  const interruptActiveTurn = useCallback(() => {
     manualStopRequestedRef.current = true;
 
     for (const activeToolCall of activeClientToolCallsRef.current.values()) {
@@ -2568,7 +2613,6 @@ const Chat: React.FC<ChatProps> = ({
 
     activeClientToolCallsRef.current.clear();
     setActiveClientToolCallCount(0);
-    setQueuedPrompts([]);
     // With resumable streams, disconnecting no longer cancels the turn — the
     // server keeps generating for reconnecting clients. Stop must be explicit:
     // this aborts the server-side generation and clears the resume pointer.
@@ -2578,7 +2622,13 @@ const Chat: React.FC<ChatProps> = ({
       }).catch(() => undefined);
     }
     stop();
-  }, [addToolOutput, stop]);
+    settleDanglingAssistantToolCalls();
+  }, [addToolOutput, stop, settleDanglingAssistantToolCalls]);
+
+  const handleStop = useCallback(() => {
+    interruptActiveTurn();
+    setQueuedPrompts([]);
+  }, [interruptActiveTurn]);
 
   const isLoading =
     status === "streaming" ||
@@ -3190,10 +3240,58 @@ const Chat: React.FC<ChatProps> = ({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
+  // When a turn ends on a completed client-side tool call (e.g. a data
+  // binding), `lastAssistantMessageIsCompleteWithToolCalls` stays true and the
+  // SDK *may* auto-continue the agent loop in a microtask after onFinish. We
+  // must not drain into that gap, but we also must not stall forever when the
+  // SDK is actually idle and won't resume (e.g. the tool settled while the
+  // stream was still streaming, so the SDK's auto-continue condition was
+  // missed). When that predicate is the *only* thing blocking the drain, defer
+  // one macrotask and re-check: if the SDK resumed, `status` is now
+  // submitted/streaming and the loading guard bails; if it stayed idle, force
+  // the drain past the (now-stale) predicate so the queue can't hang.
+  const drainRecheckScheduledRef = useRef(false);
+  const forceDrainPastAutoContinueRef = useRef(false);
+
   const tryDrainQueuedPromptRef = useRef<() => void>(() => {});
   tryDrainQueuedPromptRef.current = () => {
+    // Force-send (top arrow): the user interrupted the running turn to push
+    // this prompt now. Wait only until the aborted turn has fully settled
+    // (no in-flight stream / unanswered tool calls), then send it past every
+    // other guard — including the manual-stop flag the interrupt just set.
+    const forcedId = pendingForcePromptIdRef.current;
+    if (forcedId) {
+      const forced = queuedPromptsRef.current.find(p => p.id === forcedId);
+      if (!forced) {
+        pendingForcePromptIdRef.current = null;
+      } else {
+        if (
+          isLoadingRef.current ||
+          hasPendingAssistantToolCalls(messagesRef.current)
+        ) {
+          return;
+        }
+        pendingForcePromptIdRef.current = null;
+        const remaining = queuedPromptsRef.current.filter(
+          p => p.id !== forcedId,
+        );
+        queuedPromptsRef.current = remaining;
+        isLoadingRef.current = true;
+        setQueuedPrompts(remaining);
+        capturedConsoleIdRef.current = forced.consoleId;
+        capturedDashboardIdRef.current = forced.dashboardId;
+        manualStopRequestedRef.current = false;
+        trackEvent("ai_chat_message_sent", {
+          model: modelIdRef.current,
+          has_context: false,
+          has_images: (forced.files?.length ?? 0) > 0,
+        });
+        sendMessageRef.current({ text: forced.text, files: forced.files });
+        return;
+      }
+    }
+
     if (
-      isLoadingRef.current ||
       manualStopRequestedRef.current ||
       // Don't auto-fire the next queued prompt into a failed turn. The error
       // (e.g. usage_limit_exceeded) stays on screen; dismissing it via
@@ -3201,12 +3299,41 @@ const Chat: React.FC<ChatProps> = ({
       status === "error" ||
       queuedPromptsRef.current.length === 0 ||
       // Don't drain the head item while the user is editing it in the composer.
-      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current ||
-      autoSendWhenComplete({ messages: messagesRef.current }) ||
-      hasPendingAssistantToolCalls(messagesRef.current)
+      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current
     ) {
+      forceDrainPastAutoContinueRef.current = false;
       return;
     }
+
+    // Hard blocks: the agent is genuinely mid-turn (streaming, running a
+    // client tool, or has an unanswered tool call). Sending now would race the
+    // loop or break the SDK's "all tool calls must be settled" invariant.
+    if (
+      isLoadingRef.current ||
+      hasPendingAssistantToolCalls(messagesRef.current)
+    ) {
+      forceDrainPastAutoContinueRef.current = false;
+      return;
+    }
+
+    // Soft block: the turn ended on completed tool calls and the SDK might
+    // auto-continue in a microtask. Give it one macrotask before draining.
+    if (
+      autoSendWhenComplete({ messages: messagesRef.current }) &&
+      !forceDrainPastAutoContinueRef.current
+    ) {
+      if (!drainRecheckScheduledRef.current) {
+        drainRecheckScheduledRef.current = true;
+        setTimeout(() => {
+          drainRecheckScheduledRef.current = false;
+          forceDrainPastAutoContinueRef.current = true;
+          tryDrainQueuedPromptRef.current();
+        }, 80);
+      }
+      return;
+    }
+
+    forceDrainPastAutoContinueRef.current = false;
 
     const [next, ...rest] = queuedPromptsRef.current;
     // Synchronously advance the queue and mark loading BEFORE sending so a
@@ -3338,19 +3465,34 @@ const Chat: React.FC<ChatProps> = ({
     }
   }, [queuedPrompts, editingPromptId]);
 
-  // Promote = move to front of the queue so it drains next. While the agent is
-  // busy this only reorders; the existing drain effect sends the front item when
-  // the agent next goes idle (we don't bypass the busy guard).
-  const handlePromoteQueuedPrompt = useCallback((id: string) => {
-    setQueuedPrompts(prev => {
-      const index = prev.findIndex(prompt => prompt.id === id);
-      if (index <= 0) return prev;
-      const next = [...prev];
-      const [item] = next.splice(index, 1);
-      next.unshift(item);
-      return next;
-    });
-  }, []);
+  // Force-send (top arrow): send this prompt right now. If the agent is still
+  // running, interrupt the current turn first, then push it. If idle, just
+  // send it immediately (ahead of any other queued items).
+  const handleSendQueuedPromptNow = useCallback(
+    (id: string) => {
+      if (!queuedPromptsRef.current.some(p => p.id === id)) return;
+      if (editingPromptIdRef.current === id) setEditingPromptId(null);
+
+      // Move to the front for immediate visual feedback.
+      setQueuedPrompts(prev => {
+        const index = prev.findIndex(prompt => prompt.id === id);
+        if (index <= 0) return prev;
+        const next = [...prev];
+        const [item] = next.splice(index, 1);
+        next.unshift(item);
+        return next;
+      });
+
+      pendingForcePromptIdRef.current = id;
+      if (isLoadingRef.current) {
+        interruptActiveTurn();
+      }
+      // Drain now if already idle; otherwise the status→ready transition from
+      // the interrupt re-fires the drain effect, which sends the forced prompt.
+      queueMicrotask(() => tryDrainQueuedPromptRef.current());
+    },
+    [interruptActiveTurn],
+  );
 
   // Copy chat history handler
   const [copiedChat, setCopiedChat] = useState(false);
@@ -3693,7 +3835,7 @@ const Chat: React.FC<ChatProps> = ({
           prompts={queuedPrompts}
           editingId={editingPromptId}
           onStartEdit={handleStartEditQueuedPrompt}
-          onPromote={handlePromoteQueuedPrompt}
+          onSendNow={handleSendQueuedPromptNow}
           onRemove={handleRemoveQueuedPrompt}
         />
       </Collapse>
