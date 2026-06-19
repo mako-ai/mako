@@ -32,6 +32,7 @@ import { useFlowStore } from "../store/flowStore";
 import { useChatStore } from "../store/chatStore";
 import { useExplorerStore } from "../store/explorerStore";
 import { trackEvent, resetIdentity } from "../lib/analytics";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const NavButton = styled(Button, {
   shouldForwardProp: prop => prop !== "isActive",
@@ -65,16 +66,19 @@ type NavigationView =
   | "settings"
   | "views";
 
-const topNavigationItems: { view: NavigationView; icon: any; label: string }[] =
-  [
-    { view: "databases", icon: DatabaseIcon, label: "Databases" },
-    { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
-    { view: "flows", icon: FlowsIcon, label: "Flows" },
-    { view: "dbt", icon: TransformsIcon, label: "Transforms" },
-    { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
-    { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
-    { view: "apps", icon: AppsIcon, label: "Apps" },
-  ];
+const topNavigationItems: {
+  view: NavigationView;
+  icon: any;
+  label: string;
+}[] = [
+  { view: "databases", icon: DatabaseIcon, label: "Databases" },
+  { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
+  { view: "flows", icon: FlowsIcon, label: "Flows" },
+  { view: "dbt", icon: TransformsIcon, label: "Transforms" },
+  { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
+  { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
+  { view: "apps", icon: AppsIcon, label: "Apps" },
+];
 
 const bottomNavigationItems: {
   view: NavigationView;
@@ -82,17 +86,20 @@ const bottomNavigationItems: {
   label: string;
 }[] = [{ view: "settings", icon: SettingsIcon, label: "Settings" }];
 
-function Sidebar() {
-  // `activeExplorer` is the explorer that's actually visible on the left
-  // (null when the pane is collapsed). Use this — not `leftPane`, which is
-  // the last-selected view retained across collapse — to decide which icon
-  // is highlighted, so collapsing the pane clears the highlight.
-  const activeExplorer = useUIStore(selectActiveExplorer);
-  const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
-  const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
-  const setLeftPane = useUIStore(state => state.setLeftPane);
-  const openLeftPane = useUIStore(state => state.openLeftPane);
-  const openRightPane = useUIStore(state => state.openRightPane);
+const preloadDashboardsExplorer = () => {
+  void import("./DashboardsExplorer");
+};
+
+/**
+ * Avatar button + dropdown (workspace switcher + sign out). Shared between the
+ * desktop rail and the mobile AppBar / explorer drawer so logout and workspace
+ * switching behave identically everywhere.
+ */
+export function SidebarUserMenu({
+  tooltipPlacement = "right",
+}: {
+  tooltipPlacement?: "right" | "bottom" | "top" | "left";
+}) {
   const { user, logout } = useAuth();
   const [userMenuAnchorEl, setUserMenuAnchorEl] = useState<null | HTMLElement>(
     null,
@@ -107,14 +114,9 @@ function Sidebar() {
     setUserMenuAnchorEl(null);
   };
 
-  const preloadDashboardsExplorer = () => {
-    void import("./DashboardsExplorer");
-  };
-
   const handleLogout = async () => {
     handleUserMenuClose();
     try {
-      // Track logout event
       trackEvent("logout");
       resetIdentity();
 
@@ -140,6 +142,139 @@ function Sidebar() {
       console.error("Logout failed:", error);
     }
   };
+
+  return (
+    <>
+      <Tooltip title="User Menu" placement={tooltipPlacement}>
+        <NavButton onClick={handleUserMenuOpen}>
+          <UserIcon strokeWidth={1.5} />
+        </NavButton>
+      </Tooltip>
+
+      <Menu
+        anchorEl={userMenuAnchorEl}
+        open={isUserMenuOpen}
+        onClose={handleUserMenuClose}
+        anchorOrigin={{
+          vertical: "top",
+          horizontal: "right",
+        }}
+        transformOrigin={{
+          vertical: "bottom",
+          horizontal: "right",
+        }}
+        PaperProps={{
+          sx: {
+            minWidth: 300,
+          },
+        }}
+      >
+        {/* Workspace Switcher in User Menu */}
+        <Box sx={{ px: 1.5, py: 1.25, minWidth: 0 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mb: 0.75, display: "block", letterSpacing: 0.2 }}
+          >
+            Workspace
+          </Typography>
+          <WorkspaceSwitcher />
+        </Box>
+        <Divider />
+
+        <Box sx={{ px: 2, py: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            Signed in as
+          </Typography>
+          <Typography variant="body2" fontWeight="medium">
+            {user?.email}
+          </Typography>
+        </Box>
+        <Divider />
+        <MenuItem onClick={handleLogout}>
+          <LogoutIcon sx={{ mr: 1, fontSize: 20 }} />
+          Sign out
+        </MenuItem>
+      </Menu>
+    </>
+  );
+}
+
+/**
+ * Horizontal explorer switcher for the mobile drawer header. Reuses the same
+ * nav item definitions as the desktop rail and switches which explorer the
+ * drawer body (App.tsx `renderLeftPane`) shows. The drawer stays open so the
+ * user can browse explorers; selecting a tree node closes it (handled in
+ * App.tsx).
+ */
+export function SidebarMobileExplorerNav() {
+  const activeExplorer = useUIStore(selectActiveExplorer);
+  const setLeftPane = useUIStore(state => state.setLeftPane);
+  const openLeftPane = useUIStore(state => state.openLeftPane);
+
+  const items = [...topNavigationItems, ...bottomNavigationItems];
+
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        gap: 0.5,
+        overflowX: "auto",
+        px: 1,
+        py: 0.5,
+      }}
+    >
+      {items.map(item => {
+        const Icon = item.icon;
+        const isActive = activeExplorer === item.view;
+        return (
+          <Button
+            key={item.view}
+            onClick={() => {
+              startTransition(() => {
+                setLeftPane(item.view as Exclude<NavigationView, "views">);
+                openLeftPane();
+              });
+            }}
+            onTouchStart={
+              item.view === "dashboards" ? preloadDashboardsExplorer : undefined
+            }
+            sx={{
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 0.25,
+              minWidth: 64,
+              px: 1,
+              py: 0.75,
+              borderRadius: 2,
+              flexShrink: 0,
+              color: isActive ? "text.primary" : "text.secondary",
+              backgroundColor: isActive ? "action.selected" : "transparent",
+            }}
+          >
+            <Icon size={22} strokeWidth={1.5} />
+            <Typography variant="caption" sx={{ fontSize: "0.65rem" }}>
+              {item.label}
+            </Typography>
+          </Button>
+        );
+      })}
+    </Box>
+  );
+}
+
+function Sidebar() {
+  // `activeExplorer` is the explorer that's actually visible on the left
+  // (null when the pane is collapsed). Use this — not `leftPane`, which is
+  // the last-selected view retained across collapse — to decide which icon
+  // is highlighted, so collapsing the pane clears the highlight.
+  const activeExplorer = useUIStore(selectActiveExplorer);
+  const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
+  const rightPaneOpen = useUIStore(state => state.rightPaneOpen);
+  const setLeftPane = useUIStore(state => state.setLeftPane);
+  const openLeftPane = useUIStore(state => state.openLeftPane);
+  const openRightPane = useUIStore(state => state.openRightPane);
+  const isMobile = useIsMobile();
 
   const handleNavigation = (view: NavigationView) => {
     // Settings now behaves like any other explorer: clicking the cog opens
@@ -174,6 +309,10 @@ function Sidebar() {
       });
     }
   };
+
+  // On mobile the 52px rail is hidden; navigation moves to the BottomNavigation
+  // and explorer Drawer rendered by App.tsx (which reuse the helpers above).
+  if (isMobile) return null;
 
   return (
     <Box
@@ -256,12 +395,8 @@ function Sidebar() {
             alignItems: "center",
           }}
         >
-          {/* User Menu */}
-          <Tooltip title="User Menu" placement="right">
-            <NavButton onClick={handleUserMenuOpen}>
-              <UserIcon strokeWidth={1.5} />
-            </NavButton>
-          </Tooltip>
+          {/* User Menu (avatar + workspace switcher + sign out) */}
+          <SidebarUserMenu />
 
           {/* Settings */}
           {bottomNavigationItems.map(item => {
@@ -281,52 +416,6 @@ function Sidebar() {
               </Tooltip>
             );
           })}
-
-          <Menu
-            anchorEl={userMenuAnchorEl}
-            open={isUserMenuOpen}
-            onClose={handleUserMenuClose}
-            anchorOrigin={{
-              vertical: "top",
-              horizontal: "right",
-            }}
-            transformOrigin={{
-              vertical: "bottom",
-              horizontal: "right",
-            }}
-            PaperProps={{
-              sx: {
-                minWidth: 300,
-              },
-            }}
-          >
-            {/* Workspace Switcher in User Menu */}
-            <Box sx={{ px: 1.5, py: 1.25, minWidth: 0 }}>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ mb: 0.75, display: "block", letterSpacing: 0.2 }}
-              >
-                Workspace
-              </Typography>
-              <WorkspaceSwitcher />
-            </Box>
-            <Divider />
-
-            <Box sx={{ px: 2, py: 1 }}>
-              <Typography variant="body2" color="text.secondary">
-                Signed in as
-              </Typography>
-              <Typography variant="body2" fontWeight="medium">
-                {user?.email}
-              </Typography>
-            </Box>
-            <Divider />
-            <MenuItem onClick={handleLogout}>
-              <LogoutIcon sx={{ mr: 1, fontSize: 20 }} />
-              Sign out
-            </MenuItem>
-          </Menu>
         </Box>
       </Box>
     </Box>
