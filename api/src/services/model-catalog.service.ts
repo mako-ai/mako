@@ -858,6 +858,65 @@ export async function warmCatalog(): Promise<void> {
 // Public API (unchanged signatures — callers don't know the source switched)
 // ---------------------------------------------------------------------------
 
+/** Shape returned by GET /agent/gateway-models for the workspace settings UI. */
+export interface WorkspaceGatewayModelListing {
+  id: string;
+  name: string;
+  description: string;
+  provider: string;
+  contextWindow: number | null;
+  tags: string[];
+}
+
+function catalogToWorkspaceListing(
+  model: CatalogModel,
+): WorkspaceGatewayModelListing {
+  return {
+    id: model.id,
+    name: model.name,
+    description: model.description,
+    provider: model.provider,
+    contextWindow: model.contextWindow,
+    tags: model.tags,
+  };
+}
+
+async function getPersistedGatewaySnapshotListings(): Promise<
+  WorkspaceGatewayModelListing[]
+> {
+  const doc = await ModelCatalogSnapshot.findOne({ _id: "gateway" }).lean();
+  if (!doc?.data || !Array.isArray(doc.data) || doc.data.length === 0) {
+    return [];
+  }
+
+  const gateway = doc.data as GatewayModelNormalized[];
+  return gateway.map(gm => ({
+    id: gm.id,
+    name: gm.name,
+    description: gm.description,
+    provider: gm.provider,
+    contextWindow: gm.contextWindow,
+    tags: gm.tags,
+  }));
+}
+
+/**
+ * Super-admin-curated models for the workspace "AI Models" settings page.
+ * Reads from the in-memory/DB catalog — never hits the live AI Gateway.
+ *
+ * When curation is empty (fresh install), falls back to the persisted
+ * gateway snapshot in MongoDB (same source Inngest/startup refresh uses).
+ */
+export async function getWorkspaceGatewayModelListings(): Promise<
+  WorkspaceGatewayModelListing[]
+> {
+  const catalog = await getCatalogModels();
+  if (catalog.length > 0) {
+    return catalog.map(catalogToWorkspaceListing);
+  }
+  return getPersistedGatewaySnapshotListings();
+}
+
 export async function getCatalogModels(): Promise<CatalogModel[]> {
   await ensureCatalog();
   return cachedCatalog ?? [];

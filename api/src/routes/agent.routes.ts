@@ -27,8 +27,7 @@ import {
   getDefaultModelId,
   getDefaultFreeModelId,
 } from "../agent-lib/ai-models";
-import { getGatewayModels } from "../services/gateway-models.service";
-import { getCatalogModels } from "../services/model-catalog.service";
+import { getWorkspaceGatewayModelListings } from "../services/model-catalog.service";
 import {
   Workspace,
   DatabaseConnection,
@@ -313,15 +312,9 @@ agentRoutes.openapi(
 /**
  * GET /gateway-models - Model catalog available to workspaces.
  *
- * Returns the Vercel AI Gateway catalog intersected with the super-admin
- * curation: only models with `visible: true` in the curation document are
- * exposed. This is the list the workspace "AI Models" settings UI picks
- * from, so workspace admins can never enable a model that the platform
- * super-admin has hidden.
- *
- * If curation is empty (e.g. fresh install before the seed migration), we
- * fall back to the unfiltered gateway list to avoid a hard "no models"
- * state — super-admins will still see everything in `/api/admin/catalog`.
+ * Returns the super-admin-curated catalog from MongoDB (same source as
+ * GET /models). Avoids a live fetch to ai-gateway.vercel.sh in the request
+ * path — that upstream call is refreshed out-of-band by Inngest/startup.
  */
 agentRoutes.openapi(
   createRoute({
@@ -333,15 +326,7 @@ agentRoutes.openapi(
     responses: { ...OPEN_RESPONSES },
   }),
   async c => {
-    const [gateway, catalog] = await Promise.all([
-      getGatewayModels(),
-      getCatalogModels(),
-    ]);
-    if (catalog.length === 0) {
-      return c.json({ models: gateway });
-    }
-    const visible = new Set(catalog.map(m => m.id));
-    const models = gateway.filter(m => visible.has(m.id));
+    const models = await getWorkspaceGatewayModelListings();
     return c.json({ models });
   },
 );
