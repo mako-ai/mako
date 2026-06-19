@@ -8,8 +8,12 @@ Mako Transforms uses one **Mako-owned GitHub App** (`GITHUB_APP_*`). Workspaces 
 # From mono-dbt-polish root (private key at .secrets/github-app.pem)
 gh secret set MAKO_GITHUB_APP_PRIVATE_KEY --body "$(cat .secrets/github-app.pem | awk '{printf "%s\\n", $0}')"
 gh secret set MAKO_GITHUB_APP_WEBHOOK_SECRET --body "your-webhook-secret"
+# OAuth client used to verify the installing user controls the installation
+# (required — without it /api/github/setup refuses to bind, anti-IDOR).
+gh secret set MAKO_GITHUB_APP_CLIENT_SECRET --body "your-app-client-secret"
 gh variable set MAKO_GITHUB_APP_ID --body 4093709
 gh variable set MAKO_GITHUB_APP_SLUG --body mako-transforms-jonas-dev
+gh variable set MAKO_GITHUB_APP_CLIENT_ID --body Iv1.xxxxxxxxxxxxxxxx
 ```
 
 `deploy-app.yml` passes these to Cloud Run for **PR previews** and **production**.
@@ -19,11 +23,14 @@ gh variable set MAKO_GITHUB_APP_SLUG --body mako-transforms-jonas-dev
 | Field | Production value |
 | --- | --- |
 | Homepage URL | `https://app.mako.ai` |
-| Callback URL (OAuth — login, separate) | unchanged |
+| Callback URL (App OAuth) | `https://app.mako.ai/api/github/setup` |
+| **Request user authorization (OAuth) during installation** | ✅ **enabled** (required — delivers the `code` `/setup` uses to verify ownership) |
 | Setup URL | `https://app.mako.ai/api/github/setup` |
 | Webhook URL | `https://app.mako.ai/api/github/webhook` |
 | Webhook secret | same as `GITHUB_APP_WEBHOOK_SECRET` |
 | Logo | upload `.secrets/github-app-icon.png` (Mako icon) |
+
+> When *Request user authorization during installation* is on, GitHub makes the Setup URL unavailable and redirects through the **Callback URL** with both `code` and `installation_id` — so the App's Callback URL must point at `/api/github/setup`. Grab the **Client ID** and a generated **Client secret** from the App's General page for `MAKO_GITHUB_APP_CLIENT_ID` / `MAKO_GITHUB_APP_CLIENT_SECRET`.
 
 **Visibility:** set to **Any account** for multi-tenant SaaS.
 
@@ -48,9 +55,16 @@ GITHUB_APP_ID=...
 GITHUB_APP_SLUG=...
 GITHUB_APP_PRIVATE_KEY="-----BEGIN..."
 GITHUB_APP_WEBHOOK_SECRET=...
+GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxxxxxx
+GITHUB_APP_CLIENT_SECRET=...
 
 pnpm configure:github-app   # writes GITHUB_APP_* from .secrets/github-app.pem
 ```
+
+`pnpm register:github-app` (manifest flow) captures `GITHUB_APP_CLIENT_ID` /
+`GITHUB_APP_CLIENT_SECRET` automatically and enables OAuth-on-install. For an
+existing App, copy them from the App's General page and enable *Request user
+authorization (OAuth) during installation* manually.
 
 For local install callback, either point GitHub App setup URL at a tunnel, or seed `github_installations` manually after installing on github.com.
 
