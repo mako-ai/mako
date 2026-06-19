@@ -62,6 +62,7 @@ export interface GatewayModelPricing {
 // ---------------------------------------------------------------------------
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const FETCH_HARD_TIMEOUT_MS = 15_000;
 const GATEWAY_API_URL = "https://ai-gateway.vercel.sh/v1/models";
 
 let cachedModels: GatewayModelInfo[] | null = null;
@@ -79,6 +80,23 @@ function normalizeModel(raw: GatewayModelRaw): GatewayModelInfo {
     contextWindow: raw.context_window ?? null,
     tags: raw.tags ?? [],
   };
+}
+
+function withHardTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  });
 }
 
 async function fetchAllModels(): Promise<GatewayModelInfo[]> {
@@ -134,18 +152,23 @@ export async function getGatewayModels(): Promise<GatewayModelInfo[]> {
 
   if (fetchInFlight) return fetchInFlight;
 
-  fetchInFlight = fetchAllModels()
+  fetchInFlight = withHardTimeout(
+    fetchAllModels(),
+    FETCH_HARD_TIMEOUT_MS,
+    "Gateway models fetch",
+  )
     .then(models => {
       cachedModels = models;
       cacheTimestamp = Date.now();
-      fetchInFlight = null;
       return models;
     })
     .catch(err => {
-      fetchInFlight = null;
       logger.warn("Failed to fetch gateway models", { error: String(err) });
       if (cachedModels) return cachedModels;
       return [];
+    })
+    .finally(() => {
+      fetchInFlight = null;
     });
 
   return fetchInFlight;
