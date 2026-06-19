@@ -52,6 +52,7 @@ import {
   DroppableFolderContent,
   SectionScope,
 } from "./resource-tree/dnd";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 // Pixel height of a single tree row. Used to stack sticky folder/section
 // headers so each ancestor pins one row below its parent as the user scrolls.
@@ -275,6 +276,14 @@ function ResourceTreeInner(
   }: ResourceTreeProps,
   ref: React.Ref<ResourceTreeRef>,
 ) {
+  // Larger, finger-friendly rows and caret hit areas on phones. `rowHeight`
+  // also feeds the sticky folder/section header stacking, so deriving it once
+  // here keeps everything aligned.
+  const isMobile = useIsMobile();
+  const rowHeight = isMobile ? 36 : ROW_HEIGHT;
+  const iconColWidth = isMobile ? 28 : ICON_COL_WIDTH;
+  const caretSize = isMobile ? 28 : 18;
+
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -1020,7 +1029,7 @@ function ResourceTreeInner(
     pl: 1.5 + depth * 1.5,
     minWidth: 0,
     py: 0,
-    minHeight: ROW_HEIGHT,
+    minHeight: rowHeight,
     bgcolor: isDropTarget
       ? "action.hover"
       : isSelected
@@ -1122,7 +1131,7 @@ function ResourceTreeInner(
               // Stack ancestor headers: depth=1 sits just below the section
               // header (which is sticky at top: 0), depth=2 one row below
               // that, and so on.
-              top: depth * ROW_HEIGHT,
+              top: depth * rowHeight,
               // Deeper folders get a lower z-index so outer ancestors always
               // paint on top when sticky rows collide during scroll.
               zIndex: 20 - depth,
@@ -1140,7 +1149,7 @@ function ResourceTreeInner(
           >
             <ListItemIcon
               sx={{
-                minWidth: ICON_COL_WIDTH,
+                minWidth: iconColWidth,
                 mr: 0,
                 // MUI's ListItemIcon defaults to `action.active` which looks
                 // dimmed; the chevron should match the folder name's color.
@@ -1160,8 +1169,8 @@ function ResourceTreeInner(
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  width: 18,
-                  height: 18,
+                  width: caretSize,
+                  height: caretSize,
                 }}
               >
                 {isExpanded ? (
@@ -1172,7 +1181,7 @@ function ResourceTreeInner(
               </Box>
             </ListItemIcon>
             {!hideFolderIcon && (
-              <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+              <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
                 {getItemIcon ? (
                   getItemIcon(node, { isExpanded })
                 ) : isExpanded ? (
@@ -1250,8 +1259,8 @@ function ResourceTreeInner(
                       sx={{
                         pl: 1.5 + (depth + 1) * 1.5 + 2.75,
                         py: 0,
-                        minHeight: ROW_HEIGHT,
-                        lineHeight: `${ROW_HEIGHT}px`,
+                        minHeight: rowHeight,
+                        lineHeight: `${rowHeight}px`,
                         display: "flex",
                         alignItems: "center",
                       }}
@@ -1324,10 +1333,10 @@ function ResourceTreeInner(
         >
           {!hideFolderIcon && (
             <ListItemIcon
-              sx={{ minWidth: ICON_COL_WIDTH, visibility: "hidden", mr: 0 }}
+              sx={{ minWidth: iconColWidth, visibility: "hidden", mr: 0 }}
             />
           )}
-          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+          <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
             {getItemIcon ? getItemIcon(node) : null}
           </ListItemIcon>
           <MuiListItemText
@@ -1400,7 +1409,7 @@ function ResourceTreeInner(
           py: 0,
           pl: 1.5,
           minWidth: 0,
-          minHeight: ROW_HEIGHT,
+          minHeight: rowHeight,
           bgcolor: isDropTarget
             ? "action.hover"
             : headerSelected
@@ -1425,7 +1434,7 @@ function ResourceTreeInner(
         }}
       >
         <ListItemIcon
-          sx={{ minWidth: ICON_COL_WIDTH, mr: 0, color: "text.primary" }}
+          sx={{ minWidth: iconColWidth, mr: 0, color: "text.primary" }}
         >
           <Box
             component="span"
@@ -1440,8 +1449,8 @@ function ResourceTreeInner(
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              width: 18,
-              height: 18,
+              width: caretSize,
+              height: caretSize,
             }}
           >
             {sectionExpanded[section.key] !== false ? (
@@ -1452,7 +1461,7 @@ function ResourceTreeInner(
           </Box>
         </ListItemIcon>
         {section.icon ? (
-          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+          <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
             {section.icon}
           </ListItemIcon>
         ) : null}
