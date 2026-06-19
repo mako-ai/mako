@@ -90,6 +90,7 @@ import { useAuth } from "../contexts/auth-context";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
 import { generateObjectId } from "../utils/objectId";
@@ -614,6 +615,24 @@ function Editor({
     state => state.setActiveEditorContent,
   );
 
+  // Mobile (< md): the editor and results live behind separate bottom-nav tabs
+  // instead of the desktop vertical split. `mobileResultsView` decides which of
+  // the two a console tab shows.
+  const isMobile = useIsMobile();
+  const mobileTab = useUIStore(state => state.mobileTab);
+  const setMobileTab = useUIStore(state => state.setMobileTab);
+  const mobileResultsView = isMobile && mobileTab === "results";
+
+  // Tabs whose editing surfaces are not usable on a phone; we show a dismissible
+  // notice instead of the cramped desktop UI.
+  const DESKTOP_ONLY_KINDS = useMemo(
+    () => new Set(["flow-editor", "app", "app-file", "app-binding"]),
+    [],
+  );
+  const [dismissedDesktopOnly, setDismissedDesktopOnly] = useState<
+    Record<string, boolean>
+  >({});
+
   // Update active editor content when tab focus changes AND focus the Monaco editor
   useEffect(() => {
     if (activeConsoleId && consoleRefs.current[activeConsoleId]?.current) {
@@ -1086,6 +1105,11 @@ function Editor({
             capApplied: result.pageInfo?.capApplied ?? false,
           },
         }));
+        // On mobile, jump to the Results pane so the answer is visible without
+        // the user having to switch tabs manually.
+        if (isMobile) {
+          setMobileTab("results");
+        }
       } else if (result.error !== "Query cancelled") {
         const errText =
           typeof result.error === "string"
@@ -2217,398 +2241,417 @@ function Editor({
 
           {/* Unified tab rendering: every tab stays mounted, visibility toggled with CSS */}
           <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
-            {consoleTabs.map(tab => (
-              <Box
-                key={tab.id}
-                data-mako-tab-id={tab.id}
-                data-mako-tab-kind={tab.kind}
-                data-mako-active-tab-content={
-                  activeConsoleId === tab.id ? "true" : undefined
-                }
-                sx={{
-                  height: "100%",
-                  display: activeConsoleId === tab.id ? "block" : "none",
-                  overflow: "hidden",
-                }}
-              >
-                {tab.kind === "settings" ? (
-                  <Settings section={tab.settingsSection} />
-                ) : tab.kind === "members" ? (
-                  <WorkspaceMembers />
-                ) : tab.kind === "connectors" ? (
-                  <ConnectorTab
-                    tabId={tab.id}
-                    sourceId={
-                      typeof tab.content === "string" ? tab.content : undefined
-                    }
-                  />
-                ) : tab.kind === "flow-editor" ? (
-                  <FlowEditor
-                    flowId={tab.metadata?.flowId as string | undefined}
-                    isNew={tab.metadata?.isNew as boolean | undefined}
-                    flowType={
-                      tab.metadata?.flowType as
-                        | "webhook"
-                        | "scheduled"
-                        | "db-scheduled"
-                        | undefined
-                    }
-                    onSave={() => {
-                      // The FlowEditor already handles refreshing the flows list
-                    }}
-                    onCancel={() => {
-                      closeConsole(tab.id);
-                    }}
-                    dbFlowFormRef={dbFlowFormRef}
-                  />
-                ) : tab.kind === "table-data" ? (
-                  <TableDataView tabId={tab.id} />
-                ) : tab.kind === "dashboard" ? (
-                  <DashboardCanvas
-                    dashboardId={tab.metadata?.dashboardId as string}
-                    isNew={tab.metadata?.isNew as boolean}
-                    onCreated={(newId: string) => {
-                      useConsoleStore.setState(state => {
-                        const existingTab = state.tabs[tab.id];
-                        if (existingTab) {
-                          existingTab.metadata = {
-                            ...existingTab.metadata,
-                            dashboardId: newId,
-                            isNew: false,
-                          };
-                          existingTab.title = "Untitled Dashboard";
+            {consoleTabs.map(tab => {
+              const showDesktopOnlyNotice =
+                isMobile &&
+                !!tab.kind &&
+                DESKTOP_ONLY_KINDS.has(tab.kind) &&
+                !dismissedDesktopOnly[tab.id];
+
+              // Top (editor) and bottom (results) panes of a console tab.
+              // Extracted so the desktop vertical split and the mobile
+              // single-pane view can share the exact same children.
+              const consolePane = (
+                <Box
+                  sx={{
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  {tab.remoteUpdate && (
+                    <ConsoleRemoteUpdateBanner
+                      remoteUpdate={tab.remoteUpdate}
+                      onLoadLatest={() => {
+                        if (!currentWorkspace?.id) return;
+                        void useConsoleStore
+                          .getState()
+                          .applyRemoteConsoleUpdate(
+                            currentWorkspace.id,
+                            tab.id,
+                          );
+                      }}
+                      onKeepMine={() => {
+                        if (!currentWorkspace?.id) return;
+                        // Use the LIVE Monaco buffer, not the store
+                        // copy — it may lag keystrokes by a debounce.
+                        const live =
+                          consoleRefs.current[
+                            tab.id
+                          ]?.current?.getCurrentContent().content;
+                        void useConsoleStore
+                          .getState()
+                          .resolveRemoteUpdateKeepMine(
+                            currentWorkspace.id,
+                            tab.id,
+                            live ?? tab.content,
+                          );
+                      }}
+                      onDismiss={() =>
+                        useConsoleStore.getState().dismissRemoteUpdate(tab.id)
+                      }
+                      onCloseTab={() =>
+                        useConsoleStore.getState().closeTab(tab.id)
+                      }
+                    />
+                  )}
+                  <Box sx={{ flex: 1, minHeight: 0 }}>
+                    <Console
+                      ref={consoleRefs.current[tab.id]}
+                      consoleId={tab.id}
+                      initialContent={tab.content}
+                      title={tab.title}
+                      onExecute={(content, connectionId, databaseId) =>
+                        handleConsoleExecute(tab.id, content, connectionId, {
+                          databaseId: databaseId || tab.databaseId,
+                          databaseName: tab.databaseName,
+                        })
+                      }
+                      onCancel={() => handleConsoleCancel(tab.id)}
+                      onSave={(content, currentPath) =>
+                        handleConsoleSave(tab.id, content, currentPath)
+                      }
+                      onSaveAsCopy={content =>
+                        handleSaveAsCopy(tab.id, content)
+                      }
+                      onRenameMove={(content, currentPath) =>
+                        handleRenameMove(tab.id, content, currentPath)
+                      }
+                      isExecuting={executingTabs[tab.id] || false}
+                      isCancelling={cancellingTabs[tab.id] || false}
+                      isSaving={isSaving}
+                      onContentChange={content => {
+                        updateContent(tab.id, content);
+                        if (!tab.isDirty) {
+                          updateDirty(tab.id, true);
                         }
-                      });
+                        // Also refresh activeEditorContent for Chat consumers
+                        const ref = consoleRefs.current[tab.id]?.current;
+                        if (activeConsoleId === tab.id && ref) {
+                          setActiveEditorContent(ref.getCurrentContent());
+                        }
+                      }}
+                      connectionId={tab.connectionId}
+                      databaseId={tab.databaseId}
+                      databaseName={tab.databaseName}
+                      databases={availableDatabases}
+                      onDatabaseChange={connId =>
+                        updateConnection(tab.id, connId)
+                      }
+                      onDatabaseNameChange={(dbId, dbName) =>
+                        updateDatabase(tab.id, dbId, dbName)
+                      }
+                      filePath={tab.filePath}
+                      enableVersionControl={true}
+                      onHistoryClick={() => {
+                        setVersionHistoryTabId(tab.id);
+                        setVersionHistoryEntityType("console");
+                        setVersionHistoryOpen(true);
+                      }}
+                      historyAvailable={tab.isSaved}
+                      onShareClick={() => setShareConsoleTabId(tab.id)}
+                      shareAvailable={tab.isSaved}
+                      schedule={tab.schedule}
+                      onCreateSchedule={() =>
+                        handleOpenScheduleModal(tab.id, "create")
+                      }
+                      onUpdateSchedule={() =>
+                        handleOpenScheduleModal(tab.id, "update")
+                      }
+                    />
+                  </Box>
+                </Box>
+              );
+
+              const resultsPane = (
+                <Box
+                  sx={{
+                    height: "100%",
+                    overflow: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  <Box
+                    sx={{
+                      px: 1.5,
+                      borderBottom: 1,
+                      borderColor: "divider",
+                      minHeight: 36,
+                      display: "flex",
+                      alignItems: "center",
                     }}
-                  />
-                ) : tab.kind === "app" ? (
-                  <AppRenderer appId={tab.metadata?.appId as string} />
-                ) : tab.kind === "app-file" ? (
-                  <AppFileEditor
-                    tabId={tab.id}
-                    appId={tab.metadata?.appId as string}
-                    path={tab.metadata?.path as string}
-                  />
-                ) : tab.kind === "app-binding" ? (
-                  <AppBindingEditor
-                    tabId={tab.id}
-                    appId={tab.metadata?.appId as string}
-                    bindingId={tab.metadata?.bindingId as string}
-                  />
-                ) : tab.kind === "plan" ? (
-                  <PlanDocumentTab
-                    toolCallId={tab.metadata?.toolCallId as string}
-                  />
-                ) : tab.kind === "dbt-file" ? (
-                  <DbtFileEditor
-                    tabId={tab.id}
-                    projectId={tab.metadata?.projectId as string}
-                    path={tab.metadata?.path as string}
-                  />
-                ) : tab.kind === "dbt-job" ? (
-                  <DbtJobView
-                    projectId={tab.metadata?.projectId as string}
-                    jobId={tab.metadata?.jobId as string}
-                    autoEdit={tab.metadata?.autoEdit as boolean | undefined}
-                  />
-                ) : tab.kind === "dbt-console" ? (
-                  <DbtConsoleView
-                    projectId={tab.metadata?.projectId as string}
-                  />
-                ) : tab.kind === "dbt-runs" ? (
-                  <DbtRunsView
-                    tabId={tab.id}
-                    projectId={tab.metadata?.projectId as string}
-                    focusRunId={tab.metadata?.focusRunId as string | undefined}
-                  />
-                ) : tab.kind === "dashboard-data-source" ? (
-                  <DashboardDataSourceEditor
-                    tabId={tab.id}
-                    dashboardId={tab.metadata?.dashboardId as string}
-                    dataSourceId={tab.metadata?.dataSourceId as string}
-                  />
-                ) : (
-                  /* Console tab: editor + results split */
-                  <React.Profiler
-                    id={`Editor.console-panels.${tab.id}`}
-                    onRender={onRenderDebug}
                   >
-                    <PanelGroup
-                      direction="vertical"
-                      style={{ height: "100%", width: "100%" }}
-                      onLayout={
-                        renderDebugEnabled
-                          ? layout => handlePanelLayout(tab.id, layout)
+                    <Tabs
+                      value={tabBottomPanel[tab.id] || "results"}
+                      onChange={(_event, value: "results" | "runs") => {
+                        setTabBottomPanel(prev => ({
+                          ...prev,
+                          [tab.id]: value,
+                        }));
+                        if (value === "runs") {
+                          void loadScheduledRunsForTab(tab.id);
+                        }
+                      }}
+                      sx={{
+                        minHeight: 36,
+                        "& .MuiTabs-indicator": {
+                          height: 2,
+                        },
+                      }}
+                    >
+                      <Tab
+                        value="results"
+                        label="Results"
+                        disableRipple
+                        sx={{
+                          minHeight: 36,
+                          py: 0.25,
+                          px: 1.25,
+                          minWidth: 0,
+                          textTransform: "none",
+                          fontSize: "0.875rem",
+                          fontWeight: 600,
+                          color: "text.secondary",
+                          "&.Mui-selected": {
+                            color: "text.primary",
+                          },
+                        }}
+                      />
+                      <Tab
+                        value="runs"
+                        label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
+                        disabled={!tab.isSaved}
+                        disableRipple
+                        sx={{
+                          minHeight: 36,
+                          py: 0.25,
+                          px: 1.25,
+                          minWidth: 0,
+                          textTransform: "none",
+                          fontSize: "0.875rem",
+                          fontWeight: 600,
+                          color: "text.secondary",
+                          "&.Mui-selected": {
+                            color: "text.primary",
+                          },
+                          "&.Mui-disabled": {
+                            opacity: 0.5,
+                          },
+                        }}
+                      />
+                    </Tabs>
+                  </Box>
+                  <Box sx={{ flexGrow: 1, minHeight: 0 }}>
+                    {(tabBottomPanel[tab.id] || "results") === "runs" ? (
+                      <ScheduledRunsPanel
+                        loading={tabScheduledRunsLoading[tab.id] || false}
+                        error={tabScheduledRunsError[tab.id]}
+                        runs={tabScheduledRuns[tab.id] || []}
+                      />
+                    ) : (
+                      <ResultsTable
+                        results={tabResults[tab.id] || null}
+                        chartSpec={tabChartSpecs[tab.id] ?? null}
+                        onChartSpecChange={spec =>
+                          setChartSpecForTab(tab.id, spec)
+                        }
+                        viewMode={tabViewModes[tab.id] ?? "table"}
+                        onViewModeChange={mode =>
+                          setViewModeForTab(tab.id, mode)
+                        }
+                        onChartRenderError={error => {
+                          const cb = pendingRenderCallbackRef.current[tab.id];
+                          if (cb) {
+                            cb({ success: false, error });
+                            delete pendingRenderCallbackRef.current[tab.id];
+                          }
+                        }}
+                        onChartRenderSuccess={() => {
+                          const cb = pendingRenderCallbackRef.current[tab.id];
+                          if (cb) {
+                            cb({ success: true });
+                            delete pendingRenderCallbackRef.current[tab.id];
+                          }
+                        }}
+                        onPreviousPage={() => handlePreviousResultsPage(tab.id)}
+                        onNextPage={() => handleNextResultsPage(tab.id)}
+                        onDownload={format =>
+                          void handleDownloadResults(tab.id, format)
+                        }
+                      />
+                    )}
+                  </Box>
+                </Box>
+              );
+
+              return (
+                <Box
+                  key={tab.id}
+                  data-mako-tab-id={tab.id}
+                  data-mako-tab-kind={tab.kind}
+                  data-mako-active-tab-content={
+                    activeConsoleId === tab.id ? "true" : undefined
+                  }
+                  sx={{
+                    height: "100%",
+                    display: activeConsoleId === tab.id ? "block" : "none",
+                    overflow: "hidden",
+                  }}
+                >
+                  {showDesktopOnlyNotice ? (
+                    <Box sx={{ p: 2 }}>
+                      <Alert
+                        severity="info"
+                        onClose={() =>
+                          setDismissedDesktopOnly(prev => ({
+                            ...prev,
+                            [tab.id]: true,
+                          }))
+                        }
+                      >
+                        This view is designed for a larger screen and may be
+                        hard to use on a phone. Open Mako on a desktop for the
+                        full experience.
+                      </Alert>
+                    </Box>
+                  ) : tab.kind === "settings" ? (
+                    <Settings section={tab.settingsSection} />
+                  ) : tab.kind === "members" ? (
+                    <WorkspaceMembers />
+                  ) : tab.kind === "connectors" ? (
+                    <ConnectorTab
+                      tabId={tab.id}
+                      sourceId={
+                        typeof tab.content === "string"
+                          ? tab.content
                           : undefined
                       }
+                    />
+                  ) : tab.kind === "flow-editor" ? (
+                    <FlowEditor
+                      flowId={tab.metadata?.flowId as string | undefined}
+                      isNew={tab.metadata?.isNew as boolean | undefined}
+                      flowType={
+                        tab.metadata?.flowType as
+                          | "webhook"
+                          | "scheduled"
+                          | "db-scheduled"
+                          | undefined
+                      }
+                      onSave={() => {
+                        // The FlowEditor already handles refreshing the flows list
+                      }}
+                      onCancel={() => {
+                        closeConsole(tab.id);
+                      }}
+                      dbFlowFormRef={dbFlowFormRef}
+                    />
+                  ) : tab.kind === "table-data" ? (
+                    <TableDataView tabId={tab.id} />
+                  ) : tab.kind === "dashboard" ? (
+                    <DashboardCanvas
+                      dashboardId={tab.metadata?.dashboardId as string}
+                      isNew={tab.metadata?.isNew as boolean}
+                      onCreated={(newId: string) => {
+                        useConsoleStore.setState(state => {
+                          const existingTab = state.tabs[tab.id];
+                          if (existingTab) {
+                            existingTab.metadata = {
+                              ...existingTab.metadata,
+                              dashboardId: newId,
+                              isNew: false,
+                            };
+                            existingTab.title = "Untitled Dashboard";
+                          }
+                        });
+                      }}
+                    />
+                  ) : tab.kind === "app" ? (
+                    <AppRenderer appId={tab.metadata?.appId as string} />
+                  ) : tab.kind === "app-file" ? (
+                    <AppFileEditor
+                      tabId={tab.id}
+                      appId={tab.metadata?.appId as string}
+                      path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "app-binding" ? (
+                    <AppBindingEditor
+                      tabId={tab.id}
+                      appId={tab.metadata?.appId as string}
+                      bindingId={tab.metadata?.bindingId as string}
+                    />
+                  ) : tab.kind === "plan" ? (
+                    <PlanDocumentTab
+                      toolCallId={tab.metadata?.toolCallId as string}
+                    />
+                  ) : tab.kind === "dbt-file" ? (
+                    <DbtFileEditor
+                      tabId={tab.id}
+                      projectId={tab.metadata?.projectId as string}
+                      path={tab.metadata?.path as string}
+                    />
+                  ) : tab.kind === "dbt-job" ? (
+                    <DbtJobView
+                      projectId={tab.metadata?.projectId as string}
+                      jobId={tab.metadata?.jobId as string}
+                      autoEdit={tab.metadata?.autoEdit as boolean | undefined}
+                    />
+                  ) : tab.kind === "dbt-console" ? (
+                    <DbtConsoleView
+                      projectId={tab.metadata?.projectId as string}
+                    />
+                  ) : tab.kind === "dbt-runs" ? (
+                    <DbtRunsView
+                      tabId={tab.id}
+                      projectId={tab.metadata?.projectId as string}
+                      focusRunId={
+                        tab.metadata?.focusRunId as string | undefined
+                      }
+                    />
+                  ) : tab.kind === "dashboard-data-source" ? (
+                    <DashboardDataSourceEditor
+                      tabId={tab.id}
+                      dashboardId={tab.metadata?.dashboardId as string}
+                      dataSourceId={tab.metadata?.dataSourceId as string}
+                    />
+                  ) : (
+                    /* Console tab: editor + results split (desktop) or a single
+                     full-screen pane switched by the bottom nav (mobile). */
+                    <React.Profiler
+                      id={`Editor.console-panels.${tab.id}`}
+                      onRender={onRenderDebug}
                     >
-                      <Panel defaultSize={60} minSize={1}>
-                        <Box
-                          sx={{
-                            height: "100%",
-                            display: "flex",
-                            flexDirection: "column",
-                          }}
+                      {isMobile ? (
+                        <Box sx={{ height: "100%" }}>
+                          {mobileResultsView ? resultsPane : consolePane}
+                        </Box>
+                      ) : (
+                        <PanelGroup
+                          direction="vertical"
+                          style={{ height: "100%", width: "100%" }}
+                          onLayout={
+                            renderDebugEnabled
+                              ? layout => handlePanelLayout(tab.id, layout)
+                              : undefined
+                          }
                         >
-                          {tab.remoteUpdate && (
-                            <ConsoleRemoteUpdateBanner
-                              remoteUpdate={tab.remoteUpdate}
-                              onLoadLatest={() => {
-                                if (!currentWorkspace?.id) return;
-                                void useConsoleStore
-                                  .getState()
-                                  .applyRemoteConsoleUpdate(
-                                    currentWorkspace.id,
-                                    tab.id,
-                                  );
-                              }}
-                              onKeepMine={() => {
-                                if (!currentWorkspace?.id) return;
-                                // Use the LIVE Monaco buffer, not the store
-                                // copy — it may lag keystrokes by a debounce.
-                                const live =
-                                  consoleRefs.current[
-                                    tab.id
-                                  ]?.current?.getCurrentContent().content;
-                                void useConsoleStore
-                                  .getState()
-                                  .resolveRemoteUpdateKeepMine(
-                                    currentWorkspace.id,
-                                    tab.id,
-                                    live ?? tab.content,
-                                  );
-                              }}
-                              onDismiss={() =>
-                                useConsoleStore
-                                  .getState()
-                                  .dismissRemoteUpdate(tab.id)
-                              }
-                              onCloseTab={() =>
-                                useConsoleStore.getState().closeTab(tab.id)
-                              }
-                            />
-                          )}
-                          <Box sx={{ flex: 1, minHeight: 0 }}>
-                            <Console
-                              ref={consoleRefs.current[tab.id]}
-                              consoleId={tab.id}
-                              initialContent={tab.content}
-                              title={tab.title}
-                              onExecute={(content, connectionId, databaseId) =>
-                                handleConsoleExecute(
-                                  tab.id,
-                                  content,
-                                  connectionId,
-                                  {
-                                    databaseId: databaseId || tab.databaseId,
-                                    databaseName: tab.databaseName,
-                                  },
-                                )
-                              }
-                              onCancel={() => handleConsoleCancel(tab.id)}
-                              onSave={(content, currentPath) =>
-                                handleConsoleSave(tab.id, content, currentPath)
-                              }
-                              onSaveAsCopy={content =>
-                                handleSaveAsCopy(tab.id, content)
-                              }
-                              onRenameMove={(content, currentPath) =>
-                                handleRenameMove(tab.id, content, currentPath)
-                              }
-                              isExecuting={executingTabs[tab.id] || false}
-                              isCancelling={cancellingTabs[tab.id] || false}
-                              isSaving={isSaving}
-                              onContentChange={content => {
-                                updateContent(tab.id, content);
-                                if (!tab.isDirty) {
-                                  updateDirty(tab.id, true);
-                                }
-                                // Also refresh activeEditorContent for Chat consumers
-                                const ref =
-                                  consoleRefs.current[tab.id]?.current;
-                                if (activeConsoleId === tab.id && ref) {
-                                  setActiveEditorContent(
-                                    ref.getCurrentContent(),
-                                  );
-                                }
-                              }}
-                              connectionId={tab.connectionId}
-                              databaseId={tab.databaseId}
-                              databaseName={tab.databaseName}
-                              databases={availableDatabases}
-                              onDatabaseChange={connId =>
-                                updateConnection(tab.id, connId)
-                              }
-                              onDatabaseNameChange={(dbId, dbName) =>
-                                updateDatabase(tab.id, dbId, dbName)
-                              }
-                              filePath={tab.filePath}
-                              enableVersionControl={true}
-                              onHistoryClick={() => {
-                                setVersionHistoryTabId(tab.id);
-                                setVersionHistoryEntityType("console");
-                                setVersionHistoryOpen(true);
-                              }}
-                              historyAvailable={tab.isSaved}
-                              onShareClick={() => setShareConsoleTabId(tab.id)}
-                              shareAvailable={tab.isSaved}
-                              schedule={tab.schedule}
-                              onCreateSchedule={() =>
-                                handleOpenScheduleModal(tab.id, "create")
-                              }
-                              onUpdateSchedule={() =>
-                                handleOpenScheduleModal(tab.id, "update")
-                              }
-                            />
-                          </Box>
-                        </Box>
-                      </Panel>
+                          <Panel defaultSize={60} minSize={1}>
+                            {consolePane}
+                          </Panel>
 
-                      <StyledVerticalResizeHandle />
+                          <StyledVerticalResizeHandle />
 
-                      <Panel defaultSize={40} minSize={1}>
-                        <Box sx={{ height: "100%", overflow: "hidden" }}>
-                          <Box
-                            sx={{
-                              height: "100%",
-                              display: "flex",
-                              flexDirection: "column",
-                            }}
-                          >
-                            <Box
-                              sx={{
-                                px: 1.5,
-                                borderBottom: 1,
-                                borderColor: "divider",
-                                minHeight: 36,
-                                display: "flex",
-                                alignItems: "center",
-                              }}
-                            >
-                              <Tabs
-                                value={tabBottomPanel[tab.id] || "results"}
-                                onChange={(
-                                  _event,
-                                  value: "results" | "runs",
-                                ) => {
-                                  setTabBottomPanel(prev => ({
-                                    ...prev,
-                                    [tab.id]: value,
-                                  }));
-                                  if (value === "runs") {
-                                    void loadScheduledRunsForTab(tab.id);
-                                  }
-                                }}
-                                sx={{
-                                  minHeight: 36,
-                                  "& .MuiTabs-indicator": {
-                                    height: 2,
-                                  },
-                                }}
-                              >
-                                <Tab
-                                  value="results"
-                                  label="Results"
-                                  disableRipple
-                                  sx={{
-                                    minHeight: 36,
-                                    py: 0.25,
-                                    px: 1.25,
-                                    minWidth: 0,
-                                    textTransform: "none",
-                                    fontSize: "0.875rem",
-                                    fontWeight: 600,
-                                    color: "text.secondary",
-                                    "&.Mui-selected": {
-                                      color: "text.primary",
-                                    },
-                                  }}
-                                />
-                                <Tab
-                                  value="runs"
-                                  label={`Runs (${tab.scheduledRun?.runCount ?? 0})`}
-                                  disabled={!tab.isSaved}
-                                  disableRipple
-                                  sx={{
-                                    minHeight: 36,
-                                    py: 0.25,
-                                    px: 1.25,
-                                    minWidth: 0,
-                                    textTransform: "none",
-                                    fontSize: "0.875rem",
-                                    fontWeight: 600,
-                                    color: "text.secondary",
-                                    "&.Mui-selected": {
-                                      color: "text.primary",
-                                    },
-                                    "&.Mui-disabled": {
-                                      opacity: 0.5,
-                                    },
-                                  }}
-                                />
-                              </Tabs>
-                            </Box>
-                            <Box sx={{ flexGrow: 1, minHeight: 0 }}>
-                              {(tabBottomPanel[tab.id] || "results") ===
-                              "runs" ? (
-                                <ScheduledRunsPanel
-                                  loading={
-                                    tabScheduledRunsLoading[tab.id] || false
-                                  }
-                                  error={tabScheduledRunsError[tab.id]}
-                                  runs={tabScheduledRuns[tab.id] || []}
-                                />
-                              ) : (
-                                <ResultsTable
-                                  results={tabResults[tab.id] || null}
-                                  chartSpec={tabChartSpecs[tab.id] ?? null}
-                                  onChartSpecChange={spec =>
-                                    setChartSpecForTab(tab.id, spec)
-                                  }
-                                  viewMode={tabViewModes[tab.id] ?? "table"}
-                                  onViewModeChange={mode =>
-                                    setViewModeForTab(tab.id, mode)
-                                  }
-                                  onChartRenderError={error => {
-                                    const cb =
-                                      pendingRenderCallbackRef.current[tab.id];
-                                    if (cb) {
-                                      cb({ success: false, error });
-                                      delete pendingRenderCallbackRef.current[
-                                        tab.id
-                                      ];
-                                    }
-                                  }}
-                                  onChartRenderSuccess={() => {
-                                    const cb =
-                                      pendingRenderCallbackRef.current[tab.id];
-                                    if (cb) {
-                                      cb({ success: true });
-                                      delete pendingRenderCallbackRef.current[
-                                        tab.id
-                                      ];
-                                    }
-                                  }}
-                                  onPreviousPage={() =>
-                                    handlePreviousResultsPage(tab.id)
-                                  }
-                                  onNextPage={() =>
-                                    handleNextResultsPage(tab.id)
-                                  }
-                                  onDownload={format =>
-                                    void handleDownloadResults(tab.id, format)
-                                  }
-                                />
-                              )}
-                            </Box>
-                          </Box>
-                        </Box>
-                      </Panel>
-                    </PanelGroup>
-                  </React.Profiler>
-                )}
-              </Box>
-            ))}
+                          <Panel defaultSize={40} minSize={1}>
+                            {resultsPane}
+                          </Panel>
+                        </PanelGroup>
+                      )}
+                    </React.Profiler>
+                  )}
+                </Box>
+              );
+            })}
           </Box>
         </Box>
       ) : (

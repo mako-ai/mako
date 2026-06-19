@@ -20,6 +20,8 @@ import {
   Alert,
   Badge,
   Chip,
+  Fab,
+  CircularProgress,
   ListItemIcon,
   ListItemText,
 } from "@mui/material";
@@ -56,6 +58,7 @@ import {
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 import { ConnectionSelector } from "./ConnectionSelector";
+import { useIsMobile } from "../hooks/useIsMobile";
 import {
   onRenderDebug,
   useRenderCount,
@@ -204,6 +207,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const editorRef = useRef<any>(null);
   const diffEditorRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
   const autoSaveConsole = useConsoleStore(state => state.autoSaveConsole);
@@ -1158,6 +1162,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         height: "100%",
         display: "flex",
         flexDirection: "column",
+        position: "relative",
       }}
     >
       <Box
@@ -1168,6 +1173,8 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           backgroundColor: "background.paper",
           p: 0.5,
           gap: 0.5,
+          // Let the connection selector wrap below the actions on narrow screens
+          flexWrap: { xs: "wrap", md: "nowrap" },
         }}
       >
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -1196,7 +1203,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                 <Button
                   variant="contained"
                   size="small"
-                  startIcon={<PlayIcon />}
+                  startIcon={isMobile ? undefined : <PlayIcon />}
                   onClick={handleExecute}
                   disabled={!connectionId}
                   disableElevation
@@ -1205,10 +1212,10 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     maxWidth: "200px",
-                    minWidth: "120px",
+                    minWidth: isMobile ? 0 : "120px",
                   }}
                 >
-                  Run (⌘/Ctrl+Enter)
+                  {isMobile ? <PlayIcon /> : "Run (⌘/Ctrl+Enter)"}
                 </Button>
               </span>
             </Tooltip>
@@ -1647,6 +1654,34 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         consoleId={consoleId}
         workspaceId={currentWorkspace?.id}
       />
+
+      {/* Mobile run FAB — the primary "execute" affordance on a phone, where
+          the toolbar Run button is compact and the keyboard shortcut is
+          unavailable. */}
+      {isMobile && !isDiffMode && (
+        <Fab
+          color={isExecuting ? "error" : "primary"}
+          aria-label={isExecuting ? "Cancel query" : "Run query"}
+          onClick={isExecuting ? onCancel : handleExecute}
+          disabled={isExecuting ? isCancelling : !connectionId}
+          sx={{
+            position: "absolute",
+            right: 16,
+            bottom: "calc(16px + env(safe-area-inset-bottom))",
+            zIndex: 5,
+          }}
+        >
+          {isExecuting ? (
+            isCancelling ? (
+              <CircularProgress size={24} color="inherit" />
+            ) : (
+              <StopIcon size={22} />
+            )
+          ) : (
+            <PlayIcon />
+          )}
+        </Fab>
+      )}
     </Box>
   );
 });
