@@ -37,6 +37,24 @@ export function getGitHubAppSlug(): string | undefined {
   return process.env.GITHUB_APP_SLUG || undefined;
 }
 
+/**
+ * The App's OAuth client credentials — distinct from the App id/private key.
+ * Used for the user-to-server flow that proves the installing user actually
+ * controls the installation (requires the App's "Request user authorization
+ * (OAuth) during installation" toggle so the /setup callback carries `code`).
+ */
+export function getGitHubAppClientId(): string | undefined {
+  return process.env.GITHUB_APP_CLIENT_ID || undefined;
+}
+
+export function getGitHubAppClientSecret(): string | undefined {
+  return process.env.GITHUB_APP_CLIENT_SECRET || undefined;
+}
+
+export function isGitHubAppUserAuthConfigured(): boolean {
+  return Boolean(getGitHubAppClientId() && getGitHubAppClientSecret());
+}
+
 /** Webhook secret used to verify inbound GitHub App webhooks (later slice). */
 export function getGitHubAppWebhookSecret(): string | undefined {
   return process.env.GITHUB_APP_WEBHOOK_SECRET || undefined;

@@ -18,9 +18,16 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { GitHubInstallation } from "../database/workspace-schema";
 import { Types } from "mongoose";
-import { getInstallationMeta } from "../integrations/github/app-auth";
+import {
+  exchangeInstallUserToken,
+  getInstallationMeta,
+  userControlsInstallation,
+} from "../integrations/github/app-auth";
 import { verifyInstallState } from "../integrations/github/install-state";
-import { getGitHubAppWebhookSecret } from "../integrations/github/config";
+import {
+  getGitHubAppWebhookSecret,
+  isGitHubAppUserAuthConfigured,
+} from "../integrations/github/config";
 import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
 import { workspaceService } from "../services/workspace.service";
 import { loggers } from "../logging";
@@ -201,6 +208,43 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
   if (!Number.isInteger(installationId) || installationId <= 0) {
     return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
+
+  // SECURITY (ownership proof): the signed state proves *who* started the flow,
+  // but `installation_id` is an attacker-controllable query param. Without
+  // proving the user controls that installation, an admin could bind a victim
+  // org's installation to their own workspace and read its private repos
+  // (cross-tenant IDOR). Verify via the user-to-server OAuth flow that the
+  // installation appears in the user's own GET /user/installations.
+  if (!isGitHubAppUserAuthConfigured()) {
+    logger.error(
+      "Refusing GitHub install bind: App OAuth client not configured " +
+        "(set GITHUB_APP_CLIENT_ID/SECRET and enable 'Request user " +
+        "authorization (OAuth) during installation'), cannot verify ownership",
+      { workspaceId, installationId },
+    );
+    return c.redirect(`${redirectBase}/?transformGithub=error`);
+  }
+  const code = c.req.query("code");
+  if (!code) {
+    // App is configured for user-auth but GitHub didn't send a code — refuse.
+    return c.redirect(`${redirectBase}/?transformGithub=error`);
+  }
+  try {
+    const userToken = await exchangeInstallUserToken(code);
+    const owns = await userControlsInstallation(userToken, installationId);
+    if (!owns) {
+      logger.warn("GitHub install bind blocked: user does not control it", {
+        workspaceId,
+        installationId,
+        userId: user.id,
+      });
+      return c.redirect(`${redirectBase}/?transformGithub=forbidden`);
+    }
+  } catch (error) {
+    logger.error("Failed to verify GitHub installation ownership", { error });
+    return c.redirect(`${redirectBase}/?transformGithub=error`);
+  }
+
   try {
     const meta = await getInstallationMeta(installationId);
     await GitHubInstallation.findOneAndUpdate(

@@ -9,6 +9,8 @@
 import { createSign } from "crypto";
 
 import {
+  getGitHubAppClientId,
+  getGitHubAppClientSecret,
   getGitHubAppId,
   getGitHubAppPrivateKey,
   getGitHubDevToken,
@@ -123,6 +125,74 @@ export async function getInstallationMeta(
     accountType: json.account.type,
     repositorySelection: json.repository_selection,
   };
+}
+
+/**
+ * Exchange the OAuth `code` from the install/setup redirect for a short-lived
+ * user-to-server token. Requires the App's OAuth client credentials.
+ */
+export async function exchangeInstallUserToken(code: string): Promise<string> {
+  const clientId = getGitHubAppClientId();
+  const clientSecret = getGitHubAppClientSecret();
+  if (!clientId || !clientSecret) {
+    throw new Error("GitHub App OAuth client is not configured");
+  }
+  const res = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to exchange GitHub OAuth code (${res.status})`);
+  }
+  const json = (await res.json()) as {
+    access_token?: string;
+    error?: string;
+  };
+  if (!json.access_token) {
+    throw new Error(`GitHub OAuth code exchange returned no token`);
+  }
+  return json.access_token;
+}
+
+/**
+ * Verify the authenticated GitHub user actually controls the installation, by
+ * checking it appears in their `GET /user/installations`. This is the
+ * authoritative ownership proof that prevents binding a foreign installation.
+ */
+export async function userControlsInstallation(
+  userToken: string,
+  installationId: number,
+): Promise<boolean> {
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(
+      `${GITHUB_API}/user/installations?per_page=100&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${userToken}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`Failed to list user installations (${res.status})`);
+    }
+    const json = (await res.json()) as {
+      installations?: Array<{ id: number }>;
+    };
+    const installations = json.installations ?? [];
+    if (installations.some(i => i.id === installationId)) return true;
+    if (installations.length < 100) return false;
+  }
+  return false;
 }
 
 /**

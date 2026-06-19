@@ -113,7 +113,10 @@ const manifest = {
     statuses: "write",
   },
   default_events: ["push", "pull_request", "installation"],
-  request_oauth_on_install: false,
+  // Required: the /setup callback verifies the installing user actually
+  // controls the installation via the user-to-server OAuth `code`. Without
+  // this, GitHub never sends a `code` and Mako refuses to bind (anti-IDOR).
+  request_oauth_on_install: true,
 };
 
 const manifestJson = JSON.stringify(manifest);
@@ -167,6 +170,8 @@ const server = http.createServer(async (req, res) => {
       GITHUB_APP_SLUG: app.slug,
       GITHUB_APP_PRIVATE_KEY: pemToEnv(pem),
       GITHUB_APP_WEBHOOK_SECRET: app.webhook_secret || "",
+      GITHUB_APP_CLIENT_ID: app.client_id || "",
+      GITHUB_APP_CLIENT_SECRET: app.client_secret || "",
     });
 
     console.log("\n✓ Updated .env with:");
@@ -174,6 +179,8 @@ const server = http.createServer(async (req, res) => {
     console.log("  GITHUB_APP_SLUG=", app.slug);
     console.log("  GITHUB_APP_WEBHOOK_SECRET= (set)");
     console.log("  GITHUB_APP_PRIVATE_KEY= (set)");
+    console.log("  GITHUB_APP_CLIENT_ID= (set)");
+    console.log("  GITHUB_APP_CLIENT_SECRET= (set)");
     console.log("\nNext: restart the API, then in Mako Transforms click Connect GitHub.\n");
   } catch (error) {
     console.error("\n✗ Failed to exchange manifest code:", error);
