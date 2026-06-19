@@ -104,6 +104,11 @@ const manifest = {
   },
   redirect_url: `http://localhost:${CALLBACK_PORT}/callback`,
   setup_url: `${baseUrl.replace(/\/$/, "")}/api/github/setup`,
+  // With request_oauth_on_install the setup_url becomes unavailable; GitHub
+  // routes the user through OAuth and redirects to the callback URL with both
+  // `code` and `installation_id`. Point it at /setup so the bind handler still
+  // receives everything it needs to verify ownership.
+  callback_urls: [`${baseUrl.replace(/\/$/, "")}/api/github/setup`],
   setup_on_update: true,
   public: false,
   default_permissions: {
