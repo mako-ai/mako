@@ -2,12 +2,13 @@
  * GitHub App install callback. GitHub redirects here (the App's "Setup URL")
  * after a user installs/updates the app on an org or repo:
  *
- *   GET /api/github/setup?installation_id=123&setup_action=install&state=<workspaceId>
+ *   GET /api/github/setup?installation_id=123&setup_action=install&state=<signed>
  *
- * We record the installation against the workspace carried in `state` (the
- * browser redirect carries the session cookie, so we know who the user is),
- * then bounce back to the Transform UI. Installation access tokens are never
- * stored — they're minted on demand from the App private key.
+ * `state` is an HMAC-signed token (see install-state.ts) minted by
+ * GET /github/install-url that pins the workspace + the admin who started the
+ * flow. We verify it (signature, expiry, same user, admin role) before binding
+ * the installation, then bounce back to the Transform UI. Installation access
+ * tokens are never stored — they're minted on demand from the App private key.
  */
 import { Hono, type Context } from "hono";
 import { createHmac, timingSafeEqual } from "crypto";
@@ -18,6 +19,7 @@ import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { GitHubInstallation } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { getInstallationMeta } from "../integrations/github/app-auth";
+import { verifyInstallState } from "../integrations/github/install-state";
 import { getGitHubAppWebhookSecret } from "../integrations/github/config";
 import { handlePullRequestEvent, handlePushEvent } from "../dbt/dbt-ci.service";
 import { workspaceService } from "../services/workspace.service";
@@ -33,31 +35,6 @@ githubRoutes.use("/setup", unifiedAuthMiddleware);
 
 function clientUrl(): string {
   return process.env.CLIENT_URL || "http://localhost:5173";
-}
-
-/** Install flow state: plain workspace id (legacy) or JSON { workspaceId, clientUrl }. */
-function parseInstallState(stateParam: string | undefined): {
-  workspaceId: string | undefined;
-  returnClientUrl: string | undefined;
-} {
-  if (!stateParam) {
-    return { workspaceId: undefined, returnClientUrl: undefined };
-  }
-  try {
-    const parsed = JSON.parse(decodeURIComponent(stateParam)) as {
-      workspaceId?: string;
-      clientUrl?: string;
-    };
-    if (parsed.workspaceId) {
-      return {
-        workspaceId: parsed.workspaceId,
-        returnClientUrl: parsed.clientUrl,
-      };
-    }
-  } catch {
-    // Legacy: state is the workspace id string.
-  }
-  return { workspaceId: stateParam, returnClientUrl: undefined };
 }
 
 function resolveReturnClientUrl(returnClientUrl: string | undefined): string {
@@ -189,27 +166,39 @@ githubRoutes.get("/setup", async (c: AuthenticatedContext) => {
   const installationIdRaw = c.req.query("installation_id");
   const setupAction = c.req.query("setup_action");
   const stateParam = c.req.query("state");
-  const { workspaceId, returnClientUrl } = parseInstallState(stateParam);
-  const redirectBase = resolveReturnClientUrl(returnClientUrl);
+  // SECURITY: the state must be a token WE signed (HMAC keyed on SESSION_SECRET)
+  // that pins the workspace + the user who started the flow. A client-forgeable
+  // state would let an attacker bind someone else's installation to their own
+  // workspace (IDOR / CSRF) and then read another tenant's private repos.
+  const state = verifyInstallState(stateParam);
+  const redirectBase = resolveReturnClientUrl(state?.clientUrl);
   const user = c.get("user");
 
   if (!user) {
     // Not logged in (cookie missing) — send to login, then back to the app.
     return c.redirect(`${redirectBase}/login`);
   }
-  if (!installationIdRaw || !workspaceId) {
+  if (!installationIdRaw || !state) {
     return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
+  const { workspaceId } = state;
   if (!Types.ObjectId.isValid(workspaceId)) {
     return c.redirect(`${redirectBase}/?transformGithub=error`);
   }
-
-  const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-  if (!hasAccess) {
+  // The flow must be completed by the same user who started it…
+  if (state.userId !== user.id) {
+    return c.redirect(`${redirectBase}/?transformGithub=forbidden`);
+  }
+  // …and binding an installation is a deployment-config mutation → admin+.
+  const isAdmin = await workspaceService.isAdmin(workspaceId, user.id);
+  if (!isAdmin) {
     return c.redirect(`${redirectBase}/?transformGithub=forbidden`);
   }
 
   const installationId = Number(installationIdRaw);
+  if (!Number.isInteger(installationId) || installationId <= 0) {
+    return c.redirect(`${redirectBase}/?transformGithub=error`);
+  }
   try {
     const meta = await getInstallationMeta(installationId);
     await GitHubInstallation.findOneAndUpdate(

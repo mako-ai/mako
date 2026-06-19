@@ -22,7 +22,7 @@ import { dirname, join, normalize, relative, sep } from "path";
 import { loggers } from "../logging";
 import type { ParsedDbtCommand } from "./commands";
 import type { RenderedProfile } from "./adapter-map";
-import { resolveDbtBin } from "./dbt-bin";
+import { buildDbtBaseEnv, resolveDbtBin } from "./dbt-bin";
 
 const logger = loggers.app();
 
@@ -590,7 +590,9 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     );
 
     const childEnv: Record<string, string> = {
-      ...(process.env as Record<string, string>),
+      // SECURITY: allowlisted base env only — never spread process.env, or
+      // dbt's env_var() would expose server secrets. See buildDbtBaseEnv.
+      ...buildDbtBaseEnv(),
       ...request.profile.secretEnv,
       ...keyfileEnv,
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",

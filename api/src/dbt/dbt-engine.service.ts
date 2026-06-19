@@ -20,7 +20,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import { createHash } from "crypto";
 import { join } from "path";
-import { resolveDbtEnginePython } from "./dbt-bin";
+import { buildDbtBaseEnv, resolveDbtEnginePython } from "./dbt-bin";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -101,8 +101,10 @@ class EngineProcess {
     // (captured for debug); structured responses arrive on fd 3.
     const child = spawn(bin, prefixArgs, {
       stdio: ["pipe", "pipe", "pipe", "pipe"],
+      // SECURITY: allowlisted base env only — never spread process.env, or
+      // dbt's env_var() would expose server secrets. See buildDbtBaseEnv.
       env: {
-        ...process.env,
+        ...buildDbtBaseEnv(),
         ...this.connectionEnv,
         DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
       },

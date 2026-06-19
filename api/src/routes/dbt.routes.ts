@@ -26,6 +26,7 @@ import {
   getInstallationToken,
   resolveRepoToken,
 } from "../integrations/github/app-auth";
+import { signInstallState } from "../integrations/github/install-state";
 import {
   getGitHubAppSlug,
   isGitHubAppConfigured,
@@ -185,9 +186,32 @@ const createProjectSchema = z.object({
   defaultEnvironment: z.string().min(1),
 });
 
+// GitHub owner/repo names are alphanumeric plus '.', '_', '-'. Validating the
+// charset (and rejecting '..') before these values are interpolated into
+// api.github.com paths prevents API-path injection / traversal.
+const REPO_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+export function isValidRepoSegment(value: string): boolean {
+  return (
+    REPO_SEGMENT_RE.test(value) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("..")
+  );
+}
+
+const repoSegmentSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine(
+    isValidRepoSegment,
+    "must contain only letters, numbers, '.', '_', '-'",
+  );
+
 const repoBindingSchema = z.object({
-  owner: z.string().min(1).max(100),
-  repo: z.string().min(1).max(100),
+  owner: repoSegmentSchema,
+  repo: repoSegmentSchema,
   branch: z.string().min(1).max(255).optional(),
   subdirectory: z.string().max(255).optional(),
   installationId: z.number().int().positive().optional(),
@@ -451,6 +475,9 @@ dbtRoutes.get("/github/status", async (c: AuthenticatedContext) => {
 // GET /github/install-url — URL that starts the GitHub App install flow.
 dbtRoutes.get("/github/install-url", async (c: AuthenticatedContext) => {
   const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+    return badRequest(c, "Valid workspace ID is required");
+  }
   const slug = getGitHubAppSlug();
   if (!slug) {
     return badRequest(
@@ -458,10 +485,26 @@ dbtRoutes.get("/github/install-url", async (c: AuthenticatedContext) => {
       "GitHub App is not configured (set GITHUB_APP_SLUG/GITHUB_APP_ID)",
     );
   }
+  // Connecting a repo is a deployment-config mutation → admin+ (consistent with
+  // the rbac policy and the /setup callback that consumes this state).
+  const user = c.get("user");
+  if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
+    return c.json(
+      {
+        success: false,
+        error: "Connecting GitHub requires the admin or owner workspace role",
+      },
+      403,
+    );
+  }
   const returnClientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-  const state = encodeURIComponent(
-    JSON.stringify({ workspaceId, clientUrl: returnClientUrl }),
-  );
+  // Signed, short-lived state pins the workspace + initiating user so the
+  // /setup callback cannot be forged to bind an arbitrary installation.
+  const state = signInstallState({
+    workspaceId,
+    userId: user.id,
+    clientUrl: returnClientUrl,
+  });
   return c.json({
     success: true,
     url: `https://github.com/apps/${slug}/installations/new?state=${state}`,
@@ -507,6 +550,9 @@ dbtRoutes.get("/github/branches", async (c: AuthenticatedContext) => {
     if (!owner || !repo) {
       return badRequest(c, "owner and repo are required");
     }
+    if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
+      return badRequest(c, "Invalid owner or repo name");
+    }
     const installationIdRaw = c.req.query("installationId");
     const installationId = installationIdRaw
       ? Number(installationIdRaw)
@@ -542,6 +588,9 @@ dbtRoutes.get("/github/repo-check", async (c: AuthenticatedContext) => {
     const repo = c.req.query("repo")?.trim();
     if (!owner || !repo) {
       return badRequest(c, "owner and repo are required");
+    }
+    if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
+      return badRequest(c, "Invalid owner or repo name");
     }
     const installationIdRaw = c.req.query("installationId");
     const installationId = installationIdRaw
@@ -618,6 +667,20 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
     }
     const envError = await validateEnvironments(workspaceId, body.environments);
     if (envError) return badRequest(c, envError);
+
+    // SECURITY: never mint an installation token for an installation that is
+    // not bound to THIS workspace — otherwise an admin could read any private
+    // repo any App installation can see. Mirror the scope check the other
+    // GitHub routes (repos/branches/repo-check) already perform.
+    if (body.repo.installationId) {
+      const installation = await GitHubInstallation.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        installationId: body.repo.installationId,
+      });
+      if (!installation) {
+        return c.json({ success: false, error: "Installation not found" }, 404);
+      }
+    }
 
     // Resolve the default branch when the caller didn't pin one.
     let branch = body.repo.branch;
