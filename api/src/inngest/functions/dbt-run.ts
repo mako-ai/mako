@@ -149,21 +149,32 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       ).lean();
       if (!run) return null;
 
-      // Slim CI: when the job defers to production, resolve the project's last
-      // prod manifest so the executor can run `--defer --state`.
+      // Slim CI: resolve the project's last prod manifest so the executor can
+      // run `--defer --state`. Applies to (a) scheduled/deploy jobs that opt in
+      // via deferToProduction and (b) PR CI runs (unless the project's CI
+      // config disables defer).
       let deferStateKey: string | null = null;
-      if (run.jobId) {
-        const job = await DbtJob.findById(run.jobId)
-          .select("deferToProduction")
+      let wantsDefer = false;
+      if (run.trigger === "ci") {
+        const project = await DbtProject.findById(run.projectId)
+          .select("ci")
           .lean();
-        if (job?.deferToProduction) {
-          const project = await DbtProject.findById(run.projectId)
-            .select("lastProdManifestKey")
-            .lean();
-          deferStateKey =
-            (project as { lastProdManifestKey?: string })
-              ?.lastProdManifestKey ?? null;
-        }
+        wantsDefer =
+          (project as { ci?: { deferToProduction?: boolean } })?.ci
+            ?.deferToProduction !== false;
+      } else if (run.jobId) {
+        wantsDefer = Boolean(
+          (await DbtJob.findById(run.jobId).select("deferToProduction").lean())
+            ?.deferToProduction,
+        );
+      }
+      if (wantsDefer) {
+        const project = await DbtProject.findById(run.projectId)
+          .select("lastProdManifestKey")
+          .lean();
+        deferStateKey =
+          (project as { lastProdManifestKey?: string })?.lastProdManifestKey ??
+          null;
       }
 
       return {
@@ -243,6 +254,7 @@ export const dbtRunExecutorFunction = inngest.createFunction(
               profile: snapshot.profile,
               commands: [parsed],
               dbtVersion: snapshot.project.dbtVersion,
+              vars: snapshot.environment.vars,
               // Cloud Run services deploy with --timeout=3600; leave buffer for
               // snapshot loading + artifact upload within the step request.
               commandTimeoutMs: 50 * 60 * 1000,
@@ -441,6 +453,13 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             consecutiveFailures: failures,
           });
         }
+      }
+
+      // PR CI: post the terminal commit status back to the PR head.
+      const ciRun = await DbtRun.findById(runObjectId).select("ci").lean();
+      if (ciRun?.ci) {
+        const { postCiRunResult } = await import("../../dbt/dbt-ci.service");
+        await postCiRunResult({ _id: runObjectId, ci: ciRun.ci }, !failed);
       }
 
       // Keep the last successful prod manifest as the state artifact for

@@ -138,14 +138,26 @@ async function failUnenqueuedRun(
   });
 }
 
+export interface DbtRunCiContext {
+  prNumber: number;
+  headSha: string;
+  headRef: string;
+  baseRef: string;
+  owner: string;
+  repo: string;
+  installationId?: number;
+}
+
 export async function triggerDbtRun(params: {
   workspaceId: string;
   projectId: string;
   jobId?: string;
   environment: string;
   commands: string[];
-  trigger: "schedule" | "manual" | "agent";
+  trigger: "schedule" | "manual" | "agent" | "ci";
   triggeredBy: string;
+  /** PR context for CI runs (trigger === "ci"). */
+  ci?: DbtRunCiContext;
   /**
    * When set (scheduled runs), collapse onto an already-active run for the
    * same job instead of stacking a new one — the executor only runs one run
@@ -174,6 +186,7 @@ export async function triggerDbtRun(params: {
     status: "queued",
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    ci: params.ci,
   });
 
   try {

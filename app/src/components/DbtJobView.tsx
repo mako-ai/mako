@@ -3,7 +3,7 @@
  * the job edit form (commands list + schedule, pattern: ScheduleConsoleModal).
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
@@ -65,9 +65,11 @@ function presetFromCron(cron: string): SchedulePreset {
 export default function DbtJobView({
   projectId,
   jobId,
+  autoEdit,
 }: {
   projectId: string;
   jobId: string;
+  autoEdit?: boolean;
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
@@ -172,6 +174,15 @@ export default function DbtJobView({
     setFormDefer(!!job.deferToProduction);
     setEditing(true);
   }, [job]);
+
+  // For a freshly created job, drop straight into the edit form once.
+  const autoEditDone = useRef(false);
+  useEffect(() => {
+    if (autoEdit && job && !autoEditDone.current) {
+      autoEditDone.current = true;
+      beginEdit();
+    }
+  }, [autoEdit, job, beginEdit]);
 
   const previewRuns = useMemo(() => {
     if (!formScheduleEnabled || !formCron) return [];

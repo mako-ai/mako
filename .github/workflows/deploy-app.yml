@@ -204,6 +204,10 @@ jobs:
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
     steps:
       - name: Warn if branch Inngest event key is missing
         # NOTE: the `secrets` context is NOT allowed in `if:` conditionals — it
@@ -602,6 +606,10 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 
@@ -824,6 +832,10 @@ jobs:
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -975,6 +987,10 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 

@@ -17,6 +17,12 @@ import { Search as SearchIcon, X as ClearIcon } from "lucide-react";
 
 export interface ExplorerShellProps {
   title: string;
+  /**
+   * Custom header content rendered instead of the plain uppercase title (e.g.
+   * a project selector). Shown only when search is closed; `title` is still
+   * used for accessibility/fallback.
+   */
+  titleContent?: ReactNode;
   actions?: ReactNode;
   searchPlaceholder?: string;
   /**
@@ -41,6 +47,7 @@ export interface ExplorerShellProps {
 
 export default function ExplorerShell({
   title,
+  titleContent,
   actions,
   searchPlaceholder = "Search...",
   onSearchChange,
@@ -128,6 +135,10 @@ export default function ExplorerShell({
               },
             }}
           />
+        ) : titleContent ? (
+          <Box sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+            {titleContent}
+          </Box>
         ) : (
           <Box sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
             <Typography

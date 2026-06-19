@@ -9,20 +9,46 @@
  * and the retry action.
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
   Chip,
   CircularProgress,
   IconButton,
+  InputAdornment,
+  MenuItem,
+  Select,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
-import { FileCode as ModelIcon, RotateCcw as RetryIcon } from "lucide-react";
+import {
+  FileCode as ModelIcon,
+  RotateCcw as RetryIcon,
+  Download as DownloadIcon,
+  Search as SearchIcon,
+} from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { useDbtStore, type DbtRunItem } from "../store/dbtStore";
+import {
+  useDbtStore,
+  type DbtRunItem,
+  type DbtArtifactKind,
+} from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+
+const ARTIFACT_LABELS: Record<DbtArtifactKind, string> = {
+  manifest: "manifest.json",
+  catalog: "catalog.json",
+  runResults: "run_results.json",
+  sources: "sources.json",
+};
+const ARTIFACT_ORDER: DbtArtifactKind[] = [
+  "manifest",
+  "runResults",
+  "catalog",
+  "sources",
+];
 
 // Stop polling only after sustained fetch failures (~20s) so a transient blip
 // doesn't permanently freeze the detail panel on a non-terminal status.
@@ -108,12 +134,43 @@ export default function DbtRunHistory({
   const runDetails = useDbtStore(s => s.runDetails);
   const fetchRunDetails = useDbtStore(s => s.fetchRunDetails);
   const retryRun = useDbtStore(s => s.retryRun);
+  const downloadRunArtifact = useDbtStore(s => s.downloadRunArtifact);
 
   const logScrollRef = useRef<HTMLDivElement | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [logQuery, setLogQuery] = useState("");
 
   const selectedRun = selectedRunId ? runDetails[selectedRunId] : undefined;
   const selectedRunListItem = runs.find(run => run._id === selectedRunId);
   const selectedStatus = selectedRun?.status ?? selectedRunListItem?.status;
+
+  // Reset filters when switching runs.
+  useEffect(() => {
+    setStatusFilter("all");
+    setLogQuery("");
+  }, [selectedRunId]);
+
+  const stepResults = useMemo(
+    () => selectedRun?.stepResults ?? [],
+    [selectedRun?.stepResults],
+  );
+  const stepStatuses = useMemo(
+    () => Array.from(new Set(stepResults.map(s => s.status))).sort(),
+    [stepResults],
+  );
+  const filteredSteps = useMemo(
+    () =>
+      statusFilter === "all"
+        ? stepResults
+        : stepResults.filter(s => s.status === statusFilter),
+    [stepResults, statusFilter],
+  );
+  const visibleLogs = useMemo(() => {
+    const logs = selectedRun?.logs ?? [];
+    const query = logQuery.trim().toLowerCase();
+    if (!query) return logs;
+    return logs.filter(log => log.line.toLowerCase().includes(query));
+  }, [selectedRun?.logs, logQuery]);
 
   // Fetch details when selection changes; poll every 2s while running/queued.
   useEffect(() => {
@@ -304,13 +361,22 @@ export default function DbtRunHistory({
                       >
                         {relativeTime(run.createdAt)}
                       </Typography>
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ fontSize: "0.65rem" }}
-                      >
-                        {run.trigger}
-                      </Typography>
+                      {run.ci ? (
+                        <Typography
+                          variant="caption"
+                          sx={{ fontSize: "0.65rem", color: "primary.main" }}
+                        >
+                          CI · PR #{run.ci.prNumber}
+                        </Typography>
+                      ) : (
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ fontSize: "0.65rem" }}
+                        >
+                          {run.trigger}
+                        </Typography>
+                      )}
                     </Box>
                   </Box>
                 );
@@ -430,93 +496,213 @@ export default function DbtRunHistory({
                 )}
               </Box>
 
-              {/* Models table */}
-              {(selectedRun?.stepResults?.length ?? 0) > 0 && (
+              {/* Artifacts (manifest/run_results/catalog/sources). Screenshot 45. */}
+              {(() => {
+                const available = ARTIFACT_ORDER.filter(
+                  kind => selectedRun?.artifactKeys?.[kind],
+                );
+                if (available.length === 0) return null;
+                return (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.75,
+                      px: 1.5,
+                      py: 0.5,
+                      borderBottom: "1px solid",
+                      borderColor: "divider",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ fontWeight: 600 }}
+                    >
+                      Artifacts
+                    </Typography>
+                    {available.map(kind => (
+                      <Button
+                        key={kind}
+                        size="small"
+                        variant="outlined"
+                        startIcon={<DownloadIcon size={12} />}
+                        onClick={() => {
+                          if (workspaceId && selectedRunId) {
+                            void downloadRunArtifact(
+                              workspaceId,
+                              projectId,
+                              selectedRunId,
+                              kind,
+                            );
+                          }
+                        }}
+                        sx={{
+                          py: 0,
+                          minHeight: 22,
+                          fontSize: "0.68rem",
+                          textTransform: "none",
+                        }}
+                      >
+                        {ARTIFACT_LABELS[kind]}
+                      </Button>
+                    ))}
+                  </Box>
+                );
+              })()}
+
+              {/* Node results table + status filter (screenshot 46). */}
+              {stepResults.length > 0 && (
                 <Box
                   sx={{
-                    maxHeight: "40%",
-                    overflow: "auto",
+                    maxHeight: "45%",
+                    display: "flex",
+                    flexDirection: "column",
                     borderBottom: "1px solid",
                     borderColor: "divider",
                   }}
                 >
                   <Box
-                    component="table"
                     sx={{
-                      width: "100%",
-                      fontSize: "0.75rem",
-                      borderCollapse: "collapse",
-                      "& td, & th": {
-                        borderBottom: "1px solid",
-                        borderColor: "divider",
-                        p: 0.5,
-                        textAlign: "left",
-                      },
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 1,
+                      px: 1.5,
+                      py: 0.5,
                     }}
                   >
-                    <thead>
-                      <tr>
-                        <th>Node</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Time</th>
-                        <th>Rows</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedRun?.stepResults?.map(step => (
-                        <Box
-                          component="tr"
-                          key={step.uniqueId}
-                          sx={{
-                            color:
-                              step.status === "error" || step.status === "fail"
-                                ? "error.main"
-                                : step.status === "warn"
-                                  ? "warning.main"
-                                  : "inherit",
-                          }}
+                    <Select
+                      size="small"
+                      value={statusFilter}
+                      onChange={e => setStatusFilter(e.target.value)}
+                      sx={{ fontSize: "0.72rem", minHeight: 28 }}
+                    >
+                      <MenuItem value="all">
+                        All ({stepResults.length})
+                      </MenuItem>
+                      {stepStatuses.map(status => (
+                        <MenuItem
+                          key={status}
+                          value={status}
+                          sx={{ textTransform: "capitalize" }}
                         >
-                          <td>{step.name}</td>
-                          <td>{step.resourceType}</td>
-                          <td>
-                            {step.status}
-                            {step.message &&
-                            (step.status === "error" ||
-                              step.status === "fail" ||
-                              step.status === "warn" ||
-                              step.resourceType === "source")
-                              ? ` — ${step.message}`
-                              : ""}
-                          </td>
-                          <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-                          <td>{step.rowsAffected ?? ""}</td>
-                          <td>
-                            {step.resourceType === "model" && (
-                              <Tooltip title="Open model">
-                                <IconButton
-                                  size="small"
-                                  onClick={() =>
-                                    focusDbtFileTab(
-                                      projectId,
-                                      `models/${step.name}.sql`,
-                                    )
-                                  }
-                                >
-                                  <ModelIcon size={12} />
-                                </IconButton>
-                              </Tooltip>
-                            )}
-                          </td>
-                        </Box>
+                          {status} (
+                          {stepResults.filter(s => s.status === status).length})
+                        </MenuItem>
                       ))}
-                    </tbody>
+                    </Select>
+                    <Typography variant="caption" color="text.secondary">
+                      {filteredSteps.length} node
+                      {filteredSteps.length === 1 ? "" : "s"}
+                    </Typography>
+                  </Box>
+                  <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                    <Box
+                      component="table"
+                      sx={{
+                        width: "100%",
+                        fontSize: "0.75rem",
+                        borderCollapse: "collapse",
+                        "& td, & th": {
+                          borderBottom: "1px solid",
+                          borderColor: "divider",
+                          p: 0.5,
+                          textAlign: "left",
+                        },
+                      }}
+                    >
+                      <thead>
+                        <tr>
+                          <th>Node</th>
+                          <th>Type</th>
+                          <th>Status</th>
+                          <th>Time</th>
+                          <th>Rows</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredSteps.map(step => (
+                          <Box
+                            component="tr"
+                            key={step.uniqueId}
+                            sx={{
+                              color:
+                                step.status === "error" ||
+                                step.status === "fail"
+                                  ? "error.main"
+                                  : step.status === "warn"
+                                    ? "warning.main"
+                                    : "inherit",
+                            }}
+                          >
+                            <td>{step.name}</td>
+                            <td>{step.resourceType}</td>
+                            <td>
+                              {step.status}
+                              {step.message &&
+                              (step.status === "error" ||
+                                step.status === "fail" ||
+                                step.status === "warn" ||
+                                step.resourceType === "source")
+                                ? ` — ${step.message}`
+                                : ""}
+                            </td>
+                            <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
+                            <td>{step.rowsAffected ?? ""}</td>
+                            <td>
+                              {step.resourceType === "model" && (
+                                <Tooltip title="Open model">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() =>
+                                      focusDbtFileTab(
+                                        projectId,
+                                        `models/${step.name}.sql`,
+                                      )
+                                    }
+                                  >
+                                    <ModelIcon size={12} />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                            </td>
+                          </Box>
+                        ))}
+                      </tbody>
+                    </Box>
                   </Box>
                 </Box>
               )}
 
-              {/* Logs */}
+              {/* Logs + search */}
+              {(selectedRun?.logs ?? []).length > 0 && (
+                <Box
+                  sx={{
+                    px: 1.5,
+                    py: 0.5,
+                    borderBottom: "1px solid",
+                    borderColor: "divider",
+                  }}
+                >
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="Search logs…"
+                    value={logQuery}
+                    onChange={e => setLogQuery(e.target.value)}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon size={14} />
+                        </InputAdornment>
+                      ),
+                    }}
+                    sx={{ "& .MuiInputBase-input": { fontSize: "0.72rem" } }}
+                  />
+                </Box>
+              )}
               <Box
                 ref={logScrollRef}
                 sx={{
@@ -533,8 +719,12 @@ export default function DbtRunHistory({
                   <Typography variant="caption" color="text.secondary">
                     {selectedStatus === "queued" ? "Run queued…" : "No logs."}
                   </Typography>
+                ) : visibleLogs.length === 0 ? (
+                  <Typography variant="caption" color="text.secondary">
+                    No log lines match “{logQuery}”.
+                  </Typography>
                 ) : (
-                  selectedRun?.logs.map((log, index) => (
+                  visibleLogs.map((log, index) => (
                     <Box
                       key={index}
                       component="div"

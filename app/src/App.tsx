@@ -36,6 +36,7 @@ import DatabaseExplorer, {
 import ConsoleExplorer from "./components/ConsoleExplorer";
 import DataSourceExplorer from "./components/ConnectorExplorer";
 import Editor from "./components/Editor";
+import DbtProjectDrawersHost from "./components/DbtProjectDrawersHost";
 import { FlowsExplorer } from "./components/FlowsExplorer";
 import SettingsExplorer from "./components/SettingsExplorer";
 const loadDashboardsExplorer = () => import("./components/DashboardsExplorer");
@@ -594,6 +595,7 @@ function MainApp() {
           )}
         </Box>
       </Box>
+      <DbtProjectDrawersHost />
     </AuthWrapper>
   );
 }

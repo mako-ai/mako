@@ -1,0 +1,75 @@
+/**
+ * dbt RBAC policy — pure, testable access decisions for the Transforms module.
+ *
+ * Reads/lists (GET) are open to any member incl. viewer; viewers are otherwise
+ * read-only. Deployment-config mutations (project create/delete/settings, repo
+ * connect/import, repo writes, job create/edit/delete) require admin+. All
+ * other writes — files, ad-hoc compile/run, run trigger/cancel/retry, repo
+ * sync — are member+.
+ */
+
+export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
+
+/** Method + path-pattern pairs that require the admin or owner role. */
+export const DBT_ADMIN_ONLY: Array<{ method: string; pattern: RegExp }> = [
+  { method: "POST", pattern: /\/dbt\/projects$/ },
+  { method: "POST", pattern: /\/dbt\/projects\/import-github$/ },
+  { method: "PATCH", pattern: /\/dbt\/projects\/[^/]+$/ },
+  { method: "DELETE", pattern: /\/dbt\/projects\/[^/]+$/ },
+  { method: "POST", pattern: /\/dbt\/projects\/[^/]+\/jobs$/ },
+  { method: "PATCH", pattern: /\/dbt\/projects\/[^/]+\/jobs\/[^/]+$/ },
+  { method: "DELETE", pattern: /\/dbt\/projects\/[^/]+\/jobs\/[^/]+$/ },
+  {
+    method: "POST",
+    pattern:
+      /\/dbt\/projects\/[^/]+\/git\/(commit|branch|switch-branch|pull-request)$/,
+  },
+];
+
+export interface DbtAccessDecision {
+  ok: boolean;
+  /** HTTP status to respond with when `ok` is false. */
+  status?: 403;
+  error?: string;
+}
+
+const ALLOW: DbtAccessDecision = { ok: true };
+
+/**
+ * Decide whether a caller with `role` may perform `method` on `path`.
+ * Pure: no Hono/context coupling so it can be unit-tested directly.
+ */
+export function resolveDbtAccess(input: {
+  method: string;
+  path: string;
+  role: string | undefined;
+}): DbtAccessDecision {
+  const { method, path, role } = input;
+
+  // Reads are open to any member (incl. viewer).
+  if (method === "GET") return ALLOW;
+
+  if (!role) {
+    return { ok: false, status: 403, error: "Workspace role not determined" };
+  }
+  if (role === "viewer") {
+    return {
+      ok: false,
+      status: 403,
+      error: "Viewers have read-only access to Transforms",
+    };
+  }
+
+  const adminOnly = DBT_ADMIN_ONLY.some(
+    rule => rule.method === method && rule.pattern.test(path),
+  );
+  if (adminOnly && role !== "owner" && role !== "admin") {
+    return {
+      ok: false,
+      status: 403,
+      error: "This action requires the admin or owner workspace role",
+    };
+  }
+
+  return ALLOW;
+}

@@ -3998,6 +3998,32 @@ export interface IDbtEnvironment {
   vars?: Record<string, unknown>;
 }
 
+/**
+ * Optional binding of a dbt project to a Git repository. When present, the
+ * project's files are imported/synced from this repo. Mongo (DbtFile) stays
+ * the canonical source the runner materializes from; this binding records
+ * where those files came from and lets us sync/commit against the remote.
+ */
+export interface IDbtRepoBinding {
+  provider: "github";
+  /** GitHub App installation id granting access to the repo (omit for public). */
+  installationId?: number;
+  /** Repo owner (org or user login). */
+  owner: string;
+  /** Repo name. */
+  repo: string;
+  /** Branch tracked for import/sync, e.g. "main". */
+  branch: string;
+  /**
+   * Optional sub-directory inside the repo holding the dbt project (when
+   * dbt_project.yml is not at the repo root). POSIX, no leading/trailing slash.
+   */
+  subdirectory?: string;
+  /** Commit SHA of the last successful import/sync. */
+  lastSyncedSha?: string;
+  lastSyncedAt?: Date;
+}
+
 export interface IDbtProject extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
@@ -4011,6 +4037,21 @@ export interface IDbtProject extends Document {
    * the state artifact for --defer / state:modified+ (Slim CI, later phase).
    */
   lastProdManifestKey?: string;
+  /** Git repository this project is imported/synced from (optional). */
+  repo?: IDbtRepoBinding;
+  /**
+   * Pull-request CI config. When enabled, an opened/updated PR from the
+   * tracked branch triggers `dbt build --select state:modified+` (deferring to
+   * the prod manifest) and posts a GitHub commit status — like a dbt Cloud CI
+   * job. Off by default so connecting a repo never silently runs warehouse jobs.
+   */
+  ci?: {
+    enabled: boolean;
+    /** Environment (schema/connection) CI builds run against. */
+    environment?: string;
+    /** Defer unselected refs to the last prod manifest (Slim CI). Default true. */
+    deferToProduction?: boolean;
+  };
   createdBy: string;
   createdAt: Date;
   updatedAt: Date;
@@ -4031,6 +4072,20 @@ const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
   { _id: false },
 );
 
+const DbtRepoBindingSchema = new Schema<IDbtRepoBinding>(
+  {
+    provider: { type: String, enum: ["github"], default: "github" },
+    installationId: { type: Number },
+    owner: { type: String, required: true, trim: true },
+    repo: { type: String, required: true, trim: true },
+    branch: { type: String, required: true, trim: true, default: "main" },
+    subdirectory: { type: String, trim: true },
+    lastSyncedSha: { type: String },
+    lastSyncedAt: { type: Date },
+  },
+  { _id: false },
+);
+
 const DbtProjectSchema = new Schema<IDbtProject>(
   {
     workspaceId: {
@@ -4043,6 +4098,18 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     environments: { type: [DbtEnvironmentSchema], default: [] },
     defaultEnvironment: { type: String, default: "dev" },
     lastProdManifestKey: { type: String },
+    repo: { type: DbtRepoBindingSchema },
+    ci: {
+      type: new Schema(
+        {
+          enabled: { type: Boolean, default: false },
+          environment: { type: String },
+          deferToProduction: { type: Boolean, default: true },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     createdBy: { type: String, required: true },
   },
   { collection: "dbt_projects", timestamps: true },
@@ -4065,6 +4132,12 @@ export interface IDbtFile extends Document {
   content: string;
   updatedBy: string;
   is_deleted: boolean;
+  /**
+   * Git blob SHA of this file at the last import/sync/push. Lets us compute
+   * the working-tree status (added/modified/deleted) against the repo without
+   * re-fetching: compare this to the blob SHA of the current content.
+   */
+  repoBlobSha?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4085,6 +4158,7 @@ const DbtFileSchema = new Schema<IDbtFile>(
     content: { type: String, default: "" },
     updatedBy: { type: String, required: true },
     is_deleted: { type: Boolean, default: false },
+    repoBlobSha: { type: String },
   },
   { collection: "dbt_files", timestamps: true },
 );
@@ -4093,6 +4167,61 @@ DbtFileSchema.index({ projectId: 1, path: 1 }, { unique: true });
 DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
 
 export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
+
+/**
+ * GitHub App installation linked to a workspace. We never persist installation
+ * access tokens (they expire hourly and are minted on demand from the App's
+ * private key); this record just maps a workspace to the installation id and
+ * the account it was installed on so we can list repos and sync dbt projects.
+ */
+export interface IGitHubInstallation extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  /** GitHub App installation id (from install callback / webhook). */
+  installationId: number;
+  /** Login of the org/user the app is installed on. */
+  accountLogin: string;
+  accountType: "Organization" | "User";
+  /** Whether the app can access all repos or a selected subset. */
+  repositorySelection: "all" | "selected";
+  createdBy: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const GitHubInstallationSchema = new Schema<IGitHubInstallation>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    installationId: { type: Number, required: true },
+    accountLogin: { type: String, required: true, trim: true },
+    accountType: {
+      type: String,
+      enum: ["Organization", "User"],
+      default: "Organization",
+    },
+    repositorySelection: {
+      type: String,
+      enum: ["all", "selected"],
+      default: "all",
+    },
+    createdBy: { type: String, required: true },
+  },
+  { collection: "github_installations", timestamps: true },
+);
+
+GitHubInstallationSchema.index(
+  { workspaceId: 1, installationId: 1 },
+  { unique: true },
+);
+
+export const GitHubInstallation = mongoose.model<IGitHubInstallation>(
+  "GitHubInstallation",
+  GitHubInstallationSchema,
+);
 
 export interface IDbtJob extends Document {
   _id: Types.ObjectId;
@@ -4196,9 +4325,22 @@ export interface IDbtRun extends Document {
   environment: string;
   commands: string[];
   status: DbtRunStatus;
-  trigger: "schedule" | "manual" | "agent";
-  /** User id for manual triggers, "scheduler" / "agent" otherwise. */
+  trigger: "schedule" | "manual" | "agent" | "ci";
+  /** User id for manual triggers, "scheduler" / "agent" / "ci-webhook". */
   triggeredBy: string;
+  /**
+   * Pull-request CI context (trigger === "ci"). Drives the GitHub commit
+   * status posted back to the PR head on completion.
+   */
+  ci?: {
+    prNumber: number;
+    headSha: string;
+    headRef: string;
+    baseRef: string;
+    owner: string;
+    repo: string;
+    installationId?: number;
+  };
   startedAt?: Date;
   completedAt?: Date;
   durationMs?: number;
@@ -4251,10 +4393,25 @@ const DbtRunSchema = new Schema<IDbtRun>(
     },
     trigger: {
       type: String,
-      enum: ["schedule", "manual", "agent"],
+      enum: ["schedule", "manual", "agent", "ci"],
       required: true,
     },
     triggeredBy: { type: String, required: true },
+    ci: {
+      type: new Schema(
+        {
+          prNumber: { type: Number, required: true },
+          headSha: { type: String, required: true },
+          headRef: { type: String, required: true },
+          baseRef: { type: String, required: true },
+          owner: { type: String, required: true },
+          repo: { type: String, required: true },
+          installationId: { type: Number },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     startedAt: { type: Date },
     completedAt: { type: Date },
     durationMs: { type: Number },

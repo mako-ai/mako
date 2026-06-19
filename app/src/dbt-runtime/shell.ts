@@ -30,12 +30,16 @@ export function focusDbtFileTab(projectId: string, path: string): string {
 
   const tabId =
     existingTab?.id ??
-    consoleStore.openTab({
-      title: basename(path),
-      content: "",
-      kind: "dbt-file",
-      metadata: { projectId, path },
-    });
+    consoleStore.openTab(
+      {
+        title: basename(path),
+        content: "",
+        kind: "dbt-file",
+        metadata: { projectId, path },
+      },
+      // Each file opens its own tab instead of replacing a pristine one.
+      { replacePristine: false },
+    );
 
   consoleStore.setActiveTab(tabId);
   return tabId;
@@ -51,12 +55,15 @@ export function focusDbtConsoleTab(projectId: string, title: string): string {
 
   const tabId =
     existingTab?.id ??
-    consoleStore.openTab({
-      title,
-      content: "",
-      kind: "dbt-console",
-      metadata: { projectId },
-    });
+    consoleStore.openTab(
+      {
+        title,
+        content: "",
+        kind: "dbt-console",
+        metadata: { projectId },
+      },
+      { replacePristine: false },
+    );
 
   consoleStore.setActiveTab(tabId);
   return tabId;
@@ -80,12 +87,15 @@ export function focusDbtRunsTab(
 
   const tabId =
     existingTab?.id ??
-    consoleStore.openTab({
-      title,
-      content: "",
-      kind: "dbt-runs",
-      metadata: { projectId, focusRunId: runId },
-    });
+    consoleStore.openTab(
+      {
+        title,
+        content: "",
+        kind: "dbt-runs",
+        metadata: { projectId, focusRunId: runId },
+      },
+      { replacePristine: false },
+    );
 
   // If re-focusing an existing tab with a new target run, update the metadata
   // so DbtRunsView can react and select it. updateMetadata replaces the whole
@@ -98,11 +108,16 @@ export function focusDbtRunsTab(
   return tabId;
 }
 
-/** Open (or focus) the job view tab (run history + edit) for a dbt job. */
+/**
+ * Open (or focus) the job view tab (run history + edit) for a dbt job. Pass
+ * `autoEdit` for a freshly created job so it opens straight into the edit form
+ * (mirrors dbt Cloud's "create job" flow).
+ */
 export function focusDbtJobTab(
   projectId: string,
   jobId: string,
   title: string,
+  autoEdit?: boolean,
 ): string {
   const consoleStore = useConsoleStore.getState();
   const existingTab = Object.values(consoleStore.tabs).find(
@@ -117,12 +132,15 @@ export function focusDbtJobTab(
 
   const tabId =
     existingTab?.id ??
-    consoleStore.openTab({
-      title,
-      content: "",
-      kind: "dbt-job",
-      metadata: { projectId, jobId },
-    });
+    consoleStore.openTab(
+      {
+        title,
+        content: "",
+        kind: "dbt-job",
+        metadata: { projectId, jobId, autoEdit },
+      },
+      { replacePristine: false },
+    );
 
   consoleStore.setActiveTab(tabId);
   return tabId;
