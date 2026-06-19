@@ -69,7 +69,13 @@ export function isStaleQueued(
  */
 export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
   run: T,
+  opts: { persist?: boolean } = {},
 ): Promise<T> {
+  // `persist: false` makes this a read-only projection for GET responses — it
+  // computes the terminal status to display but performs no write. Mutating on
+  // a read path is surprising and means read-only viewers would trigger writes;
+  // the cron sweeper is the single writer for stale runs.
+  const persist = opts.persist ?? true;
   if (!isStaleQueued(run)) return run;
   // Scheduled job runs are the cron sweeper's responsibility (+ stat mirroring).
   if (run.jobId) return run;
@@ -88,6 +94,10 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
     `Run timed out in "queued" after ${Math.round(QUEUE_TIMEOUT_MS / 1000)}s — ` +
     `the dbt worker never picked it up. The Inngest worker may be unavailable, ` +
     `or "dbt/run.requested" events are not being routed to this environment.`;
+
+  if (!persist) {
+    return { ...run, status: "error", error, completedAt } as T;
+  }
 
   const res = await DbtRun.updateOne(
     { _id: run._id, status: "queued" },
@@ -108,9 +118,12 @@ export async function reconcileStaleQueuedRun<T extends ReconcilableRun>(
 /** Batch variant — only touches the DB for runs that are actually stale. */
 export async function reconcileStaleQueuedRuns<T extends ReconcilableRun>(
   runs: T[],
+  opts: { persist?: boolean } = {},
 ): Promise<T[]> {
   return Promise.all(
-    runs.map(run => (isStaleQueued(run) ? reconcileStaleQueuedRun(run) : run)),
+    runs.map(run =>
+      isStaleQueued(run) ? reconcileStaleQueuedRun(run, opts) : run,
+    ),
   );
 }
 
@@ -288,6 +301,11 @@ export async function requestDbtRunCancel(params: {
     workspaceId: new Types.ObjectId(params.workspaceId),
   });
   if (!run) return false;
+  // Only active runs can be cancelled; terminal runs (success/error/cancelled)
+  // are a no-op. The boolean return means "cancellation was initiated", which
+  // is true for both branches below (a queued run finalized here, or a running
+  // run signaled via cancelOn) — including the queued→running race, where the
+  // guarded update no-ops but the executor still honors the cancel event.
   if (run.status !== "queued" && run.status !== "running") return false;
 
   // cancelOn match in the executor; queued runs are finalized directly since

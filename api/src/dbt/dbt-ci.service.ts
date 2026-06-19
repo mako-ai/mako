@@ -25,17 +25,28 @@ const logger = loggers.api("dbt-ci");
 
 const CI_STATUS_CONTEXT = "mako/ci";
 
-/** Find repo-bound projects matching an (owner, repo), optionally a branch. */
+/**
+ * Find repo-bound projects matching an (owner, repo), optionally a branch.
+ *
+ * SECURITY: when the delivering installation id is known (webhook payloads
+ * carry it), we scope to projects bound to that SAME installation. An org has a
+ * single App installation, so this still matches every workspace that
+ * legitimately connected the repo, while refusing to drive a project that was
+ * bound to a *different* installation — so a stray/foreign binding can't be
+ * actioned by an unrelated installation's webhook.
+ */
 async function findProjectsForRepo(
   owner: string,
   repo: string,
   branch?: string,
+  installationId?: number,
 ): Promise<IDbtProject[]> {
   const query: Record<string, unknown> = {
     "repo.owner": owner,
     "repo.repo": repo,
   };
   if (branch) query["repo.branch"] = branch;
+  if (installationId) query["repo.installationId"] = installationId;
   return DbtProject.find(query);
 }
 
@@ -47,11 +58,13 @@ export async function handlePushEvent(params: {
   owner: string;
   repo: string;
   branch: string;
+  installationId?: number;
 }): Promise<{ synced: number }> {
   const projects = await findProjectsForRepo(
     params.owner,
     params.repo,
     params.branch,
+    params.installationId,
   );
   let synced = 0;
   for (const project of projects) {
@@ -120,7 +133,12 @@ export async function handlePullRequestEvent(
 ): Promise<{ triggered: number }> {
   if (!CI_ACTIONS.has(pr.action)) return { triggered: 0 };
 
-  const projects = await findProjectsForRepo(pr.owner, pr.repo, pr.headRef);
+  const projects = await findProjectsForRepo(
+    pr.owner,
+    pr.repo,
+    pr.headRef,
+    pr.installationId,
+  );
   let triggered = 0;
 
   for (const project of projects) {

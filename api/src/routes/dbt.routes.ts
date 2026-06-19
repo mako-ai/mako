@@ -1362,9 +1362,10 @@ dbtRoutes.get("/projects/:projectId/runs", async (c: AuthenticatedContext) => {
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
-    // Finalize any run stuck in "queued" past the worker-pickup deadline so the
-    // history never shows a perpetually-queued run.
-    const reconciled = await reconcileStaleQueuedRuns(runs);
+    // Present any run stuck in "queued" past the worker-pickup deadline as
+    // errored so history never shows a perpetually-queued run. Read-only on
+    // this GET path (persist: false) — the cron sweeper is the single writer.
+    const reconciled = await reconcileStaleQueuedRuns(runs, { persist: false });
     return c.json({ success: true, runs: reconciled });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt runs");
@@ -1390,9 +1391,10 @@ dbtRoutes.get(
       if (!found) {
         return c.json({ success: false, error: "Run not found" }, 404);
       }
-      // Finalize a stuck-queued run before returning so the poller (DbtRunCard /
-      // Runs view) sees a terminal error instead of spinning on "queued".
-      const run = await reconcileStaleQueuedRun(found);
+      // Present a stuck-queued run as errored so the poller (DbtRunCard / Runs
+      // view) sees a terminal status instead of spinning on "queued". Read-only
+      // on this GET path (persist: false) — the cron sweeper is the writer.
+      const run = await reconcileStaleQueuedRun(found, { persist: false });
       // logsSince = number of log lines the client already has (cursor).
       const logsSince = Number(c.req.query("logsSince")) || 0;
       const logs = run.logs ?? [];

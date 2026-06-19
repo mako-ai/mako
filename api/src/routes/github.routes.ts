@@ -62,6 +62,7 @@ interface PushPayload {
   ref?: string;
   after?: string;
   repository?: { name?: string; owner?: { login?: string } };
+  installation?: { id?: number };
 }
 
 interface PullRequestPayload {
@@ -121,6 +122,7 @@ githubRoutes.post("/webhook", async (c: Context) => {
             owner,
             repo: name,
             branch: ref.slice("refs/heads/".length),
+            installationId: p.installation?.id,
           });
         }
       } else if (event === "pull_request") {

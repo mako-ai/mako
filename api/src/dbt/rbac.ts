@@ -10,6 +10,17 @@
 
 export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
 
+/**
+ * GET routes that discover GitHub data (private repo/branch names an
+ * installation can access). These are not plain reads of workspace data, so
+ * they require at least member access — viewers are excluded.
+ */
+export const DBT_MEMBER_ONLY_GET: RegExp[] = [
+  /\/dbt\/github\/repos$/,
+  /\/dbt\/github\/branches$/,
+  /\/dbt\/github\/repo-check$/,
+];
+
 /** Method + path-pattern pairs that require the admin or owner role. */
 export const DBT_ADMIN_ONLY: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /\/dbt\/projects$/ },
@@ -46,8 +57,20 @@ export function resolveDbtAccess(input: {
 }): DbtAccessDecision {
   const { method, path, role } = input;
 
-  // Reads are open to any member (incl. viewer).
-  if (method === "GET") return ALLOW;
+  // Reads are open to any member (incl. viewer) — except GitHub discovery
+  // routes, which expose private repo/branch names and require member+.
+  if (method === "GET") {
+    if (DBT_MEMBER_ONLY_GET.some(pattern => pattern.test(path))) {
+      if (!role || role === "viewer") {
+        return {
+          ok: false,
+          status: 403,
+          error: "Connecting GitHub requires at least member workspace access",
+        };
+      }
+    }
+    return ALLOW;
+  }
 
   if (!role) {
     return { ok: false, status: 403, error: "Workspace role not determined" };

@@ -510,6 +510,15 @@ function errMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+/**
+ * Encode a dbt file path for use in a URL while preserving the "/" separators.
+ * `encodeURI` leaves `#`, `?`, `&`, `+` unescaped, which would corrupt the
+ * request for paths containing those characters — so encode each segment.
+ */
+function encodeDbtPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 export const useDbtStore = create<DbtStore>()(
   immer((set, get) => ({
     ...initialState,
@@ -917,7 +926,7 @@ export const useDbtStore = create<DbtStore>()(
           success: boolean;
           file: { path: string; content: string };
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeURI(path)}`,
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         const content = response.file?.content ?? "";
         set(state => {
@@ -965,7 +974,7 @@ export const useDbtStore = create<DbtStore>()(
       if (!file) return false;
       try {
         await apiClient.put(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeURI(path)}`,
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
           { content: file.content },
         );
         set(state => {
@@ -992,7 +1001,7 @@ export const useDbtStore = create<DbtStore>()(
     deleteFile: async (workspaceId, projectId, path) => {
       try {
         await apiClient.delete(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeURI(path)}`,
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         set(state => {
           delete state.filesByProject[projectId]?.[path];
@@ -1191,14 +1200,16 @@ export const useDbtStore = create<DbtStore>()(
           { logsSince: String(cursor) },
         );
         const run = response.run;
-        let merged: DbtRunDetails | null = null;
+        // Build the merged value as a plain object OUTSIDE the producer: a
+        // reference captured from inside `set` is an immer draft that gets
+        // revoked once produce() finalizes, so reading it later throws.
+        const previous = get().runDetails[runId];
+        const logs = previous
+          ? [...previous.logs, ...(run.logs ?? [])]
+          : (run.logs ?? []);
+        const merged: DbtRunDetails = { ...run, logs };
         set(state => {
-          const previous = state.runDetails[runId];
-          const logs = previous
-            ? [...previous.logs, ...(run.logs ?? [])]
-            : (run.logs ?? []);
-          state.runDetails[runId] = { ...run, logs };
-          merged = state.runDetails[runId];
+          state.runDetails[runId] = merged;
           // Keep the run list row in sync (status/duration changes).
           const runs = state.runsByProject[projectId];
           if (runs) {

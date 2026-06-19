@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DBT_ADMIN_ONLY, resolveDbtAccess } from "./rbac";
+import { DBT_ADMIN_ONLY, DBT_MEMBER_ONLY_GET, resolveDbtAccess } from "./rbac";
 
 const WS = "/api/workspaces/64b000000000000000000001/dbt";
 
@@ -98,7 +98,45 @@ describe("resolveDbtAccess", () => {
     ).toBe(true);
   });
 
-  it("exposes a non-empty admin-only policy table", () => {
+  describe("member-only GitHub discovery GETs", () => {
+    const githubGets = [
+      `${WS}/github/repos`,
+      `${WS}/github/branches`,
+      `${WS}/github/repo-check`,
+    ];
+
+    it.each(githubGets)("blocks viewer + undetermined on GET %s", path => {
+      expect(resolveDbtAccess({ method: "GET", path, role: "viewer" }).ok).toBe(
+        false,
+      );
+      expect(
+        resolveDbtAccess({ method: "GET", path, role: undefined }).ok,
+      ).toBe(false);
+      for (const role of ["member", "admin", "owner"]) {
+        expect(resolveDbtAccess({ method: "GET", path, role }).ok).toBe(true);
+      }
+    });
+
+    it("still allows viewers to GET ordinary reads", () => {
+      expect(
+        resolveDbtAccess({
+          method: "GET",
+          path: `${WS}/github/install-url`,
+          role: "viewer",
+        }).ok,
+      ).toBe(true);
+      expect(
+        resolveDbtAccess({
+          method: "GET",
+          path: `${WS}/projects`,
+          role: "viewer",
+        }).ok,
+      ).toBe(true);
+    });
+  });
+
+  it("exposes non-empty policy tables", () => {
     expect(DBT_ADMIN_ONLY.length).toBeGreaterThan(0);
+    expect(DBT_MEMBER_ONLY_GET.length).toBeGreaterThan(0);
   });
 });
