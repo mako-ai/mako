@@ -40,6 +40,13 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    Bindings run server-side and are workspace-scoped — never put credentials or raw
    connection strings in app code.
 
+   **Deleting bindings:** to remove an orphaned or superseded binding, call
+   `app_delete_data_binding` with its `name`. It removes the binding from the app
+   definition and persists the change; the returned `remaining` list (and a fresh
+   `list_data_sources`) confirms it is actually gone. Do NOT use `app_delete_file`
+   for bindings — bindings are not files, and that call will no-op and falsely
+   report success.
+
    **Materialized bindings (DuckDB):** set `materialization: "parquet"` to materialize
    the query into a Parquet artifact (same pipeline as dashboards) that is loaded into
    DuckDB-WASM in the browser. After creating/editing a parquet binding, call

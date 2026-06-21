@@ -108,18 +108,6 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Executing console query",
     icon: "play",
   },
-  check_query_status: {
-    domain: "console",
-    execution: "server",
-    getLabel: () => "Checking query status",
-    icon: "clock",
-  },
-  cancel_query: {
-    domain: "console",
-    execution: "server",
-    getLabel: () => "Cancelling query",
-    icon: "trash",
-  },
   sql_execute_query: {
     domain: "database",
     execution: "server",
@@ -504,6 +492,16 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "database",
     preview: { field: "code", language: "sql" },
+  },
+  app_delete_data_binding: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Deleting data binding "${name}"` : "Deleting data binding";
+    },
+    icon: "trash",
   },
   materialize_binding: {
     domain: "app",

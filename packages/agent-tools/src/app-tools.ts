@@ -78,6 +78,13 @@ const createDataBindingSchema = z.object({
     ),
 });
 
+const deleteDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe("Name of the data binding to delete (from list_data_sources)"),
+});
+
 const materializeBindingSchema = z.object({
   appId: appIdField,
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
@@ -164,6 +171,14 @@ export const clientAppTools = {
       "'parquet' for DuckDB-WASM-backed analytics (then call materialize_binding). " +
       "Use the SQL connections/tools to inspect schema and validate the query first.",
     inputSchema: createDataBindingSchema,
+  }),
+  app_delete_data_binding: tool({
+    description:
+      "Delete a named data binding (data source) from the app. Use this to " +
+      "clean up orphaned or superseded bindings. Removes the binding from the " +
+      "app definition and persists the change. Confirm the binding name with " +
+      "list_data_sources first; the change is reflected there afterward.",
+    inputSchema: deleteDataBindingSchema,
   }),
   materialize_binding: tool({
     description:
