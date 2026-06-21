@@ -171,6 +171,13 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_show",
   "dbt_create_job",
   "dbt_update_job",
+  // Git: commit/push edits to the connected repo (only when the user asks).
+  "dbt_git_status",
+  "dbt_commit_and_push",
+  "dbt_create_branch",
+  "dbt_switch_branch",
+  "dbt_list_branches",
+  "dbt_open_pull_request",
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",
