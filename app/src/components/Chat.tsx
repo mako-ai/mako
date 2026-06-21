@@ -1762,6 +1762,22 @@ const MOBILE_ASK_SUGGESTIONS = [
   "Summarize my data with a chart",
 ];
 
+// Claude-style floating round button used in the mobile pane headers. Each
+// control carries its own paper fill + blur + hairline so it reads as floating
+// chrome over the content rather than sitting in a solid app bar.
+const MOBILE_FLOAT_BTN_SX = {
+  width: 38,
+  height: 38,
+  borderRadius: "50%",
+  color: "text.secondary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
 const Chat: React.FC<ChatProps> = ({
   dbFlowFormRef,
   onChartSpecChangeRef,
@@ -3567,13 +3583,15 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Header with history and new chat */}
+      {/* Header with history and new chat. On mobile this is Claude-style
+          floating chrome: a transparent strip with round buttons (hamburger
+          left, actions right). Desktop keeps the bordered title bar. */}
       <Box
         sx={{
           px: 1,
-          py: 0.25,
-          minHeight: 37,
-          borderBottom: 1,
+          py: isMobile ? 0.75 : 0.25,
+          minHeight: isMobile ? 52 : 37,
+          borderBottom: isMobile ? 0 : 1,
           borderColor: "divider",
         }}
       >
@@ -3595,39 +3613,46 @@ const Chat: React.FC<ChatProps> = ({
               gap: 1,
             }}
           >
-            {isMobile && (
+            {isMobile ? (
               <Tooltip title="Open explorer">
                 <IconButton
-                  size="small"
-                  edge="start"
                   aria-label="Open explorer"
                   onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={MOBILE_FLOAT_BTN_SX}
                 >
                   <MenuIcon size={20} />
                 </IconButton>
               </Tooltip>
+            ) : (
+              <Typography
+                variant="h6"
+                sx={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Chat
+              </Typography>
             )}
-            <Typography
-              variant="h6"
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              Chat
-            </Typography>
           </Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: isMobile ? 1 : 0.5,
+            }}
+          >
             <Tooltip
               title={copiedChat ? "Copied!" : "Copy chat history as JSON"}
             >
               <span>
                 <IconButton
-                  size="small"
+                  size={isMobile ? "medium" : "small"}
                   aria-label="Copy chat history as JSON"
                   onClick={handleCopyChatHistory}
                   disabled={messages.length === 0}
+                  sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
                 >
                   {copiedChat ? <Check size={20} /> : <Copy size={20} />}
                 </IconButton>
@@ -3635,18 +3660,20 @@ const Chat: React.FC<ChatProps> = ({
             </Tooltip>
             <Tooltip title="New chat">
               <IconButton
-                size="small"
+                size={isMobile ? "medium" : "small"}
                 aria-label="New chat"
                 onClick={createNewSession}
+                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
               >
                 <Plus size={20} />
               </IconButton>
             </Tooltip>
             <Tooltip title="Chat history">
               <IconButton
-                size="small"
+                size={isMobile ? "medium" : "small"}
                 aria-label="Chat history"
                 onClick={handleHistoryMenuOpen}
+                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
               >
                 <History size={20} />
               </IconButton>

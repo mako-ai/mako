@@ -34,6 +34,11 @@ import {
   Alert,
   Snackbar,
   Tooltip,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Divider,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import {
@@ -50,6 +55,9 @@ import {
   Table as TableDataIcon,
   ClipboardList as PlanIcon,
   Menu as MenuIcon,
+  ChevronDown as ChevronDownIcon,
+  Plus as PlusIcon,
+  X as CloseTabIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -291,6 +299,40 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
   );
 }
 
+// Claude-style floating round button for the mobile editor header — paper fill,
+// blur and a hairline so it reads as floating chrome over the editor content.
+const MOBILE_FLOAT_BTN_SX = {
+  width: 38,
+  height: 38,
+  flexShrink: 0,
+  borderRadius: "50%",
+  color: "text.secondary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
+// Centered "current window" pill that opens the open-tabs switcher menu.
+const MOBILE_WINDOW_PILL_SX = {
+  flex: 1,
+  minWidth: 0,
+  maxWidth: 260,
+  height: 38,
+  px: 1.5,
+  textTransform: "none",
+  borderRadius: 999,
+  color: "text.primary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
 function Editor({
   dbFlowFormRef,
   onChartSpecChangeRef,
@@ -346,6 +388,9 @@ function Editor({
     {},
   );
   const [isSaving, setIsSaving] = useState(false);
+  const [windowMenuAnchor, setWindowMenuAnchor] = useState<null | HTMLElement>(
+    null,
+  );
   const [errorModalOpen, setErrorModalOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [errorPreviewRetry, setErrorPreviewRetry] = useState<{
@@ -2049,191 +2094,296 @@ function Editor({
             flexDirection: "column",
           }}
         >
-          {/* Tabs */}
-          <Box
-            sx={{
-              display: "flex",
-              alignItems: "center",
-              minHeight: 36,
-              borderBottom: 1,
-              borderColor: "divider",
-            }}
-          >
-            {isMobile && (
+          {/* Tab bar (desktop) / Claude-style floating window switcher
+              (mobile): round hamburger + center window pill + new-console. */}
+          {isMobile ? (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 1,
+                px: 1,
+                py: 0.75,
+                minHeight: 52,
+              }}
+            >
               <Tooltip title="Open explorer">
                 <IconButton
-                  size="small"
                   aria-label="Open explorer"
                   onClick={() => useUIStore.getState().openMobileDrawer()}
-                  sx={{ ml: 0.5, mr: 0.25, flexShrink: 0 }}
+                  sx={MOBILE_FLOAT_BTN_SX}
                 >
                   <MenuIcon size={20} />
                 </IconButton>
               </Tooltip>
-            )}
-            <DndContext
-              sensors={dndSensors}
-              collisionDetection={closestCenter}
-              modifiers={[restrictToHorizontalAxis]}
-              onDragEnd={handleTabDragEnd}
-            >
-              <SortableContext
-                items={sortableTabIds}
-                strategy={horizontalListSortingStrategy}
+              <Button
+                aria-label="Switch window"
+                onClick={e => setWindowMenuAnchor(e.currentTarget)}
+                endIcon={<ChevronDownIcon size={16} />}
+                sx={MOBILE_WINDOW_PILL_SX}
               >
-                <Tabs
-                  value={activeConsoleId}
-                  onChange={handleTabChange}
-                  variant="scrollable"
-                  scrollButtons={false}
+                <Box
+                  component="span"
                   sx={{
-                    minHeight: 36,
-                    "& .MuiTabs-indicator": { height: 2 },
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {consoleTabs.map((tab, index) => {
-                    const isActiveTab = activeConsoleId === tab.id;
-                    const connectionIconUrl = tab.connectionId
-                      ? connectionIconById.get(tab.connectionId)
-                      : undefined;
-                    const nextTab = consoleTabs[index + 1];
-                    const isLastTab = index === consoleTabs.length - 1;
-                    // Cursor-style separator: thin vertical rule on the trailing
-                    // edge of every tab, hidden when this tab or the next one is
-                    // active, and hidden on the very last tab.
-                    const showSeparator =
-                      !isActiveTab &&
-                      !isLastTab &&
-                      nextTab?.id !== activeConsoleId;
-                    return (
-                      <SortableConsoleTab
-                        key={tab.id}
-                        value={tab.id}
-                        sx={{
-                          minHeight: 36,
-                          py: 0.25,
-                          px: 1.25,
-                          textTransform: "none",
-                          position: "relative",
-                          "& .tab-close-btn": {
-                            visibility: isActiveTab ? "visible" : "hidden",
-                          },
-                          "&:hover .tab-close-btn": {
-                            visibility: "visible",
-                          },
-                          "&::after": showSeparator
-                            ? {
-                                content: '""',
-                                position: "absolute",
-                                right: 0,
-                                top: 0,
-                                bottom: 0,
-                                width: "1px",
-                                backgroundColor: "divider",
-                                pointerEvents: "none",
-                              }
-                            : {},
-                        }}
-                        label={
-                          <Box
-                            sx={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 0.5,
-                              minWidth: 0,
-                              maxWidth: "100%",
-                            }}
-                          >
-                            {tab.icon ? (
-                              <Box
-                                component="img"
-                                src={tab.icon}
-                                alt="tab icon"
-                                sx={{ width: 18, height: 18 }}
-                              />
-                            ) : tab.kind === "settings" ? (
-                              <SettingsIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "connectors" ? (
-                              <DataSourceIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "flow-editor" ? (
-                              tab.metadata?.flowType === "webhook" ? (
-                                <WebhookIcon size={18} strokeWidth={1.5} />
-                              ) : tab.metadata?.enabled === false ? (
-                                <PauseIcon size={18} strokeWidth={1.5} />
+                  {(activeConsoleId && tabs[activeConsoleId]?.title) ||
+                    "Console"}
+                </Box>
+              </Button>
+              <Tooltip title="New console">
+                <IconButton
+                  aria-label="New console"
+                  onClick={() => openTab({ title: "New Console", content: "" })}
+                  sx={MOBILE_FLOAT_BTN_SX}
+                >
+                  <PlusIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          ) : (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                minHeight: 36,
+                borderBottom: 1,
+                borderColor: "divider",
+              }}
+            >
+              <DndContext
+                sensors={dndSensors}
+                collisionDetection={closestCenter}
+                modifiers={[restrictToHorizontalAxis]}
+                onDragEnd={handleTabDragEnd}
+              >
+                <SortableContext
+                  items={sortableTabIds}
+                  strategy={horizontalListSortingStrategy}
+                >
+                  <Tabs
+                    value={activeConsoleId}
+                    onChange={handleTabChange}
+                    variant="scrollable"
+                    scrollButtons={false}
+                    sx={{
+                      minHeight: 36,
+                      "& .MuiTabs-indicator": { height: 2 },
+                    }}
+                  >
+                    {consoleTabs.map((tab, index) => {
+                      const isActiveTab = activeConsoleId === tab.id;
+                      const connectionIconUrl = tab.connectionId
+                        ? connectionIconById.get(tab.connectionId)
+                        : undefined;
+                      const nextTab = consoleTabs[index + 1];
+                      const isLastTab = index === consoleTabs.length - 1;
+                      // Cursor-style separator: thin vertical rule on the trailing
+                      // edge of every tab, hidden when this tab or the next one is
+                      // active, and hidden on the very last tab.
+                      const showSeparator =
+                        !isActiveTab &&
+                        !isLastTab &&
+                        nextTab?.id !== activeConsoleId;
+                      return (
+                        <SortableConsoleTab
+                          key={tab.id}
+                          value={tab.id}
+                          sx={{
+                            minHeight: 36,
+                            py: 0.25,
+                            px: 1.25,
+                            textTransform: "none",
+                            position: "relative",
+                            "& .tab-close-btn": {
+                              visibility: isActiveTab ? "visible" : "hidden",
+                            },
+                            "&:hover .tab-close-btn": {
+                              visibility: "visible",
+                            },
+                            "&::after": showSeparator
+                              ? {
+                                  content: '""',
+                                  position: "absolute",
+                                  right: 0,
+                                  top: 0,
+                                  bottom: 0,
+                                  width: "1px",
+                                  backgroundColor: "divider",
+                                  pointerEvents: "none",
+                                }
+                              : {},
+                          }}
+                          label={
+                            <Box
+                              sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 0.5,
+                                minWidth: 0,
+                                maxWidth: "100%",
+                              }}
+                            >
+                              {tab.icon ? (
+                                <Box
+                                  component="img"
+                                  src={tab.icon}
+                                  alt="tab icon"
+                                  sx={{ width: 18, height: 18 }}
+                                />
+                              ) : tab.kind === "settings" ? (
+                                <SettingsIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "connectors" ? (
+                                <DataSourceIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "flow-editor" ? (
+                                tab.metadata?.flowType === "webhook" ? (
+                                  <WebhookIcon size={18} strokeWidth={1.5} />
+                                ) : tab.metadata?.enabled === false ? (
+                                  <PauseIcon size={18} strokeWidth={1.5} />
+                                ) : (
+                                  <ScheduleIcon size={18} strokeWidth={1.5} />
+                                )
+                              ) : tab.kind === "dashboard" ? (
+                                <DashboardIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "app" ? (
+                                <AppIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "app-file" ? (
+                                <AppFileIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "app-binding" ||
+                                tab.kind === "dashboard-data-source" ? (
+                                <DatabaseIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "table-data" ? (
+                                <TableDataIcon size={18} strokeWidth={1.5} />
+                              ) : tab.kind === "plan" ? (
+                                <PlanIcon size={18} strokeWidth={1.5} />
+                              ) : connectionIconUrl ? (
+                                <Box
+                                  component="img"
+                                  src={connectionIconUrl}
+                                  alt="db icon"
+                                  sx={{
+                                    width: 18,
+                                    height: 18,
+                                    objectFit: "contain",
+                                  }}
+                                />
                               ) : (
-                                <ScheduleIcon size={18} strokeWidth={1.5} />
-                              )
-                            ) : tab.kind === "dashboard" ? (
-                              <DashboardIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app" ? (
-                              <AppIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app-file" ? (
-                              <AppFileIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "app-binding" ||
-                              tab.kind === "dashboard-data-source" ? (
-                              <DatabaseIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "table-data" ? (
-                              <TableDataIcon size={18} strokeWidth={1.5} />
-                            ) : tab.kind === "plan" ? (
-                              <PlanIcon size={18} strokeWidth={1.5} />
-                            ) : connectionIconUrl ? (
-                              <Box
-                                component="img"
-                                src={connectionIconUrl}
-                                alt="db icon"
-                                sx={{
-                                  width: 18,
-                                  height: 18,
-                                  objectFit: "contain",
+                                <ConsoleIcon size={18} strokeWidth={1.5} />
+                              )}
+                              <span
+                                style={{
+                                  fontStyle: tab.isDirty ? "normal" : "italic",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  display: "inline-block",
+                                  maxWidth: "150px",
                                 }}
-                              />
-                            ) : (
-                              <ConsoleIcon size={18} strokeWidth={1.5} />
-                            )}
-                            <span
-                              style={{
-                                fontStyle: tab.isDirty ? "normal" : "italic",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                display: "inline-block",
-                                maxWidth: "150px",
-                              }}
-                              onDoubleClick={e => {
-                                e.stopPropagation();
-                                updateDirty(tab.id, true);
-                              }}
-                              title={tab.title}
-                            >
-                              {tab.title?.split("/").filter(Boolean).pop() ||
-                                tab.title}
-                            </span>
-                            <IconButton
-                              component="span"
-                              size="small"
-                              className="tab-close-btn"
-                              onClick={e => {
-                                e.stopPropagation();
-                                closeConsole(tab.id);
-                              }}
-                              onPointerDown={e => {
-                                // Prevent the Tab's drag listener from starting
-                                // a drag when the user clicks the close button.
-                                e.stopPropagation();
-                              }}
-                              sx={{ p: 0.25, ml: 0 }}
-                            >
-                              <CloseIcon fontSize="inherit" />
-                            </IconButton>
-                          </Box>
-                        }
-                      />
-                    );
-                  })}
-                </Tabs>
-              </SortableContext>
-            </DndContext>
-          </Box>
+                                onDoubleClick={e => {
+                                  e.stopPropagation();
+                                  updateDirty(tab.id, true);
+                                }}
+                                title={tab.title}
+                              >
+                                {tab.title?.split("/").filter(Boolean).pop() ||
+                                  tab.title}
+                              </span>
+                              <IconButton
+                                component="span"
+                                size="small"
+                                className="tab-close-btn"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  closeConsole(tab.id);
+                                }}
+                                onPointerDown={e => {
+                                  // Prevent the Tab's drag listener from starting
+                                  // a drag when the user clicks the close button.
+                                  e.stopPropagation();
+                                }}
+                                sx={{ p: 0.25, ml: 0 }}
+                              >
+                                <CloseIcon fontSize="inherit" />
+                              </IconButton>
+                            </Box>
+                          }
+                        />
+                      );
+                    })}
+                  </Tabs>
+                </SortableContext>
+              </DndContext>
+            </Box>
+          )}
+
+          {/* Mobile window switcher menu — lists open tabs + new console. */}
+          <Menu
+            anchorEl={windowMenuAnchor}
+            open={Boolean(windowMenuAnchor)}
+            onClose={() => setWindowMenuAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+            transformOrigin={{ vertical: "top", horizontal: "center" }}
+            slotProps={{ paper: { sx: { maxHeight: 360, minWidth: 240 } } }}
+          >
+            {consoleTabs.map(tab => (
+              <MenuItem
+                key={tab.id}
+                selected={tab.id === activeConsoleId}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setWindowMenuAnchor(null);
+                }}
+                sx={{ pr: 1 }}
+              >
+                <ListItemIcon>
+                  {tab.icon ? (
+                    <Box
+                      component="img"
+                      src={tab.icon}
+                      alt=""
+                      sx={{ width: 18, height: 18 }}
+                    />
+                  ) : (
+                    <ConsoleIcon size={18} strokeWidth={1.5} />
+                  )}
+                </ListItemIcon>
+                <ListItemText
+                  primary={tab.title}
+                  primaryTypographyProps={{
+                    noWrap: true,
+                    sx: { maxWidth: 180 },
+                  }}
+                />
+                <IconButton
+                  size="small"
+                  aria-label={`Close ${tab.title}`}
+                  onClick={e => {
+                    e.stopPropagation();
+                    cleanupTab(tab.id);
+                  }}
+                  sx={{ ml: 1 }}
+                >
+                  <CloseTabIcon size={16} />
+                </IconButton>
+              </MenuItem>
+            ))}
+            <Divider />
+            <MenuItem
+              onClick={() => {
+                openTab({ title: "New Console", content: "" });
+                setWindowMenuAnchor(null);
+              }}
+            >
+              <ListItemIcon>
+                <PlusIcon size={18} strokeWidth={1.5} />
+              </ListItemIcon>
+              <ListItemText primary="New console" />
+            </MenuItem>
+          </Menu>
 
           {/* Breadcrumb path (Cursor-style) — one consistent bar for every
               tab kind. Views that embed their own actions in the bar
@@ -2682,17 +2832,16 @@ function Editor({
               sx={{
                 display: "flex",
                 alignItems: "center",
-                minHeight: 36,
-                px: 0.5,
-                borderBottom: 1,
-                borderColor: "divider",
+                minHeight: 52,
+                px: 1,
+                py: 0.75,
               }}
             >
               <Tooltip title="Open explorer">
                 <IconButton
-                  size="small"
                   aria-label="Open explorer"
                   onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={MOBILE_FLOAT_BTN_SX}
                 >
                   <MenuIcon size={20} />
                 </IconButton>
