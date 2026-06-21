@@ -56,6 +56,7 @@ import {
   ChevronRight as ChevronRightIcon,
   Check as CheckIcon,
   Box as ProjectBoxIcon,
+  Sparkles as GenerateIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -295,6 +296,7 @@ export function DbtExplorer() {
   const fetchGitStatus = useDbtStore(s => s.fetchGitStatus);
   const fetchGitDiff = useDbtStore(s => s.fetchGitDiff);
   const commitAndPush = useDbtStore(s => s.commitAndPush);
+  const generateCommitMessage = useDbtStore(s => s.generateCommitMessage);
   const listBranches = useDbtStore(s => s.listBranches);
   const createBranch = useDbtStore(s => s.createBranch);
   const switchBranch = useDbtStore(s => s.switchBranch);
@@ -335,6 +337,7 @@ export function DbtExplorer() {
   // In-IDE git dialogs
   const [commitTarget, setCommitTarget] = useState<string | null>(null);
   const [commitMessage, setCommitMessage] = useState("");
+  const [generatingMessage, setGeneratingMessage] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitResult, setGitResult] = useState<string | null>(null);
   const [diffData, setDiffData] = useState<GitFileDiff | null>(null);
@@ -599,10 +602,29 @@ export function DbtExplorer() {
         `Pushed to ${result.branch}: +${added} ~${modified} -${deleted}`,
       );
       setCommitMessage("");
+      // Briefly show the confirmation, then close — the working tree is now
+      // clean, so leaving the dialog open just shows a dead "0 changes" state.
+      window.setTimeout(() => {
+        setCommitTarget(null);
+        setGitResult(null);
+      }, 1500);
     } else if (result) {
       setGitResult("No changes to commit");
     }
   }, [workspaceId, commitTarget, commitMessage, commitAndPush]);
+
+  const handleGenerateMessage = useCallback(async () => {
+    if (!workspaceId || !commitTarget) return;
+    setGeneratingMessage(true);
+    setGitResult(null);
+    const message = await generateCommitMessage(workspaceId, commitTarget);
+    setGeneratingMessage(false);
+    if (message) {
+      setCommitMessage(message);
+    } else {
+      setGitResult("Could not generate a message — write one manually.");
+    }
+  }, [workspaceId, commitTarget, generateCommitMessage]);
 
   const handleCreateBranch = useCallback(async () => {
     if (!workspaceId || !branchTarget || !branchName.trim()) return;
@@ -1938,6 +1960,29 @@ export function DbtExplorer() {
                       </Box>
                     ))
                   )}
+                </Box>
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "flex-end",
+                    mb: 0.5,
+                  }}
+                >
+                  <Button
+                    size="small"
+                    onClick={handleGenerateMessage}
+                    disabled={generatingMessage || changes.length === 0}
+                    startIcon={
+                      generatingMessage ? (
+                        <CircularProgress size={13} />
+                      ) : (
+                        <GenerateIcon size={14} strokeWidth={1.75} />
+                      )
+                    }
+                    sx={{ textTransform: "none" }}
+                  >
+                    {generatingMessage ? "Generating…" : "Generate with AI"}
+                  </Button>
                 </Box>
                 <TextField
                   autoFocus

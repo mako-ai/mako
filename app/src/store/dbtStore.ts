@@ -356,6 +356,10 @@ interface DbtActions {
     projectId: string,
     message: string,
   ) => Promise<CommitResult | null>;
+  generateCommitMessage: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<string | null>;
   listBranches: (
     workspaceId: string,
     projectId: string,
@@ -805,6 +809,27 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error.projects = errMessage(error, "Failed to commit and push");
+        });
+        return null;
+      }
+    },
+
+    generateCommitMessage: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          message: string | null;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/commit-message`,
+          {},
+        );
+        return response.message ?? null;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to generate commit message",
+          );
         });
         return null;
       }
