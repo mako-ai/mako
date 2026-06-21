@@ -696,15 +696,26 @@ export class CdcBackfillService {
 
     let materializeTriggered = 0;
     let cursorsRewound = 0;
-    try {
-      const byEntity = await getCdcEventStore().countEventsByEntity({
-        workspaceId: params.workspaceId,
-        flowId: params.flowId,
-        materializationStatus: "pending",
-      });
-      for (const item of byEntity) {
-        if (item.count <= 0) continue;
+    let pendingEntities = 0;
+    const drainErrors: string[] = [];
 
+    // Enumerate entities with pending events. If THIS fails we must surface it
+    // (the "Reprocess pending events" button previously swallowed every error
+    // here and returned success:true, so a broken drain looked like a no-op).
+    const byEntity = await getCdcEventStore().countEventsByEntity({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      materializationStatus: "pending",
+    });
+
+    for (const item of byEntity) {
+      if (item.count <= 0) continue;
+      pendingEntities++;
+
+      try {
+        // Rewind the consumer cursor just below the oldest pending event so the
+        // scheduler's findStaleEntities re-flags this entity (lastIngestSeq >
+        // lastMaterializedSeq) and a forced materialize actually reads it.
         const minPending = await CdcChangeEvent.findOne({
           flowId: new Types.ObjectId(params.flowId),
           entity: item.entity,
@@ -747,12 +758,26 @@ export class CdcBackfillService {
           },
         });
         materializeTriggered++;
+      } catch (error) {
+        // One bad entity must not abort the rest of the drain.
+        const message = error instanceof Error ? error.message : String(error);
+        drainErrors.push(`${item.entity}: ${message}`);
+        log.warn("Failed to force-drain CDC entity during reprocess-stale", {
+          flowId: params.flowId,
+          entity: item.entity,
+          error: message,
+        });
       }
-    } catch (error) {
-      log.warn("Failed to force-drain CDC during reprocess-stale", {
-        flowId: params.flowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    }
+
+    // If there was pending work but we couldn't trigger a single materialize,
+    // the operation genuinely failed — surface it so the UI doesn't lie.
+    if (pendingEntities > 0 && materializeTriggered === 0) {
+      throw new Error(
+        `Failed to trigger materialization for any of ${pendingEntities} pending entities: ${
+          drainErrors[0] ?? "unknown error"
+        }`,
+      );
     }
 
     const orphanedResolved = await this.resolveOrphanedWebhookApplyStatus(
@@ -765,18 +790,22 @@ export class CdcBackfillService {
       reconciledWebhooks,
       drainedWebhooks,
       resetFailedWebhooks,
+      pendingEntities,
       materializeTriggered,
       cursorsRewound,
       orphanedResolved,
+      drainErrors: drainErrors.length,
     });
 
     return {
       reconciledWebhooks,
       drainedWebhooks,
       resetFailedWebhooks,
+      pendingEntities,
       materializeTriggered,
       cursorsRewound,
       orphanedResolved,
+      drainErrors,
     };
   }
 

@@ -291,11 +291,22 @@ class MongoCdcEventStore implements CdcEventStore {
     afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]> {
+    // Authoritative selection is `materializationStatus: "pending"` ONLY —
+    // we intentionally do NOT gate on `ingestSeq > lastMaterializedSeq`.
+    //
+    // Gating on the cursor caused permanent "cursor drift": if the consumer
+    // cursor (lastMaterializedSeq) ever advanced past a still-pending event
+    // (e.g. the pending.length===0 branch jumping the cursor to lastIngestSeq
+    // under an Atlas primary/secondary read race), those pending rows became
+    // invisible forever — readAfter skipped them (ingestSeq <= cursor) and the
+    // scheduler's findStaleEntities no longer flagged the entity. Reading the
+    // OLDEST pending rows regardless of cursor makes the backlog self-draining
+    // and is safe: applied/dropped/failed rows already leave the pending set,
+    // and destination writes are idempotent upserts.
     const rows = await CdcChangeEvent.find({
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
       materializationStatus: "pending",
-      ingestSeq: { $gt: Math.max(params.afterIngestSeq, 0) },
     })
       .sort({ ingestSeq: 1 })
       .limit(Math.max(params.limit, 1))
