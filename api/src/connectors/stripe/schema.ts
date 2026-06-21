@@ -148,13 +148,21 @@ export const INVOICE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   amount_paid: i(),
   amount_remaining: i(),
   subtotal: i(),
+  subtotal_excluding_tax: i(),
   tax: i(),
   total: i(),
+  total_excluding_tax: i(),
+  starting_balance: i(),
+  ending_balance: i(),
   attempt_count: i(),
   period_start: ts(),
   period_end: ts(),
   due_date: ts(),
   paid: b(),
+  // Out-of-band (e.g. bank transfer) invoices are common in some markets;
+  // declaring the type prevents the unknown-field policy from coercing this
+  // boolean to a string.
+  paid_out_of_band: b(),
   attempted: b(),
   auto_advance: b(),
   lines: j(),
@@ -164,6 +172,11 @@ export const INVOICE_SCHEMA: Record<string, ConnectorFieldSchema> = {
   customer_shipping: j(),
   status_transitions: j(),
   total_tax_amounts: j(),
+  automatic_tax: j(),
+  transfer_data: j(),
+  payment_settings: j(),
+  issuer: j(),
+  from_invoice: j(),
 };
 
 export const PRODUCT_SCHEMA: Record<string, ConnectorFieldSchema> = {
