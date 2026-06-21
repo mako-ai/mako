@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { RefreshCw as RefreshIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useConsoleStore } from "../store/consoleStore";
 import { useDbtStore } from "../store/dbtStore";
 import DbtRunHistory from "./DbtRunHistory";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
@@ -65,6 +66,16 @@ export default function DbtRunsView({
     if (!jobs) void fetchJobs(workspaceId, projectId);
     void fetchRuns(workspaceId, projectId);
   }, [workspaceId, projectId, jobs, fetchJobs, fetchRuns]);
+
+  // Refresh whenever this tab becomes active — opening it, or clicking back to
+  // it after it stayed mounted in the background — so it never shows stale runs
+  // while waiting for the next poll tick.
+  const isActiveTab = useConsoleStore(s => s.activeTabId === tabId);
+  useEffect(() => {
+    if (isActiveTab && workspaceId) {
+      void fetchRuns(workspaceId, projectId);
+    }
+  }, [isActiveTab, workspaceId, projectId, fetchRuns]);
 
   // Poll the run list the whole time this tab is open so newly-triggered runs
   // (agent `dbt_run_model`, editor "Run model", scheduled jobs) appear and
