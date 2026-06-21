@@ -602,6 +602,12 @@ export function DbtExplorer() {
         `Pushed to ${result.branch}: +${added} ~${modified} -${deleted}`,
       );
       setCommitMessage("");
+      // Briefly show the confirmation, then close — the working tree is now
+      // clean, so leaving the dialog open just shows a dead "0 changes" state.
+      window.setTimeout(() => {
+        setCommitTarget(null);
+        setGitResult(null);
+      }, 1500);
     } else if (result) {
       setGitResult("No changes to commit");
     }
