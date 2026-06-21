@@ -17,6 +17,11 @@ import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
 import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
+import { withContextOverflowSelfHeal } from "../agent-lib/context-overflow-self-heal";
+import {
+  computeInputBudget,
+  compactUiMessagesForBudget,
+} from "../agent-lib/context/compaction";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -859,9 +864,13 @@ agentRoutes.openapi(
     // Self-heal wrapper: if the catalog still classifies this model as manual
     // thinking but Anthropic rejects the payload with the adaptive-only 400,
     // persist the corrected mode and retry the call transparently.
-    const model = resolvedModelId.startsWith("anthropic/")
+    const baseModel = resolvedModelId.startsWith("anthropic/")
       ? withThinkingSelfHeal(getModel(resolvedModelId), resolvedModelId)
       : getModel(resolvedModelId);
+    // Provider-agnostic backstop: if the prompt still overflows the context
+    // window (estimate was too optimistic, or contextWindow unknown), retry
+    // once with aggressively trimmed history instead of surfacing a raw 400.
+    const model = withContextOverflowSelfHeal(baseModel, resolvedModelId);
     logger.info("Using model", { model: resolvedModelId });
 
     /**
@@ -887,7 +896,39 @@ agentRoutes.openapi(
       const sanitizedMessages = sanitizeMessagesForModel(
         messagesWithAttachments,
       );
-      const modelMessages = await convertToModelMessages(sanitizedMessages);
+      // Proactively keep the prompt under the model's context window. Budget is
+      // derived from the catalog `contextWindow` (provider-agnostic — every
+      // gateway model reports it); when unknown we skip this and rely on the
+      // reactive overflow backstop wrapping the model. Tool calls/results live
+      // as parts inside a single assistant UIMessage here, so compacting whole
+      // messages preserves tool call↔result pairing automatically.
+      const inputBudget = computeInputBudget({
+        contextWindow: modelDef?.contextWindow,
+        systemText: systemPrompt,
+        thinkingBudgetTokens: modelDef?.thinkingBudgetTokens,
+      });
+      let messagesForModel = sanitizedMessages;
+      if (inputBudget !== null) {
+        const compaction = await compactUiMessagesForBudget({
+          messages: sanitizedMessages,
+          budgetTokens: inputBudget,
+          summarize: true,
+          abortSignal: turnSignal,
+        });
+        messagesForModel = compaction.messages;
+        if (compaction.didCompact) {
+          logger.info("Compacted chat history before generation", {
+            chatId,
+            workspaceId,
+            modelId: resolvedModelId,
+            strategy: compaction.strategy,
+            estimatedTokensBefore: compaction.estimatedTokensBefore,
+            estimatedTokensAfter: compaction.estimatedTokensAfter,
+            budgetTokens: inputBudget,
+          });
+        }
+      }
+      const modelMessages = await convertToModelMessages(messagesForModel);
       if (includeVisionAttachments) {
         const screenshotVisionMessage = buildScreenshotVisionModelMessage(
           screenshotVisionAttachments,
