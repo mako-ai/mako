@@ -81,7 +81,7 @@ export default function DbtJobView({
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const jobs = useDbtStore(s => s.jobsByProject[projectId]);
-  const runs = useDbtStore(s => s.runsByProject[projectId]);
+  const runs = useDbtStore(s => s.runsByJob[jobId]);
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
   const fetchRuns = useDbtStore(s => s.fetchRuns);

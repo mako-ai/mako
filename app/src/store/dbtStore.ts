@@ -271,8 +271,12 @@ interface DbtState {
   filesByProject: Record<string, Record<string, DbtFileEntry>>;
   /** projectId → jobs. */
   jobsByProject: Record<string, DbtJobItem[]>;
-  /** projectId → recent runs (newest first). */
+  /** projectId → recent runs (newest first), unfiltered (project-wide view). */
   runsByProject: Record<string, DbtRunItem[]>;
+  /** jobId → recent runs for that job (newest first). Kept separate from
+   * `runsByProject` so the job view and the project-wide Runs view never
+   * clobber each other's list when both are mounted. */
+  runsByJob: Record<string, DbtRunItem[]>;
   /** runId → details incl. accumulated logs. */
   runDetails: Record<string, DbtRunDetails>;
   /** projectId → working-tree git status (repo-bound projects). */
@@ -501,6 +505,7 @@ const initialState: DbtState = {
   filesByProject: {},
   jobsByProject: {},
   runsByProject: {},
+  runsByJob: {},
   runDetails: {},
   gitStatusByProject: {},
   settingsProjectId: null,
@@ -629,6 +634,9 @@ export const useDbtStore = create<DbtStore>()(
           state.projects = state.projects.filter(p => p._id !== projectId);
           delete state.filePathsByProject[projectId];
           delete state.filesByProject[projectId];
+          for (const job of state.jobsByProject[projectId] ?? []) {
+            delete state.runsByJob[job._id];
+          }
           delete state.jobsByProject[projectId];
           delete state.runsByProject[projectId];
           if (state.activeProjectId === projectId) {
@@ -1176,7 +1184,12 @@ export const useDbtStore = create<DbtStore>()(
         }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}/trigger`,
         );
-        await get().fetchRuns(workspaceId, projectId, jobId);
+        // Refresh both the job-scoped list (job view) and the unfiltered list
+        // (project-wide Runs view) so whichever is open shows the new run.
+        await Promise.all([
+          get().fetchRuns(workspaceId, projectId, jobId),
+          get().fetchRuns(workspaceId, projectId),
+        ]);
         return response.runId ?? null;
       } catch (error) {
         set(state => {
@@ -1197,7 +1210,14 @@ export const useDbtStore = create<DbtStore>()(
         }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/retry`,
         );
-        await get().fetchRuns(workspaceId, projectId, jobId);
+        // Refresh both lists: the retry may be triggered from the job view or
+        // the project-wide Runs view, and both should reflect the new run.
+        await Promise.all([
+          jobId
+            ? get().fetchRuns(workspaceId, projectId, jobId)
+            : Promise.resolve(),
+          get().fetchRuns(workspaceId, projectId),
+        ]);
         return response.runId ?? null;
       } catch (error) {
         set(state => {
@@ -1220,7 +1240,11 @@ export const useDbtStore = create<DbtStore>()(
           jobId ? { jobId, limit: "100" } : { limit: "100" },
         );
         set(state => {
-          state.runsByProject[projectId] = response.runs ?? [];
+          if (jobId) {
+            state.runsByJob[jobId] = response.runs ?? [];
+          } else {
+            state.runsByProject[projectId] = response.runs ?? [];
+          }
         });
       } catch (error) {
         set(state => {
@@ -1253,15 +1277,16 @@ export const useDbtStore = create<DbtStore>()(
         const merged: DbtRunDetails = { ...run, logs };
         set(state => {
           state.runDetails[runId] = merged;
-          // Keep the run list row in sync (status/duration changes).
-          const runs = state.runsByProject[projectId];
-          if (runs) {
-            const idx = runs.findIndex(r => r._id === runId);
-            if (idx >= 0) {
-              const { logs: _logs, logCursor: _cursor, ...listItem } = run;
-              runs[idx] = { ...runs[idx], ...listItem };
-            }
-          }
+          // Keep the run list row in sync (status/duration changes) in both the
+          // project-wide list and the per-job list.
+          const { logs: _logs, logCursor: _cursor, ...listItem } = run;
+          const syncList = (list: DbtRunItem[] | undefined) => {
+            if (!list) return;
+            const idx = list.findIndex(r => r._id === runId);
+            if (idx >= 0) list[idx] = { ...list[idx], ...listItem };
+          };
+          syncList(state.runsByProject[projectId]);
+          if (run.jobId) syncList(state.runsByJob[run.jobId]);
         });
         return merged;
       } catch (error) {
