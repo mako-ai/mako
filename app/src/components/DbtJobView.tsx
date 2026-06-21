@@ -34,6 +34,11 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
 import DbtRunHistory from "./DbtRunHistory";
 
+// Fast cadence while a run is active; slower idle cadence so scheduled runs
+// that fire (and progress updates) surface without a manual refresh.
+const ACTIVE_POLL_INTERVAL_MS = 3_000;
+const IDLE_POLL_INTERVAL_MS = 8_000;
+
 type SchedulePreset = "hourly" | "daily" | "every6h" | "weekly" | "custom";
 
 const PRESET_CRONS: Record<Exclude<SchedulePreset, "custom">, string> = {
@@ -143,6 +148,42 @@ export default function DbtJobView({
   const runningRun = jobRuns.find(
     run => run.status === "running" || run.status === "queued",
   );
+
+  // Keep this job's run history live while the tab is open: scheduled runs
+  // that fire and in-progress runs update without a manual refresh. Cadence
+  // adapts to whether a run is active; polling pauses while the tab is hidden.
+  const hasActiveRef = useRef(false);
+  hasActiveRef.current = !!runningRun;
+  useEffect(() => {
+    if (!workspaceId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (stopped) return;
+      const interval = hasActiveRef.current
+        ? ACTIVE_POLL_INTERVAL_MS
+        : IDLE_POLL_INTERVAL_MS;
+      timer = setTimeout(() => void tick(), interval);
+    };
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        await fetchRuns(workspaceId, projectId, jobId);
+      }
+      schedule();
+    };
+    schedule();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void fetchRuns(workspaceId, projectId, jobId);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [workspaceId, projectId, jobId, fetchRuns]);
 
   const handleRunNow = useCallback(async () => {
     if (!workspaceId) return;

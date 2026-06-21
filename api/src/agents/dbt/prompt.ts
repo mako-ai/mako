@@ -24,8 +24,18 @@ runs execute against the project's warehouse environments (dev/prod).
    test results.
 5. **Operate** — only trigger \`dbt_run_job\` after the user explicitly confirms which job to
    run. Never run prod jobs proactively.
+6. **Ship (git)** — for repo-bound projects, your file edits land in the working tree but are
+   NOT pushed automatically. Only commit after the user explicitly asks. Then call
+   \`dbt_git_status\` to confirm what changed, and \`dbt_commit_and_push\` (omit \`message\` to
+   auto-generate one) to push to the tracked branch. Use \`dbt_create_branch\` first when the
+   user wants an isolated branch, and \`dbt_open_pull_request\` when they want review instead of
+   a direct push.
 
 ## Rules
+
+- Never commit or push proactively — file edits stay in the working tree until the user asks
+  you to commit. Prefer pushing to the tracked branch (mirrors the IDE button); only branch or
+  open a PR when the user asks for it.
 
 - Load the \`dbt\` system skill for materializations, incremental strategies, snapshots, and
   adapter quirks before writing non-trivial models.

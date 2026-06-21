@@ -523,6 +523,21 @@ function encodeDbtPath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
+/**
+ * Refresh the working-tree git status for a repo-bound project after a file
+ * write. Fire-and-forget: keeps the "Commit & push (N)" badge in sync when the
+ * agent (or the editor) creates/modifies/deletes/renames files. No-op for
+ * projects without a repo binding (the status endpoint would 400).
+ */
+function refreshGitStatusForRepoProject(
+  get: () => DbtStore,
+  workspaceId: string,
+  projectId: string,
+): void {
+  const project = get().projects.find(p => p._id === projectId);
+  if (project?.repo) void get().fetchGitStatus(workspaceId, projectId);
+}
+
 export const useDbtStore = create<DbtStore>()(
   immer((set, get) => ({
     ...initialState,
@@ -1006,6 +1021,7 @@ export const useDbtStore = create<DbtStore>()(
           const entry = state.filesByProject[projectId]?.[path];
           if (entry) entry.dirty = false;
         });
+        refreshGitStatusForRepoProject(get, workspaceId, projectId);
         return true;
       } catch (error) {
         set(state => {
@@ -1035,6 +1051,7 @@ export const useDbtStore = create<DbtStore>()(
             state.filePathsByProject[projectId] = paths.filter(p => p !== path);
           }
         });
+        refreshGitStatusForRepoProject(get, workspaceId, projectId);
         return true;
       } catch (error) {
         set(state => {
@@ -1066,6 +1083,7 @@ export const useDbtStore = create<DbtStore>()(
               .sort();
           }
         });
+        refreshGitStatusForRepoProject(get, workspaceId, projectId);
         return true;
       } catch (error) {
         set(state => {

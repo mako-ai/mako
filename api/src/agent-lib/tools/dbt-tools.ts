@@ -36,6 +36,15 @@ import {
   parseDbtCommands,
 } from "../../dbt/commands";
 import {
+  commitAndPush,
+  createProjectBranch,
+  getGitStatus,
+  listProjectBranches,
+  openProjectPullRequest,
+  switchProjectBranch,
+} from "../../dbt/dbt-github-git.service";
+import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
+import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
 } from "../../dbt/adapter-map";
@@ -99,7 +108,7 @@ function summarizeLogs(logs: DbtLogLine[], maxLines = 30): string[] {
   return selected.map(log => `[${log.level}] ${log.line}`);
 }
 
-export const createDbtServerTools = (workspaceId: string) => {
+export const createDbtServerTools = (workspaceId: string, userId?: string) => {
   const assertProject = async (projectId: string) => {
     if (!Types.ObjectId.isValid(projectId)) {
       throw new Error("Invalid dbt project id");
@@ -109,6 +118,18 @@ export const createDbtServerTools = (workspaceId: string) => {
       workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!project) throw new Error("dbt project not found or access denied");
+    return project;
+  };
+
+  /** Like assertProject, but also requires a connected Git repository. */
+  const assertRepoProject = async (projectId: string) => {
+    const project = await assertProject(projectId);
+    if (!project.repo) {
+      throw new Error(
+        "This dbt project is not connected to a Git repository. Connect a " +
+          "repo in project settings before using git tools.",
+      );
+    }
     return project;
   };
 
@@ -762,6 +783,216 @@ export const createDbtServerTools = (workspaceId: string) => {
           };
         } catch (error) {
           return toolError(error, "Failed to update dbt job");
+        }
+      },
+    }),
+
+    dbt_git_status: tool({
+      description:
+        "Show the working-tree git status of a repo-bound dbt project: which " +
+        "files are added/modified/deleted relative to the tracked branch, " +
+        "and the branch name. Call this before dbt_commit_and_push to confirm " +
+        "what will be committed, and to summarize pending changes for the user.",
+      inputSchema: z.object({ projectId: projectIdField }),
+      execute: async ({ projectId }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const status = await getGitStatus(project);
+          return {
+            success: true,
+            branch: status.branch,
+            hasChanges: status.hasChanges,
+            added: status.added,
+            modified: status.modified,
+            deleted: status.deleted,
+            changes: status.changes,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to read git status");
+        }
+      },
+    }),
+
+    dbt_commit_and_push: tool({
+      description:
+        "Commit ALL working-tree changes and push them to the project's " +
+        "currently tracked branch in a single commit — the same action as the " +
+        "IDE 'Commit & push' button. ONLY call this after the user has " +
+        "explicitly asked you to commit/push (or clearly confirmed it in the " +
+        "conversation); never commit proactively. If you omit `message`, a " +
+        "Conventional Commits message is generated automatically from the " +
+        "diff. Returns the new commit sha and per-type counts. To put changes " +
+        "on a separate branch, call dbt_create_branch first, or use " +
+        "dbt_open_pull_request when the user wants a review.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        message: z
+          .string()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Commit message. Omit to auto-generate one from the diff."),
+      }),
+      execute: async ({ projectId, message }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const status = await getGitStatus(project);
+          if (!status.hasChanges) {
+            return {
+              success: false,
+              error: "No changes to commit",
+              branch: status.branch,
+            };
+          }
+
+          let commitMessage = message?.trim();
+          let generated = false;
+          if (!commitMessage) {
+            const ai = await generateDbtCommitMessage(project, {
+              workspaceId,
+              userId: userId ?? "agent",
+            });
+            if (ai) {
+              commitMessage = ai;
+              generated = true;
+            }
+          }
+          if (!commitMessage) {
+            return {
+              success: false,
+              error:
+                "Could not generate a commit message — provide `message` " +
+                "explicitly and retry.",
+            };
+          }
+
+          const result = await commitAndPush(project, {
+            message: commitMessage,
+            updatedBy: userId ?? "agent",
+          });
+          return {
+            success: result.committed,
+            sha: result.sha,
+            branch: result.branch,
+            message: commitMessage,
+            messageGenerated: generated,
+            pushed: result.pushed,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to commit and push");
+        }
+      },
+    }),
+
+    dbt_create_branch: tool({
+      description:
+        "Create a new branch off the project's current branch head and check " +
+        "it out (track it). Use before dbt_commit_and_push when the user " +
+        "wants changes isolated on a feature branch. Branch content is " +
+        "identical to the current branch — no re-sync needed.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        name: z
+          .string()
+          .min(1)
+          .max(255)
+          .describe("New branch name, e.g. 'feat/add-orders-staging'"),
+      }),
+      execute: async ({ projectId, name }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await createProjectBranch(project, name.trim());
+          return { success: true, branch: result.branch };
+        } catch (error) {
+          return toolError(error, "Failed to create branch");
+        }
+      },
+    }),
+
+    dbt_switch_branch: tool({
+      description:
+        "Switch the project's tracked branch and pull its contents into the " +
+        "working tree. This OVERWRITES local working-tree files with the " +
+        "target branch — only call when the user confirms, and after any " +
+        "pending changes are committed (check dbt_git_status first).",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        branch: z.string().min(1).max(255).describe("Existing branch to track"),
+      }),
+      execute: async ({ projectId, branch }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await switchProjectBranch(
+            project,
+            branch.trim(),
+            userId ?? "agent",
+          );
+          return { success: true, branch: result.branch };
+        } catch (error) {
+          return toolError(error, "Failed to switch branch");
+        }
+      },
+    }),
+
+    dbt_list_branches: tool({
+      description:
+        "List the remote branches of the project's connected repository, plus " +
+        "the currently tracked branch. Use to pick a branch for " +
+        "dbt_switch_branch or a base for dbt_open_pull_request.",
+      inputSchema: z.object({ projectId: projectIdField }),
+      execute: async ({ projectId }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const branches = await listProjectBranches(project);
+          return {
+            success: true,
+            branches,
+            current: project.repo?.branch,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to list branches");
+        }
+      },
+    }),
+
+    dbt_open_pull_request: tool({
+      description:
+        "Open a GitHub pull request from the project's current branch into a " +
+        "base branch (defaults to the repo's default branch). Use this when " +
+        "the user wants their changes reviewed rather than pushed straight to " +
+        "the main branch. The current branch must differ from the base — " +
+        "create a feature branch with dbt_create_branch and commit to it " +
+        "first. Returns the PR number and URL.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        title: z.string().min(1).max(255).describe("Pull request title"),
+        body: z
+          .string()
+          .max(10_000)
+          .optional()
+          .describe("Pull request description (Markdown)"),
+        base: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe("Base branch to merge into; defaults to the repo default"),
+      }),
+      execute: async ({ projectId, title, body, base }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await openProjectPullRequest(project, {
+            title: title.trim(),
+            body,
+            base,
+          });
+          return {
+            success: true,
+            number: result.number,
+            url: result.htmlUrl,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to open pull request");
         }
       },
     }),

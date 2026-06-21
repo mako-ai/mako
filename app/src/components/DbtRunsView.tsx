@@ -12,11 +12,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import { RefreshCw as RefreshIcon } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useConsoleStore } from "../store/consoleStore";
 import { useDbtStore } from "../store/dbtStore";
 import DbtRunHistory from "./DbtRunHistory";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 
-const LIST_POLL_INTERVAL_MS = 3_000;
+// Fast cadence while a run is active; slower idle cadence so newly-triggered
+// runs (agent, editor, schedule) still surface without a manual refresh.
+const ACTIVE_POLL_INTERVAL_MS = 3_000;
+const IDLE_POLL_INTERVAL_MS = 8_000;
 
 export default function DbtRunsView({
   tabId,
@@ -63,25 +67,53 @@ export default function DbtRunsView({
     void fetchRuns(workspaceId, projectId);
   }, [workspaceId, projectId, jobs, fetchJobs, fetchRuns]);
 
-  // Poll the run list while anything is active so agent-triggered runs appear
-  // and statuses stay fresh without manual refresh.
+  // Refresh whenever this tab becomes active — opening it, or clicking back to
+  // it after it stayed mounted in the background — so it never shows stale runs
+  // while waiting for the next poll tick.
+  const isActiveTab = useConsoleStore(s => s.activeTabId === tabId);
+  useEffect(() => {
+    if (isActiveTab && workspaceId) {
+      void fetchRuns(workspaceId, projectId);
+    }
+  }, [isActiveTab, workspaceId, projectId, fetchRuns]);
+
+  // Poll the run list the whole time this tab is open so newly-triggered runs
+  // (agent `dbt_run_model`, editor "Run model", scheduled jobs) appear and
+  // statuses stay fresh without a manual refresh. Cadence adapts to whether a
+  // run is active, and polling pauses while the tab is hidden.
   const hasActiveRef = useRef(hasActive);
   hasActiveRef.current = hasActive;
   useEffect(() => {
-    if (!workspaceId || !hasActive) return;
+    if (!workspaceId) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const poll = async () => {
-      await fetchRuns(workspaceId, projectId);
-      if (stopped || !hasActiveRef.current) return;
-      timer = setTimeout(() => void poll(), LIST_POLL_INTERVAL_MS);
+    const schedule = () => {
+      if (stopped) return;
+      const interval = hasActiveRef.current
+        ? ACTIVE_POLL_INTERVAL_MS
+        : IDLE_POLL_INTERVAL_MS;
+      timer = setTimeout(() => void tick(), interval);
     };
-    timer = setTimeout(() => void poll(), LIST_POLL_INTERVAL_MS);
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        await fetchRuns(workspaceId, projectId);
+      }
+      schedule();
+    };
+    schedule();
+    // Refresh immediately when the tab regains focus after being hidden.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void fetchRuns(workspaceId, projectId);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [workspaceId, projectId, hasActive, fetchRuns]);
+  }, [workspaceId, projectId, fetchRuns]);
 
   // Default selection: newest run.
   useEffect(() => {

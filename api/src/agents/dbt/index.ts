@@ -73,7 +73,7 @@ export const dbtAgentFactory: AgentFactory = (
     context.toolExecutionContext,
     { chatId: context.chatId },
   );
-  const dbtServerTools = createDbtServerTools(workspaceId);
+  const dbtServerTools = createDbtServerTools(workspaceId, userId);
   const skillTools = createSkillTools(workspaceId, userId);
 
   return {
