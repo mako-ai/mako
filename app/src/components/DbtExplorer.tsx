@@ -468,8 +468,24 @@ export function DbtExplorer() {
   const activeChangeCount = activeStatus?.changes.length ?? 0;
 
   const handleRefresh = useCallback(() => {
-    if (workspaceId) void fetchProjects(workspaceId);
-  }, [workspaceId, fetchProjects]);
+    if (!workspaceId) return;
+    void fetchProjects(workspaceId);
+    // Re-pull working-tree git status so change badges reflect commits made
+    // outside this view (e.g. the agent committing server-side) without
+    // forcing a full page reload — the mount effect only runs once.
+    for (const id of repoProjectIds ? repoProjectIds.split(",") : []) {
+      void fetchGitStatus(workspaceId, id);
+    }
+    // Refresh the active project's file tree so agent-added/removed files show.
+    if (activeProjectId) void fetchFiles(workspaceId, activeProjectId);
+  }, [
+    workspaceId,
+    repoProjectIds,
+    activeProjectId,
+    fetchProjects,
+    fetchGitStatus,
+    fetchFiles,
+  ]);
 
   const handleLoadChildren = useCallback(
     async (node: ResourceTreeNode) => {
