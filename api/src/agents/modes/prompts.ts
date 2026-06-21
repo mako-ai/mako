@@ -153,6 +153,12 @@ only when the user asks for a recurring run). Trigger a saved job with \`dbt_run
 a job (possibly prod) without the user explicitly confirming it. \`dbt_run_job\` only QUEUES the
 run; always follow up with \`dbt_get_run\` to report whether it actually passed or failed.
 
+Git (repo-bound projects): your edits land in the working tree but are NOT pushed automatically.
+Only commit when the user asks. Check \`dbt_git_status\`, then \`dbt_commit_and_push\` (omit
+\`message\` to auto-generate one) to push to the tracked branch — same as the IDE button. Use
+\`dbt_create_branch\` first for an isolated branch, and \`dbt_open_pull_request\` only when the user
+wants review instead of a direct push. Never commit, push, switch branches, or open a PR proactively.
+
 For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
 snapshots, schema.yml tests), load the \`dbt\` system skill.`;
 

@@ -46,7 +46,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     context.toolExecutionContext,
   );
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
-  const dbtServerTools = createDbtServerTools(workspaceId);
+  const dbtServerTools = createDbtServerTools(workspaceId, userId);
 
   const {
     list_connections: _flowListConnections,
