@@ -53,6 +53,7 @@ import {
   openProjectPullRequest,
   switchProjectBranch,
 } from "../dbt/dbt-github-git.service";
+import { generateDbtCommitMessage } from "../dbt/dbt-commit-message.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
@@ -861,6 +862,33 @@ dbtRoutes.post(
       return c.json({ success: true, ...result });
     } catch (error) {
       return serverError(c, error, "Failed to commit and push");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/commit-message — AI-generate a commit message
+// from the working-tree diff. Returns { message: null } when there are no
+// changes or generation is unavailable; the client keeps the manual field.
+dbtRoutes.post(
+  "/projects/:projectId/git/commit-message",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const user = c.get("user");
+      const message = await generateDbtCommitMessage(project, {
+        workspaceId: c.req.param("workspaceId") ?? "unknown",
+        userId: getUserId(c),
+        userEmail: user?.email,
+      });
+      return c.json({ success: true, message });
+    } catch (error) {
+      return serverError(c, error, "Failed to generate commit message");
     }
   },
 );
