@@ -6,7 +6,23 @@ import {
   useState,
   lazy,
 } from "react";
-import { Box, CircularProgress, styled } from "@mui/material";
+import {
+  Box,
+  CircularProgress,
+  styled,
+  Drawer,
+  BottomNavigation,
+  BottomNavigationAction,
+  Paper,
+  IconButton,
+  Typography,
+} from "@mui/material";
+import {
+  MessageCircleMore as AskTabIcon,
+  SquareTerminal as EditorTabIcon,
+  Table as ResultsTabIcon,
+  X as CloseDrawerIcon,
+} from "lucide-react";
 import {
   Routes,
   Route,
@@ -16,7 +32,11 @@ import {
   useLocation,
 } from "react-router-dom";
 import { trackPageView } from "./lib/analytics";
-import Sidebar from "./components/Sidebar";
+import Sidebar, {
+  SidebarUserMenu,
+  SidebarMobileExplorerNav,
+} from "./components/Sidebar";
+import { useIsMobile } from "./hooks/useIsMobile";
 import {
   CENTER_PANE_MIN_WIDTH_PX,
   DEFAULT_LEFT_PANE_WIDTH_PX,
@@ -48,7 +68,7 @@ const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
-import { WorkspaceProvider } from "./contexts/workspace-context";
+import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
@@ -104,6 +124,50 @@ function clamp(value: number, min: number, max: number): number {
 
 type SidePane = "left" | "right";
 
+/**
+ * User identity + active workspace shown in the mobile explorer drawer header.
+ * Rendered inside `WorkspaceProvider` (unlike `MainApp`'s body), so it can read
+ * the current workspace via `useWorkspace()`.
+ */
+function MobileDrawerIdentity() {
+  const { user } = useAuth();
+  const { currentWorkspace } = useWorkspace();
+
+  return (
+    <Box sx={{ flex: 1, minWidth: 0 }}>
+      {user?.email && (
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+            lineHeight: 1.2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {user.email}
+        </Typography>
+      )}
+      {currentWorkspace?.name && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{
+            display: "block",
+            lineHeight: 1.2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {currentWorkspace.name}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
@@ -115,6 +179,26 @@ function MainApp() {
   const leftPaneWidthPx = useUIStore(state => state.leftPaneWidthPx);
   const rightPaneWidthPx = useUIStore(state => state.rightPaneWidthPx);
   const setPaneWidths = useUIStore(state => state.setPaneWidths);
+
+  // Mobile (< md) shell state. Desktop ignores these entirely.
+  const isMobile = useIsMobile();
+  const mobileTab = useUIStore(state => state.mobileTab);
+  const mobileDrawer = useUIStore(state => state.mobileDrawer);
+  const setMobileTab = useUIStore(state => state.setMobileTab);
+  const closeMobileDrawer = useUIStore(state => state.closeMobileDrawer);
+
+  // On mobile, selecting a tree node in the explorer Drawer opens/focuses a
+  // console tab. Surface the editor and close the drawer so the result of the
+  // tap is visible. Gated on the drawer being open so chat-driven tab opens
+  // (e.g. the agent creating a console) don't yank the user out of the Ask
+  // view mid-conversation.
+  useEffect(() => {
+    if (!isMobile) return;
+    if (!activeTabId) return;
+    if (useUIStore.getState().mobileDrawer !== "explorer") return;
+    setMobileTab("editor");
+    closeMobileDrawer();
+  }, [activeTabId, isMobile, setMobileTab, closeMobileDrawer]);
 
   const panelContainerRef = useRef<HTMLDivElement | null>(null);
   const leftPaneElRef = useRef<HTMLDivElement | null>(null);
@@ -496,6 +580,163 @@ function MainApp() {
       }
     };
   }, []);
+
+  // ── Mobile shell (< md) ───────────────────────────────────────────────
+  // A chat-first, single-pane experience: one full-screen pane at a time
+  // (Ask / Editor / Results) switched by the BottomNavigation, plus an
+  // explorer Drawer. Chat and Editor stay mounted (visibility toggled) so
+  // their state survives tab switches, mirroring the desktop dual-pane mount.
+  if (isMobile) {
+    const drawerOpen = mobileDrawer === "explorer";
+    // Bottom nav only drives the content panes now; the explorer Drawer is
+    // opened from the hamburger in each pane header (top-left).
+    const bottomValue = mobileTab;
+
+    return (
+      <AuthWrapper>
+        <UrlSync />
+        <Box
+          data-mako-app-shell="true"
+          data-mako-mobile="true"
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            height: "100dvh",
+            width: "100vw",
+            maxWidth: "100vw",
+            overflow: "hidden",
+            // No top app bar on mobile — navigation lives in the bottom nav and
+            // the explorer Drawer (which carries the user/workspace menu). Keep
+            // content clear of the status bar / notch on standalone installs.
+            pt: "env(safe-area-inset-top)",
+          }}
+        >
+          {/* Content — one pane at a time, both kept mounted for state */}
+          <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                display: mobileTab === "ask" ? "block" : "none",
+              }}
+            >
+              <Chat
+                dbFlowFormRef={dbFlowFormRef}
+                onChartSpecChangeRef={onChartSpecChangeRef}
+                resultsContextRef={resultsContextRef}
+              />
+            </Box>
+            <Box
+              sx={{
+                position: "absolute",
+                inset: 0,
+                display:
+                  mobileTab === "editor" || mobileTab === "results"
+                    ? "block"
+                    : "none",
+              }}
+            >
+              <Editor
+                dbFlowFormRef={dbFlowFormRef}
+                onChartSpecChangeRef={onChartSpecChangeRef}
+                resultsContextRef={resultsContextRef}
+              />
+            </Box>
+          </Box>
+
+          {/* Explorer drawer — reuses the same explorer panels as desktop */}
+          <Drawer
+            anchor="left"
+            open={drawerOpen}
+            onClose={closeMobileDrawer}
+            ModalProps={{ keepMounted: true }}
+            PaperProps={{ sx: { width: "85vw", maxWidth: 340 } }}
+          >
+            <Box
+              sx={{ height: "100%", display: "flex", flexDirection: "column" }}
+            >
+              <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+                <Box
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1,
+                    px: 1,
+                    pt: 1,
+                  }}
+                >
+                  <SidebarUserMenu tooltipPlacement="bottom" />
+                  <MobileDrawerIdentity />
+                  <IconButton
+                    size="small"
+                    aria-label="Close explorer"
+                    onClick={closeMobileDrawer}
+                  >
+                    <CloseDrawerIcon size={20} />
+                  </IconButton>
+                </Box>
+                <SidebarMobileExplorerNav />
+              </Box>
+              <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+                <Suspense
+                  fallback={
+                    <Box
+                      sx={{
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      <CircularProgress size={20} />
+                    </Box>
+                  }
+                >
+                  {renderLeftPane()}
+                </Suspense>
+              </Box>
+            </Box>
+          </Drawer>
+
+          {/* Bottom navigation — Ask / Editor / Results.
+              Explore lives in the top-left hamburger of each pane header. */}
+          <Paper
+            square
+            elevation={3}
+            sx={{
+              borderTop: 1,
+              borderColor: "divider",
+              pb: "env(safe-area-inset-bottom)",
+            }}
+          >
+            <BottomNavigation
+              showLabels
+              value={bottomValue}
+              onChange={(_event, value) =>
+                setMobileTab(value as "ask" | "editor" | "results")
+              }
+            >
+              <BottomNavigationAction
+                label="Ask"
+                value="ask"
+                icon={<AskTabIcon size={22} strokeWidth={1.5} />}
+              />
+              <BottomNavigationAction
+                label="Editor"
+                value="editor"
+                icon={<EditorTabIcon size={22} strokeWidth={1.5} />}
+              />
+              <BottomNavigationAction
+                label="Results"
+                value="results"
+                icon={<ResultsTabIcon size={22} strokeWidth={1.5} />}
+              />
+            </BottomNavigation>
+          </Paper>
+        </Box>
+      </AuthWrapper>
+    );
+  }
 
   return (
     <AuthWrapper>

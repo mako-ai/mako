@@ -8,6 +8,7 @@ import {
   MenuItem,
   ListItemIcon,
   Tooltip,
+  Button,
 } from "@mui/material";
 import {
   Database as DatabaseIcon,
@@ -763,10 +764,52 @@ function DatabaseExplorer({
       >
         {({ searchQuery }) =>
           databases.length === 0 ? (
-            <Box sx={{ p: 3, textAlign: "center", color: "text.secondary" }}>
-              <Typography variant="body2">
-                No databases found in configuration
-              </Typography>
+            <Box
+              sx={{
+                px: 3,
+                py: 5,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                textAlign: "center",
+                gap: 1.5,
+              }}
+            >
+              <Box
+                sx={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "action.hover",
+                  color: "text.secondary",
+                }}
+              >
+                <DatabaseIcon size={24} strokeWidth={1.5} />
+              </Box>
+              <Box>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                  No databases yet
+                </Typography>
+                <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mt: 0.5 }}
+                >
+                  Connect a database to start exploring and querying your data.
+                </Typography>
+              </Box>
+              <Button
+                variant="contained"
+                size="small"
+                disableElevation
+                startIcon={<AddIcon size={16} strokeWidth={2} />}
+                onClick={() => setCreateDialogOpen(true)}
+              >
+                Add database
+              </Button>
             </Box>
           ) : (
             <ResourceTree

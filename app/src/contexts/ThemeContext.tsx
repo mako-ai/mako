@@ -333,6 +333,10 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
             padding: theme.spacing(0.5, 1),
             color: theme.palette.text.secondary,
             ...truncateTextStyles,
+            // Larger touch target for tab strips on phones.
+            "@media (max-width:600px)": {
+              minHeight: 40,
+            },
             "&:hover": {
               color: theme.palette.text.primary,
             },
@@ -517,6 +521,31 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
         styleOverrides: {
           root: {
             borderRadius: 6, // Square with rounded corners instead of circular
+            // Touch-friendly hit area on phones. Explicit per-component sizes
+            // (e.g. compact 32px toolbar buttons) still win via `sx`.
+            "@media (max-width:600px)": {
+              minWidth: 40,
+              minHeight: 40,
+            },
+          },
+        },
+      },
+      MuiBottomNavigationAction: {
+        styleOverrides: {
+          root: ({ theme }: any) => ({
+            minWidth: 0,
+            paddingTop: theme.spacing(0.75),
+            paddingBottom: theme.spacing(0.75),
+            color: theme.palette.text.secondary,
+            "&.Mui-selected": {
+              color: theme.palette.primary.main,
+            },
+          }),
+          label: {
+            fontSize: "0.7rem",
+            "&.Mui-selected": {
+              fontSize: "0.7rem",
+            },
           },
         },
       },

@@ -20,6 +20,8 @@ import {
   Alert,
   Badge,
   Chip,
+  Fab,
+  CircularProgress,
   ListItemIcon,
   ListItemText,
 } from "@mui/material";
@@ -56,6 +58,7 @@ import {
 import { computeConsoleStateHash } from "../utils/stateHash";
 import { applyModification as applyConsoleModification } from "../utils/consoleModification";
 import { ConnectionSelector } from "./ConnectionSelector";
+import { useIsMobile } from "../hooks/useIsMobile";
 import {
   onRenderDebug,
   useRenderCount,
@@ -204,6 +207,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
   const editorRef = useRef<any>(null);
   const diffEditorRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
   const { effectiveMode } = useTheme();
   const { currentWorkspace } = useWorkspace();
   const autoSaveConsole = useConsoleStore(state => state.autoSaveConsole);
@@ -1158,6 +1162,7 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         height: "100%",
         display: "flex",
         flexDirection: "column",
+        position: "relative",
       }}
     >
       <Box
@@ -1168,51 +1173,65 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           backgroundColor: "background.paper",
           p: 0.5,
           gap: 0.5,
+          // Let the connection selector wrap below the actions on narrow screens
+          flexWrap: { xs: "wrap", md: "nowrap" },
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {isExecuting ? (
-            <Button
-              variant="contained"
-              size="small"
-              color="error"
-              startIcon={<StopIcon size={18} />}
-              onClick={onCancel}
-              disabled={isCancelling}
-              disableElevation
-              sx={{ minWidth: "120px" }}
-            >
-              {isCancelling ? "Cancelling..." : "Cancel"}
-            </Button>
-          ) : (
-            <Tooltip
-              title={
-                !connectionId
-                  ? "Select a database connection to run queries"
-                  : ""
-              }
-            >
-              <span>
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={<PlayIcon />}
-                  onClick={handleExecute}
-                  disabled={!connectionId}
-                  disableElevation
-                  sx={{
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    maxWidth: "200px",
-                    minWidth: "120px",
-                  }}
-                >
-                  Run (⌘/Ctrl+Enter)
-                </Button>
-              </span>
-            </Tooltip>
-          )}
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            // Wrap the action buttons onto a second line on phones instead of
+            // clipping them off the right edge.
+            flexWrap: { xs: "wrap", md: "nowrap" },
+          }}
+        >
+          {/* On mobile the run/cancel affordance is the floating FAB, so the
+              inline toolbar button is desktop-only to save horizontal space. */}
+          {!isMobile &&
+            (isExecuting ? (
+              <Button
+                variant="contained"
+                size="small"
+                color="error"
+                startIcon={<StopIcon size={18} />}
+                onClick={onCancel}
+                disabled={isCancelling}
+                disableElevation
+                sx={{ minWidth: "120px" }}
+              >
+                {isCancelling ? "Cancelling..." : "Cancel"}
+              </Button>
+            ) : (
+              <Tooltip
+                title={
+                  !connectionId
+                    ? "Select a database connection to run queries"
+                    : ""
+                }
+              >
+                <span>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={<PlayIcon />}
+                    onClick={handleExecute}
+                    disabled={!connectionId}
+                    disableElevation
+                    sx={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: "200px",
+                      minWidth: "120px",
+                    }}
+                  >
+                    Run (⌘/Ctrl+Enter)
+                  </Button>
+                </span>
+              </Tooltip>
+            ))}
 
           {isReadOnly && (
             <Chip
@@ -1238,6 +1257,29 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   size="small"
                   variant="outlined"
                   startIcon={
+                    isMobile ? undefined : (
+                      <Badge
+                        color="success"
+                        variant="dot"
+                        invisible={!hasSchedule}
+                        overlap="circular"
+                      >
+                        <ScheduleIcon size={16} />
+                      </Badge>
+                    )
+                  }
+                  onClick={() =>
+                    hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.()
+                  }
+                  disabled={!isSaved}
+                  sx={{
+                    ml: 1,
+                    whiteSpace: "nowrap",
+                    minWidth: isMobile ? 0 : undefined,
+                    px: isMobile ? 1 : undefined,
+                  }}
+                >
+                  {isMobile ? (
                     <Badge
                       color="success"
                       variant="dot"
@@ -1246,14 +1288,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                     >
                       <ScheduleIcon size={16} />
                     </Badge>
-                  }
-                  onClick={() =>
-                    hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.()
-                  }
-                  disabled={!isSaved}
-                  sx={{ ml: 1, whiteSpace: "nowrap" }}
-                >
-                  Schedule
+                  ) : (
+                    "Schedule"
+                  )}
                 </Button>
               </span>
             </Tooltip>
@@ -1647,6 +1684,34 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
         consoleId={consoleId}
         workspaceId={currentWorkspace?.id}
       />
+
+      {/* Mobile run FAB — the primary "execute" affordance on a phone, where
+          the toolbar Run button is compact and the keyboard shortcut is
+          unavailable. */}
+      {isMobile && !isDiffMode && (
+        <Fab
+          color={isExecuting ? "error" : "primary"}
+          aria-label={isExecuting ? "Cancel query" : "Run query"}
+          onClick={isExecuting ? onCancel : handleExecute}
+          disabled={isExecuting ? isCancelling : !connectionId}
+          sx={{
+            position: "absolute",
+            right: 16,
+            bottom: "calc(16px + env(safe-area-inset-bottom))",
+            zIndex: 5,
+          }}
+        >
+          {isExecuting ? (
+            isCancelling ? (
+              <CircularProgress size={24} color="inherit" />
+            ) : (
+              <StopIcon size={22} />
+            )
+          ) : (
+            <PlayIcon />
+          )}
+        </Fab>
+      )}
     </Box>
   );
 });

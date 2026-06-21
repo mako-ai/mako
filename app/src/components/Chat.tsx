@@ -12,6 +12,7 @@ import React, {
 import {
   Box,
   Button,
+  Chip,
   IconButton,
   List,
   ListItem,
@@ -46,6 +47,7 @@ import {
   Check,
   History,
   ImagePlus,
+  Menu as MenuIcon,
   Pencil,
   Plus,
   MessageSquare,
@@ -69,6 +71,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import type { ConsoleModification } from "../hooks/useMonacoConsole";
@@ -1666,6 +1669,7 @@ const ChatInputArea = React.memo(
             {isLoading ? (
               <IconButton
                 type="button"
+                aria-label="Stop generating"
                 onClick={onStop}
                 size="small"
                 sx={{
@@ -1693,6 +1697,7 @@ const ChatInputArea = React.memo(
             ) : (
               <IconButton
                 type="submit"
+                aria-label="Send message"
                 disabled={isSubmitDisabled}
                 size="small"
                 sx={{
@@ -1748,6 +1753,31 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
     : "empty";
 }
 
+// Starter prompts for the mobile "Ask your data" empty state. Tapping one runs
+// it through the normal send path.
+const MOBILE_ASK_SUGGESTIONS = [
+  "What tables are in my database?",
+  "Show me the 10 most recent records",
+  "How many rows are in each table?",
+  "Summarize my data with a chart",
+];
+
+// Claude-style floating round button used in the mobile pane headers. Each
+// control carries its own paper fill + blur + hairline so it reads as floating
+// chrome over the content rather than sitting in a solid app bar.
+const MOBILE_FLOAT_BTN_SX = {
+  width: 38,
+  height: 38,
+  borderRadius: "50%",
+  color: "text.secondary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
 const Chat: React.FC<ChatProps> = ({
   dbFlowFormRef,
   onChartSpecChangeRef,
@@ -1756,6 +1786,13 @@ const Chat: React.FC<ChatProps> = ({
   const paletteMode = useMuiTheme().palette.mode;
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
+
+  // On mobile, Chat is the full-screen "Ask your data" home. Track viewport in
+  // a ref so stable useCallback handlers (e.g. console title click) can switch
+  // the mobile tab without widening their dependency arrays.
+  const isMobile = useIsMobile();
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
 
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
   const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
@@ -3198,6 +3235,11 @@ const Chat: React.FC<ChatProps> = ({
 
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
+    // On mobile the editor lives behind the "Editor" tab — surface it so
+    // tapping a console reference in chat ("view SQL") shows the query.
+    if (isMobileRef.current) {
+      useUIStore.getState().setMobileTab("editor");
+    }
     const existingTab = store.tabs[consoleId];
     if (existingTab) {
       store.setActiveTab(consoleId);
@@ -3541,13 +3583,15 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Header with history and new chat */}
+      {/* Header with history and new chat. On mobile this is Claude-style
+          floating chrome: a transparent strip with round buttons (hamburger
+          left, actions right). Desktop keeps the bordered title bar. */}
       <Box
         sx={{
           px: 1,
-          py: 0.25,
-          minHeight: 37,
-          borderBottom: 1,
+          py: isMobile ? 0.75 : 0.25,
+          minHeight: isMobile ? 52 : 37,
+          borderBottom: isMobile ? 0 : 1,
           borderColor: "divider",
         }}
       >
@@ -3569,37 +3613,71 @@ const Chat: React.FC<ChatProps> = ({
               gap: 1,
             }}
           >
-            <Typography
-              variant="h6"
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              Chat
-            </Typography>
+            {isMobile ? (
+              <Tooltip title="Open explorer">
+                <IconButton
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={MOBILE_FLOAT_BTN_SX}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            ) : (
+              <Typography
+                variant="h6"
+                sx={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Chat
+              </Typography>
+            )}
           </Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: isMobile ? 1 : 0.5,
+            }}
+          >
             <Tooltip
               title={copiedChat ? "Copied!" : "Copy chat history as JSON"}
             >
               <span>
                 <IconButton
-                  size="small"
+                  size={isMobile ? "medium" : "small"}
+                  aria-label="Copy chat history as JSON"
                   onClick={handleCopyChatHistory}
                   disabled={messages.length === 0}
+                  sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
                 >
                   {copiedChat ? <Check size={20} /> : <Copy size={20} />}
                 </IconButton>
               </span>
             </Tooltip>
-            <IconButton size="small" onClick={createNewSession}>
-              <Plus size={20} />
-            </IconButton>
-            <IconButton size="small" onClick={handleHistoryMenuOpen}>
-              <History size={20} />
-            </IconButton>
+            <Tooltip title="New chat">
+              <IconButton
+                size={isMobile ? "medium" : "small"}
+                aria-label="New chat"
+                onClick={createNewSession}
+                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
+              >
+                <Plus size={20} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Chat history">
+              <IconButton
+                size={isMobile ? "medium" : "small"}
+                aria-label="Chat history"
+                onClick={handleHistoryMenuOpen}
+                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
+              >
+                <History size={20} />
+              </IconButton>
+            </Tooltip>
           </Box>
         </Box>
       </Box>
@@ -3737,6 +3815,67 @@ const Chat: React.FC<ChatProps> = ({
           position: "relative",
         }}
       >
+        {/* Mobile "Ask your data" home: hero + starter chips when empty */}
+        {isMobile && messages.length === 0 && (
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              px: 3,
+              gap: 3,
+              pointerEvents: "none",
+            }}
+          >
+            <Box>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                Ask your data
+              </Typography>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 1, maxWidth: 360 }}
+              >
+                Ask a question in plain English — Mako writes and runs the query
+                for you.
+              </Typography>
+            </Box>
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 1,
+                justifyContent: "center",
+                maxWidth: 440,
+                pointerEvents: "auto",
+              }}
+            >
+              {MOBILE_ASK_SUGGESTIONS.map(suggestion => (
+                <Chip
+                  key={suggestion}
+                  label={suggestion}
+                  clickable
+                  variant="outlined"
+                  disabled={!currentWorkspace}
+                  onClick={() => handleChatSubmit(suggestion)}
+                  sx={{
+                    height: "auto",
+                    py: 0.75,
+                    "& .MuiChip-label": {
+                      whiteSpace: "normal",
+                      display: "block",
+                    },
+                  }}
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
+
         <div ref={scrollContentRef}>
           <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
             <List dense>

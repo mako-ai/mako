@@ -4,6 +4,7 @@ import {
   Typography,
   Snackbar,
   Alert,
+  Chip,
   ToggleButtonGroup,
   ToggleButton,
   Tooltip,
@@ -21,12 +22,14 @@ import {
   Sheet as TableIcon,
   Braces as JsonIcon,
   BarChart3 as ChartIcon,
+  LayoutGrid as CardsIcon,
   ClipboardCopy as CopyIcon,
   Download as DownloadIcon,
   FileCode2 as StructureIcon,
 } from "lucide-react";
 import Editor from "@monaco-editor/react";
 import { useTheme } from "../contexts/ThemeContext";
+import { useIsMobile } from "../hooks/useIsMobile";
 import type { MakoChartSpec } from "../lib/chart-spec";
 import ResultsChart from "./ResultsChart";
 import {
@@ -53,12 +56,58 @@ interface QueryResult {
 
 type ViewMode = "table" | "json" | "chart";
 // "structure" is an extra, uncontrolled-only mode available when a
-// `structureView` slot is provided (table data tabs); it is intentionally not
-// part of the persisted console ViewMode.
-type ResultsViewMode = ViewMode | "structure";
+// `structureView` slot is provided (table data tabs); "cards" is the mobile
+// record-card view. Both are local-only and intentionally not part of the
+// persisted console ViewMode (the controlled `viewMode` prop stays table/json/
+// chart so the API and store contracts are unchanged).
+type ResultsViewMode = ViewMode | "structure" | "cards";
 
 const PINNED_RESULT_COLUMNS = { left: ["__rowIndex"], right: [] };
 const RESULTS_TABLE_LOCALE_TEXT = { noRowsLabel: "No rows returned" };
+
+// Max record cards rendered at once on mobile (cards are not virtualized).
+const MOBILE_CARD_LIMIT = 200;
+
+// Map common status-like cell values to a Chip color so mobile cards read at a
+// glance. Returns null for non-status values (rendered as plain text).
+const STATUS_CHIP_COLORS: Record<
+  string,
+  "success" | "error" | "warning" | "info"
+> = {
+  success: "success",
+  succeeded: "success",
+  active: "success",
+  completed: "success",
+  complete: "success",
+  done: "success",
+  enabled: "success",
+  paid: "success",
+  ok: "success",
+  passed: "success",
+  error: "error",
+  failed: "error",
+  failure: "error",
+  cancelled: "error",
+  canceled: "error",
+  rejected: "error",
+  disabled: "error",
+  inactive: "error",
+  pending: "warning",
+  processing: "warning",
+  running: "warning",
+  queued: "warning",
+  waiting: "warning",
+  draft: "info",
+  new: "info",
+};
+
+function statusChipColor(
+  value: string,
+): "success" | "error" | "warning" | "info" | null {
+  const key = value.trim().toLowerCase();
+  if (!key || key.length > 24) return null;
+  return STATUS_CHIP_COLORS[key] ?? null;
+}
 
 interface ResultsTableProps {
   results?: QueryResult | null;
@@ -91,16 +140,30 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   onDownload,
   structureView,
 }) => {
+  const isMobile = useIsMobile();
   const [snackbarOpen, setSnackbarOpen] = React.useState(false);
   const [internalViewMode, setInternalViewMode] =
     React.useState<ResultsViewMode>("table");
+  // "cards" is a local override that takes precedence over the controlled
+  // `viewMode` prop, so the mobile record-card view works even when the parent
+  // (Editor) drives table/json/chart. Defaults on for mobile.
+  const [localOverride, setLocalOverride] = React.useState<"cards" | null>(
+    isMobile ? "cards" : null,
+  );
   const [downloadAnchorEl, setDownloadAnchorEl] =
     React.useState<HTMLElement | null>(null);
   const { effectiveMode } = useTheme();
 
-  const viewMode: ResultsViewMode = controlledViewMode ?? internalViewMode;
+  const viewMode: ResultsViewMode =
+    localOverride ?? controlledViewMode ?? internalViewMode;
   const setViewMode = useCallback(
     (mode: ResultsViewMode) => {
+      if (mode === "cards") {
+        // Local-only; never propagated to the persisted console view mode.
+        setLocalOverride("cards");
+        return;
+      }
+      setLocalOverride(null);
       if (mode === "structure" || !onViewModeChange) {
         setInternalViewMode(mode);
       } else {
@@ -114,7 +177,8 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   const canGoForward = Boolean(results?.pageInfo?.hasMore && onNextPage);
   const lastTableResetExecutedAtRef = React.useRef<string | undefined>();
 
-  // Reset to table view whenever new results are received
+  // Reset the view whenever new results arrive: cards on mobile (answer-first),
+  // table on desktop.
   const executedAt = results?.executedAt;
   useEffect(() => {
     if (!executedAt || lastTableResetExecutedAtRef.current === executedAt) {
@@ -122,10 +186,15 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     }
 
     lastTableResetExecutedAtRef.current = executedAt;
-    if (viewMode !== "table") {
-      setViewMode("table");
+    if (isMobile) {
+      setLocalOverride("cards");
+    } else {
+      setLocalOverride(null);
+      if (viewMode !== "table") {
+        setViewMode("table");
+      }
     }
-  }, [executedAt, setViewMode, viewMode]);
+  }, [executedAt, isMobile, setViewMode, viewMode]);
 
   // Helper function to normalize any data into an array format
   const normalizeToArray = (data: any): any[] => {
@@ -503,6 +572,14 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
   );
 
   const jsonContent = JSON.stringify(results, null, 2);
+
+  // Data columns excluding the synthetic row-index column, used by the mobile
+  // record-card view.
+  const dataColumns = useMemo(
+    () => columns.filter(col => col.field !== "__rowIndex"),
+    [columns],
+  );
+
   useRenderCount("ResultsTable", {
     executedAt,
     viewMode,
@@ -562,6 +639,186 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
     );
   }
 
+  // ── Mobile record cards ───────────────────────────────────────────────
+  // Render up to a cap so large result sets don't blow up the DOM (cards are
+  // not virtualized like the DataGrid). Beyond the cap we point users at the
+  // Table view.
+  const renderCardValue = (value: unknown): React.ReactNode => {
+    if (value === null || value === undefined) {
+      return (
+        <Typography variant="body2" color="text.disabled">
+          —
+        </Typography>
+      );
+    }
+    if (typeof value === "object") {
+      return (
+        <Typography
+          variant="body2"
+          sx={{
+            fontFamily:
+              'Monaco, Menlo, "Ubuntu Mono", Consolas, "Courier New", monospace',
+            fontSize: "0.75rem",
+            wordBreak: "break-word",
+            textAlign: "right",
+          }}
+        >
+          {JSON.stringify(value)}
+        </Typography>
+      );
+    }
+    const str = String(value);
+    const chipColor = statusChipColor(str);
+    if (chipColor) {
+      return (
+        <Chip size="small" variant="outlined" color={chipColor} label={str} />
+      );
+    }
+    return (
+      <Typography
+        variant="body2"
+        sx={{ wordBreak: "break-word", textAlign: "right" }}
+      >
+        {str}
+      </Typography>
+    );
+  };
+
+  const cardRows = rows.slice(0, MOBILE_CARD_LIMIT);
+  const cardsView = (
+    <Box
+      sx={{
+        height: "100%",
+        overflow: "auto",
+        p: 1,
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+      }}
+    >
+      {cardRows.map((row, index) => {
+        const [titleCol, ...restCols] = dataColumns;
+        const titleRaw = titleCol ? row[titleCol.field] : undefined;
+        const title =
+          titleRaw === null || titleRaw === undefined || titleRaw === ""
+            ? `Row ${index + 1}`
+            : typeof titleRaw === "object"
+              ? JSON.stringify(titleRaw)
+              : String(titleRaw);
+        return (
+          <Box
+            key={row.id ?? index}
+            sx={{
+              border: 1,
+              borderColor: "divider",
+              borderRadius: 1,
+              p: 1.5,
+              backgroundColor: "background.paper",
+            }}
+          >
+            <Typography
+              variant="subtitle2"
+              sx={{
+                fontWeight: 700,
+                mb: restCols.length ? 1 : 0,
+                wordBreak: "break-word",
+              }}
+            >
+              {title}
+            </Typography>
+            {restCols.length > 0 && (
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 45%) 1fr",
+                  columnGap: 1.5,
+                  rowGap: 0.75,
+                  alignItems: "start",
+                }}
+              >
+                {restCols.map(col => (
+                  <React.Fragment key={col.field}>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ wordBreak: "break-word", pt: 0.25 }}
+                    >
+                      {col.headerName ?? col.field}
+                    </Typography>
+                    <Box
+                      sx={{
+                        minWidth: 0,
+                        display: "flex",
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      {renderCardValue(row[col.field])}
+                    </Box>
+                  </React.Fragment>
+                ))}
+              </Box>
+            )}
+          </Box>
+        );
+      })}
+      {rows.length > MOBILE_CARD_LIMIT && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ textAlign: "center", py: 1 }}
+        >
+          Showing the first {MOBILE_CARD_LIMIT} of {rows.length} rows — switch
+          to Table view to see all.
+        </Typography>
+      )}
+    </Box>
+  );
+
+  // ── Mobile answer-first summary band ──────────────────────────────────
+  let kpi: { label: string; value: string } | null = null;
+  if (rows.length === 1 && dataColumns.length === 1) {
+    const col = dataColumns[0];
+    const v = rows[0][col.field];
+    if (v !== null && v !== undefined && typeof v !== "object") {
+      kpi = { label: col.headerName ?? col.field, value: String(v) };
+    }
+  }
+  const summaryBand =
+    isMobile && viewMode !== "structure" ? (
+      <Box
+        sx={{
+          px: 1.5,
+          py: 1,
+          borderBottom: "1px solid",
+          borderColor: "divider",
+          backgroundColor: "background.default",
+        }}
+      >
+        {kpi ? (
+          <>
+            <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+              {kpi.value}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {kpi.label}
+            </Typography>
+          </>
+        ) : (
+          <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>
+              {results.resultCount.toLocaleString()}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {results.resultCount === 1 ? "result" : "results"}
+              {results.executionTime !== undefined
+                ? ` • ${results.executionTime} ms`
+                : ""}
+            </Typography>
+          </Box>
+        )}
+      </Box>
+    ) : null;
+
   return (
     <Box
       sx={{
@@ -593,16 +850,25 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
           size="small"
           aria-label="view mode"
         >
+          {isMobile && (
+            <Tooltip title="Cards view">
+              <ToggleButton value="cards" aria-label="cards view">
+                <CardsIcon strokeWidth={1.5} size={22} />
+              </ToggleButton>
+            </Tooltip>
+          )}
           <Tooltip title="Table view">
             <ToggleButton value="table" aria-label="table view">
               <TableIcon strokeWidth={1.5} size={22} />
             </ToggleButton>
           </Tooltip>
-          <Tooltip title="JSON view">
-            <ToggleButton value="json" aria-label="json view">
-              <JsonIcon strokeWidth={1.5} size={22} />
-            </ToggleButton>
-          </Tooltip>
+          {!isMobile && (
+            <Tooltip title="JSON view">
+              <ToggleButton value="json" aria-label="json view">
+                <JsonIcon strokeWidth={1.5} size={22} />
+              </ToggleButton>
+            </Tooltip>
+          )}
           <Tooltip title="Chart view">
             <ToggleButton value="chart" aria-label="chart view">
               <ChartIcon strokeWidth={1.5} size={22} />
@@ -659,6 +925,9 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
         )}
       </Box>
 
+      {/* Answer-first summary band (mobile) */}
+      {summaryBand}
+
       {/* Results content */}
       <Box
         sx={{
@@ -668,6 +937,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({
           maxWidth: "100%",
         }}
       >
+        {viewMode === "cards" && cardsView}
         {viewMode === "table" && (
           <React.Profiler id="ResultsTable.DataGrid" onRender={onRenderDebug}>
             <DataGridPremium
