@@ -20,6 +20,7 @@ import {
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { enqueueWebhookProcess } from "../webhook-process-enqueue";
 
 const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
@@ -1043,7 +1044,15 @@ function buildMaterializeEvents(
   }));
 }
 
-const CDC_INGEST_BATCH_LIMIT = 1000;
+// How many pending WebhookEvents the cron ingests per run, GLOBALLY across all
+// flows. The effective ingest ceiling is roughly
+//   CDC_INGEST_BATCH_LIMIT / (scheduler cron interval).
+// Raise this (and/or shorten the cron) if the pending WebhookEvent backlog
+// grows faster than it drains. Requires the { status, receivedAt } index.
+const CDC_INGEST_BATCH_LIMIT = Math.max(
+  parseInt(process.env.CDC_INGEST_BATCH_LIMIT || "2000", 10) || 2000,
+  100,
+);
 
 /**
  * Ingest pending WebhookEvents into CdcChangeEvents, grouped by flow.
@@ -1394,6 +1403,15 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       ingestPendingWebhookEvents(logger),
     )) as { ingested: number; dropped: number; failed: number };
 
+    // Reap CDC events that are still materialization-pending but whose paired
+    // webhook completed long ago (apply never finalized). Without this, stuck
+    // pending CdcChangeEvents accumulate forever — there is no TTL on the
+    // "pending" status (only applied/dropped have TTL indexes).
+    const cleanupResult = (await step.run(
+      "cleanup-stale-pending-cdc",
+      cleanupStalePendingCdcEvents,
+    )) as Awaited<ReturnType<typeof cleanupStalePendingCdcEvents>>;
+
     const staleEntities = (await step.run(
       "find-stale-entities",
       findStaleEntities,
@@ -1416,12 +1434,19 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       totalTriggered = staleEntities.length;
     }
 
-    if (ingestResult.ingested > 0 || totalTriggered > 0) {
+    if (
+      ingestResult.ingested > 0 ||
+      totalTriggered > 0 ||
+      cleanupResult.droppedCdc > 0
+    ) {
       logger.info("CDC scheduler completed", {
         ingested: ingestResult.ingested,
         dropped: ingestResult.dropped,
         failed: ingestResult.failed,
         materializeTriggered: totalTriggered,
+        staleCdcDropped: cleanupResult.droppedCdc,
+        staleWebhooksDropped: cleanupResult.droppedWebhooks,
+        staleCursorsAdvanced: cleanupResult.cursorsAdvanced,
       });
     }
 
@@ -1430,6 +1455,7 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       dropped: ingestResult.dropped,
       failed: ingestResult.failed,
       materializeTriggered: totalTriggered,
+      staleCdcDropped: cleanupResult.droppedCdc,
     };
   },
 );
