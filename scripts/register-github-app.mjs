@@ -1,12 +1,23 @@
 /**
  * Register a Mako GitHub App via GitHub's manifest flow.
  *
- * 1. Opens (or prints) a pre-filled "New GitHub App" URL.
+ * 1. Serves a local page that auto-submits the App manifest to GitHub.
  * 2. After you click Create, GitHub redirects to localhost with a one-time code.
- * 3. Exchanges the code for app id, slug, PEM, and webhook secret → updates .env.
+ * 3. Exchanges the code for app id, slug, PEM, webhook secret, and OAuth client
+ *    credentials → writes them to .env (default) or a JSON file.
  *
- * Usage: node scripts/register-github-app.mjs
- * Env overrides: BASE_URL, CLIENT_URL (read from ../../.env when present).
+ * Usage (dev, personal account, writes .env):
+ *   node scripts/register-github-app.mjs
+ *
+ * Usage (prod, org-owned, writes JSON for CI wiring):
+ *   BASE_URL=https://app.mako.ai CLIENT_URL=https://app.mako.ai \
+ *   GITHUB_APP_NAME="Mako Transforms" GITHUB_APP_ORG=mako-ai \
+ *   GITHUB_APP_PUBLIC=1 GITHUB_APP_OUTPUT_JSON=.secrets/prod-github-app.json \
+ *   node scripts/register-github-app.mjs
+ *
+ * Env overrides: BASE_URL, CLIENT_URL (read from ../.env when present),
+ *   GITHUB_APP_NAME, GITHUB_APP_ORG, GITHUB_APP_PUBLIC, GITHUB_APP_OUTPUT_JSON,
+ *   GITHUB_APP_CALLBACK_PORT.
  */
 import fs from "fs";
 import http from "http";
@@ -53,6 +64,14 @@ function pemToEnv(pem) {
   return pem.replace(/\n/g, "\\n");
 }
 
+function htmlAttr(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 async function exchangeCode(code) {
   const res = await fetch(
     `https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`,
@@ -92,9 +111,13 @@ const baseUrl =
   process.env.BASE_URL || fileEnv.BASE_URL || "http://localhost:8080";
 const clientUrl =
   process.env.CLIENT_URL || fileEnv.CLIENT_URL || "http://localhost:5173";
+const appName = process.env.GITHUB_APP_NAME || "Mako Transforms (Dev)";
+const ownerOrg = process.env.GITHUB_APP_ORG || "";
+const outputJson = process.env.GITHUB_APP_OUTPUT_JSON || "";
+const isPublic = process.env.GITHUB_APP_PUBLIC === "1";
 
 const manifest = {
-  name: "Mako Transforms (Dev)",
+  name: appName,
   description:
     "Import dbt projects from GitHub, sync on push, Slim CI on pull requests.",
   url: clientUrl.replace(/\/$/, ""),
@@ -110,14 +133,17 @@ const manifest = {
   // receives everything it needs to verify ownership.
   callback_urls: [`${baseUrl.replace(/\/$/, "")}/api/github/setup`],
   setup_on_update: true,
-  public: false,
+  public: isPublic,
   default_permissions: {
     contents: "write",
     metadata: "read",
     pull_requests: "write",
     statuses: "write",
   },
-  default_events: ["push", "pull_request", "installation"],
+  // Note: `installation`/`installation_repositories` are delivered to every
+  // App automatically and must NOT be declared here (GitHub rejects them as
+  // unsupported default events).
+  default_events: ["push", "pull_request"],
   // Required: the /setup callback verifies the installing user actually
   // controls the installation via the user-to-server OAuth `code`. Without
   // this, GitHub never sends a `code` and Mako refuses to bind (anti-IDOR).
@@ -125,32 +151,49 @@ const manifest = {
 };
 
 const manifestJson = JSON.stringify(manifest);
-const manifestB64 = Buffer.from(manifestJson, "utf8")
-  .toString("base64")
-  .replace(/\+/g, "-")
-  .replace(/\//g, "_")
-  .replace(/=+$/, "");
+// GitHub's documented manifest flow: POST a form with a `manifest` field to the
+// new-app endpoint (personal or org). A self-submitting form avoids query
+// length/encoding pitfalls of GET-based approaches.
+const newAppAction = ownerOrg
+  ? `https://github.com/organizations/${ownerOrg}/settings/apps/new`
+  : "https://github.com/settings/apps/new";
+const state = Math.random().toString(36).slice(2);
 
-const registerUrl = `https://github.com/settings/apps/new?manifest=${manifestB64}`;
+const formPage = `<!doctype html><html><body>
+<p>Submitting GitHub App manifest for "${htmlAttr(appName)}"…</p>
+<form id="f" method="post" action="${htmlAttr(newAppAction)}?state=${state}">
+  <input type="hidden" name="manifest" value="${htmlAttr(manifestJson)}">
+</form>
+<script>document.getElementById('f').submit();</script>
+</body></html>`;
 
 console.log("\nMako GitHub App — manifest registration\n");
+console.log("App name:   ", appName);
+console.log("Owner:      ", ownerOrg ? `org/${ownerOrg}` : "personal account");
+console.log("Public:     ", isPublic);
 console.log("Webhook URL:", manifest.hook_attributes.url);
 console.log("Setup URL:  ", manifest.setup_url);
 console.log("Callback:   ", manifest.redirect_url);
-console.log("\nOpening GitHub (approve sudo if prompted, then click Create)…\n");
-
-const opened = openUrl(registerUrl);
-if (!opened) {
-  console.log("Open this URL manually:\n", registerUrl, "\n");
-}
+console.log("Output:     ", outputJson || ".env");
+console.log(
+  `\nStarting local form at http://localhost:${CALLBACK_PORT}/ — open it, then click "Create GitHub App".\n`,
+);
 
 const server = http.createServer(async (req, res) => {
-  if (!req.url?.startsWith("/callback")) {
+  const url = new URL(req.url || "/", `http://localhost:${CALLBACK_PORT}`);
+
+  if (url.pathname === "/" || url.pathname === "/start") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(formPage);
+    return;
+  }
+
+  if (!url.pathname.startsWith("/callback")) {
     res.writeHead(404);
     res.end("Not found");
     return;
   }
-  const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`);
+
   const code = url.searchParams.get("code");
   if (!code) {
     res.writeHead(400);
@@ -170,23 +213,47 @@ const server = http.createServer(async (req, res) => {
       throw new Error("Unexpected conversion response — missing id/slug/pem");
     }
 
-    upsertEnv({
-      GITHUB_APP_ID: String(app.id),
-      GITHUB_APP_SLUG: app.slug,
-      GITHUB_APP_PRIVATE_KEY: pemToEnv(pem),
-      GITHUB_APP_WEBHOOK_SECRET: app.webhook_secret || "",
-      GITHUB_APP_CLIENT_ID: app.client_id || "",
-      GITHUB_APP_CLIENT_SECRET: app.client_secret || "",
-    });
+    if (outputJson) {
+      const outPath = path.isAbsolute(outputJson)
+        ? outputJson
+        : path.join(rootDir, outputJson);
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(
+        outPath,
+        JSON.stringify(
+          {
+            id: app.id,
+            slug: app.slug,
+            html_url: app.html_url,
+            owner: app.owner?.login,
+            client_id: app.client_id,
+            client_secret: app.client_secret,
+            webhook_secret: app.webhook_secret,
+            pem,
+          },
+          null,
+          2,
+        ),
+      );
+      fs.chmodSync(outPath, 0o600);
+      console.log(`\n✓ Wrote credentials JSON to ${outPath}`);
+    } else {
+      upsertEnv({
+        GITHUB_APP_ID: String(app.id),
+        GITHUB_APP_SLUG: app.slug,
+        GITHUB_APP_PRIVATE_KEY: pemToEnv(pem),
+        GITHUB_APP_WEBHOOK_SECRET: app.webhook_secret || "",
+        GITHUB_APP_CLIENT_ID: app.client_id || "",
+        GITHUB_APP_CLIENT_SECRET: app.client_secret || "",
+      });
+      console.log("\n✓ Updated .env");
+    }
 
-    console.log("\n✓ Updated .env with:");
-    console.log("  GITHUB_APP_ID=", app.id);
-    console.log("  GITHUB_APP_SLUG=", app.slug);
-    console.log("  GITHUB_APP_WEBHOOK_SECRET= (set)");
-    console.log("  GITHUB_APP_PRIVATE_KEY= (set)");
-    console.log("  GITHUB_APP_CLIENT_ID= (set)");
-    console.log("  GITHUB_APP_CLIENT_SECRET= (set)");
-    console.log("\nNext: restart the API, then in Mako Transforms click Connect GitHub.\n");
+    console.log("  app id:    ", app.id);
+    console.log("  slug:      ", app.slug);
+    console.log("  owner:     ", app.owner?.login);
+    console.log("  client id: ", app.client_id);
+    console.log("  html url:  ", app.html_url);
   } catch (error) {
     console.error("\n✗ Failed to exchange manifest code:", error);
   }
@@ -196,5 +263,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(CALLBACK_PORT, () => {
-  console.log(`Listening for callback on http://localhost:${CALLBACK_PORT}/callback …`);
+  openUrl(`http://localhost:${CALLBACK_PORT}/`);
 });

@@ -1,8 +1,33 @@
 # GitHub App — PR preview + production
 
-Mako Transforms uses one **Mako-owned GitHub App** (`GITHUB_APP_*`). Workspaces install it on their org/user account.
+Mako Transforms uses **two** Mako-owned GitHub Apps so prod isn't tied to a
+dev-named app:
 
-## 1. Repo secrets and variables
+| App | Used by | Where creds live |
+| --- | --- | --- |
+| **Mako Transforms** (`mako-transforms`, App ID `4106865`, public) | **Production** (`app.mako.ai`) | GitHub Actions **`production` environment** vars/secrets |
+| **mako-transforms-jonas-dev** (App ID `4093709`) | PR previews + local dev | **repo-level** vars/secrets |
+
+The deploy workflow's `deploy-production` job runs under `environment: production`,
+so environment-scoped `MAKO_GITHUB_APP_*` override the repo-level ones — prod
+uses the prod app, previews/local use the dev app. To (re)create the prod app:
+
+```bash
+# Owner picked during the GitHub create step; creds written to a gitignored JSON.
+BASE_URL=https://app.mako.ai CLIENT_URL=https://app.mako.ai \
+GITHUB_APP_NAME="Mako Transforms" GITHUB_APP_ORG=<org-or-omit-for-personal> \
+GITHUB_APP_PUBLIC=1 GITHUB_APP_OUTPUT_JSON=.secrets/prod-github-app.json \
+node scripts/register-github-app.mjs
+# then set the production-environment vars/secrets from that JSON:
+#   gh variable set MAKO_GITHUB_APP_{ID,SLUG,CLIENT_ID} --env production --repo mako-ai/mono ...
+#   gh secret   set MAKO_GITHUB_APP_{CLIENT_SECRET,WEBHOOK_SECRET,PRIVATE_KEY} --env production --repo mako-ai/mono ...
+```
+
+The manifest already enables *Request user authorization (OAuth) during
+installation*, sets the Callback URL to `/api/github/setup`, and marks the app
+public — no manual GitHub-UI steps needed for a manifest-created app.
+
+## 1. Repo secrets and variables (dev app — PR previews + local)
 
 ```bash
 # From mono-dbt-polish root (private key at .secrets/github-app.pem)
