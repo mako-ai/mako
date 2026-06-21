@@ -88,11 +88,72 @@ function testUserWebhookCdcRecordUsesUsersEntity() {
   assert.deepEqual(records[0].payload, { id: "user_123" });
 }
 
+// Regression: Close nests its unique event id at `event.event.id`. The CDC
+// record's changeId must resolve to it so distinct updates get distinct
+// idempotency keys (instead of collapsing onto `lead.updated:<recordId>`).
+function testWebhookChangeIdUsesNestedEventId() {
+  const connector = createConnector();
+
+  const records = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        id: "ev_nested_123",
+        object_type: "lead",
+        action: "updated",
+        object_id: "lead_abc",
+        date_updated: "2026-06-21T17:19:39.000Z",
+        data: {
+          id: "lead_abc",
+          display_name: "Acme",
+          date_updated: "2026-06-21T17:19:39.000Z",
+        },
+      },
+    },
+    "lead.updated",
+  );
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].changeId, "ev_nested_123");
+}
+
+// When no vendor event id is present, the fallback changeId must include the
+// source timestamp so two distinct updates of the same record never share a
+// changeId (and therefore never collapse to one idempotency key).
+function testWebhookChangeIdFallbackIncludesSourceTs() {
+  const connector = createConnector();
+
+  const records = connector.extractWebhookCdcRecords(
+    {
+      event: {
+        object_type: "lead",
+        action: "updated",
+        object_id: "lead_xyz",
+        date_updated: "2026-06-21T17:19:39.000Z",
+        data: {
+          id: "lead_xyz",
+          display_name: "Beta",
+          date_updated: "2026-06-21T17:19:39.000Z",
+        },
+      },
+    },
+    "lead.updated",
+  );
+
+  assert.equal(records.length, 1);
+  assert.ok(
+    records[0].changeId.endsWith(":2026-06-21T17:19:39.000Z"),
+    `changeId should include sourceTs, got ${records[0].changeId}`,
+  );
+  assert.ok(records[0].changeId.includes("lead_xyz"));
+}
+
 function main() {
   testUserWebhookEventsAreSupported();
   testUserWebhookEventsAreMapped();
   testUserWebhookPayloadIsExtractedForProcessing();
   testUserWebhookCdcRecordUsesUsersEntity();
+  testWebhookChangeIdUsesNestedEventId();
+  testWebhookChangeIdFallbackIncludesSourceTs();
 }
 
 main();

@@ -34,13 +34,24 @@ function scopeIdempotencyKey(flowId: Types.ObjectId, key: string): string {
   return `flow:${String(flowId)}:${key}`;
 }
 
-function buildIdempotencyKey(
+export function buildIdempotencyKey(
   input: CdcEventInput,
   payload: Record<string, unknown>,
   sourceTs: Date,
   flowId: Types.ObjectId,
 ): string {
-  if (input.idempotencyKey) {
+  // Only trust a connector-supplied idempotency key for NON-webhook sources.
+  //
+  // Webhook `changeId`s have proven unreliable: several connectors fall back to
+  // a value that is STABLE per (eventType, recordId) (e.g. Close emits
+  // `lead.updated:<recordId>` because the real event id is nested at
+  // `event.event.id` and never read). Keying on that collapses every subsequent
+  // update of a record onto a single idempotency key, so all but the FIRST
+  // change is silently deduped/dropped before it can be materialized — the
+  // destination then freezes at the first-seen state. For webhooks we therefore
+  // always derive a CONTENT-based key below: distinct changes never collide,
+  // while true re-deliveries (identical payload + sourceTs) still dedupe.
+  if (input.idempotencyKey && input.source !== "webhook") {
     return scopeIdempotencyKey(flowId, input.idempotencyKey);
   }
 
@@ -54,12 +65,21 @@ function buildIdempotencyKey(
     .update(stableStringify(payloadForHash))
     .digest("hex");
 
+  // Missing-sourceTs guard: resolveSourceTimestamp falls back to `new Date()`
+  // when the payload carries no usable timestamp. A "now" value would differ
+  // across re-deliveries and weaken dedupe, so when sourceTs is absent/invalid
+  // we drop it from the key and rely solely on the (always-present) payload
+  // hash. This never OVER-dedupes distinct content — at worst it allows a
+  // harmless duplicate upsert — so it cannot reintroduce the data-loss bug.
+  const hasReliableSourceTs =
+    sourceTs instanceof Date && !Number.isNaN(sourceTs.getTime());
+
   const rawKey = [
     input.source,
     input.entity,
     input.recordId,
     input.operation,
-    sourceTs.toISOString(),
+    hasReliableSourceTs ? sourceTs.toISOString() : "no-source-ts",
     payloadHash,
   ].join(":");
 

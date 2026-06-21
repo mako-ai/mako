@@ -406,19 +406,25 @@ export abstract class BaseConnector {
       return [];
     }
 
+    const sourceTs = this.resolveRecordTimestamp(extracted.data);
     return [
       {
         entity: mapping.entity,
         recordId: extracted.id,
         operation: mapping.operation,
         payload: extracted.data,
-        sourceTs: this.resolveRecordTimestamp(extracted.data),
+        sourceTs,
         source: "webhook",
+        // Prefer a vendor-unique event id. The final fallback now includes the
+        // source timestamp so two DISTINCT updates of the same record never
+        // share a changeId (which would otherwise collapse to one idempotency
+        // key and silently drop every update after the first).
         changeId:
           event?.id ||
           event?.event_id ||
           event?.eventId ||
-          `${resolvedEventType}:${extracted.id}`,
+          event?.event?.id ||
+          `${resolvedEventType}:${extracted.id}:${sourceTs.toISOString()}`,
       },
     ];
   }
