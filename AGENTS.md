@@ -21,59 +21,60 @@ them. The core dev experience is one command:
 The health check is `GET http://localhost:8080/health` (note: `/health`, not
 `/api/health`).
 
-### Database: use the Atlas **dev** DB, not a local Mongo
+### Databases run LOCALLY in this VM (no Atlas/cloud secrets injected)
 
-Secrets are injected as real environment variables (see `CLOUD_AGENT_ALL_SECRET_NAMES`),
-so you do NOT need a `.env` file and you do NOT need to run a local `mongod`.
-Connection strings for `dev`, `staging`, and `prod` Atlas databases are all
-injected.
+Only `GITHUB_TOKEN` is injected here (`CLOUD_AGENT_ALL_SECRET_NAMES`); there are
+no Atlas DB or AI-gateway secrets. The setup installed MongoDB 8.0 and
+PostgreSQL 16 locally (persist in the VM snapshot) and config lives in a
+gitignored root `.env` (also persisted in the snapshot — `api/src/index.ts`
+loads it via `dotenv.config()`).
 
-- The injected `DATABASE_URL` points at **staging**. For development, start the
-  app against the **dev** database instead, which is periodically restored from a
-  prod snapshot (fast, with real prod-like data):
+Both DB servers must be **started on each VM boot** (no systemd here); the update
+script does NOT start them. Start them before `pnpm dev`:
 
-  ```bash
-  export DATABASE_URL="$DEV_DATABASE_URL"
-  pnpm dev
-  ```
+```bash
+# MongoDB — single-node replica set (the app uses transactions, which REQUIRE a
+# replica set; a standalone mongod fails with "Transaction numbers are only
+# allowed on a replica set member"). Config already has replSetName: rs0.
+sudo mongod --config /etc/mongod.conf --bind_ip 127.0.0.1 &   # logs: /var/log/mongodb/mongod.log
+# First boot only (idempotent thereafter — already initiated in this snapshot):
+mongosh --quiet --eval 'try{rs.status()}catch(e){rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})}'
 
-- `api/src/index.ts` loads the root `.env` with `dotenv.config()` **without
-  `override`**, so injected/exported env vars always win over `.env`. That means
-  the only reliable way to point the app at the dev DB is to export
-  `DATABASE_URL` (a committed `.env` cannot override it).
-- Never run the app against `PROD_DATABASE_URL`.
+# PostgreSQL (demo data source)
+sudo pg_ctlcluster 16 main start
+```
+
+`.env` points the app at these: `DATABASE_URL=mongodb://127.0.0.1:27017/mako` and
+the demo source `DEMO_DATABASE_URL=postgresql://mako:mako@127.0.0.1:5432/demo`.
 
 ### Auto-seeded login (you are logged in out-of-the-box)
 
-The dev DB is regularly restored from prod, which wipes ad-hoc test accounts. The
-update script runs `api/src/scripts/seed-dev-admin.ts` on VM startup to
-idempotently (re)create a known admin login so you can sign in to the running app
-immediately:
-
-- **Email:** `cloud-agent@mako.dev`
-- **Password:** `CloudAgentDev!2024` (override via `DEV_ADMIN_PASSWORD`)
-
-The seed marks the user verified, completes onboarding, makes it the **owner** of
-a `Cloud Agent Dev` workspace, and attaches the `Chinook Music Store` demo
-Postgres DB (`DEMO_DATABASE_URL`) so there is queryable data on first login. It
-targets `DEV_DATABASE_URL` (falls back to `DATABASE_URL`), refuses to touch a
-production URI, and soft-fails (exits 0) if the DB is unreachable — so it never
-breaks VM startup. Re-run manually any time with:
+`api/src/scripts/seed-dev-admin.ts` idempotently creates a known admin login,
+owning a `Cloud Agent Dev` workspace with the demo Postgres attached as the
+`Chinook Music Store` connection. Run it once after Mongo is up (data then
+persists in the snapshot; re-run any time it's missing):
 
 ```bash
 pnpm --filter api exec tsx src/scripts/seed-dev-admin.ts
 ```
 
-Email/password registration normally requires email verification before login
-(SendGrid sends the code, which you won't receive). The seed sidesteps this by
-setting `emailVerified: true` directly; if you create another account manually,
-flip `emailVerified` in the DB to log in.
+- **Email:** `cloud-agent@mako.dev`
+- **Password:** `CloudAgentDev!2024` (override via `DEV_ADMIN_PASSWORD`)
+
+It marks the user verified + onboarded, refuses any URI whose DB name is
+`production`, and soft-fails (exits 0) if Mongo is unreachable. Email/password
+registration normally requires SendGrid email verification (you won't receive the
+code); the seed sidesteps this with `emailVerified: true`. If you create another
+account manually, flip `emailVerified` in the DB to log in.
 
 ### Misc caveats
 
 - No `docker-compose.yml` is committed, so `pnpm docker:*` scripts don't work
-  here — rely on the injected Atlas DB instead.
-- The Chinook demo Postgres uses lowercase, unquoted table names (`album`,
-  `artist`, …); `SELECT * FROM "Artist"` fails, `SELECT * FROM artist` works.
-- AI features need `AI_GATEWAY_API_KEY` (injected). `BILLING_ENABLED` is injected
-  as `true`; raw SQL queries are not billing-gated.
+  here — use the local Mongo/Postgres above instead.
+- The demo Postgres (`demo` DB, role `mako`/`mako`) uses lowercase, unquoted
+  table names (`artist`, `album`); `SELECT * FROM "Artist"` fails,
+  `SELECT * FROM artist` works.
+- AI features (AI query generation / chat) need `AI_GATEWAY_API_KEY`, which is
+  **not** injected — add it as a secret to enable them. Core SQL-client flows
+  (login, connections, console queries) work without it. `BILLING_ENABLED=false`
+  in `.env`, so nothing is billing-gated.
