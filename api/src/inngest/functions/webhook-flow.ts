@@ -5,6 +5,7 @@ import {
   Connector as DataSource,
   DatabaseConnection,
   CdcEntityState,
+  CdcChangeEvent,
 } from "../../database/workspace-schema";
 import { getSyncLogger } from "../logging";
 import { connectorRegistry } from "../../connectors/registry";
@@ -1026,6 +1027,87 @@ async function findStaleEntities(): Promise<
   return eligible.filter(c => existingFlowIdSet.has(c.flowId.toString()));
 }
 
+const CDC_PENDING_ENTITY_DISCOVERY_LIMIT = Math.max(
+  parseInt(process.env.CDC_PENDING_ENTITY_DISCOVERY_LIMIT || "5000", 10) || 5000,
+  100,
+);
+
+/**
+ * Self-heal discovery: find DISTINCT flow+entity pairs that still have
+ * `materializationStatus: "pending"` rows, regardless of the consumer cursor.
+ *
+ * findStaleEntities only flags entities where lastIngestSeq > lastMaterializedSeq.
+ * An entity whose cursor drifted PAST its pending rows (e.g. a backfill advanced
+ * lastMaterializedSeq, or a stale read jumped the cursor) has
+ * lastIngestSeq <= lastMaterializedSeq, so it is never flagged — and if it has
+ * also gone quiet (no new webhooks to bump lastIngestSeq), it would stay stuck
+ * forever. This authoritative scan rescues those entities. Backed by the
+ * `cdc_pending_entities` partial index, so it only touches pending rows.
+ */
+async function findEntitiesWithPendingEvents(): Promise<
+  Array<{
+    workspaceId: { toString(): string };
+    flowId: { toString(): string };
+    entity: string;
+  }>
+> {
+  const grouped = await CdcChangeEvent.aggregate<{
+    _id: { workspaceId: Types.ObjectId; flowId: Types.ObjectId; entity: string };
+  }>([
+    { $match: { materializationStatus: "pending" } },
+    {
+      $group: {
+        _id: {
+          workspaceId: "$workspaceId",
+          flowId: "$flowId",
+          entity: "$entity",
+        },
+      },
+    },
+    { $limit: CDC_PENDING_ENTITY_DISCOVERY_LIMIT },
+  ]);
+
+  if (grouped.length === 0) return [];
+
+  const candidates = grouped.map(g => ({
+    workspaceId: g._id.workspaceId,
+    flowId: g._id.flowId,
+    entity: g._id.entity,
+  }));
+
+  // Respect the circuit-breaker backoff so we don't hammer entities that are
+  // failing for a real reason (same policy as findStaleEntities).
+  const states = await CdcEntityState.find({
+    flowId: { $in: candidates.map(c => c.flowId) },
+  })
+    .select("flowId entity consecutiveFailures lastFailedAt")
+    .lean();
+  const stateKey = (flowId: string, entity: string) => `${flowId}:${entity}`;
+  const stateMap = new Map(
+    states.map(s => [stateKey(s.flowId.toString(), s.entity), s]),
+  );
+
+  const now = Date.now();
+  const eligible = candidates.filter(c => {
+    const s = stateMap.get(stateKey(c.flowId.toString(), c.entity));
+    const failures = (s as any)?.consecutiveFailures || 0;
+    if (failures === 0) return true;
+    const lastFailed = (s as any)?.lastFailedAt
+      ? new Date((s as any).lastFailedAt).getTime()
+      : 0;
+    return now - lastFailed >= circuitBreakerBackoffMs(failures);
+  });
+
+  const flowIds = Array.from(new Set(eligible.map(c => c.flowId.toString())));
+  if (flowIds.length === 0) return [];
+  const existingFlows = await Flow.find({ _id: { $in: flowIds } })
+    .select("_id")
+    .lean();
+  const existingFlowIdSet = new Set(existingFlows.map(f => f._id.toString()));
+
+  return eligible.filter(c => existingFlowIdSet.has(c.flowId.toString()));
+}
+
 function buildMaterializeEvents(
   entities: Array<{
     workspaceId: { toString(): string };
@@ -1412,26 +1494,52 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       cleanupStalePendingCdcEvents,
     )) as Awaited<ReturnType<typeof cleanupStalePendingCdcEvents>>;
 
-    const staleEntities = (await step.run(
-      "find-stale-entities",
-      findStaleEntities,
-    )) as Array<{
+    type CdcEntityRef = {
       workspaceId: { toString(): string };
       flowId: { toString(): string };
       entity: string;
-    }>;
+    };
+
+    // Cursor-based triggering (entities whose ingest is ahead of materialize).
+    const staleEntities = (await step.run(
+      "find-stale-entities",
+      findStaleEntities,
+    )) as CdcEntityRef[];
+
+    // Self-heal: entities that still have pending rows but were NOT flagged as
+    // stale (cursor drifted past them and they went quiet). This is what makes
+    // a drifted backlog drain without a manual "Reprocess pending events" click.
+    const pendingEntities = (await step.run(
+      "find-pending-entities",
+      findEntitiesWithPendingEvents,
+    )) as CdcEntityRef[];
+
+    // Union, de-duplicated by flow+entity (cdc/materialize is idempotent +
+    // singleton-guarded, but avoid emitting obvious duplicates).
+    const seen = new Set<string>();
+    const allEntities: CdcEntityRef[] = [];
+    for (const e of [...staleEntities, ...pendingEntities]) {
+      const key = `${String(e.flowId)}:${e.entity}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      allEntities.push(e);
+    }
+    const selfHealedCount = Math.max(
+      allEntities.length - staleEntities.length,
+      0,
+    );
 
     let totalTriggered = 0;
-    if (staleEntities.length > 0) {
+    if (allEntities.length > 0) {
       const DISPATCH_BATCH = 20;
-      for (let i = 0; i < staleEntities.length; i += DISPATCH_BATCH) {
-        const batch = staleEntities.slice(i, i + DISPATCH_BATCH);
+      for (let i = 0; i < allEntities.length; i += DISPATCH_BATCH) {
+        const batch = allEntities.slice(i, i + DISPATCH_BATCH);
         await step.sendEvent(
           `trigger-materializations-${i}`,
           buildMaterializeEvents(batch),
         );
       }
-      totalTriggered = staleEntities.length;
+      totalTriggered = allEntities.length;
     }
 
     if (
@@ -1444,6 +1552,9 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
         dropped: ingestResult.dropped,
         failed: ingestResult.failed,
         materializeTriggered: totalTriggered,
+        staleEntities: staleEntities.length,
+        pendingEntities: pendingEntities.length,
+        selfHealed: selfHealedCount,
         staleCdcDropped: cleanupResult.droppedCdc,
         staleWebhooksDropped: cleanupResult.droppedWebhooks,
         staleCursorsAdvanced: cleanupResult.cursorsAdvanced,
@@ -1455,6 +1566,7 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       dropped: ingestResult.dropped,
       failed: ingestResult.failed,
       materializeTriggered: totalTriggered,
+      selfHealed: selfHealedCount,
       staleCdcDropped: cleanupResult.droppedCdc,
     };
   },

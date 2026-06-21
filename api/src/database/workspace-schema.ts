@@ -2497,6 +2497,18 @@ CdcChangeEventSchema.index({
   stageStatus: 1,
   ingestSeq: 1,
 });
+// Self-heal: lets the scheduler cheaply enumerate DISTINCT flow+entity pairs
+// that still have pending rows, independent of the consumer cursor. This is
+// what rescues entities whose cursor drifted past their pending events (so
+// findStaleEntities — which keys on lastIngestSeq > lastMaterializedSeq — no
+// longer flags them). Partial filter keeps the index tiny (only pending rows).
+CdcChangeEventSchema.index(
+  { flowId: 1, entity: 1 },
+  {
+    name: "cdc_pending_entities",
+    partialFilterExpression: { materializationStatus: "pending" },
+  },
+);
 /** Successfully materialized rows — shorter retention. */
 CdcChangeEventSchema.index(
   { appliedAt: 1 },
