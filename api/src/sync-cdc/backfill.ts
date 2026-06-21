@@ -16,6 +16,7 @@ import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
 import { resolveConfiguredEntities } from "./entity-selection";
 import { hasCdcDestinationAdapter } from "./adapters/registry";
+import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 import { cdcLiveTableName, cdcStageTableName } from "./normalization";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
@@ -1314,7 +1315,8 @@ export class CdcBackfillService {
       );
       const tablePrefix = flow.tableDestination.tableName || "";
       const schema = flow.tableDestination.schema;
-      const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
+      const stageSchema =
+        destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
       const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
       let dropped = 0;
 
@@ -1461,7 +1463,8 @@ export class CdcBackfillService {
     const enabledEntities = resolveConfiguredEntities(flow).entities;
     const tablePrefix = flow.tableDestination.tableName || "";
     const schema = flow.tableDestination.schema;
-    const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
+    const stageSchema =
+      destination.type === "bigquery" ? BIGQUERY_WORKING_DATASET : schema;
     const flowId = flow._id.toString();
 
     const flowToken = flowId.replace(/[^a-zA-Z0-9]/g, "").slice(-8);
@@ -1550,9 +1553,10 @@ export async function purgeSoftDeletesAfterBackfill(params: {
 
   for (const entity of enabledEntities) {
     const tableName = cdcLiveTableName(tablePrefix, entity);
-    const fullTable = driver.formatTableRef
-      ? driver.formatTableRef(schema, tableName)
-      : `"${schema}"."${tableName}"`;
+    const fullTable =
+      destination.type === "bigquery"
+        ? `\`${schema}\`.${tableName}`
+        : `"${schema}"."${tableName}"`;
     const query = `DELETE FROM ${fullTable} WHERE is_deleted = true`;
     try {
       await driver.executeQuery(destination, query);

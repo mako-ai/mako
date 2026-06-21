@@ -213,6 +213,106 @@ async function main(): Promise<void> {
     );
   }
 
+  // ---- 5b. THE TRAP: pending rows at/below the consumer cursor ----------
+  // This is the decisive query. A pending CdcChangeEvent whose ingestSeq is
+  // <= its entity's lastMaterializedSeq is INVISIBLE to the (pre-fix) reader
+  // (readAfter gated on ingestSeq > cursor) AND, if lastIngestSeq == cursor,
+  // UNTRIGGERED by findStaleEntities ($gt). Those two together = stuck forever.
+  // If this count is large for your stuck entities, the cursor-drift trap is
+  // PROVEN regardless of which seed first advanced the cursor.
+  header("5b. Orphaned-below-cursor pending (THE trap) — top entities");
+  let totalOrphanedBelowCursor = 0;
+  let invisibleAndUntriggered = 0;
+  for (const r of cdcPendingByEntity) {
+    const flowId = r._id.flowId;
+    const entity = r._id.entity;
+    const st = await entityState.findOne(
+      { flowId, entity },
+      { projection: { lastMaterializedSeq: 1, lastIngestSeq: 1 } },
+    );
+    const cursor = Number(st?.lastMaterializedSeq || 0);
+    const ingest = Number(st?.lastIngestSeq || 0);
+    const belowCursor = await cdc.countDocuments({
+      flowId,
+      entity,
+      materializationStatus: "pending",
+      ingestSeq: { $lte: cursor },
+    });
+    if (belowCursor <= 0) continue;
+    totalOrphanedBelowCursor += belowCursor;
+    // Would the scheduler ever re-fire this entity? Only if lastIngestSeq > cursor.
+    const triggered = ingest > cursor;
+    if (!triggered) invisibleAndUntriggered += belowCursor;
+    // What produced the orphaned rows? webhook vs backfill discriminates the seed.
+    const bySource = await cdc
+      .aggregate([
+        {
+          $match: {
+            flowId,
+            entity,
+            materializationStatus: "pending",
+            ingestSeq: { $lte: cursor },
+          },
+        },
+        {
+          $group: {
+            _id: "$source",
+            n: { $sum: 1 },
+            oldest: { $min: "$ingestTs" },
+            newest: { $max: "$ingestTs" },
+          },
+        },
+      ])
+      .toArray();
+    const srcStr = bySource
+      .map(
+        s =>
+          `${s._id || "?"}=${s.n} (${fmtAge(s.oldest)}..${fmtAge(s.newest)})`,
+      )
+      .join(", ");
+    console.log(
+      `  flow ${String(flowId)} entity=${entity} ` +
+        `belowCursor=${belowCursor}/${r.n} cursor=${cursor} ingest=${ingest} ` +
+        `${triggered ? "(triggered)" : "INVISIBLE+UNTRIGGERED"}\n      src: ${srcStr}`,
+    );
+  }
+  console.log(
+    `  TOTAL orphaned-below-cursor pending (top ${TOP_N}) : ${totalOrphanedBelowCursor}`,
+  );
+  console.log(
+    `  of which invisible AND untriggered (truly stuck)  : ${invisibleAndUntriggered}`,
+  );
+
+  // ---- 5c. Seed discrimination: backfill timing vs orphaned rows --------
+  // If the orphaned pending rows are source="webhook" and their ingestTs sits
+  // inside/just-before a COMPLETED backfill window for the same flow, the most
+  // likely seed is backfill advancing lastMaterializedSeq past them (seed #2).
+  header("5c. Backfill timing for flows with pending CdcChangeEvents");
+  const flowIdsWithPending = Array.from(
+    new Set(cdcPendingByEntity.map(r => String(r._id.flowId))),
+  );
+  for (const fidStr of flowIdsWithPending.slice(0, TOP_N)) {
+    const f = await flows.findOne(
+      { _id: new mongoose.Types.ObjectId(fidStr) },
+      {
+        projection: {
+          name: 1,
+          streamState: 1,
+          backfillState: 1,
+          deleteMode: 1,
+        },
+      },
+    );
+    if (!f) continue;
+    const bf = (f as any).backfillState || {};
+    console.log(
+      `  flow ${fidStr} "${(f as any).name ?? ""}" stream=${
+        (f as any).streamState
+      } backfill.status=${bf.status ?? "n/a"} ` +
+        `started=${fmtAge(bf.startedAt)} completed=${fmtAge(bf.completedAt)}`,
+    );
+  }
+
   // ---- 6. Paused streams / incomplete backfills -------------------------
   header("6. Flow states blocking the consumer");
   const pausedStreams = await flows.countDocuments({
@@ -266,8 +366,10 @@ async function main(): Promise<void> {
   const pendingCdc = cdcByStatus.find(r => r._id === "pending")?.n || 0;
   console.log(`  pending WebhookEvents (ingest backlog) : ${pendingWh}`);
   console.log(`  pending CdcChangeEvents (mat. backlog) : ${pendingCdc}`);
+  console.log(`  >> orphaned-below-cursor pending       : ${totalOrphanedBelowCursor}  <-- the trap`);
+  console.log(`  >> invisible AND untriggered           : ${invisibleAndUntriggered}  <-- stuck forever`);
   console.log(`  circuit-breaker-stuck entities         : ${failing.length}`);
-  console.log(`  drifted cursors                        : ${driftedCursors.length}`);
+  console.log(`  drifted cursors (ingest<cursor)        : ${driftedCursors.length}`);
   console.log(`  paused streams / incomplete backfills  : ${pausedStreams} / ${incompleteBackfills}`);
   console.log("\nInterpretation:");
   console.log("  - Big & growing pending WebhookEvents -> ingest throughput-bound");
