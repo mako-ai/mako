@@ -5,6 +5,7 @@ import {
   getDashboardStateSnapshot,
   importConsoleAsDashboardDataSource,
   previewDashboardQuery,
+  removeDashboardDataSource,
   removeDashboardWidget,
   runDashboardDataSource,
   updateDashboardDataSourceQuery,
@@ -684,6 +685,63 @@ export async function executeDashboardAgentTool(
         error instanceof Error
           ? error.message
           : "Failed to run data source query";
+      return {
+        success: false,
+        error: message,
+        errorKind: classifySourceError(message),
+      };
+    }
+  }
+
+  if (toolName === "remove_data_source") {
+    const ctx = requireDashboardId(input);
+    if (!ctx) {
+      return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
+    }
+    if (typeof input.dataSourceId !== "string") {
+      return { success: false, error: "dataSourceId is required" };
+    }
+
+    const dashboard =
+      useDashboardStore.getState().openDashboards[ctx.dashboardId];
+    const dataSource = dashboard?.dataSources.find(
+      ds => ds.id === input.dataSourceId,
+    );
+    if (!dataSource) {
+      return { success: false, error: "Data source not found" };
+    }
+
+    const dependentWidgetIds = (dashboard?.widgets ?? [])
+      .filter(w => w.dataSourceId === input.dataSourceId)
+      .map(w => w.id);
+    const dependentFilterIds = (dashboard?.globalFilters ?? [])
+      .filter(f => f.dataSourceId === input.dataSourceId)
+      .map(f => f.id);
+
+    try {
+      await removeDashboardDataSource({
+        workspaceId: ctx.workspaceId,
+        dashboardId: ctx.dashboardId,
+        dataSourceId: input.dataSourceId,
+      });
+      throwIfAborted(signal);
+
+      const hint =
+        dependentWidgetIds.length > 0 || dependentFilterIds.length > 0
+          ? "Some widgets or global filters still reference the removed data source and will show no data. Remove or repoint them with remove_widget / modify_widget / remove_global_filter."
+          : undefined;
+
+      return {
+        success: true,
+        dataSourceId: input.dataSourceId,
+        removedName: dataSource.name,
+        dependentWidgetIds,
+        dependentFilterIds,
+        ...(hint && { hint }),
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to remove data source";
       return {
         success: false,
         error: message,

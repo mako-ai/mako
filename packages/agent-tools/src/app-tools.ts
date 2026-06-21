@@ -83,6 +83,13 @@ const materializeBindingSchema = z.object({
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
 });
 
+const removeDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe("Name of the data binding to remove (as shown in get_app_state)"),
+});
+
 const createAppSchema = z.object({
   title: z.string().describe("App title"),
   description: z.string().optional().describe("Brief description"),
@@ -160,6 +167,16 @@ export const clientAppTools = {
       "load it into the app's DuckDB-WASM instance. Run this after creating or " +
       "editing a parquet binding so useQuery/useDuckDB return fresh data.",
     inputSchema: materializeBindingSchema,
+  }),
+  app_remove_data_binding: tool({
+    description:
+      "Delete a named data binding from the app. Removes it from the app " +
+      "definition and persists the change, so its materialized Parquet/DuckDB " +
+      "table is no longer loaded into the preview. Any useQuery(name)/useDuckDB " +
+      "calls referencing it will stop returning data, so update or remove the " +
+      "app code that reads it. Use get_app_state or list_open_apps to see " +
+      "existing binding names first.",
+    inputSchema: removeDataBindingSchema,
   }),
   run_app: tool({
     description:

@@ -237,6 +237,13 @@ const runDataSourceQuerySchema = z.object({
     .describe("Data source ID to execute and load into DuckDB"),
 });
 
+const removeDataSourceSchema = z.object({
+  dashboardId: z.string().describe("Dashboard ID"),
+  dataSourceId: z
+    .string()
+    .describe("ID of the dashboard data source to remove"),
+});
+
 const createDashboardSchema = z.object({
   title: z.string().describe("Dashboard title"),
   description: z.string().optional().describe("Brief description"),
@@ -320,6 +327,15 @@ export const clientDashboardTools = {
       "Use after update_data_source_query to load fresh data, or to reload an existing source. " +
       "Streams via NDJSON for stability. Automatically recovers if DuckDB WASM crashes.",
     inputSchema: runDataSourceQuerySchema,
+  }),
+  remove_data_source: tool({
+    description:
+      "Remove a data source from the dashboard and drop its backing DuckDB " +
+      "table. Widgets, global filters, and relationships that reference this " +
+      "data source will no longer have data — remove or repoint them with " +
+      "remove_widget / modify_widget first. Requires edit mode. Use " +
+      "get_dashboard_state to find the dataSourceId.",
+    inputSchema: removeDataSourceSchema,
   }),
   add_widget: tool({
     description:

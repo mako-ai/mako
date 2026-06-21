@@ -198,6 +198,21 @@ export async function executeAppAgentTool(
       };
     }
 
+    case "app_remove_data_binding": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      const binding = appEntity.dataBindings.find(b => b.name === input.name);
+      if (!binding) return fail(`No data binding named "${input.name}"`);
+      store.removeDataBinding(appId, binding.id);
+      await persist();
+      return {
+        success: true,
+        binding: { name: binding.name },
+        hint: `Removed binding "${binding.name}". Remove or update any useQuery("${binding.name}")/useDuckDB code that referenced it.`,
+      };
+    }
+
     case "materialize_binding": {
       if (!appId || !workspaceId) {
         return fail("appId and workspace are required");

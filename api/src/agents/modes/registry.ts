@@ -75,6 +75,7 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "create_data_source",
   "update_data_source_query",
   "run_data_source_query",
+  "remove_data_source",
   "add_widget",
   "modify_widget",
   "remove_widget",
@@ -131,6 +132,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_remove_dependency",
   "app_create_data_binding",
   "materialize_binding",
+  "app_remove_data_binding",
   "run_app",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",

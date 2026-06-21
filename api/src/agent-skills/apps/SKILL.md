@@ -62,9 +62,12 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    you genuinely need more rows, pass `useDuckDB(sql, { rowLimit: 2_000_000 })` or
    `{ rowLimit: null }` to disable the cap (costs memory + serialization time), and
    surface `truncated` in the UI whenever you render row-level data.
-6. After a batch of edits, if something looks wrong, call `get_app_state` (or `run_app`)
+6. To delete a binding, call `app_remove_data_binding` with its `name`. This drops it
+   from the app definition (its materialized data stops loading), so first remove or
+   update any `useQuery(name)`/`useDuckDB` code that read it.
+7. After a batch of edits, if something looks wrong, call `get_app_state` (or `run_app`)
    to read build/runtime errors and fix them. Iterate until the preview is error-free.
-7. Understand and validate data before coding against it using the shared data-source
+8. Understand and validate data before coding against it using the shared data-source
    primitives (they work for apps and dashboards — pass `surface: { kind: "app", id: appId }`):
    `list_data_sources` shows every data source (connection, query, materialization, status);
    `inspect_data_source` returns its columns + sample rows; `query_duckdb` runs analytical

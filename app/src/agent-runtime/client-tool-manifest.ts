@@ -305,6 +305,13 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Running data source query",
     icon: "play",
   },
+  remove_data_source: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    getLabel: () => "Removing data source",
+    icon: "trash",
+  },
   import_console_as_data_source: {
     domain: "dashboard",
     execution: "client",
@@ -501,6 +508,16 @@ export const AGENT_TOOL_MANIFEST = {
       return name ? `Materializing "${name}"` : "Materializing binding";
     },
     icon: "database",
+  },
+  app_remove_data_binding: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Removing binding "${name}"` : "Removing data binding";
+    },
+    icon: "trash",
   },
   list_data_sources: {
     domain: "database",
