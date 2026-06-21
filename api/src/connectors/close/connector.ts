@@ -2494,11 +2494,15 @@ export class CloseConnector extends BaseConnector {
         ...record,
         payload,
         sourceTs,
+        // Close nests its unique event id at `event.event.id`. Prefer it FIRST
+        // so distinct updates get distinct changeIds; the per-record fallback
+        // includes sourceTs so it can never collapse multiple updates onto one
+        // idempotency key (the bug that froze destinations at first-seen state).
         changeId:
-          record.changeId ||
+          innerEvent?.id ||
           event?.id ||
-          event?.event?.id ||
-          `${eventType || "close.event"}:${record.entity}:${record.recordId}`,
+          record.changeId ||
+          `${eventType || "close.event"}:${record.entity}:${record.recordId}:${sourceTs.toISOString()}`,
       };
     });
   }

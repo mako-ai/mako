@@ -3021,7 +3021,7 @@ flowRoutes.openapi(
         failedTotal,
         pendingByEntity,
         failedWebhookCount,
-        webhookPendingCount,
+        webhookApplyPendingCount,
         cdcByStatus,
         cdcBySource,
       ] = await Promise.all([
@@ -3261,7 +3261,14 @@ flowRoutes.openapi(
           consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
           lastError,
           backlogCount: totalBacklog,
-          webhookPendingCount,
+          // The UI "pending" counter must reflect the TRUE CDC materialization
+          // backlog (pending CdcChangeEvents + cursor lag), not the raw
+          // WebhookEvent.applyStatus count — the latter stays inflated by
+          // orphaned/deduped rows that will never materialize, which made the
+          // count look stuck at 50k+ even when nothing was actually pending.
+          webhookPendingCount: totalBacklog,
+          // Raw applyStatus=pending count kept for diagnostics only.
+          webhookApplyPendingCount,
           lagSeconds,
           lastMaterializedAt:
             materializedDates.sort((a, b) => b.getTime() - a.getTime())[0] ||
