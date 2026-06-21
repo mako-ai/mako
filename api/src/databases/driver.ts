@@ -132,6 +132,62 @@ export interface DatabaseDriver {
     executionId: string,
   ): Promise<{ success: boolean; error?: string }>;
 
+  // ============ DESTINATION DIALECT CAPABILITIES ============
+  // These let generic sync/route code stay engine-agnostic instead of
+  // branching on `database.type`. Drivers override only what differs from
+  // the conventional SQL defaults assumed by callers.
+
+  /**
+   * Schema/dataset where staging & working tables should be created.
+   * Defaults (when not implemented) to the primary/live schema. BigQuery
+   * isolates staging in a dedicated working dataset (`mako_internal`).
+   */
+  getStagingSchema?(primarySchema?: string): string | undefined;
+
+  /**
+   * Whether CDC/webhook flows to this destination must use soft-delete
+   * (tombstones) rather than hard deletes. Defaults to false. BigQuery's CDC
+   * MERGE path relies on tombstones for correctness.
+   */
+  requiresSoftDeleteForCdc?(): boolean;
+
+  /**
+   * Whether write operations need a pre-built `columnTypes` map passed in
+   * InsertOptions/UpsertOptions. Defaults to false. BigQuery requires explicit
+   * column types so MERGE/INSERT statements are correctly typed.
+   */
+  requiresTypedColumns?(): boolean;
+
+  /**
+   * Map a logical/source column type to this destination's native type.
+   * Defaults to identity (no implementation = caller keeps the source type).
+   */
+  mapColumnType?(sourceType: string): string;
+
+  /**
+   * Build a fully-qualified, properly-quoted table reference for raw SQL.
+   * Defaults (when not implemented) to standard SQL double-quoting:
+   * `"schema"."table"`.
+   */
+  formatTableRef?(
+    schema: string | undefined,
+    table: string,
+    options?: { projectId?: string },
+  ): string;
+
+  /**
+   * Build a single batch query returning approximate row counts for the given
+   * tables, yielding rows shaped `{ table_id, row_count }`. Returns null when
+   * the engine has no cheap metadata-based row-count path (callers then skip
+   * counting). Each engine uses its own metadata source (e.g. BigQuery's
+   * `__TABLES__`, Postgres' `pg_class.reltuples`).
+   */
+  buildRowCountBatchQuery?(
+    schema: string,
+    tableNames: string[],
+    options?: { projectId?: string },
+  ): string | null;
+
   // ============ WRITE CAPABILITIES (for db-to-db sync) ============
 
   /**

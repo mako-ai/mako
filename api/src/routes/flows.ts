@@ -30,7 +30,6 @@ import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
 import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
-import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
@@ -143,10 +142,6 @@ const destinationCountBatchCache = new Map<
   { value: Record<string, number | null>; expiresAt: number }
 >();
 
-function escapeSqlLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
 function escapePostgresIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/g, '""')}"`;
 }
@@ -157,27 +152,6 @@ function escapeBigQueryPath(path: string): string {
 
 function isSafeSqlIdentifier(identifier: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier);
-}
-
-function buildDestinationCountBatchQuery(params: {
-  destinationType?: string;
-  schema: string;
-  tableNames: string[];
-  projectId?: string;
-}): string | null {
-  if (params.tableNames.length === 0) return null;
-  const type = (params.destinationType || "").toLowerCase();
-  const inList = params.tableNames.map(escapeSqlLiteral).join(",");
-  if (type === "bigquery") {
-    const dataset = params.projectId
-      ? `\`${params.projectId}\`.\`${params.schema}\``
-      : `\`${params.schema}\``;
-    return `SELECT table_id, row_count FROM ${dataset}.__TABLES__ WHERE table_id IN (${inList})`;
-  }
-  if (type.includes("postgres")) {
-    return `SELECT c.relname AS table_id, c.reltuples::bigint AS row_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escapeSqlLiteral(params.schema)} AND c.relname IN (${inList})`;
-  }
-  return null;
 }
 
 function isTableMissingError(errorMessage?: string): boolean {
@@ -241,22 +215,11 @@ async function getDestinationEntityRowCountsBatch(params: {
     tableNames.push(tableName);
   }
 
-  const query = buildDestinationCountBatchQuery({
-    destinationType: params.destinationType,
-    schema: params.schema,
-    tableNames,
+  const driver = databaseRegistry.getDriver(params.destination.type);
+  const query = driver?.buildRowCountBatchQuery?.(params.schema, tableNames, {
     projectId: (params.destination as any)?.connection?.project_id,
   });
-  if (!query) {
-    destinationCountBatchCache.set(cacheKey, {
-      value: empty,
-      expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
-    });
-    return empty;
-  }
-
-  const driver = databaseRegistry.getDriver(params.destination.type);
-  if (!driver?.executeQuery) {
+  if (!driver?.executeQuery || !query) {
     destinationCountBatchCache.set(cacheKey, {
       value: empty,
       expiresAt: Date.now() + DESTINATION_COUNT_CACHE_TTL_MS,
@@ -819,8 +782,14 @@ flowRoutes.openapi(
         flowData.tableDestination = td;
       }
 
-      if (flowType === "webhook" && destinationType === "bigquery") {
-        // BigQuery CDC path relies on tombstones for correctness.
+      const destinationDriver = databaseRegistry.getDriver(
+        destinationType ?? "",
+      );
+      if (
+        flowType === "webhook" &&
+        destinationDriver?.requiresSoftDeleteForCdc?.()
+      ) {
+        // Destination's CDC path relies on tombstones for correctness.
         flowData.deleteMode = "soft";
       } else if (body.deleteMode) {
         flowData.deleteMode = body.deleteMode;
@@ -1193,8 +1162,11 @@ flowRoutes.openapi(
         )
           .select({ type: 1 })
           .lean();
-        if (destination?.type === "bigquery") {
-          // Force soft delete for BigQuery webhook flows.
+        const destinationDriver = databaseRegistry.getDriver(
+          destination?.type ?? "",
+        );
+        if (destinationDriver?.requiresSoftDeleteForCdc?.()) {
+          // Force soft delete for destinations whose CDC path needs tombstones.
           flow.deleteMode = "soft";
         } else if (body.deleteMode !== undefined) {
           flow.deleteMode = body.deleteMode;
@@ -1849,10 +1821,7 @@ flowRoutes.openapi(
           const driver = databaseRegistry.getDriver(destination.type);
           if (driver?.dropTable) {
             const schema = flow.tableDestination.schema;
-            const stageSchema =
-              destination.type === "bigquery"
-                ? BIGQUERY_WORKING_DATASET
-                : schema;
+            const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
             const liveTable = cdcLiveTableName(
               flow.tableDestination.tableName,
               entity,

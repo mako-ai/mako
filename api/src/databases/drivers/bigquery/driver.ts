@@ -13,6 +13,25 @@ import {
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { loggers } from "../../../logging";
+import { BIGQUERY_WORKING_DATASET } from "../../../utils/bigquery-working-dataset";
+import { escapeSqlLiteral } from "../../sql-utils";
+
+/**
+ * Map source database column types to valid BigQuery types so columns are
+ * created correctly regardless of the source engine.
+ */
+function mapToBigQueryType(sourceType: string): string {
+  const t = sourceType.toUpperCase();
+  if (t === "TEXT" || t.includes("CHAR") || t.includes("CLOB")) return "STRING";
+  if (t === "INTEGER" || t === "INT" || t.includes("INT")) return "INT64";
+  if (t === "REAL" || t === "FLOAT" || t === "DOUBLE" || t === "NUMERIC") {
+    return "FLOAT64";
+  }
+  if (t === "BLOB") return "BYTES";
+  if (t.includes("BOOL")) return "BOOL";
+  if (t.includes("TIME") || t.includes("DATE")) return "TIMESTAMP";
+  return "STRING"; // Default to STRING for safety
+}
 
 /**
  * Map JavaScript types to BigQuery types
@@ -361,6 +380,51 @@ export class BigQueryDatabaseDriver implements DatabaseDriver {
     database: IDatabaseConnection,
   ): Promise<Record<string, any>> {
     return databaseConnectionService.getBigQuerySchema(database);
+  }
+
+  // ============ DESTINATION DIALECT CAPABILITIES ============
+
+  getStagingSchema(): string {
+    // BigQuery isolates staging/working tables in a dedicated dataset so they
+    // never pollute the user's live dataset.
+    return BIGQUERY_WORKING_DATASET;
+  }
+
+  requiresSoftDeleteForCdc(): boolean {
+    // The BigQuery CDC MERGE path relies on tombstones for correctness.
+    return true;
+  }
+
+  requiresTypedColumns(): boolean {
+    return true;
+  }
+
+  mapColumnType(sourceType: string): string {
+    return mapToBigQueryType(sourceType);
+  }
+
+  formatTableRef(
+    schema: string | undefined,
+    table: string,
+    options?: { projectId?: string },
+  ): string {
+    const dataset = options?.projectId
+      ? `\`${options.projectId}\`.\`${schema}\``
+      : `\`${schema}\``;
+    return `${dataset}.${table}`;
+  }
+
+  buildRowCountBatchQuery(
+    schema: string,
+    tableNames: string[],
+    options?: { projectId?: string },
+  ): string | null {
+    if (tableNames.length === 0) return null;
+    const inList = tableNames.map(escapeSqlLiteral).join(",");
+    const dataset = options?.projectId
+      ? `\`${options.projectId}\`.\`${schema}\``
+      : `\`${schema}\``;
+    return `SELECT table_id, row_count FROM ${dataset}.__TABLES__ WHERE table_id IN (${inList})`;
   }
 
   // ============ WRITE CAPABILITIES ============
