@@ -11,6 +11,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  type WebhookCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolveCloseEntitySchema, type CloseCustomField } from "./schema";
@@ -2016,6 +2017,19 @@ export class CloseConnector extends BaseConnector {
 
   supportsWebhookProvisioning(): boolean {
     return true;
+  }
+
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: true,
+      provisioning: {
+        supported: true,
+        providerLabel: "Close",
+        storesSecretAutomatically: true,
+        actionHint: "and stores its signing secret",
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    };
   }
 
   async createWebhookSubscription(

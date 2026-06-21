@@ -34,6 +34,10 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
 import {
+  useConnectorCatalogStore,
+  type WebhookCapabilities,
+} from "../store/connectorCatalogStore";
+import {
   useAvailableEntitiesStore,
   flattenConnectorEntities,
   type FlattenedConnectorEntity,
@@ -57,18 +61,6 @@ interface EntityLayoutConfig {
   clusterFields: string[];
   enabled?: boolean;
 }
-
-const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set([
-  "stripe",
-  "close",
-  "claap",
-  "calendly",
-]);
-const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set([
-  "close",
-  "claap",
-  "calendly",
-]);
 
 const SYNC_ENGINE_PERMISSION_ERROR =
   "The flow was saved, but changing the sync engine requires the workspace Owner or Admin role. Ask an admin to upgrade your role, then set the sync engine again.";
@@ -123,6 +115,18 @@ export function WebhookFlowForm({
     fetchConnectors,
     provisionFlowWebhook,
   } = useFlowStore();
+
+  const connectorTypes = useConnectorCatalogStore(state => state.types);
+  const fetchCatalog = useConnectorCatalogStore(state => state.fetchCatalog);
+  const webhookCapabilitiesByType = useMemo(() => {
+    const map: Record<string, WebhookCapabilities> = {};
+    for (const entry of connectorTypes || []) {
+      map[entry.type] = entry.webhook;
+    }
+    return map;
+  }, [connectorTypes]);
+  const isWebhookCapableType = (type: string | undefined): boolean =>
+    Boolean(type && webhookCapabilitiesByType[type]?.supported);
 
   // Get workspace-specific data
   const flows = useMemo(
@@ -209,18 +213,30 @@ export function WebhookFlowForm({
   const watchDeleteMode = watch("deleteMode");
   const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
   const selectedConnectorType = selectedConnector?.type;
+  const selectedWebhookCapabilities = selectedConnectorType
+    ? webhookCapabilitiesByType[selectedConnectorType]
+    : undefined;
+  const provisioning = selectedWebhookCapabilities?.provisioning;
   const canProvisionWebhook =
-    !isNewMode &&
-    Boolean(currentFlowId) &&
-    WEBHOOK_PROVISIONING_CONNECTOR_TYPES.has(selectedConnectorType || "");
-  const provisionProviderLabel =
-    selectedConnectorType === "claap"
-      ? "Claap"
-      : selectedConnectorType === "close"
-        ? "Close"
-        : selectedConnectorType === "calendly"
-          ? "Calendly"
-          : "Provider";
+    !isNewMode && Boolean(currentFlowId) && Boolean(provisioning?.supported);
+  const provisionProviderLabel = provisioning?.providerLabel ?? "Provider";
+  const provisionActionHint = provisioning?.actionHint;
+  const webhookSecretHelpText =
+    selectedWebhookCapabilities?.secretHelpText ??
+    "Enter the webhook signing secret from your provider";
+  const webhookCapableConnectors = useMemo(
+    () => connectors.filter(source => isWebhookCapableType(source.type)),
+    // isWebhookCapableType is derived from webhookCapabilitiesByType
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [connectors, webhookCapabilitiesByType],
+  );
+  const webhookCapableConnectorNames = useMemo(
+    () =>
+      (connectorTypes || [])
+        .filter(entry => entry.webhook?.supported)
+        .map(entry => entry.name),
+    [connectorTypes],
+  );
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -332,10 +348,7 @@ export function WebhookFlowForm({
     setIsLoadingConnectors(true);
     try {
       const sources = await fetchConnectors(workspaceId);
-      const webhookCapable = (sources || []).filter(source =>
-        WEBHOOK_CAPABLE_CONNECTOR_TYPES.has(source.type),
-      );
-      setConnectors(webhookCapable);
+      setConnectors(sources || []);
     } catch (error) {
       console.error("Failed to fetch connectors:", error);
       setError("Failed to load connectors");
@@ -349,9 +362,10 @@ export function WebhookFlowForm({
     if (currentWorkspace?.id) {
       fetchDataSources(currentWorkspace.id);
       ensureConnections(currentWorkspace.id);
+      fetchCatalog(currentWorkspace.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id, ensureConnections]);
+  }, [currentWorkspace?.id, ensureConnections, fetchCatalog]);
 
   // Load flow data if editing
   useEffect(() => {
@@ -765,7 +779,7 @@ export function WebhookFlowForm({
                           }
                           disabled={isLoadingConnectors || !isNewMode}
                         >
-                          {connectors.map(source => (
+                          {webhookCapableConnectors.map(source => (
                             <MenuItem key={source._id} value={source._id}>
                               <Box
                                 sx={{
@@ -785,12 +799,14 @@ export function WebhookFlowForm({
                             {errors.dataSourceId.message}
                           </FormHelperText>
                         )}
-                        {connectors.length === 0 && !isLoadingConnectors && (
-                          <FormHelperText>
-                            Create a Stripe, Close, or Claap data source to use
-                            webhook flows
-                          </FormHelperText>
-                        )}
+                        {webhookCapableConnectors.length === 0 &&
+                          !isLoadingConnectors && (
+                            <FormHelperText>
+                              {webhookCapableConnectorNames.length > 0
+                                ? `Create a ${webhookCapableConnectorNames.join(", ")} data source to use webhook flows`
+                                : "Create a webhook-capable data source to use webhook flows"}
+                            </FormHelperText>
+                          )}
                       </FormControl>
                     )}
                   />
@@ -1367,8 +1383,11 @@ export function WebhookFlowForm({
                           />
                         </Box>
                         <Typography variant="caption" color="text.secondary">
-                          Copy this URL to your Stripe, Close, or Claap webhook
-                          settings
+                          Copy this URL to your{" "}
+                          {provisionProviderLabel !== "Provider"
+                            ? provisionProviderLabel
+                            : "provider's"}{" "}
+                          webhook settings
                         </Typography>
                         {canProvisionWebhook && (
                           <Box
@@ -1396,11 +1415,9 @@ export function WebhookFlowForm({
                             >
                               One click creates the {provisionProviderLabel}{" "}
                               webhook
-                              {selectedConnectorType === "close"
-                                ? " and stores its signing secret"
-                                : selectedConnectorType === "claap"
-                                  ? " (copy the secret into this form if Claap shows it once)"
-                                  : ""}
+                              {provisionActionHint
+                                ? ` ${provisionActionHint}`
+                                : ""}
                               .
                             </Typography>
                           </Box>
@@ -1421,7 +1438,7 @@ export function WebhookFlowForm({
                           render={({ field }) => (
                             <TextField
                               {...field}
-                              placeholder="Enter webhook secret (e.g., whsec_...)"
+                              placeholder="Enter webhook secret"
                               fullWidth
                               size="small"
                               type="text"
@@ -1448,11 +1465,7 @@ export function WebhookFlowForm({
                           )}
                         />
                         <Typography variant="caption" color="text.secondary">
-                          {selectedConnectorType === "stripe"
-                            ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
-                            : selectedConnectorType === "claap"
-                              ? "Enter the X-Claap-Webhook-Secret from your Claap webhook settings"
-                              : "Enter the webhook signing secret from your provider"}
+                          {webhookSecretHelpText}
                         </Typography>
                       </Box>
                     </Stack>

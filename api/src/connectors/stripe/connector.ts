@@ -11,6 +11,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  type WebhookCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import Stripe from "stripe";
@@ -742,6 +743,20 @@ export class StripeConnector extends BaseConnector {
    */
   supportsWebhookProvisioning(): boolean {
     return true;
+  }
+
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: true,
+      provisioning: {
+        supported: true,
+        providerLabel: "Stripe",
+        storesSecretAutomatically: true,
+        actionHint: "and stores its signing secret",
+      },
+      secretHelpText:
+        "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret",
+    };
   }
 
   /**
