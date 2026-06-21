@@ -177,7 +177,7 @@ export async function syncProjectFromRepo(
   const { sha, files, skippedLarge } = await fetchRepoDbtFiles(project.repo);
 
   const existing = await DbtFile.find({ projectId: project._id })
-    .select("path content is_deleted")
+    .select("path content is_deleted repoBlobSha")
     .lean();
   const existingByPath = new Map(existing.map(f => [f.path, f]));
   const remotePaths = new Set(files.map(f => f.path));
@@ -220,14 +220,29 @@ export async function syncProjectFromRepo(
     );
   }
 
-  // Soft-delete files that were imported before but are gone from the branch.
+  // Reconcile files that are no longer on the branch. Pulling makes the remote
+  // the source of truth, so a file absent upstream is "in sync when deleted" —
+  // it must NOT keep a repoBlobSha, or getGitStatus() would surface it as a
+  // permanent phantom "deleted" change that can never be committed (committing
+  // a sha:null delete for a path missing from base_tree → 422 GitRPC::BadObject)
+  // nor discarded (the next pull would re-create it).
   for (const prev of existing) {
-    if (!prev.is_deleted && !remotePaths.has(prev.path)) {
+    if (remotePaths.has(prev.path)) continue;
+    if (!prev.is_deleted) {
       deleted++;
       ops.push(
         DbtFile.updateOne(
           { projectId: project._id, path: prev.path },
-          { $set: { is_deleted: true, updatedBy } },
+          { $set: { is_deleted: true, updatedBy }, $unset: { repoBlobSha: "" } },
+        ).exec(),
+      );
+    } else if (prev.repoBlobSha) {
+      // Already soft-deleted locally and gone upstream: drop the stale blob SHA
+      // so it stops counting as a pending deletion (heals previously-stuck rows).
+      ops.push(
+        DbtFile.updateOne(
+          { projectId: project._id, path: prev.path },
+          { $unset: { repoBlobSha: "" } },
         ).exec(),
       );
     }
