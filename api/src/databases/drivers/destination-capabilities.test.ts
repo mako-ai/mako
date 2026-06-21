@@ -1,3 +1,4 @@
+/* eslint-disable no-console, no-process-exit */
 import assert from "node:assert/strict";
 import { BigQueryDatabaseDriver } from "./bigquery/driver";
 import { PostgreSQLDatabaseDriver } from "./postgresql/driver";
