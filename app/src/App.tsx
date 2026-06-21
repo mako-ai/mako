@@ -10,8 +10,6 @@ import {
   Box,
   CircularProgress,
   styled,
-  AppBar,
-  Toolbar,
   Drawer,
   BottomNavigation,
   BottomNavigationAction,
@@ -20,11 +18,10 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  Menu as MenuIcon,
   MessageCircleMore as AskTabIcon,
   SquareTerminal as EditorTabIcon,
   Table as ResultsTabIcon,
-  Compass as ExploreTabIcon,
+  X as CloseDrawerIcon,
 } from "lucide-react";
 import {
   Routes,
@@ -71,7 +68,7 @@ const loadDbtExplorer = () => import("./components/DbtExplorer");
 const DbtExplorer = lazy(loadDbtExplorer);
 import { AuthWrapper } from "./components/AuthWrapper";
 import { AcceptInvite } from "./components/AcceptInvite";
-import { WorkspaceProvider } from "./contexts/workspace-context";
+import { WorkspaceProvider, useWorkspace } from "./contexts/workspace-context";
 import { OnboardingProvider } from "./contexts/onboarding-context";
 import type { DbFlowFormRef } from "./components/DbFlowForm";
 import { generateObjectId } from "./utils/objectId";
@@ -127,6 +124,50 @@ function clamp(value: number, min: number, max: number): number {
 
 type SidePane = "left" | "right";
 
+/**
+ * User identity + active workspace shown in the mobile explorer drawer header.
+ * Rendered inside `WorkspaceProvider` (unlike `MainApp`'s body), so it can read
+ * the current workspace via `useWorkspace()`.
+ */
+function MobileDrawerIdentity() {
+  const { user } = useAuth();
+  const { currentWorkspace } = useWorkspace();
+
+  return (
+    <Box sx={{ flex: 1, minWidth: 0 }}>
+      {user?.email && (
+        <Typography
+          variant="subtitle2"
+          sx={{
+            fontWeight: 600,
+            lineHeight: 1.2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {user.email}
+        </Typography>
+      )}
+      {currentWorkspace?.name && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{
+            display: "block",
+            lineHeight: 1.2,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {currentWorkspace.name}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 function MainApp() {
   const activeView = useUIStore(state => state.leftPane);
   const leftPaneOpen = useUIStore(state => state.leftPaneOpen);
@@ -144,7 +185,6 @@ function MainApp() {
   const mobileTab = useUIStore(state => state.mobileTab);
   const mobileDrawer = useUIStore(state => state.mobileDrawer);
   const setMobileTab = useUIStore(state => state.setMobileTab);
-  const openMobileDrawer = useUIStore(state => state.openMobileDrawer);
   const closeMobileDrawer = useUIStore(state => state.closeMobileDrawer);
 
   // On mobile, selecting a tree node in the explorer Drawer opens/focuses a
@@ -548,14 +588,9 @@ function MainApp() {
   // their state survives tab switches, mirroring the desktop dual-pane mount.
   if (isMobile) {
     const drawerOpen = mobileDrawer === "explorer";
-    const bottomValue = drawerOpen ? "explore" : mobileTab;
-    const title = drawerOpen
-      ? "Explore"
-      : mobileTab === "ask"
-        ? "Ask your data"
-        : mobileTab === "editor"
-          ? "Editor"
-          : "Results";
+    // Bottom nav only drives the content panes now; the explorer Drawer is
+    // opened from the hamburger in each pane header (top-left).
+    const bottomValue = mobileTab;
 
     return (
       <AuthWrapper>
@@ -570,43 +605,12 @@ function MainApp() {
             width: "100vw",
             maxWidth: "100vw",
             overflow: "hidden",
+            // No top app bar on mobile — navigation lives in the bottom nav and
+            // the explorer Drawer (which carries the user/workspace menu). Keep
+            // content clear of the status bar / notch on standalone installs.
+            pt: "env(safe-area-inset-top)",
           }}
         >
-          {/* Top bar: hamburger → explorer drawer, contextual title, user menu */}
-          <AppBar
-            position="static"
-            elevation={0}
-            color="default"
-            sx={{
-              backgroundColor: "background.paper",
-              borderBottom: 1,
-              borderColor: "divider",
-            }}
-          >
-            <Toolbar variant="dense" sx={{ minHeight: 48, gap: 1, px: 1 }}>
-              <IconButton
-                edge="start"
-                onClick={openMobileDrawer}
-                aria-label="Open explorer"
-              >
-                <MenuIcon size={22} />
-              </IconButton>
-              <Typography
-                variant="subtitle1"
-                sx={{
-                  flex: 1,
-                  fontWeight: 600,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {title}
-              </Typography>
-              <SidebarUserMenu tooltipPlacement="bottom" />
-            </Toolbar>
-          </AppBar>
-
           {/* Content — one pane at a time, both kept mounted for state */}
           <Box sx={{ flex: 1, minHeight: 0, position: "relative" }}>
             <Box
@@ -656,11 +660,20 @@ function MainApp() {
                   sx={{
                     display: "flex",
                     alignItems: "center",
+                    gap: 1,
                     px: 1,
                     pt: 1,
                   }}
                 >
                   <SidebarUserMenu tooltipPlacement="bottom" />
+                  <MobileDrawerIdentity />
+                  <IconButton
+                    size="small"
+                    aria-label="Close explorer"
+                    onClick={closeMobileDrawer}
+                  >
+                    <CloseDrawerIcon size={20} />
+                  </IconButton>
                 </Box>
                 <SidebarMobileExplorerNav />
               </Box>
@@ -685,7 +698,8 @@ function MainApp() {
             </Box>
           </Drawer>
 
-          {/* Bottom navigation — Ask / Editor / Results / Explore */}
+          {/* Bottom navigation — Ask / Editor / Results.
+              Explore lives in the top-left hamburger of each pane header. */}
           <Paper
             square
             elevation={3}
@@ -699,7 +713,7 @@ function MainApp() {
               showLabels
               value={bottomValue}
               onChange={(_event, value) =>
-                setMobileTab(value as "ask" | "editor" | "results" | "explore")
+                setMobileTab(value as "ask" | "editor" | "results")
               }
             >
               <BottomNavigationAction
@@ -716,11 +730,6 @@ function MainApp() {
                 label="Results"
                 value="results"
                 icon={<ResultsTabIcon size={22} strokeWidth={1.5} />}
-              />
-              <BottomNavigationAction
-                label="Explore"
-                value="explore"
-                icon={<ExploreTabIcon size={22} strokeWidth={1.5} />}
               />
             </BottomNavigation>
           </Paper>

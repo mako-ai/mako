@@ -217,11 +217,13 @@ export function SidebarMobileExplorerNav() {
   return (
     <Box
       sx={{
-        display: "flex",
-        gap: 0.5,
-        overflowX: "auto",
-        px: 1,
-        py: 0.5,
+        display: "grid",
+        // Wrap every destination into an even grid so nothing scrolls off
+        // the right edge or gets clipped mid-label on a phone.
+        gridTemplateColumns: "repeat(auto-fill, minmax(64px, 1fr))",
+        gap: 0.25,
+        px: 0.5,
+        py: 0.25,
       }}
     >
       {items.map(item => {
@@ -243,17 +245,27 @@ export function SidebarMobileExplorerNav() {
               flexDirection: "column",
               alignItems: "center",
               gap: 0.25,
-              minWidth: 64,
-              px: 1,
-              py: 0.75,
-              borderRadius: 2,
-              flexShrink: 0,
-              color: isActive ? "text.primary" : "text.secondary",
+              minWidth: 0,
+              width: "100%",
+              px: 0.5,
+              py: 0.5,
+              borderRadius: 1.5,
+              color: isActive ? "primary.main" : "text.secondary",
               backgroundColor: isActive ? "action.selected" : "transparent",
             }}
           >
-            <Icon size={22} strokeWidth={1.5} />
-            <Typography variant="caption" sx={{ fontSize: "0.65rem" }}>
+            <Icon size={18} strokeWidth={1.5} />
+            <Typography
+              variant="caption"
+              sx={{
+                fontSize: "0.6rem",
+                lineHeight: 1.1,
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
               {item.label}
             </Typography>
           </Button>

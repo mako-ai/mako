@@ -47,6 +47,7 @@ import {
   Check,
   History,
   ImagePlus,
+  Menu as MenuIcon,
   Pencil,
   Plus,
   MessageSquare,
@@ -1668,6 +1669,7 @@ const ChatInputArea = React.memo(
             {isLoading ? (
               <IconButton
                 type="button"
+                aria-label="Stop generating"
                 onClick={onStop}
                 size="small"
                 sx={{
@@ -1695,6 +1697,7 @@ const ChatInputArea = React.memo(
             ) : (
               <IconButton
                 type="submit"
+                aria-label="Send message"
                 disabled={isSubmitDisabled}
                 size="small"
                 sx={{
@@ -3592,6 +3595,18 @@ const Chat: React.FC<ChatProps> = ({
               gap: 1,
             }}
           >
+            {isMobile && (
+              <Tooltip title="Open explorer">
+                <IconButton
+                  size="small"
+                  edge="start"
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            )}
             <Typography
               variant="h6"
               sx={{
@@ -3610,6 +3625,7 @@ const Chat: React.FC<ChatProps> = ({
               <span>
                 <IconButton
                   size="small"
+                  aria-label="Copy chat history as JSON"
                   onClick={handleCopyChatHistory}
                   disabled={messages.length === 0}
                 >
@@ -3617,12 +3633,24 @@ const Chat: React.FC<ChatProps> = ({
                 </IconButton>
               </span>
             </Tooltip>
-            <IconButton size="small" onClick={createNewSession}>
-              <Plus size={20} />
-            </IconButton>
-            <IconButton size="small" onClick={handleHistoryMenuOpen}>
-              <History size={20} />
-            </IconButton>
+            <Tooltip title="New chat">
+              <IconButton
+                size="small"
+                aria-label="New chat"
+                onClick={createNewSession}
+              >
+                <Plus size={20} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Chat history">
+              <IconButton
+                size="small"
+                aria-label="Chat history"
+                onClick={handleHistoryMenuOpen}
+              >
+                <History size={20} />
+              </IconButton>
+            </Tooltip>
           </Box>
         </Box>
       </Box>

@@ -1177,49 +1177,61 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
           flexWrap: { xs: "wrap", md: "nowrap" },
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {isExecuting ? (
-            <Button
-              variant="contained"
-              size="small"
-              color="error"
-              startIcon={<StopIcon size={18} />}
-              onClick={onCancel}
-              disabled={isCancelling}
-              disableElevation
-              sx={{ minWidth: "120px" }}
-            >
-              {isCancelling ? "Cancelling..." : "Cancel"}
-            </Button>
-          ) : (
-            <Tooltip
-              title={
-                !connectionId
-                  ? "Select a database connection to run queries"
-                  : ""
-              }
-            >
-              <span>
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={isMobile ? undefined : <PlayIcon />}
-                  onClick={handleExecute}
-                  disabled={!connectionId}
-                  disableElevation
-                  sx={{
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    maxWidth: "200px",
-                    minWidth: isMobile ? 0 : "120px",
-                  }}
-                >
-                  {isMobile ? <PlayIcon /> : "Run (⌘/Ctrl+Enter)"}
-                </Button>
-              </span>
-            </Tooltip>
-          )}
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 1,
+            // Wrap the action buttons onto a second line on phones instead of
+            // clipping them off the right edge.
+            flexWrap: { xs: "wrap", md: "nowrap" },
+          }}
+        >
+          {/* On mobile the run/cancel affordance is the floating FAB, so the
+              inline toolbar button is desktop-only to save horizontal space. */}
+          {!isMobile &&
+            (isExecuting ? (
+              <Button
+                variant="contained"
+                size="small"
+                color="error"
+                startIcon={<StopIcon size={18} />}
+                onClick={onCancel}
+                disabled={isCancelling}
+                disableElevation
+                sx={{ minWidth: "120px" }}
+              >
+                {isCancelling ? "Cancelling..." : "Cancel"}
+              </Button>
+            ) : (
+              <Tooltip
+                title={
+                  !connectionId
+                    ? "Select a database connection to run queries"
+                    : ""
+                }
+              >
+                <span>
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={<PlayIcon />}
+                    onClick={handleExecute}
+                    disabled={!connectionId}
+                    disableElevation
+                    sx={{
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: "200px",
+                      minWidth: "120px",
+                    }}
+                  >
+                    Run (⌘/Ctrl+Enter)
+                  </Button>
+                </span>
+              </Tooltip>
+            ))}
 
           {isReadOnly && (
             <Chip
@@ -1245,6 +1257,29 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                   size="small"
                   variant="outlined"
                   startIcon={
+                    isMobile ? undefined : (
+                      <Badge
+                        color="success"
+                        variant="dot"
+                        invisible={!hasSchedule}
+                        overlap="circular"
+                      >
+                        <ScheduleIcon size={16} />
+                      </Badge>
+                    )
+                  }
+                  onClick={() =>
+                    hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.()
+                  }
+                  disabled={!isSaved}
+                  sx={{
+                    ml: 1,
+                    whiteSpace: "nowrap",
+                    minWidth: isMobile ? 0 : undefined,
+                    px: isMobile ? 1 : undefined,
+                  }}
+                >
+                  {isMobile ? (
                     <Badge
                       color="success"
                       variant="dot"
@@ -1253,14 +1288,9 @@ const Console = forwardRef<ConsoleRef, ConsoleProps>((props, ref) => {
                     >
                       <ScheduleIcon size={16} />
                     </Badge>
-                  }
-                  onClick={() =>
-                    hasSchedule ? onUpdateSchedule?.() : onCreateSchedule?.()
-                  }
-                  disabled={!isSaved}
-                  sx={{ ml: 1, whiteSpace: "nowrap" }}
-                >
-                  Schedule
+                  ) : (
+                    "Schedule"
+                  )}
                 </Button>
               </span>
             </Tooltip>

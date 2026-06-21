@@ -33,6 +33,7 @@ import {
   DialogActions,
   Alert,
   Snackbar,
+  Tooltip,
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import {
@@ -48,6 +49,7 @@ import {
   Database as DatabaseIcon,
   Table as TableDataIcon,
   ClipboardList as PlanIcon,
+  Menu as MenuIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
@@ -2057,6 +2059,18 @@ function Editor({
               borderColor: "divider",
             }}
           >
+            {isMobile && (
+              <Tooltip title="Open explorer">
+                <IconButton
+                  size="small"
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={{ ml: 0.5, mr: 0.25, flexShrink: 0 }}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            )}
             <DndContext
               sensors={dndSensors}
               collisionDetection={closestCenter}
@@ -2661,24 +2675,54 @@ function Editor({
             height: "100%",
             display: "flex",
             flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 2,
           }}
         >
-          <Typography>No console open</Typography>
-          <Button
-            variant="contained"
-            disableElevation
-            onClick={() => {
-              openTab({
-                title: "New Console",
-                content: "",
-              });
+          {isMobile && (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                minHeight: 36,
+                px: 0.5,
+                borderBottom: 1,
+                borderColor: "divider",
+              }}
+            >
+              <Tooltip title="Open explorer">
+                <IconButton
+                  size="small"
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          )}
+          <Box
+            sx={{
+              flexGrow: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 2,
             }}
           >
-            Open Console
-          </Button>
+            <Typography>No console open</Typography>
+            <Button
+              variant="contained"
+              disableElevation
+              onClick={() => {
+                openTab({
+                  title: "New Console",
+                  content: "",
+                });
+              }}
+            >
+              Open Console
+            </Button>
+          </Box>
         </Box>
       )}
 
