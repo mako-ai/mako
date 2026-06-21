@@ -97,8 +97,8 @@ export async function loadDbtProjectSnapshot(params: {
     content: file.content ?? "",
   }));
 
-  // Environment vars: merge into every command via a vars file would change
-  // semantics; instead they're applied by callers via --vars when present.
+  // Environment vars (environment.vars) are injected as `--vars` by runDbt for
+  // every command, so callers just forward snapshot.environment.vars.
 
   return { project, environment, files, profile };
 }
@@ -182,7 +182,10 @@ export async function runAdhocDbtCommand(params: {
     dbtEngineEnabled() &&
     warmDirsEnabled() &&
     parsed.subcommand === "compile" &&
-    params.select
+    params.select &&
+    // The engine path does not apply --vars; skip it when the environment sets
+    // vars so var() resolves correctly via the subprocess path below.
+    Object.keys(snapshot.environment.vars ?? {}).length === 0
   ) {
     const select = params.select;
     try {
@@ -266,6 +269,7 @@ export async function runAdhocDbtCommand(params: {
       profile: snapshot.profile,
       commands: [parsed],
       dbtVersion: snapshot.project.dbtVersion,
+      vars: snapshot.environment.vars,
       deferState: params.deferState,
       commandTimeoutMs: params.timeoutMs ?? 5 * 60 * 1000,
       seedPartialParse: caches.partialParse,

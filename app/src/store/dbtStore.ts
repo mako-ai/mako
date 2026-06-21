@@ -19,6 +19,23 @@ export interface DbtEnvironment {
   vars?: Record<string, unknown>;
 }
 
+export interface DbtRepoBinding {
+  provider: "github";
+  installationId?: number;
+  owner: string;
+  repo: string;
+  branch: string;
+  subdirectory?: string;
+  lastSyncedSha?: string;
+  lastSyncedAt?: string;
+}
+
+export interface DbtCiConfig {
+  enabled: boolean;
+  environment?: string;
+  deferToProduction?: boolean;
+}
+
 export interface DbtProjectItem {
   _id: string;
   name: string;
@@ -26,6 +43,94 @@ export interface DbtProjectItem {
   environments: DbtEnvironment[];
   defaultEnvironment: string;
   updatedAt?: string;
+  /** Set when the project is imported/synced from a Git repository. */
+  repo?: DbtRepoBinding;
+  /** Pull-request CI config (repo-bound projects). */
+  ci?: DbtCiConfig;
+  /** Artifact-store key of last prod manifest (Slim CI defer state). */
+  lastProdManifestKey?: string;
+}
+
+export interface GitHubInstallationItem {
+  installationId: number;
+  accountLogin: string;
+  accountType: "Organization" | "User";
+  repositorySelection: "all" | "selected";
+}
+
+export interface GitHubRepoItem {
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  private: boolean;
+}
+
+export interface GitHubStatus {
+  appConfigured: boolean;
+  appSlug: string | null;
+  devTokenAvailable: boolean;
+  installations: GitHubInstallationItem[];
+}
+
+export interface GitHubRepoCheck {
+  owner: string;
+  repo: string;
+  branch: string;
+  subdirectory?: string;
+  defaultBranch: string;
+  hasDbtProjectYml: boolean;
+  suggestedSubdirectories: string[];
+}
+
+export interface ImportGitHubPayload {
+  name: string;
+  environments: DbtEnvironment[];
+  defaultEnvironment: string;
+  dbtVersion?: string;
+  repo: {
+    owner: string;
+    repo: string;
+    branch?: string;
+    subdirectory?: string;
+    installationId?: number;
+  };
+}
+
+export interface SyncResult {
+  sha: string;
+  added: number;
+  updated: number;
+  deleted: number;
+  skippedLarge: string[];
+}
+
+export interface GitFileStatus {
+  path: string;
+  status: "added" | "modified" | "deleted";
+}
+
+export interface GitFileDiff {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  base: string;
+  working: string;
+}
+
+export interface GitStatus {
+  branch: string;
+  changes: GitFileStatus[];
+  added: number;
+  modified: number;
+  deleted: number;
+  hasChanges: boolean;
+}
+
+export interface CommitResult {
+  committed: boolean;
+  sha?: string;
+  branch: string;
+  pushed: { added: number; modified: number; deleted: number };
 }
 
 export interface DbtFileEntry {
@@ -78,7 +183,7 @@ export interface DbtRunItem {
   environment: string;
   commands: string[];
   status: "queued" | "running" | "success" | "error" | "cancelled";
-  trigger: "schedule" | "manual" | "agent";
+  trigger: "schedule" | "manual" | "agent" | "ci";
   triggeredBy: string;
   startedAt?: string;
   completedAt?: string;
@@ -86,11 +191,31 @@ export interface DbtRunItem {
   stepResults?: DbtStepResult[];
   error?: string;
   createdAt: string;
+  /** PR context for CI runs (trigger === "ci"). */
+  ci?: {
+    prNumber: number;
+    headSha: string;
+    headRef: string;
+    baseRef: string;
+    owner: string;
+    repo: string;
+  };
 }
+
+/** Which run artifacts were stored (keys present → downloadable). */
+export interface DbtArtifactKeys {
+  manifest?: string;
+  runResults?: string;
+  catalog?: string;
+  sources?: string;
+}
+
+export type DbtArtifactKind = keyof DbtArtifactKeys;
 
 export interface DbtRunDetails extends DbtRunItem {
   logs: DbtRunLogLine[];
   logCursor: number;
+  artifactKeys?: DbtArtifactKeys;
 }
 
 export interface DbtCompileResult {
@@ -138,6 +263,8 @@ export interface DbtLineage {
 interface DbtState {
   projects: DbtProjectItem[];
   projectsLoaded: boolean;
+  /** Currently selected project (drives the dbt Studio-style explorer). */
+  activeProjectId: string | null;
   /** projectId → sorted file paths (tree source of truth). */
   filePathsByProject: Record<string, string[]>;
   /** projectId → path → file entry. */
@@ -148,18 +275,27 @@ interface DbtState {
   runsByProject: Record<string, DbtRunItem[]>;
   /** runId → details incl. accumulated logs. */
   runDetails: Record<string, DbtRunDetails>;
+  /** projectId → working-tree git status (repo-bound projects). */
+  gitStatusByProject: Record<string, GitStatus>;
+  /** Project settings drawer (mounted at app root). */
+  settingsProjectId: string | null;
+  /** New project drawer (mounted at app root). */
+  createProjectOpen: boolean;
+  createProjectMode: "blank" | "github";
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
 }
 
 interface DbtActions {
   fetchProjects: (workspaceId: string) => Promise<void>;
+  setActiveProject: (projectId: string | null) => void;
   createProject: (
     workspaceId: string,
     payload: {
       name: string;
       environments: DbtEnvironment[];
       defaultEnvironment: string;
+      dbtVersion?: string;
     },
   ) => Promise<DbtProjectItem | null>;
   updateProject: (
@@ -170,9 +306,75 @@ interface DbtActions {
       environments?: DbtEnvironment[];
       defaultEnvironment?: string;
       dbtVersion?: string;
+      ci?: DbtCiConfig;
     },
   ) => Promise<DbtProjectItem | null>;
   deleteProject: (workspaceId: string, projectId: string) => Promise<boolean>;
+  fetchGitHubStatus: (workspaceId: string) => Promise<GitHubStatus | null>;
+  fetchGitHubRepos: (
+    workspaceId: string,
+    installationId: number,
+  ) => Promise<GitHubRepoItem[]>;
+  fetchGitHubBranches: (
+    workspaceId: string,
+    params: {
+      owner: string;
+      repo: string;
+      installationId?: number;
+    },
+  ) => Promise<string[]>;
+  checkGitHubRepo: (
+    workspaceId: string,
+    params: {
+      owner: string;
+      repo: string;
+      branch?: string;
+      subdirectory?: string;
+      installationId?: number;
+    },
+  ) => Promise<GitHubRepoCheck | null>;
+  getGitHubInstallUrl: (workspaceId: string) => Promise<string | null>;
+  importProjectFromGitHub: (
+    workspaceId: string,
+    payload: ImportGitHubPayload,
+  ) => Promise<DbtProjectItem | null>;
+  syncProjectFromGitHub: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<SyncResult | null>;
+  fetchGitStatus: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<GitStatus | null>;
+  fetchGitDiff: (
+    workspaceId: string,
+    projectId: string,
+    path: string,
+  ) => Promise<GitFileDiff | null>;
+  commitAndPush: (
+    workspaceId: string,
+    projectId: string,
+    message: string,
+  ) => Promise<CommitResult | null>;
+  listBranches: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<{ branches: string[]; current: string } | null>;
+  createBranch: (
+    workspaceId: string,
+    projectId: string,
+    name: string,
+  ) => Promise<DbtProjectItem | null>;
+  switchBranch: (
+    workspaceId: string,
+    projectId: string,
+    branch: string,
+  ) => Promise<DbtProjectItem | null>;
+  openPullRequest: (
+    workspaceId: string,
+    projectId: string,
+    payload: { title: string; body?: string; base?: string },
+  ) => Promise<{ number: number; htmlUrl: string } | null>;
 
   fetchFiles: (workspaceId: string, projectId: string) => Promise<void>;
   readFile: (
@@ -243,6 +445,13 @@ interface DbtActions {
     projectId: string,
     runId: string,
   ) => Promise<boolean>;
+  /** Fetch a run artifact and trigger a browser download. */
+  downloadRunArtifact: (
+    workspaceId: string,
+    projectId: string,
+    runId: string,
+    kind: DbtArtifactKind,
+  ) => Promise<boolean>;
 
   compileModel: (
     workspaceId: string,
@@ -270,6 +479,11 @@ interface DbtActions {
     projectId: string,
   ) => Promise<DbtLineage | null>;
 
+  openProjectSettings: (projectId: string) => void;
+  closeProjectSettings: () => void;
+  openCreateProject: (mode?: "blank" | "github") => void;
+  closeCreateProject: () => void;
+
   reset: () => void;
 }
 
@@ -278,17 +492,31 @@ type DbtStore = DbtState & DbtActions;
 const initialState: DbtState = {
   projects: [],
   projectsLoaded: false,
+  activeProjectId: null,
   filePathsByProject: {},
   filesByProject: {},
   jobsByProject: {},
   runsByProject: {},
   runDetails: {},
+  gitStatusByProject: {},
+  settingsProjectId: null,
+  createProjectOpen: false,
+  createProjectMode: "blank",
   loading: {},
   error: {},
 };
 
 function errMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
+}
+
+/**
+ * Encode a dbt file path for use in a URL while preserving the "/" separators.
+ * `encodeURI` leaves `#`, `?`, `&`, `+` unescaped, which would corrupt the
+ * request for paths containing those characters — so encode each segment.
+ */
+function encodeDbtPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
 }
 
 export const useDbtStore = create<DbtStore>()(
@@ -306,9 +534,18 @@ export const useDbtStore = create<DbtStore>()(
           projects: DbtProjectItem[];
         }>(`/workspaces/${workspaceId}/dbt/projects`);
         set(state => {
-          state.projects = response.projects ?? [];
+          const projects = response.projects ?? [];
+          state.projects = projects;
           state.projectsLoaded = true;
           state.loading.projects = false;
+          // Keep a valid selection: clear if the active project disappeared,
+          // and default to the first project when nothing is selected yet.
+          const stillExists =
+            state.activeProjectId &&
+            projects.some(p => p._id === state.activeProjectId);
+          if (!stillExists) {
+            state.activeProjectId = projects[0]?._id ?? null;
+          }
         });
       } catch (error) {
         set(state => {
@@ -316,6 +553,12 @@ export const useDbtStore = create<DbtStore>()(
           state.error.projects = errMessage(error, "Failed to load projects");
         });
       }
+    },
+
+    setActiveProject: projectId => {
+      set(state => {
+        state.activeProjectId = projectId;
+      });
     },
 
     createProject: async (workspaceId, payload) => {
@@ -327,6 +570,7 @@ export const useDbtStore = create<DbtStore>()(
         const project = response.project;
         set(state => {
           state.projects.unshift(project);
+          state.activeProjectId = project._id;
         });
         return project;
       } catch (error) {
@@ -368,6 +612,9 @@ export const useDbtStore = create<DbtStore>()(
           delete state.filesByProject[projectId];
           delete state.jobsByProject[projectId];
           delete state.runsByProject[projectId];
+          if (state.activeProjectId === projectId) {
+            state.activeProjectId = state.projects[0]?._id ?? null;
+          }
         });
         return true;
       } catch (error) {
@@ -375,6 +622,273 @@ export const useDbtStore = create<DbtStore>()(
           state.error.projects = errMessage(error, "Failed to delete project");
         });
         return false;
+      }
+    },
+
+    fetchGitHubStatus: async workspaceId => {
+      try {
+        const response = await apiClient.get<
+          { success: boolean } & GitHubStatus
+        >(`/workspaces/${workspaceId}/dbt/github/status`);
+        return {
+          appConfigured: response.appConfigured,
+          appSlug: response.appSlug,
+          devTokenAvailable: response.devTokenAvailable,
+          installations: response.installations ?? [],
+        };
+      } catch {
+        return null;
+      }
+    },
+
+    fetchGitHubRepos: async (workspaceId, installationId) => {
+      const response = await apiClient.get<{
+        success: boolean;
+        repos: GitHubRepoItem[];
+      }>(
+        `/workspaces/${workspaceId}/dbt/github/repos?installationId=${installationId}`,
+      );
+      return response.repos ?? [];
+    },
+
+    fetchGitHubBranches: async (workspaceId, params) => {
+      try {
+        const qs = new URLSearchParams({
+          owner: params.owner,
+          repo: params.repo,
+        });
+        if (params.installationId !== undefined) {
+          qs.set("installationId", String(params.installationId));
+        }
+        const response = await apiClient.get<{
+          success: boolean;
+          branches: string[];
+        }>(`/workspaces/${workspaceId}/dbt/github/branches?${qs}`);
+        return response.branches ?? [];
+      } catch {
+        return [];
+      }
+    },
+
+    checkGitHubRepo: async (workspaceId, params) => {
+      try {
+        const qs = new URLSearchParams({
+          owner: params.owner,
+          repo: params.repo,
+        });
+        if (params.branch) qs.set("branch", params.branch);
+        if (params.subdirectory) qs.set("subdirectory", params.subdirectory);
+        if (params.installationId !== undefined) {
+          qs.set("installationId", String(params.installationId));
+        }
+        const response = await apiClient.get<
+          { success: boolean } & GitHubRepoCheck
+        >(`/workspaces/${workspaceId}/dbt/github/repo-check?${qs}`);
+        return response;
+      } catch {
+        return null;
+      }
+    },
+
+    getGitHubInstallUrl: async workspaceId => {
+      try {
+        const response = await apiClient.get<{ success: boolean; url: string }>(
+          `/workspaces/${workspaceId}/dbt/github/install-url`,
+        );
+        return response.url ?? null;
+      } catch {
+        return null;
+      }
+    },
+
+    importProjectFromGitHub: async (workspaceId, payload) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          project: DbtProjectItem;
+        }>(`/workspaces/${workspaceId}/dbt/projects/import-github`, payload);
+        const project = response.project;
+        set(state => {
+          state.projects.unshift(project);
+          state.activeProjectId = project._id;
+        });
+        return project;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to import project from GitHub",
+          );
+        });
+        return null;
+      }
+    },
+
+    syncProjectFromGitHub: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.post<
+          { success: boolean; project: DbtProjectItem } & SyncResult
+        >(`/workspaces/${workspaceId}/dbt/projects/${projectId}/sync`, {});
+        set(state => {
+          const idx = state.projects.findIndex(p => p._id === projectId);
+          if (idx >= 0) state.projects[idx] = response.project;
+          // Drop cached file contents so the editor re-reads synced files.
+          delete state.filesByProject[projectId];
+        });
+        return {
+          sha: response.sha,
+          added: response.added,
+          updated: response.updated,
+          deleted: response.deleted,
+          skippedLarge: response.skippedLarge ?? [],
+        };
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to sync from GitHub",
+          );
+        });
+        return null;
+      }
+    },
+
+    fetchGitStatus: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          status: GitStatus;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/status`);
+        set(state => {
+          state.gitStatusByProject[projectId] = response.status;
+        });
+        return response.status;
+      } catch {
+        return null;
+      }
+    },
+
+    fetchGitDiff: async (workspaceId, projectId, path) => {
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          diff: GitFileDiff;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/diff`, {
+          path,
+        });
+        return response.diff;
+      } catch (error) {
+        set(state => {
+          state.error[`git:${projectId}`] = errMessage(
+            error,
+            "Failed to load diff",
+          );
+        });
+        return null;
+      }
+    },
+
+    commitAndPush: async (workspaceId, projectId, message) => {
+      try {
+        const response = await apiClient.post<
+          { success: boolean } & CommitResult
+        >(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/commit`, {
+          message,
+        });
+        await get().fetchGitStatus(workspaceId, projectId);
+        return {
+          committed: response.committed,
+          sha: response.sha,
+          branch: response.branch,
+          pushed: response.pushed,
+        };
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(error, "Failed to commit and push");
+        });
+        return null;
+      }
+    },
+
+    listBranches: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          branches: string[];
+          current: string;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/branches`);
+        return { branches: response.branches ?? [], current: response.current };
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(error, "Failed to list branches");
+        });
+        return null;
+      }
+    },
+
+    createBranch: async (workspaceId, projectId, name) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          project: DbtProjectItem;
+        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/branch`, {
+          name,
+        });
+        set(state => {
+          const idx = state.projects.findIndex(p => p._id === projectId);
+          if (idx >= 0) state.projects[idx] = response.project;
+        });
+        return response.project;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(error, "Failed to create branch");
+        });
+        return null;
+      }
+    },
+
+    switchBranch: async (workspaceId, projectId, branch) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          project: DbtProjectItem;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/switch-branch`,
+          { branch },
+        );
+        set(state => {
+          const idx = state.projects.findIndex(p => p._id === projectId);
+          if (idx >= 0) state.projects[idx] = response.project;
+          delete state.filesByProject[projectId];
+        });
+        return response.project;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(error, "Failed to switch branch");
+        });
+        return null;
+      }
+    },
+
+    openPullRequest: async (workspaceId, projectId, payload) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          number: number;
+          htmlUrl: string;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-request`,
+          payload,
+        );
+        return { number: response.number, htmlUrl: response.htmlUrl };
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to open pull request",
+          );
+        });
+        return null;
       }
     },
 
@@ -412,7 +926,7 @@ export const useDbtStore = create<DbtStore>()(
           success: boolean;
           file: { path: string; content: string };
         }>(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeURI(path)}`,
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         const content = response.file?.content ?? "";
         set(state => {
@@ -460,7 +974,7 @@ export const useDbtStore = create<DbtStore>()(
       if (!file) return false;
       try {
         await apiClient.put(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeURI(path)}`,
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
           { content: file.content },
         );
         set(state => {
@@ -487,7 +1001,7 @@ export const useDbtStore = create<DbtStore>()(
     deleteFile: async (workspaceId, projectId, path) => {
       try {
         await apiClient.delete(
-          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeURI(path)}`,
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
         );
         set(state => {
           delete state.filesByProject[projectId]?.[path];
@@ -686,14 +1200,16 @@ export const useDbtStore = create<DbtStore>()(
           { logsSince: String(cursor) },
         );
         const run = response.run;
-        let merged: DbtRunDetails | null = null;
+        // Build the merged value as a plain object OUTSIDE the producer: a
+        // reference captured from inside `set` is an immer draft that gets
+        // revoked once produce() finalizes, so reading it later throws.
+        const previous = get().runDetails[runId];
+        const logs = previous
+          ? [...previous.logs, ...(run.logs ?? [])]
+          : (run.logs ?? []);
+        const merged: DbtRunDetails = { ...run, logs };
         set(state => {
-          const previous = state.runDetails[runId];
-          const logs = previous
-            ? [...previous.logs, ...(run.logs ?? [])]
-            : (run.logs ?? []);
-          state.runDetails[runId] = { ...run, logs };
-          merged = state.runDetails[runId];
+          state.runDetails[runId] = merged;
           // Keep the run list row in sync (status/duration changes).
           const runs = state.runsByProject[projectId];
           if (runs) {
@@ -724,6 +1240,41 @@ export const useDbtStore = create<DbtStore>()(
           state.error[`run:${runId}`] = errMessage(
             error,
             "Failed to cancel run",
+          );
+        });
+        return false;
+      }
+    },
+
+    downloadRunArtifact: async (workspaceId, projectId, runId, kind) => {
+      const fileNames: Record<DbtArtifactKind, string> = {
+        manifest: "manifest.json",
+        runResults: "run_results.json",
+        catalog: "catalog.json",
+        sources: "sources.json",
+      };
+      try {
+        // Artifacts are JSON; apiClient parses them. Re-serialize for download.
+        const content = await apiClient.get<unknown>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/artifacts/${kind}`,
+        );
+        const blob = new Blob([JSON.stringify(content, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = fileNames[kind];
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        return true;
+      } catch (error) {
+        set(state => {
+          state.error[`run:${runId}`] = errMessage(
+            error,
+            "Failed to download artifact",
           );
         });
         return false;
@@ -833,6 +1384,32 @@ export const useDbtStore = create<DbtStore>()(
         });
         return null;
       }
+    },
+
+    openProjectSettings: projectId => {
+      set(state => {
+        state.settingsProjectId = projectId;
+      });
+    },
+
+    closeProjectSettings: () => {
+      set(state => {
+        state.settingsProjectId = null;
+      });
+    },
+
+    openCreateProject: mode => {
+      set(state => {
+        state.createProjectOpen = true;
+        state.createProjectMode = mode ?? "blank";
+      });
+    },
+
+    closeCreateProject: () => {
+      set(state => {
+        state.createProjectOpen = false;
+        state.createProjectMode = "blank";
+      });
     },
 
     reset: () => set(initialState),

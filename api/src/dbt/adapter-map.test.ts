@@ -56,15 +56,22 @@ describe("renderDbtProfile secret isolation", () => {
     },
   );
 
-  it("bigquery keeps the service-account JSON out of profiles.yml", () => {
+  it("bigquery writes the service-account JSON to a keyfile, not profiles.yml", () => {
     const sa = JSON.stringify({ project_id: "my-proj", private_key: "PK" });
-    const { profilesYml, secretEnv } = renderDbtProfile(
+    const { profilesYml, secretEnv, keyfiles } = renderDbtProfile(
       connection("bigquery", { service_account_json: sa }),
       env,
     );
+    // Private key never appears in the rendered profile…
     expect(profilesYml).not.toContain("PK");
+    // …the project id is surfaced and the keyfile is referenced via env_var.
     expect(profilesYml).toContain("my-proj");
-    expect(secretEnv.DBT_SECRET_BQ_KEYFILE_JSON).toBe(sa);
+    expect(profilesYml).toContain("DBT_BQ_KEYFILE");
+    // The SA JSON is not placed in the secret-env map…
+    expect(secretEnv.DBT_SECRET_BQ_KEYFILE_JSON).toBeUndefined();
+    // …it is written to a keyfile referenced by env_var('DBT_BQ_KEYFILE').
+    const keyfile = keyfiles.find(k => k.envVar === "DBT_BQ_KEYFILE");
+    expect(keyfile?.content).toBe(sa);
   });
 
   it("emits the correct adapter package per type", () => {

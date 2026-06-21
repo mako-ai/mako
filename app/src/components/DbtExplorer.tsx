@@ -14,6 +14,7 @@ import {
   Typography,
   MenuItem,
   ListItemIcon,
+  ListItemText,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -25,7 +26,12 @@ import {
   FormControl,
   InputLabel,
   Menu,
+  Chip,
+  CircularProgress,
+  Divider,
+  useTheme,
 } from "@mui/material";
+import { DiffEditor } from "@monaco-editor/react";
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
@@ -40,16 +46,24 @@ import {
   MoreVertical as KebabIcon,
   Terminal as ConsoleIcon,
   History as RunsIcon,
+  Github as GithubIcon,
+  DownloadCloud as SyncIcon,
+  GitCommitHorizontal as CommitIcon,
+  GitPullRequest as PullRequestIcon,
+  GitBranchPlus as NewBranchIcon,
+  ArrowLeftRight as SwitchBranchIcon,
+  ChevronDown as ChevronDownIcon,
+  ChevronRight as ChevronRightIcon,
+  Check as CheckIcon,
+  Box as ProjectBoxIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useExplorerStore } from "../store/explorerStore";
-import { useSchemaStore, type Connection } from "../store/schemaStore";
 import {
   useDbtStore,
-  type DbtEnvironment,
   type DbtJobItem,
-  type DbtProjectItem,
+  type GitFileDiff,
 } from "../store/dbtStore";
 import {
   focusDbtConsoleTab,
@@ -57,6 +71,17 @@ import {
   focusDbtJobTab,
   focusDbtRunsTab,
 } from "../dbt-runtime/shell";
+import {
+  DBT_JINJA_LANGUAGE_ID,
+  registerDbtJinjaLanguage,
+} from "../lib/dbt-monaco";
+
+function dbtDiffLanguage(path: string): string {
+  if (path.endsWith(".sql")) return DBT_JINJA_LANGUAGE_ID;
+  if (path.endsWith(".yml") || path.endsWith(".yaml")) return "yaml";
+  if (path.endsWith(".md")) return "markdown";
+  return "plaintext";
+}
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 
@@ -70,16 +95,6 @@ const DIR_SEP = "::dir::";
 const JOB_SEP = "::job::";
 const RUNS_SEP = "::runs::";
 const JOBS_DIR = "__jobs";
-
-const DBT_COMPATIBLE_TYPES = new Set([
-  "postgresql",
-  "cloudsql-postgres",
-  "redshift",
-  "bigquery",
-  "clickhouse",
-  "mysql",
-  "mssql",
-]);
 
 function dirname(path: string): string {
   const parts = path.split("/").filter(Boolean);
@@ -190,12 +205,83 @@ function scheduleSummary(job: DbtJobItem): string {
   return `${job.schedule.cron} ${job.schedule.timezone ?? "UTC"}`;
 }
 
+/** Collapsible section header (dbt Studio "Version control" / "File explorer"). */
+function SectionHeader({
+  label,
+  open,
+  onToggle,
+  actions,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.5,
+        px: 1,
+        py: 0.5,
+        cursor: "pointer",
+        userSelect: "none",
+        "&:hover .dbt-section-actions": { opacity: 1 },
+      }}
+      onClick={onToggle}
+    >
+      {open ? (
+        <ChevronDownIcon size={14} strokeWidth={2} />
+      ) : (
+        <ChevronRightIcon size={14} strokeWidth={2} />
+      )}
+      <Typography
+        variant="caption"
+        sx={{
+          flex: 1,
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: 0.4,
+          color: "text.secondary",
+          fontSize: "0.68rem",
+        }}
+      >
+        {label}
+      </Typography>
+      {actions && (
+        <Box
+          className="dbt-section-actions"
+          sx={{
+            display: "flex",
+            gap: 0,
+            opacity: 0,
+            transition: "opacity .1s",
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          {actions}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+const STATUS_META = {
+  added: { letter: "A", color: "success.main" },
+  deleted: { letter: "D", color: "error.main" },
+  modified: { letter: "M", color: "warning.main" },
+} as const;
+
 export function DbtExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
+  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
 
   const projects = useDbtStore(s => s.projects);
   const projectsLoaded = useDbtStore(s => s.projectsLoaded);
+  const activeProjectId = useDbtStore(s => s.activeProjectId);
+  const setActiveProject = useDbtStore(s => s.setActiveProject);
   const filePathsByProject = useDbtStore(s => s.filePathsByProject);
   const jobsByProject = useDbtStore(s => s.jobsByProject);
   const loading = useDbtStore(s => !!s.loading.projects);
@@ -203,16 +289,23 @@ export function DbtExplorer() {
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const fetchFiles = useDbtStore(s => s.fetchFiles);
   const fetchJobs = useDbtStore(s => s.fetchJobs);
-  const createProject = useDbtStore(s => s.createProject);
-  const updateProject = useDbtStore(s => s.updateProject);
   const deleteProject = useDbtStore(s => s.deleteProject);
+  const syncProjectFromGitHub = useDbtStore(s => s.syncProjectFromGitHub);
+  const gitStatusByProject = useDbtStore(s => s.gitStatusByProject);
+  const fetchGitStatus = useDbtStore(s => s.fetchGitStatus);
+  const fetchGitDiff = useDbtStore(s => s.fetchGitDiff);
+  const commitAndPush = useDbtStore(s => s.commitAndPush);
+  const listBranches = useDbtStore(s => s.listBranches);
+  const createBranch = useDbtStore(s => s.createBranch);
+  const switchBranch = useDbtStore(s => s.switchBranch);
+  const openPullRequest = useDbtStore(s => s.openPullRequest);
   const createFile = useDbtStore(s => s.createFile);
   const deleteFile = useDbtStore(s => s.deleteFile);
   const renameFile = useDbtStore(s => s.renameFile);
   const deleteJob = useDbtStore(s => s.deleteJob);
-
-  const connections = useSchemaStore(s => s.connections);
-  const ensureConnections = useSchemaStore(s => s.ensureConnections);
+  const saveJob = useDbtStore(s => s.saveJob);
+  const openProjectSettings = useDbtStore(s => s.openProjectSettings);
+  const openCreateProject = useDbtStore(s => s.openCreateProject);
 
   const activeTabId = useConsoleStore(s => s.activeTabId);
   const tabs = useConsoleStore(s => s.tabs);
@@ -237,12 +330,23 @@ export function DbtExplorer() {
   const [loadingProjects, setLoadingProjects] = useState<
     Record<string, boolean>
   >({});
-  const [createOpen, setCreateOpen] = useState(false);
-  const [createName, setCreateName] = useState("");
-  const [createConnectionId, setCreateConnectionId] = useState("");
-  const [createDevSchema, setCreateDevSchema] = useState("dbt_dev");
-  const [createProdSchema, setCreateProdSchema] = useState("analytics");
-  const [creating, setCreating] = useState(false);
+  const [syncingProjectId, setSyncingProjectId] = useState<string | null>(null);
+
+  // In-IDE git dialogs
+  const [commitTarget, setCommitTarget] = useState<string | null>(null);
+  const [commitMessage, setCommitMessage] = useState("");
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitResult, setGitResult] = useState<string | null>(null);
+  const [diffData, setDiffData] = useState<GitFileDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [branchTarget, setBranchTarget] = useState<string | null>(null);
+  const [branchName, setBranchName] = useState("");
+  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
+  const [switchBranches, setSwitchBranches] = useState<string[]>([]);
+  const [switchValue, setSwitchValue] = useState("");
+  const [prTarget, setPrTarget] = useState<string | null>(null);
+  const [prTitle, setPrTitle] = useState("");
+  const [prBody, setPrBody] = useState("");
   const [newFileTarget, setNewFileTarget] = useState<{
     projectId: string;
     dir: string;
@@ -258,84 +362,107 @@ export function DbtExplorer() {
     name: string;
   } | null>(null);
 
-  // Edit-project dialog state
-  const [editProjectId, setEditProjectId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editDbtVersion, setEditDbtVersion] = useState("");
-  const [editDefaultEnv, setEditDefaultEnv] = useState("");
-  const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
-  const [savingEdit, setSavingEdit] = useState(false);
-
   // Hover kebab menu (reuses getContextMenuItems for the same actions).
   const [kebabMenu, setKebabMenu] = useState<{
     anchorEl: HTMLElement;
     node: ResourceTreeNode;
   } | null>(null);
 
+  // dbt Studio-style chrome: project switcher + collapsible sections + the
+  // project actions / git actions overflow menus.
+  const [projectMenuAnchor, setProjectMenuAnchor] =
+    useState<HTMLElement | null>(null);
+  const [projectActionsAnchor, setProjectActionsAnchor] =
+    useState<HTMLElement | null>(null);
+  const [gitMenuAnchor, setGitMenuAnchor] = useState<HTMLElement | null>(null);
+  const [vcOpen, setVcOpen] = useState(true);
+  const [filesOpen, setFilesOpen] = useState(true);
+  const [orchOpen, setOrchOpen] = useState(true);
+
+  const activeProject = useMemo(
+    () => projects.find(p => p._id === activeProjectId) ?? null,
+    [projects, activeProjectId],
+  );
+
   useEffect(() => {
     if (workspaceId) void fetchProjects(workspaceId);
   }, [workspaceId, fetchProjects]);
 
+  // Eagerly load the active project's files + jobs (the explorer now shows one
+  // project at a time rather than lazily expanding project roots).
   useEffect(() => {
-    if ((createOpen || editProjectId) && workspaceId) {
-      void ensureConnections(workspaceId);
+    if (!workspaceId || !activeProjectId) return;
+    if (!filePathsByProject[activeProjectId]) {
+      void fetchFiles(workspaceId, activeProjectId);
     }
-  }, [createOpen, editProjectId, workspaceId, ensureConnections]);
+    if (!jobsByProject[activeProjectId]) {
+      void fetchJobs(workspaceId, activeProjectId);
+    }
+  }, [
+    workspaceId,
+    activeProjectId,
+    filePathsByProject,
+    jobsByProject,
+    fetchFiles,
+    fetchJobs,
+  ]);
 
-  const dbtConnections: Connection[] = useMemo(() => {
-    const all = workspaceId ? (connections[workspaceId] ?? []) : [];
-    return all.filter(conn => DBT_COMPATIBLE_TYPES.has(conn.type));
-  }, [workspaceId, connections]);
+  // After returning from the GitHub App install flow, open the import drawer
+  // in GitHub mode, then clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get("transformGithub");
+    if (!result) return;
+    if (result === "connected") {
+      openCreateProject("github");
+    }
+    params.delete("transformGithub");
+    const query = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      window.location.pathname + (query ? `?${query}` : ""),
+    );
+  }, [openCreateProject]);
 
-  const buildProjectNodes = useCallback(
-    (items: DbtProjectItem[]): ResourceTreeNode[] =>
-      items.map(project => {
-        const paths = filePathsByProject[project._id];
-        const jobs = jobsByProject[project._id];
-        let children: ResourceTreeNode[] | undefined;
-        if (paths) {
-          children = buildFileNodes(project._id, paths);
-          children.push({
-            id: `${project._id}${DIR_SEP}${JOBS_DIR}`,
-            name: "Jobs",
-            path: JOBS_DIR,
-            isDirectory: true,
-            children: (jobs ?? []).map(job => ({
-              id: `${project._id}${JOB_SEP}${job._id}`,
-              name: `${job.name} (${scheduleSummary(job)})`,
-              path: `job/${job._id}`,
-              isDirectory: false,
-            })),
-          });
-          children.push({
-            id: `${project._id}${RUNS_SEP}`,
-            name: "Runs",
-            path: "runs",
-            isDirectory: false,
-          });
-        }
-        return {
-          id: project._id,
-          name: `${project.name} (${project.defaultEnvironment})`,
-          path: project._id,
-          isDirectory: true,
-          children,
-        };
-      }),
-    [filePathsByProject, jobsByProject],
+  // Working-tree git status for repo-bound projects (drives change badges).
+  const repoProjectIds = useMemo(
+    () =>
+      projects
+        .filter(p => p.repo)
+        .map(p => p._id)
+        .join(","),
+    [projects],
   );
+  useEffect(() => {
+    if (!workspaceId || !repoProjectIds) return;
+    for (const id of repoProjectIds.split(",")) {
+      void fetchGitStatus(workspaceId, id);
+    }
+  }, [workspaceId, repoProjectIds, fetchGitStatus]);
 
-  const sections = useMemo(
-    () => [
-      {
-        key: "projects",
-        label: "Projects",
-        icon: <ProjectIcon size={16} strokeWidth={1.5} />,
-        nodes: buildProjectNodes(projects),
-      },
-    ],
-    [projects, buildProjectNodes],
+  // File tree for the active project only (no project-root wrapper). Jobs and
+  // Runs live in their own "Jobs & runs" section, not the file tree.
+  const sections = useMemo(() => {
+    if (!activeProject) return [];
+    const projectId = activeProject._id;
+    const paths = filePathsByProject[projectId];
+    const nodes: ResourceTreeNode[] = paths
+      ? buildFileNodes(projectId, paths)
+      : [];
+    return [{ key: "files", label: "Files", hideSectionHeader: true, nodes }];
+  }, [activeProject, filePathsByProject]);
+
+  const activeJobs = useMemo(
+    () => (activeProjectId ? (jobsByProject[activeProjectId] ?? []) : []),
+    [activeProjectId, jobsByProject],
   );
+  const runsNodeId = activeProjectId ? `${activeProjectId}${RUNS_SEP}` : "";
+
+  const activeStatus = activeProjectId
+    ? gitStatusByProject[activeProjectId]
+    : undefined;
+  const activeChangeCount = activeStatus?.changes.length ?? 0;
 
   const handleRefresh = useCallback(() => {
     if (workspaceId) void fetchProjects(workspaceId);
@@ -378,17 +505,31 @@ export function DbtExplorer() {
     [jobsByProject],
   );
 
-  const openEditProject = useCallback(
+  const openProjectSettingsFromMenu = useCallback(
     (projectId: string) => {
+      openProjectSettings(projectId);
+    },
+    [openProjectSettings],
+  );
+
+  const handleNewJob = useCallback(
+    async (projectId: string) => {
+      if (!workspaceId) return;
       const project = projects.find(p => p._id === projectId);
       if (!project) return;
-      setEditProjectId(projectId);
-      setEditName(project.name);
-      setEditDbtVersion(project.dbtVersion ?? "");
-      setEditDefaultEnv(project.defaultEnvironment);
-      setEditEnvs(project.environments.map(env => ({ ...env })));
+      const created = await saveJob(workspaceId, projectId, {
+        name: "New job",
+        environment: project.defaultEnvironment,
+        commands: ["build"],
+        schedule: null,
+        enabled: true,
+        deferToProduction: false,
+      });
+      if (created) {
+        focusDbtJobTab(projectId, created._id, created.name, true);
+      }
     },
-    [projects],
+    [workspaceId, projects, saveJob],
   );
 
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
@@ -407,6 +548,125 @@ export function DbtExplorer() {
     }
     return undefined;
   }, []);
+
+  const handleSyncProject = useCallback(
+    async (projectId: string) => {
+      if (!workspaceId) return;
+      setSyncingProjectId(projectId);
+      const result = await syncProjectFromGitHub(workspaceId, projectId);
+      setSyncingProjectId(null);
+      if (result) {
+        await fetchFiles(workspaceId, projectId);
+        await fetchGitStatus(workspaceId, projectId);
+      }
+    },
+    [workspaceId, syncProjectFromGitHub, fetchFiles, fetchGitStatus],
+  );
+
+  const openCommitDialog = useCallback(
+    (projectId: string) => {
+      setCommitTarget(projectId);
+      setCommitMessage("");
+      setGitResult(null);
+      if (workspaceId) void fetchGitStatus(workspaceId, projectId);
+    },
+    [workspaceId, fetchGitStatus],
+  );
+
+  const handleOpenDiff = useCallback(
+    async (projectId: string, path: string) => {
+      if (!workspaceId) return;
+      setDiffLoading(true);
+      const diff = await fetchGitDiff(workspaceId, projectId, path);
+      setDiffLoading(false);
+      if (diff) setDiffData(diff);
+    },
+    [workspaceId, fetchGitDiff],
+  );
+
+  const handleCommit = useCallback(async () => {
+    if (!workspaceId || !commitTarget || !commitMessage.trim()) return;
+    setGitBusy(true);
+    const result = await commitAndPush(
+      workspaceId,
+      commitTarget,
+      commitMessage.trim(),
+    );
+    setGitBusy(false);
+    if (result?.committed) {
+      const { added, modified, deleted } = result.pushed;
+      setGitResult(
+        `Pushed to ${result.branch}: +${added} ~${modified} -${deleted}`,
+      );
+      setCommitMessage("");
+    } else if (result) {
+      setGitResult("No changes to commit");
+    }
+  }, [workspaceId, commitTarget, commitMessage, commitAndPush]);
+
+  const handleCreateBranch = useCallback(async () => {
+    if (!workspaceId || !branchTarget || !branchName.trim()) return;
+    setGitBusy(true);
+    const updated = await createBranch(
+      workspaceId,
+      branchTarget,
+      branchName.trim(),
+    );
+    setGitBusy(false);
+    if (updated) {
+      setBranchTarget(null);
+      setBranchName("");
+    }
+  }, [workspaceId, branchTarget, branchName, createBranch]);
+
+  const openSwitchDialog = useCallback(
+    async (projectId: string) => {
+      if (!workspaceId) return;
+      setSwitchTarget(projectId);
+      setSwitchBranches([]);
+      const result = await listBranches(workspaceId, projectId);
+      if (result) {
+        setSwitchBranches(result.branches);
+        setSwitchValue(result.current);
+      }
+    },
+    [workspaceId, listBranches],
+  );
+
+  const handleSwitchBranch = useCallback(async () => {
+    if (!workspaceId || !switchTarget || !switchValue) return;
+    setGitBusy(true);
+    const updated = await switchBranch(workspaceId, switchTarget, switchValue);
+    setGitBusy(false);
+    if (updated) {
+      await fetchFiles(workspaceId, switchTarget);
+      await fetchGitStatus(workspaceId, switchTarget);
+      setSwitchTarget(null);
+    }
+  }, [
+    workspaceId,
+    switchTarget,
+    switchValue,
+    switchBranch,
+    fetchFiles,
+    fetchGitStatus,
+  ]);
+
+  const handleOpenPullRequest = useCallback(async () => {
+    if (!workspaceId || !prTarget || !prTitle.trim()) return;
+    setGitBusy(true);
+    const result = await openPullRequest(workspaceId, prTarget, {
+      title: prTitle.trim(),
+      body: prBody.trim() || undefined,
+    });
+    setGitBusy(false);
+    if (result) {
+      window.open(result.htmlUrl, "_blank", "noopener");
+      setPrTarget(null);
+      setPrTitle("");
+      setPrBody("");
+    }
+  }, [workspaceId, prTarget, prTitle, prBody, openPullRequest]);
 
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
@@ -454,6 +714,23 @@ export function DbtExplorer() {
         );
       }
 
+      if (parsed.kind === "dir" && parsed.path === JOBS_DIR) {
+        items.push(
+          <MenuItem
+            key="new-job"
+            onClick={() => {
+              void handleNewJob(parsed.projectId);
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <JobIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            New job
+          </MenuItem>,
+        );
+      }
+
       if (parsed.kind === "project") {
         const project = projects.find(p => p._id === parsed.projectId);
         items.push(
@@ -472,19 +749,107 @@ export function DbtExplorer() {
             </ListItemIcon>
             Open console
           </MenuItem>,
+          <MenuItem
+            key="new-job"
+            onClick={() => {
+              void handleNewJob(parsed.projectId);
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <JobIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            New job
+          </MenuItem>,
         );
+        if (project?.repo) {
+          const status = gitStatusByProject[parsed.projectId];
+          const changeCount = status?.changes.length ?? 0;
+          items.push(
+            <MenuItem
+              key="git-commit"
+              disabled={changeCount === 0}
+              onClick={() => {
+                openCommitDialog(parsed.projectId);
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <CommitIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              {changeCount > 0
+                ? `Commit & push (${changeCount})\u2026`
+                : "Commit & push"}
+            </MenuItem>,
+            <MenuItem
+              key="git-pull"
+              disabled={syncingProjectId === parsed.projectId}
+              onClick={() => {
+                void handleSyncProject(parsed.projectId);
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <SyncIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              {syncingProjectId === parsed.projectId
+                ? "Pulling\u2026"
+                : "Pull from remote"}
+            </MenuItem>,
+            <MenuItem
+              key="git-branch"
+              onClick={() => {
+                setBranchTarget(parsed.projectId);
+                setBranchName("");
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <NewBranchIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Create branch
+            </MenuItem>,
+            <MenuItem
+              key="git-switch"
+              onClick={() => {
+                void openSwitchDialog(parsed.projectId);
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <SwitchBranchIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Switch branch
+            </MenuItem>,
+            <MenuItem
+              key="git-pr"
+              onClick={() => {
+                setPrTarget(parsed.projectId);
+                setPrTitle("");
+                setPrBody("");
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <PullRequestIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Open pull request
+            </MenuItem>,
+            <Divider key="git-divider" />,
+          );
+        }
         items.push(
           <MenuItem
             key="edit-project"
             onClick={() => {
-              openEditProject(parsed.projectId);
+              openProjectSettingsFromMenu(parsed.projectId);
               helpers.closeMenu();
             }}
           >
             <ListItemIcon>
               <EditProjectIcon size={16} strokeWidth={1.5} />
             </ListItemIcon>
-            Edit project
+            Project settings
           </MenuItem>,
         );
       }
@@ -529,111 +894,120 @@ export function DbtExplorer() {
       }
       return items;
     },
-    [handleItemClick, openEditProject, projects],
+    [
+      handleItemClick,
+      openProjectSettingsFromMenu,
+      projects,
+      handleSyncProject,
+      syncingProjectId,
+      gitStatusByProject,
+      openCommitDialog,
+      openSwitchDialog,
+      handleNewJob,
+    ],
   );
 
   // Hover kebab: same actions as the right-click menu, but discoverable.
-  const getRightAdornment = useCallback((node: ResourceTreeNode) => {
-    const parsed = parseNodeId(node.id);
-    if (parsed.kind === "dir" || parsed.kind === "runs") return null;
-    return (
-      <IconButton
-        size="small"
-        aria-label="Actions"
-        className="dbt-row-kebab"
-        onClick={event => {
-          event.stopPropagation();
-          setKebabMenu({ anchorEl: event.currentTarget, node });
-        }}
-        sx={{
-          p: 0.25,
-          opacity: 0,
-          transition: "opacity 0.1s",
-          ".MuiListItemButton-root:hover &": { opacity: 1 },
-          "&:focus-visible, &[aria-expanded='true']": { opacity: 1 },
-        }}
-      >
-        <KebabIcon size={15} strokeWidth={1.5} />
-      </IconButton>
-    );
-  }, []);
+  const getRightAdornment = useCallback(
+    (node: ResourceTreeNode) => {
+      const parsed = parseNodeId(node.id);
+      // The Jobs folder gets a kebab (→ "New job"); other dirs/runs do not.
+      if (parsed.kind === "runs") return null;
+      if (parsed.kind === "dir" && parsed.path !== JOBS_DIR) return null;
 
-  const handleCreateProject = useCallback(async () => {
-    if (!workspaceId || !createName.trim() || !createConnectionId) return;
-    setCreating(true);
-    const created = await createProject(workspaceId, {
-      name: createName.trim(),
-      environments: [
-        {
-          name: "dev",
-          connectionId: createConnectionId,
-          targetSchema: createDevSchema.trim() || "dbt_dev",
-          threads: 4,
-        },
-        {
-          name: "prod",
-          connectionId: createConnectionId,
-          targetSchema: createProdSchema.trim() || "analytics",
-          threads: 4,
-        },
-      ],
-      defaultEnvironment: "dev",
-    });
-    setCreating(false);
-    if (created) {
-      setCreateOpen(false);
-      setCreateName("");
-      await Promise.all([
-        fetchFiles(workspaceId, created._id),
-        fetchJobs(workspaceId, created._id),
-      ]);
-      expandDbtFolder(created._id);
-      focusDbtFileTab(created._id, "dbt_project.yml");
-    }
-  }, [
-    workspaceId,
-    createName,
-    createConnectionId,
-    createDevSchema,
-    createProdSchema,
-    createProject,
-    fetchFiles,
-    fetchJobs,
-    expandDbtFolder,
-  ]);
+      // Per-file change dot (modified/added) for repo-bound projects.
+      if (parsed.kind === "file") {
+        const status = gitStatusByProject[parsed.projectId];
+        const change = status?.changes.find(c => c.path === parsed.path);
+        if (!change) return null;
+        const color =
+          change.status === "added"
+            ? "success.main"
+            : change.status === "deleted"
+              ? "error.main"
+              : "warning.main";
+        const letter =
+          change.status === "added"
+            ? "A"
+            : change.status === "deleted"
+              ? "D"
+              : "M";
+        return (
+          <Tooltip title={`${change.status} (uncommitted)`}>
+            <Box
+              component="span"
+              sx={{ color, fontSize: 11, fontWeight: 700, pr: 0.5 }}
+            >
+              {letter}
+            </Box>
+          </Tooltip>
+        );
+      }
 
-  const handleUpdateProject = useCallback(async () => {
-    if (!workspaceId || !editProjectId || !editName.trim()) return;
-    setSavingEdit(true);
-    const updated = await updateProject(workspaceId, editProjectId, {
-      name: editName.trim(),
-      environments: editEnvs.map(env => ({
-        ...env,
-        targetSchema: env.targetSchema.trim(),
-        threads: Number(env.threads) || 1,
-      })),
-      defaultEnvironment: editDefaultEnv,
-      dbtVersion: editDbtVersion.trim() || undefined,
-    });
-    setSavingEdit(false);
-    if (updated) setEditProjectId(null);
-  }, [
-    workspaceId,
-    editProjectId,
-    editName,
-    editEnvs,
-    editDefaultEnv,
-    editDbtVersion,
-    updateProject,
-  ]);
-
-  const updateEditEnv = useCallback(
-    (index: number, patch: Partial<DbtEnvironment>) => {
-      setEditEnvs(prev =>
-        prev.map((env, i) => (i === index ? { ...env, ...patch } : env)),
+      const project =
+        parsed.kind === "project"
+          ? projects.find(p => p._id === parsed.projectId)
+          : undefined;
+      const kebab = (
+        <IconButton
+          size="small"
+          aria-label="Actions"
+          className="dbt-row-kebab"
+          onClick={event => {
+            event.stopPropagation();
+            setKebabMenu({ anchorEl: event.currentTarget, node });
+          }}
+          sx={{
+            p: 0.25,
+            opacity: 0,
+            transition: "opacity 0.1s",
+            ".MuiListItemButton-root:hover &": { opacity: 1 },
+            "&:focus-visible, &[aria-expanded='true']": { opacity: 1 },
+          }}
+        >
+          <KebabIcon size={15} strokeWidth={1.5} />
+        </IconButton>
+      );
+      if (!project?.repo) return kebab;
+      const status = gitStatusByProject[parsed.projectId];
+      const changeCount = status?.changes.length ?? 0;
+      return (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
+          <Tooltip
+            title={
+              `${project.repo.owner}/${project.repo.repo} @ ${project.repo.branch}` +
+              (changeCount > 0 ? ` — ${changeCount} uncommitted` : "")
+            }
+          >
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.25,
+                color: changeCount > 0 ? "warning.main" : "text.secondary",
+                fontSize: 11,
+                maxWidth: 90,
+              }}
+            >
+              <GithubIcon size={12} strokeWidth={1.5} />
+              <Box
+                component="span"
+                sx={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {project.repo.branch}
+                {changeCount > 0 ? ` •${changeCount}` : ""}
+              </Box>
+            </Box>
+          </Tooltip>
+          {kebab}
+        </Box>
       );
     },
-    [],
+    [projects, gitStatusByProject],
   );
 
   const handleNewFileConfirm = useCallback(async () => {
@@ -671,10 +1045,175 @@ export function DbtExplorer() {
     setDeleteTarget(null);
   }, [deleteTarget, workspaceId, deleteProject, deleteFile, deleteJob]);
 
+  // Project-level actions (the kebab next to the project switcher). Git
+  // actions live in the Version control section instead.
+  const projectMenuItems = useCallback(
+    (projectId: string, close: () => void) => {
+      const project = projects.find(p => p._id === projectId);
+      return [
+        <MenuItem
+          key="open-console"
+          onClick={() => {
+            focusDbtConsoleTab(projectId, `${project?.name ?? "dbt"} console`);
+            close();
+          }}
+        >
+          <ListItemIcon>
+            <ConsoleIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Open console
+        </MenuItem>,
+        <MenuItem
+          key="runs"
+          onClick={() => {
+            focusDbtRunsTab(projectId, "Runs");
+            close();
+          }}
+        >
+          <ListItemIcon>
+            <RunsIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Run history
+        </MenuItem>,
+        <MenuItem
+          key="new-job"
+          onClick={() => {
+            void handleNewJob(projectId);
+            close();
+          }}
+        >
+          <ListItemIcon>
+            <JobIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          New job
+        </MenuItem>,
+        <Divider key="div" />,
+        <MenuItem
+          key="settings"
+          onClick={() => {
+            openProjectSettingsFromMenu(projectId);
+            close();
+          }}
+        >
+          <ListItemIcon>
+            <EditProjectIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Project settings
+        </MenuItem>,
+        <MenuItem
+          key="delete"
+          onClick={() => {
+            setDeleteTarget({
+              parsed: { kind: "project", projectId, path: "" },
+              name: project?.name ?? "project",
+            });
+            close();
+          }}
+        >
+          <ListItemIcon>
+            <DeleteIcon size={16} strokeWidth={1.5} />
+          </ListItemIcon>
+          Delete project
+        </MenuItem>,
+      ];
+    },
+    [projects, handleNewJob, openProjectSettingsFromMenu],
+  );
+
+  // Git actions overflow menu (Version control header). Primary commit action
+  // is a dedicated button; the rest live here.
+  const gitMenuItems = useCallback(
+    (projectId: string, close: () => void) => [
+      <MenuItem
+        key="pull"
+        disabled={syncingProjectId === projectId}
+        onClick={() => {
+          void handleSyncProject(projectId);
+          close();
+        }}
+      >
+        <ListItemIcon>
+          <SyncIcon size={16} strokeWidth={1.5} />
+        </ListItemIcon>
+        {syncingProjectId === projectId ? "Pulling\u2026" : "Pull from remote"}
+      </MenuItem>,
+      <MenuItem
+        key="branch"
+        onClick={() => {
+          setBranchTarget(projectId);
+          setBranchName("");
+          close();
+        }}
+      >
+        <ListItemIcon>
+          <NewBranchIcon size={16} strokeWidth={1.5} />
+        </ListItemIcon>
+        Create branch
+      </MenuItem>,
+      <MenuItem
+        key="switch"
+        onClick={() => {
+          void openSwitchDialog(projectId);
+          close();
+        }}
+      >
+        <ListItemIcon>
+          <SwitchBranchIcon size={16} strokeWidth={1.5} />
+        </ListItemIcon>
+        Switch branch
+      </MenuItem>,
+      <MenuItem
+        key="pr"
+        onClick={() => {
+          setPrTarget(projectId);
+          setPrTitle("");
+          setPrBody("");
+          close();
+        }}
+      >
+        <ListItemIcon>
+          <PullRequestIcon size={16} strokeWidth={1.5} />
+        </ListItemIcon>
+        Open pull request
+      </MenuItem>,
+    ],
+    [syncingProjectId, handleSyncProject, openSwitchDialog],
+  );
+
+  const projectSelector = (
+    <Box sx={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+      <Button
+        onClick={e => setProjectMenuAnchor(e.currentTarget)}
+        endIcon={<ChevronDownIcon size={15} strokeWidth={2} />}
+        sx={{
+          minWidth: 0,
+          textTransform: "none",
+          color: "text.primary",
+          px: 0.75,
+          py: 0.25,
+          fontSize: "0.95rem",
+          fontWeight: 600,
+        }}
+        startIcon={<ProjectBoxIcon size={16} strokeWidth={1.75} />}
+      >
+        <Box
+          component="span"
+          sx={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {activeProject?.name ?? "Select project"}
+        </Box>
+      </Button>
+    </Box>
+  );
+
   const actions = (
     <>
       <Tooltip title="New dbt project">
-        <IconButton size="small" onClick={() => setCreateOpen(true)}>
+        <IconButton size="small" onClick={() => openCreateProject()}>
           <AddIcon size={20} strokeWidth={2} />
         </IconButton>
       </Tooltip>
@@ -685,6 +1224,32 @@ export function DbtExplorer() {
       </Tooltip>
     </>
   );
+
+  // Project switcher row, rendered just below the "Transforms" title.
+  const projectSelectorRow = activeProject ? (
+    <Box
+      sx={{
+        display: "flex",
+        alignItems: "center",
+        gap: 0.5,
+        px: 1,
+        py: 0.5,
+        borderBottom: 1,
+        borderColor: "divider",
+      }}
+    >
+      {projectSelector}
+      <Box sx={{ flex: 1 }} />
+      <Tooltip title="Project actions">
+        <IconButton
+          size="small"
+          onClick={e => setProjectActionsAnchor(e.currentTarget)}
+        >
+          <KebabIcon size={16} strokeWidth={2} />
+        </IconButton>
+      </Tooltip>
+    </Box>
+  ) : null;
 
   const deleteKindLabel =
     deleteTarget?.parsed.kind === "project"
@@ -698,7 +1263,7 @@ export function DbtExplorer() {
       <ExplorerShell
         title="Transforms"
         actions={actions}
-        searchPlaceholder="Search dbt projects..."
+        searchPlaceholder="Search files..."
         error={error}
         onErrorClose={() => {
           useDbtStore.setState(state => {
@@ -721,110 +1286,456 @@ export function DbtExplorer() {
               <Button
                 size="small"
                 variant="outlined"
-                onClick={() => setCreateOpen(true)}
+                onClick={() => openCreateProject()}
               >
                 New dbt project
               </Button>
             </Box>
-          ) : (
-            <ResourceTree
-              sections={sections}
-              mode="sidebar"
-              searchQuery={searchQuery}
-              activeItemId={activeItemId}
-              getItemIcon={getItemIcon}
-              getContextMenuItems={getContextMenuItems}
-              getRightAdornment={getRightAdornment}
-              hideFolderIcon
-              onItemClick={handleItemClick}
-              onLoadChildren={handleLoadChildren}
-              isLoadingChildren={node => {
-                const parsed = parseNodeId(node.id);
-                return (
-                  parsed.kind === "project" &&
-                  !!loadingProjects[parsed.projectId]
-                );
-              }}
-              enableDragDrop={false}
-              enableRename={false}
-              enableDelete={false}
-              enableNewFolder={false}
-              isFolderExpanded={key => !!expandedFolders[key]}
-              onToggleFolder={toggleDbtFolder}
-              onExpandFolder={expandDbtFolder}
-              getFolderExpansionKey={node => node.id}
-            />
+          ) : !activeProject ? null : (
+            <Box sx={{ display: "flex", flexDirection: "column" }}>
+              {projectSelectorRow}
+              {/* Version control (repo-bound projects) */}
+              {activeProject.repo ? (
+                <>
+                  <SectionHeader
+                    label="Version control"
+                    open={vcOpen}
+                    onToggle={() => setVcOpen(o => !o)}
+                    actions={
+                      <Tooltip title="Branch actions">
+                        <IconButton
+                          size="small"
+                          onClick={e => setGitMenuAnchor(e.currentTarget)}
+                        >
+                          <KebabIcon size={15} strokeWidth={1.75} />
+                        </IconButton>
+                      </Tooltip>
+                    }
+                  />
+                  {vcOpen && (
+                    <Box sx={{ px: 1.25, pb: 1 }}>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.5,
+                          color: "text.secondary",
+                          mb: 0.75,
+                          minWidth: 0,
+                        }}
+                      >
+                        <GithubIcon size={13} strokeWidth={1.75} />
+                        <Box
+                          component="span"
+                          sx={{
+                            fontSize: 12,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            flex: 1,
+                          }}
+                        >
+                          {activeStatus?.branch ?? activeProject.repo.branch}
+                        </Box>
+                        {activeChangeCount > 0 && (
+                          <Chip
+                            label={activeChangeCount}
+                            size="small"
+                            color="warning"
+                            sx={{ height: 16, fontSize: "0.62rem" }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        fullWidth
+                        size="small"
+                        variant="outlined"
+                        startIcon={<CommitIcon size={15} strokeWidth={1.75} />}
+                        disabled={activeChangeCount === 0}
+                        onClick={() => openCommitDialog(activeProject._id)}
+                        sx={{ textTransform: "none", mb: 1 }}
+                      >
+                        {activeChangeCount > 0
+                          ? `Commit & push (${activeChangeCount})`
+                          : "No changes to commit"}
+                      </Button>
+                      {activeChangeCount > 0 && (
+                        <Box
+                          sx={{
+                            border: 1,
+                            borderColor: "divider",
+                            borderRadius: 1,
+                            overflow: "hidden",
+                          }}
+                        >
+                          {activeStatus?.changes.map(change => {
+                            const meta = STATUS_META[change.status];
+                            return (
+                              <Box
+                                key={change.path}
+                                role="button"
+                                tabIndex={0}
+                                title="View diff"
+                                onClick={() =>
+                                  void handleOpenDiff(
+                                    activeProject._id,
+                                    change.path,
+                                  )
+                                }
+                                onKeyDown={e => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    void handleOpenDiff(
+                                      activeProject._id,
+                                      change.path,
+                                    );
+                                  }
+                                }}
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 0.75,
+                                  px: 1,
+                                  py: 0.4,
+                                  fontSize: 12,
+                                  cursor: "pointer",
+                                  "&:hover": {
+                                    backgroundColor: "action.hover",
+                                  },
+                                }}
+                              >
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    fontWeight: 700,
+                                    width: 12,
+                                    color: meta.color,
+                                  }}
+                                >
+                                  {meta.letter}
+                                </Box>
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {change.path}
+                                </Box>
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      )}
+                    </Box>
+                  )}
+                  <Divider />
+                </>
+              ) : null}
+
+              {/* File explorer */}
+              <SectionHeader
+                label="File explorer"
+                open={filesOpen}
+                onToggle={() => setFilesOpen(o => !o)}
+                actions={
+                  <Tooltip title="New file">
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        setNewFileTarget({
+                          projectId: activeProject._id,
+                          dir: "",
+                        });
+                        setNewFileName("");
+                      }}
+                    >
+                      <NewFileIcon size={15} strokeWidth={1.75} />
+                    </IconButton>
+                  </Tooltip>
+                }
+              />
+              {filesOpen &&
+                (sections[0]?.nodes.length ||
+                filePathsByProject[activeProject._id] ? (
+                  <ResourceTree
+                    sections={sections}
+                    mode="sidebar"
+                    searchQuery={searchQuery}
+                    activeItemId={activeItemId}
+                    getItemIcon={getItemIcon}
+                    getContextMenuItems={getContextMenuItems}
+                    getRightAdornment={getRightAdornment}
+                    hideFolderIcon
+                    onItemClick={handleItemClick}
+                    onLoadChildren={handleLoadChildren}
+                    isLoadingChildren={node => {
+                      const parsed = parseNodeId(node.id);
+                      return (
+                        parsed.kind === "project" &&
+                        !!loadingProjects[parsed.projectId]
+                      );
+                    }}
+                    enableDragDrop={false}
+                    enableRename={false}
+                    enableDelete={false}
+                    enableNewFolder={false}
+                    isFolderExpanded={key => !!expandedFolders[key]}
+                    onToggleFolder={toggleDbtFolder}
+                    onExpandFolder={expandDbtFolder}
+                    getFolderExpansionKey={node => node.id}
+                  />
+                ) : (
+                  <Box sx={{ px: 2, py: 2, color: "text.secondary" }}>
+                    <CircularProgress size={16} />
+                  </Box>
+                ))}
+
+              <Divider />
+
+              {/* Jobs & runs (orchestration) */}
+              <SectionHeader
+                label="Jobs & runs"
+                open={orchOpen}
+                onToggle={() => setOrchOpen(o => !o)}
+                actions={
+                  <Tooltip title="New job">
+                    <IconButton
+                      size="small"
+                      onClick={() => void handleNewJob(activeProject._id)}
+                    >
+                      <AddIcon size={15} strokeWidth={2} />
+                    </IconButton>
+                  </Tooltip>
+                }
+              />
+              {orchOpen && (
+                <Box sx={{ pb: 1 }}>
+                  {/* Run history */}
+                  <Box
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => focusDbtRunsTab(activeProject._id, "Runs")}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        focusDbtRunsTab(activeProject._id, "Runs");
+                      }
+                    }}
+                    sx={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 0.75,
+                      px: 1.5,
+                      py: 0.5,
+                      cursor: "pointer",
+                      fontSize: 13,
+                      bgcolor:
+                        activeItemId === runsNodeId
+                          ? "action.selected"
+                          : "transparent",
+                      "&:hover": { bgcolor: "action.hover" },
+                    }}
+                  >
+                    <RunsIcon size={16} strokeWidth={1.5} />
+                    <Box component="span">Run history</Box>
+                  </Box>
+
+                  {/* Jobs */}
+                  {activeJobs.length === 0 ? (
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        display: "block",
+                        px: 1.5,
+                        py: 0.5,
+                        color: "text.secondary",
+                      }}
+                    >
+                      No jobs yet.
+                    </Typography>
+                  ) : (
+                    activeJobs.map(job => {
+                      const jobNodeId = `${activeProject._id}${JOB_SEP}${job._id}`;
+                      const jobNode: ResourceTreeNode = {
+                        id: jobNodeId,
+                        name: job.name,
+                        path: `job/${job._id}`,
+                        isDirectory: false,
+                      };
+                      return (
+                        <Box
+                          key={job._id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() =>
+                            focusDbtJobTab(activeProject._id, job._id, job.name)
+                          }
+                          onKeyDown={e => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              focusDbtJobTab(
+                                activeProject._id,
+                                job._id,
+                                job.name,
+                              );
+                            }
+                          }}
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 0.75,
+                            px: 1.5,
+                            py: 0.5,
+                            cursor: "pointer",
+                            fontSize: 13,
+                            bgcolor:
+                              activeItemId === jobNodeId
+                                ? "action.selected"
+                                : "transparent",
+                            "&:hover": {
+                              bgcolor: "action.hover",
+                              ".dbt-job-kebab": { opacity: 1 },
+                            },
+                          }}
+                        >
+                          <JobIcon size={16} strokeWidth={1.5} />
+                          <Box
+                            sx={{
+                              flex: 1,
+                              minWidth: 0,
+                              overflow: "hidden",
+                            }}
+                          >
+                            <Box
+                              component="span"
+                              sx={{
+                                display: "block",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {job.name}
+                            </Box>
+                            <Box
+                              component="span"
+                              sx={{
+                                display: "block",
+                                fontSize: 11,
+                                color: "text.secondary",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {scheduleSummary(job)}
+                            </Box>
+                          </Box>
+                          <IconButton
+                            size="small"
+                            aria-label="Job actions"
+                            className="dbt-job-kebab"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setKebabMenu({
+                                anchorEl: e.currentTarget,
+                                node: jobNode,
+                              });
+                            }}
+                            sx={{
+                              p: 0.25,
+                              opacity: 0,
+                              transition: "opacity 0.1s",
+                            }}
+                          >
+                            <KebabIcon size={15} strokeWidth={1.5} />
+                          </IconButton>
+                        </Box>
+                      );
+                    })
+                  )}
+                </Box>
+              )}
+            </Box>
           )
         }
       </ExplorerShell>
 
-      {/* New project dialog */}
-      <Dialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        maxWidth="xs"
-        fullWidth
+      {/* Project switcher menu */}
+      <Menu
+        open={!!projectMenuAnchor}
+        anchorEl={projectMenuAnchor}
+        onClose={() => setProjectMenuAnchor(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+        transformOrigin={{ vertical: "top", horizontal: "left" }}
+        slotProps={{ paper: { sx: { minWidth: 240 } } }}
       >
-        <DialogTitle>New dbt project</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="Project name"
-            value={createName}
-            onChange={e => setCreateName(e.target.value)}
-            sx={{ mt: 1, mb: 2 }}
-          />
-          <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-            <InputLabel id="dbt-target-connection">
-              Target connection
-            </InputLabel>
-            <Select
-              labelId="dbt-target-connection"
-              label="Target connection"
-              value={createConnectionId}
-              onChange={e => setCreateConnectionId(e.target.value)}
-            >
-              {dbtConnections.map(conn => (
-                <MenuItem key={conn.id} value={conn.id}>
-                  {conn.name} ({conn.type})
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          {dbtConnections.length === 0 && (
-            <Typography variant="caption" color="text.secondary">
-              No dbt-compatible connections found. Add a Postgres, BigQuery,
-              ClickHouse, MySQL, Redshift or SQL Server connection first.
-            </Typography>
-          )}
-          <TextField
-            fullWidth
-            size="small"
-            label="Dev schema"
-            value={createDevSchema}
-            onChange={e => setCreateDevSchema(e.target.value)}
-            sx={{ mb: 2 }}
-          />
-          <TextField
-            fullWidth
-            size="small"
-            label="Prod schema"
-            value={createProdSchema}
-            onChange={e => setCreateProdSchema(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCreateOpen(false)}>Cancel</Button>
-          <Button
-            onClick={handleCreateProject}
-            disabled={creating || !createName.trim() || !createConnectionId}
+        {projects.map(project => (
+          <MenuItem
+            key={project._id}
+            selected={project._id === activeProjectId}
+            onClick={() => {
+              setActiveProject(project._id);
+              setProjectMenuAnchor(null);
+            }}
           >
-            Create
-          </Button>
-        </DialogActions>
-      </Dialog>
+            <ListItemIcon>
+              {project._id === activeProjectId ? (
+                <CheckIcon size={16} strokeWidth={2} />
+              ) : (
+                <ProjectIcon size={16} strokeWidth={1.5} />
+              )}
+            </ListItemIcon>
+            <ListItemText
+              primary={project.name}
+              secondary={project.defaultEnvironment}
+            />
+          </MenuItem>
+        ))}
+        <Divider />
+        <MenuItem
+          onClick={() => {
+            openCreateProject();
+            setProjectMenuAnchor(null);
+          }}
+        >
+          <ListItemIcon>
+            <AddIcon size={16} strokeWidth={2} />
+          </ListItemIcon>
+          New dbt project
+        </MenuItem>
+      </Menu>
+
+      {/* Project actions menu */}
+      <Menu
+        open={!!projectActionsAnchor}
+        anchorEl={projectActionsAnchor}
+        onClose={() => setProjectActionsAnchor(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+      >
+        {activeProjectId
+          ? projectMenuItems(activeProjectId, () =>
+              setProjectActionsAnchor(null),
+            )
+          : null}
+      </Menu>
+
+      {/* Git actions menu (Version control header) */}
+      <Menu
+        open={!!gitMenuAnchor}
+        anchorEl={gitMenuAnchor}
+        onClose={() => setGitMenuAnchor(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+      >
+        {activeProjectId
+          ? gitMenuItems(activeProjectId, () => setGitMenuAnchor(null))
+          : null}
+      </Menu>
 
       {/* New file dialog */}
       <Dialog
@@ -900,118 +1811,6 @@ export function DbtExplorer() {
           : null}
       </Menu>
 
-      {/* Edit project dialog */}
-      <Dialog
-        open={!!editProjectId}
-        onClose={() => setEditProjectId(null)}
-        maxWidth="xs"
-        fullWidth
-      >
-        <DialogTitle>Edit dbt project</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="Project name"
-            value={editName}
-            onChange={e => setEditName(e.target.value)}
-            sx={{ mt: 1, mb: 2 }}
-          />
-          <TextField
-            fullWidth
-            size="small"
-            label="dbt version"
-            placeholder="1.9.10"
-            value={editDbtVersion}
-            onChange={e => setEditDbtVersion(e.target.value)}
-            sx={{ mb: 2 }}
-          />
-          {editEnvs.map((env, index) => (
-            <Box
-              key={env.name}
-              sx={{
-                mb: 2,
-                p: 1.5,
-                border: 1,
-                borderColor: "divider",
-                borderRadius: 1,
-              }}
-            >
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                {env.name}
-              </Typography>
-              <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
-                <InputLabel id={`dbt-edit-conn-${env.name}`}>
-                  Connection
-                </InputLabel>
-                <Select
-                  labelId={`dbt-edit-conn-${env.name}`}
-                  label="Connection"
-                  value={env.connectionId}
-                  onChange={e =>
-                    updateEditEnv(index, { connectionId: e.target.value })
-                  }
-                >
-                  {dbtConnections.map(conn => (
-                    <MenuItem key={conn.id} value={conn.id}>
-                      {conn.name} ({conn.type})
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              <TextField
-                fullWidth
-                size="small"
-                label="Target schema"
-                value={env.targetSchema}
-                onChange={e =>
-                  updateEditEnv(index, { targetSchema: e.target.value })
-                }
-                sx={{ mb: 1.5 }}
-              />
-              <TextField
-                fullWidth
-                size="small"
-                type="number"
-                label="Threads"
-                value={env.threads}
-                onChange={e =>
-                  updateEditEnv(index, { threads: Number(e.target.value) })
-                }
-                inputProps={{ min: 1, max: 32 }}
-              />
-            </Box>
-          ))}
-          <FormControl fullWidth size="small">
-            <InputLabel id="dbt-edit-default-env">
-              Default environment
-            </InputLabel>
-            <Select
-              labelId="dbt-edit-default-env"
-              label="Default environment"
-              value={editDefaultEnv}
-              onChange={e => setEditDefaultEnv(e.target.value)}
-            >
-              {editEnvs.map(env => (
-                <MenuItem key={env.name} value={env.name}>
-                  {env.name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setEditProjectId(null)}>Cancel</Button>
-          <Button
-            onClick={handleUpdateProject}
-            disabled={savingEdit || !editName.trim()}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
       {/* Delete confirmation */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>Delete {deleteKindLabel}</DialogTitle>
@@ -1028,6 +1827,352 @@ export function DbtExplorer() {
           <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
           <Button onClick={handleDeleteConfirm} color="error">
             Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Commit & push dialog */}
+      <Dialog
+        open={!!commitTarget}
+        onClose={() => setCommitTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Commit &amp; push</DialogTitle>
+        <DialogContent>
+          {(() => {
+            const status = commitTarget
+              ? gitStatusByProject[commitTarget]
+              : undefined;
+            const changes = status?.changes ?? [];
+            return (
+              <>
+                <Typography variant="caption" color="text.secondary">
+                  {status
+                    ? `${changes.length} change${
+                        changes.length === 1 ? "" : "s"
+                      } on ${status.branch}` +
+                      (changes.length > 0
+                        ? " — click a file to view its diff"
+                        : "")
+                    : "Loading changes…"}
+                </Typography>
+                <Box
+                  sx={{
+                    maxHeight: 160,
+                    overflow: "auto",
+                    my: 1,
+                    border: 1,
+                    borderColor: "divider",
+                    borderRadius: 1,
+                  }}
+                >
+                  {changes.length === 0 ? (
+                    <Typography
+                      variant="body2"
+                      sx={{ p: 1.5, color: "text.secondary" }}
+                    >
+                      No changes to commit.
+                    </Typography>
+                  ) : (
+                    changes.map(change => (
+                      <Box
+                        key={change.path}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => {
+                          if (commitTarget) {
+                            void handleOpenDiff(commitTarget, change.path);
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if (
+                            (e.key === "Enter" || e.key === " ") &&
+                            commitTarget
+                          ) {
+                            e.preventDefault();
+                            void handleOpenDiff(commitTarget, change.path);
+                          }
+                        }}
+                        title="View diff"
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 1,
+                          px: 1.5,
+                          py: 0.5,
+                          fontSize: 13,
+                          cursor: "pointer",
+                          "&:hover": { backgroundColor: "action.hover" },
+                        }}
+                      >
+                        <Box
+                          component="span"
+                          sx={{
+                            fontWeight: 700,
+                            width: 14,
+                            color:
+                              change.status === "added"
+                                ? "success.main"
+                                : change.status === "deleted"
+                                  ? "error.main"
+                                  : "warning.main",
+                          }}
+                        >
+                          {change.status === "added"
+                            ? "A"
+                            : change.status === "deleted"
+                              ? "D"
+                              : "M"}
+                        </Box>
+                        <Box
+                          component="span"
+                          sx={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {change.path}
+                        </Box>
+                      </Box>
+                    ))
+                  )}
+                </Box>
+                <TextField
+                  autoFocus
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  size="small"
+                  label="Commit message"
+                  value={commitMessage}
+                  onChange={e => setCommitMessage(e.target.value)}
+                />
+                {gitResult && (
+                  <Typography
+                    variant="caption"
+                    color="success.main"
+                    display="block"
+                    sx={{ mt: 1 }}
+                  >
+                    {gitResult}
+                  </Typography>
+                )}
+              </>
+            );
+          })()}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCommitTarget(null)}>Close</Button>
+          <Button
+            onClick={handleCommit}
+            startIcon={
+              gitBusy ? (
+                <CircularProgress size={14} />
+              ) : (
+                <CommitIcon size={15} strokeWidth={1.75} />
+              )
+            }
+            disabled={
+              gitBusy ||
+              !commitMessage.trim() ||
+              (commitTarget
+                ? (gitStatusByProject[commitTarget]?.changes.length ?? 0) === 0
+                : true)
+            }
+          >
+            {gitBusy ? "Pushing…" : "Commit & push"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* File diff dialog (side-by-side, screenshot 52) */}
+      <Dialog
+        open={!!diffData || diffLoading}
+        onClose={() => setDiffData(null)}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{ sx: { height: "80vh" } }}
+      >
+        <DialogTitle
+          sx={{ fontSize: "0.9rem", fontFamily: "monospace", py: 1.25 }}
+        >
+          {diffData?.path ?? "Loading diff…"}
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0 }}>
+          {diffLoading ? (
+            <Box
+              sx={{
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <CircularProgress size={20} />
+            </Box>
+          ) : diffData ? (
+            <DiffEditor
+              height="100%"
+              theme={monacoTheme}
+              original={diffData.base}
+              modified={diffData.working}
+              language={dbtDiffLanguage(diffData.path)}
+              beforeMount={registerDbtJinjaLanguage}
+              options={{
+                readOnly: true,
+                renderSideBySide: true,
+                minimap: { enabled: false },
+                fontSize: 12,
+                scrollBeyondLastLine: false,
+              }}
+            />
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDiffData(null)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Create branch dialog */}
+      <Dialog
+        open={!!branchTarget}
+        onClose={() => setBranchTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Create branch</DialogTitle>
+        <DialogContent>
+          <Typography variant="caption" color="text.secondary">
+            Branches off the current branch and checks it out.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="New branch name"
+            placeholder="feature/my-change"
+            value={branchName}
+            onChange={e => setBranchName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleCreateBranch();
+            }}
+            sx={{ mt: 1.5 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBranchTarget(null)}>Cancel</Button>
+          <Button
+            onClick={handleCreateBranch}
+            disabled={gitBusy || !branchName.trim()}
+          >
+            {gitBusy ? "Creating…" : "Create & switch"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Switch branch dialog */}
+      <Dialog
+        open={!!switchTarget}
+        onClose={() => setSwitchTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Switch branch</DialogTitle>
+        <DialogContent>
+          <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
+            <InputLabel id="dbt-switch-branch">Branch</InputLabel>
+            <Select
+              labelId="dbt-switch-branch"
+              label="Branch"
+              value={switchValue}
+              onChange={e => setSwitchValue(e.target.value)}
+            >
+              {switchBranches.length === 0 && (
+                <MenuItem disabled value="">
+                  Loading branches…
+                </MenuItem>
+              )}
+              {switchBranches.map(branch => (
+                <MenuItem key={branch} value={branch}>
+                  {branch}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            display="block"
+            sx={{ mt: 1 }}
+          >
+            Switching pulls the selected branch and overwrites uncommitted local
+            changes.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSwitchTarget(null)}>Cancel</Button>
+          <Button
+            onClick={handleSwitchBranch}
+            disabled={gitBusy || !switchValue}
+          >
+            {gitBusy ? "Switching…" : "Switch"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Open pull request dialog */}
+      <Dialog
+        open={!!prTarget}
+        onClose={() => setPrTarget(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Open pull request</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="Title"
+            value={prTitle}
+            onChange={e => setPrTitle(e.target.value)}
+            sx={{ mt: 1.5, mb: 2 }}
+          />
+          <TextField
+            fullWidth
+            multiline
+            minRows={3}
+            size="small"
+            label="Description (optional)"
+            value={prBody}
+            onChange={e => setPrBody(e.target.value)}
+          />
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            display="block"
+            sx={{ mt: 1 }}
+          >
+            Opens a PR from the current branch into the repository&apos;s
+            default branch.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPrTarget(null)}>Cancel</Button>
+          <Button
+            onClick={handleOpenPullRequest}
+            startIcon={
+              gitBusy ? (
+                <CircularProgress size={14} />
+              ) : (
+                <PullRequestIcon size={15} strokeWidth={1.75} />
+              )
+            }
+            disabled={gitBusy || !prTitle.trim()}
+          >
+            {gitBusy ? "Opening…" : "Open PR"}
           </Button>
         </DialogActions>
       </Dialog>

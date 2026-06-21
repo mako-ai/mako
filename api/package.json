@@ -14,6 +14,8 @@
     "migrate:workspaces": "tsx src/migrations/migrate-to-workspaces.ts",
     "openapi:generate": "tsx src/openapi/generate-cli.ts",
     "test": "tsx src/openapi/core.test.ts && tsx src/openapi/openapi.test.ts && tsx src/dbt/warm-dir-cache.test.ts && tsx src/connectors/stripe/connector.test.ts",
+    "test:dbt": "vitest run",
+    "test:dbt:watch": "vitest",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"
   },
@@ -88,7 +90,9 @@
     "@typescript-eslint/parser": "^8.34.0",
     "copyfiles": "^2.4.1",
     "eslint": "^8.57.1",
+    "mongodb-memory-server": "^10.4.3",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9"
   }
 }

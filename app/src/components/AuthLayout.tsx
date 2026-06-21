@@ -60,7 +60,7 @@ export function AuthLayout({ children, title, subtitle }: AuthLayoutProps) {
           >
             <Box
               component="img"
-              src="/mako-icon.svg"
+              src="/mako-icon.png"
               alt="Mako"
               sx={{
                 width: 64,

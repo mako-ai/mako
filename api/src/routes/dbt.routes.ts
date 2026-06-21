@@ -20,11 +20,44 @@ import {
   DbtProject,
   DbtRun,
   DatabaseConnection,
+  GitHubInstallation,
 } from "../database/workspace-schema";
+import {
+  getInstallationToken,
+  resolveRepoToken,
+} from "../integrations/github/app-auth";
+import { signInstallState } from "../integrations/github/install-state";
+import {
+  getGitHubAppSlug,
+  isGitHubAppConfigured,
+  getGitHubDevToken,
+} from "../integrations/github/config";
+import {
+  fileExistsAtRef,
+  getRepoInfo,
+  listBranches,
+  listDbtProjectSubdirectories,
+  listInstallationRepos,
+} from "../integrations/github/github-api";
+import {
+  fetchRepoDbtFiles,
+  repoFilesToInserts,
+  syncProjectFromRepo,
+} from "../dbt/dbt-github-sync.service";
+import {
+  commitAndPush,
+  createProjectBranch,
+  getGitStatus,
+  getProjectFileDiff,
+  listProjectBranches,
+  openProjectPullRequest,
+  switchProjectBranch,
+} from "../dbt/dbt-github-git.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
   isDbtCompatibleConnectionType,
 } from "../dbt/adapter-map";
+import { resolveDbtAccess } from "../dbt/rbac";
 import {
   DbtCommandValidationError,
   parseDbtCommand,
@@ -54,7 +87,8 @@ export const dbtRoutes = new Hono();
 
 dbtRoutes.use("*", unifiedAuthMiddleware);
 
-// Workspace access check — mirrors skills.ts
+// Workspace access check — mirrors skills.ts, and resolves the caller's
+// workspace role (memberRole) so the RBAC policy below can gate mutations.
 dbtRoutes.use("*", async (c: AuthenticatedContext, next) => {
   const workspaceId = c.req.param("workspaceId");
   if (!workspaceId) {
@@ -71,19 +105,44 @@ dbtRoutes.use("*", async (c: AuthenticatedContext, next) => {
         403,
       );
     }
+    // Workspace-scoped API keys are service credentials with full access.
+    c.set("memberRole", "owner");
   } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-    if (!hasAccess) {
+    const member = await workspaceService.getMember(workspaceId, user.id);
+    if (!member) {
       return c.json(
         { success: false, error: "Access denied to workspace" },
         403,
       );
     }
+    c.set("memberRole", member.role);
   } else {
     return c.json({ success: false, error: "Unauthorized" }, 401);
   }
 
   enrichContextWithWorkspace(workspaceId);
+  await next();
+});
+
+// RBAC policy lives in ../dbt/rbac.ts (pure + unit-tested). Reads (GET) are
+// open to any member incl. viewer; viewers are otherwise read-only;
+// deployment-config mutations require admin+; other writes are member+.
+dbtRoutes.use("*", async (c: AuthenticatedContext, next) => {
+  if (!c.req.param("workspaceId")) {
+    await next();
+    return;
+  }
+  const decision = resolveDbtAccess({
+    method: c.req.method,
+    path: c.req.path,
+    role: c.get("memberRole"),
+  });
+  if (!decision.ok) {
+    return c.json(
+      { success: false, error: decision.error },
+      decision.status ?? 403,
+    );
+  }
   await next();
 });
 
@@ -127,11 +186,57 @@ const createProjectSchema = z.object({
   defaultEnvironment: z.string().min(1),
 });
 
+// GitHub owner/repo names are alphanumeric plus '.', '_', '-'. Validating the
+// charset (and rejecting '..') before these values are interpolated into
+// api.github.com paths prevents API-path injection / traversal.
+const REPO_SEGMENT_RE = /^[A-Za-z0-9._-]+$/;
+
+export function isValidRepoSegment(value: string): boolean {
+  return (
+    REPO_SEGMENT_RE.test(value) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("..")
+  );
+}
+
+const repoSegmentSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine(
+    isValidRepoSegment,
+    "must contain only letters, numbers, '.', '_', '-'",
+  );
+
+const repoBindingSchema = z.object({
+  owner: repoSegmentSchema,
+  repo: repoSegmentSchema,
+  branch: z.string().min(1).max(255).optional(),
+  subdirectory: z.string().max(255).optional(),
+  installationId: z.number().int().positive().optional(),
+});
+
+const importGithubSchema = z.object({
+  name: z.string().min(1).max(128),
+  dbtVersion: z.string().max(16).optional(),
+  environments: z.array(environmentSchema).min(1),
+  defaultEnvironment: z.string().min(1),
+  repo: repoBindingSchema,
+});
+
 const patchProjectSchema = z.object({
   name: z.string().min(1).max(128).optional(),
   dbtVersion: z.string().max(16).optional(),
   environments: z.array(environmentSchema).min(1).optional(),
   defaultEnvironment: z.string().min(1).optional(),
+  ci: z
+    .object({
+      enabled: z.boolean(),
+      environment: z.string().min(1).optional(),
+      deferToProduction: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 async function validateEnvironments(
@@ -302,6 +407,23 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
         `Default environment "${project.defaultEnvironment}" is not in environments`,
       );
     }
+    if (body.ci) {
+      if (
+        body.ci.environment &&
+        !project.environments.some(env => env.name === body.ci?.environment)
+      ) {
+        return badRequest(
+          c,
+          `CI environment "${body.ci.environment}" is not in environments`,
+        );
+      }
+      project.ci = {
+        enabled: body.ci.enabled,
+        environment: body.ci.environment,
+        deferToProduction: body.ci.deferToProduction ?? true,
+      };
+      project.markModified("ci");
+    }
     await project.save();
     return c.json({ success: true, project });
   } catch (error) {
@@ -326,6 +448,518 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
     return serverError(c, error, "Failed to delete dbt project");
   }
 });
+
+// ---------------------------------------------------------------------------
+// GitHub integration — connect a repo, list installation repos, import & sync
+// ---------------------------------------------------------------------------
+
+// GET /github/status — tells the UI which connect paths are available.
+dbtRoutes.get("/github/status", async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  const installations = workspaceId
+    ? await GitHubInstallation.find({
+        workspaceId: new Types.ObjectId(workspaceId),
+      })
+        .select("installationId accountLogin accountType repositorySelection")
+        .lean()
+    : [];
+  return c.json({
+    success: true,
+    appConfigured: isGitHubAppConfigured(),
+    appSlug: getGitHubAppSlug() ?? null,
+    devTokenAvailable: Boolean(getGitHubDevToken()),
+    installations,
+  });
+});
+
+// GET /github/install-url — URL that starts the GitHub App install flow.
+dbtRoutes.get("/github/install-url", async (c: AuthenticatedContext) => {
+  const workspaceId = c.req.param("workspaceId");
+  if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+    return badRequest(c, "Valid workspace ID is required");
+  }
+  const slug = getGitHubAppSlug();
+  if (!slug) {
+    return badRequest(
+      c,
+      "GitHub App is not configured (set GITHUB_APP_SLUG/GITHUB_APP_ID)",
+    );
+  }
+  // Connecting a repo is a deployment-config mutation → admin+ (consistent with
+  // the rbac policy and the /setup callback that consumes this state).
+  const user = c.get("user");
+  if (!user || !(await workspaceService.isAdmin(workspaceId, user.id))) {
+    return c.json(
+      {
+        success: false,
+        error: "Connecting GitHub requires the admin or owner workspace role",
+      },
+      403,
+    );
+  }
+  const returnClientUrl = process.env.CLIENT_URL || "http://localhost:5173";
+  // Signed, short-lived state pins the workspace + initiating user so the
+  // /setup callback cannot be forged to bind an arbitrary installation.
+  const state = signInstallState({
+    workspaceId,
+    userId: user.id,
+    clientUrl: returnClientUrl,
+  });
+  return c.json({
+    success: true,
+    url: `https://github.com/apps/${slug}/installations/new?state=${state}`,
+  });
+});
+
+// GET /github/repos?installationId= — repos an installation can access.
+dbtRoutes.get("/github/repos", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      return badRequest(c, "Valid workspace ID is required");
+    }
+    const installationIdRaw = c.req.query("installationId");
+    if (!installationIdRaw) {
+      return badRequest(c, "installationId is required");
+    }
+    const installationId = Number(installationIdRaw);
+    const installation = await GitHubInstallation.findOne({
+      workspaceId: new Types.ObjectId(workspaceId),
+      installationId,
+    });
+    if (!installation) {
+      return c.json({ success: false, error: "Installation not found" }, 404);
+    }
+    const token = await getInstallationToken(installationId);
+    const repos = await listInstallationRepos(token);
+    return c.json({ success: true, repos });
+  } catch (error) {
+    return serverError(c, error, "Failed to list repositories");
+  }
+});
+
+// GET /github/branches — branch names for import UI.
+dbtRoutes.get("/github/branches", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      return badRequest(c, "Valid workspace ID is required");
+    }
+    const owner = c.req.query("owner")?.trim();
+    const repo = c.req.query("repo")?.trim();
+    if (!owner || !repo) {
+      return badRequest(c, "owner and repo are required");
+    }
+    if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
+      return badRequest(c, "Invalid owner or repo name");
+    }
+    const installationIdRaw = c.req.query("installationId");
+    const installationId = installationIdRaw
+      ? Number(installationIdRaw)
+      : undefined;
+    if (installationIdRaw && Number.isNaN(installationId)) {
+      return badRequest(c, "installationId must be a number");
+    }
+    if (installationId) {
+      const installation = await GitHubInstallation.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        installationId,
+      });
+      if (!installation) {
+        return c.json({ success: false, error: "Installation not found" }, 404);
+      }
+    }
+    const token = await resolveRepoToken(installationId);
+    const branches = await listBranches(owner, repo, token);
+    return c.json({ success: true, branches });
+  } catch (error) {
+    return serverError(c, error, "Failed to list branches");
+  }
+});
+
+// GET /github/repo-check — validate dbt_project.yml before import.
+dbtRoutes.get("/github/repo-check", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      return badRequest(c, "Valid workspace ID is required");
+    }
+    const owner = c.req.query("owner")?.trim();
+    const repo = c.req.query("repo")?.trim();
+    if (!owner || !repo) {
+      return badRequest(c, "owner and repo are required");
+    }
+    if (!isValidRepoSegment(owner) || !isValidRepoSegment(repo)) {
+      return badRequest(c, "Invalid owner or repo name");
+    }
+    const installationIdRaw = c.req.query("installationId");
+    const installationId = installationIdRaw
+      ? Number(installationIdRaw)
+      : undefined;
+    if (installationIdRaw && Number.isNaN(installationId)) {
+      return badRequest(c, "installationId must be a number");
+    }
+    if (installationId) {
+      const installation = await GitHubInstallation.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        installationId,
+      });
+      if (!installation) {
+        return c.json({ success: false, error: "Installation not found" }, 404);
+      }
+    }
+    const subdirectory = c.req.query("subdirectory")?.trim() ?? "";
+    const token = await resolveRepoToken(installationId);
+    const info = await getRepoInfo(owner, repo, token);
+    const branch = c.req.query("branch")?.trim() || info.defaultBranch;
+    const subdir = subdirectory.replace(/^\/+|\/+$/g, "");
+    const projectPath = subdir
+      ? `${subdir}/dbt_project.yml`
+      : "dbt_project.yml";
+    const hasDbtProjectYml = await fileExistsAtRef(
+      owner,
+      repo,
+      projectPath,
+      branch,
+      token,
+    );
+    let suggestedSubdirectories: string[] = [];
+    if (!hasDbtProjectYml) {
+      suggestedSubdirectories = await listDbtProjectSubdirectories(
+        owner,
+        repo,
+        branch,
+        token,
+      );
+    }
+    return c.json({
+      success: true,
+      owner,
+      repo,
+      branch,
+      subdirectory: subdir || undefined,
+      defaultBranch: info.defaultBranch,
+      hasDbtProjectYml,
+      suggestedSubdirectories,
+    });
+  } catch (error) {
+    return serverError(c, error, "Failed to check repository");
+  }
+});
+
+// POST /projects/import-github — create a project from a repo's contents.
+dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
+  try {
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId || !Types.ObjectId.isValid(workspaceId)) {
+      return badRequest(c, "Valid workspace ID is required");
+    }
+    const parsed = importGithubSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+    }
+    const body = parsed.data;
+    if (!body.environments.some(env => env.name === body.defaultEnvironment)) {
+      return badRequest(
+        c,
+        `Default environment "${body.defaultEnvironment}" is not in environments`,
+      );
+    }
+    const envError = await validateEnvironments(workspaceId, body.environments);
+    if (envError) return badRequest(c, envError);
+
+    // SECURITY: never mint an installation token for an installation that is
+    // not bound to THIS workspace — otherwise an admin could read any private
+    // repo any App installation can see. Mirror the scope check the other
+    // GitHub routes (repos/branches/repo-check) already perform.
+    if (body.repo.installationId) {
+      const installation = await GitHubInstallation.findOne({
+        workspaceId: new Types.ObjectId(workspaceId),
+        installationId: body.repo.installationId,
+      });
+      if (!installation) {
+        return c.json({ success: false, error: "Installation not found" }, 404);
+      }
+    }
+
+    // Resolve the default branch when the caller didn't pin one.
+    let branch = body.repo.branch;
+    if (!branch) {
+      const token = await resolveRepoToken(body.repo.installationId);
+      const info = await getRepoInfo(body.repo.owner, body.repo.repo, token);
+      branch = info.defaultBranch;
+    }
+
+    const binding = {
+      owner: body.repo.owner,
+      repo: body.repo.repo,
+      branch,
+      subdirectory: body.repo.subdirectory,
+      installationId: body.repo.installationId,
+    };
+    const { sha, files, skippedLarge } = await fetchRepoDbtFiles(binding);
+
+    if (files.length === 0) {
+      return badRequest(
+        c,
+        "No dbt files found in that repo/branch/subdirectory",
+      );
+    }
+    const hasProjectYml = files.some(f => f.path === "dbt_project.yml");
+    if (!hasProjectYml) {
+      return badRequest(
+        c,
+        "dbt_project.yml not found at the project root — set the correct subdirectory",
+      );
+    }
+
+    const userId = getUserId(c);
+    const project = await DbtProject.create({
+      workspaceId: new Types.ObjectId(workspaceId),
+      name: body.name,
+      dbtVersion: body.dbtVersion ?? "1.9",
+      environments: body.environments.map(env => ({
+        ...env,
+        connectionId: new Types.ObjectId(env.connectionId),
+      })),
+      defaultEnvironment: body.defaultEnvironment,
+      repo: {
+        provider: "github" as const,
+        installationId: body.repo.installationId,
+        owner: binding.owner,
+        repo: binding.repo,
+        branch: binding.branch,
+        subdirectory: body.repo.subdirectory,
+        lastSyncedSha: sha,
+        lastSyncedAt: new Date(),
+      },
+      createdBy: userId,
+    });
+
+    await DbtFile.insertMany(
+      repoFilesToInserts(files, {
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        updatedBy: userId,
+      }),
+    );
+
+    return c.json({
+      success: true,
+      project,
+      imported: files.length,
+      skippedLarge,
+    });
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) {
+      return badRequest(c, "A dbt project with this name already exists");
+    }
+    return serverError(c, error, "Failed to import dbt project from GitHub");
+  }
+});
+
+// POST /projects/:projectId/sync — pull the latest repo state into Mongo.
+dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
+  try {
+    const project = await findProject(c);
+    if (!project) {
+      return c.json({ success: false, error: "dbt project not found" }, 404);
+    }
+    if (!project.repo) {
+      return badRequest(c, "Project is not connected to a repository");
+    }
+    const result = await syncProjectFromRepo(project, getUserId(c));
+    return c.json({ success: true, ...result, project });
+  } catch (error) {
+    return serverError(c, error, "Failed to sync dbt project from GitHub");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// In-IDE git: status, commit & push, branches, pull requests
+// ---------------------------------------------------------------------------
+
+const commitSchema = z.object({ message: z.string().min(1).max(500) });
+const branchSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^[^\s~^:?*[\\]+$/, "Invalid branch name"),
+});
+const switchBranchSchema = z.object({ branch: z.string().min(1).max(255) });
+const pullRequestSchema = z.object({
+  title: z.string().min(1).max(255),
+  body: z.string().max(10_000).optional(),
+  base: z.string().min(1).max(255).optional(),
+});
+
+// GET /projects/:projectId/git/status — working-tree diff vs the branch.
+dbtRoutes.get(
+  "/projects/:projectId/git/status",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const status = await getGitStatus(project);
+      return c.json({ success: true, status });
+    } catch (error) {
+      return serverError(c, error, "Failed to compute git status");
+    }
+  },
+);
+
+// GET /projects/:projectId/git/diff?path= — base (HEAD) vs working content.
+dbtRoutes.get(
+  "/projects/:projectId/git/diff",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const path = c.req.query("path");
+      if (!path) {
+        return badRequest(c, "path query parameter is required");
+      }
+      const diff = await getProjectFileDiff(project, path);
+      return c.json({ success: true, diff });
+    } catch (error) {
+      return serverError(c, error, "Failed to compute git diff");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/commit — commit & push working-tree changes.
+dbtRoutes.post(
+  "/projects/:projectId/git/commit",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = commitSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await commitAndPush(project, {
+        message: parsed.data.message,
+        updatedBy: getUserId(c),
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to commit and push");
+    }
+  },
+);
+
+// GET /projects/:projectId/git/branches — list remote branches.
+dbtRoutes.get(
+  "/projects/:projectId/git/branches",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const branches = await listProjectBranches(project);
+      return c.json({ success: true, branches, current: project.repo.branch });
+    } catch (error) {
+      return serverError(c, error, "Failed to list branches");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/branch — create + check out a new branch.
+dbtRoutes.post(
+  "/projects/:projectId/git/branch",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = branchSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await createProjectBranch(project, parsed.data.name);
+      return c.json({ success: true, ...result, project });
+    } catch (error) {
+      return serverError(c, error, "Failed to create branch");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/switch-branch — track + pull another branch.
+dbtRoutes.post(
+  "/projects/:projectId/git/switch-branch",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = switchBranchSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await switchProjectBranch(
+        project,
+        parsed.data.branch,
+        getUserId(c),
+      );
+      return c.json({ success: true, ...result, project });
+    } catch (error) {
+      return serverError(c, error, "Failed to switch branch");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/pull-request — open a PR from the branch.
+dbtRoutes.post(
+  "/projects/:projectId/git/pull-request",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = pullRequestSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await openProjectPullRequest(project, parsed.data);
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to open pull request");
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Files
@@ -728,9 +1362,10 @@ dbtRoutes.get("/projects/:projectId/runs", async (c: AuthenticatedContext) => {
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
-    // Finalize any run stuck in "queued" past the worker-pickup deadline so the
-    // history never shows a perpetually-queued run.
-    const reconciled = await reconcileStaleQueuedRuns(runs);
+    // Present any run stuck in "queued" past the worker-pickup deadline as
+    // errored so history never shows a perpetually-queued run. Read-only on
+    // this GET path (persist: false) — the cron sweeper is the single writer.
+    const reconciled = await reconcileStaleQueuedRuns(runs, { persist: false });
     return c.json({ success: true, runs: reconciled });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt runs");
@@ -756,9 +1391,10 @@ dbtRoutes.get(
       if (!found) {
         return c.json({ success: false, error: "Run not found" }, 404);
       }
-      // Finalize a stuck-queued run before returning so the poller (DbtRunCard /
-      // Runs view) sees a terminal error instead of spinning on "queued".
-      const run = await reconcileStaleQueuedRun(found);
+      // Present a stuck-queued run as errored so the poller (DbtRunCard / Runs
+      // view) sees a terminal status instead of spinning on "queued". Read-only
+      // on this GET path (persist: false) — the cron sweeper is the writer.
+      const run = await reconcileStaleQueuedRun(found, { persist: false });
       // logsSince = number of log lines the client already has (cursor).
       const logsSince = Number(c.req.query("logsSince")) || 0;
       const logs = run.logs ?? [];

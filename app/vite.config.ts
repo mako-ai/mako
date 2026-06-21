@@ -46,18 +46,8 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       proxy: {
         "/api": {
-          target: "http://localhost:8080",
+          target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8080",
           changeOrigin: true,
-          configure: proxy => {
-            proxy.on("proxyReq", (proxyReq, req) => {
-              const host =
-                (req.headers["x-forwarded-host"] as string) || req.headers.host;
-              if (host) proxyReq.setHeader("x-forwarded-host", host);
-              const proto =
-                (req.headers["x-forwarded-proto"] as string) || "http";
-              proxyReq.setHeader("x-forwarded-proto", proto);
-            });
-          },
         },
       },
     },

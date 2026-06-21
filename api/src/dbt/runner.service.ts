@@ -22,7 +22,7 @@ import { dirname, join, normalize, relative, sep } from "path";
 import { loggers } from "../logging";
 import type { ParsedDbtCommand } from "./commands";
 import type { RenderedProfile } from "./adapter-map";
-import { resolveDbtBin } from "./dbt-bin";
+import { buildDbtBaseEnv, resolveDbtBin } from "./dbt-bin";
 
 const logger = loggers.app();
 
@@ -37,6 +37,12 @@ export interface DbtRunRequest {
   profile: RenderedProfile;
   commands: ParsedDbtCommand[];
   dbtVersion?: string;
+  /**
+   * Environment-level dbt variables, injected as `--vars <json>` into every
+   * command (except `retry`, and commands that already declare their own
+   * `--vars`). Powers `{{ var('key') }}` in project code.
+   */
+  vars?: Record<string, unknown>;
   /** Per-command timeout (ms). Defaults to 9 minutes (Cloud Run is 600s). */
   commandTimeoutMs?: number;
   /**
@@ -584,7 +590,9 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
     );
 
     const childEnv: Record<string, string> = {
-      ...(process.env as Record<string, string>),
+      // SECURITY: allowlisted base env only — never spread process.env, or
+      // dbt's env_var() would expose server secrets. See buildDbtBaseEnv.
+      ...buildDbtBaseEnv(),
       ...request.profile.secretEnv,
       ...keyfileEnv,
       DBT_SEND_ANONYMOUS_USAGE_STATS: "false",
@@ -694,24 +702,18 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         request.onLog?.(line);
       };
 
-      // --defer/--state only apply to node-executing/compiling subcommands.
-      const stateAware = new Set([
-        "run",
-        "build",
-        "test",
-        "compile",
-        "seed",
-        "snapshot",
-      ]);
-      const deferArgs =
-        stateDir && stateAware.has(command.subcommand)
-          ? ["--defer", "--state", stateDir]
-          : [];
+      // --defer/--state and environment --vars injection (pure + unit-tested).
+      const extraArgs = buildExtraDbtArgs({
+        subcommand: command.subcommand,
+        argv: command.argv,
+        stateDir,
+        vars: request.vars,
+      });
 
       const args = [
         ...resolved.prefixArgs,
         ...command.argv,
-        ...deferArgs,
+        ...extraArgs,
         "--profiles-dir",
         projectDir,
         "--project-dir",
@@ -779,6 +781,47 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
       await rm(projectDir, { recursive: true, force: true }).catch(() => {});
     }
   }
+}
+
+/** Subcommands that support --defer/--state and accept node selection. */
+const STATE_AWARE_SUBCOMMANDS = new Set([
+  "run",
+  "build",
+  "test",
+  "compile",
+  "seed",
+  "snapshot",
+]);
+
+/**
+ * Build the defer/state + environment --vars argv segment injected between the
+ * user command and the fixed --profiles-dir/--project-dir flags. Pure so the
+ * injection rules can be unit-tested without spawning dbt:
+ *
+ *  - --defer/--state only for state-aware subcommands when a stateDir exists;
+ *  - --vars only when the environment defines vars, the subcommand isn't
+ *    `retry` (which replays prior argv), and the command didn't already pass
+ *    its own --vars.
+ */
+export function buildExtraDbtArgs(opts: {
+  subcommand: string;
+  argv: string[];
+  stateDir?: string | null;
+  vars?: Record<string, unknown>;
+}): string[] {
+  const { subcommand, argv, stateDir, vars } = opts;
+  const deferArgs =
+    stateDir && STATE_AWARE_SUBCOMMANDS.has(subcommand)
+      ? ["--defer", "--state", stateDir]
+      : [];
+  const varsArgs =
+    vars &&
+    Object.keys(vars).length > 0 &&
+    subcommand !== "retry" &&
+    !argv.includes("--vars")
+      ? ["--vars", JSON.stringify(vars)]
+      : [];
+  return [...deferArgs, ...varsArgs];
 }
 
 /** Map a run_results.json artifact to the dbt_runs.stepResults shape. */

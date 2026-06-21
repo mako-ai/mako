@@ -2309,6 +2309,7 @@ function Editor({
                   <DbtJobView
                     projectId={tab.metadata?.projectId as string}
                     jobId={tab.metadata?.jobId as string}
+                    autoEdit={tab.metadata?.autoEdit as boolean | undefined}
                   />
                 ) : tab.kind === "dbt-console" ? (
                   <DbtConsoleView
