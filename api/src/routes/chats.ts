@@ -21,6 +21,8 @@ const CONSOLE_RESTORE_TOOL_NAMES = new Set([
   "create_console",
   "open_console",
   "run_console",
+  "check_query_status",
+  "cancel_query",
   "set_console_connection",
 ]);
 

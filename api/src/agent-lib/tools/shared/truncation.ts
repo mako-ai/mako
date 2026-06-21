@@ -5,9 +5,12 @@
 
 import type { AgentToolExecutionContext } from "../../../agents/types";
 import { databaseConnectionService } from "../../../services/database-connection.service";
+import { AGENT_DIRECT_QUERY_TIMEOUT_MS } from "../../../config/long-running-queries";
 
-// Agent query timeout: how long server-side agent tools wait before aborting
-export const AGENT_QUERY_TIMEOUT_MS = 60_000; // 60 seconds
+// Agent query timeout: how long the direct, single-shot execute tools wait
+// before aborting. Env-overridable via AGENT_DIRECT_QUERY_TIMEOUT_MS. Heavy
+// queries should instead run via a console (run_console), which is resumable.
+export const AGENT_QUERY_TIMEOUT_MS = AGENT_DIRECT_QUERY_TIMEOUT_MS;
 export const AGENT_QUERY_TIMEOUT = "AGENT_QUERY_TIMEOUT";
 export const AGENT_QUERY_ABORTED = "AGENT_QUERY_ABORTED";
 

@@ -118,7 +118,7 @@ export interface ConsoleTab {
    */
   lastRun?: {
     at: string;
-    status: "success" | "error";
+    status: "running" | "success" | "error" | "cancelled";
     rowCount?: number;
     durationMs: number;
     error?: string;
@@ -126,6 +126,8 @@ export interface ConsoleTab {
     fields?: unknown;
     /** Origin of the run ("agent", "user", …) — drives results catch-up. */
     source?: string;
+    startedAt?: string;
+    executionId?: string;
   } | null;
   schedule?: {
     cron: string;

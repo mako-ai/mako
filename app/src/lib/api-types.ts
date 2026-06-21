@@ -10,7 +10,7 @@
 /** Latest server-side run artifact persisted on a console (agent run_console). */
 export interface ConsoleLastRun {
   at: string;
-  status: "success" | "error";
+  status: "running" | "success" | "error" | "cancelled";
   rowCount?: number;
   durationMs: number;
   error?: string;
@@ -18,6 +18,8 @@ export interface ConsoleLastRun {
   fields?: unknown;
   runBy: string;
   source: string;
+  startedAt?: string;
+  executionId?: string;
 }
 
 export interface ConsoleContentResponse {
