@@ -3953,6 +3953,16 @@ export interface components {
             description: string;
             author?: string;
             supportedEntities: string[];
+            webhook: {
+                supported: boolean;
+                provisioning: {
+                    supported: boolean;
+                    providerLabel: string;
+                    storesSecretAutomatically: boolean;
+                    actionHint?: string;
+                };
+                secretHelpText?: string;
+            };
         };
         DatabaseType: {
             type: string;

@@ -88,6 +88,34 @@ export interface ProvisionWebhookResult {
   signingSecret?: string;
 }
 
+/**
+ * Static, UI-facing description of a connector's webhook support. Surfaced
+ * through connector metadata so the generic webhook UI stays connector-agnostic
+ * (no `if (type === "stripe")` branching in components — see rule 15).
+ */
+export interface WebhookProvisioningCapability {
+  /** Connector can create the provider-side webhook subscription itself. */
+  supported: boolean;
+  /** Provider display name, used in copy like `Create in {providerLabel}`. */
+  providerLabel: string;
+  /** Provisioning persists the signing secret automatically on creation. */
+  storesSecretAutomatically: boolean;
+  /**
+   * Optional clause appended after "One click creates the {provider} webhook"
+   * (e.g. "and stores its signing secret").
+   */
+  actionHint?: string;
+}
+
+export interface WebhookCapabilities {
+  /** Connector can receive inbound webhooks at all. */
+  supported: boolean;
+  /** Auto-provisioning capability + UI copy. */
+  provisioning: WebhookProvisioningCapability;
+  /** Help text for the manual signing-secret input field. */
+  secretHelpText?: string;
+}
+
 export type NormalizedCdcRecord = Omit<NormalizedCdcEvent, "runId">;
 
 export type ConnectorLogicalType =
@@ -288,6 +316,24 @@ export abstract class BaseConnector {
   supportsWebhookProvisioning(): boolean {
     // Connectors that can create provider-side subscriptions should override.
     return false;
+  }
+
+  /**
+   * Static, UI-facing webhook capabilities. Defaults are derived from the
+   * existing capability predicates; connectors override to provide provider
+   * labels and help text so the generic webhook UI never hardcodes connector
+   * types. Must be safe to call on a metadata-only (dummy) instance.
+   */
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: this.supportsWebhooks(),
+      provisioning: {
+        supported: this.supportsWebhookProvisioning(),
+        providerLabel: this.getMetadata().name,
+        storesSecretAutomatically: false,
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    };
   }
 
   /**

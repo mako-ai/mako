@@ -1014,6 +1014,43 @@
             "items": {
               "type": "string"
             }
+          },
+          "webhook": {
+            "type": "object",
+            "properties": {
+              "supported": {
+                "type": "boolean"
+              },
+              "provisioning": {
+                "type": "object",
+                "properties": {
+                  "supported": {
+                    "type": "boolean"
+                  },
+                  "providerLabel": {
+                    "type": "string"
+                  },
+                  "storesSecretAutomatically": {
+                    "type": "boolean"
+                  },
+                  "actionHint": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "supported",
+                  "providerLabel",
+                  "storesSecretAutomatically"
+                ]
+              },
+              "secretHelpText": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "supported",
+              "provisioning"
+            ]
           }
         },
         "required": [
@@ -1021,7 +1058,8 @@
           "name",
           "version",
           "description",
-          "supportedEntities"
+          "supportedEntities",
+          "webhook"
         ]
       },
       "DatabaseType": {
