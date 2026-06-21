@@ -209,6 +209,21 @@ export async function executeAppAgentTool(
       };
     }
 
+    case "app_delete_data_binding": {
+      if (!appId) return fail("appId is required");
+      const appEntity = await ensureApp(appId);
+      if (!appEntity) return fail("App not found");
+      const name = input.name as string;
+      const binding = appEntity.dataBindings.find(b => b.name === name);
+      if (!binding) return fail(`No data binding named "${name}"`);
+      store.removeDataBinding(appId, binding.id);
+      await persist();
+      const remaining = (
+        useAppStore.getState().openApps[appId]?.dataBindings ?? []
+      ).map(b => b.name);
+      return { success: true, deleted: name, remaining };
+    }
+
     case "materialize_binding": {
       if (!appId || !workspaceId) {
         return fail("appId and workspace are required");
