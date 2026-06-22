@@ -1654,12 +1654,25 @@ agentRoutes.openapi(
     if (!access.ok) {
       // A not-yet-created chat (client-minted chatId, no turn sent) is a normal
       // "nothing to resume" case, not an error.
-      if (access.status === 404) return c.body(null, 204);
+      if (access.status === 404) {
+        // `reason` discriminates the three distinct 204 outcomes below so a
+        // benign "nothing to resume" can be told apart from a lost stream when
+        // investigating client-side disconnect reports.
+        logger.debug("Stream resume: nothing to resume", {
+          chatId,
+          reason: "chat-not-found",
+        });
+        return c.body(null, 204);
+      }
       return c.json({ error: "Cannot access chat stream" }, access.status);
     }
 
     const { activeStreamId } = access.chat;
     if (!activeStreamId) {
+      logger.debug("Stream resume: nothing to resume", {
+        chatId,
+        reason: "no-active-stream",
+      });
       return c.body(null, 204);
     }
 
@@ -1667,7 +1680,15 @@ agentRoutes.openapi(
       await getResumableStreamContext().resumeExistingStream(activeStreamId);
     if (!stream) {
       // Stale pointer: stream expired or was lost (e.g. process restart with
-      // the in-memory backend). Clear it so future mounts short-circuit.
+      // the in-memory backend, or a `/stop` handled by another instance). The
+      // client minted a turn but we can no longer reattach — this is the
+      // server-side counterpart of the client's silent-disconnect rescue.
+      logger.info("Stream resume: stale pointer, cannot reattach", {
+        chatId,
+        streamId: activeStreamId,
+        reason: "stale-pointer",
+      });
+      // Clear it so future mounts short-circuit.
       void Chat.updateOne(
         { _id: new ObjectId(chatId), activeStreamId },
         { $set: { activeStreamId: null } },
@@ -1681,9 +1702,15 @@ agentRoutes.openapi(
       chatId,
       streamId: activeStreamId,
     });
-    return new Response(stream.pipeThrough(new TextEncoderStream()), {
-      headers: UI_MESSAGE_STREAM_HEADERS,
-    });
+    // Keep the reattached connection warm during long silent tool gaps, same
+    // as the live POST branch. Without this, a client that resumes mid-turn is
+    // dropped by the edge proxy's idle timeout (~100s with no bytes) whenever a
+    // server-side tool runs quietly, stranding the resumed turn.
+    return withSseKeepAlive(
+      new Response(stream.pipeThrough(new TextEncoderStream()), {
+        headers: UI_MESSAGE_STREAM_HEADERS,
+      }),
+    );
   },
 );
 
