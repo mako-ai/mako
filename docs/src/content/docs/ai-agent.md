@@ -110,6 +110,10 @@ Key capabilities:
 
 The agent handles edit-mode locking, so concurrent users cannot conflict.
 
+### dbt Agent
+
+Active on `dbt-file` and `dbt-job` tabs in [Transforms](/transforms/) (and available as the `dbt` expertise mode in the unified production agent). It builds and operates dbt Core projects — compiling and running models with graph operators, managing jobs and runs, and handling Git (status, commit/push with AI-generated messages, branches, and pull requests).
+
 ## Visual Inspection
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:

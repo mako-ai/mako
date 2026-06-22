@@ -43,6 +43,7 @@ export default defineConfig({
             { label: "Console", slug: "console" },
             { label: "Dashboards", slug: "dashboards" },
             { label: "Query Runner", slug: "query-runner" },
+            { label: "Transforms (dbt)", slug: "transforms" },
             { label: "Self-Directive", slug: "self-directive" },
             { label: "Skills", slug: "skills" },
             { label: "Notifications", slug: "notifications" },
