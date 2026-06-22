@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { UIMessage } from "ai";
-import { elideOldToolOutputs } from "./compaction";
+import { elideOldToolOutputs, stripReplayedReasoning } from "./compaction";
 import { estimateUiMessagesTokens } from "./token-estimate";
 
 function t(label: string, fn: () => void) {
@@ -159,4 +159,96 @@ t("respects custom keepRecentTurns and minTokens", () => {
   assert.equal(none.changed, false);
 });
 
-process.stdout.write("\nAll compaction elision tests passed.\n");
+// --- stripReplayedReasoning ----------------------------------------------
+
+function assistantWithReasoning(id: string, text: string): UIMessage {
+  return {
+    id,
+    role: "assistant",
+    parts: [
+      { type: "reasoning", text: `thinking about ${text}` },
+      { type: "text", text },
+    ],
+  } as UIMessage;
+}
+
+function reasoningPartCount(msgs: UIMessage[]): number {
+  let n = 0;
+  for (const m of msgs) {
+    for (const p of (m.parts ?? []) as Array<Record<string, unknown>>) {
+      if (p.type === "reasoning") n += 1;
+    }
+  }
+  return n;
+}
+
+t("strips ALL reasoning when the last message is a fresh user turn", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q0"),
+    assistantWithReasoning("a0", "answer 0"),
+    userMsg("u1", "q1"),
+    assistantWithReasoning("a1", "answer 1"),
+    userMsg("u2", "q2"), // fresh user turn → no continuation
+  ];
+  assert.equal(reasoningPartCount(msgs), 2);
+  const res = stripReplayedReasoning(msgs);
+  assert.equal(res.changed, true);
+  assert.equal(res.strippedCount, 2);
+  assert.equal(reasoningPartCount(res.messages), 0);
+});
+
+t("preserves reasoning on the last assistant msg during a continuation", () => {
+  // Last message is an assistant message (e.g. a client tool result was folded
+  // back into it) → Anthropic interleaved thinking may require its thinking.
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q0"),
+    assistantWithReasoning("a0", "answer 0"),
+    userMsg("u1", "q1"),
+    assistantWithReasoning("a1", "answer 1"), // last assistant, continuation
+  ];
+  const res = stripReplayedReasoning(msgs);
+  assert.equal(res.changed, true);
+  // a0 stripped, a1 preserved
+  assert.equal(res.strippedCount, 1);
+  const a1 = res.messages.find(m => m.id === "a1");
+  assert.ok(a1);
+  assert.equal(
+    (a1.parts as Array<Record<string, unknown>>).some(
+      p => p.type === "reasoning",
+    ),
+    true,
+  );
+  const a0 = res.messages.find(m => m.id === "a0");
+  assert.ok(a0);
+  assert.equal(
+    (a0.parts as Array<Record<string, unknown>>).some(
+      p => p.type === "reasoning",
+    ),
+    false,
+  );
+});
+
+t("never empties a reasoning-only assistant message", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q0"),
+    {
+      id: "a0",
+      role: "assistant",
+      parts: [{ type: "reasoning", text: "only thinking, no answer" }],
+    } as UIMessage,
+    userMsg("u1", "q1"),
+  ];
+  const res = stripReplayedReasoning(msgs);
+  // Stripping would empty a0 → left untouched.
+  assert.equal(res.changed, false);
+  assert.equal(reasoningPartCount(res.messages), 1);
+});
+
+t("no-op when there is no reasoning to strip", () => {
+  const msgs = conversation(3);
+  const res = stripReplayedReasoning(msgs);
+  assert.equal(res.changed, false);
+  assert.equal(res.strippedCount, 0);
+});
+
+process.stdout.write("\nAll compaction tests passed.\n");
