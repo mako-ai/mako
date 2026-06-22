@@ -345,6 +345,29 @@ describe("Chat.tsx structural guards", () => {
   });
 });
 
+describe("StreamingToolCard structural guards", () => {
+  const cardSource = fs.readFileSync(
+    path.resolve(__dirname, "../StreamingToolCard.tsx"),
+    "utf-8",
+  );
+
+  it("unmounts the collapsed body (Collapse unmountOnExit)", () => {
+    // Collapsed tool cards must not keep their syntax-highlighted JSON/code in
+    // the DOM — that's the dominant DOM-node source in long chats on mobile.
+    expect(cardSource).toMatch(/<Collapse[^>]*unmountOnExit/s);
+  });
+
+  it("caps inline output/code size before highlighting", () => {
+    // Never feed a 10k-line JSON blob to the syntax highlighter inline.
+    expect(cardSource).toContain("capForDisplay");
+    expect(cardSource).toMatch(/MAX_INLINE_(CHARS|LINES)/);
+  });
+
+  it("defers building the heavy body strings until the body renders", () => {
+    expect(cardSource).toMatch(/shouldRenderBody/);
+  });
+});
+
 describe("StreamingMarkdown structural guards", () => {
   const sdSource = fs.readFileSync(
     path.resolve(__dirname, "../StreamingMarkdown.tsx"),

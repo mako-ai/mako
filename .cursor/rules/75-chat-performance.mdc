@@ -102,6 +102,21 @@ Key pieces:
   after the bulk `setMessages`, because Virtuoso keeps one instance across chat
   switches so `initialTopMostItemIndex` (mount-only) won't re-apply.
 
+## Tool-card DOM cost (`StreamingToolCard`)
+
+Virtualization unmounts off-screen rows, but a single on-screen tool card can
+still blow up the DOM. Collapsed tool cards MUST unmount their body, not just
+hide it:
+- The expandable body uses MUI `<Collapse ... unmountOnExit>` so the
+  syntax-highlighted code/JSON DOM is removed entirely when collapsed (the
+  default `Collapse` keeps children mounted at height 0).
+- Heavy body strings (`code`, `formattedOutput`) are built **only** when the body
+  will render (`shouldRenderBody = (expanded || isActive) && hasVisibleBody`);
+  collapsed history cards never pay the serialization/highlight cost.
+- Inline output/code is capped (`capForDisplay`, `MAX_INLINE_CHARS` /
+  `MAX_INLINE_LINES`) so a huge tool result never expands into thousands of DOM
+  nodes; the full payload stays available via the tool-details dialog.
+
 ## Zustand selector rules
 
 ```
@@ -147,6 +162,7 @@ callback, not via a selector subscription.
 - [ ] `experimental_throttle: 50` is present on `useChat`
 - [ ] Message list stays virtualized (`<Virtuoso data={messages}>`), never `messages.map`
 - [ ] Auto-scroll uses Virtuoso `followOutput`, not a DIY `useEffect`
+- [ ] Collapsed `StreamingToolCard` bodies unmount (`Collapse unmountOnExit`)
 - [ ] Any new child component inside `ChatMessageRow` is `React.memo`-wrapped
 - [ ] Zustand selectors return primitives, not object references
 - [ ] Render-count test (`Chat.perf.test.ts`) still passes

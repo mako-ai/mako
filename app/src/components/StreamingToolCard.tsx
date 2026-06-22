@@ -217,6 +217,59 @@ function formatOutputForDisplay(output: unknown): string {
   return JSON.stringify(o, null, 2);
 }
 
+// Inline display caps. Tool results are already size-bounded server-side, but a
+// single 50k-char JSON blob still expands into thousands of DOM nodes once
+// syntax-highlighted — and many such cards in a long chat make mobile Safari
+// crawl. We never feed more than this to the highlighter; the full payload is
+// still available via the tool-details dialog.
+const MAX_INLINE_CHARS = 8_000;
+const MAX_INLINE_LINES = 200;
+
+function capForDisplay(text: string): string {
+  if (!text) return text;
+  let capped = text;
+  let truncated = false;
+  if (capped.length > MAX_INLINE_CHARS) {
+    capped = capped.slice(0, MAX_INLINE_CHARS);
+    truncated = true;
+  }
+  const newlineCount = (capped.match(/\n/g) ?? []).length;
+  if (newlineCount + 1 > MAX_INLINE_LINES) {
+    let idx = -1;
+    for (let i = 0; i < MAX_INLINE_LINES; i++) {
+      const next = capped.indexOf("\n", idx + 1);
+      if (next === -1) break;
+      idx = next;
+    }
+    if (idx !== -1) capped = capped.slice(0, idx);
+    truncated = true;
+  }
+  if (truncated) {
+    capped +=
+      "\n\n… truncated for display — open the tool details to view the full result.";
+  }
+  return capped;
+}
+
+/**
+ * Cheap check (no full serialization) for whether an output has anything worth
+ * showing in the expandable body. Used to decide `canExpand` without paying the
+ * cost of `formatOutputForDisplay` for collapsed cards.
+ */
+function hasDisplayableOutput(output: unknown): boolean {
+  if (output === null || output === undefined) return false;
+  if (typeof output === "string") return output.length > 0;
+  if (Array.isArray(output)) return output.length > 0;
+  if (typeof output === "object") {
+    const o = output as Record<string, unknown>;
+    const keys = Object.keys(o).filter(
+      k => !(k === "success" && o.success === true),
+    );
+    return keys.length > 0;
+  }
+  return false;
+}
+
 // ── Animations ───────────────────────────────────────────────
 
 const pulseKf = keyframes`
@@ -319,15 +372,39 @@ export const StreamingToolCard = React.memo(
     const rawContent = config.preview
       ? inputObj?.[config.preview.field]
       : undefined;
-    const defaultCode =
-      typeof rawContent === "string"
-        ? rawContent
-        : rawContent && typeof rawContent === "object"
-          ? JSON.stringify(rawContent, null, 2)
-          : "";
-    const code = bodyPreview?.content ?? defaultCode;
     const codeLanguage =
       bodyPreview?.language ?? config.preview?.language ?? "text";
+
+    // Cheap presence checks (no serialization) so we can decide expandability
+    // for collapsed cards without building the (potentially huge) body strings.
+    const hasCode = Boolean(
+      bodyPreview?.content ||
+        (typeof rawContent === "string"
+          ? rawContent.length > 0
+          : rawContent != null),
+    );
+    const hasOutput = (isDone || isError) && hasDisplayableOutput(output);
+
+    const hasVisibleBody = hasCode || hasOutput;
+    const canExpand = hasVisibleBody;
+
+    // Only build the heavy body strings when they will actually be rendered:
+    // while the card is active (streaming the preview) or after the user
+    // expands it. Collapsed history cards never pay this cost. The body itself
+    // is unmounted (Collapse `unmountOnExit`) so its DOM is gone too.
+    const shouldRenderBody = (expanded || isActive) && hasVisibleBody;
+
+    const code = useMemo(() => {
+      if (!shouldRenderBody || !hasCode) return "";
+      const raw =
+        bodyPreview?.content ??
+        (typeof rawContent === "string"
+          ? rawContent
+          : rawContent && typeof rawContent === "object"
+            ? JSON.stringify(rawContent, null, 2)
+            : "");
+      return capForDisplay(raw);
+    }, [shouldRenderBody, hasCode, bodyPreview?.content, rawContent]);
 
     useEffect(() => {
       if (isStreaming && !userScrolled && codeContainerRef.current) {
@@ -351,18 +428,16 @@ export const StreamingToolCard = React.memo(
     );
 
     const formattedOutput = useMemo(
-      () => (isDone || isError ? formatOutputForDisplay(output) : ""),
-      [isDone, isError, output],
+      () =>
+        shouldRenderBody && (isDone || isError)
+          ? capForDisplay(formatOutputForDisplay(output))
+          : "",
+      [shouldRenderBody, isDone, isError, output],
     );
     const outputLang =
       formattedOutput.startsWith("{") || formattedOutput.startsWith("[")
         ? "json"
         : "text";
-
-    const hasVisibleBody =
-      code.length > 0 || ((isDone || isError) && formattedOutput.length > 0);
-
-    const canExpand = hasVisibleBody;
 
     const statusText = isStreaming
       ? "Generating…"
@@ -565,8 +640,11 @@ export const StreamingToolCard = React.memo(
           </Box>
         </Box>
 
-        {/* Expandable body: code preview + output */}
-        <Collapse in={expanded && hasVisibleBody} timeout={300}>
+        {/* Expandable body: code preview + output.
+            `unmountOnExit` removes the syntax-highlighted DOM (and its many
+            nodes) entirely when collapsed — critical for keeping the DOM small
+            in long chats on mobile Safari. */}
+        <Collapse in={expanded && hasVisibleBody} timeout={300} unmountOnExit>
           {/* Code preview */}
           {code.length > 0 && (
             <Box
