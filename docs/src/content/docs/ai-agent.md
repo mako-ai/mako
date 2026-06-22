@@ -152,6 +152,25 @@ Models tagged with `reasoning` in the Gateway catalog automatically enable exten
 
 Users pick their preferred model in the chat UI. The model is persisted per-user in workspace settings. If a user's saved model becomes unavailable (e.g. billing downgrade), Mako falls back to the best available model for their plan.
 
+## Long-Running Queries
+
+Queries that take a while no longer fail at a fixed timeout. When the agent calls `run_console`, the query runs as a *detached server-side task* that outlives the tool call:
+
+- If it finishes within a short soft timeout (~90s, env-overridable), the rows come back immediately, as before.
+- If it's still running after that, `run_console` returns `{ status: "running", executionId }` and the query **keeps running** server-side — nothing is cancelled.
+
+The agent then polls `check_query_status` (with backoff) to fetch the result, and can stop a run with `cancel_query`:
+
+| Tool                 | What It Does                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| `run_console`        | Executes a console's query as a detached run; returns rows, or `status: "running"` + `executionId`   |
+| `check_query_status` | Polls a running query by `consoleId` (+ optional `executionId`); returns `running`/`success`/`error`/`cancelled` |
+| `cancel_query`       | Aborts a running detached query (task + engine-native cancel)                                         |
+
+Results land via the persisted `lastRun` record and the realtime `console.run.completed` pipeline, so this works across server instances for **every engine** — no re-attach and no Inngest dependency. A server-side hard cap (default 5 minutes, env-overridable) aborts any detached run that exceeds it, so no query can run forever.
+
+The short, single-shot execute tools (`sql_execute_query`, `mongo_execute_query`) stay on a brief timeout for quick exploration; when one times out, the agent moves the query into a console and uses the resumable `run_console` flow instead.
+
 ## Safety
 
 - SELECT queries are auto-limited to 500 rows unless you explicitly override
