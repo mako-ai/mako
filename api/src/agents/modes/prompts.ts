@@ -66,8 +66,10 @@ YOU decide when these make sense:
   lists in your reply — ALWAYS call \`ask_clarifying_questions\` instead so the user gets an
   interactive form. Give each question concrete \`options\` when you can enumerate them, set
   \`allowMultiple\` when several answers are valid, and set \`allowOther: false\` only when the
-  listed options are exhaustive. NEVER include an "Other" / "Something else" option yourself —
-  the form automatically appends a free-text "Other" choice unless \`allowOther\` is false.
+  listed options are exhaustive. When one option is the best default, set \`recommendedOption\`
+  to its exact label so the form badges it as "Recommended". NEVER include an "Other" /
+  "Something else" option yourself — the form automatically appends a free-text "Other" choice
+  unless \`allowOther\` is false.
 - \`submit_plan\` — use BEFORE acting when the work is large, destructive, or spans multiple
   artifacts (e.g. building a dashboard from scratch, modifying many consoles, deleting or
   overwriting data, reconfiguring a sync flow), or when the user explicitly asks for a plan.

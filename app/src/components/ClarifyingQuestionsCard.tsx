@@ -113,6 +113,8 @@ interface OptionRowProps {
   multiple: boolean;
   icon?: React.ReactNode;
   role?: "radio" | "checkbox";
+  /** Show a subtle "Recommended" badge after the label. */
+  recommended?: boolean;
   onToggle: () => void;
 }
 
@@ -123,6 +125,7 @@ const OptionRow: React.FC<OptionRowProps> = ({
   multiple,
   icon,
   role,
+  recommended,
   onToggle,
 }) => {
   const indicator =
@@ -172,6 +175,20 @@ const OptionRow: React.FC<OptionRowProps> = ({
       <Typography sx={{ fontSize: 13, flex: 1, minWidth: 0 }}>
         {label}
       </Typography>
+      {recommended && (
+        <Chip
+          size="small"
+          label="Recommended"
+          color="primary"
+          variant="outlined"
+          sx={{
+            flexShrink: 0,
+            height: 18,
+            fontSize: 10,
+            "& .MuiChip-label": { px: 0.75 },
+          }}
+        />
+      )}
     </Box>
   );
 };
@@ -444,6 +461,10 @@ export const ClarifyingQuestionsCard: React.FC<
                       label={option}
                       selected={answer.selected.includes(option)}
                       multiple={Boolean(question.allowMultiple)}
+                      recommended={
+                        !question.allowMultiple &&
+                        question.recommendedOption === option
+                      }
                       onToggle={() => toggleOption(question, option)}
                     />
                   ))}
