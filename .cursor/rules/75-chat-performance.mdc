@@ -54,23 +54,42 @@ When you need a fresh value inside `onToolCall` or `prepareSendMessagesRequest`,
 call `useConsoleStore.getState()` at invocation time rather than closing over
 render-time state.
 
-## Auto-scroll contract (`use-stick-to-bottom`)
+## Virtualized message list + auto-scroll (`react-virtuoso`)
 
-Auto-scroll uses the **`use-stick-to-bottom`** library (same library used in
-Vercel's official `ai-chatbot` template). It observes container/content resizes
-via `ResizeObserver` and uses spring-based animations — no `useEffect([messages])`
-or `MutationObserver` hacks.
+The message list is **virtualized with `react-virtuoso`**. Only on-screen rows
+(plus a viewport overscan) are mounted in the DOM. This keeps the DOM node count
+roughly constant regardless of chat length — essential for mobile Safari, which
+crawls once a long chat accumulates thousands of nodes.
 
-Key pieces:
-- `scrollContainerRef` / `scrollContentRef` — refs from `useStickToBottom()` hook,
-  attached to the outer scroll `<Box>` and inner content `<div>` respectively.
-- `isAtBottom` — boolean state for showing the "scroll to bottom" button.
-- `scrollToBottom()` — imperative scroll for the button's `onClick`.
+Key pieces (in `Chat.tsx`):
+- `<Virtuoso data={messages} itemContent={...} />` renders each row via the
+  memoized `ChatMessageRow`.
+- `computeItemKey={(_, m) => m.id}` — stable keys so rows aren't remounted (which
+  would drop tool-card expand state) as the visible range shifts.
+- `key={chatId}` on `<Virtuoso>` — remounts per chat so each opens at the bottom
+  (`initialTopMostItemIndex`).
+- `followOutput="auto"` — sticks to the bottom while streaming **only when the
+  user is already at the bottom** (Virtuoso re-measures the growing last row via
+  its internal `ResizeObserver`).
+- `atBottomStateChange={setIsAtBottom}` drives the "scroll to bottom" button;
+  `scrollToBottom()` calls `virtuosoRef.current.scrollToIndex({ index: "LAST" })`.
 
 **Never replace this with a DIY `useEffect([messages])` → `scrollIntoView`.
 That fires on every chunk and causes scroll jank + broken hover/click events.**
-The library correctly distinguishes user scrolling from programmatic scrolling
-and handles edge cases like content shrinking and mobile devices.
+Virtuoso correctly distinguishes user scrolling from programmatic scrolling and
+handles content shrinking and mobile devices.
+
+## Tool-card DOM cost (`StreamingToolCard`)
+
+Collapsed tool cards MUST unmount their body, not just hide it:
+- The expandable body uses MUI `<Collapse ... unmountOnExit>` so the
+  syntax-highlighted code/JSON DOM is removed entirely when collapsed (the
+  default `Collapse` keeps children mounted at height 0).
+- Heavy body strings (`code`, `formattedOutput`) are built **only** when the body
+  will render (`shouldRenderBody = (expanded || isActive) && hasVisibleBody`).
+- Inline output/code is capped (`capForDisplay`, `MAX_INLINE_CHARS` /
+  `MAX_INLINE_LINES`) so a huge tool result never expands into thousands of DOM
+  nodes; the full payload stays available via the tool-details dialog.
 
 ## Zustand selector rules
 
@@ -115,7 +134,9 @@ callback, not via a selector subscription.
 - [ ] No new `useCallback`/`useMemo` with object dependencies
 - [ ] No new `useEffect` depending on `messages` that touches the DOM
 - [ ] `experimental_throttle: 50` is present on `useChat`
-- [ ] Auto-scroll uses `use-stick-to-bottom`, not a DIY `useEffect`
+- [ ] Message list stays virtualized (`react-virtuoso`); auto-scroll uses
+      Virtuoso's `followOutput`, not a DIY `useEffect`
+- [ ] Collapsed `StreamingToolCard` bodies unmount (`Collapse unmountOnExit`)
 - [ ] Any new child component inside `ChatMessageRow` is `React.memo`-wrapped
 - [ ] Zustand selectors return primitives, not object references
 - [ ] Render-count test (`Chat.perf.test.ts`) still passes

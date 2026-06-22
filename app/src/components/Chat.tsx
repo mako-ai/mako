@@ -14,7 +14,6 @@ import {
   Button,
   Chip,
   IconButton,
-  List,
   ListItem,
   ListItemText,
   MenuItem,
@@ -56,7 +55,7 @@ import {
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
-import { useStickToBottom } from "use-stick-to-bottom";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
@@ -721,6 +720,31 @@ const assistantMessageSx = {
   "& pre": { margin: 0, overflow: "hidden" },
 } as const;
 const listItemSx = { p: 0 } as const;
+
+// react-virtuoso slot components. The previous (non-virtualized) list got its
+// 8px gutters from the scroll container's `p: 1`; Virtuoso owns the scroller now
+// so we re-add the horizontal gutters per item and top/bottom spacers via the
+// Header/Footer slots. Defined at module scope so their identity is stable
+// (re-creating them each render would remount every row).
+const ChatListHeader = () => <div style={{ height: 8 }} />;
+const ChatListFooter = () => <div style={{ height: 8 }} />;
+const ChatListItem = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(function ChatListItem(props, ref) {
+  return (
+    <div
+      {...props}
+      ref={ref}
+      style={{ ...props.style, paddingLeft: 8, paddingRight: 8 }}
+    />
+  );
+});
+const virtuosoComponents = {
+  Header: ChatListHeader,
+  Footer: ChatListFooter,
+  Item: ChatListItem,
+};
 
 /**
  * Lightweight, dependency-free image lightbox. Shows the full (uncropped) image
@@ -1890,13 +1914,18 @@ const Chat: React.FC<ChatProps> = ({
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const {
-    scrollRef: scrollContainerRef,
-    contentRef: scrollContentRef,
-    isAtBottom,
-    scrollToBottom,
-  } = useStickToBottom();
+  // Virtualized message list (react-virtuoso). Owns its own scroll container
+  // and the stick-to-bottom behavior; off-screen messages are unmounted, which
+  // keeps the DOM small in long chats (mobile Safari struggles otherwise).
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const scrollToBottom = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({
+      index: "LAST",
+      behavior: "smooth",
+      align: "end",
+    });
+  }, []);
 
   // Track if we're viewing an existing chat from history (vs a new chat)
   // Moved before useChat so onFinish callback can access it
@@ -4035,13 +4064,11 @@ const Chat: React.FC<ChatProps> = ({
         </Box>
       )}
 
-      {/* Messages */}
+      {/* Messages — virtualized so only on-screen rows live in the DOM. */}
       <Box
-        ref={scrollContainerRef}
         sx={{
           flex: 1,
-          overflow: "auto",
-          p: 1,
+          minHeight: 0,
           position: "relative",
         }}
       >
@@ -4106,32 +4133,42 @@ const Chat: React.FC<ChatProps> = ({
           </Box>
         )}
 
-        <div ref={scrollContentRef}>
+        {messages.length > 0 && (
           <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
-            <List dense>
-              {messages.map((message, msgIdx) => (
+            <Virtuoso
+              key={chatId}
+              ref={virtuosoRef}
+              data={messages}
+              style={{ height: "100%" }}
+              className="chat-message-virtuoso"
+              computeItemKey={(_index, message) => message.id}
+              initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+              followOutput="auto"
+              atBottomStateChange={setIsAtBottom}
+              atBottomThreshold={120}
+              increaseViewportBy={{ top: 800, bottom: 800 }}
+              components={virtuosoComponents}
+              itemContent={(index, message) => (
                 <ChatMessageRow
-                  key={message.id}
                   message={message}
-                  isLastMessage={msgIdx === messages.length - 1}
+                  isLastMessage={index === messages.length - 1}
                   isStreaming={status === "streaming"}
                   onToolClick={handleToolClick}
                   onConsoleTitleClick={handleConsoleTitleClick}
                   connectionIconById={connectionIconById}
                   paletteMode={paletteMode}
                 />
-              ))}
-            </List>
+              )}
+            />
           </React.Profiler>
-          <div ref={messagesEndRef} />
-        </div>
+        )}
 
-        {!isAtBottom && (
+        {messages.length > 0 && !isAtBottom && (
           <IconButton
             onClick={() => scrollToBottom()}
             size="small"
             sx={{
-              position: "sticky",
+              position: "absolute",
               bottom: 8,
               left: "50%",
               transform: "translateX(-50%)",

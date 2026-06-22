@@ -304,8 +304,23 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/experimental_throttle\s*:\s*\d+/);
   });
 
-  it("uses use-stick-to-bottom for scroll management", () => {
-    expect(chatSource).toContain("useStickToBottom");
+  it("virtualizes the message list with react-virtuoso", () => {
+    // Off-screen messages must be unmounted so the DOM stays small in long
+    // chats (mobile Safari struggles with thousands of nodes). Virtuoso owns
+    // the scroller + stick-to-bottom behavior.
+    expect(chatSource).toContain("react-virtuoso");
+    expect(chatSource).toMatch(/<Virtuoso\b/);
+  });
+
+  it("keys virtualized rows by message.id", () => {
+    // Stable keys prevent Virtuoso from remounting rows (which would drop
+    // tool-card expand state and cause flicker) as the range shifts.
+    expect(chatSource).toMatch(/computeItemKey=\{[^}]*message\.id/);
+  });
+
+  it("follows streaming output and tracks bottom state", () => {
+    expect(chatSource).toMatch(/followOutput=/);
+    expect(chatSource).toMatch(/atBottomStateChange=\{setIsAtBottom\}/);
   });
 
   it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
@@ -328,6 +343,29 @@ describe("Chat.tsx structural guards", () => {
     // toolCallId keeps identity stable across reorders/inserts.
     expect(chatSource).toMatch(/key=\{\s*key\s*\}/);
     expect(chatSource).toMatch(/`tool-\$\{toolCallId\}`/);
+  });
+});
+
+describe("StreamingToolCard structural guards", () => {
+  const cardSource = fs.readFileSync(
+    path.resolve(__dirname, "../StreamingToolCard.tsx"),
+    "utf-8",
+  );
+
+  it("unmounts the collapsed body (Collapse unmountOnExit)", () => {
+    // Collapsed tool cards must not keep their syntax-highlighted JSON/code in
+    // the DOM — that's the dominant DOM-node source in long chats on mobile.
+    expect(cardSource).toMatch(/<Collapse[^>]*unmountOnExit/s);
+  });
+
+  it("caps inline output/code size before highlighting", () => {
+    // Never feed a 10k-line JSON blob to the syntax highlighter inline.
+    expect(cardSource).toContain("capForDisplay");
+    expect(cardSource).toMatch(/MAX_INLINE_(CHARS|LINES)/);
+  });
+
+  it("defers building the heavy body strings until the body renders", () => {
+    expect(cardSource).toMatch(/shouldRenderBody/);
   });
 });
 
