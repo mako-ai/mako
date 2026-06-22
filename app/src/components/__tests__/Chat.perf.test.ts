@@ -304,8 +304,22 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/experimental_throttle\s*:\s*\d+/);
   });
 
-  it("uses use-stick-to-bottom for scroll management", () => {
-    expect(chatSource).toContain("useStickToBottom");
+  it("virtualizes the message list with react-virtuoso", () => {
+    // Long chats must NOT mount every message at once (DOM/memory/paint death
+    // on mobile). Virtuoso windows the list so only visible rows + overscan
+    // are mounted. Reverting to `messages.map(...)` over the full array would
+    // reintroduce the lag this guards against.
+    expect(chatSource).toContain('from "react-virtuoso"');
+    expect(chatSource).toMatch(/<Virtuoso\b/);
+    expect(chatSource).toMatch(/data=\{messages\}/);
+    expect(chatSource).toMatch(/computeItemKey=/);
+  });
+
+  it("auto-follows the streaming tail only when at bottom", () => {
+    // followOutput pins to the newest message while streaming, but is disabled
+    // when the user has scrolled up to read history (so they're not yanked
+    // down). This replaces use-stick-to-bottom's equivalent behavior.
+    expect(chatSource).toMatch(/followOutput=\{isAtBottom \? .* : false\}/);
   });
 
   it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
@@ -328,6 +342,29 @@ describe("Chat.tsx structural guards", () => {
     // toolCallId keeps identity stable across reorders/inserts.
     expect(chatSource).toMatch(/key=\{\s*key\s*\}/);
     expect(chatSource).toMatch(/`tool-\$\{toolCallId\}`/);
+  });
+});
+
+describe("StreamingToolCard structural guards", () => {
+  const cardSource = fs.readFileSync(
+    path.resolve(__dirname, "../StreamingToolCard.tsx"),
+    "utf-8",
+  );
+
+  it("unmounts the collapsed body (Collapse unmountOnExit)", () => {
+    // Collapsed tool cards must not keep their syntax-highlighted JSON/code in
+    // the DOM — that's the dominant DOM-node source in long chats on mobile.
+    expect(cardSource).toMatch(/<Collapse[^>]*unmountOnExit/s);
+  });
+
+  it("caps inline output/code size before highlighting", () => {
+    // Never feed a 10k-line JSON blob to the syntax highlighter inline.
+    expect(cardSource).toContain("capForDisplay");
+    expect(cardSource).toMatch(/MAX_INLINE_(CHARS|LINES)/);
+  });
+
+  it("defers building the heavy body strings until the body renders", () => {
+    expect(cardSource).toMatch(/shouldRenderBody/);
   });
 });
 
