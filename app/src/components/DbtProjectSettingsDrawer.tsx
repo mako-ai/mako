@@ -1,0 +1,973 @@
+/**
+ * DbtProjectSettingsDrawer — project + environment settings (dbt Cloud-style
+ * drawer, not a centered modal). View-first; Edit enables full CRUD including
+ * add/remove environments.
+ */
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Box,
+  Button,
+  Chip,
+  Drawer,
+  FormControl,
+  IconButton,
+  InputLabel,
+  Link,
+  MenuItem,
+  Select,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+} from "@mui/material";
+import {
+  ArrowLeft as BackIcon,
+  ChevronRight as ChevronIcon,
+  ExternalLink as ExternalLinkIcon,
+  Pencil as EditIcon,
+  Plus as PlusIcon,
+  Settings as SettingsIcon,
+  Trash2 as TrashIcon,
+  X as CloseIcon,
+} from "lucide-react";
+import {
+  useDbtStore,
+  type DbtEnvironment,
+  type DbtProjectItem,
+} from "../store/dbtStore";
+import type { Connection } from "../store/schemaStore";
+import { dbtVersionLabel, normalizeDbtVersion } from "../lib/dbt-versions";
+import DbtVersionSelect from "./DbtVersionSelect";
+
+const DRAWER_WIDTH = 540;
+
+function connectionLabel(
+  connectionId: string,
+  connections: Connection[],
+): string {
+  const conn = connections.find(c => c.id === connectionId);
+  if (!conn) return "Unknown connection";
+  return `${conn.name} (${conn.type})`;
+}
+
+function envBadge(envName: string, project: DbtProjectItem): string {
+  if (
+    envName === project.defaultEnvironment ||
+    envName === "dev" ||
+    envName === "development"
+  ) {
+    return "DEV";
+  }
+  if (envName === "prod" || envName === "production") return "PROD";
+  return "General";
+}
+
+function formatSha(sha?: string): string {
+  if (!sha) return "—";
+  return sha.length > 8 ? sha.slice(0, 8) : sha;
+}
+
+function defaultNewEnvironment(
+  existing: DbtEnvironment[],
+  connections: Connection[],
+): DbtEnvironment {
+  const n = existing.length + 1;
+  const baseConn = existing[0]?.connectionId ?? connections[0]?.id ?? "";
+  return {
+    name: n === 2 ? "prod" : `env_${n}`,
+    connectionId: baseConn,
+    targetSchema: n === 2 ? "dbt_prod" : `dbt_env_${n}`,
+    threads: 4,
+  };
+}
+
+function SettingsSection({
+  title,
+  children,
+  action,
+}: {
+  title: string;
+  children: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <Box
+      sx={{
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 1,
+        mb: 2,
+        overflow: "hidden",
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          px: 2,
+          py: 1.25,
+          bgcolor: "action.hover",
+          borderBottom: 1,
+          borderColor: "divider",
+        }}
+      >
+        <Typography variant="subtitle2" fontWeight={600}>
+          {title}
+        </Typography>
+        {action}
+      </Box>
+      <Box sx={{ px: 2, py: 1.5 }}>{children}</Box>
+    </Box>
+  );
+}
+
+function ReadOnlyField({
+  label,
+  value,
+  href,
+}: {
+  label: string;
+  value: string;
+  href?: string;
+}) {
+  return (
+    <Box sx={{ mb: 1.5 }}>
+      <Typography variant="caption" color="text.secondary" display="block">
+        {label}
+      </Typography>
+      {href ? (
+        <Link
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          variant="body2"
+        >
+          {value}
+        </Link>
+      ) : (
+        <Typography variant="body2">{value}</Typography>
+      )}
+    </Box>
+  );
+}
+
+interface DbtProjectSettingsDrawerProps {
+  open: boolean;
+  projectId: string | null;
+  workspaceId: string;
+  connections: Connection[];
+  onClose: () => void;
+}
+
+export default function DbtProjectSettingsDrawer({
+  open,
+  projectId,
+  workspaceId,
+  connections,
+  onClose,
+}: DbtProjectSettingsDrawerProps) {
+  const projects = useDbtStore(s => s.projects);
+  const updateProject = useDbtStore(s => s.updateProject);
+
+  const project = useMemo(
+    () => projects.find(p => p._id === projectId) ?? null,
+    [projects, projectId],
+  );
+
+  const [selectedEnvName, setSelectedEnvName] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const [editName, setEditName] = useState("");
+  const [editDbtVersion, setEditDbtVersion] = useState("");
+  const [editDefaultEnv, setEditDefaultEnv] = useState("");
+  const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
+  // Per-environment variable rows, parallel to editEnvs (same index). Kept as
+  // an ordered array (not a record) so typing keys never reorders or collides.
+  const [editVarRows, setEditVarRows] = useState<
+    Array<Array<{ key: string; value: string }>>
+  >([]);
+
+  const resetFromProject = useCallback((p: DbtProjectItem) => {
+    setEditName(p.name);
+    setEditDbtVersion(normalizeDbtVersion(p.dbtVersion));
+    setEditDefaultEnv(p.defaultEnvironment);
+    setEditEnvs(p.environments.map(env => ({ ...env })));
+    setEditVarRows(
+      p.environments.map(env =>
+        Object.entries(env.vars ?? {}).map(([key, value]) => ({
+          key,
+          value: typeof value === "string" ? value : JSON.stringify(value),
+        })),
+      ),
+    );
+    setSaveError(null);
+  }, []);
+
+  useEffect(() => {
+    if (!open || !projectId) return;
+    setSelectedEnvName(null);
+    setIsEditing(false);
+    setSaveError(null);
+  }, [open, projectId]);
+
+  useEffect(() => {
+    if (!open || !project) return;
+    if (!isEditing) resetFromProject(project);
+  }, [open, project, isEditing, resetFromProject]);
+
+  const handleClose = useCallback(() => {
+    setIsEditing(false);
+    setSelectedEnvName(null);
+    setSaveError(null);
+    onClose();
+  }, [onClose]);
+
+  const handleCancelEdit = useCallback(() => {
+    if (project) resetFromProject(project);
+    setIsEditing(false);
+    setSaveError(null);
+  }, [project, resetFromProject]);
+
+  const isRepoBound = project?.repo != null;
+  const selectedEnv = useMemo(
+    () =>
+      selectedEnvName
+        ? (project?.environments.find(e => e.name === selectedEnvName) ?? null)
+        : null,
+    [project, selectedEnvName],
+  );
+  const selectedEnvIndex = useMemo(
+    () =>
+      selectedEnvName
+        ? editEnvs.findIndex(e => e.name === selectedEnvName)
+        : -1,
+    [editEnvs, selectedEnvName],
+  );
+
+  const updateEditEnv = useCallback(
+    (index: number, patch: Partial<DbtEnvironment>) => {
+      setEditEnvs(prev =>
+        prev.map((env, i) => (i === index ? { ...env, ...patch } : env)),
+      );
+    },
+    [],
+  );
+
+  const handleAddEnvironment = useCallback(() => {
+    const draft = defaultNewEnvironment(editEnvs, connections);
+    setEditEnvs(prev => [...prev, draft]);
+    setEditVarRows(prev => [...prev, []]);
+    setSelectedEnvName(draft.name);
+    setIsEditing(true);
+    if (!editDefaultEnv && editEnvs.length === 0) {
+      setEditDefaultEnv(draft.name);
+    }
+  }, [editEnvs, connections, editDefaultEnv]);
+
+  const handleRemoveEnvironment = useCallback(
+    (index: number) => {
+      if (editEnvs.length <= 1) return;
+      const removed = editEnvs[index];
+      const next = editEnvs.filter((_, i) => i !== index);
+      setEditEnvs(next);
+      setEditVarRows(prev => prev.filter((_, i) => i !== index));
+      if (editDefaultEnv === removed.name) {
+        setEditDefaultEnv(next[0]?.name ?? "");
+      }
+      if (selectedEnvName === removed.name) {
+        setSelectedEnvName(null);
+      }
+    },
+    [editEnvs, editDefaultEnv, selectedEnvName],
+  );
+
+  const addVarRow = useCallback((envIndex: number) => {
+    setEditVarRows(prev =>
+      prev.map((rows, i) =>
+        i === envIndex ? [...rows, { key: "", value: "" }] : rows,
+      ),
+    );
+  }, []);
+
+  const updateVarRow = useCallback(
+    (
+      envIndex: number,
+      rowIndex: number,
+      patch: Partial<{ key: string; value: string }>,
+    ) => {
+      setEditVarRows(prev =>
+        prev.map((rows, i) =>
+          i === envIndex
+            ? rows.map((row, r) =>
+                r === rowIndex ? { ...row, ...patch } : row,
+              )
+            : rows,
+        ),
+      );
+    },
+    [],
+  );
+
+  const removeVarRow = useCallback((envIndex: number, rowIndex: number) => {
+    setEditVarRows(prev =>
+      prev.map((rows, i) =>
+        i === envIndex ? rows.filter((_, r) => r !== rowIndex) : rows,
+      ),
+    );
+  }, []);
+
+  const validateBeforeSave = useCallback((): string | null => {
+    if (!editName.trim()) return "Project name is required.";
+    const names = editEnvs.map(e => e.name.trim());
+    if (names.some(n => !n)) return "Every environment needs a name.";
+    const unique = new Set(names);
+    if (unique.size !== names.length) {
+      return "Environment names must be unique.";
+    }
+    if (!editEnvs.some(e => e.name.trim() === editDefaultEnv)) {
+      return "Default environment must match one of the environment names.";
+    }
+    for (const env of editEnvs) {
+      if (!env.connectionId) return `Connection is required for "${env.name}".`;
+      if (!env.targetSchema.trim()) {
+        return `Target schema is required for "${env.name}".`;
+      }
+    }
+    if (connections.length === 0) {
+      return "Add a database connection before saving environments.";
+    }
+    return null;
+  }, [editName, editEnvs, editDefaultEnv, connections.length]);
+
+  const handleSave = useCallback(async () => {
+    if (!workspaceId || !projectId) return;
+    const validationError = validateBeforeSave();
+    if (validationError) {
+      setSaveError(validationError);
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    const normalizedEnvs = editEnvs.map((env, index) => {
+      const vars: Record<string, string> = {};
+      for (const row of editVarRows[index] ?? []) {
+        const key = row.key.trim();
+        if (key) vars[key] = row.value;
+      }
+      return {
+        ...env,
+        name: env.name.trim(),
+        targetSchema: env.targetSchema.trim(),
+        threads: Number(env.threads) || 1,
+        vars,
+      };
+    });
+    const updated = await updateProject(workspaceId, projectId, {
+      name: editName.trim(),
+      environments: normalizedEnvs,
+      defaultEnvironment: editDefaultEnv,
+      dbtVersion: editDbtVersion,
+    });
+    setSaving(false);
+    if (updated) {
+      resetFromProject(updated);
+      setIsEditing(false);
+      if (
+        selectedEnvName &&
+        !updated.environments.some(e => e.name === selectedEnvName)
+      ) {
+        setSelectedEnvName(null);
+      }
+    } else {
+      setSaveError("Failed to save project. Check your connection settings.");
+    }
+  }, [
+    workspaceId,
+    projectId,
+    validateBeforeSave,
+    editEnvs,
+    editVarRows,
+    editName,
+    editDefaultEnv,
+    editDbtVersion,
+    updateProject,
+    resetFromProject,
+    selectedEnvName,
+  ]);
+
+  const devConnectionName = project
+    ? connectionLabel(
+        project.environments.find(e => e.name === project.defaultEnvironment)
+          ?.connectionId ??
+          project.environments[0]?.connectionId ??
+          "",
+        connections,
+      )
+    : "—";
+
+  const repoUrl = project?.repo
+    ? `https://github.com/${project.repo.owner}/${project.repo.repo}`
+    : undefined;
+
+  const headerTitle = selectedEnvName ? selectedEnvName : "Project settings";
+
+  const showOverviewEditButton =
+    Boolean(project) && !isEditing && !selectedEnvName;
+
+  const renderEnvironmentEditor = (index: number, compact?: boolean) => {
+    const env = editEnvs[index];
+    if (!env) return null;
+    return (
+      <Box
+        key={`${index}-${env.name}`}
+        sx={{
+          mb: compact ? 0 : 2,
+          p: compact ? 0 : 1.5,
+          border: compact ? 0 : 1,
+          borderColor: "divider",
+          borderRadius: 1,
+        }}
+      >
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            mb: 1.5,
+          }}
+        >
+          <Typography variant="subtitle2" fontWeight={600}>
+            {compact ? "Environment" : env.name || "New environment"}
+          </Typography>
+          {editEnvs.length > 1 && (
+            <IconButton
+              size="small"
+              aria-label="Remove environment"
+              onClick={() => handleRemoveEnvironment(index)}
+            >
+              <TrashIcon size={16} />
+            </IconButton>
+          )}
+        </Box>
+        <TextField
+          fullWidth
+          size="small"
+          label="Environment name"
+          value={env.name}
+          onChange={e => {
+            const nextName = e.target.value;
+            const prevName = env.name;
+            updateEditEnv(index, { name: nextName });
+            if (editDefaultEnv === prevName) setEditDefaultEnv(nextName);
+            if (selectedEnvName === prevName) setSelectedEnvName(nextName);
+          }}
+          sx={{ mb: 1.5 }}
+        />
+        <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+          <InputLabel id={`dbt-settings-conn-${index}`}>Connection</InputLabel>
+          <Select
+            labelId={`dbt-settings-conn-${index}`}
+            label="Connection"
+            value={env.connectionId}
+            onChange={e =>
+              updateEditEnv(index, { connectionId: e.target.value })
+            }
+          >
+            {connections.map(conn => (
+              <MenuItem key={conn.id} value={conn.id}>
+                {conn.name} ({conn.type})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <TextField
+          fullWidth
+          size="small"
+          label="Target schema"
+          value={env.targetSchema}
+          onChange={e => updateEditEnv(index, { targetSchema: e.target.value })}
+          sx={{ mb: 1.5 }}
+        />
+        <TextField
+          fullWidth
+          size="small"
+          type="number"
+          label="Threads"
+          value={env.threads}
+          onChange={e =>
+            updateEditEnv(index, { threads: Number(e.target.value) })
+          }
+          inputProps={{ min: 1, max: 32 }}
+          sx={{ mb: 1.5 }}
+        />
+
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", mb: 0.5, fontWeight: 600 }}
+        >
+          Variables
+        </Typography>
+        {(editVarRows[index] ?? []).map((row, rowIndex) => (
+          <Box
+            key={rowIndex}
+            sx={{ display: "flex", gap: 1, mb: 1, alignItems: "center" }}
+          >
+            <TextField
+              size="small"
+              label="Key"
+              value={row.key}
+              onChange={e =>
+                updateVarRow(index, rowIndex, { key: e.target.value })
+              }
+              sx={{ flex: 1 }}
+            />
+            <TextField
+              size="small"
+              label="Value"
+              value={row.value}
+              onChange={e =>
+                updateVarRow(index, rowIndex, { value: e.target.value })
+              }
+              sx={{ flex: 1 }}
+            />
+            <IconButton
+              size="small"
+              aria-label="Remove variable"
+              onClick={() => removeVarRow(index, rowIndex)}
+            >
+              <TrashIcon size={14} />
+            </IconButton>
+          </Box>
+        ))}
+        <Button
+          size="small"
+          startIcon={<PlusIcon size={14} />}
+          onClick={() => addVarRow(index)}
+        >
+          Add variable
+        </Button>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", mt: 0.5 }}
+        >
+          Passed to every dbt command as <code>--vars</code>; read in models via{" "}
+          <code>{"{{ var('key') }}"}</code>.
+        </Typography>
+      </Box>
+    );
+  };
+
+  return (
+    <Drawer
+      anchor="right"
+      open={open && Boolean(projectId)}
+      onClose={handleClose}
+      sx={{ zIndex: theme => theme.zIndex.modal }}
+      PaperProps={{
+        sx: {
+          width: { xs: "100%", sm: DRAWER_WIDTH },
+          maxWidth: "100vw",
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: theme => theme.shadows[16],
+        },
+      }}
+    >
+      <Box
+        sx={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 1,
+          px: 2,
+          py: 1.5,
+          borderBottom: 1,
+          borderColor: "divider",
+          flexShrink: 0,
+          bgcolor: "background.paper",
+        }}
+      >
+        <Box
+          sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}
+        >
+          {selectedEnvName ? (
+            <IconButton
+              size="small"
+              aria-label="Back to project"
+              onClick={() => {
+                setSelectedEnvName(null);
+                setIsEditing(false);
+                if (project) resetFromProject(project);
+              }}
+            >
+              <BackIcon size={18} />
+            </IconButton>
+          ) : (
+            <SettingsIcon size={18} strokeWidth={1.75} />
+          )}
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle1" fontWeight={600} noWrap>
+              {headerTitle}
+            </Typography>
+            {project && !selectedEnvName && (
+              <Typography variant="caption" color="text.secondary" noWrap>
+                {project.name}
+                {project.repo
+                  ? ` · ${project.repo.branch} · ${project.repo.owner}/${project.repo.repo}`
+                  : ""}
+              </Typography>
+            )}
+            {project && selectedEnvName && (
+              <Chip
+                size="small"
+                label={envBadge(selectedEnvName, project)}
+                sx={{ mt: 0.25, height: 20, fontSize: "0.65rem" }}
+              />
+            )}
+          </Box>
+        </Box>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          {showOverviewEditButton && (
+            <Button
+              size="small"
+              startIcon={<EditIcon size={14} />}
+              onClick={() => setIsEditing(true)}
+            >
+              Edit
+            </Button>
+          )}
+          <IconButton size="small" aria-label="Close" onClick={handleClose}>
+            <CloseIcon size={18} />
+          </IconButton>
+        </Box>
+      </Box>
+
+      <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 2 }}>
+        {!project ? (
+          <Typography variant="body2" color="text.secondary">
+            Loading project…
+          </Typography>
+        ) : selectedEnvName && selectedEnv ? (
+          isEditing && selectedEnvIndex >= 0 ? (
+            renderEnvironmentEditor(selectedEnvIndex, true)
+          ) : (
+            <>
+              <ReadOnlyField
+                label="Environment type"
+                value={
+                  envBadge(selectedEnvName, project) === "DEV"
+                    ? "Development"
+                    : "Deployment"
+                }
+              />
+              <ReadOnlyField
+                label="dbt version"
+                value={dbtVersionLabel(project.dbtVersion)}
+              />
+              <ReadOnlyField
+                label="Connection"
+                value={connectionLabel(selectedEnv.connectionId, connections)}
+              />
+              <ReadOnlyField
+                label="Target schema"
+                value={selectedEnv.targetSchema}
+              />
+              <ReadOnlyField
+                label="Threads"
+                value={String(selectedEnv.threads)}
+              />
+              <Box sx={{ mb: 1.5 }}>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  display="block"
+                >
+                  Variables
+                </Typography>
+                {Object.entries(selectedEnv.vars ?? {}).length === 0 ? (
+                  <Typography variant="body2">—</Typography>
+                ) : (
+                  Object.entries(selectedEnv.vars ?? {}).map(([key, value]) => (
+                    <Typography
+                      key={key}
+                      variant="body2"
+                      sx={{ fontFamily: "monospace", fontSize: "0.78rem" }}
+                    >
+                      {key} ={" "}
+                      {typeof value === "string"
+                        ? value
+                        : JSON.stringify(value)}
+                    </Typography>
+                  ))
+                )}
+              </Box>
+            </>
+          )
+        ) : isEditing ? (
+          <>
+            <SettingsSection title="Overview">
+              <TextField
+                autoFocus
+                fullWidth
+                size="small"
+                label="Project name"
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                sx={{ mb: 1.5 }}
+              />
+              <Box sx={{ mb: 1.5 }}>
+                <DbtVersionSelect
+                  value={editDbtVersion}
+                  onChange={setEditDbtVersion}
+                  labelId="dbt-settings-version"
+                />
+              </Box>
+              <FormControl fullWidth size="small">
+                <InputLabel id="dbt-settings-default-env">
+                  Default environment
+                </InputLabel>
+                <Select
+                  labelId="dbt-settings-default-env"
+                  label="Default environment"
+                  value={editDefaultEnv}
+                  onChange={e => setEditDefaultEnv(e.target.value)}
+                >
+                  {editEnvs.map(env => (
+                    <MenuItem key={env.name} value={env.name}>
+                      {env.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </SettingsSection>
+
+            <SettingsSection
+              title="Environments"
+              action={
+                <Button
+                  size="small"
+                  startIcon={<PlusIcon size={14} />}
+                  onClick={handleAddEnvironment}
+                >
+                  Add
+                </Button>
+              }
+            >
+              {connections.length === 0 && (
+                <Typography variant="caption" color="error" display="block">
+                  No dbt-compatible connections. Add a Postgres, BigQuery, or
+                  other supported connection in Databases first.
+                </Typography>
+              )}
+              {editEnvs.map((_, index) => renderEnvironmentEditor(index))}
+            </SettingsSection>
+          </>
+        ) : (
+          <>
+            <SettingsSection title="Overview">
+              <ReadOnlyField label="Project name" value={project.name} />
+              <ReadOnlyField
+                label="Project subdirectory"
+                value={project.repo?.subdirectory?.trim() || "—"}
+              />
+              {project.repo ? (
+                <ReadOnlyField
+                  label="Repository"
+                  value={`${project.repo.owner}/${project.repo.repo}`}
+                  href={repoUrl}
+                />
+              ) : (
+                <ReadOnlyField label="Repository" value="Not connected" />
+              )}
+              <ReadOnlyField
+                label="Development connection"
+                value={devConnectionName}
+              />
+              <ReadOnlyField
+                label="Default environment"
+                value={project.defaultEnvironment}
+              />
+              <ReadOnlyField
+                label="dbt version"
+                value={dbtVersionLabel(project.dbtVersion)}
+              />
+            </SettingsSection>
+
+            <SettingsSection
+              title="Environments"
+              action={
+                <Button
+                  size="small"
+                  startIcon={<PlusIcon size={14} />}
+                  onClick={() => {
+                    setIsEditing(true);
+                    handleAddEnvironment();
+                  }}
+                >
+                  Add environment
+                </Button>
+              }
+            >
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Environment</TableCell>
+                    <TableCell>Connection</TableCell>
+                    <TableCell>Schema</TableCell>
+                    <TableCell width={32} />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {project.environments.map(env => (
+                    <TableRow
+                      key={env.name}
+                      hover
+                      sx={{ cursor: "pointer" }}
+                      onClick={() => setSelectedEnvName(env.name)}
+                    >
+                      <TableCell>
+                        <Box
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 0.75,
+                          }}
+                        >
+                          {env.name}
+                          {env.name === project.defaultEnvironment && (
+                            <Chip
+                              size="small"
+                              label="default"
+                              sx={{ height: 18, fontSize: "0.6rem" }}
+                            />
+                          )}
+                          <Chip
+                            size="small"
+                            label={envBadge(env.name, project)}
+                            sx={{ height: 18, fontSize: "0.6rem" }}
+                          />
+                        </Box>
+                      </TableCell>
+                      <TableCell sx={{ fontSize: "0.8rem" }}>
+                        {connectionLabel(env.connectionId, connections)}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: "0.8rem" }}>
+                        {env.targetSchema}
+                      </TableCell>
+                      <TableCell>
+                        <ChevronIcon size={16} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ mt: 1, display: "block" }}
+              >
+                Click a row for details, or use Add environment / Edit to create
+                prod, staging, or personal dev schemas.
+              </Typography>
+            </SettingsSection>
+
+            {isRepoBound && project.repo && (
+              <SettingsSection title="Git">
+                <ReadOnlyField label="Branch" value={project.repo.branch} />
+                <ReadOnlyField
+                  label="Last synced"
+                  value={
+                    project.repo.lastSyncedSha
+                      ? `${formatSha(project.repo.lastSyncedSha)}${
+                          project.repo.lastSyncedAt
+                            ? ` · ${new Date(
+                                project.repo.lastSyncedAt,
+                              ).toLocaleString()}`
+                            : ""
+                        }`
+                      : "—"
+                  }
+                />
+                <Link
+                  href={repoUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="body2"
+                  sx={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                  }}
+                >
+                  Open on GitHub
+                  <ExternalLinkIcon size={14} />
+                </Link>
+              </SettingsSection>
+            )}
+          </>
+        )}
+
+        {saveError && (
+          <Typography variant="caption" color="error" sx={{ mt: 1 }}>
+            {saveError}
+          </Typography>
+        )}
+      </Box>
+
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 1,
+          px: 2,
+          py: 1.5,
+          borderTop: 1,
+          borderColor: "divider",
+          flexShrink: 0,
+          bgcolor: "background.paper",
+        }}
+      >
+        {isEditing ? (
+          <>
+            <Button size="small" onClick={handleCancelEdit} disabled={saving}>
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              onClick={handleSave}
+              disabled={saving || !editName.trim()}
+            >
+              {saving ? "Saving…" : "Save changes"}
+            </Button>
+          </>
+        ) : selectedEnvName ? (
+          <Button
+            size="small"
+            startIcon={<EditIcon size={14} />}
+            onClick={() => setIsEditing(true)}
+          >
+            Edit environment
+          </Button>
+        ) : (
+          <Typography variant="caption" color="text.secondary">
+            Edit to change project or add environments
+          </Typography>
+        )}
+      </Box>
+    </Drawer>
+  );
+}

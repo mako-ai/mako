@@ -18,6 +18,7 @@ import {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
+import { appBindingMaterializeFunction } from "./functions/app-binding-materialize";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { usageReportingFunction } from "./functions/usage-reporting";
 import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
@@ -29,6 +30,12 @@ import {
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
 } from "./functions/flow-run-notifications";
+import {
+  dbtRunExecutorFunction,
+  dbtRunCancelFunction,
+  dbtSchedulerFunction,
+  dbtRunSweeperFunction,
+} from "./functions/dbt-run";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -39,11 +46,15 @@ const baseFunctions = [
   syncBackfillEntityFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  appBindingMaterializeFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
+  dbtRunExecutorFunction,
+  dbtRunCancelFunction,
+  dbtRunSweeperFunction,
 ];
 
 const allWebhookFunctions = [
@@ -79,6 +90,7 @@ export function getFunctions() {
         flowSchedulerFunction,
         dashboardSchedulerFunction,
         scheduledQuerySchedulerFunction,
+        dbtSchedulerFunction,
       ];
 
   return _functions;
@@ -126,8 +138,13 @@ export {
   dashboardRefreshFunction,
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
+  appBindingMaterializeFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,
   scheduledQuerySchedulerFunction,
+  dbtRunExecutorFunction,
+  dbtRunCancelFunction,
+  dbtSchedulerFunction,
+  dbtRunSweeperFunction,
 };

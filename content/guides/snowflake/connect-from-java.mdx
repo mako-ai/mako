@@ -1,0 +1,160 @@
+---
+title: "How to Connect to Snowflake from Java"
+description: "Connect to Snowflake from Java with the snowflake-jdbc driver: JDBC setup, the account identifier format trap, key-pair authentication after the 2025 password block, named binds, and the errors you actually hit."
+database: "snowflake"
+category: "how-to"
+tags: ["snowflake", "java", "jdbc", "snowflake-jdbc", "key-pair-auth", "connection"]
+date: "2026-06-17"
+---
+
+Java connects to Snowflake through JDBC, and there is exactly one official driver: `net.snowflake:snowflake-jdbc`. Unlike PostgreSQL or MySQL, where you choose between several mature drivers, here the decision is made for you. This guide covers the Maven setup, the account-identifier format that trips up almost everyone, key-pair authentication (which you now need rather than a password), parameter binding, and reading results efficiently.
+
+## The driver and its Maven coordinates
+
+```xml
+<dependency>
+  <groupId>net.snowflake</groupId>
+  <artifactId>snowflake-jdbc</artifactId>
+  <version>4.3.1</version>
+</dependency>
+```
+
+Gradle:
+
+```groovy
+implementation 'net.snowflake:snowflake-jdbc:4.3.1'
+```
+
+The driver is a JDBC Type 4 (pure Java) driver and requires Java 8 or higher (as of June 2026). It self-registers, so you do not need `Class.forName("net.snowflake.client.jdbc.SnowflakeDriver")`. The JAR is large because it bundles its dependencies (Apache Arrow for result fetching, an HTTP client, JSON libraries); that is expected. There is also a thin `snowflake-jdbc-thin` artifact if you want to manage those transitive dependencies yourself, but the fat JAR is the safe default.
+
+## The account identifier trap
+
+The single most common reason a first connection fails is the JDBC URL. Snowflake has no host/port in the traditional sense. The URL is built from your account identifier:
+
+```
+jdbc:snowflake://<account_identifier>.snowflakecomputing.com
+```
+
+The preferred account identifier format is `organization-account` (for example `myorg-myaccount`), using a hyphen. The older format is the account locator plus its region and cloud (for example `xy12345.eu-central-1`). The two are not interchangeable in how they are written, and copying the locator out of a URL bar without the region is a classic mistake. You can find both forms in the Snowsight UI under your account details.
+
+A minimal connection:
+
+```java
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.util.Properties;
+
+public class Example {
+    public static void main(String[] args) throws Exception {
+        String url = "jdbc:snowflake://myorg-myaccount.snowflakecomputing.com";
+
+        Properties props = new Properties();
+        props.put("user", "APP_USER");
+        props.put("warehouse", "COMPUTE_WH");
+        props.put("db", "ANALYTICS");
+        props.put("schema", "PUBLIC");
+        props.put("role", "REPORTING");
+        // authentication added below
+
+        try (Connection conn = DriverManager.getConnection(url, props)) {
+            // use the connection
+        }
+    }
+}
+```
+
+`warehouse`, `db`, `schema`, and `role` can be set here or with `USE` statements after connecting, but setting them in the properties avoids a class of "no active warehouse" and "object does not exist" errors that are really just missing session context.
+
+## Authentication: password is no longer enough
+
+As of November 2025, Snowflake blocks sign-in with single-factor password authentication for most account types. If you are writing new code, do not plan around `props.put("password", ...)` alone. The replacement for programmatic access is key-pair authentication.
+
+Generate an encrypted PKCS#8 private key and register the public key on the user:
+
+```bash
+# private key (encrypted)
+openssl genrsa 2048 | openssl pkcs8 -topk8 -v2 aes-256-cbc -inform PEM -out rsa_key.p8
+# public key
+openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+```
+
+Then in Snowflake (strip the PEM header/footer and newlines from `rsa_key.pub`):
+
+```sql
+ALTER USER APP_USER SET RSA_PUBLIC_KEY='MIIBIjANBgkqh...';
+```
+
+In Java, point the driver at the key file:
+
+```java
+props.put("authenticator", "SNOWFLAKE_JWT");
+props.put("private_key_file", "/secure/path/rsa_key.p8");
+props.put("private_key_file_pwd", "the-passphrase-you-set"); // omit if unencrypted
+```
+
+If the private key was generated with an algorithm the bundled BouncyCastle build does not accept, you will see `Private key provided is invalid or not supported`. The `-v2 aes-256-cbc` form above is known-good. For interactive use rather than a service account, `props.put("authenticator", "externalbrowser")` opens your SSO/MFA flow in a browser instead.
+
+## Binding parameters
+
+Use `PreparedStatement` with positional `?` placeholders. The driver does not support named parameters in the JDBC sense.
+
+```java
+String sql = "SELECT id, email FROM users WHERE created_at > ? AND region = ?";
+try (java.sql.PreparedStatement ps = conn.prepareStatement(sql)) {
+    ps.setTimestamp(1, java.sql.Timestamp.valueOf("2026-01-01 00:00:00"));
+    ps.setString(2, "EU");
+    try (java.sql.ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+            System.out.println(rs.getLong("ID") + " " + rs.getString("EMAIL"));
+        }
+    }
+}
+```
+
+Note the uppercase column names. Snowflake folds unquoted identifiers to uppercase, so a column you created as `email` comes back as `EMAIL`. `rs.getString("email")` may still work because the driver is case-insensitive on lookup, but if you read into a map keyed by the exact column label, expect uppercase keys. This surprises people coming from PostgreSQL, which folds to lowercase.
+
+## Reading large result sets
+
+Snowflake returns large results in Arrow format and the driver streams them in chunks, so you do not need to set a fetch size for memory reasons the way you would with PostgreSQL. Just iterate the `ResultSet`. If you are pulling millions of rows for an export, consider `COPY INTO` to stage files instead of a row-by-row JDBC read, which is faster and cheaper on warehouse credits.
+
+## Connection pooling
+
+Connecting to Snowflake involves authentication round-trips and warehouse resume, so you do not want to open a connection per query. Snowflake's own guidance is to reuse connections, and a pool like HikariCP works well:
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+
+HikariConfig config = new HikariConfig();
+config.setJdbcUrl("jdbc:snowflake://myorg-myaccount.snowflakecomputing.com");
+config.addDataSourceProperty("user", "APP_USER");
+config.addDataSourceProperty("warehouse", "COMPUTE_WH");
+config.addDataSourceProperty("authenticator", "SNOWFLAKE_JWT");
+config.addDataSourceProperty("private_key_file", "/secure/path/rsa_key.p8");
+config.setMaximumPoolSize(8);
+
+try (HikariDataSource ds = new HikariDataSource(config)) {
+    try (Connection conn = ds.getConnection()) {
+        // ...
+    }
+}
+```
+
+Keep the pool small. Snowflake's concurrency model is about warehouse size and query queuing, not raw connection count, so a large pool buys you nothing and can leave idle sessions consuming resources. Combine it with `CLIENT_SESSION_KEEP_ALIVE` (set as a property) only if you genuinely need long-lived sessions; otherwise let idle sessions expire.
+
+## Common errors
+
+| Error | Cause |
+|-------|-------|
+| `Incorrect username or password was specified` after Nov 2025 | Password auth is blocked; switch to key-pair (`SNOWFLAKE_JWT`) |
+| `JWT token is invalid` | Public key not registered on the user, or system clock skew |
+| `Private key provided is invalid or not supported` | Key not in PKCS#8 form, or unsupported encryption algorithm |
+| `No active warehouse selected in the current session` | `warehouse` not set in properties or via `USE WAREHOUSE` |
+| `Object does not exist or not authorized` | Missing `db`/`schema`/`role` context, or the role lacks grants |
+| `Could not resolve host` | Wrong account identifier format (locator vs org-account) |
+
+## Where Mako fits
+
+Once your Java service is querying Snowflake, you often want to explore the data by hand to write or debug those queries. Mako connects to Snowflake with AI-powered autocomplete so you can iterate on a query interactively before pasting it into your code. It is a read/query tool, not a replacement for your application driver or for warehouse administration. For loading data, see our [import CSV to Snowflake](/guides/import-csv-to-snowflake) guide.
+
+Mako connects to Snowflake, PostgreSQL, BigQuery, and more with AI-powered autocomplete. Try it free at mako.ai.

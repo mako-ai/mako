@@ -1,0 +1,190 @@
+---
+title: "How to Connect to BigQuery from Node.js"
+description: "Connect to BigQuery from Node.js with @google-cloud/bigquery. Working code for ADC and service-account auth, queries, named and positional parameters, DataFrame-free result handling, and cost controls."
+database: "bigquery"
+category: "how-to"
+tags: ["bigquery", "nodejs", "google-cloud-bigquery", "connection"]
+date: "2026-06-15"
+---
+
+Connecting to BigQuery from Node.js is unlike connecting to PostgreSQL or MySQL: there is no host, port, or connection string. BigQuery is an API, so "connecting" means authenticating with Google Cloud credentials and pointing a client at a project. The auth setup is the real work; the query code is a few lines.
+
+There is one client that matters: `@google-cloud/bigquery`, maintained by Google. Current version is 8.3.1 (as of June 2026). It requires Node.js 18 or later.
+
+```bash
+npm install @google-cloud/bigquery
+```
+
+## Step 0: authentication
+
+The client uses Application Default Credentials (ADC), the same resolution every Google Cloud library uses. It looks for credentials in this order:
+
+1. The `GOOGLE_APPLICATION_CREDENTIALS` environment variable pointing at a service-account JSON key file.
+2. Credentials from `gcloud auth application-default login` (local development).
+3. The service account attached to the runtime (Cloud Run, GCE, GKE, Cloud Functions) when running inside Google Cloud.
+
+For local development, the cleanest path is a service-account key referenced by environment variable:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/key.json"
+```
+
+Treat that JSON file like a password: keep it out of git, rotate it, and prefer workload identity federation over long-lived keys where your platform supports it. Inside Google Cloud, do not ship a key file at all -- attach a service account to the workload and ADC picks it up automatically.
+
+You can also pass a key file path directly to the constructor, which is occasionally useful in scripts but should not be your default:
+
+```js
+const bigquery = new BigQuery({
+  projectId: "your-project-id",
+  keyFilename: "/path/to/key.json",
+});
+```
+
+## Connecting and querying
+
+```js
+import { BigQuery } from "@google-cloud/bigquery";
+
+const bigquery = new BigQuery({ projectId: "your-project-id" });
+// projectId is optional if ADC carries a default project
+
+async function main() {
+  const [rows] = await bigquery.query({
+    query: `
+      SELECT name, SUM(number) AS total
+      FROM \`bigquery-public-data.usa_names.usa_1910_2013\`
+      WHERE state = 'TX'
+      GROUP BY name
+      ORDER BY total DESC
+      LIMIT 10
+    `,
+  });
+
+  for (const row of rows) {
+    console.log(row.name, row.total);
+  }
+}
+
+main();
+```
+
+`query()` submits the job, waits for it to finish, and returns the rows in a single array destructured as `[rows]` (the method resolves to an array whose first element is the rows). Each row is a plain object keyed by column name.
+
+The `projectId` you give the client is the *billing* project -- where the query job runs and where the cost lands. The project in the table reference is where the *data* lives. That split is how you can query `bigquery-public-data` tables while the bill goes to your own project.
+
+### query() vs createQueryJob()
+
+`query()` is the right default: it runs the job and returns rows. When you need the job object itself -- to read its ID, poll statistics, or fire a long-running query without blocking -- use `createQueryJob()`:
+
+```js
+const [job] = await bigquery.createQueryJob({ query: sql });
+console.log("Job ID:", job.id);
+const [rows] = await job.getQueryResults();
+```
+
+## Query parameters
+
+Never build SQL with template literals around user input. BigQuery supports both named and positional parameters.
+
+Named parameters use `@name` in the SQL and a `params` object:
+
+```js
+const [rows] = await bigquery.query({
+  query: `
+    SELECT name
+    FROM \`bigquery-public-data.usa_names.usa_1910_2013\`
+    WHERE state = @state AND number > @minTotal
+  `,
+  params: { state: "TX", minTotal: 1000 },
+});
+```
+
+Positional parameters use `?` and a `params` array:
+
+```js
+const [rows] = await bigquery.query({
+  query: "SELECT name FROM `...` WHERE state = ? AND number > ?",
+  params: ["TX", 1000],
+});
+```
+
+The client infers BigQuery types from JavaScript values, which is usually right. When it cannot -- the most common case is a `NULL` value, where there is nothing to infer from -- pass an explicit `types` map:
+
+```js
+const [rows] = await bigquery.query({
+  query: "SELECT * FROM dataset.events WHERE country = @country",
+  params: { country: null },
+  types: { country: "STRING" },
+});
+```
+
+## Location
+
+BigQuery jobs run in the location (region or multi-region) of the data they touch. If your dataset lives in `EU` or `asia-northeast1` rather than the default `US`, a query that omits the location fails with a `Not found: Dataset` error that looks like a permissions problem but is not. Set it explicitly:
+
+```js
+const [rows] = await bigquery.query({
+  query: sql,
+  location: "EU",
+});
+```
+
+This is the single most common source of confusion when moving code between projects in different regions.
+
+## Cost controls
+
+You pay per byte scanned on on-demand pricing, and a careless `SELECT *` over a large table costs real money. Two mechanisms are worth wiring in from the start.
+
+A dry run reports the bytes a query would scan without running it:
+
+```js
+const [job] = await bigquery.createQueryJob({
+  query: sql,
+  dryRun: true,
+});
+const bytes = Number(job.metadata.statistics.totalBytesProcessed);
+console.log(`Would process ${(bytes / 1e9).toFixed(2)} GB`);
+```
+
+A maximum-bytes-billed cap aborts the query if it would scan more than the limit, which protects you from a runaway `JOIN`:
+
+```js
+const [rows] = await bigquery.query({
+  query: sql,
+  maximumBytesBilled: "1000000000", // 1 GB, as a string
+});
+```
+
+## Streaming large result sets
+
+`query()` buffers the entire result set into memory. For results too large to hold at once, use the streaming interface, which pages under the hood and emits rows as they arrive:
+
+```js
+bigquery
+  .createQueryStream({ query: sql })
+  .on("data", (row) => {
+    /* handle one row */
+  })
+  .on("end", () => console.log("done"))
+  .on("error", console.error);
+```
+
+For genuinely large extractions, the BigQuery Storage Read API (a separate gRPC client, `@google-cloud/bigquery-storage`) downloads results over parallel streams and is substantially faster, at the cost of more setup.
+
+## Error reference
+
+| Error | Cause | Fix |
+|---|---|---|
+| `Could not load the default credentials` | ADC found nothing | Set `GOOGLE_APPLICATION_CREDENTIALS` or run `gcloud auth application-default login` |
+| `Not found: Dataset ...` on a dataset that exists | Job ran in the wrong location | Pass `location` matching the dataset's region |
+| `Access Denied: ... bigquery.jobs.create` | Service account lacks job-creation rights | Grant **BigQuery Job User** on the billing project |
+| `Query exceeded limit for bytes billed` | `maximumBytesBilled` cap hit | Narrow the query or raise the cap deliberately |
+| `Syntax error: Unexpected ...` | Legacy SQL assumed | BigQuery defaults to Standard SQL; check backtick table refs |
+
+## Verifying your data
+
+Once connected, you usually want to browse what is in the warehouse. The BigQuery console works; a desktop client is faster for jumping between projects and datasets. We compared the options in [Best BigQuery GUI Clients](/guides/bigquery-gui-client). For loading data, see [Import CSV to BigQuery](/guides/import-csv-to-bigquery) and [Import JSON to BigQuery](/guides/import-json-to-bigquery).
+
+---
+
+Mako connects to BigQuery (and 8 other databases) with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

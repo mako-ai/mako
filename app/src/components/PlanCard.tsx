@@ -1,230 +1,163 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect } from "react";
 import {
   Box,
   Button,
   Chip,
-  Divider,
+  CircularProgress,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import { ClipboardList } from "lucide-react";
-import type {
-  PlanDecision,
-  PlanTodo,
-  SubmitPlanInput,
-  SubmitPlanOutput,
-} from "@mako/agent-tools";
+import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
+import {
+  DECISION_COLOR,
+  DECISION_LABEL,
+  focusPlanTab,
+  usePlanStore,
+} from "../store/planStore";
 
 interface PlanCardProps {
+  toolCallId: string;
+  /** Chat owning the tool call; falls back to the registered plan entry when
+   * omitted (inline summaries in message history). */
+  chatId?: string;
+  /** True while the model is still streaming the plan input. The card renders
+   * the "Writing plan…" progress variant and reads live data from planStore
+   * (which Chat.tsx feeds on every streamed delta). */
+  streaming?: boolean;
   input?: SubmitPlanInput;
   /** Present once the plan has been resolved (read-only summary view). */
   output?: SubmitPlanOutput;
-  /** Required for the pending (interactive) card; unused for summaries. */
-  onResolve?: (output: SubmitPlanOutput) => void;
 }
 
-const DECISION_LABEL: Record<PlanDecision, string> = {
-  approve: "Approved",
-  request_changes: "Changes requested",
-  cancel: "Cancelled",
-};
-
-const DECISION_COLOR: Record<PlanDecision, "success" | "warning" | "default"> =
-  {
-    approve: "success",
-    request_changes: "warning",
-    cancel: "default",
-  };
-
 /**
- * Editable plan card for the deferred `submit_plan` tool. The user can edit the
- * plan, then Approve (unlocks mutations on the next turn), Request changes
- * (returns feedback), or Cancel. Resolves the tool call via `onResolve`.
+ * Compact summary card for the deferred `submit_plan` tool (Cursor-style).
+ * All review/editing happens in the main-view plan tab; clicking the card
+ * opens or focuses that tab. While pending, a quick "Approve & run" button
+ * resolves the plan directly — iteration happens by replying in chat.
  */
 export const PlanCard: React.FC<PlanCardProps> = ({
+  toolCallId,
+  chatId,
+  streaming = false,
   input,
   output,
-  onResolve,
 }) => {
-  const resolved = Boolean(output);
-  const [title, setTitle] = useState(input?.title ?? "");
-  const [planMarkdown, setPlanMarkdown] = useState(input?.planMarkdown ?? "");
-  const [todos, setTodos] = useState<PlanTodo[]>(() => input?.todos ?? []);
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [feedback, setFeedback] = useState("");
+  const plan = usePlanStore(s => s.plans[toolCallId]);
+  const resolvePlan = usePlanStore(s => s.resolvePlan);
 
-  const editedPlan = useMemo(
-    () => ({ title, planMarkdown, todos }),
-    [title, planMarkdown, todos],
-  );
-
-  const decide = (decision: PlanDecision) => {
-    if (resolved) return;
-    if (decision === "request_changes" && !showFeedback) {
-      setShowFeedback(true);
-      return;
+  // Hydrate the store from message history (idempotent; registerPlan never
+  // clobbers an existing draft and markResolved skips already-resolved plans).
+  // Skipped while streaming: a partial input must not finalize the draft —
+  // Chat.tsx feeds streaming deltas via setStreamingInput instead.
+  useEffect(() => {
+    if (!toolCallId || streaming) return;
+    const store = usePlanStore.getState();
+    if (input) {
+      store.registerPlan(
+        toolCallId,
+        chatId ?? store.plans[toolCallId]?.chatId ?? "",
+        input,
+      );
     }
-    onResolve?.({
-      success: true,
-      decision,
-      ...(decision === "request_changes" ? { feedback } : {}),
-      ...(decision !== "cancel" ? { editedPlan } : {}),
-    });
+    if (output) store.markResolved(toolCallId, output);
+  }, [toolCallId, chatId, streaming, input, output]);
+
+  const isStreaming = streaming || plan?.status === "streaming";
+  const title =
+    plan?.draft.title ?? output?.editedPlan?.title ?? input?.title ?? "Plan";
+  const stepCount =
+    plan?.draft.todos.length ??
+    output?.editedPlan?.todos.length ??
+    input?.todos.length ??
+    0;
+  const decision =
+    plan && plan.status !== "pending" && plan.status !== "streaming"
+      ? plan.status
+      : output?.decision;
+  const pending = !decision && !isStreaming;
+
+  const openTab = () => {
+    if (!toolCallId) return;
+    focusPlanTab(toolCallId, chatId ?? plan?.chatId ?? "", title);
   };
-
-  const updateTodo = (index: number, content: string) =>
-    setTodos(prev => prev.map((t, i) => (i === index ? { ...t, content } : t)));
-
-  const displayTodos = resolved ? (output?.editedPlan?.todos ?? todos) : todos;
 
   return (
     <Box
+      onClick={openTab}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openTab();
+        }
+      }}
       sx={{
         border: 1,
-        borderColor: resolved ? "divider" : "primary.main",
+        borderColor: pending || isStreaming ? "primary.main" : "divider",
         borderRadius: 2,
         p: 1.5,
         my: 0.5,
         bgcolor: "background.paper",
+        cursor: "pointer",
+        "&:hover": { bgcolor: "action.hover" },
       }}
     >
-      <Stack direction="row" spacing={1} alignItems="center" mb={1}>
-        <ClipboardList size={15} />
-        <Typography variant="subtitle2" fontWeight={600}>
-          Plan
-        </Typography>
-        {resolved && output && (
+      <Stack direction="row" spacing={1} alignItems="center">
+        {isStreaming ? (
+          <CircularProgress size={15} thickness={5} />
+        ) : (
+          <ClipboardList size={15} />
+        )}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography
+            variant="subtitle2"
+            fontWeight={600}
+            noWrap
+            sx={
+              isStreaming && !title.trim()
+                ? {
+                    animation: "planCardPulse 1.4s ease-in-out infinite",
+                    "@keyframes planCardPulse": {
+                      "0%, 100%": { opacity: 1 },
+                      "50%": { opacity: 0.45 },
+                    },
+                  }
+                : undefined
+            }
+          >
+            {isStreaming && !title.trim() ? "Writing plan…" : title}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {isStreaming
+              ? `Writing plan… · ${stepCount} step${stepCount === 1 ? "" : "s"}`
+              : pending
+                ? `${stepCount} step${stepCount === 1 ? "" : "s"} · reply in chat to iterate`
+                : `Plan · ${stepCount} step${stepCount === 1 ? "" : "s"}`}
+          </Typography>
+        </Box>
+        {decision && (
           <Chip
             size="small"
-            label={DECISION_LABEL[output.decision]}
-            color={DECISION_COLOR[output.decision]}
+            label={DECISION_LABEL[decision]}
+            color={DECISION_COLOR[decision]}
             variant="outlined"
           />
         )}
-      </Stack>
-
-      {resolved ? (
-        <>
-          <Typography variant="body2" fontWeight={600} mb={0.5}>
-            {output?.editedPlan?.title ?? title}
-          </Typography>
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ whiteSpace: "pre-wrap" }}
+        {pending && (
+          <Button
+            size="small"
+            variant="contained"
+            onClick={e => {
+              e.stopPropagation();
+              resolvePlan(toolCallId, "approve");
+            }}
           >
-            {output?.editedPlan?.planMarkdown ?? planMarkdown}
-          </Typography>
-          {output?.feedback && (
-            <Typography variant="body2" color="warning.main" mt={1}>
-              Feedback: {output.feedback}
-            </Typography>
-          )}
-        </>
-      ) : (
-        <Stack spacing={1.25}>
-          <TextField
-            size="small"
-            fullWidth
-            label="Title"
-            value={title}
-            onChange={e => setTitle(e.target.value)}
-          />
-          <TextField
-            size="small"
-            fullWidth
-            multiline
-            minRows={3}
-            maxRows={14}
-            label="Plan"
-            value={planMarkdown}
-            onChange={e => setPlanMarkdown(e.target.value)}
-          />
-        </Stack>
-      )}
-
-      {displayTodos.length > 0 && (
-        <>
-          <Divider sx={{ my: 1 }} />
-          <Typography variant="caption" color="text.secondary">
-            Steps
-          </Typography>
-          <Stack spacing={0.5} mt={0.5}>
-            {displayTodos.map((todo, index) =>
-              resolved ? (
-                <Typography
-                  key={todo.id ?? index}
-                  variant="body2"
-                  color="text.secondary"
-                >
-                  {index + 1}. {todo.content}
-                </Typography>
-              ) : (
-                <Stack
-                  key={todo.id ?? index}
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                >
-                  <Typography variant="body2" color="text.secondary">
-                    {index + 1}.
-                  </Typography>
-                  <TextField
-                    size="small"
-                    fullWidth
-                    value={todo.content}
-                    onChange={e => updateTodo(index, e.target.value)}
-                  />
-                </Stack>
-              ),
-            )}
-          </Stack>
-        </>
-      )}
-
-      {!resolved && (
-        <>
-          {showFeedback && (
-            <TextField
-              size="small"
-              fullWidth
-              multiline
-              minRows={2}
-              maxRows={6}
-              placeholder="What should change?"
-              value={feedback}
-              onChange={e => setFeedback(e.target.value)}
-              sx={{ mt: 1.5 }}
-            />
-          )}
-          <Stack direction="row" spacing={1} mt={1.5} justifyContent="flex-end">
-            <Button
-              size="small"
-              color="inherit"
-              onClick={() => decide("cancel")}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="small"
-              color="warning"
-              variant={showFeedback ? "contained" : "outlined"}
-              disabled={showFeedback && feedback.trim().length === 0}
-              onClick={() => decide("request_changes")}
-            >
-              {showFeedback ? "Send feedback" : "Request changes"}
-            </Button>
-            <Button
-              size="small"
-              variant="contained"
-              onClick={() => decide("approve")}
-            >
-              Approve & run
-            </Button>
-          </Stack>
-        </>
-      )}
+            Approve &amp; run
+          </Button>
+        )}
+      </Stack>
     </Box>
   );
 };

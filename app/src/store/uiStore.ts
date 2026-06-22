@@ -32,6 +32,16 @@ interface ActiveEditorContent {
   language?: string;
 }
 
+/**
+ * Which full-screen pane is shown on mobile (< md). Desktop ignores this and
+ * keeps its 4-column flex shell. "explore" is surfaced via the explorer Drawer
+ * rather than a dedicated content pane (see `setMobileTab`).
+ */
+export type MobileTab = "ask" | "editor" | "results" | "explore";
+
+/** Mobile overlay drawer state. Only the explorer drawer exists today. */
+export type MobileDrawer = "none" | "explorer";
+
 interface UIState {
   // Navigation
   leftPane: LeftPaneView;
@@ -40,6 +50,11 @@ interface UIState {
   rightPaneOpen: boolean;
   leftPaneWidthPx: number | null;
   rightPaneWidthPx: number | null;
+
+  // Mobile (< md) navigation — ephemeral, never persisted. Desktop layout is
+  // driven by leftPaneOpen/rightPaneOpen; mobile is driven by mobileTab.
+  mobileTab: MobileTab;
+  mobileDrawer: MobileDrawer;
 
   // Loading indicators (keyed by operation name)
   loading: Record<string, boolean>;
@@ -66,6 +81,11 @@ interface UIActions {
     rightPaneWidthPx?: number | null;
   }) => void;
 
+  // Mobile navigation
+  setMobileTab: (tab: MobileTab) => void;
+  openMobileDrawer: () => void;
+  closeMobileDrawer: () => void;
+
   // Loading state
   setLoading: (key: string, value: boolean) => void;
   isLoading: (key: string) => boolean;
@@ -89,6 +109,8 @@ const initialState: UIState = {
   rightPaneOpen: true,
   leftPaneWidthPx: null,
   rightPaneWidthPx: null,
+  mobileTab: "ask",
+  mobileDrawer: "none",
   loading: {},
   activeEditorContent: undefined,
   currentWorkspaceId: null,
@@ -150,6 +172,29 @@ export const useUIStore = create<UIStore>()(
           if (widths.rightPaneWidthPx !== undefined) {
             state.rightPaneWidthPx = widths.rightPaneWidthPx;
           }
+        }),
+
+      // Mobile navigation. Selecting "explore" opens the explorer Drawer as an
+      // overlay rather than swapping the underlying content pane, so closing
+      // the drawer returns to the previous ask/editor/results view.
+      setMobileTab: tab =>
+        set(state => {
+          if (tab === "explore") {
+            state.mobileDrawer = "explorer";
+          } else {
+            state.mobileTab = tab;
+            state.mobileDrawer = "none";
+          }
+        }),
+
+      openMobileDrawer: () =>
+        set(state => {
+          state.mobileDrawer = "explorer";
+        }),
+
+      closeMobileDrawer: () =>
+        set(state => {
+          state.mobileDrawer = "none";
         }),
 
       // Loading state
@@ -216,6 +261,8 @@ export type ActiveExplorer =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "apps"
+  | "dbt"
   | "settings"
   | null;
 
@@ -225,6 +272,8 @@ const EXPLORER_VIEWS: ReadonlySet<LeftPaneView> = new Set([
   "connectors",
   "flows",
   "dashboards",
+  "apps",
+  "dbt",
   "settings",
 ]);
 

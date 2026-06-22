@@ -1,0 +1,186 @@
+---
+title: "ClickHouse Arrays: A Practical Guide"
+description: "Working with arrays in ClickHouse: building and indexing them, arrayJoin to unfold rows, the higher-order functions arrayMap/arrayFilter/arrayReduce with lambdas, the ARRAY JOIN clause, and the GROUP BY arrays produced by groupArray."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "arrays", "arrayjoin", "higher-order-functions", "olap"]
+date: "2026-06-05"
+---
+
+# ClickHouse Arrays
+
+Arrays are a first-class data type in ClickHouse, not a bolt-on. Columns can be `Array(T)`, aggregate functions can return arrays, and a large family of functions transforms them in place. For analytical workloads this matters: storing a list of values in one row and processing it with vectorized array functions is often faster and tidier than normalizing into a second table. This guide covers building arrays, indexing them, unfolding them into rows, and the higher-order functions that do the real work.
+
+## Building and Indexing Arrays
+
+Create an array with the `array` function or the `[]` literal. Elements must share a common super-type; ClickHouse picks the smallest type that fits all of them.
+
+```sql
+SELECT [1, 2, 3] AS a, array('x', 'y') AS b;
+-- a: [1,2,3]   b: ['x','y']
+```
+
+Indexing is **1-based**, which trips up people coming from most programming languages. Negative indices count from the end.
+
+```sql
+SELECT
+    [10, 20, 30] AS a,
+    a[1]  AS first,   -- 10, not 20
+    a[-1] AS last;    -- 30
+```
+
+Out-of-bounds access returns the default value for the element type (0 for numbers, empty string for strings), not an error. Use `length(a)` to get the element count and `empty(a)` / `notEmpty(a)` to test for emptiness.
+
+```sql
+SELECT
+    length([10, 20, 30]) AS n,   -- 3
+    [1, 2, 3][99]        AS oob; -- 0  (no error)
+```
+
+`has(arr, x)`, `indexOf(arr, x)` (1-based, 0 if absent), and `hasAll` / `hasAny` cover membership tests:
+
+```sql
+SELECT
+    has([1, 2, 3], 2)        AS present,  -- 1
+    indexOf(['a','b'], 'b')  AS pos,      -- 2
+    hasAll([1,2,3,4], [2,4]) AS contains; -- 1
+```
+
+## arrayJoin: One Row Becomes Many
+
+`arrayJoin` is the workhorse for turning an array column into rows. Each element of the array produces a separate output row, with the rest of the row's columns duplicated.
+
+```sql
+SELECT
+    id,
+    arrayJoin([10, 20, 30]) AS value
+FROM (SELECT 1 AS id);
+-- (1, 10), (1, 20), (1, 30)
+```
+
+A common real case: an events table stores tags as `Array(String)` and you want one row per tag to count them.
+
+```sql
+SELECT
+    tag,
+    count() AS events
+FROM (
+    SELECT arrayJoin(tags) AS tag
+    FROM events
+)
+GROUP BY tag
+ORDER BY events DESC;
+```
+
+Two gotchas. First, if you reference `arrayJoin` more than once in a query, ClickHouse evaluates it once and reuses the result, which is rarely what you want; wrap it in a subquery if you need independent unfolds. Second, an empty array drops the row entirely (zero output rows for it). If you need to keep rows with empty arrays, the `LEFT ARRAY JOIN` clause below handles that.
+
+## The ARRAY JOIN Clause
+
+`ARRAY JOIN` is the clause form and is usually cleaner than `arrayJoin()` inside the SELECT list, especially when unfolding multiple arrays in parallel.
+
+```sql
+SELECT
+    id,
+    tag,
+    score
+FROM events
+ARRAY JOIN
+    tags  AS tag,
+    scores AS score;
+```
+
+When you join two arrays this way, they unfold **element by element in lockstep**, so `tags` and `scores` must have the same length per row. `LEFT ARRAY JOIN` keeps rows whose array is empty, emitting a single row with the default value instead of dropping it:
+
+```sql
+SELECT id, tag
+FROM events
+LEFT ARRAY JOIN tags AS tag;
+-- rows with empty tags still appear, with tag = ''
+```
+
+## Higher-Order Functions and Lambdas
+
+This is where arrays become expressive. `arrayMap`, `arrayFilter`, `arrayReduce`, and their relatives take a lambda written with the `->` syntax.
+
+`arrayMap` applies a function to every element:
+
+```sql
+SELECT arrayMap(x -> x * x, [1, 2, 3]) AS squared;
+-- [1,4,9]
+```
+
+`arrayFilter` keeps elements where the lambda returns nonzero:
+
+```sql
+SELECT arrayFilter(x -> x > 1, [1, 2, 3]) AS kept;
+-- [2,3]
+```
+
+Lambdas can take more than one array argument; the arrays are walked in parallel:
+
+```sql
+SELECT arrayMap((x, y) -> x + y, [1, 2, 3], [10, 20, 30]) AS summed;
+-- [11,22,33]
+```
+
+For every higher-order function except `arrayMap` and `arrayFilter`, the lambda can be omitted and identity mapping is assumed. Useful companions:
+
+- `arrayCount(x -> cond, arr)` counts matching elements.
+- `arrayExists(x -> cond, arr)` / `arrayAll(...)` return 0 or 1.
+- `arraySum`, `arrayMin`, `arrayMax`, `arrayAvg` reduce to a scalar, and each accepts an optional lambda to transform first: `arraySum(x -> x * 2, arr)`.
+- `arraySort` / `arrayReverseSort` accept an optional key lambda.
+
+```sql
+SELECT
+    arrayCount(x -> x > 100, prices)      AS expensive_items,
+    arraySum(x -> x * qty, prices)        AS would_not_work; -- see note
+```
+
+Note that a lambda only sees the array it iterates; it cannot reference a second array positionally unless that array is also passed as an argument. To combine `prices` and `quantities` element-wise, pass both:
+
+```sql
+SELECT arraySum((p, q) -> p * q, prices, quantities) AS revenue
+FROM orders;
+```
+
+`arrayReduce` applies a named **aggregate function** across the array's elements, which is how you reach functions that have no direct array form:
+
+```sql
+SELECT arrayReduce('uniqExact', ['a', 'b', 'a', 'c']) AS distinct_count;
+-- 3
+```
+
+## groupArray: Building Arrays in Aggregation
+
+The inverse of `arrayJoin` is `groupArray`, an aggregate function that collects values from a group into an array. `groupUniqArray` collects distinct values.
+
+```sql
+SELECT
+    user_id,
+    groupArray(product_id) AS products_viewed,
+    groupUniqArray(category) AS categories
+FROM events
+GROUP BY user_id;
+```
+
+`groupArray(N)(col)` caps the array at N elements. Combined with `arrayMap` and `arraySort`, this is a compact way to build per-group sequences (for example, the ordered list of pages in a session) without window functions.
+
+## Common Mistakes
+
+- **0-based indexing.** ClickHouse arrays start at index 1. `arr[0]` returns the type default, not the first element.
+- **Expecting an error on out-of-bounds.** It silently returns the default value. Guard with `length()` or `arrayElement` logic if that matters.
+- **Mismatched array lengths in `ARRAY JOIN`.** Parallel unfolds require equal lengths per row, or you get a runtime error.
+- **Empty arrays vanishing.** Plain `arrayJoin` / `ARRAY JOIN` drop rows with empty arrays. Use `LEFT ARRAY JOIN` to keep them.
+- **Trying to reference a sibling array inside a single-array lambda.** Pass every array the lambda needs as an explicit argument.
+
+When you are sketching out array transformations against an unfamiliar dataset, Mako's AI autocomplete can suggest the right higher-order function and lambda shape as you type, which helps given how many `array*` variants ClickHouse exposes.
+
+## Related Guides
+
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions) for `groupArray` and the combinators that pair with arrays.
+- [ClickHouse JSON Queries](/guides/clickhouse/json-queries) since `JSONExtract` paths and arrays overlap.
+- [Import CSV to ClickHouse](/guides/import-csv-to-clickhouse) to load data for testing these queries.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

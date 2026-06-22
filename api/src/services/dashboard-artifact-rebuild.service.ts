@@ -1,19 +1,17 @@
-import { promises as fsPromises } from "fs";
 import crypto from "crypto";
 import { Types } from "mongoose";
 import { Dashboard, DatabaseConnection } from "../database/workspace-schema";
 import { loggers } from "../logging";
-import { databaseConnectionService } from "./database-connection.service";
 import {
   artifactExists,
   buildDashboardArtifactKey,
-  storeArtifact,
   withArtifactBuildLock,
 } from "./dashboard-cache.service";
 import {
-  buildParquetFromBatches,
-  type FieldMeta,
-} from "../utils/streaming-parquet-builder";
+  buildQueryParquetFile,
+  storeParquetArtifactFile,
+  PARQUET_ROW_LIMIT,
+} from "./parquet-build.service";
 import { generateSnapshotsForDataSource } from "./dashboard-snapshot.service";
 import {
   appendMaterializationRunEvent,
@@ -294,31 +292,6 @@ export async function rebuildDashboardArtifacts(
           );
         }
 
-        let fields: FieldMeta[] = [];
-        try {
-          const schemaResult =
-            await databaseConnectionService.getStreamingQueryFields(
-              database,
-              executableQuery,
-              {
-                databaseId: dataSource.query.databaseId as string | undefined,
-                databaseName: dataSource.query.databaseName as
-                  | string
-                  | undefined,
-              },
-            );
-          if (schemaResult.success && schemaResult.fields) {
-            fields = schemaResult.fields;
-          }
-        } catch {
-          logger.warn(
-            "Schema probe failed, falling back to runtime inference",
-            {
-              dataSourceId: dataSource.id,
-            },
-          );
-        }
-
         const parquetWriteStartedEvent = pushRunEvent(currentRun, {
           type: "parquet_write_started",
           message: "Started streaming parquet build",
@@ -332,11 +305,18 @@ export async function rebuildDashboardArtifacts(
           stage: "parquet_streaming",
         });
 
-        const rowLimit = dataSource.rowLimit || 500000;
-        const parquetFile = await buildParquetFromBatches({
+        // Shared core: schema probe + streaming + Parquet build. Lenient
+        // probe preserves runtime column inference for MongoDB executables;
+        // stream failures are strict (a failed query fails the build instead
+        // of producing a silently truncated artifact).
+        const parquetFile = await buildQueryParquetFile({
+          connection: database,
+          executableQuery,
+          databaseId: dataSource.query.databaseId as string | undefined,
+          databaseName: dataSource.query.databaseName as string | undefined,
+          rowLimit: dataSource.rowLimit || PARQUET_ROW_LIMIT,
           filenameBase: `${dashboard._id}-${dataSource.id}`,
-          rowLimit,
-          fields,
+          schemaProbe: "lenient",
           onBatchInserted: async (totalRows: number) => {
             await updateMaterializationRunHeartbeat({
               runId: currentRun.runId,
@@ -348,20 +328,6 @@ export async function rebuildDashboardArtifacts(
                 `parquet_streaming:${totalRows}_rows`,
               );
             }
-          },
-          streamBatches: async insertBatch => {
-            await databaseConnectionService.executeStreamingQuery(
-              database,
-              executableQuery,
-              {
-                batchSize: 5000,
-                databaseId: dataSource.query.databaseId as string | undefined,
-                databaseName: dataSource.query.databaseName as
-                  | string
-                  | undefined,
-                onBatch: insertBatch,
-              },
-            );
           },
         });
 
@@ -410,17 +376,15 @@ export async function rebuildDashboardArtifacts(
           stage: "artifact_upload",
         });
 
-        try {
-          await storeArtifact(parquetFile.filePath, artifactKey, {
+        await storeParquetArtifactFile({
+          filePath: parquetFile.filePath,
+          artifactKey,
+          metadata: {
             dashboardId: dashboard._id.toString(),
             dataSourceId: dataSource.id,
             definitionHash,
-          });
-        } finally {
-          await fsPromises
-            .rm(parquetFile.filePath, { force: true })
-            .catch(() => undefined);
-        }
+          },
+        });
         const artifactStorePutFinishedEvent = pushRunEvent(currentRun, {
           type: "artifact_store_put_finished",
           message: "Stored artifact successfully",

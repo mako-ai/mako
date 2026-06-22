@@ -1,0 +1,151 @@
+---
+title: "Aggregate Functions in SQLite"
+description: "How count, sum, avg, min, max, and group_concat work in SQLite, plus DISTINCT, the FILTER clause, ORDER BY inside aggregates, HAVING, and the integer-division and NULL gotchas that produce wrong totals."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "aggregate", "group-by", "group_concat"]
+date: "2026-06-03"
+---
+
+Aggregate functions collapse many rows into one value: a count, a total, an average, a concatenated list. SQLite's built-in set is small but covers the common cases, and recent versions added a few that used to require extensions.
+
+This guide covers the aggregates and the clauses that shape them. For per-row running totals and ranks, you want window functions instead, covered in our [SQLite window functions guide](/guides/sqlite/window-functions).
+
+## The built-in aggregates
+
+| Function | Returns |
+| --- | --- |
+| `count(*)` | Number of rows in the group |
+| `count(X)` | Number of rows where `X` is not NULL |
+| `sum(X)` | Sum of non-NULL `X`; NULL if no rows |
+| `total(X)` | Sum of non-NULL `X`; 0.0 if no rows (always float) |
+| `avg(X)` | Average of non-NULL `X` (always float) |
+| `min(X)` / `max(X)` | Minimum / maximum non-NULL `X` |
+| `group_concat(X, Y)` | Non-NULL `X` joined by separator `Y` |
+| `string_agg(X, Y)` | Standard-SQL alias for `group_concat` |
+
+As of version 3.46.0 (2024), SQLite also ships `median`, `percentile`, `percentile_cont`, and `percentile_disc` as built-in aggregates. On older versions these need the extension functions, so verify your version with `SELECT sqlite_version()` before relying on them.
+
+## count: the star matters
+
+`count(*)` counts rows. `count(X)` counts rows where `X` is not NULL. The difference is the source of a lot of quietly wrong reports.
+
+```sql
+SELECT
+  count(*)          AS total_rows,
+  count(phone)      AS rows_with_phone,
+  count(DISTINCT city) AS distinct_cities
+FROM customers;
+```
+
+If a column has NULLs and you `count` it expecting a row count, you'll undercount. Use `count(*)` for "how many rows," `count(col)` for "how many have a value."
+
+## sum vs total, and the NULL trap
+
+`sum` returns NULL when there are no rows to add, not 0. `total` returns 0.0 in the same situation and always returns a float. Pick based on what you want a "no rows" result to look like.
+
+```sql
+SELECT sum(amount)   FROM payments WHERE 1=0;  -- NULL
+SELECT total(amount) FROM payments WHERE 1=0;  -- 0.0
+```
+
+If you need a zero from `sum`, wrap it: `coalesce(sum(amount), 0)`.
+
+## Integer division surprises
+
+`sum` and `avg` follow SQLite's arithmetic rules. `sum` of integer values stays an integer (and can overflow to a float on very large totals); `avg` is always a float. But division *inside* an aggregate, or on integer columns, truncates:
+
+```sql
+SELECT avg(price) FROM products;        -- float, correct
+SELECT sum(price) / count(*) FROM products;  -- integer division if price is INTEGER
+```
+
+The second form truncates because integer divided by integer is integer. Force a float by multiplying by 1.0 or casting: `sum(price) * 1.0 / count(*)`, or just use `avg`.
+
+## DISTINCT inside an aggregate
+
+Any single-argument aggregate can take `DISTINCT` to deduplicate before aggregating:
+
+```sql
+SELECT count(DISTINCT user_id) AS unique_users FROM events;
+SELECT group_concat(DISTINCT tag) FROM posts;
+```
+
+## group_concat: joining rows into a string
+
+`group_concat` builds a delimited string from a column across rows. The second argument is the separator; without it, the default separator is a comma.
+
+```sql
+SELECT group_concat(name)        FROM tags;        -- 'sql,sqlite,db'
+SELECT group_concat(name, ' | ') FROM tags;        -- 'sql | sqlite | db'
+```
+
+Two practical points. First, the order of concatenated values is arbitrary unless you specify `ORDER BY` inside the call:
+
+```sql
+SELECT group_concat(name ORDER BY name) FROM tags;
+```
+
+Support for `ORDER BY` inside the aggregate arrived in version 3.44.0 (2023). On older versions the order is whatever the query happens to produce, which is not safe to rely on. `string_agg(X, Y)` is the SQL-standard spelling of the two-argument form and behaves identically.
+
+Second, `group_concat` skips NULLs. A column with NULLs produces a list shorter than the row count, with no empty placeholders.
+
+## The FILTER clause
+
+`FILTER (WHERE ...)` restricts which rows feed a single aggregate, letting you compute conditional totals side by side without `CASE` gymnastics. It's available from version 3.30.0 (2019).
+
+```sql
+SELECT
+  count(*) AS total_orders,
+  count(*) FILTER (WHERE status = 'paid')     AS paid,
+  count(*) FILTER (WHERE status = 'refunded') AS refunded,
+  sum(amount) FILTER (WHERE status = 'paid')  AS paid_revenue
+FROM orders;
+```
+
+Before `FILTER` existed, the equivalent was `sum(CASE WHEN status = 'paid' THEN 1 ELSE 0 END)`. That still works everywhere and is the fallback for old SQLite builds, but `FILTER` reads better and makes intent obvious.
+
+## GROUP BY and HAVING
+
+Aggregates without `GROUP BY` collapse the whole result to one row. Add `GROUP BY` to aggregate per group, and `HAVING` to filter on the aggregated result (where `WHERE` can't reach, because it runs before grouping).
+
+```sql
+SELECT
+  category,
+  count(*)     AS n,
+  sum(amount)  AS revenue
+FROM orders
+WHERE created_at >= '2026-01-01'   -- filters rows before grouping
+GROUP BY category
+HAVING sum(amount) > 1000          -- filters groups after aggregating
+ORDER BY revenue DESC;
+```
+
+The split is the rule people forget: `WHERE` filters individual rows, `HAVING` filters groups. Putting an aggregate in `WHERE` is an error; putting a plain row condition in `HAVING` works but is slower than filtering it in `WHERE`.
+
+A SQLite-specific leniency worth knowing: SQLite lets you `SELECT` columns that aren't in the `GROUP BY` and aren't aggregated. It returns a value from an arbitrary row in each group (with a documented special case for `min`/`max`). Stricter engines reject this. Don't depend on it; list every non-aggregated column in `GROUP BY` so the query means the same thing everywhere.
+
+## min and max pick a companion row
+
+When you `GROUP BY` and select `max(X)` alongside other columns, SQLite has a documented behavior: the other columns come from the row that supplied the `max` (or `min`). This is a handy shortcut for "the latest row per group":
+
+```sql
+SELECT user_id, max(created_at) AS last_seen, ip_address
+FROM logins
+GROUP BY user_id;
+```
+
+Here `ip_address` is taken from the row with the largest `created_at`. This is convenient but SQLite-specific and only well-defined when there's a single `min` or `max` in the select list. For portable code, use a window function or a correlated subquery.
+
+## Common mistakes
+
+- **`count(col)` when you meant `count(*)`.** NULLs in `col` silently shrink the count.
+- **Integer division in averages.** `sum(x)/count(*)` truncates on integer columns. Use `avg` or multiply by 1.0.
+- **Expecting `sum` to return 0 on no rows.** It returns NULL. Use `total` or `coalesce`.
+- **Relying on `group_concat` order without `ORDER BY`.** Arbitrary unless you specify it, and the in-aggregate `ORDER BY` needs 3.44.0+.
+- **Putting an aggregate in `WHERE`.** Aggregate conditions go in `HAVING`. `WHERE` runs before grouping.
+- **Leaning on bare columns in a `GROUP BY` query.** SQLite allows it; other databases don't, and the chosen value is arbitrary.
+
+When you're building a report with several `FILTER`ed counts and conditional sums in one pass, Mako's AI autocomplete can lay out the aggregate list so you can check each conditional total against the raw rows.
+
+Mako connects to SQLite and eight other databases with AI-powered autocomplete. Try it free at mako.ai.

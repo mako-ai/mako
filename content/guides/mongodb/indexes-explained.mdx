@@ -1,0 +1,152 @@
+---
+title: "MongoDB Indexes Explained"
+description: "A practical guide to MongoDB index types: single field, compound, multikey, text, wildcard, and more, plus the ESR rule for ordering compound index keys and how to read explain output."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "indexes", "performance", "nosql"]
+date: "2026-06-09"
+---
+
+Without an index, MongoDB answers a query by reading every document in the collection and checking each one. This is a collection scan, and on anything past a few thousand documents it gets slow. An index is a separate, ordered data structure (a B-tree) that lets MongoDB jump straight to the matching documents instead of scanning the whole collection.
+
+The cost is that every index has to be updated on every write, and each index consumes RAM and disk. So the goal is not "index everything," it is "index the fields your queries actually filter, sort, and join on, and no more."
+
+This guide covers the index types, when each applies, and how to confirm an index is doing its job.
+
+## The default index
+
+Every collection has one index you did not create: `_id`. It is unique and cannot be dropped. Queries by `_id` are always indexed.
+
+## Creating and listing indexes
+
+```javascript
+db.users.createIndex({ email: 1 })   // 1 = ascending, -1 = descending
+db.users.getIndexes()                 // list all indexes on the collection
+db.users.dropIndex({ email: 1 })      // remove one
+```
+
+For a single-field index, the direction (`1` or `-1`) does not matter for lookups; MongoDB can read a B-tree in either direction. Direction starts to matter only with compound indexes and sorts, covered below.
+
+## Single field indexes
+
+The simplest case: an index on one field, good for queries that filter or sort on that field.
+
+```javascript
+db.users.createIndex({ email: 1 })
+db.users.find({ email: "alice@example.com" })   // uses the index
+```
+
+## Compound indexes
+
+A compound index covers multiple fields in a defined order, and that order is the single most important thing to get right.
+
+```javascript
+db.orders.createIndex({ customerId: 1, status: 1, createdAt: -1 })
+```
+
+A compound index can serve a query that filters on a **prefix** of its keys. The index above supports queries on `customerId`, on `customerId + status`, and on all three fields. It does **not** efficiently support a query that filters only on `status`, because `status` is not a prefix; `customerId` comes first.
+
+### The ESR rule
+
+For ordering the keys in a compound index, MongoDB's own guidance is the ESR rule: **Equality, Sort, Range.**
+
+- **Equality** fields (exact matches, like `status: "shipped"`) go first.
+- **Sort** fields (whatever you `$sort` or `.sort()` on) go next.
+- **Range** fields (`$gt`, `$lt`, `$in` over a span) go last.
+
+Putting a range field before a sort field forces MongoDB to sort the results in memory instead of reading them in index order, which is exactly the cost the index was meant to avoid. A query like "find shipped orders for a customer, sorted by date" wants `{ customerId: 1, createdAt: -1 }`: equality first, sort second.
+
+## Multikey indexes
+
+When you index a field that holds an array, MongoDB automatically creates a multikey index: it stores one index entry per array element. You do not declare this; it happens based on the data.
+
+```javascript
+db.posts.createIndex({ tags: 1 })          // tags is an array field
+db.posts.find({ tags: "mongodb" })          // matches any post with that tag
+```
+
+The main restriction: a single compound index can include at most one array field. Indexing two array fields together would require a multiplicative number of entries, so MongoDB disallows it.
+
+## Text indexes
+
+A text index supports language-aware search over string content, with stemming and stop-word handling.
+
+```javascript
+db.articles.createIndex({ title: "text", body: "text" })
+db.articles.find({ $text: { $search: "aggregation pipeline" } })
+```
+
+A collection can have only one text index, though it may span multiple fields. For richer relevance ranking, faceting, and fuzzy matching, MongoDB Atlas offers a separate Atlas Search feature built on Lucene; the built-in text index is the self-managed option.
+
+## Wildcard indexes
+
+When you do not know in advance which fields will be queried (common with flexible or user-defined document shapes), a wildcard index covers all fields or a subtree.
+
+```javascript
+db.products.createIndex({ "attributes.$**": 1 })
+```
+
+This indexes every field under `attributes`. Wildcard indexes are useful for genuinely unpredictable query patterns, but they are larger and less efficient than a targeted index. If you know the queries, a specific index always beats a wildcard one.
+
+## Hashed indexes
+
+A hashed index stores the hash of a field's value rather than the value itself. It supports equality matches but not range queries, and its main use is sharding a collection on a key with an even hash distribution.
+
+```javascript
+db.events.createIndex({ userId: "hashed" })
+```
+
+## Index properties
+
+These are modifiers you add to any index:
+
+- **Unique**: rejects duplicate values. `db.users.createIndex({ email: 1 }, { unique: true })`
+- **Partial**: indexes only documents matching a filter, keeping the index small. `{ partialFilterExpression: { status: "active" } }`
+- **Sparse**: indexes only documents where the field exists at all.
+- **TTL**: automatically deletes documents a set number of seconds after a date field. `db.sessions.createIndex({ createdAt: 1 }, { expireAfterSeconds: 3600 })`
+
+A partial index is usually the better choice over a sparse index now, because it gives you finer control over exactly which documents are included.
+
+## Covered queries
+
+If an index contains every field a query needs, both for filtering and for the fields it returns, MongoDB can answer the query from the index alone without touching the documents. This is a covered query, and it is the fastest path.
+
+```javascript
+db.users.createIndex({ email: 1, name: 1 })
+db.users.find({ email: "alice@example.com" }, { _id: 0, name: 1 })  // covered
+```
+
+Note the `_id: 0`: because `_id` is returned by default and is not in this index, you have to exclude it for the query to stay covered.
+
+## Confirming an index is used
+
+Never assume. Run `explain` and read the winning plan:
+
+```javascript
+db.orders.find({ customerId: 123 }).explain("executionStats")
+```
+
+The two things to look for:
+
+- **`stage`**: `IXSCAN` means an index scan (good); `COLLSCAN` means a full collection scan (the index is not being used).
+- **`totalDocsExamined` vs `nReturned`**: ideally these are close. If MongoDB examined 100,000 documents to return 10, the index is not selective enough for this query.
+
+A common surprise is that MongoDB picks only one index per query (it does not normally combine two single-field indexes), so a query filtering on two fields usually wants one compound index, not two separate ones.
+
+## When not to add an index
+
+Indexes are not free. Each one slows down inserts, updates, and deletes, and consumes memory. On a write-heavy collection, an unused index is pure overhead. MongoDB tracks index usage:
+
+```javascript
+db.orders.aggregate([ { $indexStats: {} } ])
+```
+
+Indexes with an `accesses.ops` count of zero over a representative period are candidates for removal.
+
+## Exploring indexes interactively
+
+Reading `explain` output and tuning index key order is iterative work. Mako connects to MongoDB and can help write and explain queries while you test which index a query actually uses. As a read and query tool, it is suited to analysis and exploration rather than managing index builds on the server, which you will run from the shell or your deployment tooling.
+
+For the aggregation side of performance, see our [aggregation pipeline guide](/guides/mongodb/aggregation-pipeline), where the placement of `$match` relative to indexes is the central performance lever.
+
+Mako connects to MongoDB, PostgreSQL, MySQL, and more with AI-powered autocomplete. Try it free at mako.ai.

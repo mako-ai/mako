@@ -17,6 +17,19 @@ LicenseInfo.setLicenseKey(import.meta.env.VITE_MUI_LICENSE_KEY || "");
 // This clears localStorage when the schema version changes
 initializeStoreVersion();
 
+// Stale-bundle safety net: after a deploy, old content-hashed chunks no longer
+// exist on the server, so lazy route/component imports from a stale client
+// fail. Reload once to pick up the new build (guarded against reload loops).
+window.addEventListener("vite:preloadError", event => {
+  const LAST_RELOAD_KEY = "mako:chunk-error-reload-at";
+  const lastReloadAt = Number(sessionStorage.getItem(LAST_RELOAD_KEY) || 0);
+  if (Date.now() - lastReloadAt > 60_000) {
+    sessionStorage.setItem(LAST_RELOAD_KEY, String(Date.now()));
+    event.preventDefault();
+    window.location.reload();
+  }
+});
+
 enableMapSet();
 
 const rootElement = document.getElementById("root");

@@ -2,9 +2,11 @@ import { PLAN_GATE_ALLOWED_TOOL_NAMES } from "@mako/agent-tools";
 import type { AgentContext } from "../types";
 import type { AgentMode, ExpertiseModeId } from "./types";
 import {
-  SQL_MODE_SYSTEM_PROMPT,
+  QUERY_MODE_SYSTEM_PROMPT,
   DASHBOARD_MODE_SYSTEM_PROMPT,
   FLOW_MODE_SYSTEM_PROMPT,
+  APP_MODE_SYSTEM_PROMPT,
+  TRANSFORM_MODE_SYSTEM_PROMPT,
   EXPLORE_MODE_SYSTEM_PROMPT,
 } from "./prompts";
 
@@ -35,7 +37,7 @@ export const CORE_ALWAYS_TOOL_NAMES: readonly string[] = [
   "get_version_snapshot",
 ];
 
-const SQL_MODE_TOOL_NAMES: string[] = [
+const QUERY_MODE_TOOL_NAMES: string[] = [
   // Client console tools
   "read_console",
   "modify_console",
@@ -78,8 +80,10 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "modify_widget",
   "remove_widget",
   "get_dashboard_state",
-  "preview_data_source",
-  "get_data_preview",
+  // Shared surface-scoped data-source primitives (apps + dashboards)
+  "list_data_sources",
+  "inspect_data_source",
+  "query_duckdb",
   "add_global_filter",
   "remove_global_filter",
   "link_tables",
@@ -114,6 +118,76 @@ const FLOW_MODE_TOOL_NAMES: string[] = [
   "sql_inspect_table",
 ];
 
+const APP_MODE_TOOL_NAMES: string[] = [
+  // Client app tools
+  "list_open_apps",
+  "open_app",
+  "create_app",
+  "get_app_state",
+  "app_read_file",
+  "app_write_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "app_delete_data_binding",
+  "materialize_binding",
+  "run_app",
+  // Shared surface-scoped data-source primitives (apps + dashboards)
+  "list_data_sources",
+  "inspect_data_source",
+  "query_duckdb",
+  "capture_screenshot",
+  // Discovery for validating binding queries
+  "list_connections",
+  "sql_list_connections",
+  "sql_list_databases",
+  "sql_list_tables",
+  "sql_inspect_table",
+  "sql_execute_query",
+  "mongo_list_connections",
+  "mongo_list_databases",
+  "mongo_list_collections",
+  "mongo_inspect_collection",
+  "mongo_execute_query",
+];
+
+const TRANSFORM_MODE_TOOL_NAMES: string[] = [
+  // Bootstrap: create a project when the workspace has none
+  "dbt_create_project",
+  // Client dbt file tools
+  "read_dbt_project_tree",
+  "read_dbt_file",
+  "create_dbt_file",
+  "modify_dbt_file",
+  "delete_dbt_file",
+  // Server dbt verification + execution tools
+  "dbt_parse",
+  "dbt_compile_model",
+  "dbt_run_model",
+  "dbt_run_job",
+  "dbt_get_run",
+  "dbt_show",
+  "dbt_create_job",
+  "dbt_update_job",
+  // Git: commit/push edits to the connected repo (only when the user asks).
+  "dbt_git_status",
+  "dbt_commit_and_push",
+  "dbt_create_branch",
+  "dbt_switch_branch",
+  "dbt_list_branches",
+  "dbt_open_pull_request",
+  // Discovery: inspect sources before writing staging models; preview built
+  // tables after dbt_run_model.
+  "list_connections",
+  "sql_list_connections",
+  "sql_list_databases",
+  "sql_list_tables",
+  "sql_inspect_table",
+  "sql_execute_query",
+];
+
 const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_connections",
   "sql_list_connections",
@@ -134,13 +208,13 @@ const EXPLORE_MODE_TOOL_NAMES: string[] = [
 ];
 
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
-  sql: {
-    id: "sql",
-    name: "Console / SQL",
+  query: {
+    id: "query",
+    name: "Query",
     routingPrompt:
       "Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses.",
-    systemPrompt: SQL_MODE_SYSTEM_PROMPT,
-    toolNames: SQL_MODE_TOOL_NAMES,
+    systemPrompt: QUERY_MODE_SYSTEM_PROMPT,
+    toolNames: QUERY_MODE_TOOL_NAMES,
     trajectories: [
       "Discover the relevant connection and tables",
       "Draft the query in a console",
@@ -173,6 +247,32 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
       "Configure pagination and schema mapping",
     ],
   },
+  app: {
+    id: "app",
+    name: "React App",
+    routingPrompt:
+      "Build React apps wired to workspace data: edit files, add dependencies, and create data bindings.",
+    systemPrompt: APP_MODE_SYSTEM_PROMPT,
+    toolNames: APP_MODE_TOOL_NAMES,
+    trajectories: [
+      "Locate or create the target app",
+      "Validate the data and create data bindings",
+      "Edit app files and verify the preview builds without errors",
+    ],
+  },
+  transform: {
+    id: "transform",
+    name: "Transforms",
+    routingPrompt:
+      "Build and run dbt transformations: edit project files, compile, test, and run models against the warehouse.",
+    systemPrompt: TRANSFORM_MODE_SYSTEM_PROMPT,
+    toolNames: TRANSFORM_MODE_TOOL_NAMES,
+    trajectories: [
+      "Inspect the source tables for the model",
+      "Write the model SQL + schema.yml entries",
+      "Verify with dbt_parse, dbt_compile_model, then dbt_run_model on dev",
+    ],
+  },
   explore: {
     id: "explore",
     name: "Explore",
@@ -193,6 +293,27 @@ export function isExpertiseModeId(value: unknown): value is ExpertiseModeId {
 }
 
 /**
+ * Legacy mode ids → current ids. Existing chats persist `enable_mode` tool
+ * calls; `deriveModeState` replays them, so a rename must keep resolving the
+ * old id (e.g. the dbt mode was renamed to "transform").
+ */
+const LEGACY_MODE_ALIASES: Record<string, ExpertiseModeId> = {
+  dbt: "transform",
+};
+
+/**
+ * Resolve a (possibly legacy) mode id to a current `ExpertiseModeId`, or
+ * `undefined` if it is not a known mode.
+ */
+export function resolveExpertiseModeId(
+  value: unknown,
+): ExpertiseModeId | undefined {
+  if (typeof value !== "string") return undefined;
+  const resolved = LEGACY_MODE_ALIASES[value] ?? value;
+  return isExpertiseModeId(resolved) ? resolved : undefined;
+}
+
+/**
  * Pick the expertise mode to enable by default for a fresh request, based on
  * what the user is currently looking at. This replaces PostHog's small-model
  * router with a zero-cost heuristic; a model router can be layered on later.
@@ -204,7 +325,11 @@ export function defaultExpertiseMode(
   const view = context.activeView;
   if (view === "dashboard" || tabKind === "dashboard") return "dashboard";
   if (view === "flow-editor" || tabKind === "flow-editor") return "flow";
-  return "sql";
+  if (view === "app" || tabKind === "app") return "app";
+  if (view === "dbt" || tabKind === "dbt-file" || tabKind === "dbt-job") {
+    return "transform";
+  }
+  return "query";
 }
 
 /** Names of the tools unlocked by the given enabled expertise modes. */

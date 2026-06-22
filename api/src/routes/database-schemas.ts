@@ -1,9 +1,60 @@
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import fs from "fs";
 import path from "path";
 import { databaseRegistry } from "../databases/registry";
+import {
+  createRouter,
+  errorJson,
+  jsonContent,
+  successEnvelope,
+} from "../openapi/core";
 
-export const databaseSchemaRoutes = new Hono();
+/**
+ * Database connection-form schema + icon endpoints. Public (no auth): they
+ * expose only static connection-field schemas and SVG icons.
+ */
+export const databaseSchemaRoutes = createRouter();
+
+const DatabaseTypeParam = z.object({
+  type: z.string().openapi({ param: { name: "type", in: "path" } }),
+});
+
+const FieldSchemaSchema = z
+  .object({
+    name: z.string(),
+    label: z.string(),
+    type: z.enum([
+      "string",
+      "number",
+      "boolean",
+      "password",
+      "textarea",
+      "select",
+    ]),
+    required: z.boolean().optional(),
+    default: z.any().optional(),
+    helperText: z.string().optional(),
+    placeholder: z.string().optional(),
+    rows: z.number().optional(),
+    options: z
+      .array(z.object({ label: z.string(), value: z.any() }))
+      .optional(),
+    path: z.string().optional(),
+    advanced: z.boolean().optional(),
+    group: z.string().optional(),
+    visibleWhen: z.object({ field: z.string(), equals: z.any() }).optional(),
+  })
+  .openapi("DatabaseField");
+
+const DatabaseTypeSchema = z
+  .object({
+    type: z.string(),
+    displayName: z.string(),
+    consoleLanguage: z.string(),
+    iconUrl: z.string(),
+    defaultTemplate: z.string(),
+  })
+  .openapi("DatabaseType");
 
 // In a larger system, these could be moved to separate files or loaded dynamically
 // Each database type exposes a simple schema describing the connection fields
@@ -143,6 +194,8 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
         type: "string",
         required: false,
         placeholder: "default",
+        helperText:
+          "Leave empty to browse all databases and switch between them (cluster mode)",
       },
       {
         name: "username",
@@ -625,130 +678,185 @@ const DATABASE_SCHEMAS: Record<string, DatabaseSchemaResponse> = {
   },
 };
 
-databaseSchemaRoutes.get("/types", c => {
-  // Registered driver metadata (preferred)
-  const registeredMeta = new Map(
-    databaseRegistry.getAllMetadata().map(m => [m.type, m]),
-  );
+databaseSchemaRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/types",
+    tags: ["Databases"],
+    summary: "List database types",
+    description:
+      "Returns the supported database types with display metadata and default console templates. Public — no authentication required.",
+    security: [],
+    responses: {
+      200: jsonContent(
+        successEnvelope(z.array(DatabaseTypeSchema)),
+        "Supported database types.",
+      ),
+    },
+  }),
+  c => {
+    // Registered driver metadata (preferred)
+    const registeredMeta = new Map(
+      databaseRegistry.getAllMetadata().map(m => [m.type, m]),
+    );
 
-  // Union of schema-defined types and registered driver types
-  const typeKeys = Array.from(
-    new Set<string>([
-      ...Object.keys(DATABASE_SCHEMAS),
-      ...registeredMeta.keys(),
-    ]),
-  ).sort();
+    // Union of schema-defined types and registered driver types
+    const typeKeys = Array.from(
+      new Set<string>([
+        ...Object.keys(DATABASE_SCHEMAS),
+        ...registeredMeta.keys(),
+      ]),
+    ).sort();
 
-  const toDisplayName = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+    const toDisplayName = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
 
-  const toConsoleLanguage = (t: string): string => {
-    // Default sensible mapping; drivers may override
-    if (t === "mongodb") return "mongodb";
-    if (t === "clickhouse") return "sql";
-    if (t === "bigquery") return "sql";
-    if (t === "redshift") return "sql";
-    if (t === "cloudflare-d1") return "sql";
-    if (t === "cloudflare-kv") return "javascript";
-    return "sql";
-  };
+    const toConsoleLanguage = (t: string): string => {
+      // Default sensible mapping; drivers may override
+      if (t === "mongodb") return "mongodb";
+      if (t === "clickhouse") return "sql";
+      if (t === "bigquery") return "sql";
+      if (t === "redshift") return "sql";
+      if (t === "cloudflare-d1") return "sql";
+      if (t === "cloudflare-kv") return "javascript";
+      return "sql";
+    };
 
-  const types = typeKeys.map(t => {
-    const meta = registeredMeta.get(t);
-    const displayName = meta?.displayName || toDisplayName(t);
-    const consoleLanguage = meta?.consoleLanguage || toConsoleLanguage(t);
-    const iconUrl = `/api/databases/${t}/icon.svg`;
-    // Provide a stable default console template pattern per type
-    // Use placeholder tokens to be filled by the client: {collection}, {project}, {dataset}, {table}
-    const defaultTemplate =
-      t === "mongodb"
-        ? 'db.getCollection("{collection}").find({}).limit(500)'
-        : t === "clickhouse"
-          ? "SELECT * FROM {table} LIMIT 500;"
-          : t === "bigquery"
-            ? "SELECT * FROM `{project}.{dataset}.{table}` LIMIT 500;"
-            : t === "cloudflare-d1"
-              ? "SELECT * FROM {table} LIMIT 500;"
-              : t === "cloudflare-kv"
-                ? "kv.list({ limit: 100 })"
-                : "SELECT * FROM {table} LIMIT 500;";
-    return { type: t, displayName, consoleLanguage, iconUrl, defaultTemplate };
-  });
+    const types = typeKeys.map(t => {
+      const meta = registeredMeta.get(t);
+      const displayName = meta?.displayName || toDisplayName(t);
+      const consoleLanguage = meta?.consoleLanguage || toConsoleLanguage(t);
+      const iconUrl = `/api/databases/${t}/icon.svg`;
+      // Provide a stable default console template pattern per type
+      // Use placeholder tokens to be filled by the client: {collection}, {project}, {dataset}, {table}
+      const defaultTemplate =
+        t === "mongodb"
+          ? 'db.getCollection("{collection}").find({}).limit(500)'
+          : t === "clickhouse"
+            ? "SELECT * FROM {table} LIMIT 500;"
+            : t === "bigquery"
+              ? "SELECT * FROM `{project}.{dataset}.{table}` LIMIT 500;"
+              : t === "cloudflare-d1"
+                ? "SELECT * FROM {table} LIMIT 500;"
+                : t === "cloudflare-kv"
+                  ? "kv.list({ limit: 100 })"
+                  : "SELECT * FROM {table} LIMIT 500;";
+      return {
+        type: t,
+        displayName,
+        consoleLanguage,
+        iconUrl,
+        defaultTemplate,
+      };
+    });
 
-  return c.json({ success: true, data: types });
-});
+    return c.json({ success: true as const, data: types }, 200);
+  },
+);
 
-databaseSchemaRoutes.get("/:type/schema", c => {
-  const type = c.req.param("type");
-  const schema = DATABASE_SCHEMAS[type];
-  if (!schema) {
-    return c.json({ success: false, error: "Database type not found" }, 404);
-  }
-  return c.json({ success: true, data: schema });
-});
+databaseSchemaRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{type}/schema",
+    tags: ["Databases"],
+    summary: "Get database connection schema",
+    description:
+      "Returns the connection-form field schema for a database type. Public — no authentication required.",
+    security: [],
+    request: { params: DatabaseTypeParam },
+    responses: {
+      200: jsonContent(
+        successEnvelope(z.object({ fields: z.array(FieldSchemaSchema) })),
+        "Connection-form field schema.",
+      ),
+      404: errorJson("Database type not found"),
+    },
+  }),
+  c => {
+    const { type } = c.req.valid("param");
+    const schema = DATABASE_SCHEMAS[type];
+    if (!schema) {
+      return c.json({ success: false, error: "Database type not found" }, 404);
+    }
+    return c.json({ success: true as const, data: schema }, 200);
+  },
+);
 
-// GET /api/databases/:type/icon.svg - return SVG icon for database type
-databaseSchemaRoutes.get("/:type/icon.svg", c => {
-  const type = c.req.param("type");
-  if (!type) return c.text("Database type is required", 400);
+databaseSchemaRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{type}/icon.svg",
+    tags: ["Databases"],
+    summary: "Get database icon",
+    description:
+      "Returns the SVG icon for a database type (with a generic fallback).",
+    security: [],
+    request: { params: DatabaseTypeParam },
+    responses: {
+      200: {
+        description: "SVG icon.",
+        content: { "image/svg+xml": { schema: z.string() } },
+      },
+      304: { description: "Not modified (matched `If-None-Match`)." },
+    },
+  }),
+  c => {
+    const { type } = c.req.valid("param");
 
-  // Try filesystem icon under src/databases/icons/{type}.svg
-  const tryPaths = [
-    // New per-driver folder convention (compiled path first)
-    path.resolve(__dirname, "..", "databases", "drivers", type, "icon.svg"),
-    // When running from monorepo root in dev (ts-node/ts-node-dev)
-    path.resolve(
-      process.cwd(),
-      "src",
-      "databases",
-      "drivers",
-      type,
-      "icon.svg",
-    ),
-    // When process.cwd() is the monorepo root and API code lives under api/src
-    path.resolve(
-      process.cwd(),
-      "api",
-      "src",
-      "databases",
-      "drivers",
-      type,
-      "icon.svg",
-    ),
-  ];
+    // Try filesystem icon under src/databases/icons/{type}.svg
+    const tryPaths = [
+      // New per-driver folder convention (compiled path first)
+      path.resolve(__dirname, "..", "databases", "drivers", type, "icon.svg"),
+      // When running from monorepo root in dev (ts-node/ts-node-dev)
+      path.resolve(
+        process.cwd(),
+        "src",
+        "databases",
+        "drivers",
+        type,
+        "icon.svg",
+      ),
+      // When process.cwd() is the monorepo root and API code lives under api/src
+      path.resolve(
+        process.cwd(),
+        "api",
+        "src",
+        "databases",
+        "drivers",
+        type,
+        "icon.svg",
+      ),
+    ];
 
-  for (const p of tryPaths) {
-    if (fs.existsSync(p)) {
-      const stat = fs.statSync(p);
-      const etag = `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`;
+    for (const p of tryPaths) {
+      if (fs.existsSync(p)) {
+        const stat = fs.statSync(p);
+        const etag = `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`;
 
-      // Check If-None-Match for conditional requests
-      const ifNoneMatch = c.req.header("If-None-Match");
-      if (ifNoneMatch === etag) {
-        return c.body(null, { status: 304 });
-      }
+        // Check If-None-Match for conditional requests
+        const ifNoneMatch = c.req.header("If-None-Match");
+        if (ifNoneMatch === etag) {
+          return c.body(null, 304);
+        }
 
-      const svgBuffer = fs.readFileSync(p);
-      const isDev = process.env.NODE_ENV !== "production";
-      return c.body(svgBuffer, {
-        headers: {
+        const svgBuffer = fs.readFileSync(p);
+        const isDev = process.env.NODE_ENV !== "production";
+        return c.body(svgBuffer, 200, {
           "Content-Type": "image/svg+xml",
           ETag: etag,
           // In dev: always revalidate. In prod: cache for 1 day but allow revalidation.
           "Cache-Control": isDev
             ? "no-cache"
             : "public, max-age=86400, must-revalidate",
-        },
-      });
+        });
+      }
     }
-  }
 
-  // Generic database fallback when no icon.svg exists in driver folder
-  const svg = `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="4" rx="2" fill="#90a4ae"/><rect x="3" y="10" width="18" height="4" rx="2" fill="#b0bec5"/><rect x="3" y="16" width="18" height="4" rx="2" fill="#cfd8dc"/></svg>`;
+    // Generic database fallback when no icon.svg exists in driver folder
+    const svg = `<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="4" rx="2" fill="#90a4ae"/><rect x="3" y="10" width="18" height="4" rx="2" fill="#b0bec5"/><rect x="3" y="16" width="18" height="4" rx="2" fill="#cfd8dc"/></svg>`;
 
-  return c.body(Buffer.from(svg, "utf8"), {
-    headers: {
+    return c.body(Buffer.from(svg, "utf8"), 200, {
       "Content-Type": "image/svg+xml",
       "Cache-Control": "public, max-age=86400",
-    },
-  });
-});
+    });
+  },
+);

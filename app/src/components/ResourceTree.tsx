@@ -52,6 +52,7 @@ import {
   DroppableFolderContent,
   SectionScope,
 } from "./resource-tree/dnd";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 // Pixel height of a single tree row. Used to stack sticky folder/section
 // headers so each ancestor pins one row below its parent as the user scrolls.
@@ -66,6 +67,7 @@ const ICON_COL_WIDTH = 20;
 import {
   findNodeInSections,
   getFolderDropTargetId,
+  isSidebarRowActive,
   resolveTreeDropTarget,
 } from "./resource-tree/utils";
 import {
@@ -114,6 +116,16 @@ export interface ResourceTreeProps {
   mode?: "sidebar" | "picker";
   activeItemId?: string | null;
   searchQuery?: string;
+
+  /**
+   * Reveal request: the id of a node to expand-to and scroll into view. Pair
+   * it with `revealNonce` — the reveal runs whenever the nonce changes (so the
+   * same node can be revealed repeatedly, e.g. re-clicking a breadcrumb). The
+   * tree expands every ancestor folder, then scrolls the row into view,
+   * retrying briefly to accommodate lazily-loaded children (e.g. app files).
+   */
+  revealNodeId?: string | null;
+  revealNonce?: number;
 
   getItemIcon?: (
     node: ResourceTreeNode,
@@ -166,8 +178,10 @@ export interface ResourceTreeProps {
   /**
    * Opt-in: when this returns true for a directory node, clicking the row
    * (name/icon area) fires `onItemClick` instead of toggling expansion. The
-   * chevron still expands/collapses. Used by the database explorer so
-   * clicking a table name opens its data while the caret browses the schema.
+   * caret — and anything left of it (the indent) — still expands/collapses.
+   * Used by the database explorer so clicking a table name opens its data
+   * while the caret browses the schema, and by the apps explorer so clicking
+   * an app name opens the app while the caret browses its files.
    */
   shouldFolderClickActivate?: (node: ResourceTreeNode) => boolean;
   onPickerFileClick?: (node: ResourceTreeNode) => void;
@@ -219,6 +233,8 @@ function ResourceTreeInner(
     mode = "sidebar",
     activeItemId,
     searchQuery = "",
+    revealNodeId,
+    revealNonce,
     getItemIcon,
     getRightAdornment,
     onLoadChildren,
@@ -260,10 +276,21 @@ function ResourceTreeInner(
   }: ResourceTreeProps,
   ref: React.Ref<ResourceTreeRef>,
 ) {
+  // Larger, finger-friendly rows and caret hit areas on phones. `rowHeight`
+  // also feeds the sticky folder/section header stacking, so deriving it once
+  // here keeps everything aligned.
+  const isMobile = useIsMobile();
+  const rowHeight = isMobile ? 36 : ROW_HEIGHT;
+  const iconColWidth = isMobile ? 28 : ICON_COL_WIDTH;
+  const caretSize = isMobile ? 28 : 18;
+
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [renamingItemId, setRenamingItemId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  // Scopes the reveal `querySelector` to this tree so we don't accidentally
+  // scroll an identically-id'd row in another tree (e.g. a picker dialog).
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const [contextMenu, setContextMenu] = useState<{
     anchorPosition: { top: number; left: number };
@@ -900,6 +927,63 @@ function ResourceTreeInner(
     updateLocationSelection,
   ]);
 
+  // Reveal-to-node: expand ancestor folders and scroll the target row into
+  // view whenever `revealNonce` changes (e.g. a tab switch or breadcrumb
+  // click). `sections` is a dep so the reveal re-attempts once lazily-loaded
+  // children arrive (apps fetch their file tree on demand); the
+  // `revealDoneNonceRef` guard stops it from re-firing once the row is found,
+  // so later unrelated tree changes don't yank the scroll position.
+  const revealDoneNonceRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!revealNonce || !revealNodeId) return;
+    if (revealDoneNonceRef.current === revealNonce) return;
+
+    const location = findNodeLocation(revealNodeId);
+    if (location) {
+      const sectionNodes =
+        sections.find(section => section.key === location.sectionKey)?.nodes ??
+        [];
+      for (const expansionKey of findAncestorExpansionKeys(
+        sectionNodes,
+        revealNodeId,
+      )) {
+        onExpandFolder(expansionKey);
+      }
+      setSectionExpanded(prev =>
+        prev[location.sectionKey] === false
+          ? { ...prev, [location.sectionKey]: true }
+          : prev,
+      );
+    }
+
+    const escapeId =
+      typeof CSS !== "undefined" && typeof CSS.escape === "function"
+        ? CSS.escape(revealNodeId)
+        : revealNodeId.replace(/["\\]/g, "\\$&");
+    let cancelled = false;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = rootRef.current?.querySelector(`[data-node-id="${escapeId}"]`);
+      if (el) {
+        // Center the revealed row vertically rather than nudging it just barely
+        // into view, so the focused entity lands near the middle of the panel.
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        revealDoneNonceRef.current = revealNonce;
+        cancelled = true;
+      }
+    };
+    // Retry on a short ramp to cover render + lazy child fetch latency.
+    const timeouts = [0, 80, 200, 450, 900, 1600].map(delay =>
+      window.setTimeout(tryScroll, delay),
+    );
+
+    return () => {
+      cancelled = true;
+      timeouts.forEach(id => window.clearTimeout(id));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealNonce, revealNodeId, sections]);
+
   const renderInlineRenameInput = (nodeId: string) => (
     <input
       ref={renameInputRef}
@@ -945,7 +1029,7 @@ function ResourceTreeInner(
     pl: 1.5 + depth * 1.5,
     minWidth: 0,
     py: 0,
-    minHeight: ROW_HEIGHT,
+    minHeight: rowHeight,
     bgcolor: isDropTarget
       ? "action.hover"
       : isSelected
@@ -983,7 +1067,11 @@ function ResourceTreeInner(
       const isExpanded = node.isDirectory && isNodeExpanded(node);
       const isSelectedLocation =
         mode === "picker" && currentSelectedLocation === node.id;
-      const isActive = mode === "sidebar" && activeItemId === node.id;
+      const isActive = isSidebarRowActive({
+        mode,
+        activeItemId,
+        nodeId: node.id,
+      });
       const isRenaming = renamingItemId === node.id;
       const isDropTarget =
         dropTargetId === node.id ||
@@ -995,13 +1083,27 @@ function ResourceTreeInner(
           <ListItemButton
             key={node.id}
             data-node-id={node.id}
-            selected={isSelectedLocation}
-            onClick={() => {
+            selected={isSelectedLocation || isActive}
+            onClick={event => {
               setFocusedNodeId(node.id);
               if (mode === "picker") {
                 updateLocationSelection(node.id, sectionKey);
               } else if (shouldFolderClickActivate?.(node)) {
-                onItemClick?.(node);
+                // Clicks on the caret itself are handled (and stopped) by the
+                // caret's own handler; clicks left of it (the indent) should
+                // still toggle, while the name/icon area activates.
+                const caret =
+                  event.currentTarget.querySelector("[data-tree-caret]");
+                if (
+                  caret &&
+                  event.clientX <= caret.getBoundingClientRect().right
+                ) {
+                  const willExpand = !isExpanded;
+                  onToggleFolder(getExpansionKey(node));
+                  if (willExpand) maybeLoadChildren(node);
+                } else {
+                  onItemClick?.(node);
+                }
               } else {
                 const willExpand = !isExpanded;
                 onToggleFolder(getExpansionKey(node));
@@ -1019,13 +1121,17 @@ function ResourceTreeInner(
               ...buildRowSx({
                 depth,
                 isDropTarget,
-                isSelected: isSelectedLocation,
+                // Folder rows must respect the sidebar active highlight too —
+                // entities like apps and Postgres tables open from a directory
+                // row (see isSidebarRowActive). Picker selection still wins via
+                // `isSelectedLocation`.
+                isSelected: isSelectedLocation || isActive,
               }),
               position: "sticky",
               // Stack ancestor headers: depth=1 sits just below the section
               // header (which is sticky at top: 0), depth=2 one row below
               // that, and so on.
-              top: depth * ROW_HEIGHT,
+              top: depth * rowHeight,
               // Deeper folders get a lower z-index so outer ancestors always
               // paint on top when sticky rows collide during scroll.
               zIndex: 20 - depth,
@@ -1036,14 +1142,14 @@ function ResourceTreeInner(
               // visually invisible against the surrounding tree at rest.
               // Selected / drop-target states from buildRowSx still win.
               backgroundColor:
-                isDropTarget || isSelectedLocation
+                isDropTarget || isSelectedLocation || isActive
                   ? undefined
                   : "background.default",
             }}
           >
             <ListItemIcon
               sx={{
-                minWidth: ICON_COL_WIDTH,
+                minWidth: iconColWidth,
                 mr: 0,
                 // MUI's ListItemIcon defaults to `action.active` which looks
                 // dimmed; the chevron should match the folder name's color.
@@ -1052,6 +1158,7 @@ function ResourceTreeInner(
             >
               <Box
                 component="span"
+                data-tree-caret
                 onClick={event => {
                   event.stopPropagation();
                   const willExpand = !isExpanded;
@@ -1062,8 +1169,8 @@ function ResourceTreeInner(
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  width: 18,
-                  height: 18,
+                  width: caretSize,
+                  height: caretSize,
                 }}
               >
                 {isExpanded ? (
@@ -1074,7 +1181,7 @@ function ResourceTreeInner(
               </Box>
             </ListItemIcon>
             {!hideFolderIcon && (
-              <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+              <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
                 {getItemIcon ? (
                   getItemIcon(node, { isExpanded })
                 ) : isExpanded ? (
@@ -1152,8 +1259,8 @@ function ResourceTreeInner(
                       sx={{
                         pl: 1.5 + (depth + 1) * 1.5 + 2.75,
                         py: 0,
-                        minHeight: ROW_HEIGHT,
-                        lineHeight: `${ROW_HEIGHT}px`,
+                        minHeight: rowHeight,
+                        lineHeight: `${rowHeight}px`,
                         display: "flex",
                         alignItems: "center",
                       }}
@@ -1226,10 +1333,10 @@ function ResourceTreeInner(
         >
           {!hideFolderIcon && (
             <ListItemIcon
-              sx={{ minWidth: ICON_COL_WIDTH, visibility: "hidden", mr: 0 }}
+              sx={{ minWidth: iconColWidth, visibility: "hidden", mr: 0 }}
             />
           )}
-          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+          <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
             {getItemIcon ? getItemIcon(node) : null}
           </ListItemIcon>
           <MuiListItemText
@@ -1302,7 +1409,7 @@ function ResourceTreeInner(
           py: 0,
           pl: 1.5,
           minWidth: 0,
-          minHeight: ROW_HEIGHT,
+          minHeight: rowHeight,
           bgcolor: isDropTarget
             ? "action.hover"
             : headerSelected
@@ -1327,7 +1434,7 @@ function ResourceTreeInner(
         }}
       >
         <ListItemIcon
-          sx={{ minWidth: ICON_COL_WIDTH, mr: 0, color: "text.primary" }}
+          sx={{ minWidth: iconColWidth, mr: 0, color: "text.primary" }}
         >
           <Box
             component="span"
@@ -1342,8 +1449,8 @@ function ResourceTreeInner(
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              width: 18,
-              height: 18,
+              width: caretSize,
+              height: caretSize,
             }}
           >
             {sectionExpanded[section.key] !== false ? (
@@ -1354,7 +1461,7 @@ function ResourceTreeInner(
           </Box>
         </ListItemIcon>
         {section.icon ? (
-          <ListItemIcon sx={{ minWidth: ICON_COL_WIDTH, mr: 0.75 }}>
+          <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
             {section.icon}
           </ListItemIcon>
         ) : null}
@@ -1453,11 +1560,8 @@ function ResourceTreeInner(
               fontSize: "0.8125rem",
             }}
           >
-            {draggedNode.isDirectory ? (
-              <Folder size={14} />
-            ) : (
-              getItemIcon?.(draggedNode) || null
-            )}
+            {getItemIcon?.(draggedNode) ||
+              (draggedNode.isDirectory ? <Folder size={14} /> : null)}
             <span className="app-truncate-inline">{draggedNode.name}</span>
           </Box>
         ) : null}
@@ -1469,9 +1573,11 @@ function ResourceTreeInner(
 
   return (
     <>
-      <React.Profiler id="ResourceTree.content" onRender={onRenderDebug}>
-        {content}
-      </React.Profiler>
+      <Box ref={rootRef} sx={{ display: "contents" }}>
+        <React.Profiler id="ResourceTree.content" onRender={onRenderDebug}>
+          {content}
+        </React.Profiler>
+      </Box>
 
       <Menu
         open={!!contextMenu}

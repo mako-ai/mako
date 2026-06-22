@@ -1,0 +1,214 @@
+---
+title: "How to Connect to PostgreSQL from Java"
+description: "Connect to PostgreSQL from Java with the pgJDBC driver: DriverManager, DataSource, PreparedStatement, HikariCP pooling, SSL, and the errors you actually hit in production."
+database: "postgresql"
+category: "how-to"
+tags: ["postgresql", "java", "jdbc", "pgjdbc", "hikaricp", "connection"]
+date: "2026-06-17"
+---
+
+Java talks to PostgreSQL through JDBC, and for PostgreSQL that means one driver: pgJDBC (`org.postgresql:postgresql`). Everything else (Spring Data, Hibernate, jOOQ, R2DBC's blocking fallback) sits on top of it or replaces it wholesale. This guide shows the raw JDBC connection code first, then connection pooling with HikariCP, then SSL and the errors you will actually hit.
+
+## The one driver you need
+
+| Library | Layer | When to use |
+|---|---|---|
+| pgJDBC (`org.postgresql:postgresql`) | JDBC driver | Always. This is the actual wire-protocol driver. |
+| HikariCP | Connection pool | Any app that opens more than a handful of connections. |
+| Spring JDBC / JdbcTemplate | Helper over JDBC | Spring apps that want less boilerplate. |
+| Hibernate / JPA | ORM | Entity mapping, not raw SQL. Still uses pgJDBC underneath. |
+| r2dbc-postgresql | Reactive driver | Non-blocking stacks (WebFlux). A separate driver, not pgJDBC. |
+
+For a normal blocking application, you need pgJDBC plus a pool. That is it.
+
+## Adding the dependency
+
+Maven:
+
+```xml
+<dependency>
+  <groupId>org.postgresql</groupId>
+  <artifactId>postgresql</artifactId>
+  <version>42.7.11</version>
+</dependency>
+```
+
+Gradle:
+
+```groovy
+implementation 'org.postgresql:postgresql:42.7.11'
+```
+
+pgJDBC 42.7.x targets Java 8 and up and speaks protocol version 3.0, compatible with PostgreSQL 8.4 and higher (as of June 2026). Modern versions register themselves automatically, so you do not need `Class.forName("org.postgresql.Driver")` anymore. That line has been unnecessary since JDBC 4.0 and the service-provider mechanism; you will still see it in old tutorials.
+
+## The basic connection
+
+```java
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
+public class Example {
+    public static void main(String[] args) throws Exception {
+        String url = "jdbc:postgresql://localhost:5432/mydb";
+        String user = "app_user";
+        String password = "secret";
+
+        try (Connection conn = DriverManager.getConnection(url, user, password)) {
+            String sql = "SELECT id, email FROM users WHERE created_at > ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setObject(1, java.time.LocalDate.of(2026, 1, 1));
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        System.out.println(rs.getLong("id") + " " + rs.getString("email"));
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+Three things to notice:
+
+- **try-with-resources everywhere.** `Connection`, `PreparedStatement`, and `ResultSet` all implement `AutoCloseable`. If you do not close them, you leak connections until the server refuses new ones with `FATAL: sorry, too many clients already`. The nested try blocks close in reverse order.
+- **`?` placeholders, not string concatenation.** A `PreparedStatement` with bound parameters is the only safe way to pass values. Building SQL with `"... WHERE id = " + userInput` is how you get SQL injection.
+- **JDBC parameters are 1-based.** `setObject(1, ...)` sets the first `?`. This trips up everyone at least once.
+
+## Connection URL format
+
+```
+jdbc:postgresql://host:port/database?param1=value1&param2=value2
+```
+
+Common parameters worth knowing:
+
+```
+jdbc:postgresql://db.example.com:5432/mydb?ssl=true&sslmode=verify-full&ApplicationName=billing-worker&connectTimeout=10
+```
+
+- `ApplicationName` shows up in `pg_stat_activity`, which makes it far easier to find which service is holding a connection.
+- `connectTimeout` (seconds) caps how long the initial TCP connect waits. The default is no timeout, which means a dead host hangs the thread indefinitely. Set it.
+- `currentSchema=app` sets the search path so you do not have to schema-qualify every table.
+
+You can also pass username and password as URL parameters, but the two-argument and `Properties` forms keep credentials out of log lines that print the URL.
+
+## Use a connection pool (HikariCP)
+
+`DriverManager.getConnection` opens a fresh TCP connection and authenticates every time. PostgreSQL connections are heavyweight (each one is a backend process on the server), so opening one per request will dominate your latency and exhaust `max_connections`. In production you pool.
+
+HikariCP is the de facto standard and the default pool in Spring Boot.
+
+```xml
+<dependency>
+  <groupId>com.zaxxer</groupId>
+  <artifactId>HikariCP</artifactId>
+  <version>7.1.0</version>
+</dependency>
+```
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import javax.sql.DataSource;
+
+HikariConfig config = new HikariConfig();
+config.setJdbcUrl("jdbc:postgresql://localhost:5432/mydb");
+config.setUsername("app_user");
+config.setPassword("secret");
+config.setMaximumPoolSize(10);
+config.setConnectionTimeout(30_000); // ms to wait for a free connection
+config.setMaxLifetime(1_800_000);    // 30 min, keep below server/proxy idle limits
+
+try (HikariDataSource ds = new HikariDataSource(config)) {
+    try (Connection conn = ds.getConnection()) {
+        // borrowed from the pool; close() returns it, does not destroy it
+    }
+}
+```
+
+The single most common pooling mistake is sizing `maximumPoolSize` too high. More connections is not faster: PostgreSQL has a hard `max_connections` ceiling (often 100), and every pool across every app instance draws from it. HikariCP's own guidance is that a small pool (often around `cores * 2`) outperforms a large one because it reduces contention on the server. If you run 8 app instances with a pool of 50 each, you are asking for 400 connections against a server that allows 100, and the ninth instance will get connection refusals.
+
+`setMaxLifetime` matters because cloud load balancers, PgBouncer, and PostgreSQL's own `idle_in_transaction_session_timeout` can silently drop a connection the pool still thinks is alive. Keeping max lifetime a bit under those server-side limits means Hikari retires connections before the server does, avoiding "connection has been closed" surprises mid-query.
+
+## SSL / TLS
+
+For anything crossing a network you do not fully control, require encryption and verify the server certificate:
+
+```
+jdbc:postgresql://db.example.com:5432/mydb?ssl=true&sslmode=verify-full
+```
+
+The `sslmode` values are the part people get wrong:
+
+| sslmode | Encrypts | Verifies cert | Verifies hostname |
+|---|---|---|---|
+| `disable` | No | No | No |
+| `require` | Yes | No | No |
+| `verify-ca` | Yes | Yes | No |
+| `verify-full` | Yes | Yes | Yes |
+
+`require` encrypts but does nothing to stop a man-in-the-middle, because it does not check the certificate. `verify-full` is the one you want for production: it confirms the certificate chains to a trusted CA and that the hostname matches. You may need to point pgJDBC at the CA with `sslrootcert=/path/to/root.crt`.
+
+## Transactions
+
+By default a JDBC connection is in autocommit mode, so each statement commits on its own. For multi-statement atomicity, turn it off:
+
+```java
+try (Connection conn = ds.getConnection()) {
+    conn.setAutoCommit(false);
+    try (PreparedStatement debit = conn.prepareStatement(
+             "UPDATE accounts SET balance = balance - ? WHERE id = ?");
+         PreparedStatement credit = conn.prepareStatement(
+             "UPDATE accounts SET balance = balance + ? WHERE id = ?")) {
+        debit.setBigDecimal(1, amount); debit.setLong(2, from); debit.executeUpdate();
+        credit.setBigDecimal(1, amount); credit.setLong(2, to); credit.executeUpdate();
+        conn.commit();
+    } catch (Exception e) {
+        conn.rollback();
+        throw e;
+    }
+}
+```
+
+When you borrow from a pool, reset state you changed. If you flip autocommit off and forget to restore it (or the pool does not), the next code to borrow that connection inherits the surprise. HikariCP resets autocommit on return by default, which is one more reason to pool rather than hand-manage connections.
+
+## Batch inserts
+
+Round-tripping one `INSERT` per row is slow. Batch them, and add `reWriteBatchedInserts=true` to the URL so pgJDBC rewrites the batch into a single multi-row `INSERT`, which is dramatically fewer network round trips:
+
+```java
+String sql = "INSERT INTO events (user_id, kind) VALUES (?, ?)";
+try (PreparedStatement ps = conn.prepareStatement(sql)) {
+    for (Event e : events) {
+        ps.setLong(1, e.userId());
+        ps.setString(2, e.kind());
+        ps.addBatch();
+    }
+    ps.executeBatch();
+}
+```
+
+Without `reWriteBatchedInserts`, `executeBatch()` still sends each statement separately over the wire; the flag is what makes batching actually fast on PostgreSQL.
+
+## Errors you will actually hit
+
+| Error / SQLState | Cause | Fix |
+|---|---|---|
+| `FATAL: password authentication failed` (28P01) | Wrong password, or `pg_hba.conf` requires a different auth method | Check credentials and the server's `pg_hba.conf` line for your host |
+| `FATAL: sorry, too many clients already` (53300) | Connections exhausted `max_connections` | Pool, and lower `maximumPoolSize` across all instances |
+| `The connection attempt failed` (08001) | Host unreachable, wrong port, firewall | Verify host/port; set `connectTimeout` so it fails fast |
+| `FATAL: database "x" does not exist` (3D000) | Typo or wrong database in URL | Check the path segment of the JDBC URL |
+| `No suitable driver found for jdbc:postgresql:...` | Driver not on the classpath | Confirm the `org.postgresql:postgresql` dependency resolved |
+| `This connection has been closed` | Server or proxy dropped an idle connection the pool reused | Set `maxLifetime` below the server/proxy idle timeout |
+
+The `No suitable driver found` one is almost always a build problem, not a code problem: the dependency is missing, scoped to `test`, or shaded out of the final jar.
+
+## A note on querying after you connect
+
+Once the connection works, the day-to-day question shifts to writing the actual SQL: checking what tables exist, eyeballing a result set, confirming your inserts landed. You can do that from `psql`, from a GUI client (we compared them in [Best PostgreSQL GUI Clients](/guides/postgresql-gui-client)), or with Mako. For getting data in, see [Import CSV to PostgreSQL](/guides/import-csv-to-postgresql) and [Import JSON to PostgreSQL](/guides/import-json-to-postgresql). When you start writing analytical queries, the [PostgreSQL window functions](/guides/postgresql/window-functions) and [JSON queries](/guides/postgresql/json-queries) guides cover the parts of SQL that pay off most.
+
+Version notes (as of June 2026): pgJDBC is at 42.7.x, the actively maintained line; HikariCP is at 7.x. Both target current LTS Java releases.
+
+Mako connects to PostgreSQL with AI-powered autocomplete for writing queries. Try it free at mako.ai.

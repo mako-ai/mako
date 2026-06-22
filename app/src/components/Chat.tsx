@@ -12,6 +12,7 @@ import React, {
 import {
   Box,
   Button,
+  Chip,
   IconButton,
   List,
   ListItem,
@@ -46,6 +47,7 @@ import {
   Check,
   History,
   ImagePlus,
+  Menu as MenuIcon,
   Pencil,
   Plus,
   MessageSquare,
@@ -69,6 +71,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import type { ConsoleModification } from "../hooks/useMonacoConsole";
@@ -77,7 +80,14 @@ import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
+import { DbtRunCard } from "./DbtRunCard";
 import { PlanCard } from "./PlanCard";
+import {
+  focusPlanTab,
+  syncPlanTabTitle,
+  usePlanStore,
+  type PartialSubmitPlanInput,
+} from "../store/planStore";
 import type {
   AskClarifyingQuestionsInput,
   AskClarifyingQuestionsOutput,
@@ -101,9 +111,15 @@ import { consumePendingScreenshotVisionAttachments } from "../agent-runtime/scre
 import { buildModificationDiff } from "../utils/consoleModification";
 import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
+  APP_EXECUTOR_TOOL_NAMES,
+  DBT_EXECUTOR_TOOL_NAMES,
+  DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
+import { executeAppAgentTool } from "../app-runtime/agent-tools";
+import { executeDbtAgentTool } from "../dbt-runtime/agent-tools";
+import { executeDataSourceTool } from "../agent-runtime/data-source-tools";
 import { UpgradePrompt } from "./UpgradePrompt";
 import {
   onRenderDebug,
@@ -892,6 +908,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                 return (
                   <PlanCard
                     key={key}
+                    toolCallId={toolCallId}
                     input={part.input as SubmitPlanInput}
                     output={part.output as SubmitPlanOutput}
                   />
@@ -899,6 +916,32 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
               }
               if (rawState !== "output-error") {
                 return null;
+              }
+            }
+
+            // Async dbt builds: once dbt_run_model has dispatched a run (output
+            // carries a runId), render a live run card that self-polls the run
+            // — decoupled from the agent turn, so it keeps updating after the
+            // turn ends and resumes on chat reload. While the dispatch is still
+            // in flight, or if it errored without a runId, fall through to the
+            // generic card.
+            if (
+              toolName === "dbt_run_model" &&
+              rawState === "output-available"
+            ) {
+              const dbtOutput = cardOutput as { runId?: string } | undefined;
+              const dbtInput = part.input as
+                | { projectId?: string; model?: string }
+                | undefined;
+              if (dbtOutput?.runId && dbtInput?.projectId) {
+                return (
+                  <DbtRunCard
+                    key={key}
+                    runId={dbtOutput.runId}
+                    projectId={dbtInput.projectId}
+                    label={dbtInput.model}
+                  />
+                );
               }
             }
             return (
@@ -1008,7 +1051,7 @@ interface QueuedPromptListProps {
   prompts: QueuedPrompt[];
   editingId: string | null;
   onStartEdit: (id: string) => void;
-  onPromote: (id: string) => void;
+  onSendNow: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
@@ -1016,7 +1059,7 @@ interface QueuedPromptRowProps {
   prompt: QueuedPrompt;
   isEditing: boolean;
   onStartEdit: (id: string) => void;
-  onPromote: (id: string) => void;
+  onSendNow: (id: string) => void;
   onRemove: (id: string) => void;
 }
 
@@ -1035,7 +1078,7 @@ const QueuedPromptRow = React.memo(
     prompt,
     isEditing,
     onStartEdit,
-    onPromote,
+    onSendNow,
     onRemove,
   }: QueuedPromptRowProps) => {
     const imageCount = prompt.files?.length ?? 0;
@@ -1113,15 +1156,17 @@ const QueuedPromptRow = React.memo(
           >
             <Pencil size={14} />
           </IconButton>
-          <IconButton
-            type="button"
-            aria-label="Send queued prompt next"
-            onClick={() => onPromote(prompt.id)}
-            size="small"
-            sx={QUEUED_ROW_ACTION_BTN_SX}
-          >
-            <ArrowUp size={14} />
-          </IconButton>
+          <Tooltip title="Send now (interrupts the running chat)">
+            <IconButton
+              type="button"
+              aria-label="Send now (interrupts the running chat)"
+              onClick={() => onSendNow(prompt.id)}
+              size="small"
+              sx={QUEUED_ROW_ACTION_BTN_SX}
+            >
+              <ArrowUp size={14} />
+            </IconButton>
+          </Tooltip>
           <IconButton
             type="button"
             aria-label="Remove queued prompt"
@@ -1143,7 +1188,7 @@ const QueuedPromptList = React.memo(
     prompts,
     editingId,
     onStartEdit,
-    onPromote,
+    onSendNow,
     onRemove,
   }: QueuedPromptListProps) => {
     const [expanded, setExpanded] = useState(true);
@@ -1206,7 +1251,7 @@ const QueuedPromptList = React.memo(
                 prompt={prompt}
                 isEditing={prompt.id === editingId}
                 onStartEdit={onStartEdit}
-                onPromote={onPromote}
+                onSendNow={onSendNow}
                 onRemove={onRemove}
               />
             ))}
@@ -1624,6 +1669,7 @@ const ChatInputArea = React.memo(
             {isLoading ? (
               <IconButton
                 type="button"
+                aria-label="Stop generating"
                 onClick={onStop}
                 size="small"
                 sx={{
@@ -1651,6 +1697,7 @@ const ChatInputArea = React.memo(
             ) : (
               <IconButton
                 type="submit"
+                aria-label="Send message"
                 disabled={isSubmitDisabled}
                 size="small"
                 sx={{
@@ -1706,6 +1753,31 @@ function normalizeChatActiveView(kind: ConsoleTab["kind"]): ChatActiveView {
     : "empty";
 }
 
+// Starter prompts for the mobile "Ask your data" empty state. Tapping one runs
+// it through the normal send path.
+const MOBILE_ASK_SUGGESTIONS = [
+  "What tables are in my database?",
+  "Show me the 10 most recent records",
+  "How many rows are in each table?",
+  "Summarize my data with a chart",
+];
+
+// Claude-style floating round button used in the mobile pane headers. Each
+// control carries its own paper fill + blur + hairline so it reads as floating
+// chrome over the content rather than sitting in a solid app bar.
+const MOBILE_FLOAT_BTN_SX = {
+  width: 38,
+  height: 38,
+  borderRadius: "50%",
+  color: "text.secondary",
+  bgcolor: "background.paper",
+  border: 1,
+  borderColor: "divider",
+  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
+  backdropFilter: "blur(8px)",
+  "&:hover": { bgcolor: "action.hover" },
+} as const;
+
 const Chat: React.FC<ChatProps> = ({
   dbFlowFormRef,
   onChartSpecChangeRef,
@@ -1714,6 +1786,13 @@ const Chat: React.FC<ChatProps> = ({
   const paletteMode = useMuiTheme().palette.mode;
   const { currentWorkspace } = useWorkspace();
   const selectedModelId = useSettingsStore(s => s.selectedModelId);
+
+  // On mobile, Chat is the full-screen "Ask your data" home. Track viewport in
+  // a ref so stable useCallback handlers (e.g. console title click) can switch
+  // the mobile tab without widening their dependency arrays.
+  const isMobile = useIsMobile();
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
 
   // Ref for dbFlowFormRef to avoid stale closure in onToolCall
   const dbFlowFormRefCurrent = useRef(dbFlowFormRef);
@@ -1843,6 +1922,9 @@ const Chat: React.FC<ChatProps> = ({
   const [editingPromptId, setEditingPromptId] = useState<string | null>(null);
   const editingPromptIdRef = useRef<string | null>(null);
   editingPromptIdRef.current = editingPromptId;
+  // Id of a prompt the user force-sent (top arrow). Once the interrupted turn
+  // settles, the drain sends it immediately, bypassing the normal busy guards.
+  const pendingForcePromptIdRef = useRef<string | null>(null);
   const editingPrompt = useMemo(
     () => queuedPrompts.find(prompt => prompt.id === editingPromptId) ?? null,
     [queuedPrompts, editingPromptId],
@@ -2066,6 +2148,126 @@ const Chat: React.FC<ChatProps> = ({
                   dashboardError instanceof Error
                     ? dashboardError.message
                     : "Dashboard tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- React App tools (client-side) ---
+        if (APP_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeAppTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+
+          // Fire-and-forget, same rationale as dashboard tools above: never
+          // await client work inside onToolCall or the SSE finish chunk stalls.
+          void (async () => {
+            try {
+              const appToolOutput = await executeAppAgentTool(toolName, input, {
+                executionId: activeAppTool.executionId,
+                signal: activeAppTool.abortController.signal,
+              });
+
+              if (activeAppTool.abortController.signal.aborted) return;
+
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                appToolOutput ?? {
+                  success: false,
+                  error: `App tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (appError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeAppTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  appError instanceof Error
+                    ? appError.message
+                    : "App tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- dbt tools (client-side) ---
+        if (DBT_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeDbtTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          // Fire-and-forget, same rationale as app tools above.
+          void (async () => {
+            try {
+              const dbtToolOutput = await executeDbtAgentTool(toolName, input);
+              if (activeDbtTool.abortController.signal.aborted) return;
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                dbtToolOutput ?? {
+                  success: false,
+                  error: `dbt tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dbtError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDbtTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  dbtError instanceof Error
+                    ? dbtError.message
+                    : "dbt tool execution failed",
+              });
+            }
+          })();
+          return;
+        }
+
+        // --- Shared data source tools (apps + dashboards) ---
+        if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
+          const activeDataTool = registerActiveClientToolCall(
+            toolName,
+            toolCall.toolCallId,
+          );
+          void (async () => {
+            try {
+              const output = await executeDataSourceTool(toolName, input);
+              if (activeDataTool.abortController.signal.aborted) return;
+              settleActiveClientToolCall(
+                toolName,
+                toolCall.toolCallId,
+                output ?? {
+                  success: false,
+                  error: `Data source tool "${toolName}" did not return a result.`,
+                },
+              );
+            } catch (dataError) {
+              if (
+                manualStopRequestedRef.current ||
+                activeDataTool.abortController.signal.aborted
+              ) {
+                return;
+              }
+              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
+                success: false,
+                error:
+                  dataError instanceof Error
+                    ? dataError.message
+                    : "Data source tool execution failed",
               });
             }
           })();
@@ -2388,7 +2590,47 @@ const Chat: React.FC<ChatProps> = ({
     [addToolOutput],
   );
 
-  const handleStop = useCallback(() => {
+  // Aborting mid-stream can leave assistant tool calls stuck in
+  // "input-available"/"input-streaming" (their output never arrives). The AI
+  // SDK blocks the next sendMessage until every tool call is settled, so patch
+  // any dangling ones to "error" — otherwise a force-send after an interrupt
+  // would hang.
+  const settleDanglingAssistantToolCalls = useCallback(() => {
+    setMessages(prev =>
+      prev.map(msg => {
+        if (msg.role !== "assistant") return msg;
+        const hasPending = msg.parts?.some(p => {
+          const pt = p.type as string;
+          if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+          const s = (p as Record<string, unknown>).state as string;
+          return s !== "output-available" && s !== "error";
+        });
+        if (!hasPending) return msg;
+        return {
+          ...msg,
+          parts: msg.parts.map(p => {
+            const pt = p.type as string;
+            if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+            const s = (p as Record<string, unknown>).state as string;
+            if (s === "output-available" || s === "error") return p;
+            return {
+              ...p,
+              state: "error" as const,
+              output: {
+                success: false,
+                error: "Tool cancelled (chat stopped)",
+              },
+            };
+          }) as any,
+        };
+      }),
+    );
+  }, [setMessages]);
+
+  // Interrupt the in-flight turn: abort client tools, abort server-side
+  // generation, and settle every dangling tool call. Does NOT touch the queue
+  // so callers can choose to clear it (manual stop) or keep it (force-send).
+  const interruptActiveTurn = useCallback(() => {
     manualStopRequestedRef.current = true;
 
     for (const activeToolCall of activeClientToolCallsRef.current.values()) {
@@ -2408,7 +2650,6 @@ const Chat: React.FC<ChatProps> = ({
 
     activeClientToolCallsRef.current.clear();
     setActiveClientToolCallCount(0);
-    setQueuedPrompts([]);
     // With resumable streams, disconnecting no longer cancels the turn — the
     // server keeps generating for reconnecting clients. Stop must be explicit:
     // this aborts the server-side generation and clears the resume pointer.
@@ -2418,13 +2659,85 @@ const Chat: React.FC<ChatProps> = ({
       }).catch(() => undefined);
     }
     stop();
-  }, [addToolOutput, stop]);
+    settleDanglingAssistantToolCalls();
+  }, [addToolOutput, stop, settleDanglingAssistantToolCalls]);
+
+  const handleStop = useCallback(() => {
+    interruptActiveTurn();
+    setQueuedPrompts([]);
+  }, [interruptActiveTurn]);
 
   const isLoading =
     status === "streaming" ||
     status === "submitted" ||
     activeClientToolCallCount > 0;
   isLoadingRef.current = isLoading;
+
+  // Rescue tool cards orphaned by a clean stream end.
+  //
+  // A tool card's "Running…" status is derived purely from the AI SDK tool
+  // part `state` — it only resolves once a terminal `output-available` /
+  // `output-error` chunk arrives. `onError` patches stuck parts when the
+  // stream *throws* (e.g. a 524), and the history-load path rewrites them when
+  // a chat is reopened. But with resumable streams a long server-side tool can
+  // outlive the edge proxy's idle timeout: the SSE connection is closed, the
+  // SDK silently reconnects, the reconnect returns 204 ("nothing streaming"),
+  // and `status` settles back to "ready" without any error ever surfacing. The
+  // live in-memory message then keeps a tool part frozen at "input-available"
+  // → a permanent "Running…" card that also blocks the composer (the SDK won't
+  // accept a new message until every tool call is settled).
+  //
+  // Once the turn has settled (`status === "ready"`) and no client-side tool is
+  // still executing, any non-terminal tool part on the last assistant message
+  // is orphaned. Patch it to an error so the card resolves and input unblocks.
+  // Mirrors the `onError` rescue; uses `setMessages` (not `addToolOutput`) so
+  // it does not feed back into `sendAutomaticallyWhen` and kick off a new turn.
+  useEffect(() => {
+    if (status !== "ready" || activeClientToolCallCount > 0) return;
+    if (activeClientToolCallsRef.current.size > 0) return;
+    setMessages(prev => {
+      const lastIndex = prev.length - 1;
+      const last = prev[lastIndex];
+      if (!last || last.role !== "assistant") return prev;
+      const hasPending = last.parts?.some(p => {
+        const pt = p.type as string;
+        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+        const s = (p as Record<string, unknown>).state as string;
+        return (
+          s !== "output-available" && s !== "output-error" && s !== "error"
+        );
+      });
+      if (!hasPending) return prev;
+      return prev.map((msg, i) => {
+        if (i !== lastIndex) return msg;
+        return {
+          ...msg,
+          parts: msg.parts.map(p => {
+            const pt = p.type as string;
+            if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+            const s = (p as Record<string, unknown>).state as string;
+            if (
+              s === "output-available" ||
+              s === "output-error" ||
+              s === "error"
+            ) {
+              return p;
+            }
+            return {
+              ...p,
+              state: "error" as const,
+              output: {
+                success: false,
+                error:
+                  "Interrupted — stream disconnected before tool completed",
+              },
+            };
+          }) as any,
+        };
+      });
+    });
+  }, [status, activeClientToolCallCount, setMessages]);
+
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
   useRenderCount("Chat", {
@@ -2478,6 +2791,51 @@ const Chat: React.FC<ChatProps> = ({
       useRealtimeStore.getState().setActiveChatId(null);
     };
   }, [chatId, currentWorkspace?.id]);
+
+  // In-band console opening: when a create_console / open_console tool
+  // result streams in (state "output-available"), open the console tab in
+  // THIS window. The chat stream is resumable, so unlike the legacy
+  // chat.ui-intent realtime poke this survives SSE drops, reconnects and
+  // page refreshes — the replayed part triggers the same idempotent open.
+  // Tool call ids seen in RESTORED history are pre-seeded into this set by
+  // loadSession (reopening a chat must not re-open every console it ever
+  // touched — the dedicated consoles-restore payload handles that).
+  const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    handledConsoleOpenToolCallIdsRef.current = new Set();
+  }, [chatId]);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    for (const part of last.parts ?? []) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        state?: string;
+        toolCallId?: string;
+        output?: { success?: boolean; consoleId?: string };
+      };
+      const toolName =
+        p.type === "dynamic-tool"
+          ? p.toolName
+          : p.type?.startsWith("tool-")
+            ? p.type.slice("tool-".length)
+            : undefined;
+      if (toolName !== "create_console" && toolName !== "open_console") {
+        continue;
+      }
+      if (p.state !== "output-available") continue;
+      const consoleId = p.output?.consoleId;
+      if (!p.toolCallId || !p.output?.success || !consoleId) continue;
+      if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
+      handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
+      void useConsoleStore
+        .getState()
+        .openConsoleFromServer(workspaceId, consoleId);
+    }
+  }, [messages, currentWorkspace?.id]);
 
   // Load messages when selecting an existing chat from history
   useEffect(() => {
@@ -2629,6 +2987,19 @@ const Chat: React.FC<ChatProps> = ({
                 parts,
               };
             }) || [];
+
+          // Restored tool parts must not re-trigger the in-band console
+          // opener (only LIVE streamed results should); the consoles-restore
+          // payload below already reopens what matters.
+          for (const msg of convertedMessages) {
+            for (const part of msg.parts ?? []) {
+              const toolCallId = (part as { toolCallId?: string }).toolCallId;
+              if (toolCallId) {
+                handledConsoleOpenToolCallIdsRef.current.add(toolCallId);
+              }
+            }
+          }
+
           setMessages(convertedMessages);
 
           // Restore consoles that were modified by the agent in this chat
@@ -2786,20 +3157,89 @@ const Chat: React.FC<ChatProps> = ({
       ) {
         continue;
       }
-      if (part.state !== "input-available") continue;
+      // submit_plan also surfaces while its input is still streaming so the
+      // plan tab and dock card can render the plan as the model writes it.
+      const isStreamingPlan =
+        partType === "tool-submit_plan" && part.state === "input-streaming";
+      if (part.state !== "input-available" && !isStreamingPlan) continue;
       return {
         toolName: partType.slice("tool-".length) as
           | "ask_clarifying_questions"
           | "submit_plan",
         toolCallId: (part.toolCallId as string) || "",
         input: part.input,
+        streaming: isStreamingPlan,
       };
     }
     return null;
   }, [messages]);
 
+  // While a submit_plan awaits review (input fully available, unresolved),
+  // the chat composer becomes the plan-iteration channel: a sent message is
+  // routed to the tool output as request_changes feedback instead of a normal
+  // user message. Ref keeps handleChatSubmit's identity stable (perf rules).
+  const pendingPlanToolCallIdRef = useRef<string | null>(null);
+  pendingPlanToolCallIdRef.current =
+    pendingInteractiveTool?.toolName === "submit_plan" &&
+    !pendingInteractiveTool.streaming
+      ? pendingInteractiveTool.toolCallId
+      : null;
+
+  // Pending submit_plan: register the plan + its resolver in planStore and
+  // auto-open the main-view plan tab (once per toolCallId, as soon as
+  // streaming starts). While the input streams, each delta only does a cheap
+  // store write (setStreamingInput) — no tab re-open, no resolver churn. The
+  // resolver re-registers whenever handleResolveInteractiveTool changes so it
+  // always settles the tool through the live useChat instance.
+  const autoOpenedPlanTabsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (
+      !pendingInteractiveTool ||
+      pendingInteractiveTool.toolName !== "submit_plan"
+    ) {
+      return;
+    }
+    const { toolCallId, streaming } = pendingInteractiveTool;
+    if (!toolCallId) return;
+
+    const planStore = usePlanStore.getState();
+    if (streaming) {
+      planStore.setStreamingInput(
+        toolCallId,
+        chatId,
+        pendingInteractiveTool.input as PartialSubmitPlanInput | undefined,
+      );
+    } else {
+      const input = pendingInteractiveTool.input as SubmitPlanInput;
+      planStore.registerPlan(toolCallId, chatId, input);
+      planStore.registerResolver(toolCallId, output => {
+        handleResolveInteractiveTool({
+          tool: "submit_plan",
+          toolCallId,
+          output: output as unknown as Record<string, unknown>,
+        });
+      });
+    }
+
+    if (!autoOpenedPlanTabsRef.current.has(toolCallId)) {
+      autoOpenedPlanTabsRef.current.add(toolCallId);
+      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
+      focusPlanTab(toolCallId, chatId, title || "Plan");
+    } else {
+      // Keep the tab title in sync as the title streams in / finalizes
+      // (no-op unless it actually changed).
+      const title = usePlanStore.getState().plans[toolCallId]?.draft.title;
+      if (title) syncPlanTabTitle(toolCallId, chatId, title);
+    }
+  }, [pendingInteractiveTool, chatId, handleResolveInteractiveTool]);
+
   const handleConsoleTitleClick = useCallback(async (consoleId: string) => {
     const store = useConsoleStore.getState();
+    // On mobile the editor lives behind the "Editor" tab — surface it so
+    // tapping a console reference in chat ("view SQL") shows the query.
+    if (isMobileRef.current) {
+      useUIStore.getState().setMobileTab("editor");
+    }
     const existingTab = store.tabs[consoleId];
     if (existingTab) {
       store.setActiveTab(consoleId);
@@ -2842,10 +3282,58 @@ const Chat: React.FC<ChatProps> = ({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
+  // When a turn ends on a completed client-side tool call (e.g. a data
+  // binding), `lastAssistantMessageIsCompleteWithToolCalls` stays true and the
+  // SDK *may* auto-continue the agent loop in a microtask after onFinish. We
+  // must not drain into that gap, but we also must not stall forever when the
+  // SDK is actually idle and won't resume (e.g. the tool settled while the
+  // stream was still streaming, so the SDK's auto-continue condition was
+  // missed). When that predicate is the *only* thing blocking the drain, defer
+  // one macrotask and re-check: if the SDK resumed, `status` is now
+  // submitted/streaming and the loading guard bails; if it stayed idle, force
+  // the drain past the (now-stale) predicate so the queue can't hang.
+  const drainRecheckScheduledRef = useRef(false);
+  const forceDrainPastAutoContinueRef = useRef(false);
+
   const tryDrainQueuedPromptRef = useRef<() => void>(() => {});
   tryDrainQueuedPromptRef.current = () => {
+    // Force-send (top arrow): the user interrupted the running turn to push
+    // this prompt now. Wait only until the aborted turn has fully settled
+    // (no in-flight stream / unanswered tool calls), then send it past every
+    // other guard — including the manual-stop flag the interrupt just set.
+    const forcedId = pendingForcePromptIdRef.current;
+    if (forcedId) {
+      const forced = queuedPromptsRef.current.find(p => p.id === forcedId);
+      if (!forced) {
+        pendingForcePromptIdRef.current = null;
+      } else {
+        if (
+          isLoadingRef.current ||
+          hasPendingAssistantToolCalls(messagesRef.current)
+        ) {
+          return;
+        }
+        pendingForcePromptIdRef.current = null;
+        const remaining = queuedPromptsRef.current.filter(
+          p => p.id !== forcedId,
+        );
+        queuedPromptsRef.current = remaining;
+        isLoadingRef.current = true;
+        setQueuedPrompts(remaining);
+        capturedConsoleIdRef.current = forced.consoleId;
+        capturedDashboardIdRef.current = forced.dashboardId;
+        manualStopRequestedRef.current = false;
+        trackEvent("ai_chat_message_sent", {
+          model: modelIdRef.current,
+          has_context: false,
+          has_images: (forced.files?.length ?? 0) > 0,
+        });
+        sendMessageRef.current({ text: forced.text, files: forced.files });
+        return;
+      }
+    }
+
     if (
-      isLoadingRef.current ||
       manualStopRequestedRef.current ||
       // Don't auto-fire the next queued prompt into a failed turn. The error
       // (e.g. usage_limit_exceeded) stays on screen; dismissing it via
@@ -2853,12 +3341,41 @@ const Chat: React.FC<ChatProps> = ({
       status === "error" ||
       queuedPromptsRef.current.length === 0 ||
       // Don't drain the head item while the user is editing it in the composer.
-      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current ||
-      autoSendWhenComplete({ messages: messagesRef.current }) ||
-      hasPendingAssistantToolCalls(messagesRef.current)
+      queuedPromptsRef.current[0]?.id === editingPromptIdRef.current
     ) {
+      forceDrainPastAutoContinueRef.current = false;
       return;
     }
+
+    // Hard blocks: the agent is genuinely mid-turn (streaming, running a
+    // client tool, or has an unanswered tool call). Sending now would race the
+    // loop or break the SDK's "all tool calls must be settled" invariant.
+    if (
+      isLoadingRef.current ||
+      hasPendingAssistantToolCalls(messagesRef.current)
+    ) {
+      forceDrainPastAutoContinueRef.current = false;
+      return;
+    }
+
+    // Soft block: the turn ended on completed tool calls and the SDK might
+    // auto-continue in a microtask. Give it one macrotask before draining.
+    if (
+      autoSendWhenComplete({ messages: messagesRef.current }) &&
+      !forceDrainPastAutoContinueRef.current
+    ) {
+      if (!drainRecheckScheduledRef.current) {
+        drainRecheckScheduledRef.current = true;
+        setTimeout(() => {
+          drainRecheckScheduledRef.current = false;
+          forceDrainPastAutoContinueRef.current = true;
+          tryDrainQueuedPromptRef.current();
+        }, 80);
+      }
+      return;
+    }
+
+    forceDrainPastAutoContinueRef.current = false;
 
     const [next, ...rest] = queuedPromptsRef.current;
     // Synchronously advance the queue and mark loading BEFORE sending so a
@@ -2896,6 +3413,26 @@ const Chat: React.FC<ChatProps> = ({
         );
       }
       return;
+    }
+
+    // Conversational plan iteration (Cursor-style): while a submitted plan is
+    // awaiting review, the typed message becomes request_changes feedback on
+    // the plan — including the current draft, so manual edits made in the
+    // plan tab flow back — instead of a normal user message.
+    const pendingPlanToolCallId = pendingPlanToolCallIdRef.current;
+    if (pendingPlanToolCallId) {
+      const planStore = usePlanStore.getState();
+      const planEntry = planStore.plans[pendingPlanToolCallId];
+      const feedback = text.trim();
+      if (planEntry?.status === "pending" && feedback) {
+        trackEvent("ai_plan_feedback_sent", { model: modelIdRef.current });
+        planStore.resolvePlan(
+          pendingPlanToolCallId,
+          "request_changes",
+          feedback,
+        );
+        return;
+      }
     }
 
     capturedConsoleIdRef.current = activeConsoleIdRef.current;
@@ -2970,19 +3507,34 @@ const Chat: React.FC<ChatProps> = ({
     }
   }, [queuedPrompts, editingPromptId]);
 
-  // Promote = move to front of the queue so it drains next. While the agent is
-  // busy this only reorders; the existing drain effect sends the front item when
-  // the agent next goes idle (we don't bypass the busy guard).
-  const handlePromoteQueuedPrompt = useCallback((id: string) => {
-    setQueuedPrompts(prev => {
-      const index = prev.findIndex(prompt => prompt.id === id);
-      if (index <= 0) return prev;
-      const next = [...prev];
-      const [item] = next.splice(index, 1);
-      next.unshift(item);
-      return next;
-    });
-  }, []);
+  // Force-send (top arrow): send this prompt right now. If the agent is still
+  // running, interrupt the current turn first, then push it. If idle, just
+  // send it immediately (ahead of any other queued items).
+  const handleSendQueuedPromptNow = useCallback(
+    (id: string) => {
+      if (!queuedPromptsRef.current.some(p => p.id === id)) return;
+      if (editingPromptIdRef.current === id) setEditingPromptId(null);
+
+      // Move to the front for immediate visual feedback.
+      setQueuedPrompts(prev => {
+        const index = prev.findIndex(prompt => prompt.id === id);
+        if (index <= 0) return prev;
+        const next = [...prev];
+        const [item] = next.splice(index, 1);
+        next.unshift(item);
+        return next;
+      });
+
+      pendingForcePromptIdRef.current = id;
+      if (isLoadingRef.current) {
+        interruptActiveTurn();
+      }
+      // Drain now if already idle; otherwise the status→ready transition from
+      // the interrupt re-fires the drain effect, which sends the forced prompt.
+      queueMicrotask(() => tryDrainQueuedPromptRef.current());
+    },
+    [interruptActiveTurn],
+  );
 
   // Copy chat history handler
   const [copiedChat, setCopiedChat] = useState(false);
@@ -3031,13 +3583,15 @@ const Chat: React.FC<ChatProps> = ({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Header with history and new chat */}
+      {/* Header with history and new chat. On mobile this is Claude-style
+          floating chrome: a transparent strip with round buttons (hamburger
+          left, actions right). Desktop keeps the bordered title bar. */}
       <Box
         sx={{
           px: 1,
-          py: 0.25,
-          minHeight: 37,
-          borderBottom: 1,
+          py: isMobile ? 0.75 : 0.25,
+          minHeight: isMobile ? 52 : 37,
+          borderBottom: isMobile ? 0 : 1,
           borderColor: "divider",
         }}
       >
@@ -3059,37 +3613,71 @@ const Chat: React.FC<ChatProps> = ({
               gap: 1,
             }}
           >
-            <Typography
-              variant="h6"
-              sx={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              Chat
-            </Typography>
+            {isMobile ? (
+              <Tooltip title="Open explorer">
+                <IconButton
+                  aria-label="Open explorer"
+                  onClick={() => useUIStore.getState().openMobileDrawer()}
+                  sx={MOBILE_FLOAT_BTN_SX}
+                >
+                  <MenuIcon size={20} />
+                </IconButton>
+              </Tooltip>
+            ) : (
+              <Typography
+                variant="h6"
+                sx={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Chat
+              </Typography>
+            )}
           </Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: isMobile ? 1 : 0.5,
+            }}
+          >
             <Tooltip
               title={copiedChat ? "Copied!" : "Copy chat history as JSON"}
             >
               <span>
                 <IconButton
-                  size="small"
+                  size={isMobile ? "medium" : "small"}
+                  aria-label="Copy chat history as JSON"
                   onClick={handleCopyChatHistory}
                   disabled={messages.length === 0}
+                  sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
                 >
                   {copiedChat ? <Check size={20} /> : <Copy size={20} />}
                 </IconButton>
               </span>
             </Tooltip>
-            <IconButton size="small" onClick={createNewSession}>
-              <Plus size={20} />
-            </IconButton>
-            <IconButton size="small" onClick={handleHistoryMenuOpen}>
-              <History size={20} />
-            </IconButton>
+            <Tooltip title="New chat">
+              <IconButton
+                size={isMobile ? "medium" : "small"}
+                aria-label="New chat"
+                onClick={createNewSession}
+                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
+              >
+                <Plus size={20} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Chat history">
+              <IconButton
+                size={isMobile ? "medium" : "small"}
+                aria-label="Chat history"
+                onClick={handleHistoryMenuOpen}
+                sx={isMobile ? MOBILE_FLOAT_BTN_SX : undefined}
+              >
+                <History size={20} />
+              </IconButton>
+            </Tooltip>
           </Box>
         </Box>
       </Box>
@@ -3227,6 +3815,67 @@ const Chat: React.FC<ChatProps> = ({
           position: "relative",
         }}
       >
+        {/* Mobile "Ask your data" home: hero + starter chips when empty */}
+        {isMobile && messages.length === 0 && (
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              px: 3,
+              gap: 3,
+              pointerEvents: "none",
+            }}
+          >
+            <Box>
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                Ask your data
+              </Typography>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 1, maxWidth: 360 }}
+              >
+                Ask a question in plain English — Mako writes and runs the query
+                for you.
+              </Typography>
+            </Box>
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 1,
+                justifyContent: "center",
+                maxWidth: 440,
+                pointerEvents: "auto",
+              }}
+            >
+              {MOBILE_ASK_SUGGESTIONS.map(suggestion => (
+                <Chip
+                  key={suggestion}
+                  label={suggestion}
+                  clickable
+                  variant="outlined"
+                  disabled={!currentWorkspace}
+                  onClick={() => handleChatSubmit(suggestion)}
+                  sx={{
+                    height: "auto",
+                    py: 0.75,
+                    "& .MuiChip-label": {
+                      whiteSpace: "normal",
+                      display: "block",
+                    },
+                  }}
+                />
+              ))}
+            </Box>
+          </Box>
+        )}
+
         <div ref={scrollContentRef}>
           <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
             <List dense>
@@ -3276,11 +3925,16 @@ const Chat: React.FC<ChatProps> = ({
           only shows a read-only summary once the user has responded. */}
       {pendingInteractiveTool && (
         <Box
-          sx={{ mx: 1, mt: 1, mb: -0.5 }}
+          sx={
+            pendingInteractiveTool.toolName === "ask_clarifying_questions"
+              ? { mx: 2.25, mt: 1, mb: -1 }
+              : { mx: 1, mt: 1, mb: -0.5 }
+          }
           key={pendingInteractiveTool.toolCallId}
         >
           {pendingInteractiveTool.toolName === "ask_clarifying_questions" ? (
             <ClarifyingQuestionsCard
+              docked
               input={
                 pendingInteractiveTool.input as AskClarifyingQuestionsInput
               }
@@ -3294,13 +3948,15 @@ const Chat: React.FC<ChatProps> = ({
             />
           ) : (
             <PlanCard
-              input={pendingInteractiveTool.input as SubmitPlanInput}
-              onResolve={output =>
-                handleResolveInteractiveTool({
-                  tool: pendingInteractiveTool.toolName,
-                  toolCallId: pendingInteractiveTool.toolCallId,
-                  output: output as unknown as Record<string, unknown>,
-                })
+              toolCallId={pendingInteractiveTool.toolCallId}
+              chatId={chatId}
+              streaming={pendingInteractiveTool.streaming}
+              // While streaming the input is partial — the card reads live
+              // data from planStore instead (fed by setStreamingInput).
+              input={
+                pendingInteractiveTool.streaming
+                  ? undefined
+                  : (pendingInteractiveTool.input as SubmitPlanInput)
               }
             />
           )}
@@ -3318,7 +3974,7 @@ const Chat: React.FC<ChatProps> = ({
           prompts={queuedPrompts}
           editingId={editingPromptId}
           onStartEdit={handleStartEditQueuedPrompt}
-          onPromote={handlePromoteQueuedPrompt}
+          onSendNow={handleSendQueuedPromptNow}
           onRemove={handleRemoveQueuedPrompt}
         />
       </Collapse>

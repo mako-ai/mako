@@ -1,0 +1,4 @@
+.env.e2e
+node_modules/
+shots/
+package-lock.json

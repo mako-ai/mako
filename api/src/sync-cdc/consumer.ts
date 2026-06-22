@@ -1,5 +1,6 @@
 import { Types } from "mongoose";
 import {
+  CdcChangeEvent,
   CdcEntityState,
   DatabaseConnection,
   Flow,
@@ -129,14 +130,28 @@ export class CdcConsumerService {
       // have already been applied/failed/dropped by a previous run.
       const currentIngestSeq = Number(state?.lastIngestSeq || 0);
       if (currentIngestSeq > afterIngestSeq) {
-        await cdcSyncStateService.advanceConsumerCursor({
-          workspaceId: params.workspaceId,
-          flowId: params.flowId,
+        // Drift-seed guard: `readAfter` already selects ALL pending rows for
+        // this entity, so an empty result *should* mean nothing is pending.
+        // Confirm with a direct count before jumping the cursor forward — if a
+        // pending row exists (e.g. a backfill or concurrent ingest raced ahead
+        // of this read), advancing would orphan it below lastMaterializedSeq
+        // and findStaleEntities would stop re-triggering it. Never advance the
+        // cursor past a still-pending event.
+        const stillPending = await CdcChangeEvent.countDocuments({
+          flowId: new Types.ObjectId(params.flowId),
           entity: params.entity,
-          lastIngestSeq: currentIngestSeq,
-          processedEventsDelta: 0,
-          rowsAppliedDelta: 0,
+          materializationStatus: "pending",
         });
+        if (stillPending === 0) {
+          await cdcSyncStateService.advanceConsumerCursor({
+            workspaceId: params.workspaceId,
+            flowId: params.flowId,
+            entity: params.entity,
+            lastIngestSeq: currentIngestSeq,
+            processedEventsDelta: 0,
+            rowsAppliedDelta: 0,
+          });
+        }
       }
       return {
         processed: 0,

@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import starlightOpenAPI, { openAPISidebarGroups } from "starlight-openapi";
 
 // https://astro.build/config
 export default defineConfig({
@@ -14,6 +15,17 @@ export default defineConfig({
           label: "GitHub",
           href: "https://github.com/mako-ai/mako",
         },
+      ],
+      plugins: [
+        // Renders interactive REST API reference pages from the OpenAPI spec
+        // generated from the Hono route table (`pnpm --filter api openapi:generate`).
+        starlightOpenAPI([
+          {
+            base: "api",
+            label: "REST API",
+            schema: "./src/openapi/mako-api.json",
+          },
+        ]),
       ],
       sidebar: [
         {
@@ -56,8 +68,10 @@ export default defineConfig({
         },
         {
           label: "Reference",
-          items: [{ label: "API Reference", slug: "api-reference" }],
+          items: [{ label: "API Overview", slug: "api-reference" }],
         },
+        // Auto-generated REST API reference (from the OpenAPI spec).
+        ...openAPISidebarGroups,
         {
           label: "Roadmap",
           items: [{ label: "Roadmap", slug: "roadmap" }],

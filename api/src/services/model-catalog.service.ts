@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { loggers } from "../logging";
 import { ModelCatalogSnapshot } from "../database/schema";
+import { warmModelsCache } from "./gateway-models.service";
 import {
   hasExplicitThinkingMode,
   resolveAnthropicThinkingMode,
@@ -288,31 +289,21 @@ async function probeAnthropicThinkingModes(
 // Snapshot refresh: Gateway (models + pricing)
 // ---------------------------------------------------------------------------
 
-export async function refreshGatewaySnapshot(): Promise<
+type GatewayModelRaw = z.infer<typeof GatewayModelRawSchema>;
+
+/**
+ * Shared tail for both refresh variants: given the already-validated raw
+ * gateway entries, filter to language models, enforce the < 10 floor, build +
+ * upsert the snapshot/pricing docs, and probe Anthropic thinking modes. The
+ * two refresh entry points differ only in how they validate `body.data`
+ * (all-or-nothing vs. per-row), so everything downstream lives here.
+ */
+async function persistLanguageSnapshot(
+  entries: GatewayModelRaw[],
+): Promise<
   { models: number; pricedModels: number } | { skipped: true; reason: string }
 > {
-  const res = await fetch(GATEWAY_API_URL, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(10_000),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Gateway fetch failed: ${res.status} ${res.statusText}`);
-  }
-
-  const body = await res.json();
-  const parsed = GatewayResponseSchema.safeParse(body);
-  if (!parsed.success) {
-    const reason = parsed.error.issues
-      .map(i => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
-    logger.warn("Gateway response failed Zod validation, skipping upsert", {
-      reason,
-    });
-    return { skipped: true, reason };
-  }
-
-  const languageModels = parsed.data.data.filter(m => m.type === "language");
+  const languageModels = entries.filter(m => m.type === "language");
   if (languageModels.length < 10) {
     const reason = `Only ${languageModels.length} language models after type filter`;
     logger.warn("Gateway snapshot too small, skipping upsert", { reason });
@@ -371,6 +362,86 @@ export async function refreshGatewaySnapshot(): Promise<
   }
 
   return { models: gatewayDocs.length, pricedModels: pricingDocs.length };
+}
+
+export async function refreshGatewaySnapshot(): Promise<
+  { models: number; pricedModels: number } | { skipped: true; reason: string }
+> {
+  const res = await fetch(GATEWAY_API_URL, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gateway fetch failed: ${res.status} ${res.statusText}`);
+  }
+
+  const body = await res.json();
+  // All-or-nothing validation: a single malformed row skips the whole upsert.
+  const parsed = GatewayResponseSchema.safeParse(body);
+  if (!parsed.success) {
+    const reason = parsed.error.issues
+      .map(i => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    logger.warn("Gateway response failed Zod validation, skipping upsert", {
+      reason,
+    });
+    return { skipped: true, reason };
+  }
+
+  return persistLanguageSnapshot(parsed.data.data);
+}
+
+/**
+ * Resilient refresh: validates each upstream row independently and drops only
+ * the malformed ones instead of skipping the entire snapshot. Use when the
+ * strict refresh keeps reporting validation errors and new models aren't
+ * appearing because one bad row poisons the whole batch.
+ */
+export async function hardRefreshGatewaySnapshot(): Promise<
+  | { models: number; pricedModels: number; droppedEntries: number }
+  | { skipped: true; reason: string }
+> {
+  const res = await fetch(GATEWAY_API_URL, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Gateway fetch failed: ${res.status} ${res.statusText}`);
+  }
+
+  const body: unknown = await res.json();
+  const rawData =
+    body && typeof body === "object"
+      ? (body as { data?: unknown }).data
+      : undefined;
+  if (!Array.isArray(rawData)) {
+    throw new Error("Gateway response missing `data` array");
+  }
+
+  const validEntries: GatewayModelRaw[] = [];
+  let droppedEntries = 0;
+  for (const entry of rawData) {
+    const parsed = GatewayModelRawSchema.safeParse(entry);
+    if (parsed.success) {
+      validEntries.push(parsed.data);
+      continue;
+    }
+    droppedEntries += 1;
+    const id = (entry as { id?: unknown })?.id;
+    const reason = parsed.error.issues
+      .map(i => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
+    logger.warn("Dropping malformed gateway model entry", {
+      id: typeof id === "string" ? id : "unknown",
+      reason,
+    });
+  }
+
+  const result = await persistLanguageSnapshot(validEntries);
+  if ("skipped" in result) return result;
+  return { ...result, droppedEntries };
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +576,40 @@ export async function adminRefreshCatalog(): Promise<
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error("Admin catalog refresh failed", { error: msg });
+    await setCurationRefreshError(msg);
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * Admin "hard refresh": resilient per-row gateway parse that drops only
+ * malformed models, then busts BOTH caches — the Mongo-backed catalog cache
+ * (`warmCatalog`) and the separate in-process gateway-models cache
+ * (`warmModelsCache`) — so `/api/agent/gateway-models` can't keep serving a
+ * stale list after a refresh.
+ */
+export async function adminHardRefreshCatalog(): Promise<
+  | { ok: true; models: number; pricedModels: number; droppedEntries: number }
+  | { ok: false; error: string }
+> {
+  try {
+    const result = await hardRefreshGatewaySnapshot();
+    if ("skipped" in result) {
+      await setCurationRefreshError(`Skipped: ${result.reason}`);
+      return { ok: false, error: result.reason };
+    }
+    await setCurationRefreshError(null);
+    await warmCatalog();
+    await warmModelsCache();
+    return {
+      ok: true,
+      models: result.models,
+      pricedModels: result.pricedModels,
+      droppedEntries: result.droppedEntries,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error("Admin catalog hard refresh failed", { error: msg });
     await setCurationRefreshError(msg);
     return { ok: false, error: msg };
   }
@@ -752,6 +857,65 @@ export async function warmCatalog(): Promise<void> {
 // ---------------------------------------------------------------------------
 // Public API (unchanged signatures — callers don't know the source switched)
 // ---------------------------------------------------------------------------
+
+/** Shape returned by GET /agent/gateway-models for the workspace settings UI. */
+export interface WorkspaceGatewayModelListing {
+  id: string;
+  name: string;
+  description: string;
+  provider: string;
+  contextWindow: number | null;
+  tags: string[];
+}
+
+function catalogToWorkspaceListing(
+  model: CatalogModel,
+): WorkspaceGatewayModelListing {
+  return {
+    id: model.id,
+    name: model.name,
+    description: model.description,
+    provider: model.provider,
+    contextWindow: model.contextWindow,
+    tags: model.tags,
+  };
+}
+
+async function getPersistedGatewaySnapshotListings(): Promise<
+  WorkspaceGatewayModelListing[]
+> {
+  const doc = await ModelCatalogSnapshot.findOne({ _id: "gateway" }).lean();
+  if (!doc?.data || !Array.isArray(doc.data) || doc.data.length === 0) {
+    return [];
+  }
+
+  const gateway = doc.data as GatewayModelNormalized[];
+  return gateway.map(gm => ({
+    id: gm.id,
+    name: gm.name,
+    description: gm.description,
+    provider: gm.provider,
+    contextWindow: gm.contextWindow,
+    tags: gm.tags,
+  }));
+}
+
+/**
+ * Super-admin-curated models for the workspace "AI Models" settings page.
+ * Reads from the in-memory/DB catalog — never hits the live AI Gateway.
+ *
+ * When curation is empty (fresh install), falls back to the persisted
+ * gateway snapshot in MongoDB (same source Inngest/startup refresh uses).
+ */
+export async function getWorkspaceGatewayModelListings(): Promise<
+  WorkspaceGatewayModelListing[]
+> {
+  const catalog = await getCatalogModels();
+  if (catalog.length > 0) {
+    return catalog.map(catalogToWorkspaceListing);
+  }
+  return getPersistedGatewaySnapshotListings();
+}
 
 export async function getCatalogModels(): Promise<CatalogModel[]> {
   await ensureCatalog();

@@ -11,6 +11,7 @@ import {
   NormalizedCdcRecord,
   ProvisionWebhookOptions,
   ProvisionWebhookResult,
+  type WebhookCapabilities,
   type ConnectorEntitySchema,
 } from "../base/BaseConnector";
 import { resolveCloseEntitySchema, type CloseCustomField } from "./schema";
@@ -731,6 +732,12 @@ export class CloseConnector extends BaseConnector {
       partitionGranularity: "day" as const,
       clusterFields: ["_dataSourceId", "id"],
     };
+    // Lookup tables have no stable creation timestamp worth partitioning on.
+    const lookupLayout = {
+      partitionField: "_syncedAt",
+      partitionGranularity: "day" as const,
+      clusterFields: ["_dataSourceId", "id"],
+    };
     return [
       { name: "leads", label: "Leads", layoutSuggestion: defaultLayout },
       {
@@ -758,7 +765,37 @@ export class CloseConnector extends BaseConnector {
       {
         name: "custom_fields",
         label: "Custom Fields",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "custom_activity_types",
+        label: "Custom Activity Types",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "custom_object_types",
+        label: "Custom Object Types",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "custom_objects",
+        label: "Custom Objects",
         layoutSuggestion: defaultLayout,
+      },
+      {
+        name: "lead_statuses",
+        label: "Lead Statuses",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "opportunity_statuses",
+        label: "Opportunity Statuses",
+        layoutSuggestion: lookupLayout,
+      },
+      {
+        name: "outcomes",
+        label: "Outcomes",
+        layoutSuggestion: lookupLayout,
       },
     ];
   }
@@ -1982,6 +2019,19 @@ export class CloseConnector extends BaseConnector {
     return true;
   }
 
+  getWebhookCapabilities(): WebhookCapabilities {
+    return {
+      supported: true,
+      provisioning: {
+        supported: true,
+        providerLabel: "Close",
+        storesSecretAutomatically: true,
+        actionHint: "and stores its signing secret",
+      },
+      secretHelpText: "Enter the webhook signing secret from your provider",
+    };
+  }
+
   async createWebhookSubscription(
     options: ProvisionWebhookOptions,
   ): Promise<ProvisionWebhookResult> {
@@ -2444,11 +2494,15 @@ export class CloseConnector extends BaseConnector {
         ...record,
         payload,
         sourceTs,
+        // Close nests its unique event id at `event.event.id`. Prefer it FIRST
+        // so distinct updates get distinct changeIds; the per-record fallback
+        // includes sourceTs so it can never collapse multiple updates onto one
+        // idempotency key (the bug that froze destinations at first-seen state).
         changeId:
-          record.changeId ||
+          innerEvent?.id ||
           event?.id ||
-          event?.event?.id ||
-          `${eventType || "close.event"}:${record.entity}:${record.recordId}`,
+          record.changeId ||
+          `${eventType || "close.event"}:${record.entity}:${record.recordId}:${sourceTs.toISOString()}`,
       };
     });
   }

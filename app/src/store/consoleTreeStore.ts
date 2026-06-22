@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 import {
   findById,
   findParentArray,
@@ -196,11 +197,13 @@ export const useConsoleTreeStore = create<TreeState>()(
         state.searchLoading = true;
       });
       try {
-        const data = await apiClient.get<{
+        const data = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/consoles/search", {
+            params: { path: { workspaceId }, query: { q: query } },
+          }),
+        ) as {
           results: ConsoleSearchResult[];
-        }>(
-          `/workspaces/${workspaceId}/consoles/search?q=${encodeURIComponent(query)}`,
-        );
+        };
         set(state => {
           state.searchResults = data.results || [];
           state.searchLoading = false;
@@ -227,12 +230,16 @@ export const useConsoleTreeStore = create<TreeState>()(
         state.error[workspaceId] = null;
       });
       try {
-        const data = await apiClient.get<{
+        const data = unwrapBody(
+          await api.GET("/api/workspaces/{workspaceId}/consoles", {
+            params: { path: { workspaceId } },
+          }),
+        ) as {
           success: boolean;
           tree?: ConsoleEntry[];
           myConsoles?: ConsoleEntry[];
           sharedWithWorkspace?: ConsoleEntry[];
-        }>(`/workspaces/${workspaceId}/consoles`);
+        };
 
         const myTree = data.myConsoles ?? data.tree ?? [];
         const sharedWithWorkspaceTree = data.sharedWithWorkspace ?? [];
@@ -314,10 +321,12 @@ export const useConsoleTreeStore = create<TreeState>()(
       try {
         const body: Record<string, unknown> = { folderId };
         if (access) body.access = access;
-        const res = await apiClient.patch<{ success: boolean }>(
-          `/workspaces/${workspaceId}/consoles/${consoleId}/move`,
-          body,
-        );
+        const res = unwrapBody(
+          await api.PATCH("/api/workspaces/{workspaceId}/consoles/{id}/move", {
+            params: { path: { workspaceId, id: consoleId } },
+            body,
+          }),
+        ) as { success: boolean };
         if (!res.success) {
           await _get().refresh(workspaceId);
         }
@@ -345,10 +354,12 @@ export const useConsoleTreeStore = create<TreeState>()(
       try {
         const body: Record<string, unknown> = { parentId };
         if (access) body.access = access;
-        const res = await apiClient.patch<{ success: boolean }>(
-          `/workspaces/${workspaceId}/consoles/folders/${folderId}/move`,
-          body,
-        );
+        const res = unwrapBody(
+          await api.PATCH(
+            "/api/workspaces/{workspaceId}/consoles/folders/{id}/move",
+            { params: { path: { workspaceId, id: folderId } }, body },
+          ),
+        ) as { success: boolean };
         if (!res.success) {
           await _get().refresh(workspaceId);
         }
@@ -397,15 +408,20 @@ export const useConsoleTreeStore = create<TreeState>()(
       });
 
       try {
-        const res = await apiClient.post<{
+        const res = unwrapBody(
+          await api.POST("/api/workspaces/{workspaceId}/consoles/folders", {
+            params: { path: { workspaceId } },
+            body: {
+              name,
+              parentId: parentId || undefined,
+              isPrivate: resolvedAccess !== "workspace",
+              access: resolvedAccess,
+            },
+          }),
+        ) as {
           success: boolean;
           data?: { id: string; name: string };
-        }>(`/workspaces/${workspaceId}/consoles/folders`, {
-          name,
-          parentId: parentId || undefined,
-          isPrivate: resolvedAccess !== "workspace",
-          access: resolvedAccess,
-        });
+        };
         if (res.success && res.data) {
           const newId = res.data.id;
           set(state => {
@@ -441,12 +457,23 @@ export const useConsoleTreeStore = create<TreeState>()(
         }
       });
       try {
-        const endpoint = isDirectory
-          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}/rename`
-          : `/workspaces/${workspaceId}/consoles/${itemId}/rename`;
-        const res = await apiClient.patch<{ success: boolean }>(endpoint, {
-          name: newName,
-        });
+        const res = unwrapBody(
+          isDirectory
+            ? await api.PATCH(
+                "/api/workspaces/{workspaceId}/consoles/folders/{id}/rename",
+                {
+                  params: { path: { workspaceId, id: itemId } },
+                  body: { name: newName },
+                },
+              )
+            : await api.PATCH(
+                "/api/workspaces/{workspaceId}/consoles/{id}/rename",
+                {
+                  params: { path: { workspaceId, id: itemId } },
+                  body: { name: newName },
+                },
+              ),
+        ) as { success: boolean };
         if (!res.success) {
           await _get().refresh(workspaceId);
         }
@@ -463,10 +490,16 @@ export const useConsoleTreeStore = create<TreeState>()(
         removeFromAnySection(state, workspaceId, itemId);
       });
       try {
-        const endpoint = isDirectory
-          ? `/workspaces/${workspaceId}/consoles/folders/${itemId}`
-          : `/workspaces/${workspaceId}/consoles/${itemId}`;
-        const res = await apiClient.delete<{ success: boolean }>(endpoint);
+        const res = unwrapBody(
+          isDirectory
+            ? await api.DELETE(
+                "/api/workspaces/{workspaceId}/consoles/folders/{id}",
+                { params: { path: { workspaceId, id: itemId } } },
+              )
+            : await api.DELETE("/api/workspaces/{workspaceId}/consoles/{id}", {
+                params: { path: { workspaceId, id: itemId } },
+              }),
+        ) as { success: boolean };
         if (!res.success) {
           await _get().refresh(workspaceId);
         }
@@ -498,10 +531,15 @@ export const useConsoleTreeStore = create<TreeState>()(
 
     duplicateConsole: async (workspaceId, consoleId) => {
       try {
-        const res = await apiClient.post<{
+        const res = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/consoles/{id}/duplicate",
+            { params: { path: { workspaceId, id: consoleId } } },
+          ),
+        ) as {
           success: boolean;
           data?: { id: string; name: string; folderId?: string };
-        }>(`/workspaces/${workspaceId}/consoles/${consoleId}/duplicate`);
+        };
         if (res.success && res.data) {
           const newConsole = res.data;
           set(state => {
@@ -532,9 +570,12 @@ export const useConsoleTreeStore = create<TreeState>()(
 
     restoreConsole: async (workspaceId, consoleId) => {
       try {
-        const res = await apiClient.patch<{ success: boolean }>(
-          `/workspaces/${workspaceId}/consoles/${consoleId}/restore`,
-        );
+        const res = unwrapBody(
+          await api.PATCH(
+            "/api/workspaces/{workspaceId}/consoles/{id}/restore",
+            { params: { path: { workspaceId, id: consoleId } } },
+          ),
+        ) as { success: boolean };
         if (res.success) {
           await _get().refresh(workspaceId);
         }

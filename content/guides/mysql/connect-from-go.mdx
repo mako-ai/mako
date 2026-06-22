@@ -1,0 +1,194 @@
+---
+title: "How to Connect to MySQL from Go"
+description: "Connect to MySQL from Go with go-sql-driver/mysql and database/sql. Working code for connection pools, the DSN parseTime and loc traps, context timeouts, parameterized queries, and common authentication errors."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "go", "golang", "go-sql-driver", "database-sql", "connection"]
+date: "2026-06-15"
+---
+
+For MySQL in Go there is one driver everyone uses: go-sql-driver/mysql. It implements Go's standard `database/sql/driver` interface, so once you import it you work entirely through the standard `database/sql` API. There is no real competitor with comparable maintenance and adoption, which makes the choice simple. This guide shows working code, the DSN options that quietly cause bugs (especially `parseTime`), and the errors you'll hit first.
+
+## The driver
+
+| Driver | Import path | Interface | Version (as of June 2026) |
+|---|---|---|---|
+| go-sql-driver/mysql | `github.com/go-sql-driver/mysql` | `database/sql` | v1.9.0 |
+
+It is a pure Go implementation -- no cgo, no libmysqlclient, no native build step. That makes cross-compilation and container builds trivial.
+
+```bash
+go get github.com/go-sql-driver/mysql
+```
+
+You import it as a side-effecting blank import (it registers itself with `database/sql`) and use the standard package directly:
+
+```go
+import (
+	"database/sql"
+	_ "github.com/go-sql-driver/mysql"
+)
+```
+
+## A working connection
+
+```go
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+)
+
+func main() {
+	db, err := sql.Open("mysql", os.Getenv("MYSQL_DSN"))
+	if err != nil {
+		log.Fatal(err) // only DSN parse errors land here
+	}
+	defer db.Close()
+
+	// Pool tuning -- see the section below for why these matter.
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(3 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatalf("cannot reach MySQL: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx,
+		"SELECT id, name FROM customers WHERE region = ?",
+		"EMEA",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(id, name)
+	}
+	if err := rows.Err(); err != nil { // mid-loop errors surface here
+		log.Fatal(err)
+	}
+}
+```
+
+Three habits worth burning in:
+
+- **`sql.Open` does not connect.** It only parses the DSN and prepares the lazy pool. The first real connection happens on the first query or on an explicit `db.PingContext`. Always ping at startup so a bad host or password fails immediately rather than on a user's first request.
+- **Always `defer rows.Close()` and check `rows.Err()`** after the loop. A failure mid-iteration ends the loop normally; the error only appears in `rows.Err()`. Skipping it silently truncates results, and leaked result sets pin a pooled connection.
+- **Placeholders are `?`**, MySQL-style. Pass values as arguments so the driver parameterizes them. Never assemble SQL with `fmt.Sprintf`.
+
+## The DSN, and the two traps inside it
+
+The data source name is a single string and most connection bugs live here. The general form:
+
+```
+username:password@protocol(address:port)/dbname?param=value
+```
+
+A realistic one:
+
+```
+app_user:secret@tcp(db.example.com:3306)/sales?parseTime=true&loc=UTC&charset=utf8mb4
+```
+
+### Trap 1: parseTime
+
+By default the driver returns `DATE`, `DATETIME`, and `TIMESTAMP` columns as `[]byte`, not `time.Time`. If you try to `Scan` one into a `time.Time` you get a conversion error. Set `parseTime=true` so the driver hands you real `time.Time` values:
+
+```
+?parseTime=true
+```
+
+This is the single most common surprise for newcomers. Almost every real application wants it on.
+
+### Trap 2: loc and time zones
+
+Once `parseTime=true` is set, the `loc` parameter decides which location the driver attaches to parsed times. The default is `UTC`. If your server stores wall-clock times in a non-UTC zone and you don't set `loc`, you'll get times shifted by the offset. The safe pattern is to store and interpret everything in UTC:
+
+```
+?parseTime=true&loc=UTC
+```
+
+Set the value to a URL-encoded IANA name (e.g. `loc=America%2FNew_York`) only if you have a specific reason. Mixing time zones between the database, the `loc` setting, and your application is a classic source of off-by-an-hour bugs.
+
+### charset and collation
+
+Use `charset=utf8mb4` (or set the column/connection collation explicitly) so full Unicode -- including emoji and supplementary characters -- round-trips. The legacy `utf8` alias in MySQL is really `utf8mb3` and cannot store 4-byte characters.
+
+## Connection pool sizing
+
+`database/sql` manages the pool; the driver does not. The three knobs:
+
+```go
+db.SetMaxOpenConns(10)         // hard cap on open connections; 0 = unlimited (risky)
+db.SetMaxIdleConns(5)          // idle connections kept ready
+db.SetConnMaxLifetime(3 * time.Minute) // recycle connections before the server drops them
+```
+
+Two specifics matter for MySQL:
+
+- **Set `SetConnMaxLifetime` shorter than the server's `wait_timeout`.** MySQL closes idle connections after `wait_timeout` (default 8 hours, but managed providers and proxies often set it to minutes). If the pool hands you a connection the server already dropped, the first query fails with a "bad connection" / "invalid connection" error. Recycling connections before that window avoids it.
+- **Account for multiple processes.** Each instance of your service gets its own pool. Eight pods × `SetMaxOpenConns(10)` = 80 connections, against MySQL's default `max_connections` of 151. Size accordingly.
+
+## Context timeouts
+
+Use `...Context` method variants everywhere and bound query time with a context:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+var name string
+err := db.QueryRowContext(ctx,
+	"SELECT name FROM customers WHERE id = ?", 42,
+).Scan(&name)
+if err != nil {
+	if errors.Is(err, sql.ErrNoRows) { // no matching row
+		// handle "not found"
+	}
+	log.Fatal(err)
+}
+```
+
+When the context is cancelled or times out, the driver attempts to cancel the running query rather than leaving it to finish on its own. This keeps a slow query from pinning a pooled connection.
+
+## Authentication notes
+
+MySQL 8.0 made `caching_sha2_password` the default authentication plugin, and MySQL 9 removed the old `mysql_native_password` plugin entirely. The Go driver supports `caching_sha2_password` natively, so this is usually a non-issue. Two things to know:
+
+- Over a plaintext (non-TLS) connection, `caching_sha2_password` requires the server's RSA public key for the initial handshake. The driver handles this, but if you've locked the server down you may need `allowNativePasswords` or to provide the key explicitly.
+- For TLS, add `tls=true` (or a custom registered TLS config) to the DSN. Hosted MySQL providers typically require it: `...?parseTime=true&tls=true`.
+
+## Common errors
+
+| Error | Likely cause |
+|---|---|
+| `dial tcp ... connection refused` | Wrong host/port, or MySQL not listening on TCP |
+| `Error 1045: Access denied for user` | Wrong credentials, or the user lacks host-pattern access (`user@%` vs `user@localhost`) |
+| `sql: Scan error ... converting ... to time.Time` | `parseTime=true` missing from the DSN |
+| `invalid connection` / `bad connection` on first query | Server dropped an idle connection -- set `SetConnMaxLifetime` below `wait_timeout` |
+| `Error 1040: Too many connections` | Pool size × process count exceeds server `max_connections` |
+| `this authentication plugin is not supported` | Server uses an auth plugin the DSN config disallows -- check `tls`/`allowNativePasswords` |
+
+## Querying without writing connection code
+
+If you want to explore a MySQL database rather than build an application, a GUI client skips all of this. Mako connects to MySQL with AI-assisted SQL -- see our [MySQL GUI client guide](/guides/mysql-gui-client) for how it compares to MySQL Workbench, DBeaver, and TablePlus. Connecting from another language? See [How to Connect to MySQL from Python](/guides/mysql/connect-from-python) and [from Node.js](/guides/mysql/connect-from-node).
+
+Mako connects to MySQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

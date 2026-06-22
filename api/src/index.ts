@@ -1,30 +1,16 @@
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import { serve } from "@hono/node-server";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import { serve as serveInngest } from "inngest/hono";
+import { Scalar } from "@scalar/hono-api-reference";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
-import { consoleRoutes } from "./routes/consoles";
-import { realtimeRoutes } from "./routes/realtime";
-import { dataSourceRoutes } from "./routes/sources";
-import { customPromptRoutes } from "./routes/custom-prompt";
-import { skillsRoutes } from "./routes/skills";
-import { chatsRoutes } from "./routes/chats";
-import { chatImagesRoutes } from "./routes/chat-images";
-import { agentRoutes } from "./routes/agent.routes";
-import { adminRoutes } from "./routes/admin.routes";
-import { authRoutes } from "./auth/auth.controller";
 import { connectDatabase } from "./database/schema";
-import { workspaceRoutes } from "./routes/workspaces";
-import {
-  workspaceDatabaseRoutes,
-  workspaceExecuteRoutes,
-} from "./routes/workspace-databases";
-import { connectorRoutes } from "./routes/connectors";
-import { databaseSchemaRoutes } from "./routes/database-schemas";
-import { databaseTreeRoutes } from "./routes/database-tree";
+import { registerApiRoutes } from "./routes/register-routes";
+import { getOpenApiDocument } from "./openapi";
+import type { AuthEnv } from "./openapi/core";
 import { databaseRegistry } from "./databases/registry";
 import { BigQueryDatabaseDriver } from "./databases/drivers/bigquery/driver";
 import { MongoDatabaseDriver } from "./databases/drivers/mongodb/driver";
@@ -35,16 +21,6 @@ import { CloudflareKVDatabaseDriver } from "./databases/drivers/cloudflare-kv/dr
 import { ClickHouseDatabaseDriver } from "./databases/drivers/clickhouse/driver";
 import { MySQLDatabaseDriver } from "./databases/drivers/mysql/driver";
 import { RedshiftDatabaseDriver } from "./databases/drivers/redshift/driver";
-import { flowRoutes } from "./routes/flows";
-import { usageRoutes } from "./routes/usage";
-import { billingRoutes } from "./routes/billing";
-import { stripeWebhookRoutes } from "./routes/stripe-webhook";
-import { dashboardRoutes } from "./routes/dashboards";
-import { dashboardMaterializationRoutes } from "./routes/dashboard-materialization";
-import { scheduledQueryRoutes } from "./routes/scheduled-queries";
-import { notificationRulesRoutes } from "./routes/notification-rules";
-import { devEmailPreviewRoutes } from "./routes/dev-email-preview.routes";
-import { webhookRoutes } from "./routes/webhooks";
 import { getFunctions, inngest, logInngestStatus } from "./inngest";
 import mongoose from "mongoose";
 import { databaseConnectionService } from "./services/database-connection.service";
@@ -87,7 +63,7 @@ const REQUIRED_SYSTEM_SKILLS = [
   "flows",
 ];
 
-const app = new Hono();
+const app = new OpenAPIHono<AuthEnv>();
 
 // CORS middleware
 app.use(
@@ -131,45 +107,40 @@ app.get("/health", c => {
   return c.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// API routes
-app.route("/api/auth", authRoutes);
-app.route("/api/workspaces", workspaceRoutes);
-app.route("/api/workspaces/:workspaceId/databases", workspaceDatabaseRoutes);
-app.route("/api/workspaces/:workspaceId/execute", workspaceExecuteRoutes);
-app.route("/api/workspaces/:workspaceId/consoles", consoleRoutes);
-app.route("/api/workspaces/:workspaceId/realtime", realtimeRoutes);
-app.route("/api/workspaces/:workspaceId/chats", chatsRoutes);
-app.route("/api/workspaces/:workspaceId/chat-images", chatImagesRoutes);
-app.route("/api/workspaces/:workspaceId/custom-prompt", customPromptRoutes);
-app.route("/api/workspaces/:workspaceId/skills", skillsRoutes);
-// Connectors routes
-app.route("/api/workspaces/:workspaceId/connectors", dataSourceRoutes);
-app.route("/api/workspaces/:workspaceId/flows", flowRoutes);
-app.route(
-  "/api/workspaces/:workspaceId/scheduled-queries",
-  scheduledQueryRoutes,
-);
-app.route(
-  "/api/workspaces/:workspaceId/notification-rules",
-  notificationRulesRoutes,
-);
-
-if (process.env.NODE_ENV !== "production") {
-  app.route("/api/dev/email-preview", devEmailPreviewRoutes);
+// Frontend build version - public, used by long-lived clients (especially the
+// desktop app) to detect that their loaded bundle is stale and prompt a
+// reload. The build ID is emitted into public/version.json by the Vite build
+// (git SHA in CI), so it is always in sync with the bundle shipped in this
+// image. Falls back to "dev" locally where no version.json exists.
+let cachedBuildId: string | null = null;
+function getFrontendBuildId(): string {
+  if (cachedBuildId === null) {
+    try {
+      const versionPath = path.join(process.cwd(), "public", "version.json");
+      const parsed = JSON.parse(fs.readFileSync(versionPath, "utf8")) as {
+        buildId?: unknown;
+      };
+      cachedBuildId =
+        typeof parsed.buildId === "string" && parsed.buildId
+          ? parsed.buildId
+          : "dev";
+    } catch {
+      cachedBuildId = "dev";
+    }
+  }
+  return cachedBuildId;
 }
 
-app.route("/api/workspaces/:workspaceId/usage", usageRoutes);
-app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
-app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
-app.route(
-  "/api/workspaces/:workspaceId/dashboards/:dashboardId",
-  dashboardMaterializationRoutes,
-);
-app.route("/api/agent", agentRoutes);
-app.route("/api/admin", adminRoutes);
-app.route("/api/connectors", connectorRoutes);
-app.route("/api/databases", databaseSchemaRoutes);
-app.route("/api/workspaces/:workspaceId/databases", databaseTreeRoutes);
+app.get("/api/version", c => {
+  // no-store: this endpoint exists to detect new deploys, so neither the
+  // browser nor any CDN in front may ever serve a cached response.
+  c.header("Cache-Control", "no-store");
+  return c.json({ buildId: getFrontendBuildId() });
+});
+
+// API routes — single source of truth for the documented REST surface.
+// Shared with the OpenAPI generator so docs can never drift from the server.
+registerApiRoutes(app);
 
 // Register database drivers
 databaseRegistry.register(new BigQueryDatabaseDriver());
@@ -181,8 +152,18 @@ databaseRegistry.register(new CloudflareD1DatabaseDriver());
 databaseRegistry.register(new CloudflareKVDatabaseDriver());
 databaseRegistry.register(new ClickHouseDatabaseDriver());
 databaseRegistry.register(new RedshiftDatabaseDriver());
-app.route("/api", webhookRoutes);
-app.route("/api/webhooks/stripe", stripeWebhookRoutes);
+
+// OpenAPI specification (machine-readable) and interactive reference UI.
+// Both are public so agents and external clients can discover the API surface.
+app.get("/api/openapi.json", c => c.json(getOpenApiDocument()));
+app.get(
+  "/api/reference",
+  Scalar({
+    url: "/api/openapi.json",
+    pageTitle: "Mako API Reference",
+    theme: "purple",
+  }),
+);
 
 // Inngest endpoint
 app.on(
@@ -213,6 +194,9 @@ app.use("*", async (c, next) => {
     const indexPath = path.join(publicPath, "index.html");
     if (fs.existsSync(indexPath)) {
       const content = fs.readFileSync(indexPath, "utf8");
+      // index.html must always be revalidated so a reload after a deploy
+      // picks up the new bundle (stale-client detection depends on this).
+      c.header("Cache-Control", "no-cache");
       return c.html(content);
     }
   }
@@ -222,13 +206,21 @@ app.use("*", async (c, next) => {
     const ext = path.extname(filePath);
     const contentType = getContentType(ext);
     const content = fs.readFileSync(filePath);
-    return c.body(content, { headers: { "Content-Type": contentType } });
+    // Vite assets are content-hashed, so they can be cached forever; anything
+    // else (index.html handled above) gets revalidation.
+    const cacheControl = requestPath.startsWith("/assets/")
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+    return c.body(content, {
+      headers: { "Content-Type": contentType, "Cache-Control": cacheControl },
+    });
   }
 
   // Fallback to index.html for SPA routing
   const indexPath = path.join(publicPath, "index.html");
   if (fs.existsSync(indexPath)) {
     const content = fs.readFileSync(indexPath, "utf8");
+    c.header("Cache-Control", "no-cache");
     return c.html(content);
   }
 

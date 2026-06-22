@@ -1,0 +1,92 @@
+---
+globs: app/src/store/lib/types.ts,app/src/components/UrlSync.tsx,app/src/components/EntityBreadcrumbs.tsx,app/src/components/Editor.tsx,app/src/lib/tab-routing.ts,app/src/lib/explorer-reveal.ts,app/src/components/ResourceTree.tsx
+description: Invariants for tab entities — unique URLs, breadcrumbs, page titles, sidebar highlight + reveal
+---
+
+# Tab entities: URLs, breadcrumbs, page titles
+
+Every entity that opens in an editor tab (console, dashboard, table, app,
+file, data source, flow, connector, settings section, plan, ...) MUST have:
+
+1. **A unique, shareable URL** that the address bar shows while the tab is
+   focused, and that restores the tab when opened directly (deep link).
+2. **A breadcrumb bar** rendered with the shared `EntityBreadcrumbs`
+   component, with a trail that starts at the workspace root and mirrors the
+   sidebar: `<workspace name> / <sidebar section> / <entity path>` (e.g.
+   `Acme / Databases / prod / public / users`).
+3. **A page title** — `document.title` is derived from the active tab's
+   `title` in `Editor.tsx`, so the tab title must be kept accurate (use
+   `consoleStore.updateTitle` once the entity loads if the tab was opened
+   from a deep link with a placeholder title).
+
+## Compile-time guards (do not weaken)
+
+- [app/src/lib/tab-routing.ts](mdc:app/src/lib/tab-routing.ts) —
+  `tabUrlPath()` (tab → URL) and `TAB_DEEP_LINK_PATTERNS` (URL → kind) are
+  exhaustive over `TabKind`. Adding a kind to `TabKind` without deciding its
+  URL fails `tsc`.
+- [app/src/components/EntityBreadcrumbs.tsx](mdc:app/src/components/EntityBreadcrumbs.tsx)
+  — `segmentsForTab()` is exhaustive over `TabKind`; a new kind without a
+  breadcrumb trail fails `tsc`.
+- [app/src/lib/tab-routing.test.ts](mdc:app/src/lib/tab-routing.test.ts) —
+  requires a fixture per kind and verifies each generated URL is matched by
+  its own deep-link pattern (round-trip). Run with
+  `pnpm --filter app run test:unit`.
+
+Never "fix" a compile error from these guards by adding a `default` case,
+casting, or returning `null` without a deliberate decision. `null` is only
+acceptable for kinds that genuinely cannot be deep-linked (currently only
+the legacy `members` kind).
+
+## Sidebar highlight + reveal (do not weaken)
+
+Every entity that opens in a tab and has a sidebar explorer row MUST:
+
+1. **Highlight its row when focused.** The explorer passes `activeItemId` to
+   `ResourceTree`. `ResourceTree` decides the highlight via the single helper
+   [isSidebarRowActive](mdc:app/src/components/resource-tree/utils.ts) and
+   applies it to **both file and folder rows**. Apps and Postgres tables open
+   from a *directory* row, so folder rows must respect `activeItemId` too — a
+   past regression highlighted files but not folders, leaving open apps
+   un-highlighted. Guarded by `resource-tree/utils.test.ts` (a structural test
+   asserts folder rows use `isSelectedLocation || isActive`).
+2. **Be reachable by reveal.** [explorer-reveal.ts](mdc:app/src/lib/explorer-reveal.ts)
+   maps a tab → `{ explorer, nodeId }`, where `nodeId` MUST equal the id the
+   owning explorer builds for that `ResourceTree` node. The switch is
+   exhaustive over `TabKind` (return `null` for kinds with no sidebar home).
+   `tabUrlPath`/breadcrumbs and this mapping must agree on the owning explorer.
+
+Reveal flow: producers (the tab-switch effect in `App.tsx`, clickable
+breadcrumbs in `EntityBreadcrumbs.tsx`) call
+`useExplorerRevealStore.requestReveal(explorer, nodeId)`. Each explorer
+subscribes with `selectRevealFor(<explorer>)` and threads `revealNodeId` /
+`revealNonce` into its `ResourceTree`, which expands ancestors and scrolls the
+row into view. Tab-switch auto-scroll only fires when the owning explorer is
+already on screen; breadcrumb clicks also switch the explorer first.
+
+When adding a new tab kind with a sidebar row, add its case to
+`tabRevealTarget`, make sure the explorer passes `activeItemId` +
+`revealNodeId`/`revealNonce`, and (if it uses encoded node ids like apps)
+source the separators from `explorer-reveal.ts` so reveal ids never drift.
+
+## Checklist for adding a new tab kind
+
+1. Add the kind to `TabKind` in
+   [app/src/store/lib/types.ts](mdc:app/src/store/lib/types.ts). Typecheck
+   now fails in the guarded files until steps 2–3 are done.
+2. `lib/tab-routing.ts`: add the URL builder case in `tabUrlPath` and the
+   matching regex in `TAB_DEEP_LINK_PATTERNS`; add the hydration handler in
+   `UrlSync.tsx` (match most-specific routes first; dedupe against existing
+   tabs before opening a new one). Add the fixture in `tab-routing.test.ts`.
+3. `EntityBreadcrumbs.tsx`: add the `segmentsForTab` case. Trail starts at
+   the workspace root, then the sidebar section label, then the entity path.
+4. `Editor.tsx`: add the tab icon and the content renderer. The breadcrumb
+   bar is rendered centrally by `Editor.tsx`; only add the kind to its
+   `rendersOwnBreadcrumbs` exclusion list if the view embeds
+   `EntityBreadcrumbs` itself (needed only to place actions in the bar via
+   the `trailing` prop, like the table refresh button).
+5. Add an open-or-focus helper following the `focusAppTab` /
+   `focusDashboardTab` pattern (`app/src/app-runtime/shell.ts`,
+   `app/src/dashboard-runtime/shell.ts`) so the tab is deduped everywhere.
+6. Keep the tab `title` synced once the entity loads (placeholder titles
+   come from deep-link hydration).

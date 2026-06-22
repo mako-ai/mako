@@ -1,0 +1,172 @@
+---
+title: "MongoDB Change Streams: Watching Data Change in Real Time"
+description: "How to use MongoDB change streams to react to inserts, updates, and deletes as they happen, including resume tokens, fullDocument options, pre- and post-images, and the oplog limitations that bite in production."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "change-streams", "real-time", "events", "nosql"]
+date: "2026-06-10"
+---
+
+Cache invalidation, search-index syncing, notifications, audit logs: all of these need to know when a document changed, and polling for changes is both slow and expensive. Change streams, available since MongoDB 3.6, give you a cursor that emits an event for every insert, update, replace, and delete as it happens.
+
+Before change streams, the standard hack was tailing the oplog directly -- a replication internal with an undocumented format that changed between versions. Change streams are the supported API over the same mechanism, with a defined event format and the ability to resume after disconnection.
+
+## Requirements
+
+Change streams only work on replica sets and sharded clusters, not standalone servers. This is because they read from the oplog, which only exists when replication is on. For local development, a single-node replica set works:
+
+```bash
+mongod --replSet rs0
+mongosh --eval "rs.initiate()"
+```
+
+Atlas clusters are always replica sets, so change streams work there out of the box.
+
+## Opening a change stream
+
+You can watch a single collection, a whole database, or the entire deployment:
+
+```javascript
+// One collection (most common)
+const stream = db.orders.watch();
+
+// All collections in a database
+const stream = db.watch();
+
+// Everything (except admin, local, config)
+const stream = client.watch();
+```
+
+In application code, you iterate the stream like a cursor that never ends:
+
+```javascript
+const stream = db.collection("orders").watch();
+for await (const event of stream) {
+  console.log(event.operationType, event.documentKey);
+}
+```
+
+## Anatomy of a change event
+
+An insert event looks like this:
+
+```javascript
+{
+  _id: { _data: "8265A1B2..." },        // the resume token
+  operationType: "insert",
+  clusterTime: Timestamp(...),
+  ns: { db: "shop", coll: "orders" },
+  documentKey: { _id: ObjectId("...") },
+  fullDocument: { _id: ObjectId("..."), status: "pending", total: 42 }
+}
+```
+
+The main `operationType` values are `insert`, `update`, `replace`, `delete`, `drop`, `rename`, `dropDatabase`, and `invalidate`. MongoDB 6.0 added DDL events like `create` and `createIndexes` when you pass `showExpandedEvents: true`.
+
+Update events are the ones that surprise people. By default they do **not** contain the full document -- only what changed:
+
+```javascript
+{
+  operationType: "update",
+  documentKey: { _id: ObjectId("...") },
+  updateDescription: {
+    updatedFields: { status: "shipped" },
+    removedFields: [],
+    truncatedArrays: []
+  }
+}
+```
+
+If you need the whole document, see the `fullDocument` options below.
+
+## Getting the full document on updates
+
+The `fullDocument` option controls what update events carry:
+
+```javascript
+db.orders.watch([], { fullDocument: "updateLookup" });
+```
+
+- **`"updateLookup"`** -- MongoDB fetches the document at the time the event is *read*, not when the change happened. If the document was modified again in between, you get the later state; if it was deleted, you get `null`. Good enough for cache invalidation, dangerous for audit logs.
+- **`"whenAvailable"`** and **`"required"`** (6.0+) -- return the actual post-image of that specific update, taken from stored post-images. `required` errors if the image is unavailable; `whenAvailable` returns `null` instead.
+
+Post-images (and pre-images, via the `fullDocumentBeforeChange` option) must be enabled per collection first:
+
+```javascript
+db.runCommand({
+  collMod: "orders",
+  changeStreamPreAndPostImages: { enabled: true }
+});
+```
+
+Pre-images give you the document state *before* an update or delete -- the only way to know what a deleted document contained. They are stored in `config.system.preimages` and consume storage proportional to your write rate, so set an expiry (`expireAfterSeconds`) and enable them only on collections that need them.
+
+## Filtering with a pipeline
+
+`watch()` accepts an aggregation pipeline, so you can filter server-side instead of discarding events in your application:
+
+```javascript
+const stream = db.orders.watch([
+  { $match: {
+      operationType: "update",
+      "updateDescription.updatedFields.status": { $exists: true }
+  }},
+  { $project: { documentKey: 1, updateDescription: 1 } }
+]);
+```
+
+Only a subset of stages is allowed (`$match`, `$project`, `$addFields`, `$replaceRoot`, and a few others). Filtering early matters: every change stream cursor makes the server scan the oplog, and shipping events you immediately throw away wastes both server work and network. The pipeline syntax is the same as regular [aggregation pipelines](/guides/mongodb/aggregation-pipeline).
+
+One caveat: if you `$project` away the `_id` field of the event, the stream errors -- that field is the resume token, and MongoDB refuses to produce events that cannot be resumed from.
+
+## Resume tokens: surviving restarts
+
+Every event's `_id` is a resume token. If your application crashes or the connection drops, you can continue exactly where you left off instead of missing everything that happened while you were down:
+
+```javascript
+let resumeToken = loadTokenFromSomewhereDurable();
+
+const stream = db.orders.watch([], 
+  resumeToken ? { resumeAfter: resumeToken } : {}
+);
+
+for await (const event of stream) {
+  await process(event);
+  await saveTokenSomewhereDurable(event._id);  // after processing
+}
+```
+
+Persist the token *after* successfully processing the event, in durable storage (a database, not memory). Save it before processing and a crash mid-event loses that event.
+
+There are two resume options:
+
+- **`resumeAfter`** -- resume after the given token. Fails if the stream was invalidated (e.g. the collection was dropped).
+- **`startAfter`** (4.2+) -- same, but can start a fresh stream after an `invalidate` event. Prefer this for long-lived consumers.
+
+There is also `startAtOperationTime` to begin from a cluster timestamp rather than a token.
+
+**The catch:** a resume token is only usable while the event it points to is still in the oplog. The oplog is a capped collection; under heavy write load its window can shrink to hours or less. If your consumer is down longer than the oplog window, resuming fails and you need a full re-sync strategy. Check your window with `rs.printReplicationInfo()`, and size the oplog for your worst-case downtime, not the average.
+
+## Operational notes
+
+- **Each stream is a server-side cursor scanning the oplog.** Tens of streams are fine; thousands are not. If many consumers need the same events, fan out through one consumer (or Kafka via the MongoDB Kafka connector) rather than opening a stream per client.
+- **Sharded clusters preserve global ordering.** The `mongos` merges streams from all shards and delivers events in cluster-time order. This works, but it means a change stream on a sharded cluster is only as fast as its slowest shard.
+- **Events are only emitted for majority-committed writes**, so you will never see a change that later gets rolled back. The flip side: a lagging majority delays your events.
+- **Multi-document transactions** emit one event per changed document, not one per transaction, and only when the transaction commits. See our [transactions guide](/guides/mongodb/transactions) for how commit timing works.
+- **No event for TTL is special-cased** -- TTL deletions arrive as ordinary `delete` events, which is exactly what you want for cache syncing.
+
+## When not to use change streams
+
+- **Standalone servers** -- not supported, full stop.
+- **Analytics over historical changes** -- change streams are forward-looking. They cannot replay history beyond the oplog window. For an audit trail, write an audit log explicitly (pre-images help, but they expire too).
+- **Exactly-once side effects** -- delivery is at-least-once from your consumer's perspective (you may reprocess the last event after a crash, depending on when you saved the token). Make handlers idempotent.
+
+If you are choosing between embedding data so it is updated atomically versus referencing and syncing via change streams, that is a schema question first -- our [schema design guide](/guides/mongodb/schema-design) covers the tradeoff.
+
+## Debugging tips
+
+- Stream emits nothing? Check you are on a replica set, and that writes are actually reaching majority commit.
+- `ChangeStreamHistoryLost` error on resume? Your token aged out of the oplog. Re-sync and start a fresh stream.
+- `fullDocument` is `null` with `updateLookup`? The document was deleted between the update and your read of the event. Handle it.
+
+Mako connects to MongoDB with AI-powered autocomplete for queries and aggregations. Try it free at mako.ai.

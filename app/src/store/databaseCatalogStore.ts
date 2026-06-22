@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { persist } from "zustand/middleware";
-import { apiClient } from "../lib/api-client";
+import { api, unwrapBody } from "../api";
 
 export interface DatabaseTypeItem {
   type: string;
@@ -64,10 +64,9 @@ export const useDatabaseCatalogStore = create<CatalogState>()(
           s.error = null;
         });
         try {
-          const data =
-            await apiClient.get<CatalogResponse<DatabaseTypeItem[]>>(
-              "/databases/types",
-            );
+          const data = unwrapBody(
+            await api.GET("/api/databases/types"),
+          ) as CatalogResponse<DatabaseTypeItem[]>;
           if (data.success) {
             set(s => {
               s.types = data.data;
@@ -90,9 +89,11 @@ export const useDatabaseCatalogStore = create<CatalogState>()(
         const state = get();
         if (state.schemas[type] && !force) return state.schemas[type];
         try {
-          const res = await apiClient.get<
-            CatalogResponse<DatabaseSchemaResponse>
-          >(`/databases/${type}/schema`);
+          const res = unwrapBody(
+            await api.GET("/api/databases/{type}/schema", {
+              params: { path: { type } },
+            }),
+          ) as CatalogResponse<DatabaseSchemaResponse>;
           if (res.success) {
             set(s => {
               s.schemas[type] = res.data;

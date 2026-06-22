@@ -3,7 +3,14 @@ title: API Reference
 description: REST API endpoints for authentication, workspaces, queries, and the AI agent.
 ---
 
-The Mako API is a RESTful API built with [Hono](https://hono.dev). All endpoints are prefixed with `/api`.
+:::tip[Interactive reference]
+The complete, always-up-to-date endpoint reference is generated automatically
+from the API source code. Browse it under **REST API** in the sidebar, or open
+the interactive playground at `/api/reference` on a running server. The raw
+OpenAPI spec is served at `/api/openapi.json`.
+:::
+
+This page is a hand-written conceptual overview. The Mako API is a RESTful API built with [Hono](https://hono.dev). All endpoints are prefixed with `/api`.
 
 ## Authentication
 
@@ -101,6 +108,11 @@ The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoin
 | `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console immediately (admin only) |
 | `GET` | `/api/workspaces/:wid/consoles/:id/schedule/runs` | List scheduled run history (admin only) |
 | `GET` | `/api/workspaces/:wid/scheduled-queries` | List scheduled consoles in the workspace (admin only) |
+| `GET`    | `/api/workspaces/:wid/consoles/:id/collaborators`           | List per-user collaborators                  |
+| `POST`   | `/api/workspaces/:wid/consoles/:id/collaborators`           | Add/update a collaborator (`{ userId, role }`; owner/admin only) |
+| `PATCH`  | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`   | Change a collaborator's role (owner/admin only) |
+| `DELETE` | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`   | Remove a collaborator (owner/admin only)     |
+| `PATCH`  | `/api/workspaces/:wid/consoles/:id/sharing`                 | Update general access (`{ access, workspaceRole }`; owner/admin only) |
 
 See [Console](/console/) for full API documentation with examples. Scheduled query endpoints require workspace admin access and use the same session/API-key authentication as other workspace endpoints.
 
@@ -267,8 +279,14 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 | `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
 | `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
 | `GET`    | `/api/workspaces/:wid/dashboards/:did/collaborators`             | List per-user collaborators                  |
-| `POST`   | `/api/workspaces/:wid/dashboards/:did/collaborators`             | Add a collaborator (`{ userId }`, `editor` role; owner/admin only) |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/collaborators`             | Add/update a collaborator (`{ userId, role }`, role `viewer`\|`editor`; owner/admin only) |
+| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Change a collaborator's role (owner/admin only) |
 | `DELETE` | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Remove a collaborator (owner/admin only)     |
+| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/sharing`                   | Update general access (`{ access, workspaceRole }`; owner/admin only) |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/public-share`             | Enable/create a public link (`{ password? }`; owner/admin only) |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did/public-share/password`    | Reveal the public-link password (owner/admin only) |
+| `PATCH`  | `/api/workspaces/:wid/dashboards/:did/public-share`            | Update password / rotate token / rename slug (owner/admin only) |
+| `DELETE` | `/api/workspaces/:wid/dashboards/:did/public-share`            | Disable the public link (owner/admin only)   |
 
 ### Dashboard Folders
 
@@ -287,6 +305,18 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 | `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger`                | Trigger materialization for a data source       |
 | `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger-all`            | Trigger materialization for all data sources    |
 | `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/stream/:dataSourceId`   | Stream Parquet artifact (supports range requests) |
+
+## Public Shares
+
+Token-gated, **read-only** endpoints for published dashboard/app links. These are intentionally unauthenticated (no session or API key) and serve only materialized snapshots.
+
+| Method | Endpoint                                  | Description                                              |
+| ------ | ----------------------------------------- | ------------------------------------------------------- |
+| `GET`  | `/api/share/:token`                       | Get public-share metadata (title, whether a password is required) |
+| `POST` | `/api/share/:token/unlock`                | Exchange a password for access to a protected link      |
+| `GET`  | `/api/share/:token/content`               | Get the shared resource's materialized content          |
+| `GET`  | `/api/share/:token/artifacts/:artifactId` | Stream a materialized Parquet artifact (supports range requests) |
+| `POST` | `/api/share/:token/refresh`               | Throttled anonymous re-materialization of the snapshot  |
 
 ## Inngest
 

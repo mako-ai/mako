@@ -105,23 +105,20 @@ async function createWorkerAndInstantiate(): Promise<AsyncDuckDB> {
   if (!workerUrl) {
     throw new Error("DuckDB worker URL is unavailable");
   }
-  let worker: Worker;
-  try {
-    worker = new Worker(workerUrl);
-    console.log(
-      `[opfs-diag] createWorkerAndInstantiate: worker created from ${workerUrl}`,
-    );
-  } catch {
-    console.warn(
-      `[opfs-diag] createWorkerAndInstantiate: direct worker creation failed for ${workerUrl}, falling back to blob worker`,
-    );
-    const resp = await fetch(workerUrl);
-    const blob = new Blob([await resp.text()], { type: "text/javascript" });
-    worker = new Worker(URL.createObjectURL(blob));
-    console.log(
-      "[opfs-diag] createWorkerAndInstantiate: blob worker created successfully",
-    );
-  }
+  // Always create the worker through a same-origin blob shim (duckdb-wasm's
+  // documented pattern). A direct cross-origin `new Worker(cdnUrl)` throws
+  // synchronously in Chrome/Firefox (so a try/catch fallback would run), but
+  // Safari/WebKit fails *asynchronously* via an error event instead — the
+  // catch never fired and DuckDB silently never instantiated on Safari.
+  const blobUrl = URL.createObjectURL(
+    new Blob([`importScripts(${JSON.stringify(workerUrl)});`], {
+      type: "text/javascript",
+    }),
+  );
+  const worker = new Worker(blobUrl);
+  console.log(
+    `[opfs-diag] createWorkerAndInstantiate: blob worker created for ${workerUrl}`,
+  );
 
   const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
   const db = new duckdb.AsyncDuckDB(logger, worker);

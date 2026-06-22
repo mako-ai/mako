@@ -8,6 +8,7 @@ import {
 } from "../../database/workspace-schema";
 import { getSyncLogger } from "../logging";
 import { connectorRegistry } from "../../connectors/registry";
+import type { BaseConnector } from "../../connectors/base/BaseConnector";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
@@ -19,6 +20,8 @@ import {
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
+import { reconcileOrphanedWebhookApplyStatus } from "../../sync-cdc/cdc-orphan-applystatus";
 import { enqueueWebhookProcess } from "../webhook-process-enqueue";
 
 const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
@@ -35,6 +38,108 @@ const CDC_MATERIALIZE_CONCURRENCY_PER_FLOW = Math.max(
   parseInt(process.env.CDC_MATERIALIZE_CONCURRENCY_PER_FLOW || "3", 10) || 3,
   1,
 );
+
+type WebhookCdcRecord = {
+  entity: string;
+  recordId: string;
+  operation: "upsert" | "delete";
+  payload: Record<string, unknown>;
+  sourceTs: Date;
+  source: "webhook";
+  changeId: string;
+};
+
+/**
+ * Convert a single WebhookEvent into the (possibly multiple) canonical CDC
+ * records a connector emits for it. Routing through extractWebhookCdcRecords
+ * lets connectors fan out one webhook into several entities (e.g. Calendly
+ * invitee.created -> invitees + scheduled_events). Falls back to the base
+ * mapping + extractWebhookData for connectors that emit a single record.
+ *
+ * Each record is enriched with the same system fields the single-record path
+ * used (_dataSourceId/_dataSourceName/_syncedAt), filtered by the flow's
+ * enabled-entity selection, and given a stable changeId for idempotency.
+ *
+ * `extractedCount` reports how many records the connector emitted *before* the
+ * enabled-entity filter, so callers can tell "extraction yielded nothing"
+ * (genuine failure → retry) apart from "everything got filtered out as
+ * disabled/unselected" (intentional drop).
+ */
+function buildWebhookCdcRecords(params: {
+  connector: BaseConnector;
+  dataSource: { id: string; name: string };
+  flow: Parameters<typeof isEntityEnabledForFlow>[0];
+  webhookEvent: {
+    eventId: string;
+    eventType: string;
+    rawPayload: unknown;
+    receivedAt: Date | string;
+  };
+}): { records: WebhookCdcRecord[]; extractedCount: number } {
+  const { connector, dataSource, flow, webhookEvent } = params;
+
+  const rawRecords = (
+    connector.extractWebhookCdcRecords(
+      webhookEvent.rawPayload,
+      webhookEvent.eventType,
+    ) ?? []
+  ).filter(record => record != null);
+
+  const receivedAt = new Date(webhookEvent.receivedAt);
+  const out: WebhookCdcRecord[] = [];
+
+  for (const record of rawRecords) {
+    const sourcePayload = (record.payload || {}) as Record<string, unknown>;
+
+    // Defensive sub-entity resolution for connectors that emit a generic
+    // "activities" parent with a `_type` discriminator (Close already
+    // pre-resolves the sub-entity in its mapping, so this is a no-op there).
+    let entity = record.entity;
+    if (entity === "activities" && sourcePayload._type) {
+      entity = `activities:${sourcePayload._type}`;
+    }
+
+    const baseEntity = entity.split(":")[0];
+    if (!isEntityEnabledForFlow(flow, entity, baseEntity)) {
+      continue;
+    }
+
+    const payload: Record<string, unknown> = {
+      ...normalizePayloadKeys(sourcePayload),
+      _dataSourceId: dataSource.id,
+      _dataSourceName: dataSource.name,
+      _syncedAt: new Date(),
+    };
+
+    const recordId = String(record.recordId ?? payload.id ?? "");
+    if (!recordId) continue;
+
+    const operation: "upsert" | "delete" =
+      record.operation === "delete" ? "delete" : "upsert";
+
+    const sourceTs =
+      record.sourceTs instanceof Date
+        ? record.sourceTs
+        : resolveSourceTimestamp(payload, receivedAt);
+
+    const changeId =
+      typeof record.changeId === "string" && record.changeId.length > 0
+        ? record.changeId
+        : `webhook:${webhookEvent.eventId}:${entity}:${recordId}:${operation}`;
+
+    out.push({
+      entity,
+      recordId,
+      operation,
+      payload,
+      sourceTs,
+      source: "webhook",
+      changeId,
+    });
+  }
+
+  return { records: out, extractedCount: rawRecords.length };
+}
 
 async function runWebhookEventProcess({
   event,
@@ -180,19 +285,19 @@ async function runWebhookEventProcess({
           return { processed: false, reason: "Unknown event type" };
         }
 
-        // Extract data using connector
-        const extractedData = connector.extractWebhookData(
-          webhookEvent.rawPayload,
-        );
-        if (!extractedData) {
-          throw new Error("Failed to extract data from webhook event");
-        }
-
-        const { id, data } = extractedData;
-
-        // Flatten keys with dots (e.g. Close custom fields "custom.cf_xxx")
-        // BigQuery interprets dots as struct field access which breaks queries
-        const flatData = normalizePayloadKeys(data);
+        // Fan out into every entity the connector emits for this event
+        // (e.g. Calendly invitee.created -> invitees + scheduled_events).
+        const { records, extractedCount } = buildWebhookCdcRecords({
+          connector,
+          dataSource: { id: dataSource.id, name: dataSource.name },
+          flow,
+          webhookEvent: {
+            eventId: webhookEvent.eventId,
+            eventType,
+            rawPayload: webhookEvent.rawPayload,
+            receivedAt: webhookEvent.receivedAt,
+          },
+        });
 
         const destinationType = database.type;
         const isCdcEnabled =
@@ -200,50 +305,16 @@ async function runWebhookEventProcess({
           Boolean(flow.tableDestination?.connectionId) &&
           hasCdcDestinationAdapter(destinationType);
 
-        // For activity events, resolve sub-type from the data's _type field
-        // so we route to the correct per-sub-type table (e.g. activities:Call → call)
-        let resolvedEntity = mapping.entity;
-        if (mapping.entity === "activities" && data._type) {
-          resolvedEntity = `activities:${data._type}`;
+        // The mapping exists but the connector produced no usable record:
+        // a malformed/unexpected payload. Throw so Inngest retries and the
+        // event is surfaced as failed (matches the legacy extract-failed path).
+        if (extractedCount === 0) {
+          throw new Error("Failed to extract data from webhook event");
         }
 
-        // Apply connector-specific record normalization so the webhook payload
-        // matches the backfill shape (e.g. lead allowlist + custom field flattening).
-        let normalizedPayload = flatData;
-        let connectorSourceTs: Date | undefined;
-        if (isCdcEnabled && connector.normalizeBackfillRecord) {
-          const cdcRecord = connector.normalizeBackfillRecord(
-            resolvedEntity,
-            flatData,
-          );
-          if (cdcRecord?.payload) {
-            normalizedPayload = cdcRecord.payload as Record<string, unknown>;
-          }
-          if (cdcRecord?.sourceTs) {
-            connectorSourceTs = cdcRecord.sourceTs;
-          }
-        }
-
-        const documentData = {
-          ...normalizedPayload,
-          _dataSourceId: dataSource.id,
-          _dataSourceName: dataSource.name,
-          _syncedAt: new Date(),
-        };
-
-        const entityLayout = (flow.entityLayouts || []).find(
-          (l: any) =>
-            l.entity === resolvedEntity || l.entity === mapping.entity,
-        );
-        const isEntityEnabled = isEntityEnabledForFlow(
-          flow,
-          resolvedEntity,
-          mapping.entity,
-        );
-
-        // When entity layouts are configured, only explicitly enabled entities
-        // are allowed through (both webhook and backfill-driven writes).
-        if (!isEntityEnabled) {
+        // Records were extracted but all got filtered out by the flow's
+        // enabled-entity selection. Intentional drop, not a failure.
+        if (records.length === 0) {
           await WebhookEvent.updateOne(
             { _id: webhookEvent._id },
             {
@@ -252,7 +323,7 @@ async function runWebhookEventProcess({
                 applyStatus: "dropped",
                 applyError: {
                   code: "ENTITY_DISABLED",
-                  message: `Entity ${resolvedEntity} is disabled or not selected in flow configuration`,
+                  message: `No enabled entity for event ${eventType} in flow configuration`,
                 },
                 processedAt: new Date(),
                 processingDurationMs:
@@ -263,32 +334,26 @@ async function runWebhookEventProcess({
           );
           return {
             processed: false,
-            reason: `Entity ${resolvedEntity} is disabled`,
+            reason: `No enabled entity for event ${eventType}`,
           };
         }
 
+        const primaryRecord = records[0];
+
         if (isCdcEnabled && flow.tableDestination?.connectionId) {
-          const sourceTs =
-            connectorSourceTs ??
-            resolveSourceTimestamp(
-              documentData,
-              new Date(webhookEvent.receivedAt),
-            );
           await cdcIngestService.appendNormalizedEvents({
             workspaceId: String(flow.workspaceId),
             flowId: String(flowId),
-            events: [
-              {
-                entity: resolvedEntity,
-                recordId: String(id),
-                operation: mapping.operation,
-                payload: documentData,
-                sourceTs,
-                source: "webhook",
-                changeId: `webhook:${webhookEvent.eventId}:${resolvedEntity}:${id}:${mapping.operation}`,
-                webhookEventId: String(webhookEvent._id),
-              },
-            ],
+            events: records.map(record => ({
+              entity: record.entity,
+              recordId: record.recordId,
+              operation: record.operation,
+              payload: record.payload,
+              sourceTs: record.sourceTs,
+              source: "webhook" as const,
+              changeId: record.changeId,
+              webhookEventId: String(webhookEvent._id),
+            })),
           });
 
           await WebhookEvent.updateOne(
@@ -297,9 +362,9 @@ async function runWebhookEventProcess({
               $set: {
                 status: "completed",
                 processedAt: new Date(),
-                entity: resolvedEntity,
-                operation: mapping.operation,
-                recordId: String(id),
+                entity: primaryRecord.entity,
+                operation: primaryRecord.operation,
+                recordId: primaryRecord.recordId,
                 applyStatus: "pending",
                 processingDurationMs:
                   Date.now() - new Date(webhookEvent.receivedAt).getTime(),
@@ -312,97 +377,103 @@ async function runWebhookEventProcess({
           logger.info("Queued webhook event for BigQuery CDC materialization", {
             eventId: webhookEvent.eventId,
             flowId,
-            entity: resolvedEntity,
-            operation: mapping.operation,
+            entities: records.map(r => r.entity),
           });
 
           return {
             processed: true,
             reason: "Queued for CDC materialization",
-            entity: resolvedEntity,
-            operation: mapping.operation,
+            entity: primaryRecord.entity,
+            operation: primaryRecord.operation,
           };
         }
 
         // ========== SQL/BigQuery destination path ==========
         if (flow.tableDestination?.connectionId) {
-          const entityTableName = getEntityTableName(
-            flow.tableDestination.tableName,
-            resolvedEntity,
-          );
+          for (const record of records) {
+            const entityLayout = (flow.entityLayouts || []).find(
+              (l: any) =>
+                l.entity === record.entity ||
+                l.entity === record.entity.split(":")[0],
+            );
+            const entityTableName = getEntityTableName(
+              flow.tableDestination.tableName,
+              record.entity,
+            );
 
-          const entityTableDest = {
-            ...flow.tableDestination,
-            tableName: entityTableName,
-            connectionId: new Types.ObjectId(
-              flow.tableDestination.connectionId,
-            ),
-            partitioning: entityLayout
-              ? {
-                  enabled: true,
-                  type: "time" as const,
-                  field: entityLayout.partitionField,
-                  granularity: entityLayout.partitionGranularity || "day",
-                }
-              : flow.tableDestination.partitioning,
-            clustering: entityLayout?.clusterFields?.length
-              ? {
-                  enabled: true,
-                  fields: entityLayout.clusterFields,
-                }
-              : flow.tableDestination.clustering,
-          };
-
-          const writer = await createDestinationWriter(
-            {
-              destinationDatabaseId: new Types.ObjectId(
-                flow.destinationDatabaseId,
+            const entityTableDest = {
+              ...flow.tableDestination,
+              tableName: entityTableName,
+              connectionId: new Types.ObjectId(
+                flow.tableDestination.connectionId,
               ),
-              destinationDatabaseName: flow.destinationDatabaseName,
-              tableDestination: entityTableDest,
-            },
-            dataSource.name,
-          );
-          (writer as any).config.deleteMode = flow.deleteMode;
+              partitioning: entityLayout
+                ? {
+                    enabled: true,
+                    type: "time" as const,
+                    field: entityLayout.partitionField,
+                    granularity: entityLayout.partitionGranularity || "day",
+                  }
+                : flow.tableDestination.partitioning,
+              clustering: entityLayout?.clusterFields?.length
+                ? {
+                    enabled: true,
+                    fields: entityLayout.clusterFields,
+                  }
+                : flow.tableDestination.clustering,
+            };
 
-          logger.info("Processing webhook event (SQL destination)", {
-            eventType,
-            entity: resolvedEntity,
-            operation: mapping.operation,
-            id,
-            table: entityTableName,
-          });
+            const writer = await createDestinationWriter(
+              {
+                destinationDatabaseId: new Types.ObjectId(
+                  flow.destinationDatabaseId,
+                ),
+                destinationDatabaseName: flow.destinationDatabaseName,
+                tableDestination: entityTableDest,
+              },
+              dataSource.name,
+            );
+            (writer as any).config.deleteMode = flow.deleteMode;
 
-          if (mapping.operation === "upsert") {
-            const result = await writer.writeBatch([documentData], {
-              keyColumns: ["id", "_dataSourceId"],
-              conflictStrategy: "update",
+            logger.info("Processing webhook event (SQL destination)", {
+              eventType,
+              entity: record.entity,
+              operation: record.operation,
+              id: record.recordId,
+              table: entityTableName,
             });
-            if (!result.success) {
-              throw new Error(`SQL upsert failed: ${result.error}`);
-            }
-          } else if (mapping.operation === "delete") {
-            const deleteMode = flow.deleteMode || "hard";
-            if (deleteMode === "soft") {
-              const softDeleteDoc = {
-                ...documentData,
-                is_deleted: true,
-                deleted_at: new Date(),
-              };
-              const result = await writer.writeBatch([softDeleteDoc], {
+
+            if (record.operation === "upsert") {
+              const result = await writer.writeBatch([record.payload], {
                 keyColumns: ["id", "_dataSourceId"],
                 conflictStrategy: "update",
               });
               if (!result.success) {
-                throw new Error(`SQL soft delete failed: ${result.error}`);
+                throw new Error(`SQL upsert failed: ${result.error}`);
               }
-            } else {
-              const result = await writer.deleteByKeys({
-                id,
-                _dataSourceId: dataSource.id,
-              });
-              if (!result.success) {
-                throw new Error(`SQL hard delete failed: ${result.error}`);
+            } else if (record.operation === "delete") {
+              const deleteMode = flow.deleteMode || "hard";
+              if (deleteMode === "soft") {
+                const softDeleteDoc = {
+                  ...record.payload,
+                  is_deleted: true,
+                  deleted_at: new Date(),
+                };
+                const result = await writer.writeBatch([softDeleteDoc], {
+                  keyColumns: ["id", "_dataSourceId"],
+                  conflictStrategy: "update",
+                });
+                if (!result.success) {
+                  throw new Error(`SQL soft delete failed: ${result.error}`);
+                }
+              } else {
+                const result = await writer.deleteByKeys({
+                  id: record.recordId,
+                  _dataSourceId: dataSource.id,
+                });
+                if (!result.success) {
+                  throw new Error(`SQL hard delete failed: ${result.error}`);
+                }
               }
             }
           }
@@ -413,9 +484,9 @@ async function runWebhookEventProcess({
               $set: {
                 status: "completed",
                 processedAt: new Date(),
-                entity: resolvedEntity,
-                operation: mapping.operation,
-                recordId: String(id),
+                entity: primaryRecord.entity,
+                operation: primaryRecord.operation,
+                recordId: primaryRecord.recordId,
                 applyStatus: "applied",
                 appliedAt: new Date(),
                 processingDurationMs:
@@ -429,68 +500,54 @@ async function runWebhookEventProcess({
           logger.info("Webhook event processed (SQL)", {
             eventId: webhookEvent.eventId,
             eventType,
-            entity: resolvedEntity,
-            operation: mapping.operation,
-            table: entityTableName,
+            entities: records.map(r => r.entity),
           });
 
           return {
             processed: true,
-            entity: resolvedEntity,
-            operation: mapping.operation,
+            entity: primaryRecord.entity,
+            operation: primaryRecord.operation,
           };
         }
 
-        // ========== Legacy MongoDB destination path (unchanged) ==========
-        const collectionName = `${dataSource.name}_${mapping.entity}`;
-        const collection = db.collection(collectionName);
+        // ========== Legacy MongoDB destination path ==========
+        for (const record of records) {
+          const baseEntity = record.entity.split(":")[0];
+          const collectionName = `${dataSource.name}_${baseEntity}`;
+          const collection = db.collection(collectionName);
 
-        const stagingCollectionName = `${collectionName}_staging`;
-        let stagingCollection = null;
-
-        try {
-          const stagingCol = db.collection(stagingCollectionName);
-          const indexes = await stagingCol.indexes();
-          if (indexes && indexes.length > 0) {
-            stagingCollection = stagingCol;
-            logger.info("Staging collection found, will write to both", {
+          const stagingCollectionName = `${collectionName}_staging`;
+          let stagingCollection = null;
+          try {
+            const stagingCol = db.collection(stagingCollectionName);
+            const indexes = await stagingCol.indexes();
+            if (indexes && indexes.length > 0) {
+              stagingCollection = stagingCol;
+            }
+          } catch {
+            logger.debug("No staging collection found", {
               stagingCollection: stagingCollectionName,
             });
           }
-        } catch {
-          logger.debug("No staging collection found", {
-            stagingCollection: stagingCollectionName,
-          });
-        }
 
-        logger.info("Processing webhook event", {
-          eventType,
-          entity: mapping.entity,
-          operation: mapping.operation,
-          id,
-          collection: collectionName,
-          hasStaging: !!stagingCollection,
-        });
-
-        if (mapping.operation === "upsert") {
-          await collection.updateOne(
-            { id },
-            { $set: documentData },
-            { upsert: true },
-          );
-
-          if (stagingCollection) {
-            await stagingCollection.updateOne(
-              { id },
-              { $set: documentData },
+          if (record.operation === "upsert") {
+            await collection.updateOne(
+              { id: record.recordId },
+              { $set: record.payload },
               { upsert: true },
             );
-          }
-        } else if (mapping.operation === "delete") {
-          await collection.deleteOne({ id });
-
-          if (stagingCollection) {
-            await stagingCollection.deleteOne({ id });
+            if (stagingCollection) {
+              await stagingCollection.updateOne(
+                { id: record.recordId },
+                { $set: record.payload },
+                { upsert: true },
+              );
+            }
+          } else if (record.operation === "delete") {
+            await collection.deleteOne({ id: record.recordId });
+            if (stagingCollection) {
+              await stagingCollection.deleteOne({ id: record.recordId });
+            }
           }
         }
 
@@ -500,9 +557,9 @@ async function runWebhookEventProcess({
             $set: {
               status: "completed",
               processedAt: new Date(),
-              entity: resolvedEntity,
-              operation: mapping.operation,
-              recordId: String(id),
+              entity: primaryRecord.entity,
+              operation: primaryRecord.operation,
+              recordId: primaryRecord.recordId,
               applyStatus: "applied",
               appliedAt: new Date(),
               processingDurationMs:
@@ -516,16 +573,13 @@ async function runWebhookEventProcess({
         logger.info("Webhook event processed successfully", {
           eventId: webhookEvent.eventId,
           eventType,
-          entity: mapping.entity,
-          operation: mapping.operation,
-          collection: collectionName,
-          updatedStaging: !!stagingCollection,
+          entities: records.map(r => r.entity),
         });
 
         return {
           processed: true,
-          entity: mapping.entity,
-          operation: mapping.operation,
+          entity: primaryRecord.entity,
+          operation: primaryRecord.operation,
         };
       } catch (error) {
         // Mark event as failed
@@ -991,7 +1045,15 @@ function buildMaterializeEvents(
   }));
 }
 
-const CDC_INGEST_BATCH_LIMIT = 1000;
+// How many pending WebhookEvents the cron ingests per run, GLOBALLY across all
+// flows. The effective ingest ceiling is roughly
+//   CDC_INGEST_BATCH_LIMIT / (scheduler cron interval).
+// Raise this (and/or shorten the cron) if the pending WebhookEvent backlog
+// grows faster than it drains. Requires the { status, receivedAt } index.
+const CDC_INGEST_BATCH_LIMIT = Math.max(
+  parseInt(process.env.CDC_INGEST_BATCH_LIMIT || "2000", 10) || 2000,
+  100,
+);
 
 /**
  * Ingest pending WebhookEvents into CdcChangeEvents, grouped by flow.
@@ -1172,10 +1234,26 @@ async function ingestPendingWebhookEvents(logger: {
         continue;
       }
 
-      const extractedData = connector.extractWebhookData(
-        webhookEvent.rawPayload,
-      );
-      if (!extractedData) {
+      // Fan out into every entity the connector emits for this event
+      // (e.g. Calendly invitee.created -> invitees + scheduled_events).
+      const { records, extractedCount } = buildWebhookCdcRecords({
+        connector,
+        dataSource: { id: dataSource.id, name: dataSource.name },
+        flow,
+        webhookEvent: {
+          eventId: webhookEvent.eventId,
+          eventType: webhookEvent.eventType,
+          rawPayload: webhookEvent.rawPayload,
+          receivedAt: webhookEvent.receivedAt,
+        },
+      });
+
+      if (extractedCount === 0) {
+        // Mapping existed but the connector produced no usable record:
+        // malformed/unexpected payload. Mark failed so it's surfaced (matches
+        // the legacy extract-failed path).
+        flowFailed++;
+        totalFailed++;
         await WebhookEvent.updateOne(
           { _id: webhookEvent._id },
           {
@@ -1192,42 +1270,12 @@ async function ingestPendingWebhookEvents(logger: {
             },
           },
         );
-        flowFailed++;
-        totalFailed++;
         continue;
       }
 
-      const { id, data } = extractedData;
-      const flatData = normalizePayloadKeys(data);
-
-      let resolvedEntity = mapping.entity;
-      if (mapping.entity === "activities" && data._type) {
-        resolvedEntity = `activities:${data._type}`;
-      }
-
-      let normalizedPayload = flatData;
-      let connectorSourceTs: Date | undefined;
-      if (connector.normalizeBackfillRecord) {
-        const cdcRecord = connector.normalizeBackfillRecord(
-          resolvedEntity,
-          flatData,
-        );
-        if (cdcRecord?.payload) {
-          normalizedPayload = cdcRecord.payload as Record<string, unknown>;
-        }
-        if (cdcRecord?.sourceTs) {
-          connectorSourceTs = cdcRecord.sourceTs;
-        }
-      }
-
-      const documentData = {
-        ...normalizedPayload,
-        _dataSourceId: dataSource.id,
-        _dataSourceName: dataSource.name,
-        _syncedAt: new Date(),
-      };
-
-      if (!isEntityEnabledForFlow(flow, resolvedEntity, mapping.entity)) {
+      if (records.length === 0) {
+        // Records were extracted but all got filtered out by the flow's
+        // enabled-entity selection. Intentional drop, not a failure.
         flowDropped++;
         totalDropped++;
         await WebhookEvent.updateOne(
@@ -1238,7 +1286,7 @@ async function ingestPendingWebhookEvents(logger: {
               applyStatus: "dropped",
               applyError: {
                 code: "ENTITY_DISABLED",
-                message: `Entity ${resolvedEntity} is disabled or not selected in flow configuration`,
+                message: `No enabled entity for event ${webhookEvent.eventType} in flow configuration`,
               },
               processedAt: new Date(),
               processingDurationMs:
@@ -1250,26 +1298,26 @@ async function ingestPendingWebhookEvents(logger: {
         continue;
       }
 
-      const sourceTs =
-        connectorSourceTs ??
-        resolveSourceTimestamp(documentData, new Date(webhookEvent.receivedAt));
+      for (const record of records) {
+        cdcEvents.push({
+          entity: record.entity,
+          recordId: record.recordId,
+          operation: record.operation,
+          payload: record.payload,
+          sourceTs: record.sourceTs,
+          source: "webhook",
+          changeId: record.changeId,
+          webhookEventId: String(webhookEvent._id),
+        });
+      }
 
-      cdcEvents.push({
-        entity: resolvedEntity,
-        recordId: String(id),
-        operation: mapping.operation,
-        payload: documentData,
-        sourceTs,
-        source: "webhook",
-        changeId: `webhook:${webhookEvent.eventId}:${resolvedEntity}:${id}:${mapping.operation}`,
-        webhookEventId: String(webhookEvent._id),
-      });
-
+      // Bookkeeping on the WebhookEvent uses the primary (first) record.
+      const primary = records[0];
       processedIds.push({
         _id: webhookEvent._id,
-        entity: resolvedEntity,
-        operation: mapping.operation,
-        recordId: String(id),
+        entity: primary.entity,
+        operation: primary.operation,
+        recordId: primary.recordId,
         receivedAt: webhookEvent.receivedAt,
       });
     }
@@ -1356,6 +1404,24 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       ingestPendingWebhookEvents(logger),
     )) as { ingested: number; dropped: number; failed: number };
 
+    // Reap CDC events that are still materialization-pending but whose paired
+    // webhook completed long ago (apply never finalized). Without this, stuck
+    // pending CdcChangeEvents accumulate forever — there is no TTL on the
+    // "pending" status (only applied/dropped have TTL indexes).
+    const cleanupResult = (await step.run(
+      "cleanup-stale-pending-cdc",
+      cleanupStalePendingCdcEvents,
+    )) as Awaited<ReturnType<typeof cleanupStalePendingCdcEvents>>;
+
+    // Self-heal the flow "pending" counter: flip WebhookEvents stuck at
+    // applyStatus:"pending" whose CDC events are all terminal (or were deduped)
+    // to "applied". Without this, the count grows forever and the UI looks
+    // stuck even when there is no real materialization backlog.
+    const orphanReconcile = (await step.run(
+      "reconcile-orphaned-applystatus",
+      reconcileOrphanedWebhookApplyStatus,
+    )) as Awaited<ReturnType<typeof reconcileOrphanedWebhookApplyStatus>>;
+
     const staleEntities = (await step.run(
       "find-stale-entities",
       findStaleEntities,
@@ -1378,12 +1444,21 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       totalTriggered = staleEntities.length;
     }
 
-    if (ingestResult.ingested > 0 || totalTriggered > 0) {
+    if (
+      ingestResult.ingested > 0 ||
+      totalTriggered > 0 ||
+      cleanupResult.droppedCdc > 0 ||
+      orphanReconcile.resolved > 0
+    ) {
       logger.info("CDC scheduler completed", {
         ingested: ingestResult.ingested,
         dropped: ingestResult.dropped,
         failed: ingestResult.failed,
         materializeTriggered: totalTriggered,
+        staleCdcDropped: cleanupResult.droppedCdc,
+        staleWebhooksDropped: cleanupResult.droppedWebhooks,
+        staleCursorsAdvanced: cleanupResult.cursorsAdvanced,
+        orphanApplyStatusResolved: orphanReconcile.resolved,
       });
     }
 
@@ -1392,6 +1467,8 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       dropped: ingestResult.dropped,
       failed: ingestResult.failed,
       materializeTriggered: totalTriggered,
+      staleCdcDropped: cleanupResult.droppedCdc,
+      orphanApplyStatusResolved: orphanReconcile.resolved,
     };
   },
 );

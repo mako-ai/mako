@@ -166,7 +166,14 @@ jobs:
       GH_CLIENT_SECRET: ${{ secrets.GH_CLIENT_SECRET }}
       GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      INNGEST_EVENT_KEY: ${{ vars.INNGEST_EVENT_KEY }}
+      # Inngest routes a sent event to an environment by its EVENT KEY, not by
+      # INNGEST_ENV / the x-inngest-env header. Branch environments share a single
+      # "Branch Environments" event key; pairing it with INNGEST_ENV=pr-<n> routes
+      # events to that branch env. Using the production event key here would make
+      # event-triggered functions (e.g. dbt/run.requested) escape to prod and the
+      # branch executor never fires (runs stuck "queued"). Falls back to the prod
+      # key only if the branch key secret is unset, to avoid breaking deploys.
+      INNGEST_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY || vars.INNGEST_EVENT_KEY }}
       INNGEST_SIGNING_KEY: ${{ secrets.INNGEST_BRANCH_SIGNING_KEY }}
       AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -197,7 +204,25 @@ jobs:
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/pr-${{ needs.detect-changes.outputs.pr_number }}
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
+      - name: Warn if branch Inngest event key is missing
+        # NOTE: the `secrets` context is NOT allowed in `if:` conditionals — it
+        # makes the whole workflow file invalid (every run fails at 0s with no
+        # jobs, blocking ALL deploys). Surface the secret via step `env` and do
+        # the emptiness check in bash instead.
+        env:
+          INNGEST_BRANCH_EVENT_KEY: ${{ secrets.INNGEST_BRANCH_EVENT_KEY }}
+        run: |
+          if [ -z "${INNGEST_BRANCH_EVENT_KEY}" ]; then
+            echo "::warning title=Inngest branch event key missing::INNGEST_BRANCH_EVENT_KEY is not set — preview events fall back to the PRODUCTION event key and route to the prod Inngest env, so event-triggered functions (e.g. dbt runs) will NOT fire on this preview (they stay 'queued'). Add the Branch Environments event key as a repo secret to enable event-driven flows on previews."
+          fi
+
       - name: Set PR-specific variables
         id: pr-vars
         run: |
@@ -265,11 +290,16 @@ jobs:
           echo "latest_tag=${IMAGE_URI}:latest" >> "$GITHUB_OUTPUT"
 
       - name: Create .env.production for Docker build
+        env:
+          # Build ID baked into the frontend bundle + version.json so clients
+          # can detect stale bundles (served back via GET /api/version)
+          VITE_BUILD_ID: ${{ needs.detect-changes.outputs.pr_sha || github.sha }}
         run: |
           cat <<EOF > .env.production
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
           VITE_GTM_ID=${VITE_GTM_ID}
+          VITE_BUILD_ID=${VITE_BUILD_ID}
           EOF
 
       - name: Build Docker image
@@ -578,6 +608,12 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars GITHUB_APP_CLIENT_ID=${MAKO_GITHUB_APP_CLIENT_ID} \
+            --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 
@@ -800,6 +836,12 @@ jobs:
       STRIPE_METER_EVENT_NAME: llm_usage_usd
       DASHBOARD_ARTIFACT_PREFIX: dashboard-artifacts/prod
       SUPER_ADMIN_EMAILS: ${{ secrets.SUPER_ADMIN_EMAILS }}
+      MAKO_GITHUB_APP_ID: ${{ vars.MAKO_GITHUB_APP_ID }}
+      MAKO_GITHUB_APP_SLUG: ${{ vars.MAKO_GITHUB_APP_SLUG }}
+      MAKO_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.MAKO_GITHUB_APP_WEBHOOK_SECRET }}
+      MAKO_GITHUB_APP_PRIVATE_KEY: ${{ secrets.MAKO_GITHUB_APP_PRIVATE_KEY }}
+      MAKO_GITHUB_APP_CLIENT_ID: ${{ vars.MAKO_GITHUB_APP_CLIENT_ID }}
+      MAKO_GITHUB_APP_CLIENT_SECRET: ${{ secrets.MAKO_GITHUB_APP_CLIENT_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -864,6 +906,7 @@ jobs:
           VITE_API_URL=${VITE_API_URL}
           VITE_MUI_LICENSE_KEY=${VITE_MUI_LICENSE_KEY}
           VITE_GTM_ID=${VITE_GTM_ID}
+          VITE_BUILD_ID=${GITHUB_SHA}
           EOF
 
       - name: Build Docker image
@@ -950,6 +993,12 @@ jobs:
             --set-env-vars STRIPE_PRO_PRICE_ID=${STRIPE_PRO_PRICE_ID} \
             --set-env-vars STRIPE_OVERAGE_PRICE_ID=${STRIPE_OVERAGE_PRICE_ID} \
             --set-env-vars STRIPE_METER_EVENT_NAME=${STRIPE_METER_EVENT_NAME} \
+            --set-env-vars GITHUB_APP_ID=${MAKO_GITHUB_APP_ID} \
+            --set-env-vars GITHUB_APP_SLUG=${MAKO_GITHUB_APP_SLUG} \
+            --set-env-vars GITHUB_APP_WEBHOOK_SECRET=${MAKO_GITHUB_APP_WEBHOOK_SECRET} \
+            --set-env-vars GITHUB_APP_CLIENT_ID=${MAKO_GITHUB_APP_CLIENT_ID} \
+            --set-env-vars "^|^GITHUB_APP_CLIENT_SECRET=${MAKO_GITHUB_APP_CLIENT_SECRET}" \
+            --set-env-vars "^|^GITHUB_APP_PRIVATE_KEY=${MAKO_GITHUB_APP_PRIVATE_KEY}" \
             --set-env-vars "^|^SUPER_ADMIN_EMAILS=${SUPER_ADMIN_EMAILS}" \
             --quiet
 

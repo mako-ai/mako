@@ -21,8 +21,11 @@ import {
 import type { ExpertiseModeId, ModeState } from "../../agents/modes/types";
 
 const enableModeSchema = z.object({
+  // Derived from the registry so new modes (e.g. dbt) can never drift out of
+  // sync with the enum — a hard-coded list previously omitted "dbt", which
+  // made the model unable to enter dbt mode from a non-dbt surface.
   mode: z
-    .enum(["sql", "dashboard", "flow", "explore"])
+    .enum(EXPERTISE_MODE_IDS as [ExpertiseModeId, ...ExpertiseModeId[]])
     .describe(
       "Which expertise mode to enable. Loads that mode's tools and guidance.",
     ),

@@ -15,7 +15,16 @@ export type TabKind =
   | "members"
   | "flow-editor"
   | "dashboard"
-  | "table-data";
+  | "dashboard-data-source"
+  | "table-data"
+  | "app"
+  | "app-file"
+  | "app-binding"
+  | "plan"
+  | "dbt-file"
+  | "dbt-job"
+  | "dbt-console"
+  | "dbt-runs";
 
 /**
  * Sub-section for `kind === "settings"` tabs. Each section is rendered in its
@@ -74,6 +83,8 @@ export interface ConsoleTab {
   resultsViewMode?: "table" | "json" | "chart";
   /** Access level: private or workspace */
   access?: ConsoleAccessLevel;
+  /** Role granted to workspace members when access is "workspace" */
+  workspaceRole?: "viewer" | "editor";
   /** User ID of the console owner */
   owner_id?: string;
   /** True if the current user can only read (not edit) this console */
@@ -107,12 +118,16 @@ export interface ConsoleTab {
    */
   lastRun?: {
     at: string;
-    status: "success" | "error";
+    status: "running" | "success" | "error" | "cancelled";
     rowCount?: number;
     durationMs: number;
     error?: string;
     sampleRows?: Record<string, unknown>[];
     fields?: unknown;
+    /** Origin of the run ("agent", "user", …) — drives results catch-up. */
+    source?: string;
+    startedAt?: string;
+    executionId?: string;
   } | null;
   schedule?: {
     cron: string;
@@ -162,6 +177,8 @@ export type LeftPaneView =
   | "connectors"
   | "flows"
   | "dashboards"
+  | "apps"
+  | "dbt"
   | "settings";
 
 /**

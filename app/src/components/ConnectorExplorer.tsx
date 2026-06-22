@@ -22,6 +22,10 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useDataSourceEntitiesStore } from "../store/dataSourceEntitiesStore";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
 import ResourceTree, {
   type ResourceTreeNode,
   type ResourceTreeSection,
@@ -166,6 +170,8 @@ function ConnectorExplorer() {
     return tab?.content ?? null;
   }, [consoleTabs, activeConsoleId]);
 
+  const reveal = useExplorerRevealStore(selectRevealFor("connectors"));
+
   const actions = (
     <>
       <Tooltip title="Add Connector">
@@ -208,6 +214,8 @@ function ConnectorExplorer() {
               mode="sidebar"
               searchQuery={searchQuery}
               activeItemId={activeConnectorId || undefined}
+              revealNodeId={reveal?.nodeId}
+              revealNonce={reveal?.nonce}
               getItemIcon={getItemIcon}
               hideFolderIcon
               isFolderExpanded={() => true}

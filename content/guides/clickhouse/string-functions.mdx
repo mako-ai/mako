@@ -1,0 +1,172 @@
+---
+title: "ClickHouse String Functions: A Practical Guide"
+description: "Working with strings in ClickHouse: length and case, substrings with 1-based indexing, splitting and joining, search and replace including regular expressions, and the UTF-8 versus byte distinction that trips people up."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "strings", "regex", "utf8", "olap"]
+date: "2026-06-05"
+---
+
+# ClickHouse String Functions
+
+ClickHouse has a deep catalog of string functions, split across three documentation pages: general string functions, search functions, and replace functions. This guide pulls the practical subset together, shows the 1-based indexing and byte-versus-character distinction that cause most mistakes, and covers regular expressions, splitting, and joining.
+
+## The Byte vs Character Distinction
+
+This is the single most important thing to understand. Most ClickHouse string functions operate on **bytes**, not Unicode characters. For ASCII data they are identical, but for UTF-8 text with multi-byte characters they differ. The UTF-8-aware variants carry a `UTF8` suffix.
+
+```sql
+SELECT
+    length('café'),        -- 5  (bytes: é is two bytes in UTF-8)
+    lengthUTF8('café'),    -- 4  (characters)
+    upper('café'),         -- CAFÉ only if your locale handles it; ASCII-only by default
+    upperUTF8('café');     -- CAFÉ, correct Unicode case folding
+```
+
+Rule of thumb: if your data is plain ASCII, the byte functions are faster and correct. If you have accented characters, emoji, or non-Latin scripts and you care about character counts or case, reach for the `UTF8` variants. Mixing them silently is a common source of off-by-a-few bugs in `substring` calls.
+
+## Length and Case
+
+```sql
+SELECT
+    length(s),         -- length in bytes
+    lengthUTF8(s),     -- length in characters
+    empty(s),          -- 1 if the string is empty, else 0
+    notEmpty(s),
+    lower(s),          -- ASCII lowercasing
+    upper(s),
+    lowerUTF8(s),      -- Unicode-aware
+    upperUTF8(s),
+    reverse(s),        -- byte reversal
+    reverseUTF8(s)     -- character reversal
+FROM strings;
+```
+
+## Substrings (1-based indexing)
+
+ClickHouse uses 1-based indexing for string positions, like MySQL and standard SQL, not the 0-based indexing some languages use.
+
+```sql
+SELECT
+    substring('clickhouse', 6, 5)      AS sub,    -- 'house'
+    substring('clickhouse', 6)         AS to_end, -- 'house'
+    substringUTF8('café latte', 1, 4)  AS chars,  -- 'café' counted by character
+    left('clickhouse', 5)              AS first5, -- 'click'
+    right('clickhouse', 5)             AS last5;  -- 'house'
+```
+
+A negative start position counts from the end:
+
+```sql
+SELECT substring('clickhouse', -5, 5);  -- 'house'
+```
+
+`substringUTF8` exists for the same character-aware reasons described above. Slicing a multi-byte string with plain `substring` can cut a character in half and produce invalid UTF-8.
+
+## Trimming, Padding, Concatenation
+
+```sql
+SELECT
+    trimLeft('  hi  '),       -- 'hi  '
+    trimRight('  hi  '),      -- '  hi'
+    trimBoth('  hi  '),       -- 'hi'
+    leftPad('7', 3, '0'),     -- '007'
+    rightPad('7', 3, '_'),    -- '7__'
+    concat('click', 'house'), -- 'clickhouse'
+    concatWithSeparator('-', '2026', '06', '05'); -- '2026-06-05'
+```
+
+`concat` takes any number of arguments. `concatWithSeparator` (also written `concat_ws`) puts a delimiter between them, which is handy for building keys or CSV-style fields.
+
+## Searching Within Strings
+
+Search functions live on their own documentation page. The core ones:
+
+```sql
+SELECT
+    position('clickhouse', 'house'),       -- 6, the 1-based byte offset (0 if not found)
+    positionUTF8('café latte', 'latte'),   -- character offset
+    positionCaseInsensitive('ClickHouse', 'HOUSE'), -- 6
+    like('clickhouse', '%house'),          -- 1, SQL LIKE as a function
+    notLike('clickhouse', 'mysql%'),       -- 1
+    multiSearchAny('clickhouse', ['sql', 'house']), -- 1 if any needle matches
+    countSubstrings('a.b.c.d', '.');       -- 3
+```
+
+`position` returns the 1-based offset of the first match, or `0` when there is no match. That zero-means-absent convention matters: do not treat the result as a boolean directly, since `0` is falsy but a valid match at position 1 is truthy as expected.
+
+For matching against many patterns at once, the `multiSearch*` family is built for it and far faster than chaining many `position` calls or `OR`-ed `LIKE`s.
+
+## Regular Expressions
+
+ClickHouse uses the RE2 engine, which is fast and linear-time but deliberately does not support backreferences or lookahead/lookbehind. Most everyday patterns work; some Perl-style tricks do not.
+
+```sql
+SELECT
+    match('2026-06-05', '^\d{4}-\d{2}-\d{2}$'),       -- 1, full-string regex test
+    extract('order-12345', '\d+'),                    -- '12345', first match
+    extractAll('a1b2c3', '\d'),                        -- ['1','2','3']
+    replaceRegexpOne('2026-06-05', '-', '/'),          -- '2026/06-05', first only
+    replaceRegexpAll('2026-06-05', '-', '/'),          -- '2026/06/05', all
+    replaceOne('aaa', 'a', 'b'),                        -- 'baa', literal, first
+    replaceAll('aaa', 'a', 'b');                        -- 'bbb', literal, all
+```
+
+Capture groups are referenced with `\1`, `\2` in the replacement string:
+
+```sql
+-- Swap day and month in a date string
+SELECT replaceRegexpOne('05/06/2026', '(\d{2})/(\d{2})/(\d{4})', '\2/\1/\3');
+-- '06/05/2026'
+```
+
+Because RE2 has no backreferences, a pattern like `(\w+)\s+\1` to find a repeated word will not compile. If you need that, restructure the query or preprocess the data.
+
+## Splitting and Joining
+
+```sql
+SELECT
+    splitByChar('.', 'a.b.c'),          -- ['a','b','c']
+    splitByString('::', 'a::b::c'),     -- ['a','b','c']
+    splitByRegexp('\s+', 'one   two  three'), -- ['one','two','three']
+    arrayStringConcat(['a','b','c'], '-'); -- 'a-b-c'
+```
+
+`splitByChar` is the fast path for single-character delimiters; `splitByString` handles multi-character delimiters; `splitByRegexp` handles patterns. The inverse, `arrayStringConcat`, joins an array back into a string with a separator. Splitting produces an `Array(String)`, which pairs naturally with `arrayJoin` to explode rows or with the array higher-order functions for filtering.
+
+## A Realistic Example
+
+Parse a log line into structured columns:
+
+```sql
+SELECT
+    extract(line, '^\S+')                        AS ip,
+    parseDateTimeBestEffortOrNull(
+        extract(line, '\[([^\]]+)\]'))           AS ts,
+    extract(line, '"(\w+)\s')                    AS method,
+    toUInt16OrNull(extract(line, '"\s(\d{3})\s')) AS status
+FROM (SELECT '192.168.1.1 [05/Jun/2026:14:30:00] "GET /api HTTP/1.1" 200' AS line);
+```
+
+The pattern uses `extract` for each field, RE2-compatible regex throughout, and the `OrNull` parsers so malformed lines yield `NULL` rather than failing the whole query.
+
+## Common Mistakes
+
+- **Using byte functions on UTF-8 text.** `length('café')` is 5, not 4. Use `lengthUTF8` and `substringUTF8` when characters matter.
+- **Assuming 0-based string indexing.** ClickHouse is 1-based; `substring(s, 1, n)` starts at the first character.
+- **Treating `position`'s `0` as a position.** Zero means "not found"; a real match starts at 1.
+- **Expecting backreferences or lookahead in regex.** RE2 does not support them. Patterns relying on them will not compile.
+- **Confusing `replaceOne`/`replaceAll` with `replaceRegexpOne`/`replaceRegexpAll`.** The non-regex versions treat the pattern as a literal string, which is what you want when the needle contains characters like `.` or `*`.
+
+When you are reverse-engineering an unfamiliar string column, Mako's AI autocomplete surfaces the matching function names and their byte-versus-UTF-8 pairs as you type, which saves a few trips back to the docs.
+
+## Related Guides
+
+- [ClickHouse Date and Time Functions](/guides/clickhouse/date-functions)
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions)
+- [ClickHouse JSON Queries](/guides/clickhouse/json-queries)
+- [ClickHouse JOINs](/guides/clickhouse/joins-guide)
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for queries like these. Try it free at mako.ai.

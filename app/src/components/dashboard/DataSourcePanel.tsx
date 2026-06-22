@@ -38,6 +38,7 @@ import {
   Import,
   ChevronUp,
   Eye,
+  Maximize2,
 } from "lucide-react";
 import {
   useDashboardStore,
@@ -56,6 +57,7 @@ import {
   previewDashboardQuery,
 } from "../../dashboard-runtime/commands";
 import { useDashboardRuntimeStore } from "../../dashboard-runtime/store";
+import { focusDashboardDataSourceTab } from "../../dashboard-runtime/shell";
 import { useSchemaStore } from "../../store/schemaStore";
 
 interface ConsoleResult {
@@ -558,7 +560,13 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
       open={open}
       onClose={onClose}
       PaperProps={{
-        sx: { width: 420, p: 0, display: "flex", flexDirection: "column" },
+        sx: {
+          width: { xs: "100vw", sm: 420 },
+          maxWidth: "100vw",
+          p: 0,
+          display: "flex",
+          flexDirection: "column",
+        },
       }}
     >
       {/* Header */}
@@ -1028,6 +1036,22 @@ const DataSourcePanel: React.FC<DataSourcePanelProps> = ({
                       title="Preview rows"
                     >
                       <Eye size={14} />
+                    </IconButton>
+                    <IconButton
+                      size="small"
+                      onClick={() => {
+                        if (dashboardId) {
+                          focusDashboardDataSourceTab(
+                            dashboardId,
+                            ds.id,
+                            ds.name,
+                          );
+                        }
+                      }}
+                      sx={{ p: 0.5 }}
+                      title="Open in tab"
+                    >
+                      <Maximize2 size={14} />
                     </IconButton>
                     <IconButton
                       size="small"

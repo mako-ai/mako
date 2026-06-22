@@ -6,6 +6,7 @@ import {
   type IDashboardFolder,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import { canReadResource, canWriteResource } from "./resource-acl";
 
 const logger = loggers.api("dashboard-manager");
 
@@ -27,12 +28,12 @@ export interface DashboardTreeNode {
 /**
  * Centralized permission + tree logic for dashboards.
  *
- * Access model (mirrors console-manager pattern):
+ * Access model (delegates to utils/resource-acl):
  * - `access` is the source of truth for visibility ('private' | 'workspace')
  * - `owner_id` tracks the dashboard creator (backfilled from `createdBy`)
- * - Private dashboards are only visible/editable by the owner
- * - Workspace dashboards are visible to all members; editable by owner + admins
- * - `sharedWith` grants explicit per-user edit access regardless of `access`
+ * - `sharedWith` grants per-user viewer/editor access regardless of `access`
+ * - `workspaceRole` is the role workspace members get on workspace dashboards
+ *   (admins always get editor; workspace `viewer` members are capped)
  */
 export class DashboardManager {
   static getOwnerId(dashboard: IDashboard): string {
@@ -44,28 +45,32 @@ export class DashboardManager {
   }
 
   /**
-   * Whether `userId` is an explicit collaborator on the dashboard.
-   * All collaborators currently have the "editor" role (read + write).
+   * Whether `userId` is an explicit collaborator on the dashboard
+   * (any role — viewer or editor).
    */
   static isCollaborator(dashboard: IDashboard, userId: string): boolean {
     return (dashboard.sharedWith || []).some(s => s.userId === userId);
   }
 
-  static canRead(dashboard: IDashboard, userId: string): boolean {
-    if (DashboardManager.isOwner(dashboard, userId)) return true;
-    if (DashboardManager.isCollaborator(dashboard, userId)) return true;
-    return dashboard.access === "workspace";
+  static canRead(
+    dashboard: IDashboard,
+    userId: string,
+    memberRole?: string,
+  ): boolean {
+    return canReadResource(dashboard, userId, memberRole);
   }
 
   static canWrite(
     dashboard: IDashboard,
     userId: string,
     isAdmin: boolean = false,
+    memberRole?: string,
   ): boolean {
-    if (DashboardManager.isOwner(dashboard, userId)) return true;
-    if (DashboardManager.isCollaborator(dashboard, userId)) return true;
-    if (dashboard.access === "private") return false;
-    return isAdmin;
+    return canWriteResource(
+      dashboard,
+      userId,
+      memberRole ?? (isAdmin ? "admin" : undefined),
+    );
   }
 
   static classifyForUser(

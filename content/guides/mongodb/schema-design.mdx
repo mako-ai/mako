@@ -1,0 +1,115 @@
+---
+title: "MongoDB Schema Design: Embedding vs Referencing"
+description: "How to decide between embedding related data in one document and referencing it across collections in MongoDB, covering the 16MB limit, access patterns, cardinality, atomicity, and the common hybrid patterns."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "schema-design", "data-modeling", "nosql"]
+date: "2026-06-09"
+---
+
+The central decision in MongoDB data modeling is whether to store related data together inside one document (embedding) or in separate collections linked by a reference (referencing). Unlike a relational database, where normalization is the default and joins are cheap, MongoDB gives you a choice, and the right answer depends on how your application reads and writes the data.
+
+This guide covers the tradeoffs, the hard constraints that force your hand, and the patterns most production schemas end up using.
+
+## The two approaches
+
+**Embedding** nests related data inside the parent document.
+
+```javascript
+// One document in the "users" collection
+{
+  _id: ObjectId("..."),
+  name: "Ada",
+  addresses: [
+    { type: "home", city: "London" },
+    { type: "work", city: "Cambridge" }
+  ]
+}
+```
+
+A single read returns the user and all their addresses. No join.
+
+**Referencing** stores related data in another collection and links by `_id`.
+
+```javascript
+// "users" collection
+{ _id: ObjectId("u1"), name: "Ada" }
+
+// "addresses" collection
+{ _id: ObjectId("a1"), userId: ObjectId("u1"), type: "home", city: "London" }
+{ _id: ObjectId("a2"), userId: ObjectId("u1"), type: "work", city: "Cambridge" }
+```
+
+Reading the user plus addresses now requires a second query or a [`$lookup`](/guides/mongodb/lookup-joins) join.
+
+## The default: prefer embedding
+
+MongoDB's own guidance is to prefer embedding by default and reach for references only when a specific reason pushes you there. The reasoning is that the data model should serve your most frequent query, and most applications read related data together. If every time you load a user you also load their addresses, embedding turns two queries into one and removes the join entirely.
+
+Embedding also gives you single-document atomicity for free. A write that updates a user and their embedded addresses in one operation is atomic without a transaction, because it touches one document. That is a real simplification compared to coordinating writes across collections.
+
+So the question is really: *when does embedding stop being the right call?*
+
+## When to reference instead
+
+Reach for references when one or more of these is true.
+
+**The data is unbounded.** Embedding an array that grows without limit eventually hits the 16MB document size cap, MongoDB's hard maximum per document. A user with a handful of addresses is fine to embed. A product with millions of reviews is not; embed those and the document either blows the limit or becomes slow to load because every read pulls the entire array. Unbounded one-to-many relationships should be referenced.
+
+**The embedded data changes far more often than its parent, or independently.** Every update to an embedded sub-object rewrites part of the parent document. If a sub-entity is updated constantly while the parent is static, that write pattern argues for splitting them so updates touch a smaller document.
+
+**The data is shared across many parents (many-to-many).** If the same entity is referenced by many documents, embedding duplicates it everywhere, and updating it means rewriting every copy. A canonical example is tags or categories shared across thousands of products. Reference these from a single source of truth.
+
+**You query the child independently.** If you frequently fetch the child entity on its own, without its parent, keeping it in its own collection with its own indexes is cleaner than digging it out of an array.
+
+**The relationship has high cardinality on the "many" side.** MongoDB modeling guidance splits one-to-many into "one-to-few" (embed), "one-to-many" (reference with the IDs stored on the one side, or the many side depending on access), and "one-to-squillions" (always reference, store the parent ID on the child).
+
+## The hybrid pattern (subset / extended reference)
+
+Real schemas are rarely all-embed or all-reference. The most common production compromise is to **embed a subset and reference the rest.**
+
+For example, an order references a customer by `_id` but also embeds the customer's name and city as they were at order time:
+
+```javascript
+{
+  _id: ObjectId("..."),
+  customerId: ObjectId("c1"),
+  customerName: "Ada",     // duplicated for fast reads
+  customerCity: "London",
+  total: 240
+}
+```
+
+The order list renders without a join because the few customer fields it needs are right there, and the full customer record is one `$lookup` away when needed. This is called the **extended reference** pattern. Its cost is duplication: if the customer's name changes, you decide whether historical orders should reflect that (often they should not, which is itself a reason the pattern fits).
+
+A related idea is the **subset pattern**: embed the few items you usually show (the ten most recent reviews) and keep the full set in a referenced collection. The document stays small and the common read is fast.
+
+## Atomicity and consistency
+
+Embedding gives single-document atomicity automatically. Referencing across collections does not, so if you need a write to update a parent and a child consistently, you either:
+
+- Restructure so the things that must change together live in one document, or
+- Use a multi-document transaction (available on replica sets since MongoDB 4.0, and on sharded clusters since 4.2).
+
+Transactions work, but they carry overhead and locking costs. If you find yourself wrapping most writes in transactions to keep referenced collections consistent, that is a signal the data wanted to be embedded.
+
+## A decision checklist
+
+Ask, in roughly this order:
+
+1. **Do I almost always read these together?** Yes leans embed.
+2. **Is the "many" side bounded and small?** Yes leans embed; unbounded leans reference.
+3. **Is the child shared across many parents?** Yes leans reference.
+4. **Is the child updated independently and often?** Yes leans reference.
+5. **Do writes need to be atomic across the pieces?** Yes leans embed (or accept transactions).
+6. **Could this document exceed 16MB over its lifetime?** If plausibly yes, reference the growing part.
+
+There is no universally correct schema, only one that fits your access patterns. When the patterns change, the schema should be allowed to change with them, and MongoDB's flexible documents make that migration easier than it would be in a rigid relational schema.
+
+## Inspecting and iterating on a schema
+
+Modeling is iterative: you sketch a structure, load real data, run your actual queries, and see where the document shape fights you. Mako connects to MongoDB and offers AI-assisted query writing, which helps when you are exploring how an embedded array or a referenced collection behaves under your real queries. Mako is a read and query tool, so it suits inspecting and analyzing your data rather than administering or migrating the deployment.
+
+To load sample data and experiment with different shapes, see our guides on importing [CSV](/guides/import-csv-to-mongodb), [JSON](/guides/import-json-to-mongodb), and [Excel](/guides/import-excel-to-mongodb) into MongoDB. For querying across referenced collections, see the [$lookup joins guide](/guides/mongodb/lookup-joins), and for keeping reads fast, the [indexes guide](/guides/mongodb/indexes-explained).
+
+Mako connects to MongoDB, PostgreSQL, MySQL, and more with AI-powered autocomplete. Try it free at mako.ai.

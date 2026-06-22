@@ -1,24 +1,45 @@
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import {
-  requireWorkspace,
-  AuthenticatedContext,
-} from "../middleware/workspace.middleware";
+import { requireWorkspace } from "../middleware/workspace.middleware";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { databaseRegistry } from "../databases/registry";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { buildConsoleTemplate } from "../databases/console-template";
 import { loggers } from "../logging";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
-export const databaseTreeRoutes = new Hono();
+export const databaseTreeRoutes = createRouter();
+
+databaseTreeRoutes.use("*", unifiedAuthMiddleware);
+databaseTreeRoutes.use("*", requireWorkspace);
+
+const DbIdParam = z.object({
+  workspaceId: z
+    .string()
+    .openapi({ param: { name: "workspaceId", in: "path" } }),
+  id: z.string().openapi({ param: { name: "id", in: "path" } }),
+});
 
 // GET /api/workspaces/:workspaceId/databases/:id/tree
-databaseTreeRoutes.get(
-  "/:id/tree",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+databaseTreeRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/tree",
+    tags: ["Databases"],
+    summary: "Get database object tree",
+    security: AUTH_SECURITY,
+    request: {
+      params: DbIdParam,
+      query: z.object({
+        nodeId: z.string().optional(),
+        kind: z.string().optional(),
+        metadata: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const workspace = c.get("workspace");
     const databaseId = c.req.param("id");
     if (!Types.ObjectId.isValid(databaseId)) {
@@ -53,11 +74,25 @@ databaseTreeRoutes.get(
 );
 
 // GET /api/workspaces/:workspaceId/databases/:id/autocomplete
-databaseTreeRoutes.get(
-  "/:id/autocomplete",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+databaseTreeRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/autocomplete",
+    tags: ["Databases"],
+    summary: "Get autocomplete data",
+    security: AUTH_SECURITY,
+    request: {
+      params: DbIdParam,
+      query: z.object({
+        datasetId: z.string().optional(),
+        tableId: z.string().optional(),
+        prefix: z.string().optional(),
+        limit: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const workspace = c.get("workspace");
     const databaseId = c.req.param("id");
     if (!Types.ObjectId.isValid(databaseId)) {
@@ -186,11 +221,24 @@ databaseTreeRoutes.get(
 
 // GET /api/workspaces/:workspaceId/databases/:id/console-template
 // Returns a placeholder query and language for a given database and optional node context
-databaseTreeRoutes.get(
-  "/:id/console-template",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+databaseTreeRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/console-template",
+    tags: ["Databases"],
+    summary: "Get a console template for a database",
+    security: AUTH_SECURITY,
+    request: {
+      params: DbIdParam,
+      query: z.object({
+        nodeId: z.string().optional(),
+        kind: z.string().optional(),
+        metadata: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const workspace = c.get("workspace");
     const databaseId = c.req.param("id");
     if (!Types.ObjectId.isValid(databaseId)) {
@@ -229,11 +277,24 @@ databaseTreeRoutes.get(
 // GET /api/workspaces/:workspaceId/databases/:id/table-definition
 // Full SQL definition script (DDL, comments, indexes, triggers) for one
 // table or view. Currently Postgres-family only.
-databaseTreeRoutes.get(
-  "/:id/table-definition",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+databaseTreeRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/table-definition",
+    tags: ["Databases"],
+    summary: "Get a table's SQL definition",
+    security: AUTH_SECURITY,
+    request: {
+      params: DbIdParam,
+      query: z.object({
+        table: z.string().optional(),
+        schema: z.string().optional(),
+        database: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const log = loggers.api("database-tree");
     const workspace = c.get("workspace");
     const databaseId = c.req.param("id");
@@ -312,11 +373,24 @@ databaseTreeRoutes.get(
 
 // GET /api/workspaces/:workspaceId/databases/:id/table-exists
 // Check if a table exists and return its schema if it does
-databaseTreeRoutes.get(
-  "/:id/table-exists",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+databaseTreeRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/table-exists",
+    tags: ["Databases"],
+    summary: "Check whether a table exists",
+    security: AUTH_SECURITY,
+    request: {
+      params: DbIdParam,
+      query: z.object({
+        tableName: z.string().optional(),
+        schema: z.string().optional(),
+        database: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const log = loggers.api("database-tree");
     const workspace = c.get("workspace");
     const databaseId = c.req.param("id");

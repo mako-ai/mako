@@ -1,6 +1,12 @@
 import type { AgentConfig, AgentContext, AgentMeta } from "../types";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
-import { clientDashboardTools } from "@mako/agent-tools";
+import {
+  clientDashboardTools,
+  clientAppTools,
+  clientDbtTools,
+  clientDataSourceTools,
+} from "@mako/agent-tools";
+import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -40,6 +46,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     context.toolExecutionContext,
   );
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
+  const dbtServerTools = createDbtServerTools(workspaceId, userId);
 
   const {
     list_connections: _flowListConnections,
@@ -66,6 +73,10 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     tools: {
       ...universalTools,
       ...clientDashboardTools,
+      ...clientAppTools,
+      ...clientDbtTools,
+      ...dbtServerTools,
+      ...clientDataSourceTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
       ...skillTools,

@@ -1,0 +1,192 @@
+---
+title: "How to Connect to BigQuery from Java"
+description: "Connect to BigQuery from Java with the official google-cloud-bigquery client: authentication with Application Default Credentials, running queries, named parameters, cost controls, the location trap, and the errors you actually hit."
+database: "bigquery"
+category: "how-to"
+tags: ["bigquery", "java", "google-cloud-bigquery", "jdbc", "connection"]
+date: "2026-06-17"
+---
+
+BigQuery is not a database you open a socket to. There is no host or port. You authenticate against Google Cloud, then issue queries over HTTPS through Google's API. For Java that means the official `google-cloud-bigquery` client library, not a JDBC driver. A Simba JDBC driver exists and matters when a legacy tool demands a JDBC interface, but for application code the client library is the right call. This guide covers authentication, running queries, parameters, cost controls, the location trap, and the errors you will actually hit.
+
+## Client library vs JDBC driver
+
+| Option | When to use |
+|---|---|
+| `google-cloud-bigquery` (client library) | Application code. Idiomatic Java, maintained by Google, full feature access. |
+| Simba JDBC driver / Google-developed JDBC driver | When a tool you do not control (a BI connector, an ETL framework) speaks only JDBC. |
+
+For your own Java code, reach for the client library. The JDBC route exists to plug BigQuery into JDBC-only tooling, not because it is a better fit for application development. This guide uses the client library.
+
+## Adding the dependency
+
+Use the Google Cloud libraries BOM so the BigQuery version stays aligned with its transitive Google dependencies, then declare the artifact without a version.
+
+Maven:
+
+```xml
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>libraries-bom</artifactId>
+      <version>26.84.0</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <dependency>
+    <groupId>com.google.cloud</groupId>
+    <artifactId>google-cloud-bigquery</artifactId>
+  </dependency>
+</dependencies>
+```
+
+Gradle:
+
+```groovy
+implementation platform('com.google.cloud:libraries-bom:26.84.0')
+implementation 'com.google.cloud:google-cloud-bigquery'
+```
+
+If you prefer to pin directly without the BOM, the standalone artifact is at `2.67.0` (as of June 2026). The BOM is the safer default because it prevents version skew across the Google client stack.
+
+## Authentication
+
+There is no password in a connection string. The client authenticates through Application Default Credentials (ADC), which resolves credentials in this order:
+
+1. The `GOOGLE_APPLICATION_CREDENTIALS` environment variable, pointing at a service-account key JSON file.
+2. Credentials from `gcloud auth application-default login` (local development).
+3. The attached service account, when running on Google Cloud (Compute Engine, Cloud Run, GKE, etc.).
+
+On Google Cloud infrastructure, option 3 means you usually need no key file at all: the runtime's service account is used automatically. For local development, `gcloud auth application-default login` is the cleanest path because it avoids a long-lived key file on disk.
+
+```java
+import com.google.cloud.bigquery.*;
+
+// ADC is picked up automatically; no credentials in code.
+BigQuery bigquery = BigQueryOptions.getDefaultInstance().getService();
+```
+
+To pin an explicit billing project rather than relying on the ADC default:
+
+```java
+BigQuery bigquery = BigQueryOptions.newBuilder()
+    .setProjectId("my-billing-project")
+    .build()
+    .getService();
+```
+
+Note the distinction between the **billing project** (who pays for the query) and the **data project** (where the tables live). They are often the same, but the project you set here is the one billed; the tables you reference can sit in another project via fully qualified `project.dataset.table` names.
+
+## Running a query
+
+```java
+import com.google.cloud.bigquery.*;
+
+public class BigQueryExample {
+    public static void main(String[] args) throws InterruptedException {
+        BigQuery bigquery = BigQueryOptions.getDefaultInstance().getService();
+
+        String query =
+            "SELECT name, SUM(number) AS total " +
+            "FROM `bigquery-public-data.usa_names.usa_1910_2013` " +
+            "WHERE state = 'TX' " +
+            "GROUP BY name ORDER BY total DESC LIMIT 10";
+
+        QueryJobConfiguration config = QueryJobConfiguration.newBuilder(query).build();
+
+        TableResult result = bigquery.query(config);
+
+        for (FieldValueList row : result.iterateAll()) {
+            String name = row.get("name").getStringValue();
+            long total = row.get("total").getLongValue();
+            System.out.println(name + ": " + total);
+        }
+    }
+}
+```
+
+`bigquery.query()` runs the job and blocks until results are ready. `result.iterateAll()` pages through the full result set transparently, fetching more pages from the API as you iterate, so you do not have to manage pagination by hand.
+
+## Parameterized queries
+
+Build queries from user input with named parameters, never string concatenation. Query parameters require Standard SQL (the default).
+
+```java
+String query =
+    "SELECT name, SUM(number) AS total " +
+    "FROM `bigquery-public-data.usa_names.usa_1910_2013` " +
+    "WHERE state = @state AND name = @name " +
+    "GROUP BY name";
+
+QueryJobConfiguration config = QueryJobConfiguration.newBuilder(query)
+    .addNamedParameter("state", QueryParameterValue.string("TX"))
+    .addNamedParameter("name", QueryParameterValue.string("Emma"))
+    .build();
+
+TableResult result = bigquery.query(config);
+```
+
+Positional parameters (`?`) are also supported via `addPositionalParameter`, but named parameters read better and are harder to misorder.
+
+## Cost controls
+
+BigQuery bills by bytes scanned, so a careless query against a large table can be expensive. Two guardrails are worth wiring in from the start.
+
+A dry run tells you how many bytes a query would scan without running it or incurring cost:
+
+```java
+QueryJobConfiguration dryRun = QueryJobConfiguration.newBuilder(query)
+    .setDryRun(true)
+    .setUseQueryCache(false)
+    .build();
+
+Job job = bigquery.create(JobInfo.of(dryRun));
+JobStatistics.QueryStatistics stats = job.getStatistics();
+System.out.println("Would scan: " + stats.getTotalBytesProcessed() + " bytes");
+```
+
+A hard byte cap makes a query fail rather than run away with your budget:
+
+```java
+QueryJobConfiguration config = QueryJobConfiguration.newBuilder(query)
+    .setMaximumBytesBilled(1_000_000_000L) // 1 GB ceiling
+    .build();
+```
+
+If the query would scan more than the cap, it errors out instead of billing you. For exploratory work against unfamiliar tables, set this.
+
+## The location trap
+
+Datasets live in a location (a region or multi-region like `US` or `EU`). If you query a dataset in `EU` but the job defaults to `US`, BigQuery reports that the table is not found, which looks like a permissions or typo problem but is actually a location mismatch. Set the location explicitly when your data is not in the default:
+
+```java
+QueryJobConfiguration config = QueryJobConfiguration.newBuilder(query).build();
+JobId jobId = JobId.newBuilder().setLocation("EU").build();
+TableResult result = bigquery.query(config, jobId);
+```
+
+## Errors you will actually hit
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Application Default Credentials not found` | ADC not configured | Run `gcloud auth application-default login`, or set `GOOGLE_APPLICATION_CREDENTIALS` |
+| `Not found: Table ...` (but the table exists) | Job ran in the wrong location | Set the dataset's location on the `JobId` |
+| `Access Denied: BigQuery ...` | Service account lacks roles | Grant `roles/bigquery.dataViewer` and `roles/bigquery.jobUser` |
+| `Query exceeded limit for bytes billed` | Query scanned more than `maximumBytesBilled` | Narrow the query, or raise the cap deliberately |
+| `403 ... has not enabled BigQuery API` | API disabled on the project | Enable the BigQuery API in the Cloud Console |
+| `400 ... billing has not been enabled` | No billing account on the project | Attach a billing account |
+
+The "table not found" case is the one that wastes the most time, because the error wording points you at the table name when the real fix is the location.
+
+## A note on querying after you connect
+
+Once authentication works, the day-to-day question is the SQL: confirming a table's schema, eyeballing a result set, checking a row count before a big scan. You can do that from the `bq` command-line tool, the Cloud Console, a GUI (see [Best BigQuery GUI Clients](/guides/bigquery-gui-client)), or with Mako. For loading data, see [Import CSV to BigQuery](/guides/import-csv-to-bigquery) and [Import JSON to BigQuery](/guides/import-json-to-bigquery). If you are weighing engines, [Snowflake vs BigQuery](/guides/snowflake-vs-bigquery) and [ClickHouse vs BigQuery](/guides/clickhouse-vs-bigquery) cover the tradeoffs.
+
+Version notes (as of June 2026): google-cloud-bigquery is at 2.67.x, managed through libraries-bom 26.84.x. The client targets current LTS Java releases.
+
+Mako connects to BigQuery with AI-powered autocomplete for writing queries. Try it free at mako.ai.

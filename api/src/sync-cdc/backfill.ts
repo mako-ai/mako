@@ -20,6 +20,7 @@ import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
 import { cdcLiveTableName, cdcStageTableName } from "./normalization";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
+import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
 
 const log = loggers.sync("cdc.backfill");
 
@@ -696,15 +697,26 @@ export class CdcBackfillService {
 
     let materializeTriggered = 0;
     let cursorsRewound = 0;
-    try {
-      const byEntity = await getCdcEventStore().countEventsByEntity({
-        workspaceId: params.workspaceId,
-        flowId: params.flowId,
-        materializationStatus: "pending",
-      });
-      for (const item of byEntity) {
-        if (item.count <= 0) continue;
+    let pendingEntities = 0;
+    const drainErrors: string[] = [];
 
+    // Enumerate entities with pending events. If THIS fails we must surface it
+    // (the "Reprocess pending events" button previously swallowed every error
+    // here and returned success:true, so a broken drain looked like a no-op).
+    const byEntity = await getCdcEventStore().countEventsByEntity({
+      workspaceId: params.workspaceId,
+      flowId: params.flowId,
+      materializationStatus: "pending",
+    });
+
+    for (const item of byEntity) {
+      if (item.count <= 0) continue;
+      pendingEntities++;
+
+      try {
+        // Rewind the consumer cursor just below the oldest pending event so the
+        // scheduler's findStaleEntities re-flags this entity (lastIngestSeq >
+        // lastMaterializedSeq) and a forced materialize actually reads it.
         const minPending = await CdcChangeEvent.findOne({
           flowId: new Types.ObjectId(params.flowId),
           entity: item.entity,
@@ -747,12 +759,26 @@ export class CdcBackfillService {
           },
         });
         materializeTriggered++;
+      } catch (error) {
+        // One bad entity must not abort the rest of the drain.
+        const message = error instanceof Error ? error.message : String(error);
+        drainErrors.push(`${item.entity}: ${message}`);
+        log.warn("Failed to force-drain CDC entity during reprocess-stale", {
+          flowId: params.flowId,
+          entity: item.entity,
+          error: message,
+        });
       }
-    } catch (error) {
-      log.warn("Failed to force-drain CDC during reprocess-stale", {
-        flowId: params.flowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    }
+
+    // If there was pending work but we couldn't trigger a single materialize,
+    // the operation genuinely failed — surface it so the UI doesn't lie.
+    if (pendingEntities > 0 && materializeTriggered === 0) {
+      throw new Error(
+        `Failed to trigger materialization for any of ${pendingEntities} pending entities: ${
+          drainErrors[0] ?? "unknown error"
+        }`,
+      );
     }
 
     const orphanedResolved = await this.resolveOrphanedWebhookApplyStatus(
@@ -765,18 +791,22 @@ export class CdcBackfillService {
       reconciledWebhooks,
       drainedWebhooks,
       resetFailedWebhooks,
+      pendingEntities,
       materializeTriggered,
       cursorsRewound,
       orphanedResolved,
+      drainErrors: drainErrors.length,
     });
 
     return {
       reconciledWebhooks,
       drainedWebhooks,
       resetFailedWebhooks,
+      pendingEntities,
       materializeTriggered,
       cursorsRewound,
       orphanedResolved,
+      drainErrors,
     };
   }
 
@@ -1199,64 +1229,11 @@ export class CdcBackfillService {
     workspaceId: string,
     flowId: string,
   ): Promise<number> {
-    try {
-      const flowOid = new Types.ObjectId(flowId);
-      const wsOid = new Types.ObjectId(workspaceId);
-
-      const stuckWebhookEvents = await WebhookEvent.find({
-        flowId: flowOid,
-        workspaceId: wsOid,
-        status: "completed",
-        applyStatus: "pending",
-      })
-        .select({ _id: 1 })
-        .limit(1000)
-        .lean();
-
-      if (stuckWebhookEvents.length === 0) return 0;
-
-      const stuckIds = stuckWebhookEvents.map(e => String(e._id));
-
-      const withPendingCdc: string[] = await CdcChangeEvent.distinct(
-        "webhookEventId",
-        {
-          flowId: flowOid,
-          webhookEventId: { $in: stuckIds },
-          materializationStatus: "pending",
-        },
-      );
-      const pendingSet = new Set(withPendingCdc);
-
-      const orphanedIds = stuckIds.filter(id => !pendingSet.has(id));
-      if (orphanedIds.length === 0) return 0;
-
-      const orphanedOids = orphanedIds.map(id => new Types.ObjectId(id));
-
-      const result = await WebhookEvent.updateMany(
-        { _id: { $in: orphanedOids } },
-        {
-          $set: { applyStatus: "applied" },
-          $unset: { applyError: "" },
-        },
-      );
-
-      if (result.modifiedCount > 0) {
-        log.info("Resolved orphaned webhook applyStatus", {
-          flowId,
-          total: stuckWebhookEvents.length,
-          withPendingCdc: withPendingCdc.length,
-          resolved: result.modifiedCount,
-        });
-      }
-
-      return result.modifiedCount || 0;
-    } catch (error) {
-      log.warn("Failed to resolve orphaned webhook apply status", {
-        flowId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return 0;
-    }
+    // Delegates to the shared, cursor-paginated resolver so a single
+    // "Reprocess pending events" click drains the ENTIRE orphaned backlog. The
+    // old inline version capped at 1000 per call, which is why the button
+    // appeared to do nothing against a 50k+ backlog.
+    return resolveOrphanedWebhookApplyStatusForFlow({ workspaceId, flowId });
   }
 
   private async cleanupOrphanStagingTables(

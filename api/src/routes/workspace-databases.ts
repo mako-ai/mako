@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { createRoute, z } from "@hono/zod-openapi";
 import type { Db } from "mongodb";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import {
@@ -27,6 +27,7 @@ import { writeParquetTempFile } from "../utils/parquet-serializer";
 import { buildDashboardMaterializationArtifactPath } from "../services/dashboard-cache.service";
 import { workspaceService } from "../services/workspace.service";
 import { promises as fsPromises } from "fs";
+import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.db();
 
@@ -276,7 +277,7 @@ function getDemoDatabaseConfig() {
   };
 }
 
-export const workspaceDatabaseRoutes = new Hono();
+export const workspaceDatabaseRoutes = createRouter();
 
 // Helper function to mask passwords in connection strings
 function maskPasswordInConnectionString(connectionString: string): string {
@@ -292,12 +293,34 @@ function maskPasswordInConnectionString(connectionString: string): string {
 }
 
 // Create demo database for workspace (onboarding)
-workspaceDatabaseRoutes.post(
-  "/demo",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/demo",
+    tags: ["Databases"],
+    summary: "POST /demo",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       if (!user) {
@@ -370,11 +393,24 @@ workspaceDatabaseRoutes.post(
 );
 
 // Get all databases for workspace
-workspaceDatabaseRoutes.get(
-  "/",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/",
+    tags: ["Databases"],
+    summary: "GET /",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
 
@@ -445,11 +481,25 @@ workspaceDatabaseRoutes.get(
 );
 
 // Get specific database
-workspaceDatabaseRoutes.get(
-  "/:id",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}",
+    tags: ["Databases"],
+    summary: "GET /{id}",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -501,12 +551,34 @@ workspaceDatabaseRoutes.get(
 
 // Test database connection (without saving)
 // This allows testing a connection before creating the database
-workspaceDatabaseRoutes.post(
-  "/test-connection",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/test-connection",
+    tags: ["Databases"],
+    summary: "POST /test-connection",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const body = await c.req.json();
 
@@ -553,12 +625,34 @@ workspaceDatabaseRoutes.post(
 );
 
 // Create new database
-workspaceDatabaseRoutes.post(
-  "/",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/",
+    tags: ["Databases"],
+    summary: "POST /",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const user = c.get("user");
       const workspace = c.get("workspace");
@@ -633,12 +727,35 @@ workspaceDatabaseRoutes.post(
 );
 
 // Update database
-workspaceDatabaseRoutes.put(
-  "/:id",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}",
+    tags: ["Databases"],
+    summary: "PUT /{id}",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -698,12 +815,29 @@ workspaceDatabaseRoutes.put(
 );
 
 // Delete database
-workspaceDatabaseRoutes.delete(
-  "/:id",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}",
+    tags: ["Databases"],
+    summary: "DELETE /{id}",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -762,11 +896,31 @@ workspaceDatabaseRoutes.delete(
 );
 
 // Test database connection
-workspaceDatabaseRoutes.post(
-  "/:id/test",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/test",
+    tags: ["Databases"],
+    summary: "POST /{id}/test",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -810,11 +964,31 @@ workspaceDatabaseRoutes.post(
 );
 
 // Execute query on database
-workspaceDatabaseRoutes.post(
-  "/:id/execute",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/execute",
+    tags: ["Databases"],
+    summary: "POST /{id}/execute",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -859,11 +1033,25 @@ workspaceDatabaseRoutes.post(
 );
 
 // Get collections for MongoDB database
-workspaceDatabaseRoutes.get(
-  "/:id/collections",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/collections",
+    tags: ["Databases"],
+    summary: "GET /{id}/collections",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -942,12 +1130,35 @@ workspaceDatabaseRoutes.get(
 );
 
 // Get collection info for MongoDB
-workspaceDatabaseRoutes.post(
-  "/:id/collections",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/collections",
+    tags: ["Databases"],
+    summary: "POST /{id}/collections",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1011,11 +1222,26 @@ workspaceDatabaseRoutes.post(
   },
 );
 
-workspaceDatabaseRoutes.get(
-  "/:id/collections/:name",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/collections/{name}",
+    tags: ["Databases"],
+    summary: "GET /{id}/collections/{name}",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1100,11 +1326,26 @@ workspaceDatabaseRoutes.get(
   },
 );
 
-workspaceDatabaseRoutes.get(
-  "/:id/collections/:name/info",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/collections/{name}/info",
+    tags: ["Databases"],
+    summary: "GET /{id}/collections/{name}/info",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1164,12 +1405,30 @@ workspaceDatabaseRoutes.get(
   },
 );
 
-workspaceDatabaseRoutes.delete(
-  "/:id/collections/:name",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/collections/{name}",
+    tags: ["Databases"],
+    summary: "DELETE /{id}/collections/{name}",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1217,11 +1476,25 @@ workspaceDatabaseRoutes.delete(
 );
 
 // Get views for MongoDB database
-workspaceDatabaseRoutes.get(
-  "/:id/views",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/views",
+    tags: ["Databases"],
+    summary: "GET /{id}/views",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1277,12 +1550,35 @@ workspaceDatabaseRoutes.get(
   },
 );
 
-workspaceDatabaseRoutes.post(
-  "/:id/views",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/views",
+    tags: ["Databases"],
+    summary: "POST /{id}/views",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1367,11 +1663,26 @@ workspaceDatabaseRoutes.post(
   },
 );
 
-workspaceDatabaseRoutes.get(
-  "/:id/views/:name/info",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/views/{name}/info",
+    tags: ["Databases"],
+    summary: "GET /{id}/views/{name}/info",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1427,12 +1738,30 @@ workspaceDatabaseRoutes.get(
   },
 );
 
-workspaceDatabaseRoutes.delete(
-  "/:id/views/:name",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  requireWorkspaceRole(["owner", "admin", "member"]),
-  async (c: AuthenticatedContext) => {
+workspaceDatabaseRoutes.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/views/{name}",
+    tags: ["Databases"],
+    summary: "DELETE /{id}/views/{name}",
+    security: AUTH_SECURITY,
+    middleware: [
+      unifiedAuthMiddleware,
+      requireWorkspace,
+      requireWorkspaceRole(["owner", "admin", "member"]),
+    ] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        id: z.string().openapi({ param: { name: "id", in: "path" } }),
+        name: z.string().openapi({ param: { name: "name", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const databaseId = c.req.param("id");
@@ -1481,14 +1810,33 @@ workspaceDatabaseRoutes.delete(
 // Workspace-level execute endpoint (cleaner API)
 // Mounted at /api/workspaces/:workspaceId/execute in index.ts
 // ============================================================================
-export const workspaceExecuteRoutes = new Hono();
+export const workspaceExecuteRoutes = createRouter();
 
 // POST /api/workspaces/:workspaceId/execute - Execute query with explicit connection/database params
-workspaceExecuteRoutes.post(
-  "/",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceExecuteRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/",
+    tags: ["Query Execution"],
+    summary: "POST /",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     const startTime = Date.now();
     let database: IDatabaseConnection | null = null;
     let executionStatus: QueryStatus = "error";
@@ -1784,11 +2132,30 @@ workspaceExecuteRoutes.post(
   },
 );
 
-workspaceExecuteRoutes.post(
-  "/export",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceExecuteRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/export",
+    tags: ["Query Execution"],
+    summary: "POST /export",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const workspace = c.get("workspace");
       const body = await parseRequestBody(c);
@@ -1996,11 +2363,30 @@ workspaceExecuteRoutes.post(
 );
 
 // POST /api/workspaces/:workspaceId/execute/cancel - Cancel a running query
-workspaceExecuteRoutes.post(
-  "/cancel",
-  unifiedAuthMiddleware,
-  requireWorkspace,
-  async (c: AuthenticatedContext) => {
+workspaceExecuteRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/cancel",
+    tags: ["Query Execution"],
+    summary: "POST /cancel",
+    security: AUTH_SECURITY,
+    middleware: [unifiedAuthMiddleware, requireWorkspace] as const,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+      }),
+      body: {
+        required: false,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
     try {
       const body = await c.req.json();
       const { executionId } = body;

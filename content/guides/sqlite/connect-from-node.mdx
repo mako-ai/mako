@@ -1,0 +1,139 @@
+---
+title: "How to Connect to SQLite from Node.js"
+description: "Use SQLite from Node.js with the built-in node:sqlite module or better-sqlite3. Working code for both, why the classic sqlite3 package is deprecated, and when synchronous database access is actually the right call."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "nodejs", "node-sqlite", "better-sqlite3", "connection"]
+date: "2026-06-12"
+---
+
+SQLite in Node.js went through a changing of the guard. The classic `sqlite3` package -- the async, callback-based driver that dominated for a decade -- was marked deprecated and unmaintained by its stewards at Ghost. Meanwhile Node.js shipped a built-in `node:sqlite` module (v22.5.0, available without a flag since v22.13.0), and `better-sqlite3` remains the fastest and most complete third-party option. This guide shows working code for the two you should actually consider and explains how to pick.
+
+## The options
+
+| Driver | Package | API style | Status (as of June 2026) |
+|---|---|---|---|
+| Built-in module | `node:sqlite` (no install) | Synchronous | Release candidate on Node 24+; works without flags on 22.13+ |
+| better-sqlite3 | `better-sqlite3` | Synchronous | Actively maintained, v12.10.0 |
+| node-sqlite3 | `sqlite3` | Async callbacks | Deprecated, repo unmaintained (v6.0.1 final) |
+
+Rules of thumb:
+
+- **No dependencies, scripts, CLIs, tests:** `node:sqlite`. Zero install, no native compilation, ships with the runtime.
+- **Production apps, or you need extensions, user-defined aggregates beyond the basics, backup APIs, or the larger ecosystem:** `better-sqlite3`. More complete API, excellent documentation, slightly faster in most benchmarks.
+- **`sqlite3`:** only in legacy codebases. Don't start anything new on it.
+
+Both recommended options are *synchronous*. That sounds wrong for Node until you remember what SQLite is: an in-process library reading a local file. There's no network round-trip to overlap with other work. A typical indexed query completes in microseconds -- less than the overhead of scheduling a Promise. The async API of the old `sqlite3` package never bought concurrency (SQLite serializes writes anyway); it just bought callback ceremony. For long-running analytical queries that genuinely block the event loop, run them in a worker thread.
+
+## node:sqlite (built-in)
+
+Nothing to install:
+
+```js
+import { DatabaseSync } from "node:sqlite";
+
+const db = new DatabaseSync("app.db");
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL
+  ) STRICT
+`);
+
+const insert = db.prepare("INSERT INTO users (email) VALUES (?)");
+const info = insert.run("ada@example.com");
+console.log(info);  // { lastInsertRowid: 1, changes: 1 }
+
+const query = db.prepare("SELECT * FROM users WHERE email = ?");
+console.log(query.get("ada@example.com"));  // { id: 1, email: 'ada@example.com' }
+console.log(query.all());                   // array of all matching rows
+
+db.close();
+```
+
+Named parameters use `$name`, `:name`, or `@name` prefixes and bind from an object:
+
+```js
+const stmt = db.prepare("INSERT INTO users (email) VALUES ($email)");
+stmt.run({ email: "grace@example.com" });
+```
+
+In-memory databases work as expected: `new DatabaseSync(":memory:")`.
+
+One status caveat, stated plainly: `node:sqlite` is not yet marked fully stable. It runs without flags since 22.13.0 and prints an experimental warning on Node 22; on Node 24+ it's classified as a release candidate (Stability 1.2), meaning the API is settled barring significant issues but hasn't received the final stamp. For scripts and internal tools that's a non-issue. For a long-lived production service, it's a small but real consideration in favor of better-sqlite3.
+
+## better-sqlite3
+
+```bash
+npm install better-sqlite3
+```
+
+It's a native addon; prebuilt binaries cover common platforms, so installs rarely compile from source.
+
+```js
+import Database from "better-sqlite3";
+
+const db = new Database("app.db");
+db.pragma("journal_mode = WAL");   // do this once -- see below
+
+const insert = db.prepare("INSERT INTO users (email) VALUES (?)");
+const info = insert.run("ada@example.com");
+console.log(info);  // { changes: 1, lastInsertRowid: 1 }
+
+const user = db.prepare("SELECT * FROM users WHERE email = ?").get("ada@example.com");
+const all  = db.prepare("SELECT * FROM users").all();
+
+db.close();
+```
+
+The API mirrors `node:sqlite` closely (prepare/run/get/all), which is no accident -- the built-in module took heavy inspiration from it. better-sqlite3 adds, among other things:
+
+- **Transactions as functions.** `db.transaction(fn)` wraps `fn` in BEGIN/COMMIT with automatic rollback on throw, and handles nesting via savepoints:
+
+```js
+const insertMany = db.transaction((users) => {
+  for (const u of users) insert.run(u.email);
+});
+insertMany([{ email: "a@x.com" }, { email: "b@x.com" }]);  // all-or-nothing
+```
+
+- **Iteration without buffering.** `stmt.iterate()` yields rows one at a time instead of materializing the full result array.
+- **User-defined functions and aggregates** in JavaScript, callable from SQL (`db.function()`, `db.aggregate()`), plus extension loading and an online backup API.
+
+## Configuration that matters
+
+**Enable WAL mode.** SQLite's default rollback journal blocks readers during writes. Write-Ahead Logging lets readers and one writer proceed concurrently, which is what you want in practically every application:
+
+```js
+db.pragma("journal_mode = WAL");           // better-sqlite3
+db.exec("PRAGMA journal_mode = WAL");      // node:sqlite
+```
+
+It's persistent per database file, so once set it sticks.
+
+**"Database is locked" (SQLITE_BUSY).** Two processes writing to the same file will eventually collide. Set a busy timeout so the second writer waits instead of failing instantly: `db.pragma("busy_timeout = 5000")`. If you're hitting this *within* one process, you're opening multiple connections where one would do -- with synchronous drivers, a single shared connection is the normal pattern.
+
+**Accidental file creation.** Opening a path that doesn't exist silently creates an empty database -- so a typo'd path produces "no such table" errors rather than "file not found". better-sqlite3 supports `new Database(path, { fileMustExist: true })`; with `node:sqlite`, check the path yourself first.
+
+**One connection is fine.** There's no pool to configure. SQLite serializes writes at the file level regardless of how many connections you open; for a typical Node service, one long-lived connection (plus WAL) is the standard setup.
+
+## What about the old sqlite3 package?
+
+The `sqlite3` package (TryGhost/node-sqlite3) is deprecated: the README is marked `[DEPRECATED]` and the maintainers state the repository is unmaintained, with issues and pull requests no longer reviewed. The final release is 6.0.1. Existing code keeps working, but anything new should use `node:sqlite` or better-sqlite3 -- and libraries that depend on `sqlite3` (some Sequelize and Knex setups) are migrating off it.
+
+If you're porting: the old `db.run("INSERT ...", cb)` callback style maps to `stmt.run()` return values, `db.get`/`db.all` map directly to `stmt.get()`/`stmt.all()`, and you can delete every callback and most error-handling pyramids in the process.
+
+## ORMs and query builders
+
+Drizzle and Knex support better-sqlite3 natively, and Drizzle also supports `node:sqlite`. Prisma ships its own SQLite engine. If you're on an ORM, the driver choice is mostly made for you -- the gotchas above (WAL, busy timeout, file creation) still apply.
+
+## Working with the data
+
+For browsing tables, checking what a migration actually did, or prototyping queries before they go into code, a GUI is faster than the REPL. [Mako](/guides/sqlite-gui-client) connects to SQLite files with AI-assisted autocomplete; that guide compares DB Browser for SQLite, DBeaver, and the other options fairly.
+
+Once connected, our SQLite guides cover [transactions and locking](/guides/sqlite/transactions), [upserts](/guides/sqlite/upsert), and [full-text search](/guides/sqlite/full-text-search). For loading data, see [importing CSV to SQLite](/guides/import-csv-to-sqlite).
+
+---
+
+Mako connects to SQLite (and 8 other databases) with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).

@@ -33,6 +33,15 @@ import {
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore } from "../store/schemaStore";
+import {
+  useConnectorCatalogStore,
+  type WebhookCapabilities,
+} from "../store/connectorCatalogStore";
+import {
+  useAvailableEntitiesStore,
+  flattenConnectorEntities,
+  type FlattenedConnectorEntity,
+} from "../store/availableEntitiesStore";
 import { trackEvent } from "../lib/analytics";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
@@ -53,273 +62,11 @@ interface EntityLayoutConfig {
   enabled?: boolean;
 }
 
-const WEBHOOK_CAPABLE_CONNECTOR_TYPES = new Set(["stripe", "close", "claap"]);
-const WEBHOOK_PROVISIONING_CONNECTOR_TYPES = new Set(["close", "claap"]);
+const SYNC_ENGINE_PERMISSION_ERROR =
+  "The flow was saved, but changing the sync engine requires the workspace Owner or Admin role. Ask an admin to upgrade your role, then set the sync engine again.";
 
-const CLAAP_ENTITY_FIELDS: Record<string, string[]> = {
-  recordings: [
-    "id",
-    "title",
-    "state",
-    "createdAt",
-    "durationSeconds",
-    "source",
-    "url",
-    "thumbnailUrl",
-    "labels",
-    "channel",
-    "recorder",
-    "workspace",
-    "meeting",
-    "deal",
-    "companies",
-    "crmInfo",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  workspace: [
-    "id",
-    "name",
-    "createdAt",
-    "membersCount",
-    "recordingsCount",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-};
-
-const CLOSE_ENTITY_FIELDS: Record<string, string[]> = {
-  leads: [
-    "id",
-    "display_name",
-    "status_id",
-    "status_label",
-    "date_created",
-    "date_updated",
-    "organization_id",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  opportunities: [
-    "id",
-    "lead_id",
-    "status_id",
-    "status_label",
-    "status_type",
-    "value",
-    "date_created",
-    "date_updated",
-    "date_won",
-    "user_id",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Call": [
-    "id",
-    "lead_id",
-    "user_id",
-    "direction",
-    "duration",
-    "phone",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Email": [
-    "id",
-    "lead_id",
-    "user_id",
-    "subject",
-    "sender",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:EmailThread": [
-    "id",
-    "lead_id",
-    "user_id",
-    "subject",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:SMS": [
-    "id",
-    "lead_id",
-    "user_id",
-    "text",
-    "direction",
-    "phone",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Meeting": [
-    "id",
-    "lead_id",
-    "user_id",
-    "title",
-    "starts_at",
-    "ends_at",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:Note": [
-    "id",
-    "lead_id",
-    "user_id",
-    "note",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:LeadStatusChange": [
-    "id",
-    "lead_id",
-    "user_id",
-    "old_status_label",
-    "new_status_label",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:OpportunityStatusChange": [
-    "id",
-    "lead_id",
-    "user_id",
-    "old_status_label",
-    "new_status_label",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:TaskCompleted": [
-    "id",
-    "lead_id",
-    "user_id",
-    "text",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  contacts: [
-    "id",
-    "lead_id",
-    "first_name",
-    "last_name",
-    "display_name",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  users: [
-    "id",
-    "email",
-    "first_name",
-    "last_name",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_fields: [
-    "id",
-    "name",
-    "custom_field_type",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  "activities:CustomActivity": [
-    "id",
-    "lead_id",
-    "user_id",
-    "_type",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_activity_types: [
-    "id",
-    "name",
-    "description",
-    "api_create_only",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_object_types: [
-    "id",
-    "name",
-    "description",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  custom_objects: [
-    "id",
-    "custom_object_type",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  lead_statuses: [
-    "id",
-    "label",
-    "organization_id",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-  opportunity_statuses: [
-    "id",
-    "label",
-    "type",
-    "organization_id",
-    "date_created",
-    "date_updated",
-    "_dataSourceId",
-    "_dataSourceName",
-    "_syncedAt",
-  ],
-};
+// Always-selectable fallback when the connector exposes no schema fields.
+const SYSTEM_ENTITY_FIELDS = ["_syncedAt", "_dataSourceId", "id"];
 
 interface FormData {
   dataSourceId: string;
@@ -369,6 +116,18 @@ export function WebhookFlowForm({
     provisionFlowWebhook,
   } = useFlowStore();
 
+  const connectorTypes = useConnectorCatalogStore(state => state.types);
+  const fetchCatalog = useConnectorCatalogStore(state => state.fetchCatalog);
+  const webhookCapabilitiesByType = useMemo(() => {
+    const map: Record<string, WebhookCapabilities> = {};
+    for (const entry of connectorTypes || []) {
+      map[entry.type] = entry.webhook;
+    }
+    return map;
+  }, [connectorTypes]);
+  const isWebhookCapableType = (type: string | undefined): boolean =>
+    Boolean(type && webhookCapabilitiesByType[type]?.supported);
+
   // Get workspace-specific data
   const flows = useMemo(
     () => (currentWorkspace ? flowsMap[currentWorkspace.id] || [] : []),
@@ -395,7 +154,9 @@ export function WebhookFlowForm({
     flowId,
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
-  const [_entityMetadata, setEntityMetadata] = useState<any[]>([]);
+  const [entityMetadata, setEntityMetadata] = useState<
+    FlattenedConnectorEntity[]
+  >([]);
   const [openSteps, setOpenSteps] = useState<Set<number>>(new Set([0]));
 
   const toggleStep = (stepIndex: number) => {
@@ -452,16 +213,30 @@ export function WebhookFlowForm({
   const watchDeleteMode = watch("deleteMode");
   const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
   const selectedConnectorType = selectedConnector?.type;
+  const selectedWebhookCapabilities = selectedConnectorType
+    ? webhookCapabilitiesByType[selectedConnectorType]
+    : undefined;
+  const provisioning = selectedWebhookCapabilities?.provisioning;
   const canProvisionWebhook =
-    !isNewMode &&
-    Boolean(currentFlowId) &&
-    WEBHOOK_PROVISIONING_CONNECTOR_TYPES.has(selectedConnectorType || "");
-  const provisionProviderLabel =
-    selectedConnectorType === "claap"
-      ? "Claap"
-      : selectedConnectorType === "close"
-        ? "Close"
-        : "Provider";
+    !isNewMode && Boolean(currentFlowId) && Boolean(provisioning?.supported);
+  const provisionProviderLabel = provisioning?.providerLabel ?? "Provider";
+  const provisionActionHint = provisioning?.actionHint;
+  const webhookSecretHelpText =
+    selectedWebhookCapabilities?.secretHelpText ??
+    "Enter the webhook signing secret from your provider";
+  const webhookCapableConnectors = useMemo(
+    () => connectors.filter(source => isWebhookCapableType(source.type)),
+    // isWebhookCapableType is derived from webhookCapabilitiesByType
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [connectors, webhookCapabilitiesByType],
+  );
+  const webhookCapableConnectorNames = useMemo(
+    () =>
+      (connectorTypes || [])
+        .filter(entry => entry.webhook?.supported)
+        .map(entry => entry.name),
+    [connectorTypes],
+  );
 
   const selectedDestination = databases.find(
     db => db.id === watchDestinationId,
@@ -493,137 +268,25 @@ export function WebhookFlowForm({
     isNewMode,
   ]);
 
-  // Fetch entity metadata from connector and build per-entity layout defaults
+  // Fetch entity metadata from the connector API and build per-entity layout
+  // defaults. Schema-driven: connectors expose entities + layout suggestions
+  // via /connectors/:id/entities, so new connector entities appear here
+  // automatically (see 15-connector-agnostic.mdc).
   useEffect(() => {
     if (hasStagingDest && watchDataSourceId && connectors.length > 0) {
       const source = connectors.find(c => c._id === watchDataSourceId);
-      if (!source) return;
+      if (!source || !currentWorkspace?.id) return;
 
-      const connectorType = source.type;
-      if (connectorType === "close") {
-        const entities = [
-          {
-            name: "leads",
-            label: "Leads",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "opportunities",
-            label: "Opportunities",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "contacts",
-            label: "Contacts",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Call",
-            label: "Calls",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Email",
-            label: "Emails",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:EmailThread",
-            label: "Email Threads",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:SMS",
-            label: "SMS",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Meeting",
-            label: "Meetings",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:Note",
-            label: "Notes",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:LeadStatusChange",
-            label: "Lead Status Changes",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:OpportunityStatusChange",
-            label: "Opportunity Status Changes",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:TaskCompleted",
-            label: "Completed Tasks",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "users",
-            label: "Users",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_fields",
-            label: "Custom Fields",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "activities:CustomActivity",
-            label: "Custom Activities",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_activity_types",
-            label: "Custom Activity Types",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_object_types",
-            label: "Custom Object Types",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "custom_objects",
-            label: "Custom Objects",
-            partitionField: "date_created",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "lead_statuses",
-            label: "Lead Statuses",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "opportunity_statuses",
-            label: "Opportunity Statuses",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-        ];
+      let cancelled = false;
+      (async () => {
+        const list = await useAvailableEntitiesStore
+          .getState()
+          .fetch(currentWorkspace.id, watchDataSourceId);
+        if (cancelled || list.length === 0) return;
+
+        const entities = flattenConnectorEntities(list);
         setEntityMetadata(entities);
+
         // Read saved layouts from the flow object (store), not watch(),
         // because watch() may return stale state when effects race.
         const existingFlow =
@@ -633,7 +296,7 @@ export function WebhookFlowForm({
         const savedLayouts: EntityLayoutConfig[] =
           existingFlow?.entityLayouts || watch("entityLayouts") || [];
         const savedByEntity = new Map(
-          savedLayouts.map((l: any) => [l.entity, l]),
+          savedLayouts.map((l: EntityLayoutConfig) => [l.entity, l]),
         );
         setValue(
           "entityLayouts",
@@ -649,127 +312,16 @@ export function WebhookFlowForm({
                   entity: e.name,
                   label: e.label,
                   partitionField: e.partitionField,
-                  partitionGranularity: "day" as const,
-                  clusterFields: e.clusterFields || [],
+                  partitionGranularity: e.partitionGranularity,
+                  clusterFields: e.clusterFields,
                   enabled: true,
                 };
           }),
         );
-      } else if (connectorType === "claap") {
-        const entities = [
-          {
-            name: "recordings",
-            label: "Recordings",
-            partitionField: "createdAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "workspace",
-            label: "Workspace",
-            partitionField: "createdAt",
-            clusterFields: [] as string[],
-          },
-        ];
-        setEntityMetadata(entities);
-        const existingFlowClaap =
-          !isNewMode && currentFlowId
-            ? flows.find(j => j._id === currentFlowId)
-            : null;
-        const savedLayoutsClaap: EntityLayoutConfig[] =
-          existingFlowClaap?.entityLayouts || watch("entityLayouts") || [];
-        const savedByEntity = new Map(
-          savedLayoutsClaap.map((l: EntityLayoutConfig) => [l.entity, l]),
-        );
-        setValue(
-          "entityLayouts",
-          entities.map(e => {
-            const saved = savedByEntity.get(e.name);
-            return saved
-              ? {
-                  ...saved,
-                  label: e.label,
-                  enabled: saved.enabled !== false,
-                }
-              : {
-                  entity: e.name,
-                  label: e.label,
-                  partitionField: e.partitionField,
-                  partitionGranularity: "day" as const,
-                  clusterFields: e.clusterFields || [],
-                  enabled: true,
-                };
-          }),
-        );
-      } else if (connectorType === "stripe") {
-        const entities = [
-          {
-            name: "customers",
-            label: "Customers",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "subscriptions",
-            label: "Subscriptions",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "charges",
-            label: "Charges",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "invoices",
-            label: "Invoices",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "products",
-            label: "Products",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-          {
-            name: "plans",
-            label: "Plans",
-            partitionField: "_syncedAt",
-            clusterFields: [] as string[],
-          },
-        ];
-        setEntityMetadata(entities);
-        const existingFlowStripe =
-          !isNewMode && currentFlowId
-            ? flows.find(j => j._id === currentFlowId)
-            : null;
-        const savedLayoutsStripe: EntityLayoutConfig[] =
-          existingFlowStripe?.entityLayouts || watch("entityLayouts") || [];
-        const savedByEntity = new Map(
-          savedLayoutsStripe.map((l: any) => [l.entity, l]),
-        );
-        setValue(
-          "entityLayouts",
-          entities.map(e => {
-            const saved = savedByEntity.get(e.name);
-            return saved
-              ? {
-                  ...saved,
-                  label: e.label,
-                  enabled: saved.enabled !== false,
-                }
-              : {
-                  entity: e.name,
-                  label: e.label,
-                  partitionField: e.partitionField || "_syncedAt",
-                  partitionGranularity: "day" as const,
-                  clusterFields: e.clusterFields || [],
-                  enabled: true,
-                };
-          }),
-        );
-      }
+      })();
+      return () => {
+        cancelled = true;
+      };
     } else if (
       watchDataSourceId &&
       connectors.length > 0 &&
@@ -796,10 +348,7 @@ export function WebhookFlowForm({
     setIsLoadingConnectors(true);
     try {
       const sources = await fetchConnectors(workspaceId);
-      const webhookCapable = (sources || []).filter(source =>
-        WEBHOOK_CAPABLE_CONNECTOR_TYPES.has(source.type),
-      );
-      setConnectors(webhookCapable);
+      setConnectors(sources || []);
     } catch (error) {
       console.error("Failed to fetch connectors:", error);
       setError("Failed to load connectors");
@@ -813,9 +362,10 @@ export function WebhookFlowForm({
     if (currentWorkspace?.id) {
       fetchDataSources(currentWorkspace.id);
       ensureConnections(currentWorkspace.id);
+      fetchCatalog(currentWorkspace.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentWorkspace?.id, ensureConnections]);
+  }, [currentWorkspace?.id, ensureConnections, fetchCatalog]);
 
   // Load flow data if editing
   useEffect(() => {
@@ -943,13 +493,16 @@ export function WebhookFlowForm({
       let newFlow;
       if (isNewMode) {
         newFlow = await createFlow(currentWorkspace.id, payload);
-        if (desiredSyncEngine !== "legacy") {
-          await setSyncEngine(
-            currentWorkspace.id,
-            newFlow._id,
-            desiredSyncEngine,
-          );
-        }
+        // setSyncEngine swallows its error and returns false (e.g. 403 when the
+        // user isn't owner/admin). Capture it before fetchFlows wipes storeError.
+        const syncEngineOk =
+          desiredSyncEngine === "legacy"
+            ? true
+            : await setSyncEngine(
+                currentWorkspace.id,
+                newFlow._id,
+                desiredSyncEngine,
+              );
 
         // Track flow creation
         trackEvent("flow_created", {
@@ -967,6 +520,13 @@ export function WebhookFlowForm({
         // Notify parent that a new flow has been created
         onSaved?.(newFlow._id);
 
+        if (!syncEngineOk) {
+          setError(SYNC_ENGINE_PERMISSION_ERROR);
+          // Keep the form open so the message stays visible; the flow itself
+          // was created, only the sync-engine change was rejected.
+          return;
+        }
+
         // Reset form with the new flow data to mark it as pristine
         reset(data);
 
@@ -974,20 +534,26 @@ export function WebhookFlowForm({
         onSave?.();
       } else if (currentFlowId) {
         await updateFlow(currentWorkspace.id, currentFlowId, payload);
-        if (desiredSyncEngine !== currentSyncEngine) {
-          await setSyncEngine(
-            currentWorkspace.id,
-            currentFlowId,
-            desiredSyncEngine,
-          );
-        }
+        const syncEngineOk =
+          desiredSyncEngine === currentSyncEngine
+            ? true
+            : await setSyncEngine(
+                currentWorkspace.id,
+                currentFlowId,
+                desiredSyncEngine,
+              );
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
+        onSaved?.(currentFlowId);
+
+        if (!syncEngineOk) {
+          setError(SYNC_ENGINE_PERMISSION_ERROR);
+          return;
+        }
+
         // Reset form to mark it as pristine
         reset(data);
-
-        onSaved?.(currentFlowId);
 
         // Notify parent if needed
         onSave?.();
@@ -1213,7 +779,7 @@ export function WebhookFlowForm({
                           }
                           disabled={isLoadingConnectors || !isNewMode}
                         >
-                          {connectors.map(source => (
+                          {webhookCapableConnectors.map(source => (
                             <MenuItem key={source._id} value={source._id}>
                               <Box
                                 sx={{
@@ -1233,12 +799,14 @@ export function WebhookFlowForm({
                             {errors.dataSourceId.message}
                           </FormHelperText>
                         )}
-                        {connectors.length === 0 && !isLoadingConnectors && (
-                          <FormHelperText>
-                            Create a Stripe, Close, or Claap data source to use
-                            webhook flows
-                          </FormHelperText>
-                        )}
+                        {webhookCapableConnectors.length === 0 &&
+                          !isLoadingConnectors && (
+                            <FormHelperText>
+                              {webhookCapableConnectorNames.length > 0
+                                ? `Create a ${webhookCapableConnectorNames.join(", ")} data source to use webhook flows`
+                                : "Create a webhook-capable data source to use webhook flows"}
+                            </FormHelperText>
+                          )}
                       </FormControl>
                     )}
                   />
@@ -1547,22 +1115,23 @@ export function WebhookFlowForm({
                               </Typography>
                             </Box>
                             {watchEntityLayouts.map((layout, idx) => {
-                              const entityFieldMap =
-                                selectedConnectorType === "close"
-                                  ? CLOSE_ENTITY_FIELDS
-                                  : selectedConnectorType === "claap"
-                                    ? CLAAP_ENTITY_FIELDS
-                                    : {};
-                              const entityFields = entityFieldMap[
-                                layout.entity
-                              ] || ["_syncedAt", "_dataSourceId", "id"];
-                              const timestampFields = entityFields.filter(
-                                f =>
-                                  f.includes("date") ||
-                                  f.includes("created") ||
-                                  f.includes("updated") ||
-                                  f === "_syncedAt",
-                              );
+                              const schemaFields =
+                                entityMetadata.find(
+                                  e => e.name === layout.entity,
+                                )?.fields ?? [];
+                              const entityFields =
+                                schemaFields.length > 0
+                                  ? schemaFields.map(f => f.name)
+                                  : SYSTEM_ENTITY_FIELDS;
+                              const timestampFields =
+                                schemaFields.length > 0
+                                  ? schemaFields
+                                      .filter(f => f.type === "timestamp")
+                                      .map(f => f.name)
+                                  : ["_syncedAt"];
+                              if (!timestampFields.includes("_syncedAt")) {
+                                timestampFields.push("_syncedAt");
+                              }
                               const isEnabled = layout.enabled !== false;
                               return (
                                 <Box
@@ -1814,8 +1383,11 @@ export function WebhookFlowForm({
                           />
                         </Box>
                         <Typography variant="caption" color="text.secondary">
-                          Copy this URL to your Stripe, Close, or Claap webhook
-                          settings
+                          Copy this URL to your{" "}
+                          {provisionProviderLabel !== "Provider"
+                            ? provisionProviderLabel
+                            : "provider's"}{" "}
+                          webhook settings
                         </Typography>
                         {canProvisionWebhook && (
                           <Box
@@ -1843,11 +1415,9 @@ export function WebhookFlowForm({
                             >
                               One click creates the {provisionProviderLabel}{" "}
                               webhook
-                              {selectedConnectorType === "close"
-                                ? " and stores its signing secret"
-                                : selectedConnectorType === "claap"
-                                  ? " (copy the secret into this form if Claap shows it once)"
-                                  : ""}
+                              {provisionActionHint
+                                ? ` ${provisionActionHint}`
+                                : ""}
                               .
                             </Typography>
                           </Box>
@@ -1868,7 +1438,7 @@ export function WebhookFlowForm({
                           render={({ field }) => (
                             <TextField
                               {...field}
-                              placeholder="Enter webhook secret (e.g., whsec_...)"
+                              placeholder="Enter webhook secret"
                               fullWidth
                               size="small"
                               type="text"
@@ -1895,11 +1465,7 @@ export function WebhookFlowForm({
                           )}
                         />
                         <Typography variant="caption" color="text.secondary">
-                          {selectedConnectorType === "stripe"
-                            ? "Get this from Stripe Dashboard > Webhooks > Your endpoint > Signing secret"
-                            : selectedConnectorType === "claap"
-                              ? "Enter the X-Claap-Webhook-Secret from your Claap webhook settings"
-                              : "Enter the webhook signing secret from your provider"}
+                          {webhookSecretHelpText}
                         </Typography>
                       </Box>
                     </Stack>

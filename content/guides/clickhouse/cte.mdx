@@ -1,0 +1,149 @@
+---
+title: "Common Table Expressions (CTEs) in ClickHouse"
+description: "How the WITH clause works in ClickHouse: scalar expressions, named subquery CTEs, the inlining-by-default behavior that catches people out, materialized CTEs, and recursive CTEs for hierarchical data."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "cte", "with-clause", "recursive-queries", "olap"]
+date: "2026-06-05"
+---
+
+# Common Table Expressions in ClickHouse
+
+The `WITH` clause in ClickHouse does three related jobs: it defines scalar constants, it names subqueries (the classic CTE), and since version 24.4 it supports recursive queries. The syntax looks like standard SQL, but the default execution model differs from PostgreSQL in a way that affects performance, so it pays to understand what actually happens when you reference a CTE.
+
+## Scalar Expressions
+
+The simplest form binds a value or a single-row, single-column query result to a name. This is closer to a variable than to a temporary table.
+
+```sql
+WITH 7 AS days_back
+SELECT *
+FROM events
+WHERE event_date >= today() - days_back;
+```
+
+A scalar subquery works the same way and is evaluated once:
+
+```sql
+WITH (SELECT max(event_date) FROM events) AS last_day
+SELECT count()
+FROM events
+WHERE event_date = last_day;
+```
+
+Note the order: in ClickHouse the alias comes after the expression (`WITH expr AS name`), which is the opposite of the named-subquery form below. Both forms are valid and can appear in the same `WITH` clause.
+
+## Named Subqueries (the standard CTE)
+
+This is the form most people mean by "CTE": a named result set you reference like a table.
+
+```sql
+WITH recent_orders AS (
+    SELECT customer_id, sum(amount) AS total
+    FROM orders
+    WHERE order_date >= today() - 30
+    GROUP BY customer_id
+)
+SELECT customer_id, total
+FROM recent_orders
+WHERE total > 1000
+ORDER BY total DESC;
+```
+
+Here the alias comes first (`name AS (subquery)`), matching ANSI SQL. You can chain several CTEs, and a later one can reference an earlier one:
+
+```sql
+WITH
+    active AS (
+        SELECT user_id FROM sessions WHERE session_date = today()
+    ),
+    enriched AS (
+        SELECT u.user_id, u.country
+        FROM users AS u
+        WHERE u.user_id IN (SELECT user_id FROM active)
+    )
+SELECT country, count() AS active_users
+FROM enriched
+GROUP BY country;
+```
+
+## The Inlining Gotcha
+
+This is the part that surprises people coming from PostgreSQL. By default, ClickHouse does **not** compute a CTE once and reuse the result. Every reference to the CTE is replaced by its underlying subquery before execution. If you reference a CTE twice, its subquery runs twice.
+
+```sql
+WITH heavy AS (
+    SELECT user_id, count() AS n
+    FROM huge_events
+    GROUP BY user_id
+)
+-- 'heavy' is expanded into BOTH sides of this join,
+-- so the aggregation over huge_events runs twice.
+SELECT a.user_id, a.n, b.n
+FROM heavy AS a
+INNER JOIN heavy AS b ON a.user_id = b.user_id;
+```
+
+For a cheap subquery this is fine. For an expensive aggregation referenced multiple times, it doubles the work. The historical workaround was to push the subquery into a temporary table or a separate query. Recent versions also offer materialized CTEs (below) to avoid recomputation.
+
+## Materialized CTEs
+
+ClickHouse can materialize a CTE so it is computed once and the result reused across references. Support arrived in recent releases and is controlled by a setting rather than always-on, so confirm behavior on your version before relying on it. When available, materialization is the right choice for an expensive CTE referenced more than once; for a CTE referenced a single time, inlining is usually as good or better because it lets the optimizer push predicates into the subquery.
+
+The practical rule: inline (default) when the CTE is referenced once or is cheap; materialize when it is expensive and referenced multiple times.
+
+## Recursive CTEs
+
+Recursive CTEs landed in ClickHouse 24.4, built on the query analyzer that is enabled by default in current versions. The syntax is standard SQL: a non-recursive anchor term, `UNION ALL`, then a recursive term that references the CTE by name.
+
+```sql
+WITH RECURSIVE numbers AS (
+    SELECT 1 AS n               -- anchor
+    UNION ALL
+    SELECT n + 1                -- recursive step
+    FROM numbers
+    WHERE n < 10
+)
+SELECT n FROM numbers;
+-- 1, 2, ... 10
+```
+
+The common real-world use is walking a hierarchy, such as an org chart or a category tree stored as `(id, parent_id)`:
+
+```sql
+WITH RECURSIVE subtree AS (
+    SELECT id, parent_id, name, 1 AS depth
+    FROM categories
+    WHERE id = 100              -- start node
+
+    UNION ALL
+
+    SELECT c.id, c.parent_id, c.name, s.depth + 1
+    FROM categories AS c
+    INNER JOIN subtree AS s ON c.parent_id = s.id
+)
+SELECT id, name, depth
+FROM subtree
+ORDER BY depth, id;
+```
+
+A recursive CTE executes the anchor once, then repeats the recursive step against the rows produced by the previous iteration until no new rows appear. Guard against infinite loops on cyclic data with a depth limit in the `WHERE` clause, since ClickHouse will keep iterating otherwise.
+
+## Common Mistakes
+
+- **Expecting CTEs to be materialized by default.** They are inlined. A CTE referenced three times runs its subquery three times unless you explicitly materialize it or use a temporary table.
+- **Mixing up the two alias orders.** Scalar expressions are `WITH expr AS name`; named subqueries are `WITH name AS (subquery)`. Both can coexist, but swapping them is a syntax error.
+- **Running recursive CTEs on an old version.** They require 24.4 or later and the query analyzer. On older builds the `RECURSIVE` keyword is not recognized.
+- **No termination condition.** A recursive term with no bound, or one run over a graph with cycles, never stops. Always cap depth or detect already-visited nodes.
+
+When you are drafting a multi-stage `WITH` chain or a recursive traversal against an unfamiliar schema, Mako's AI autocomplete can suggest the join shape and the recursive step as you type, which helps given how easy it is to get the anchor-vs-recursive split wrong.
+
+## Related Guides
+
+- [ClickHouse Joins Guide](/guides/clickhouse/joins-guide) for the join strictness used inside recursive steps.
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions) for the aggregations CTEs commonly wrap.
+- [ClickHouse Window Functions](/guides/clickhouse/window-functions) as an alternative to self-referencing CTEs for running totals and rankings.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

@@ -1,0 +1,124 @@
+---
+title: "ClickHouse Partitioning: When It Helps and When It Hurts"
+description: "How PARTITION BY works in ClickHouse: choosing a partition key, partition pruning, partition-level operations (DROP, DETACH, ATTACH, MOVE, FREEZE), the too-many-parts problem, and why most teams over-partition."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "partitioning", "mergetree", "data-management", "olap"]
+date: "2026-06-08"
+---
+
+# ClickHouse Partitioning
+
+Partitioning in ClickHouse splits a table's data into separate logical chunks based on an expression you define in the `PARTITION BY` clause. Each partition is stored as its own set of directories on disk, which lets ClickHouse skip whole partitions during a query and lets you run bulk operations (drop, detach, move) on a partition without touching the rest of the table.
+
+The most important thing to understand up front: partitioning is a data-management feature, not a primary query-optimization feature. Query speed in ClickHouse comes mostly from the `ORDER BY` (sorting) key and its sparse primary index. Partitioning helps queries only when the query filters on the partition expression, and it can actively hurt performance when overused. The official guidance is blunt: in most cases you do not need a partition key, and when you do, you rarely need anything more granular than by month.
+
+## Defining a Partition Key
+
+`PARTITION BY` is declared at table creation and applies to `MergeTree`-family engines.
+
+```sql
+CREATE TABLE events
+(
+    event_time DateTime,
+    user_id    UInt64,
+    event_type String,
+    payload    String
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(event_time)
+ORDER BY (user_id, event_time);
+```
+
+Here `toYYYYMM(event_time)` produces a value like `202606`, so each calendar month becomes one partition. As rows are inserted, ClickHouse routes each row to the partition its expression evaluates to. You can inspect partitions through the `system.parts` table:
+
+```sql
+SELECT partition, name, rows, bytes_on_disk
+FROM system.parts
+WHERE table = 'events' AND active
+ORDER BY partition;
+```
+
+## How Partition Pruning Works
+
+When a query filters on a column used in the partition expression, ClickHouse evaluates which partitions can possibly contain matching rows and reads only those. This is partition pruning.
+
+```sql
+-- Only touches the 202606 and 202607 partitions
+SELECT count()
+FROM events
+WHERE event_time >= '2026-06-01' AND event_time < '2026-08-01';
+```
+
+A query that does not reference the partition expression gets no pruning benefit at all. It still reads every partition and relies entirely on the primary index inside each part. This is why partitioning by a column your queries never filter on is wasted effort.
+
+A subtle point: pruning works on the partition expression, not arbitrary columns. If you partition by `toYYYYMM(event_time)` but filter on `toDate(event_time)`, ClickHouse can still prune because the filter is derivable from the same column. But if you partition by `cityHash64(user_id) % 100`, a filter like `user_id = 42` will not prune unless ClickHouse can map the predicate onto the hashed expression, which in practice it usually cannot.
+
+## Partition-Level Operations
+
+The real payoff of partitioning is cheap bulk operations. Dropping a partition is close to instant because it just removes directories, unlike a `DELETE` that has to rewrite parts.
+
+```sql
+-- Drop one month of data, near-instant
+ALTER TABLE events DROP PARTITION '202601';
+
+-- Detach: move the partition out of the active set but keep files on disk
+ALTER TABLE events DETACH PARTITION '202601';
+
+-- Re-attach a detached (or backed-up) partition
+ALTER TABLE events ATTACH PARTITION '202601';
+```
+
+`DETACH` followed by `ATTACH` is the standard way to move data between tables with an identical structure, since you can detach from one table and attach the part files into another. You can also freeze a partition for backup, which makes hardlinked copies under the `shadow/` directory:
+
+```sql
+ALTER TABLE events FREEZE PARTITION '202606';
+```
+
+With multi-disk storage configured, you can move a partition to a different volume or disk, which is how cold data gets pushed to cheaper storage:
+
+```sql
+ALTER TABLE events MOVE PARTITION '202601' TO VOLUME 'cold';
+```
+
+This overlaps with what `TTL ... TO VOLUME` automates. The difference is that `MOVE PARTITION` is a manual, explicit operation, while TTL tiering runs automatically during merges. For age-based lifecycle rules, TTL is usually the better fit; `MOVE PARTITION` is for one-off or scripted moves.
+
+## The Too-Many-Parts Problem
+
+Every insert creates at least one new data part, and parts are merged in the background per partition. Partitioning multiplies the number of parts because a single insert spanning N partitions writes at least N parts. ClickHouse never merges parts across partition boundaries, so each partition maintains its own merge tree.
+
+If you partition too finely, for example by day on a table that only holds a few thousand rows per day, or worse by a high-cardinality key like user ID, you end up with thousands of tiny partitions and a flood of small parts. Symptoms include:
+
+- `Too many parts` errors on insert (the `parts_to_throw_insert` threshold, default 3000 active parts per partition).
+- Slow `SELECT`s because the query has to open and merge many small parts.
+- High memory and file-descriptor pressure on the server.
+
+The fix is almost always coarser partitioning. Monthly is the default recommendation for a reason. If you think you need daily, confirm your daily volume justifies it (observability workloads ingesting billions of rows a day are the classic legitimate case).
+
+## Choosing a Partition Key: Practical Rules
+
+- **Default to monthly** with `toYYYYMM(date_column)` unless you have a specific reason not to.
+- **Partition by the column you delete or archive by.** If you expire data by age, partition by time so `DROP PARTITION` does the cleanup cheaply.
+- **Never partition by a high-cardinality column** like user ID, session ID, or a name. Put that column first in `ORDER BY` instead, where it drives the sparse index without exploding part counts.
+- **Keep the partition count in the low hundreds, not thousands.** A few years of monthly partitions is fine; thousands of daily partitions on a low-volume table is not.
+- **Partitioning is not a substitute for a good ORDER BY.** The sorting key and primary index do the heavy lifting for query speed. Partitioning manages the lifecycle.
+
+## Common Mistakes
+
+- **Over-partitioning.** The single most common mistake. Daily or hourly partitions on a table that does not ingest enough to justify them. Start coarse and only go finer with evidence.
+- **Partitioning by a column queries never filter on.** No pruning benefit, all the part-count cost.
+- **Expecting pruning from a hashed or transformed partition key.** A filter on the raw column may not prune if the partition expression hashes or otherwise obscures it.
+- **Using DELETE for time-based cleanup when DROP PARTITION would do.** Aligning partitions with your retention boundary turns expensive mutations into near-instant directory drops.
+- **Forgetting that parts never merge across partitions.** More partitions means more independent merge trees and more small parts to manage.
+
+When you are sizing partitions and want to see how many parts and rows each one holds before committing to a key, Mako's AI autocomplete can help you draft the `system.parts` queries to inspect the layout.
+
+## Related Guides
+
+- [ClickHouse TTL](/guides/clickhouse/ttl) for automating age-based deletion and storage tiering that aligns with partition boundaries.
+- [ClickHouse Materialized Views](/guides/clickhouse/materialized-views) for pre-aggregating data, which is partitioned alongside the target table.
+- [ClickHouse Date and Time Functions](/guides/clickhouse/date-functions) for the toYYYYMM and toStartOfMonth expressions used in partition keys.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).
