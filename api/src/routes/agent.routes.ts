@@ -22,6 +22,7 @@ import {
   computeInputBudget,
   compactUiMessagesForBudget,
   elideOldToolOutputs,
+  stripReplayedReasoning,
 } from "../agent-lib/context/compaction";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -912,6 +913,21 @@ agentRoutes.openapi(
           workspaceId,
           modelId: resolvedModelId,
           elidedCount: elision.elidedCount,
+        });
+      }
+      // Strip replayed thinking/reasoning traces. `sendReasoning: true` persists
+      // the model's thinking and the client replays it every turn; a model never
+      // needs to re-read its own past thinking, and those blocks are re-billed as
+      // input tokens each request. Kept only on the assistant turn being
+      // continued with tool results (Anthropic interleaved-thinking requirement).
+      const reasoningStrip = stripReplayedReasoning(messagesForModel);
+      messagesForModel = reasoningStrip.messages;
+      if (reasoningStrip.changed) {
+        logger.info("Stripped replayed reasoning before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          strippedCount: reasoningStrip.strippedCount,
         });
       }
       // Proactively keep the prompt under the model's context window. Budget is

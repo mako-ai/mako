@@ -264,6 +264,69 @@ export function elideOldToolOutputs(
 }
 
 // ---------------------------------------------------------------------------
+// Replayed reasoning / thinking stripping (cost control, budget-independent)
+// ---------------------------------------------------------------------------
+
+export interface StripReasoningResult {
+  messages: UIMessage[];
+  changed: boolean;
+  strippedCount: number;
+}
+
+/**
+ * Drop replayed `reasoning` (extended-thinking) parts from the model input.
+ *
+ * `sendReasoning: true` streams the model's thinking to the UI and persists it,
+ * so the client replays every prior turn's thinking trace on every request.
+ * That is pure waste: a model never needs to re-read its own past thinking — the
+ * conclusions already live in the assistant text/tool calls that follow — and
+ * the blocks are re-billed as input tokens each turn.
+ *
+ * The one exception is provider-mandated: with Anthropic interleaved thinking +
+ * tool use, the thinking block of the assistant turn that is being *continued*
+ * with tool results must be preserved (signature verification). That turn is the
+ * LAST assistant message, and only when the latest message is NOT a fresh user
+ * message (i.e. we're mid tool-continuation). In every other case we strip all
+ * reasoning. We never empty a message (guards a reasoning-only assistant turn).
+ */
+export function stripReplayedReasoning(
+  messages: UIMessage[],
+): StripReasoningResult {
+  if (messages.length === 0) {
+    return { messages, changed: false, strippedCount: 0 };
+  }
+
+  const lastMessage = messages[messages.length - 1];
+  const isContinuation = lastMessage.role !== "user";
+  let preserveIdx = -1;
+  if (isContinuation) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") {
+        preserveIdx = i;
+        break;
+      }
+    }
+  }
+
+  let changed = false;
+  let strippedCount = 0;
+  const next = messages.map((msg, idx) => {
+    if (msg.role !== "assistant" || idx === preserveIdx) return msg;
+    const parts = (msg.parts ?? []) as Array<Record<string, unknown>>;
+    const filtered = parts.filter(part => part.type !== "reasoning");
+    const removed = parts.length - filtered.length;
+    // Nothing to strip, or stripping would leave the message empty (which
+    // `convertToModelMessages` rejects) — leave it untouched.
+    if (removed === 0 || filtered.length === 0) return msg;
+    changed = true;
+    strippedCount += removed;
+    return { ...msg, parts: filtered as UIMessage["parts"] };
+  });
+
+  return { messages: next, changed, strippedCount };
+}
+
+// ---------------------------------------------------------------------------
 // Summarization (agnostic — cheapest curated tool-use model)
 // ---------------------------------------------------------------------------
 
