@@ -54,23 +54,53 @@ When you need a fresh value inside `onToolCall` or `prepareSendMessagesRequest`,
 call `useConsoleStore.getState()` at invocation time rather than closing over
 render-time state.
 
-## Auto-scroll contract (`use-stick-to-bottom`)
+## List virtualization (`react-virtuoso`)
 
-Auto-scroll uses the **`use-stick-to-bottom`** library (same library used in
-Vercel's official `ai-chatbot` template). It observes container/content resizes
-via `ResizeObserver` and uses spring-based animations — no `useEffect([messages])`
-or `MutationObserver` hacks.
+The message list is **virtualized** with `react-virtuoso`. Only visible rows
+(plus an overscan buffer) are mounted in the DOM. This is the load-bearing fix
+for long-chat lag: without it, every message — each with shiki-highlighted
+markdown, tool cards, and result tables — stays mounted at once, which tanks
+DOM size, memory, paint, and scroll, especially on mobile. Memoization stops
+*re-renders* but does nothing about *mount cost / DOM size*; virtualization is
+the only thing that does.
+
+Key pieces (in `Chat.tsx`):
+- `<Virtuoso data={messages} computeItemKey={(_, m) => m.id} itemContent={...} />`
+  — `computeItemKey` by `message.id` keeps row identity (and memo) stable across
+  streaming ticks and history inserts (mirrors the old `key={message.id}`).
+- `components={{ List: MessageVirtuosoList }}` — a `React.memo`'d
+  `<List dense component="div">` so the `dense` ListContext still reaches each
+  `ChatMessageRow`'s `<ListItem>` (context flows through Virtuoso's div Item
+  wrappers regardless of DOM nesting). It **must forward the inline `style`**
+  Virtuoso passes (paddingTop/Bottom offsets for windowed items).
+- `increaseViewportBy={{ top: 600, bottom: 900 }}` — overscan buffer; prevents
+  blank rows on fast mobile flings.
+
+**Never revert to `messages.map(...)` over the full array.** That reintroduces
+the unbounded DOM that lags long chats on mobile.
+
+## Auto-scroll contract (Virtuoso `followOutput`)
+
+Bottom-anchoring is owned by Virtuoso, **not** `use-stick-to-bottom` (removed),
+and **not** a DIY `useEffect([messages])` → `scrollIntoView` (which fires on
+every chunk and causes scroll jank + broken hover/click events).
 
 Key pieces:
-- `scrollContainerRef` / `scrollContentRef` — refs from `useStickToBottom()` hook,
-  attached to the outer scroll `<Box>` and inner content `<div>` respectively.
-- `isAtBottom` — boolean state for showing the "scroll to bottom" button.
-- `scrollToBottom()` — imperative scroll for the button's `onClick`.
-
-**Never replace this with a DIY `useEffect([messages])` → `scrollIntoView`.
-That fires on every chunk and causes scroll jank + broken hover/click events.**
-The library correctly distinguishes user scrolling from programmatic scrolling
-and handles edge cases like content shrinking and mobile devices.
+- `followOutput={isAtBottom ? "smooth" : false}` — auto-sticks to the streaming
+  tail, but **only when the user is already at the bottom**, so scrolling up to
+  read history doesn't yank them back down.
+- `initialTopMostItemIndex={Math.max(0, messages.length - 1)}` — lands at the
+  newest message on mount / chat switch.
+- `atBottomStateChange={setIsAtBottom}` + `atBottomThreshold={120}` — drives the
+  `isAtBottom` state (note: this only flips when crossing the threshold, so it
+  does **not** re-render per streaming chunk).
+- `virtuosoRef.current?.scrollToIndex({ index: messages.length - 1, align: "end" })`
+  — imperative scroll for the "scroll to bottom" button's `onClick`. The button
+  is `position: absolute` inside the relative parent `Box` (a sibling of
+  `<Virtuoso>`), since Virtuoso owns the scroller.
+- Opening an existing chat does an explicit `scrollToIndex({ index: "LAST" })`
+  after the bulk `setMessages`, because Virtuoso keeps one instance across chat
+  switches so `initialTopMostItemIndex` (mount-only) won't re-apply.
 
 ## Zustand selector rules
 
@@ -115,7 +145,8 @@ callback, not via a selector subscription.
 - [ ] No new `useCallback`/`useMemo` with object dependencies
 - [ ] No new `useEffect` depending on `messages` that touches the DOM
 - [ ] `experimental_throttle: 50` is present on `useChat`
-- [ ] Auto-scroll uses `use-stick-to-bottom`, not a DIY `useEffect`
+- [ ] Message list stays virtualized (`<Virtuoso data={messages}>`), never `messages.map`
+- [ ] Auto-scroll uses Virtuoso `followOutput`, not a DIY `useEffect`
 - [ ] Any new child component inside `ChatMessageRow` is `React.memo`-wrapped
 - [ ] Zustand selectors return primitives, not object references
 - [ ] Render-count test (`Chat.perf.test.ts`) still passes

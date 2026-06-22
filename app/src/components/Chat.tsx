@@ -56,7 +56,7 @@ import {
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
-import { useStickToBottom } from "use-stick-to-bottom";
+import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
@@ -1081,6 +1081,34 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
 
 ChatMessageRow.displayName = "ChatMessageRow";
 
+// List element Virtuoso renders the (windowed) message rows into. Rendered as
+// a MUI `<List dense component="div">` so the `dense` ListContext still reaches
+// each `ChatMessageRow`'s `<ListItem>` (context flows through Virtuoso's div
+// Item wrappers regardless of DOM nesting) while avoiding `<ul>` DOM-nesting
+// warnings. Virtuoso owns the inline `style` (it sets paddingTop/Bottom to
+// offset windowed items) so we must forward it onto the list element.
+const MessageVirtuosoList = React.memo(
+  React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+    function MessageVirtuosoList({ style, children }, ref) {
+      return (
+        <List dense component="div" ref={ref} style={style} sx={{ px: 1 }}>
+          {children}
+        </List>
+      );
+    },
+  ),
+);
+MessageVirtuosoList.displayName = "MessageVirtuosoList";
+
+// Virtuoso's `Components['List']` types `ref` as a `LegacyRef` (string refs
+// allowed), which is contravariant with forwardRef's `Ref`. The component is
+// structurally correct; this cast bridges that one incompatibility.
+const messageVirtuosoComponents: Components<ChatMessageRowProps["message"]> = {
+  List: MessageVirtuosoList as Components<
+    ChatMessageRowProps["message"]
+  >["List"],
+};
+
 // Isolated input component — owns its own `input` state so keystrokes
 // never re-render the (expensive) message list above it.
 
@@ -1890,13 +1918,13 @@ const Chat: React.FC<ChatProps> = ({
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const {
-    scrollRef: scrollContainerRef,
-    contentRef: scrollContentRef,
-    isAtBottom,
-    scrollToBottom,
-  } = useStickToBottom();
+  // Virtualized message list (react-virtuoso). Replaces use-stick-to-bottom:
+  // Virtuoso owns its own scroller and bottom-anchoring (`followOutput`), and
+  // only mounts visible rows + overscan so long chats stay light on
+  // DOM/memory/paint — critical on mobile. `isAtBottom` drives both the
+  // "scroll to bottom" button and whether streaming auto-follows the tail.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   // Track if we're viewing an existing chat from history (vs a new chat)
   // Moved before useChat so onFinish callback can access it
@@ -3232,6 +3260,23 @@ const Chat: React.FC<ChatProps> = ({
 
           setMessages(convertedMessages);
 
+          // Virtuoso keeps ONE instance across chat switches (Chat isn't keyed
+          // by chatId), so its `initialTopMostItemIndex` — read once at mount —
+          // never re-applies when we bulk-load a different chat's history here.
+          // Without this, opening an existing chat from history can land
+          // mid-list or at the top. Pin to the newest message on the next
+          // frame (after the new data has rendered) so it deterministically
+          // opens at the bottom, matching the old stick-to-bottom behavior.
+          if (convertedMessages.length > 0) {
+            requestAnimationFrame(() => {
+              if (cancelled) return;
+              virtuosoRef.current?.scrollToIndex({
+                index: "LAST",
+                align: "end",
+              });
+            });
+          }
+
           // Restore consoles that were modified by the agent in this chat
           // The backend extracts console IDs from modify_console tool calls in the messages
           // and fetches those consoles from the database
@@ -4035,14 +4080,16 @@ const Chat: React.FC<ChatProps> = ({
         </Box>
       )}
 
-      {/* Messages */}
+      {/* Messages — Virtuoso owns the scroller; this Box is just a relative,
+          full-height flex container so the virtual list fills it and the
+          floating "scroll to bottom" button + mobile hero can overlay it. */}
       <Box
-        ref={scrollContainerRef}
         sx={{
           flex: 1,
-          overflow: "auto",
-          p: 1,
+          minHeight: 0,
           position: "relative",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         {/* Mobile "Ask your data" home: hero + starter chips when empty */}
@@ -4106,32 +4153,50 @@ const Chat: React.FC<ChatProps> = ({
           </Box>
         )}
 
-        <div ref={scrollContentRef}>
-          <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
-            <List dense>
-              {messages.map((message, msgIdx) => (
-                <ChatMessageRow
-                  key={message.id}
-                  message={message}
-                  isLastMessage={msgIdx === messages.length - 1}
-                  isStreaming={status === "streaming"}
-                  onToolClick={handleToolClick}
-                  onConsoleTitleClick={handleConsoleTitleClick}
-                  connectionIconById={connectionIconById}
-                  paletteMode={paletteMode}
-                />
-              ))}
-            </List>
-          </React.Profiler>
-          <div ref={messagesEndRef} />
-        </div>
+        <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
+          <Virtuoso<ChatMessageRowProps["message"]>
+            ref={virtuosoRef}
+            data={messages}
+            // Stable key per message so a row's identity (and thus its memo)
+            // survives streaming ticks and history inserts — mirrors the old
+            // `key={message.id}`.
+            computeItemKey={(_index, message) => message.id}
+            // Auto-stick to the tail while streaming, but only when the user is
+            // already at the bottom (don't yank them down if they scrolled up
+            // to read history). This preserves the old use-stick-to-bottom UX.
+            followOutput={isAtBottom ? "smooth" : false}
+            initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+            atBottomStateChange={setIsAtBottom}
+            atBottomThreshold={120}
+            increaseViewportBy={{ top: 600, bottom: 900 }}
+            components={messageVirtuosoComponents}
+            style={{ flex: 1 }}
+            itemContent={(msgIdx, message) => (
+              <ChatMessageRow
+                message={message}
+                isLastMessage={msgIdx === messages.length - 1}
+                isStreaming={status === "streaming"}
+                onToolClick={handleToolClick}
+                onConsoleTitleClick={handleConsoleTitleClick}
+                connectionIconById={connectionIconById}
+                paletteMode={paletteMode}
+              />
+            )}
+          />
+        </React.Profiler>
 
         {!isAtBottom && (
           <IconButton
-            onClick={() => scrollToBottom()}
+            onClick={() =>
+              virtuosoRef.current?.scrollToIndex({
+                index: messages.length - 1,
+                align: "end",
+                behavior: "smooth",
+              })
+            }
             size="small"
             sx={{
-              position: "sticky",
+              position: "absolute",
               bottom: 8,
               left: "50%",
               transform: "translateX(-50%)",

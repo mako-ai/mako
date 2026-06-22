@@ -304,8 +304,22 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/experimental_throttle\s*:\s*\d+/);
   });
 
-  it("uses use-stick-to-bottom for scroll management", () => {
-    expect(chatSource).toContain("useStickToBottom");
+  it("virtualizes the message list with react-virtuoso", () => {
+    // Long chats must NOT mount every message at once (DOM/memory/paint death
+    // on mobile). Virtuoso windows the list so only visible rows + overscan
+    // are mounted. Reverting to `messages.map(...)` over the full array would
+    // reintroduce the lag this guards against.
+    expect(chatSource).toContain('from "react-virtuoso"');
+    expect(chatSource).toMatch(/<Virtuoso\b/);
+    expect(chatSource).toMatch(/data=\{messages\}/);
+    expect(chatSource).toMatch(/computeItemKey=/);
+  });
+
+  it("auto-follows the streaming tail only when at bottom", () => {
+    // followOutput pins to the newest message while streaming, but is disabled
+    // when the user has scrolled up to read history (so they're not yanked
+    // down). This replaces use-stick-to-bottom's equivalent behavior.
+    expect(chatSource).toMatch(/followOutput=\{isAtBottom \? .* : false\}/);
   });
 
   it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
