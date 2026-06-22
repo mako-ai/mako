@@ -1,0 +1,166 @@
+---
+title: "How to Connect to MySQL from C# (.NET)"
+description: "Connect to MySQL from C# with MySqlConnector: ADO.NET basics, async commands, parameters, pooling, Dapper and EF Core, the MySql.Data vs MySqlConnector choice, SSL, and the errors you actually hit."
+database: "mysql"
+category: "how-to"
+tags: ["mysql", "csharp", "dotnet", "mysqlconnector", "dapper", "ef-core", "connection"]
+date: "2026-06-22"
+---
+
+Connecting to MySQL from .NET starts with a decision most other databases do not force on you: there are two ADO.NET drivers, and they are not equivalent. This guide explains the choice, shows the raw ADO.NET connection code, then layers on Dapper and EF Core, and covers the MySQL-specific traps around authentication, time zones, and SSL.
+
+## Two drivers: MySqlConnector vs MySql.Data
+
+| Driver | NuGet package | Notes |
+|---|---|---|
+| MySqlConnector | `MySqlConnector` | Open-source, async-first rewrite of the ADO.NET API. Recommended for new code. |
+| Connector/NET (MySql.Data) | `MySql.Data` | Oracle's official driver. Historically implemented async as sync-over-async, which can deadlock or block threads. |
+
+Both expose the same ADO.NET types (`MySqlConnection`, `MySqlCommand`), so most code looks identical. The practical difference is that MySqlConnector was built async from the ground up and tends to behave better under concurrency, while MySql.Data is the vendor-blessed option that some tooling and Oracle support expect. For a new application, MySqlConnector (current stable 2.6.0 as of June 2026) is the common recommendation. If you must use the official driver for support reasons, MySql.Data is at 9.7.0.
+
+The rest of this guide uses MySqlConnector. The API is the same if you switch, but the namespace differs (`MySqlConnector` vs `MySql.Data.MySqlClient`).
+
+```bash
+dotnet add package MySqlConnector
+```
+
+## A first connection with ADO.NET
+
+```csharp
+using MySqlConnector;
+
+var connString = "Server=localhost;Port=3306;User ID=root;Password=secret;Database=appdb";
+
+await using var conn = new MySqlConnection(connString);
+await conn.OpenAsync();
+
+await using var cmd = new MySqlCommand(
+    "SELECT id, email FROM users WHERE active = @active", conn);
+cmd.Parameters.AddWithValue("@active", true);
+
+await using var reader = await cmd.ExecuteReaderAsync();
+while (await reader.ReadAsync())
+{
+    Console.WriteLine($"{reader.GetInt32(0)}: {reader.GetString(1)}");
+}
+```
+
+Use the async methods in server code. The synchronous calls block a thread for the network round trip; with MySql.Data specifically, the async methods historically degrade to sync-over-async, which is another reason to prefer MySqlConnector when you actually need non-blocking I/O.
+
+## Parameters and the generated key
+
+Bind values; never concatenate them into the SQL.
+
+```csharp
+await using var cmd = new MySqlCommand(
+    "INSERT INTO users (email, age) VALUES (@email, @age)", conn);
+cmd.Parameters.AddWithValue("@email", "a@example.com");
+cmd.Parameters.AddWithValue("@age", 30);
+await cmd.ExecuteNonQueryAsync();
+
+long newId = cmd.LastInsertedId;
+```
+
+Unlike PostgreSQL's `RETURNING`, MySQL gives you the auto-increment value through `LastInsertedId` after the insert, which maps to `LAST_INSERT_ID()`.
+
+## Character set: use utf8mb4
+
+MySQL's legacy `utf8` is a three-byte encoding that cannot store four-byte characters such as emoji or some CJK glyphs. Always use `utf8mb4`, both on the table and on the connection. MySqlConnector defaults to `utf8mb4`, so the main thing to get right is the column and table definitions:
+
+```sql
+CREATE TABLE users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255)
+) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+## Connection pooling
+
+Pooling is on by default. The pool size is controlled in the connection string:
+
+```
+Server=localhost;User ID=root;Password=secret;Database=appdb;Maximum Pool Size=100;Minimum Pool Size=0
+```
+
+`Maximum Pool Size` defaults to 100. As with any database, the constraint is total connections across all application instances versus MySQL's `max_connections` (default 151). If several instances each open a full pool you will exceed the server limit. Size the pool so `instances x max pool` stays under `max_connections` with headroom.
+
+A connection-string convenience worth knowing in MySqlConnector: `ConnectionReset` controls whether each pooled connection is reset on reuse. The defaults are safe; only change them if you have profiled a specific reason.
+
+## Dapper
+
+Dapper layers object mapping on top of either MySQL driver.
+
+```csharp
+using Dapper;
+
+public record User(int Id, string Email, int Age);
+
+await using var conn = new MySqlConnection(connString);
+
+var users = await conn.QueryAsync<User>(
+    "SELECT id, email, age FROM users WHERE age > @minAge",
+    new { minAge = 18 });
+```
+
+Dapper binds anonymous-object properties to `@named` parameters, so it is injection-safe and you keep full control of the SQL.
+
+## EF Core
+
+For MySQL with EF Core, the widely used provider is Pomelo (`Pomelo.EntityFrameworkCore.MySql`), which is built on MySqlConnector. Oracle also ships `MySql.EntityFrameworkCore` on top of MySql.Data.
+
+```bash
+dotnet add package Pomelo.EntityFrameworkCore.MySql
+```
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+protected override void OnConfiguring(DbContextOptionsBuilder options)
+    => options.UseMySql(connString, ServerVersion.AutoDetect(connString));
+```
+
+`ServerVersion.AutoDetect` opens a connection at startup to learn the server version, which Pomelo uses to enable version-specific SQL. In environments where you would rather not connect at configuration time, pass an explicit `ServerVersion.Create(...)` instead. Match the provider major version to your EF Core major version.
+
+## SSL
+
+MySqlConnector controls TLS through `SSL Mode`:
+
+```
+Server=db.example.com;User ID=app;Password=secret;Database=appdb;SSL Mode=VerifyFull
+```
+
+| SSL Mode | Behavior |
+|---|---|
+| `None` | No TLS. |
+| `Preferred` | TLS if available, else plaintext. The default. |
+| `Required` | Demand TLS, no certificate validation. |
+| `VerifyCA` | Require TLS and validate the certificate chain. |
+| `VerifyFull` | Validate chain and hostname. Use this over a network. |
+
+Managed MySQL (Amazon RDS, Azure Database for MySQL, PlanetScale) requires TLS. Use `VerifyFull` with the provider's CA root rather than `Required`, which skips validation.
+
+## Authentication: caching_sha2_password
+
+MySQL 8.0 and later default to the `caching_sha2_password` authentication plugin. MySqlConnector supports it. Two things commonly trip people up:
+
+- Over a non-TLS connection, `caching_sha2_password` needs the server's RSA public key to send the password securely on first authentication. Either connect over TLS (recommended) or allow public-key retrieval.
+- MySQL 9 removed the older `mysql_native_password` plugin entirely. Code or accounts that depended on it will fail to authenticate until the user is migrated to `caching_sha2_password`.
+
+## Time zones
+
+A frequent source of wrong timestamps: store and reason in UTC. MySqlConnector returns `DATETIME` values without a zone, so decide on a convention and apply it consistently. If you use the connection-string time-zone handling, set it explicitly rather than relying on the server's session zone, which may differ between environments.
+
+## Errors you will actually hit
+
+| Error | Cause | Fix |
+|---|---|---|
+| `Access denied for user 'x'@'host'` | Wrong credentials or the account is not allowed from your host | Check user/password and the account's host pattern (`'app'@'%'` vs `'app'@'localhost'`) |
+| `Unknown database 'x'` | Database missing or typo in `Database=` | Create it or fix the name |
+| `Unable to connect to any of the specified MySQL hosts` | Server down, wrong host/port, firewall | Check `Server`/`Port`, that MySQL is listening, and firewall rules |
+| `Authentication method 'caching_sha2_password' ... requires SSL` | Non-TLS connection on MySQL 8+ default auth | Connect over TLS or enable public-key retrieval |
+| `Too many connections` | Pool max x instances exceeds `max_connections` | Lower `Maximum Pool Size` or raise the server limit |
+| `Incorrect string value` | Inserting four-byte characters into a legacy `utf8` column | Convert the column and connection to `utf8mb4` |
+
+## Where Mako fits
+
+Mako connects to MySQL with AI-assisted SQL autocomplete, useful for exploring tables before you wire up MySqlConnector, Dapper, or EF Core in your application. It is a read and query tool, not a connection library: your app code still uses a driver. Try it free at mako.ai.
