@@ -1,0 +1,186 @@
+---
+title: "ClickHouse Aggregate Functions: Combinators, uniq, quantile, and groupArray"
+description: "How to use ClickHouse aggregate functions, including the -If/-Array/-State/-Merge combinators, approximate counting with uniq, quantiles, and groupArray for analytical queries."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "aggregate-functions", "group-by", "analytics", "olap"]
+date: "2026-06-04"
+---
+
+# ClickHouse Aggregate Functions
+
+Aggregate functions collapse many rows into a single value per group. ClickHouse has the standard set (`count`, `sum`, `avg`, `min`, `max`) plus a large library of analytical aggregates and a combinator system that is unique among SQL databases. The combinators are what make ClickHouse aggregation expressive, so most of this guide is about them.
+
+## Sample Schema
+
+```sql
+CREATE TABLE events
+(
+    user_id     UInt32,
+    event_type  String,
+    country     String,
+    revenue     Decimal(10, 2),
+    ts          DateTime
+)
+ENGINE = MergeTree
+ORDER BY (country, ts);
+```
+
+## Standard Aggregates and GROUP BY
+
+```sql
+SELECT
+    country,
+    count()        AS event_count,
+    sum(revenue)   AS total_revenue,
+    avg(revenue)   AS avg_revenue,
+    max(ts)        AS last_event
+FROM events
+GROUP BY country
+HAVING event_count > 100
+ORDER BY total_revenue DESC;
+```
+
+`count()` (no argument) counts rows. `count(column)` counts non-NULL values of that column, the same as standard SQL. `HAVING` filters on the aggregated result; `WHERE` filters rows before aggregation. Put a predicate in `WHERE` whenever you can, because it runs first and processes less data.
+
+## The Combinator System
+
+A combinator is a suffix on an aggregate function name that changes how it behaves. You can stack them. This is the feature that separates ClickHouse aggregation from other engines, so it is worth learning well.
+
+### -If: Conditional Aggregation Without CASE
+
+The `-If` suffix adds a condition argument. The function only processes rows where the condition is true:
+
+```sql
+SELECT
+    country,
+    countIf(event_type = 'purchase')           AS purchases,
+    sumIf(revenue, event_type = 'purchase')     AS purchase_revenue,
+    avgIf(revenue, revenue > 0)                 AS avg_nonzero_revenue
+FROM events
+GROUP BY country;
+```
+
+This replaces the `sum(CASE WHEN ... THEN ... END)` pattern from standard SQL. It is shorter and the intent is clearer. You can compute many conditional metrics in a single pass over the data, which is exactly what you want for dashboards.
+
+### -Array: Aggregating Array Elements
+
+The `-Array` suffix applies the aggregate to each element of array-typed columns:
+
+```sql
+SELECT sumArray(scores) AS total_all_scores
+FROM (SELECT [10, 20, 30] AS scores);
+```
+
+This treats the array elements as if they were individual rows fed into `sum`.
+
+### -State and -Merge: Partial Aggregation
+
+This pair powers materialized views and incremental aggregation, and it is the reason ClickHouse can pre-aggregate at insert time.
+
+- A `-State` combinator returns an intermediate aggregation state instead of the final value. The state is a binary blob that can be stored.
+- A `-Merge` combinator takes those states and combines them into the final result.
+
+```sql
+-- Store intermediate states, typically in an AggregatingMergeTree table
+SELECT
+    country,
+    uniqState(user_id)   AS unique_users_state,
+    sumState(revenue)    AS revenue_state
+FROM events
+GROUP BY country;
+
+-- Later, merge the stored states into final answers
+SELECT
+    country,
+    uniqMerge(unique_users_state)  AS unique_users,
+    sumMerge(revenue_state)        AS total_revenue
+FROM aggregated_by_country
+GROUP BY country;
+```
+
+The point: you aggregate once at write time into states, then cheaply merge them at read time. A daily-rollup table built this way answers "unique users last month" by merging 30 daily states rather than rescanning raw events.
+
+## Approximate Counting: uniq and Friends
+
+Counting distinct values exactly is memory-intensive at scale. ClickHouse offers a family of distinct-count functions with different accuracy/cost tradeoffs:
+
+- `uniqExact(x)` is exact, like `count(DISTINCT x)`, and uses the most memory.
+- `uniq(x)` is approximate using an adaptive algorithm. It is the recommended default for large data, with a typical error around 0.5 to 2 percent.
+- `uniqHLL12(x)` uses HyperLogLog with fixed memory, useful when you need predictable memory bounds.
+- `uniqCombined(x)` balances accuracy and memory and is often a good middle choice.
+
+```sql
+SELECT
+    country,
+    uniq(user_id)       AS approx_unique_users,
+    uniqExact(user_id)  AS exact_unique_users
+FROM events
+GROUP BY country;
+```
+
+Use `uniq` unless you specifically need an exact count. On billions of rows the memory and speed difference is large, and a 1 percent error rarely changes a decision.
+
+## Quantiles and Percentiles
+
+```sql
+SELECT
+    country,
+    quantile(0.5)(revenue)   AS median_revenue,
+    quantile(0.95)(revenue)  AS p95_revenue,
+    quantiles(0.5, 0.9, 0.99)(revenue) AS p50_p90_p99
+FROM events
+GROUP BY country;
+```
+
+Note the two-part call syntax: `quantile(level)(column)`. The level is a parameter; the column is the argument. `quantile` is approximate. For an exact result use `quantileExact`, and for time-series latency data `quantileTiming` is optimized. `quantiles(...)` computes several levels in one pass, which is more efficient than several separate `quantile` calls.
+
+## groupArray and groupUniqArray
+
+`groupArray` collects values from a group into an array, which is ClickHouse's equivalent of PostgreSQL's `array_agg` or MySQL's `GROUP_CONCAT`:
+
+```sql
+SELECT
+    user_id,
+    groupArray(event_type)        AS event_sequence,
+    groupUniqArray(country)       AS countries_seen,
+    groupArray(10)(event_type)    AS first_10_events
+FROM events
+GROUP BY user_id;
+```
+
+`groupArray(N)(x)` caps the array at N elements, which protects you from a single huge group blowing up memory. `groupUniqArray` deduplicates. These are the building blocks for funnel and sessionization queries.
+
+## argMin and argMax
+
+These return the value of one column at the row where another column is minimal or maximal, in a single pass:
+
+```sql
+SELECT
+    country,
+    argMax(event_type, ts) AS most_recent_event,
+    argMin(event_type, ts) AS first_event
+FROM events
+GROUP BY country;
+```
+
+This avoids the subquery-and-join dance you would need in standard SQL to answer "what was the event type of the latest row per country".
+
+## Common Mistakes
+
+- **`count(DISTINCT x)` on huge tables.** Prefer `uniq(x)` unless you truly need an exact count.
+- **Wrong quantile syntax.** It is `quantile(0.95)(column)`, two sets of parentheses, not `quantile(column, 0.95)`.
+- **Filtering with `HAVING` when `WHERE` would do.** `WHERE` runs before aggregation and scans less data.
+- **Confusing `-State` output for a value.** A `-State` result is an intermediate blob and only becomes a number after a matching `-Merge`.
+
+When you are exploring an unfamiliar dataset, Mako's AI autocomplete can suggest the right combinator or quantile syntax as you type, which is helpful given how many aggregate variants ClickHouse exposes.
+
+## Related Guides
+
+- [ClickHouse Window Functions](/guides/clickhouse/window-functions) for per-row analytics that don't collapse groups.
+- [Import CSV to ClickHouse](/guides/import-csv-to-clickhouse) to load data for testing these queries.
+- [ClickHouse vs BigQuery](/guides/clickhouse-vs-bigquery) for choosing an analytical warehouse.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

@@ -1,0 +1,128 @@
+---
+title: "ClickHouse Table Functions: Querying External Data Without Importing"
+description: "How ClickHouse table functions let you SELECT from and INSERT into S3, files, URLs, remote ClickHouse, PostgreSQL, and MySQL without loading data first. Covers s3, file, url, remote, postgresql, mysql, schema inference, glob patterns, and when to promote a table function into a permanent table engine."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "table-functions", "s3", "federated-queries", "data-import", "olap"]
+date: "2026-06-08"
+---
+
+# ClickHouse Table Functions
+
+A table function is a method for constructing a table on the fly inside a query. Instead of declaring a table with `CREATE TABLE` and loading data into it, you call a function in the `FROM` clause and ClickHouse treats the result as a readable (and sometimes writable) table for the duration of that query. This is how you query a Parquet file in S3, a CSV on disk, a PostgreSQL table, or another ClickHouse server without importing anything first.
+
+Table functions are the lighter half of a pair: most of them have a matching *table engine* (the `S3` engine, the `PostgreSQL` engine) that creates a persistent table backed by the same source. The function is for one-off and ad-hoc queries; the engine is for a connection you query repeatedly. This guide covers the common functions and when to graduate from one to the other.
+
+## Querying Files in Object Storage: s3
+
+The `s3` function reads and writes files in S3-compatible storage. ClickHouse infers the schema from the file format, so you often do not declare columns at all:
+
+```sql
+SELECT count()
+FROM s3(
+    'https://bucket.s3.amazonaws.com/data/events_2026.parquet',
+    'Parquet'
+);
+```
+
+A glob pattern reads many files as a single table, which is how you scan a partitioned data lake:
+
+```sql
+SELECT toStartOfMonth(event_time) AS month, count()
+FROM s3('https://bucket.s3.amazonaws.com/events/2026/*.parquet', 'Parquet')
+GROUP BY month
+ORDER BY month;
+```
+
+For private buckets, pass credentials as additional arguments (`s3(url, access_key_id, secret_access_key, format)`), though storing them in a named collection on the server is cleaner than inlining keys into every query. The same function also writes, which makes it an export path:
+
+```sql
+INSERT INTO FUNCTION s3('https://bucket.s3.amazonaws.com/export/out.parquet', 'Parquet')
+SELECT * FROM events WHERE event_date = today();
+```
+
+ClickHouse also ships `gcs` for Google Cloud Storage and `azureBlobStorage` for Azure, with the same shape as `s3`.
+
+## Local Files: file
+
+`file` does for the server's local filesystem what `s3` does for object storage. Paths are relative to the server's `user_files` directory unless configured otherwise:
+
+```sql
+SELECT * FROM file('logs/access.csv', 'CSVWithNames')
+LIMIT 10;
+```
+
+Schema inference works the same way, and glob patterns (`file('logs/*.csv', 'CSVWithNames')`) read directories. This is useful for loading data that has been staged on the same host, but note the path is on the *server*, not your client machine.
+
+## Remote Endpoints: url
+
+`url` reads from any HTTP(S) endpoint that returns data in a supported format:
+
+```sql
+SELECT *
+FROM url('https://example.com/data/sample.jsoneachrow', 'JSONEachRow')
+LIMIT 100;
+```
+
+It pairs well with quick exploration of published datasets and APIs that emit newline-delimited JSON or CSV. There is no caching: every query refetches the resource, so it is for ad-hoc reads, not a hot query path.
+
+## Other ClickHouse Servers: remote and remoteSecure
+
+`remote` runs a query against another ClickHouse instance and streams the result back, without setting up a Distributed table:
+
+```sql
+SELECT count()
+FROM remote('other-host:9000', 'analytics', 'events', 'default', 'password');
+```
+
+Use `remoteSecure` for TLS connections. It is handy for one-off cross-cluster checks and data copies (`INSERT INTO local SELECT * FROM remote(...)`), but for routine distributed reads a `Distributed` table or `clusterAllReplicas` is the better-engineered path.
+
+## Relational Sources: postgresql and mysql
+
+ClickHouse can query a live PostgreSQL or MySQL table directly. The argument order is the connection string, database, table, user, and password:
+
+```sql
+SELECT *
+FROM postgresql('pg-host:5432', 'app_db', 'customers', 'readonly_user', 'password')
+WHERE created_at >= '2026-01-01';
+```
+
+```sql
+SELECT *
+FROM mysql('mysql-host:3306', 'shop', 'orders', 'reader', 'password')
+LIMIT 1000;
+```
+
+ClickHouse pushes down what filters it can to the source database, but a query here hits the live OLTP server, so a heavy scan competes with that database's production traffic. For repeated access, prefer the `PostgreSQL` / `MySQL` table engine (a persistent table bound to the remote table) or, for PostgreSQL, the `MaterializedPostgreSQL` database engine, which replicates changes into ClickHouse so reads no longer touch the source. There is also the `INSERT INTO FUNCTION` form for writing back, where you must use the `FUNCTION` keyword so ClickHouse does not read the arguments as a column list.
+
+## Schema Inference and Its Limits
+
+For file-based functions (`s3`, `file`, `url`), ClickHouse samples the source and guesses column types. This is convenient for exploration but worth overriding for production loads: inference can pick a wider type than you need, or read everything as `Nullable`. You can supply an explicit structure as an argument, or inspect what ClickHouse guessed first:
+
+```sql
+DESCRIBE TABLE s3('https://bucket.s3.amazonaws.com/data/events.parquet', 'Parquet');
+```
+
+Self-describing formats like Parquet and ORC carry their own schema and infer reliably. CSV and TSV are guessed from a sample and are the most likely to need an explicit structure for stable, repeatable loads.
+
+## Function or Engine?
+
+The decision is about how often you touch the source:
+
+- **One-off query, ad-hoc export, exploring a new file**: use the table function. Nothing to declare, nothing to clean up.
+- **Repeated reads of the same external source**: create the matching table engine (`S3`, `PostgreSQL`, `MySQL`) so the connection details live in one place and queries stay short.
+- **You want the data to stop living elsewhere**: do a one-time `INSERT INTO local_table SELECT * FROM s3(...)` (or `postgresql(...)`) to land it in a MergeTree table, where ClickHouse's storage and indexing actually apply. A table function does not give you primary-key pruning or skip indexes; it reads the external source as-is.
+
+That last point is the common trap: querying a PostgreSQL table through the `postgresql` function repeatedly does not make it fast, because every query goes back to PostgreSQL. The speed comes from importing into a MergeTree table, at which point the table function was just the import mechanism.
+
+When you are exploring an external file or a remote table and want to draft the `DESCRIBE` and schema-inference queries quickly, Mako's AI autocomplete can help you shape them before you commit to a permanent table.
+
+## Related Guides
+
+- [Import CSV to ClickHouse](/guides/import-csv-to-clickhouse) for landing CSV data into a MergeTree table once you have explored it with `file` or `s3`.
+- [ClickHouse MergeTree Table Engines](/guides/clickhouse/mergetree-engines) for the storage layer you import into when a table function is too slow to query repeatedly.
+- [ClickHouse Dictionaries](/guides/clickhouse/dictionaries) for an alternative way to pull reference data from PostgreSQL or MySQL into fast in-memory lookups.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).
