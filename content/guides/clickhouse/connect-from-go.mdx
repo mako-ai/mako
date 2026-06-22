@@ -1,0 +1,247 @@
+---
+title: "How to Connect to ClickHouse from Go"
+description: "Connect to ClickHouse from Go with the official clickhouse-go driver. Working code for the native vs database/sql interface, the 9000 vs 9440 vs 8123 port question, connection pooling, batch inserts, and TLS."
+database: "clickhouse"
+category: "how-to"
+tags: ["clickhouse", "go", "golang", "clickhouse-go", "connection"]
+date: "2026-06-16"
+---
+
+ClickHouse has one official Go driver, and it gives you two faces: a native ClickHouse interface (`clickhouse.Open`) and a standard `database/sql` interface (`clickhouse.OpenDB`). The native interface is faster and exposes ClickHouse-specific features like typed batch inserts; the `database/sql` face trades some speed for compatibility with ORMs, query builders, and migration tools. This guide shows both, explains which transport port you actually want, and covers the configuration that matters for an OLAP workload: batching, pooling, and TLS.
+
+## The options
+
+| Package | Import path | Interface | Transport | Version (as of June 2026) |
+|---|---|---|---|---|
+| clickhouse-go (native) | `github.com/ClickHouse/clickhouse-go/v2` | ClickHouse-specific API | native TCP (9000/9440) or HTTP (8123/8443) | v2.46.0 |
+| clickhouse-go (stdlib) | `github.com/ClickHouse/clickhouse-go/v2` via `OpenDB` | `database/sql` | native or HTTP | v2.46.0 |
+| ch-go | `github.com/ClickHouse/ch-go` | low-level columnar API | native TCP | v0.72.0 |
+
+The decision tree:
+
+- **Most applications:** clickhouse-go v2 with the native interface (`clickhouse.Open`). You get batch inserts, typed scanning, and the binary protocol. This is the default recommendation.
+- **You need `database/sql`** (an ORM, `sqlx`, a migration runner): use `clickhouse.OpenDB`. Same driver, standard interface, slightly slower because it goes through `database/sql`'s row-by-row plumbing.
+- **You need maximum insert throughput and are willing to work at the column level:** `ch-go` is the low-level driver that clickhouse-go is built on. It speaks columns, not rows, and is the right tool for high-volume ingestion pipelines. Most teams do not need it.
+
+clickhouse-go v2 is a full rewrite of v1; v1 is no longer recommended for new code. Make sure your import path ends in `/v2`.
+
+## The port question
+
+This trips up nearly everyone the first time. ClickHouse exposes several ports, and the driver behaves differently depending on which protocol you point it at:
+
+| Port | Protocol | TLS | Notes |
+|---|---|---|---|
+| 9000 | native TCP | no | default for self-hosted, fastest |
+| 9440 | native TCP | yes | TLS native, common in production |
+| 8123 | HTTP | no | useful behind HTTP proxies/load balancers |
+| 8443 | HTTPS | yes | ClickHouse Cloud uses this |
+
+If you set up the native interface but point it at 8123, the connection fails with a protocol mismatch. ClickHouse Cloud listens on 9440 (native+TLS) and 8443 (HTTPS); pick the matching `Protocol` in the driver options. Set the protocol explicitly with `Protocol: clickhouse.Native` or `clickhouse.HTTP` so there is no ambiguity.
+
+## Native interface (recommended)
+
+```bash
+go get github.com/ClickHouse/clickhouse-go/v2
+```
+
+`clickhouse.Open` returns a connection object that manages its own pool internally. It is safe for concurrent use by multiple goroutines, so open it once at startup and share it.
+
+```go
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+)
+
+func main() {
+	ctx := context.Background()
+
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{"localhost:9000"},
+		Auth: clickhouse.Auth{
+			Database: "default",
+			Username: "default",
+			Password: "",
+		},
+		Protocol: clickhouse.Native,
+		Settings: clickhouse.Settings{
+			"max_execution_time": 60,
+		},
+		DialTimeout:     10 * time.Second,
+		MaxOpenConns:    10,
+		MaxIdleConns:    5,
+		ConnMaxLifetime: time.Hour,
+	})
+	if err != nil {
+		log.Fatalf("open: %v", err)
+	}
+	defer conn.Close()
+
+	// Open is lazy. Force a real round trip at startup so misconfiguration
+	// surfaces here rather than on the first query under load.
+	if err := conn.Ping(ctx); err != nil {
+		log.Fatalf("ping: %v", err)
+	}
+
+	rows, err := conn.Query(ctx,
+		"SELECT id, name FROM events WHERE region = ? LIMIT 10",
+		"EMEA",
+	)
+	if err != nil {
+		log.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			id   uint64
+			name string
+		)
+		if err := rows.Scan(&id, &name); err != nil {
+			log.Fatalf("scan: %v", err)
+		}
+		fmt.Printf("%d: %s\n", id, name)
+	}
+	if err := rows.Err(); err != nil {
+		log.Fatalf("rows: %v", err)
+	}
+
+	_ = tls.Config{} // see TLS section below
+}
+```
+
+Two traps in that loop that the Go compiler will not catch:
+
+- `defer rows.Close()` is not optional. Leaking result sets eventually starves the pool.
+- `rows.Err()` after the loop catches errors that happen *during* iteration, such as a server-side timeout. `rows.Next()` returning `false` does not distinguish "done" from "failed."
+
+The native interface uses `?` placeholders for parameters. Values are sent typed over the binary protocol, so you do not build SQL strings by hand.
+
+## Batch inserts
+
+ClickHouse is built for large, infrequent inserts, not row-at-a-time writes. Sending one `INSERT` per row creates a flood of small parts and triggers the "Too many parts" error as the server struggles to merge them. The native driver's batch API is the correct pattern:
+
+```go
+batch, err := conn.PrepareBatch(ctx, "INSERT INTO events (id, name, region)")
+if err != nil {
+	log.Fatalf("prepare batch: %v", err)
+}
+
+for _, e := range incoming {
+	if err := batch.Append(e.ID, e.Name, e.Region); err != nil {
+		log.Fatalf("append: %v", err)
+	}
+}
+
+if err := batch.Send(); err != nil {
+	log.Fatalf("send: %v", err)
+}
+```
+
+Accumulate thousands to tens of thousands of rows per batch. If your rows trickle in continuously, either buffer them in your application and flush periodically, or enable server-side `async_insert` (set it in `Settings` and turn on `wait_for_async_insert` if you need confirmation that the write landed).
+
+## database/sql interface
+
+When a library demands the standard interface, use `clickhouse.OpenDB`. It takes the same `Options` struct, so all the configuration above carries over.
+
+```go
+package main
+
+import (
+	"context"
+	"database/sql"
+	"log"
+	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+)
+
+func main() {
+	db := clickhouse.OpenDB(&clickhouse.Options{
+		Addr: []string{"localhost:9000"},
+		Auth: clickhouse.Auth{Database: "default", Username: "default"},
+		Protocol: clickhouse.Native,
+	})
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Hour)
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatalf("ping: %v", err)
+	}
+
+	var count uint64
+	err := db.QueryRowContext(ctx,
+		"SELECT count() FROM events WHERE region = ?", "EMEA").Scan(&count)
+	if err != nil {
+		log.Fatalf("query: %v", err)
+	}
+	log.Printf("count = %d", count)
+}
+```
+
+With `database/sql` you set pool sizes through the standard `db.SetMaxOpenConns` / `SetMaxIdleConns` / `SetConnMaxLifetime` methods rather than the `Options` fields. Batch inserts still work but go through the standard prepared-statement path inside a transaction, which is slower than the native `PrepareBatch`. If insert performance matters, that alone is a reason to prefer the native interface.
+
+## Context timeouts
+
+Every query method takes a `context.Context`. Use it. OLAP queries can scan billions of rows, and a context deadline is how you bound that:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+rows, err := conn.Query(ctx, "SELECT ... ")
+```
+
+When the context expires, the driver cancels the query on the server side as well, so a runaway aggregation does not keep burning CPU after your client has given up. This is more reliable than the `max_execution_time` setting alone, though setting both is reasonable.
+
+## TLS
+
+For an encrypted native connection (port 9440) or ClickHouse Cloud (8443), pass a `tls.Config`:
+
+```go
+conn, err := clickhouse.Open(&clickhouse.Options{
+	Addr:     []string{"your-instance.clickhouse.cloud:9440"},
+	Protocol: clickhouse.Native,
+	Auth: clickhouse.Auth{
+		Database: "default",
+		Username: "default",
+		Password: "your-password",
+	},
+	TLS: &tls.Config{},
+})
+```
+
+An empty `&tls.Config{}` enables TLS and verifies the server certificate against the system root CAs, which is what you want for ClickHouse Cloud and any properly provisioned server. Do not reach for `InsecureSkipVerify: true` to make a connection work; that disables certificate verification and defeats the point of TLS. If you hit a verification error against a self-hosted server, add its CA to `RootCAs` instead.
+
+## Common errors
+
+| Error | Cause | Fix |
+|---|---|---|
+| `unexpected packet` / protocol mismatch | native interface pointed at HTTP port (8123) or vice versa | match `Protocol` to the port |
+| `Too many parts` | too many small inserts | batch rows, or use `async_insert` |
+| `code: 516, Authentication failed` | wrong user/password or database | check `Auth` fields |
+| `dial tcp ... connection refused` | server not listening on that port, or firewall | confirm the port; Cloud needs IP allowlisting |
+| `x509: certificate signed by unknown authority` | self-hosted CA not in system roots | add the CA to `tls.Config.RootCAs` |
+| context deadline exceeded | query slower than the deadline | raise the timeout or optimize the query |
+
+## Related guides
+
+- [Importing CSV data into ClickHouse](/guides/import-csv-to-clickhouse)
+- [The best ClickHouse GUI clients](/guides/clickhouse-gui-client)
+- [Connecting to ClickHouse from Python](/guides/clickhouse/connect-from-python)
+- [Connecting to ClickHouse from Node.js](/guides/clickhouse/connect-from-node)
+
+---
+
+Mako connects to ClickHouse, PostgreSQL, MySQL, and more, with AI-powered autocomplete for exploring your tables. Try it free at mako.ai.

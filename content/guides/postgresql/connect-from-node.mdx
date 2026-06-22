@@ -1,0 +1,177 @@
+---
+title: "How to Connect to PostgreSQL from Node.js"
+description: "Connect to PostgreSQL from Node.js with node-postgres (pg) or Postgres.js. Working code for pools and queries, the SSL self-signed certificate trap, parameterized queries, and which client to pick."
+database: "postgresql"
+category: "how-to"
+tags: ["postgresql", "nodejs", "node-postgres", "pg", "postgres-js", "connection"]
+date: "2026-06-12"
+---
+
+Node has two serious PostgreSQL clients: node-postgres (`pg`), the long-standing default that nearly every ORM builds on, and Postgres.js (`postgres`), a newer client built around tagged template literals and automatic pipelining. Both are production-grade. This guide shows working code for each, the configuration that actually matters (pooling, SSL), and the errors you'll hit first.
+
+## The options
+
+| Client | Package | API style | Pooling | Version (as of June 2026) |
+|---|---|---|---|---|
+| node-postgres | `pg` | Callback/Promise, `$1` placeholders | Separate `Pool` class | 8.21.0 |
+| Postgres.js | `postgres` | Tagged template literals | Built-in, always on | 3.4.9 |
+| pg-promise | `pg-promise` | Promise layer over pg | Via pg | 12.6.2 |
+
+Rules of thumb:
+
+- **Default choice, or you're using an ORM/query builder** (Prisma, Drizzle, Knex, TypeORM, Sequelize -- all use or support `pg` underneath): node-postgres. Largest ecosystem, most documentation.
+- **Hand-written SQL and you want the most ergonomic API:** Postgres.js. Tagged templates make parameterization automatic, and it benchmarks faster than `pg` thanks to pipelining and prepared statements.
+- **pg-promise** is a mature Promise/task layer on top of `pg` -- worth knowing it exists, but with modern async/await on plain `pg`, fewer new projects need it.
+
+Neither client requires libpq or any native compilation; both are pure JavaScript. (`pg-native` exists for libpq bindings but the maintainers don't recommend it for most apps -- the performance difference is small and it complicates deployment.)
+
+## node-postgres (pg)
+
+```bash
+npm install pg
+```
+
+### Use a Pool, not a Client
+
+A `Client` is one connection. A `Pool` manages many and hands them out per query. For anything serving concurrent requests (i.e., any web app), use the pool:
+
+```js
+import pg from "pg";
+const { Pool } = pg;
+
+const pool = new Pool({
+  host: "db.example.com",
+  port: 5432,
+  database: "sales",
+  user: "app_user",
+  password: "secret",
+  max: 10,                      // default: 10 connections
+  idleTimeoutMillis: 10000,     // default: idle clients dropped after 10s
+});
+
+const { rows } = await pool.query(
+  "SELECT id, name FROM customers WHERE region = $1",
+  ["EMEA"]
+);
+console.log(rows);
+```
+
+Placeholders are `$1`, `$2`, ... -- never interpolate values into the SQL string. A connection string works too:
+
+```js
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+```
+
+### Transactions need a dedicated client
+
+`pool.query()` may run each statement on a *different* connection, which silently breaks transactions. Check out a client explicitly:
+
+```js
+const client = await pool.connect();
+try {
+  await client.query("BEGIN");
+  await client.query("UPDATE accounts SET balance = balance - $1 WHERE id = $2", [100, 1]);
+  await client.query("UPDATE accounts SET balance = balance + $1 WHERE id = $2", [100, 2]);
+  await client.query("COMMIT");
+} catch (e) {
+  await client.query("ROLLBACK");
+  throw e;
+} finally {
+  client.release();   // forget this and the pool leaks a connection
+}
+```
+
+The `finally { client.release() }` is the part people forget. Leak enough clients and the pool deadlocks waiting for a free connection.
+
+### The pool error handler
+
+Idle pooled connections can be terminated by the server (restarts, failovers, load balancer timeouts). Without an error listener, that crashes the whole Node process:
+
+```js
+pool.on("error", (err) => {
+  console.error("Unexpected error on idle client", err);
+});
+```
+
+Add this to every pool. It is the single most common cause of "my Node app crashes randomly at night."
+
+## Postgres.js
+
+```bash
+npm install postgres
+```
+
+```js
+import postgres from "postgres";
+
+const sql = postgres("postgres://app_user:secret@db.example.com:5432/sales");
+
+const customers = await sql`
+  SELECT id, name FROM customers WHERE region = ${"EMEA"}
+`;
+console.log(customers);
+```
+
+The `sql` tagged template is the whole API. Every `${value}` becomes a query parameter automatically -- this is *not* string interpolation, and it is immune to SQL injection by construction. Pooling is built in (`max: 10` by default) and there is no separate Pool class to manage.
+
+Transactions are a callback:
+
+```js
+await sql.begin(async (sql) => {
+  await sql`UPDATE accounts SET balance = balance - 100 WHERE id = 1`;
+  await sql`UPDATE accounts SET balance = balance + 100 WHERE id = 2`;
+});  // commits on success, rolls back on throw
+```
+
+One trap: because the API looks like template strings, people try `sql("SELECT ...")` with a plain string -- that's not how it works. Dynamic identifiers (table/column names) go through `sql(name)` helpers, and partial queries compose with nested `sql` fragments.
+
+## The SSL trap
+
+Hosted PostgreSQL (RDS, Supabase, Neon, DigitalOcean, Heroku) requires TLS, and the first attempt usually fails with one of:
+
+```
+Error: self signed certificate in certificate chain
+Error: The server does not support SSL connections
+```
+
+With `pg`, the commonly pasted fix is:
+
+```js
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+```
+
+Understand what this does: it encrypts the connection but skips certificate verification, so it does not protect against man-in-the-middle attacks. The correct production setup verifies the provider's CA:
+
+```js
+import fs from "node:fs";
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { ca: fs.readFileSync("ca-certificate.crt").toString() },
+});
+```
+
+Every major provider documents where to download its CA bundle. With Postgres.js the equivalent options are `ssl: "require"` (no verification) and `ssl: { ca }`.
+
+If you're on a serverless platform connecting to a serverless Postgres provider, also look at the provider's own driver (e.g. `@neondatabase/serverless`, which speaks the pg API over WebSockets/HTTP) and use a pooled connection string -- classic TCP pools and short-lived functions don't mix well.
+
+## Common errors
+
+| Error | Likely cause |
+|---|---|
+| `ECONNREFUSED` | Wrong host/port, or PostgreSQL not listening on TCP (`listen_addresses`) |
+| `password authentication failed for user` | Wrong credentials, or wrong `pg_hba.conf` auth method |
+| `SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string` | Password is `undefined` -- usually a missing env var, or a number in config instead of a string |
+| `self signed certificate in certificate chain` | TLS verification against a provider CA (see SSL section) |
+| `Connection terminated unexpectedly` | Server restarted or idle connection killed -- add the pool `error` handler |
+| `sorry, too many clients already` | Pool `max` × process count exceeds the server's `max_connections` -- lower `max` or add PgBouncer |
+
+That last one matters at scale: each Node process gets its *own* pool, so 8 cluster workers × `max: 10` = 80 server connections. Size accordingly or put PgBouncer in front.
+
+## Querying without writing connection code
+
+If you want to explore a PostgreSQL database rather than build an application, a GUI client skips all of this. Mako connects to PostgreSQL with AI-assisted SQL -- see our [PostgreSQL GUI client guide](/guides/postgresql-gui-client) for how it compares to pgAdmin, DBeaver, and TablePlus. Connecting from Python instead? See [How to Connect to PostgreSQL from Python](/guides/postgresql/connect-from-python).
+
+Mako connects to PostgreSQL with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
