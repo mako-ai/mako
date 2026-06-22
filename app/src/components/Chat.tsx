@@ -136,6 +136,57 @@ interface ChatSessionMeta {
   activeStreamId?: string | null;
 }
 
+// Human-in-the-loop tools resolve via an interactive card (the user answers /
+// approves), not via an `execute` result. They legitimately stay pending at
+// `input-available` with no output until the user acts, so any "settle the
+// dangling tool" cleanup must skip them — otherwise the card is torn down
+// before it can be answered. Part types are `tool-<toolName>`.
+const HUMAN_IN_THE_LOOP_TOOL_PART_TYPES = new Set([
+  "tool-ask_clarifying_questions",
+  "tool-submit_plan",
+]);
+
+function isHumanInTheLoopToolPartType(partType: string): boolean {
+  return HUMAN_IN_THE_LOOP_TOOL_PART_TYPES.has(partType);
+}
+
+function toolNameFromPartType(partType: string): string {
+  return partType.startsWith("tool-")
+    ? partType.slice("tool-".length)
+    : partType;
+}
+
+// Diagnostics for the two *live* stream-disconnect signatures so they can be
+// investigated after the fact:
+//   - "orphan-rescue": a turn settled to `ready` while non-interactive tool
+//     cards were still pending (the silent SSE drop → 204 reconnect path).
+//   - "stream-error":  the SDK surfaced a thrown stream error (e.g. a 524).
+// Emits a structured console line for live debugging and a PostHog product
+// event so frequency / affected tools are queryable. Correlate with the
+// server's `mako.agent` logs (and the resume-endpoint 204 reasons) via chatId.
+type StreamInterruptionPath = "orphan-rescue" | "stream-error";
+
+function reportStreamInterruption(detail: {
+  path: StreamInterruptionPath;
+  chatId: string;
+  status: string;
+  toolNames: string[];
+  recoveredToolNames?: string[];
+  errorMessage?: string;
+}): void {
+  console.warn("[Chat][stream-interrupted]", detail);
+  trackEvent("ai_chat_stream_interrupted", {
+    interruption_path: detail.path,
+    chat_id: detail.chatId,
+    chat_status: detail.status,
+    tool_names: detail.toolNames.join(",") || "(none)",
+    tool_count: detail.toolNames.length,
+    recovered_tool_names: detail.recoveredToolNames?.join(",") || "(none)",
+    recovered_count: detail.recoveredToolNames?.length ?? 0,
+    error_message: detail.errorMessage,
+  });
+}
+
 // ── Per-tab chat session persistence ─────────────────────────────
 // sessionStorage scopes the active chat to the browser tab: a refresh
 // restores (and reattaches to) the same chat, while new tabs start blank.
@@ -2466,6 +2517,28 @@ const Chat: React.FC<ChatProps> = ({
     onError: err => {
       console.error("[Chat] Error:", err);
       cancelActiveClientToolCalls("stream-error");
+      const lastMessage = messagesRef.current.at(-1);
+      const stalledToolNames =
+        lastMessage?.role === "assistant"
+          ? (lastMessage.parts ?? [])
+              .filter(p => {
+                const pt = p.type as string;
+                if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") {
+                  return false;
+                }
+                if (isHumanInTheLoopToolPartType(pt)) return false;
+                const s = (p as Record<string, unknown>).state as string;
+                return s !== "output-available" && s !== "error";
+              })
+              .map(p => toolNameFromPartType(p.type as string))
+          : [];
+      reportStreamInterruption({
+        path: "stream-error",
+        chatId,
+        status,
+        toolNames: stalledToolNames,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
       // When the stream disconnects (e.g. 524 timeout), tool calls may be
       // stuck in "input-available" state. The AI SDK blocks sendMessage until
       // all tool calls are settled. Patch them to "error" so the chat remains
@@ -2476,6 +2549,7 @@ const Chat: React.FC<ChatProps> = ({
           const hasPending = msg.parts?.some(p => {
             const pt = p.type as string;
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+            if (isHumanInTheLoopToolPartType(pt)) return false;
             const s = (p as Record<string, unknown>).state as string;
             return s !== "output-available" && s !== "error";
           });
@@ -2485,6 +2559,7 @@ const Chat: React.FC<ChatProps> = ({
             parts: msg.parts.map(p => {
               const pt = p.type as string;
               if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+              if (isHumanInTheLoopToolPartType(pt)) return p;
               const s = (p as Record<string, unknown>).state as string;
               if (s === "output-available" || s === "error") return p;
               return {
@@ -2588,6 +2663,89 @@ const Chat: React.FC<ChatProps> = ({
       }
     },
     [addToolOutput],
+  );
+
+  // Self-heal a client tool call that the live stream delivered but never got
+  // to dispatch (the SSE dropped, the SDK reconnected to a 204, and `status`
+  // settled to "ready" with the tool frozen at "input-available"). Because a
+  // completed run would be "output-available", a tool stuck at "input-available"
+  // provably never executed — so we can safely re-dispatch it through the exact
+  // same executor `onToolCall` would have used. Its result settles via
+  // `addToolOutput`, and `sendAutomaticallyWhen` resumes the turn, recovering
+  // transparently instead of poisoning the card with "Interrupted".
+  //
+  // Returns true if it took ownership of the call (recovering), false if the
+  // tool is not a client-executable family we can safely re-run (those still
+  // get the terminal error patch).
+  const recoveredToolCallIdsRef = useRef<Set<string>>(new Set());
+  const recoverOrphanedClientToolCall = useCallback(
+    (
+      toolName: string,
+      toolCallId: string,
+      input: Record<string, unknown>,
+    ): boolean => {
+      const name = toolName as AgentToolName;
+      let run:
+        | ((ctx: {
+            executionId: string;
+            signal: AbortSignal;
+          }) => Promise<Record<string, unknown> | null | undefined>)
+        | null = null;
+      if (APP_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = ({ executionId, signal }) =>
+          executeAppAgentTool(toolName, input, { executionId, signal });
+      } else if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = ({ executionId, signal }) =>
+          executeDashboardAgentTool(toolName, input, { executionId, signal });
+      } else if (DBT_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = () => executeDbtAgentTool(toolName, input);
+      } else if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = () => executeDataSourceTool(toolName, input);
+      }
+      if (!run) return false;
+
+      // Already recovering this exact call (effect re-ran before it settled):
+      // keep ownership so it isn't poisoned, but don't dispatch twice.
+      if (recoveredToolCallIdsRef.current.has(toolCallId)) return true;
+      recoveredToolCallIdsRef.current.add(toolCallId);
+
+      const active = registerActiveClientToolCall(toolName, toolCallId);
+      void (async () => {
+        try {
+          const output = await run({
+            executionId: active.executionId,
+            signal: active.abortController.signal,
+          });
+          if (active.abortController.signal.aborted) return;
+          await settleActiveClientToolCall(
+            toolName,
+            toolCallId,
+            output ?? {
+              success: false,
+              error: `Recovered tool "${toolName}" did not return a result.`,
+            },
+          );
+        } catch (recoverError) {
+          if (
+            manualStopRequestedRef.current ||
+            active.abortController.signal.aborted
+          ) {
+            return;
+          }
+          await settleActiveClientToolCall(toolName, toolCallId, {
+            success: false,
+            error:
+              recoverError instanceof Error
+                ? recoverError.message
+                : "Recovered tool execution failed",
+          });
+        } finally {
+          recoveredToolCallIdsRef.current.delete(toolCallId);
+        }
+      })();
+      return true;
+    },
+    [registerActiveClientToolCall, settleActiveClientToolCall],
   );
 
   // Aborting mid-stream can leave assistant tool calls stuck in
@@ -2695,27 +2853,76 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     if (status !== "ready" || activeClientToolCallCount > 0) return;
     if (activeClientToolCallsRef.current.size > 0) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    // Human-in-the-loop tools (clarifying questions / plan review) are *meant*
+    // to sit at "input-available" with no output until the user answers via
+    // their docked card — that is not an orphan. Patching them here would tear
+    // the card down before it can be answered (it surfaces as "Interrupted —
+    // stream disconnected"). Leave them pending.
+    const pendingToolParts = (last.parts ?? []).filter(p => {
+      const pt = p.type as string;
+      if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+      if (isHumanInTheLoopToolPartType(pt)) return false;
+      const s = (p as Record<string, unknown>).state as string;
+      return s !== "output-available" && s !== "output-error" && s !== "error";
+    });
+    if (pendingToolParts.length === 0) return;
+
+    // Try to self-heal first: re-dispatch any client-executable tool stuck at
+    // "input-available". The IDs we recover keep their card alive (the
+    // re-dispatch registers an active client tool call) and must NOT be
+    // poisoned below.
+    const recoveredCallIds = new Set<string>();
+    const recoveredToolNames: string[] = [];
+    const orphanedToolNames: string[] = [];
+    for (const part of pendingToolParts) {
+      const record = part as Record<string, unknown>;
+      const pt = part.type as string;
+      const toolName =
+        pt === "dynamic-tool"
+          ? ((record.toolName as string) ?? "")
+          : toolNameFromPartType(pt);
+      const toolCallId = record.toolCallId as string | undefined;
+      const input = (record.input ?? {}) as Record<string, unknown>;
+      if (
+        record.state === "input-available" &&
+        toolCallId &&
+        recoverOrphanedClientToolCall(toolName, toolCallId, input)
+      ) {
+        recoveredCallIds.add(toolCallId);
+        recoveredToolNames.push(toolName);
+      } else {
+        orphanedToolNames.push(toolName);
+      }
+    }
+
+    reportStreamInterruption({
+      path: "orphan-rescue",
+      chatId,
+      status,
+      toolNames: orphanedToolNames,
+      recoveredToolNames,
+    });
+
+    // Nothing left to poison — everything is being recovered.
+    if (orphanedToolNames.length === 0) return;
     setMessages(prev => {
       const lastIndex = prev.length - 1;
-      const last = prev[lastIndex];
-      if (!last || last.role !== "assistant") return prev;
-      const hasPending = last.parts?.some(p => {
-        const pt = p.type as string;
-        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
-        const s = (p as Record<string, unknown>).state as string;
-        return (
-          s !== "output-available" && s !== "output-error" && s !== "error"
-        );
-      });
-      if (!hasPending) return prev;
+      const lastMsg = prev[lastIndex];
+      if (!lastMsg || lastMsg.role !== "assistant") return prev;
       return prev.map((msg, i) => {
         if (i !== lastIndex) return msg;
         return {
           ...msg,
           parts: msg.parts.map(p => {
+            const record = p as Record<string, unknown>;
             const pt = p.type as string;
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
-            const s = (p as Record<string, unknown>).state as string;
+            if (isHumanInTheLoopToolPartType(pt)) return p;
+            // Leave parts we just handed to recovery untouched.
+            if (recoveredCallIds.has(record.toolCallId as string)) return p;
+            const s = record.state as string;
             if (
               s === "output-available" ||
               s === "output-error" ||
@@ -2736,7 +2943,14 @@ const Chat: React.FC<ChatProps> = ({
         };
       });
     });
-  }, [status, activeClientToolCallCount, setMessages]);
+  }, [
+    status,
+    activeClientToolCallCount,
+    messages,
+    chatId,
+    recoverOrphanedClientToolCall,
+    setMessages,
+  ]);
 
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
@@ -2919,6 +3133,22 @@ const Chat: React.FC<ChatProps> = ({
                         toolState === "output-error" ||
                         toolState === "output-denied";
                       if (isComplete) {
+                        return {
+                          ...p,
+                          input: p.input ?? {},
+                        };
+                      }
+                      // A persisted, unanswered human-in-the-loop tool
+                      // (clarifying questions / plan review) is not an
+                      // interrupted tool: re-render its interactive card so the
+                      // user can still answer it. Answering sends the tool
+                      // result, which continues the turn from persisted
+                      // history. Keep it pending instead of marking it errored.
+                      if (
+                        typeof p.type === "string" &&
+                        isHumanInTheLoopToolPartType(p.type) &&
+                        toolState === "input-available"
+                      ) {
                         return {
                           ...p,
                           input: p.input ?? {},
