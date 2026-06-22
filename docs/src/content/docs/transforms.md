@@ -36,6 +36,24 @@ tests/                 # singular SQL tests
 
 Files are versioned per path (unique `{projectId, path}`), and deletes are soft (`is_deleted`) so history is preserved.
 
+## GitHub integration
+
+Projects can be **imported from GitHub** and kept in sync, via Mako's multi-tenant GitHub App (shipped in the dbt Cloud parity work, #532).
+
+- **Install flow** is HMAC-state protected — the signed `state` pins the initiating workspace + user, and binding an installation requires that same user with **admin** access (prevents install IDOR/CSRF).
+- **Browse & import** — list repos, check a repo's dbt layout, and import a project.
+- **Continuous branch sync** — pushes to the tracked branch flow back into the in-app project.
+- **Slim CI on PRs** — `state:modified+` builds with prod-manifest `defer`, posting commit statuses back to the PR.
+
+## Studio-style editor
+
+Beyond the file IDE, the editor mirrors **dbt Studio**:
+
+- **Live auto-compile** of the model you're editing.
+- **Build / Run / Test** node menu with graph operators: `model`, `model+`, `+model`, `+model+`.
+- **Persistent bottom panel** — Compiled / Problems / Results / Lineage tabs and a status bar.
+- **jinja-sql** Monaco language support, a dbt version selector, and project create/import/settings drawers.
+
 ## Running models
 
 Three ways to execute dbt, all routed through the same validated runner:
@@ -65,6 +83,18 @@ Every execution produces a **run** record with per-node status, timing, and logs
 | `runResults` | Per-node execution results and timing |
 | `catalog` | Column-level metadata from `docs generate` |
 | `sources` | Source freshness results |
+
+## Access control (RBAC)
+
+Transforms access is enforced by a pure policy (`api/src/dbt/rbac.ts`):
+
+- **Reads (GET)** — open to any member, including viewers.
+- **File/run mutations** (edit files, trigger runs, sync) — require **member** or above (viewers excluded).
+- **Deployment-config changes** (GitHub connect/import, repo writes, job create/edit/delete) — require **admin** or **owner**.
+
+## Runner security
+
+dbt model code can call `env_var()`, so the runner does **not** inherit the API's process environment. The dbt subprocess runs with an allowlisted base env (`buildDbtBaseEnv`) forwarding only what uv/python/dbt need; per-connection secrets are layered on top. This stops workspace members from exfiltrating server secrets (e.g. `ENCRYPTION_KEY`, `AI_GATEWAY_API_KEY`, `DATABASE_URL`) through a one-line model.
 
 ## Lineage
 

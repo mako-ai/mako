@@ -116,6 +116,8 @@ Active in the [Transforms](/transforms/) section. Builds and runs dbt models aga
 
 It can also create and update jobs, but only triggers a job (`dbt_run_job`) after explicit user confirmation. Ad-hoc builds always default to the `dev` environment.
 
+For GitHub-backed projects it also handles version control: `dbt_git_status`, `dbt_commit_and_push` (with AI-generated commit messages from the working-tree diff), `dbt_create_branch` / `dbt_switch_branch` / `dbt_list_branches`, and `dbt_open_pull_request`.
+
 ## Visual Inspection
 
 The agent can capture screenshots of the live UI for visual QA via the **`capture_screenshot`** client tool. It runs in the browser (no server round-trip) and returns a PNG that the agent inspects directly. Supported targets:
