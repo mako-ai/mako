@@ -21,6 +21,7 @@ import { withContextOverflowSelfHeal } from "../agent-lib/context-overflow-self-
 import {
   computeInputBudget,
   compactUiMessagesForBudget,
+  elideOldToolOutputs,
 } from "../agent-lib/context/compaction";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
@@ -896,6 +897,23 @@ agentRoutes.openapi(
       const sanitizedMessages = sanitizeMessagesForModel(
         messagesWithAttachments,
       );
+      // Always-on cost control (budget-independent): the client replays the
+      // entire `messages[]` every turn, so a long session re-sends every prior
+      // turn's full tool outputs on every request — re-billed as input tokens
+      // each time, even when the prompt comfortably fits the context window.
+      // Elide large tool outputs from older turns (keeping the most recent
+      // turns verbatim) before any budget math. This is the main lever against
+      // runaway spend on long chats. Runs even when `contextWindow` is unknown.
+      const elision = elideOldToolOutputs(sanitizedMessages);
+      let messagesForModel = elision.messages;
+      if (elision.changed) {
+        logger.info("Elided old tool outputs before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          elidedCount: elision.elidedCount,
+        });
+      }
       // Proactively keep the prompt under the model's context window. Budget is
       // derived from the catalog `contextWindow` (provider-agnostic — every
       // gateway model reports it); when unknown we skip this and rely on the
@@ -907,10 +925,9 @@ agentRoutes.openapi(
         systemText: systemPrompt,
         thinkingBudgetTokens: modelDef?.thinkingBudgetTokens,
       });
-      let messagesForModel = sanitizedMessages;
       if (inputBudget !== null) {
         const compaction = await compactUiMessagesForBudget({
-          messages: sanitizedMessages,
+          messages: messagesForModel,
           budgetTokens: inputBudget,
           summarize: true,
           abortSignal: turnSignal,

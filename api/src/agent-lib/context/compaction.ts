@@ -46,6 +46,19 @@ const logger = loggers.agent();
 /** Turns kept verbatim at the tail of the conversation. */
 const DEFAULT_KEEP_RECENT_TURNS = 6;
 
+/**
+ * Turns kept verbatim by the ALWAYS-ON elision pass (cost control).
+ *
+ * Distinct from `DEFAULT_KEEP_RECENT_TURNS` (used by the budget-driven path):
+ * even when the prompt comfortably fits the context window, replaying every
+ * prior turn's full tool outputs on every request is the dominant driver of
+ * token spend in long agent chats. We keep only the most recent few turns
+ * verbatim and elide large tool outputs from everything older — regardless of
+ * the budget. Smaller than the budget window because this runs every turn and
+ * we want aggressive savings while preserving recent, actionable context.
+ */
+const ALWAYS_ELIDE_KEEP_RECENT_TURNS = 2;
+
 /** Fraction of the context window reserved as a safety margin. */
 const SAFETY_MARGIN_RATIO = 0.1;
 
@@ -131,12 +144,16 @@ function groupIntoTurns(messages: UIMessage[]): Turn[] {
 // Tool-output elision (lossless-ish)
 // ---------------------------------------------------------------------------
 
-function elideToolOutputsInMessage(message: UIMessage): {
+function elideToolOutputsInMessage(
+  message: UIMessage,
+  minTokens: number = ELIDE_TOOL_OUTPUT_TOKENS,
+): {
   message: UIMessage;
   changed: boolean;
+  count: number;
 } {
   const parts = (message.parts ?? []) as Array<Record<string, unknown>>;
-  let changed = false;
+  let count = 0;
   const nextParts = parts.map(part => {
     const type = typeof part.type === "string" ? part.type : "";
     const isTool = type.startsWith("tool-") || type === "dynamic-tool";
@@ -148,32 +165,102 @@ function elideToolOutputsInMessage(message: UIMessage): {
     ) {
       return part;
     }
-    if (estimateTokensFromValue(part.output) < ELIDE_TOOL_OUTPUT_TOKENS) {
+    if (estimateTokensFromValue(part.output) < minTokens) {
       return part;
     }
-    changed = true;
+    count += 1;
     return { ...part, output: ELIDED_OUTPUT_PLACEHOLDER };
   });
-  if (!changed) return { message, changed: false };
+  if (count === 0) return { message, changed: false, count: 0 };
   return {
     message: { ...message, parts: nextParts as UIMessage["parts"] },
     changed: true,
+    count,
   };
 }
 
 function elideToolOutputs(
   messages: UIMessage[],
   range: { from: number; to: number },
-): { messages: UIMessage[]; changed: boolean } {
+  minTokens: number = ELIDE_TOOL_OUTPUT_TOKENS,
+): { messages: UIMessage[]; changed: boolean; count: number } {
   let changed = false;
+  let count = 0;
   const next = messages.map((msg, idx) => {
     if (idx < range.from || idx >= range.to) return msg;
     if (msg.role !== "assistant") return msg;
-    const res = elideToolOutputsInMessage(msg);
-    if (res.changed) changed = true;
+    const res = elideToolOutputsInMessage(msg, minTokens);
+    if (res.changed) {
+      changed = true;
+      count += res.count;
+    }
     return res.message;
   });
-  return { messages: next, changed };
+  return { messages: next, changed, count };
+}
+
+// ---------------------------------------------------------------------------
+// Always-on old tool-output elision (cost control, budget-independent)
+// ---------------------------------------------------------------------------
+
+export interface ElideOldToolOutputsOptions {
+  /** Turns kept fully verbatim at the tail. */
+  keepRecentTurns?: number;
+  /** Only elide tool outputs estimated at or above this many tokens. */
+  minTokens?: number;
+}
+
+export interface ElideOldToolOutputsResult {
+  messages: UIMessage[];
+  changed: boolean;
+  elidedCount: number;
+}
+
+/**
+ * Elide large tool outputs from OLDER turns, independent of any token budget.
+ *
+ * This is the primary cost lever for long agent chats: the client replays the
+ * entire `messages[]` every turn, so a session that ran 50 large SQL/schema
+ * tool calls re-sends all of them on every subsequent request — even when the
+ * total still fits the context window. Those bytes are re-billed as input
+ * tokens (and re-processed) every single turn.
+ *
+ * We keep the most recent `keepRecentTurns` turns verbatim (the model's active
+ * working set) and replace large tool outputs in everything older with a short
+ * placeholder. Tool call↔result pairing is preserved because we only swap the
+ * `output` field of a tool part; the tool call itself remains.
+ */
+export function elideOldToolOutputs(
+  messages: UIMessage[],
+  opts?: ElideOldToolOutputsOptions,
+): ElideOldToolOutputsResult {
+  const keepRecentTurns =
+    opts?.keepRecentTurns ?? ALWAYS_ELIDE_KEEP_RECENT_TURNS;
+  const minTokens = opts?.minTokens ?? ELIDE_TOOL_OUTPUT_TOKENS;
+  if (messages.length === 0) {
+    return { messages, changed: false, elidedCount: 0 };
+  }
+
+  const turns = groupIntoTurns(messages);
+  if (turns.length <= keepRecentTurns) {
+    return { messages, changed: false, elidedCount: 0 };
+  }
+  const recentStartTurn = Math.max(0, turns.length - keepRecentTurns);
+  const recentStartIdx = turns[recentStartTurn].start;
+  if (recentStartIdx <= 0) {
+    return { messages, changed: false, elidedCount: 0 };
+  }
+
+  const res = elideToolOutputs(
+    messages,
+    { from: 0, to: recentStartIdx },
+    minTokens,
+  );
+  return {
+    messages: res.messages,
+    changed: res.changed,
+    elidedCount: res.count,
+  };
 }
 
 // ---------------------------------------------------------------------------
