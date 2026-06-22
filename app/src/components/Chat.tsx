@@ -1594,11 +1594,11 @@ const ChatInputArea = React.memo(
               maxHeight: "50vh",
               overflowY: "auto",
               "& .MuiInputBase-input": {
-                fontSize: 14,
+                fontSize: { xs: 16, sm: 14 },
               },
               "& .MuiInputBase-root": {
                 p: 0,
-                fontSize: 14,
+                fontSize: { xs: 16, sm: 14 },
               },
               "& .MuiOutlinedInput-notchedOutline": {
                 border: "none",
