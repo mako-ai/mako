@@ -3078,8 +3078,16 @@ const Chat: React.FC<ChatProps> = ({
             : undefined;
       const opensTab =
         toolName === "create_console" || toolName === "open_console";
+      // Server console writes whose only client delivery is the realtime poke.
+      // run_console bumps the draft revision AND persists a run artifact
+      // (tab.lastRun); the revision sync refreshes both, and Editor.tsx
+      // reactively renders lastRun into the results panel — so reconciling
+      // here surfaces agent run RESULTS even when the run.completed poke was
+      // missed (dead/half-closed SSE), matching modify/set-connection.
       const editsConsole =
-        toolName === "modify_console" || toolName === "set_console_connection";
+        toolName === "modify_console" ||
+        toolName === "set_console_connection" ||
+        toolName === "run_console";
       if (!opensTab && !editsConsole) continue;
       if (p.state !== "output-available") continue;
       if (!p.toolCallId || !p.output?.success) continue;
