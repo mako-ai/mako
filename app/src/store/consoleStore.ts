@@ -1159,6 +1159,11 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.connectionId = res.connectionId;
                 tab.databaseId = res.databaseId;
                 tab.databaseName = res.databaseName;
+                // Canonical: the title is ALWAYS the leaf name from the server.
+                // Sidebar/search opens seed the tab with a placeholder (often
+                // the full path); reconcile it to the authoritative leaf so the
+                // tab strip, breadcrumb and document.title agree.
+                if (res.name) tab.title = res.name;
                 tab.filePath = filePath;
                 tab.access = res.access;
                 tab.owner_id = res.owner_id;

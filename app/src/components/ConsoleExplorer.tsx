@@ -390,7 +390,8 @@ function ConsoleExplorer(
           nextName,
         );
         updateTabFilePath(selectedItem.id, nextPath);
-        updateTabTitle(selectedItem.id, nextPath);
+        // Title is the canonical leaf name; the path drives the breadcrumb.
+        updateTabTitle(selectedItem.id, nextName);
         updateTabAccess(
           selectedItem.id,
           section === "workspace" ? "workspace" : "private",

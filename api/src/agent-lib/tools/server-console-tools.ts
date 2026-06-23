@@ -52,6 +52,18 @@ const logger = loggers.agent();
 
 const RUN_PREVIEW_MAX_ROWS = 50;
 
+/**
+ * A console's `name` is the canonical LEAF display name (folder placement is
+ * `folderId`, never the name). Keep agent-set names as leaves so the agent
+ * cannot reintroduce slash-delimited "paths" into the name field — the UI
+ * shows `name` verbatim as the title/breadcrumb leaf/tree row.
+ */
+function leafConsoleName(raw: string | undefined): string {
+  const value = raw ?? "";
+  const parts = value.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : value;
+}
+
 /** First poll backoff hint surfaced to the agent (seconds). */
 const FIRST_POLL_BACKOFF_S = Math.round(
   (QUERY_POLL_BACKOFF_MS[0] ?? 30_000) / 1000,
@@ -288,7 +300,7 @@ export function createServerConsoleTools({
               // exceeds what the client has.
               draftRevision: currentRevision + 1,
             };
-            if (title) setFields.name = title;
+            if (title) setFields.name = leafConsoleName(title) || title;
 
             const updated = await SavedConsole.findOneAndUpdate(
               {
@@ -371,7 +383,7 @@ export function createServerConsoleTools({
 
           const doc = await SavedConsole.create({
             workspaceId: new Types.ObjectId(workspaceId),
-            name: title || "Untitled",
+            name: leafConsoleName(title) || "Untitled",
             code: content || "",
             language,
             connectionId: connectionId
