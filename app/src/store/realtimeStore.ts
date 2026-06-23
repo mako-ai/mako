@@ -95,12 +95,16 @@ const RECONNECT_MAX_MS = 30_000;
 /** Batch bursts of pokes (e.g. agent patching repeatedly) into one pull. */
 const SYNC_DEBOUNCE_MS = 250;
 /**
- * Liveness watchdog: the server heartbeats every 25s, so a stream that has
- * been silent longer than this is dead even though no `error` event fired
- * (NAT/proxy half-close, sleeping machine). 70s tolerates two missed beats.
+ * Liveness watchdog: the server heartbeats every 15s (realtime.ts
+ * HEARTBEAT_INTERVAL_MS), so a stream that has been silent longer than this
+ * is dead even though no `error` event fired (NAT/proxy half-close, sleeping
+ * machine). 35s tolerates two missed beats. This bounds how long a MISSED
+ * poke can leave a window stale with no user interaction: the reconnect's
+ * `onopen` runs syncRevisions, so lowering this directly shrinks the
+ * worst-case "edited elsewhere but not shown here" window (≈35s + one sweep).
  */
-const WATCHDOG_STALE_MS = 70_000;
-const WATCHDOG_INTERVAL_MS = 15_000;
+const WATCHDOG_STALE_MS = 35_000;
+const WATCHDOG_INTERVAL_MS = 8_000;
 /**
  * Wake-trigger staleness: when the user comes back to this window (focus /
  * visibility / pageshow), a stream that hasn't produced a frame within ~1.5
@@ -109,7 +113,7 @@ const WATCHDOG_INTERVAL_MS = 15_000;
  * their sockets without firing an `error` event, so `status === "open"`
  * cannot be trusted on wake.
  */
-const WAKE_STALE_MS = 40_000;
+const WAKE_STALE_MS = 25_000;
 /** Collapse the burst of focus+visibility events one window switch fires. */
 const WAKE_THROTTLE_MS = 1_000;
 /**
@@ -198,14 +202,17 @@ export const useRealtimeStore = create<RealtimeStore>()(
         }
       }
 
-      const tab = useConsoleStore.getState().tabs[event.consoleId];
-      if (!tab) return; // not open in this window — nothing to update
-
-      // Remember agent-origin edits on OPEN consoles so the pull routes them
-      // into the diff review (editor keeps the baseline until accept/reject).
+      // Remember agent-origin edits even when the tab is NOT open yet (the
+      // common create_console → immediate modify_console race: the modify
+      // poke can land while openConsoleFromServer is still fetching). The
+      // reconcile after the tab opens uses this + lastDraftOrigin to route
+      // the pulled copy into the diff review instead of a silent apply.
       if (event.origin === "agent") {
         agentOriginConsoles.add(event.consoleId);
       }
+
+      const tab = useConsoleStore.getState().tabs[event.consoleId];
+      if (!tab) return; // not open yet — openConsoleFromServer reconciles
 
       // A tab that never synced (no draftRevision) counts as revision 0 so
       // even the server's first revision is pulled.
@@ -293,11 +300,21 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (!workspaceId || event.intent !== "open_console") return;
 
       const consoleStore = useConsoleStore.getState();
-      if (consoleStore.tabs[event.consoleId]) {
-        consoleStore.setActiveTab(event.consoleId);
-        return;
-      }
-      void consoleStore.openConsoleFromServer(workspaceId, event.consoleId);
+      void (async () => {
+        if (consoleStore.tabs[event.consoleId]) {
+          consoleStore.setActiveTab(event.consoleId);
+        } else {
+          await consoleStore.openConsoleFromServer(
+            workspaceId,
+            event.consoleId,
+          );
+        }
+        // Pokes for this console may have arrived before the tab existed
+        // (create → immediate modify). Reconcile against the server now so a
+        // dropped poke does not leave the freshly opened tab on stale
+        // create-time content.
+        void get().syncRevisions();
+      })();
     };
 
     const handleEvent = (event: RealtimeEvent) => {
@@ -318,6 +335,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
           set(state => {
             state.chatActivity[event.chatId] = event.state;
           });
+          // Agent turn finished: reconcile open consoles. Tool-agnostic
+          // catch-all for any console.updated poke missed during the turn
+          // (SSE blip, poke-before-tab-open race) and for detached
+          // server-side runs that completed while this window was attached.
+          if (event.state === "idle" && event.chatId === get().activeChatId) {
+            scheduleSync();
+          }
           break;
       }
     };
@@ -534,6 +558,17 @@ export const useRealtimeStore = create<RealtimeStore>()(
           const store = useConsoleStore.getState();
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
+
+            // An agent edit can also RENAME the console (modify_console title).
+            // Patch the sidebar tree node by id IN PLACE (no full refetch, so
+            // no loading skeletons or layout shift) — the Apollo-style
+            // "update entity by id" pattern. tab.title here is the pre-apply
+            // value, so a real rename is detected before it is applied below.
+            if (entry.name && tab && entry.name !== tab.title) {
+              useConsoleTreeStore
+                .getState()
+                .applyRemoteRename(workspaceId, entry.id, entry.name);
+            }
 
             // Agent (modify_console) edits surface as a Monaco Accept/Reject
             // diff instead of being applied silently. Route the pulled copy

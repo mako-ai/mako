@@ -689,8 +689,16 @@ export const useConsoleStore = create<ConsoleStore>()(
         if (!tab) return;
         const existing = pendingAgentReviews.get(entry.id);
         // Nothing to review: the proposed content already matches the tab
-        // (e.g. a stale re-sync after the user just accepted, or an echo).
-        if (!existing && tab.content === entry.content) return;
+        // (e.g. a run-artifact/metadata-only bump, an echo, or a stale
+        // re-sync after the user just accepted). Still FAST-FORWARD the
+        // revision/metadata to the server's current base — otherwise the tab
+        // keeps reporting its old draftRevision, so every later sync re-pulls
+        // this same "changed" entry and revision-checked writes use a stale
+        // base. (Returning without fast-forwarding was a real churn bug.)
+        if (!existing && tab.content === entry.content) {
+          get().fastForwardRemoteConsoleEntry(entry);
+          return;
+        }
         // Idempotent: same proposal already on screen — don't re-dispatch
         // (avoids resetting the diff scroll on every unrelated poke).
         if (

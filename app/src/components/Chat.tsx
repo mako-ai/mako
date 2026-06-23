@@ -3034,14 +3034,25 @@ const Chat: React.FC<ChatProps> = ({
     };
   }, [chatId, currentWorkspace?.id]);
 
-  // In-band console opening: when a create_console / open_console tool
-  // result streams in (state "output-available"), open the console tab in
-  // THIS window. The chat stream is resumable, so unlike the legacy
-  // chat.ui-intent realtime poke this survives SSE drops, reconnects and
-  // page refreshes — the replayed part triggers the same idempotent open.
+  // In-band console sync: when a server-side console tool result streams in
+  // (state "output-available"), reconcile THIS window against the server
+  // draft. The chat stream is resumable, so unlike the workspace realtime
+  // poke channel this survives SSE drops, half-closes, frozen background
+  // tabs, reconnects and page refreshes — the replayed part triggers the
+  // same idempotent reconciliation.
+  //
+  //   - create_console / open_console -> open the tab here.
+  //   - modify_console / set_console_connection -> pull the authoritative
+  //     draft for open tabs (revision sync). Without this, an agent EDIT
+  //     reached the editor ONLY via the realtime poke; a missed poke (dead
+  //     SSE, or a poke that raced the tab open) left the editor stale until
+  //     the next focus/reconnect/watchdog/refresh — the reported "modify did
+  //     nothing until I refreshed" bug. create_console never had this problem
+  //     because it already rode the chat stream (asymmetry, issue #475).
+  //
   // Tool call ids seen in RESTORED history are pre-seeded into this set by
-  // loadSession (reopening a chat must not re-open every console it ever
-  // touched — the dedicated consoles-restore payload handles that).
+  // loadSession (reopening a chat must not re-open/re-sync every console it
+  // ever touched — the dedicated consoles-restore payload handles that).
   const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     handledConsoleOpenToolCallIdsRef.current = new Set();
@@ -3065,17 +3076,41 @@ const Chat: React.FC<ChatProps> = ({
           : p.type?.startsWith("tool-")
             ? p.type.slice("tool-".length)
             : undefined;
-      if (toolName !== "create_console" && toolName !== "open_console") {
-        continue;
-      }
+      const opensTab =
+        toolName === "create_console" || toolName === "open_console";
+      // Server console writes whose only client delivery is the realtime poke.
+      // run_console bumps the draft revision AND persists a run artifact
+      // (tab.lastRun); the revision sync refreshes both, and Editor.tsx
+      // reactively renders lastRun into the results panel — so reconciling
+      // here surfaces agent run RESULTS even when the run.completed poke was
+      // missed (dead/half-closed SSE), matching modify/set-connection.
+      const editsConsole =
+        toolName === "modify_console" ||
+        toolName === "set_console_connection" ||
+        toolName === "run_console";
+      if (!opensTab && !editsConsole) continue;
       if (p.state !== "output-available") continue;
-      const consoleId = p.output?.consoleId;
-      if (!p.toolCallId || !p.output?.success || !consoleId) continue;
+      if (!p.toolCallId || !p.output?.success) continue;
+      // Opening needs a consoleId; an edit reconciles all open tabs so it
+      // does not. Don't burn the dedupe slot on an opener that lacks an id.
+      if (opensTab && !p.output?.consoleId) continue;
       if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
       handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
-      void useConsoleStore
-        .getState()
-        .openConsoleFromServer(workspaceId, consoleId);
+      if (opensTab) {
+        const consoleId = p.output.consoleId as string;
+        void (async () => {
+          await useConsoleStore
+            .getState()
+            .openConsoleFromServer(workspaceId, consoleId);
+          // A create followed immediately by a modify can drop the modify's
+          // workspace poke while the tab is still opening; reconcile once the
+          // tab carries a revision base so it never sticks on create-time
+          // content.
+          void useRealtimeStore.getState().syncRevisions();
+        })();
+      } else {
+        void useRealtimeStore.getState().syncRevisions();
+      }
     }
   }, [messages, currentWorkspace?.id]);
 

@@ -23,6 +23,11 @@ hide divergence. Run it whenever the sync layer changes:
 | `03-agent-modalities` | create/modify/run/set-connection/open: Monaco shows agent edits, results render, user↔agent edits interleave without loss, tab stays a draft |
 | `04-dead-sse` | consoles created during a silently-dead SSE still appear (in-band chat stream); liveness watchdog reconnects ≲85s and repairs missed pokes (~2 min, real time) |
 | `05-stale-save-dual-guard` | agent edits (draftRevision-only) can't be silently reverted by a stale Cmd+S (dual version+draftRevision guard) |
+| `07-create-modify-same-turn` | create + modify in ONE turn with a delayed content fetch (forces the poke-before-tab-open race): the editor shows the modified query without a refresh (reconcile-after-open) |
+| `10-run-dead-sse` | agent `run_console` RESULTS render under a silently-dead SSE via the in-band reconcile (the run.completed poke is missed) |
+| `11-rename-legacy-console` | agent rename of a LEGACY console (no `draftRevision` field) updates the open tab title + breadcrumbs + tree (revision-base `?? 0` fix; simulates legacy via mongosh `$unset`) |
+| `12-rename-saved-surgical` | agent rename of a SAVED console updates tab + breadcrumb + sidebar tree surgically (by id, no full refetch/skeleton); old name gone everywhere |
+| `99-modify-dead-sse-repro` | agent `modify_console` surfaces LIVE even when the realtime poke channel is dead — the chat stream drives an in-band revision sync (regression for "create showed instantly, modify did nothing until refresh") |
 
 ## One-time setup
 

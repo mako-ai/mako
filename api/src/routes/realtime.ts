@@ -30,8 +30,14 @@ import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.api("realtime");
 
-/** Keep-alive interval — defeats proxy idle timeouts (Cloud Run, nginx). */
-const HEARTBEAT_INTERVAL_MS = 25_000;
+/**
+ * Keep-alive interval — defeats proxy idle timeouts (Cloud Run, nginx) AND
+ * acts as the liveness signal the client's watchdog measures against: a more
+ * frequent beat lets a silently-dead stream (NAT/proxy half-close) be detected
+ * and self-healed sooner. Keep in sync with the client's WATCHDOG_STALE_MS
+ * (app/src/store/realtimeStore.ts), which tolerates ~2 missed beats.
+ */
+const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export const realtimeRoutes = createRouter();
 

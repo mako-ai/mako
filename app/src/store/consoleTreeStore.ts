@@ -160,6 +160,18 @@ interface TreeState {
     newName: string,
     isDirectory: boolean,
   ) => Promise<boolean>;
+  /**
+   * Surgically rename a tree node by id from a REMOTE signal (agent edit or
+   * another window) — in place, WITHOUT an API call and WITHOUT a full
+   * refetch. This keeps the sidebar update Apollo-like (patch the entity by
+   * id) so there are no loading skeletons or layout shift. No-op if the node
+   * is not in the tree (e.g. an unsaved draft) or already has the new name.
+   */
+  applyRemoteRename: (
+    workspaceId: string,
+    itemId: string,
+    newName: string,
+  ) => void;
   deleteItem: (
     workspaceId: string,
     itemId: string,
@@ -482,6 +494,25 @@ export const useConsoleTreeStore = create<TreeState>()(
         await _get().refresh(workspaceId);
         return false;
       }
+    },
+
+    applyRemoteRename: (workspaceId, itemId, newName) => {
+      set(state => {
+        for (const section of allSections(state, workspaceId)) {
+          const parent = findParentArray(section, itemId);
+          if (!parent) continue;
+          const idx = parent.findIndex(n => n.id === itemId);
+          if (idx === -1) continue;
+          if (parent[idx].name === newName) return; // already current — no-op
+          // Splice + re-insert so the row lands in its sorted position, exactly
+          // like the optimistic renameItem path. Only this node's parent array
+          // changes, so React re-renders just that branch (no skeleton/refetch).
+          const [node] = parent.splice(idx, 1);
+          node.name = newName;
+          insertAlphabetically(parent, node);
+          return;
+        }
+      });
     },
 
     deleteItem: async (workspaceId, itemId, isDirectory) => {
