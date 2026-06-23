@@ -214,7 +214,6 @@ export const createDbtServerTools = (
   // Snapshot a dbt file version (entity-version pattern, mirrors the route).
   const snapshotVersion = async (
     fileId: Types.ObjectId,
-    projectId: Types.ObjectId,
     wsId: Types.ObjectId,
     path: string,
     content: string,
@@ -234,7 +233,6 @@ export const createDbtServerTools = (
     } catch {
       /* version history is best-effort */
     }
-    void projectId;
   };
 
   return {
@@ -276,7 +274,6 @@ export const createDbtServerTools = (
           );
           await snapshotVersion(
             file._id,
-            project._id,
             project.workspaceId,
             path,
             contents ?? "",
@@ -322,7 +319,6 @@ export const createDbtServerTools = (
           );
           await snapshotVersion(
             file._id,
-            project._id,
             project.workspaceId,
             path,
             contents ?? "",
