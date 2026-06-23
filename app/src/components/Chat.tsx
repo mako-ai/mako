@@ -71,6 +71,8 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import { useAppStore } from "../store/appStore";
+import { useDbtStore } from "../store/dbtStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
@@ -155,6 +157,25 @@ function toolNameFromPartType(partType: string): string {
     ? partType.slice("tool-".length)
     : partType;
 }
+
+// Server-executed mutation tools (issue #475 pattern) whose open-tab sync we
+// ALSO reconcile off the resumable chat stream — in addition to the workspace
+// realtime poke (app.updated / dbt.file.updated) — so an open app / dbt tab
+// converges even when the workspace SSE is dead (mobile lock / laptop sleep).
+const APP_SERVER_MUTATION_TOOLS = new Set<string>([
+  "app_write_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "app_delete_data_binding",
+]);
+const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
+  "create_dbt_file",
+  "modify_dbt_file",
+  "delete_dbt_file",
+]);
 
 // Diagnostics for the *live* stream-disconnect signatures so they can be
 // investigated after the fact:
@@ -3288,6 +3309,87 @@ const Chat: React.FC<ChatProps> = ({
         })();
       } else {
         void useRealtimeStore.getState().syncRevisions();
+      }
+    }
+  }, [messages, currentWorkspace?.id]);
+
+  // In-band app/dbt sync — the app/dbt analogue of the console reconcile above.
+  // The app_* and dbt file mutation tools execute SERVER-SIDE, so an OPEN app /
+  // dbt tab learns about the agent's write via the workspace realtime poke
+  // (app.updated / dbt.file.updated). That poke rides the workspace SSE, which
+  // a mobile lock / laptop sleep / proxy half-close can kill — so reconcile
+  // off the RESUMABLE CHAT STREAM too: when the tool result streams in (or is
+  // replayed after a wake reattach), refetch the open app / dbt file. This
+  // makes the open tab converge even under a dead workspace SSE (poke = fast
+  // path, this = robust backstop). Mirrors the console pattern (issue #475).
+  const handledEntitySyncToolCallIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    handledEntitySyncToolCallIdsRef.current = new Set();
+  }, [chatId]);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    for (const part of last.parts ?? []) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        state?: string;
+        toolCallId?: string;
+        input?: { appId?: string; projectId?: string; path?: string };
+        output?: { success?: boolean };
+      };
+      const toolName =
+        p.type === "dynamic-tool"
+          ? p.toolName
+          : p.type?.startsWith("tool-")
+            ? p.type.slice("tool-".length)
+            : undefined;
+      if (!toolName) continue;
+      const isAppEdit = APP_SERVER_MUTATION_TOOLS.has(toolName);
+      const isDbtEdit = DBT_SERVER_MUTATION_TOOLS.has(toolName);
+      if (!isAppEdit && !isDbtEdit) continue;
+      if (
+        p.state !== "output-available" ||
+        !p.toolCallId ||
+        !p.output?.success
+      ) {
+        continue;
+      }
+      if (handledEntitySyncToolCallIdsRef.current.has(p.toolCallId)) continue;
+      handledEntitySyncToolCallIdsRef.current.add(p.toolCallId);
+
+      if (isAppEdit) {
+        const appId = p.input?.appId;
+        // Only reconcile a tab that is actually open here (mirrors the
+        // realtime handler); fetchApp + bumpPreview rebuilds the preview.
+        if (appId && useAppStore.getState().openApps[appId]) {
+          void (async () => {
+            const fresh = await useAppStore
+              .getState()
+              .fetchApp(workspaceId, appId);
+            if (fresh) useAppStore.getState().bumpPreview(appId);
+          })();
+        }
+      } else {
+        const projectId = p.input?.projectId;
+        const path = p.input?.path;
+        // Only touch projects this window has loaded.
+        if (
+          projectId &&
+          path &&
+          useDbtStore.getState().filePathsByProject[projectId]
+        ) {
+          void useDbtStore
+            .getState()
+            .applyRemoteFileUpdate(
+              workspaceId,
+              projectId,
+              path,
+              toolName === "delete_dbt_file",
+            );
+        }
       }
     }
   }, [messages, currentWorkspace?.id]);
