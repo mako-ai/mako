@@ -41,6 +41,7 @@ import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { useAvailableEntitiesStore } from "../store/availableEntitiesStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { trackEvent } from "../lib/analytics";
+import { SCHEDULE_PRESETS } from "../lib/schedule-presets";
 import { FlowRunNotificationsSection } from "./FlowRunNotificationsSection";
 
 interface ScheduledFlowFormProps {
@@ -94,18 +95,6 @@ interface EntityMetadata {
 }
 
 // Common schedule presets
-const SCHEDULE_PRESETS = [
-  { label: "Every 5 minutes", cron: "*/5 * * * *" },
-  { label: "Every 15 minutes", cron: "*/15 * * * *" },
-  { label: "Every 30 minutes", cron: "*/30 * * * *" },
-  { label: "Hourly", cron: "0 * * * *" },
-  { label: "Every 6 hours", cron: "0 */6 * * *" },
-  { label: "Daily at midnight", cron: "0 0 * * *" },
-  { label: "Daily at 6 AM", cron: "0 6 * * *" },
-  { label: "Weekly on Sunday", cron: "0 0 * * 0" },
-  { label: "Monthly on 1st", cron: "0 0 1 * *" },
-];
-
 const normalizeCronValue = (value: unknown): string => {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {

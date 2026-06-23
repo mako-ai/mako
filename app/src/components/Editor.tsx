@@ -101,7 +101,9 @@ import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import ShareDialog from "./ShareDialog";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useConnectionIconMap } from "../hooks/useConnectionIconMap";
 import { trackEvent } from "../lib/analytics";
+import { MOBILE_FLOAT_BTN_SX as MOBILE_FLOAT_BTN_BASE_SX } from "../lib/mobile-toolbar-styles";
 import { getApiBasePath } from "../lib/api-base-path";
 import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
@@ -302,18 +304,11 @@ function SortableConsoleTab(props: React.ComponentProps<typeof Tab>) {
 
 // Claude-style floating round button for the mobile editor header — paper fill,
 // blur and a hairline so it reads as floating chrome over the editor content.
+// Editor renders these buttons inside a flex toolbar row, so it pins
+// `flexShrink: 0` on top of the shared mobile button style.
 const MOBILE_FLOAT_BTN_SX = {
-  width: 38,
-  height: 38,
+  ...MOBILE_FLOAT_BTN_BASE_SX,
   flexShrink: 0,
-  borderRadius: "50%",
-  color: "text.secondary",
-  bgcolor: "background.paper",
-  border: 1,
-  borderColor: "divider",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
-  backdropFilter: "blur(8px)",
-  "&:hover": { bgcolor: "action.hover" },
 } as const;
 
 // Centered "current window" pill that opens the open-tabs switcher menu.
@@ -422,18 +417,7 @@ function Editor({
   useEffect(() => {
     fetchDbTypes().catch(() => undefined);
   }, [fetchDbTypes]);
-  const connectionIconById = React.useMemo(() => {
-    const typeToIcon = new Map<string, string>();
-    for (const t of dbTypes || []) {
-      if (t.iconUrl) typeToIcon.set(t.type, t.iconUrl);
-    }
-    const map = new Map<string, string>();
-    for (const c of availableDatabases) {
-      const icon = typeToIcon.get(c.type);
-      if (icon) map.set(c.id, icon);
-    }
-    return map;
-  }, [dbTypes, availableDatabases]);
+  const connectionIconById = useConnectionIconMap(dbTypes, availableDatabases);
 
   // Save dialog state (folder navigator)
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);

@@ -74,12 +74,14 @@ import { useRealtimeStore } from "../store/realtimeStore";
 import { useAppStore } from "../store/appStore";
 import { useDbtStore } from "../store/dbtStore";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useConnectionIconMap } from "../hooks/useConnectionIconMap";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
 import type { ConsoleModification } from "../hooks/useMonacoConsole";
 import { trackEvent } from "../lib/analytics";
 import { DbFlowFormRef } from "./DbFlowForm";
 import { safeStringify, toJsonSafe } from "../lib/json-safe";
+import { MOBILE_FLOAT_BTN_SX } from "../lib/mobile-toolbar-styles";
 import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
 import { DbtRunCard } from "./DbtRunCard";
@@ -1872,18 +1874,6 @@ const MOBILE_ASK_SUGGESTIONS = [
 // Claude-style floating round button used in the mobile pane headers. Each
 // control carries its own paper fill + blur + hairline so it reads as floating
 // chrome over the content rather than sitting in a solid app bar.
-const MOBILE_FLOAT_BTN_SX = {
-  width: 38,
-  height: 38,
-  borderRadius: "50%",
-  color: "text.secondary",
-  bgcolor: "background.paper",
-  border: 1,
-  borderColor: "divider",
-  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.08)",
-  backdropFilter: "blur(8px)",
-  "&:hover": { bgcolor: "action.hover" },
-} as const;
 
 const Chat: React.FC<ChatProps> = ({
   dbFlowFormRef,
@@ -1916,19 +1906,10 @@ const Chat: React.FC<ChatProps> = ({
     () => (currentWorkspace ? connections[currentWorkspace.id] || [] : []),
     [connections, currentWorkspace],
   );
-  const connectionIconById = useMemo(() => {
-    const iconByType = new Map<string, string>();
-    for (const dbType of dbTypes ?? []) {
-      if (dbType.iconUrl) iconByType.set(dbType.type, dbType.iconUrl);
-    }
-
-    const iconByConnectionId = new Map<string, string>();
-    for (const connection of workspaceConnections) {
-      const iconUrl = iconByType.get(connection.type);
-      if (iconUrl) iconByConnectionId.set(connection.id, iconUrl);
-    }
-    return iconByConnectionId;
-  }, [dbTypes, workspaceConnections]);
+  const connectionIconById = useConnectionIconMap(
+    dbTypes,
+    workspaceConnections,
+  );
 
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   // The chat persisted for this tab (if any), read once per mount. Restoring

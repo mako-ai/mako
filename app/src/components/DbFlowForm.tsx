@@ -49,6 +49,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
 import { useSchemaStore, TreeNode } from "../store/schemaStore";
 import { trackEvent } from "../lib/analytics";
+import { SCHEDULE_PRESETS } from "../lib/schedule-presets";
 import { ConnectionSelector } from "./ConnectionSelector";
 import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { SchemaMappingTable, TypeCoercion } from "./SchemaMappingTable";
@@ -146,18 +147,6 @@ const STEPS = [
 ];
 
 // Common schedule presets
-const SCHEDULE_PRESETS = [
-  { label: "Every 5 minutes", cron: "*/5 * * * *" },
-  { label: "Every 15 minutes", cron: "*/15 * * * *" },
-  { label: "Every 30 minutes", cron: "*/30 * * * *" },
-  { label: "Hourly", cron: "0 * * * *" },
-  { label: "Every 6 hours", cron: "0 */6 * * *" },
-  { label: "Daily at midnight", cron: "0 0 * * *" },
-  { label: "Daily at 6 AM", cron: "0 6 * * *" },
-  { label: "Weekly on Sunday", cron: "0 0 * * 0" },
-  { label: "Monthly on 1st", cron: "0 0 1 * *" },
-];
-
 /**
  * Default form values
  */
