@@ -5,6 +5,7 @@ import {
   ResumableFetchOptions,
   FetchState,
 } from "../base/BaseConnector";
+import { getValueByPath } from "../base/object-path";
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 
 type JsonRecord = Record<string, any>;
@@ -475,9 +476,6 @@ export class RestConnector extends BaseConnector {
   }
 
   private getValueByPath(obj: any, path: string): any {
-    if (!path) return obj;
-    return path.split(".").reduce((current, key) => {
-      return current && current[key] !== undefined ? current[key] : null;
-    }, obj);
+    return getValueByPath(obj, path);
   }
 }

@@ -1,5 +1,42 @@
+import axios from "axios";
 import { IConnector } from "../../database/workspace-schema";
+import { loggers } from "../../logging";
 import type { NormalizedCdcEvent } from "../../sync-cdc/events";
+
+const retryLogger = loggers.connector("http-retry");
+
+/**
+ * Options for {@link BaseConnector.executeHttpWithRetry}. Defaults preserve the
+ * behavior the individual connectors previously hand-rolled: up to 5 retries on
+ * HTTP 429 / 5xx, honoring a numeric `Retry-After` header, with exponential
+ * backoff otherwise.
+ */
+export interface HttpRetryOptions {
+  /** Max number of retries after the initial attempt. Default: 5. */
+  maxRetries?: number;
+  /** Base delay for exponential backoff, in ms. Default: 1000. */
+  baseDelayMs?: number;
+  /** Upper bound applied to exponential backoff, in ms. Default: 60_000. */
+  maxDelayMs?: number;
+  /**
+   * Fixed wait (seconds) used when the error is retryable but carries no
+   * numeric `Retry-After` header. When omitted, exponential backoff is used.
+   * A present numeric `Retry-After` header always takes precedence.
+   */
+  retryAfterFallbackSeconds?: number;
+  /**
+   * Decide whether a thrown error should be retried. Default: HTTP 429 or 5xx.
+   */
+  isRetryable?: (error: unknown) => boolean;
+  /**
+   * Transform the error that is ultimately thrown (when not retryable or once
+   * retries are exhausted). Lets connectors surface a friendlier message while
+   * keeping the original error type.
+   */
+  transformFinalError?: (error: unknown) => unknown;
+  /** Human-readable label used in the structured retry log line. */
+  label?: string;
+}
 
 export interface SyncLogger {
   log(
@@ -300,6 +337,82 @@ export abstract class BaseConnector {
    */
   protected async sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Default retryability check: HTTP 429 (rate limited) or any 5xx.
+   */
+  protected static isRetryableHttpError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) return false;
+    const status = error.response?.status;
+    if (status === undefined) return false;
+    return status === 429 || (status >= 500 && status < 600);
+  }
+
+  /**
+   * Parse a numeric `Retry-After` header (in seconds) from an axios error.
+   * Returns `undefined` when absent or non-numeric.
+   */
+  private static parseRetryAfterSeconds(error: unknown): number | undefined {
+    if (!axios.isAxiosError(error)) return undefined;
+    const header = error.response?.headers?.["retry-after"];
+    if (header === undefined || header === null) return undefined;
+    const seconds = parseInt(String(header), 10);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+
+  /**
+   * Shared HTTP retry wrapper for connectors (see rule 15: connectors should
+   * use one retry pattern, honor `Retry-After`, and back off on 429/5xx instead
+   * of ad-hoc loops). Connectors tune behavior via {@link HttpRetryOptions}.
+   */
+  protected async executeHttpWithRetry<T>(
+    fn: () => Promise<T>,
+    options: HttpRetryOptions = {},
+  ): Promise<T> {
+    const {
+      maxRetries = 5,
+      baseDelayMs = 1000,
+      maxDelayMs = 60_000,
+      retryAfterFallbackSeconds,
+      isRetryable = BaseConnector.isRetryableHttpError,
+      transformFinalError,
+      label = "HTTP request",
+    } = options;
+
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      try {
+        return await fn();
+      } catch (error) {
+        if (!isRetryable(error) || attempt >= maxRetries) {
+          throw transformFinalError ? transformFinalError(error) : error;
+        }
+
+        const headerSeconds = BaseConnector.parseRetryAfterSeconds(error);
+        let delayMs: number;
+        if (headerSeconds !== undefined) {
+          delayMs = headerSeconds * 1000;
+        } else if (retryAfterFallbackSeconds !== undefined) {
+          delayMs = retryAfterFallbackSeconds * 1000;
+        } else {
+          delayMs = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
+        }
+
+        retryLogger.warn(`${label} failed; retrying`, {
+          attempt: attempt + 1,
+          maxRetries,
+          delayMs,
+          status: axios.isAxiosError(error)
+            ? error.response?.status
+            : undefined,
+        });
+
+        await this.sleep(delayMs);
+        attempt++;
+      }
+    }
   }
 
   /**

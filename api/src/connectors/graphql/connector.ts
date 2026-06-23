@@ -5,6 +5,7 @@ import {
   ResumableFetchOptions,
   FetchState,
 } from "../base/BaseConnector";
+import { getValueByPath } from "../base/object-path";
 import axios, { AxiosInstance } from "axios";
 import { loggers } from "../../logging";
 
@@ -653,48 +654,11 @@ export class GraphQLConnector extends BaseConnector {
     operation: () => Promise<T>,
     settings: any,
   ): Promise<T> {
-    let attempts = 0;
-
-    while (attempts <= settings.maxRetries) {
-      try {
-        return await operation();
-      } catch (error) {
-        attempts++;
-
-        if (attempts > settings.maxRetries) {
-          throw error;
-        }
-
-        let delayMs: number;
-
-        if (axios.isAxiosError(error) && error.response?.status === 429) {
-          const retryAfter = error.response.headers["retry-after"];
-          delayMs = retryAfter
-            ? parseInt(retryAfter, 10) * 1000
-            : 1000 * Math.pow(2, attempts);
-          logger.warn("Rate limited, waiting before retry", {
-            delayMs,
-            attempt: attempts,
-            maxRetries: settings.maxRetries,
-          });
-        } else if (this.isRetryableError(error)) {
-          const backoff = 500 * Math.pow(2, attempts);
-          delayMs = backoff;
-          logger.warn("Retryable error, waiting before retry", {
-            delayMs,
-            attempt: attempts,
-            maxRetries: settings.maxRetries,
-          });
-        } else {
-          throw error;
-        }
-
-        logger.info("Retry delay", { delayMs });
-        await this.sleep(delayMs);
-      }
-    }
-
-    throw new Error("Max retries exceeded");
+    return this.executeHttpWithRetry(operation, {
+      maxRetries: settings.maxRetries,
+      isRetryable: error => this.isRetryableError(error),
+      label: "GraphQL API request",
+    });
   }
 
   private isRetryableError(error: any): boolean {
@@ -808,8 +772,6 @@ export class GraphQLConnector extends BaseConnector {
   }
 
   private getValueByPath(obj: any, path: string): any {
-    return path.split(".").reduce((current, key) => {
-      return current && current[key] !== undefined ? current[key] : null;
-    }, obj);
+    return getValueByPath(obj, path);
   }
 }
