@@ -74,7 +74,8 @@ account manually, flip `emailVerified` in the DB to log in.
 - The demo Postgres (`demo` DB, role `mako`/`mako`) uses lowercase, unquoted
   table names (`artist`, `album`); `SELECT * FROM "Artist"` fails,
   `SELECT * FROM artist` works.
-- AI features (AI query generation / chat) need `AI_GATEWAY_API_KEY`, which is
-  **not** injected — add it as a secret to enable them. Core SQL-client flows
-  (login, connections, console queries) work without it. `BILLING_ENABLED=false`
-  in `.env`, so nothing is billing-gated.
+- AI features (AI query generation / chat) need `AI_GATEWAY_API_KEY`. It is now
+  injected as a secret (also persisted in the gitignored `.env`), so AI works
+  out of the box; on startup the API logs `Refreshed gateway models cache`. Core
+  SQL-client flows (login, connections, console queries) work even without it.
+  `BILLING_ENABLED=false` in `.env`, so nothing is billing-gated.
