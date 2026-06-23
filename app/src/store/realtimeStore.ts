@@ -198,14 +198,16 @@ export const useRealtimeStore = create<RealtimeStore>()(
         }
       }
 
-      const tab = useConsoleStore.getState().tabs[event.consoleId];
-      if (!tab) return; // not open in this window — nothing to update
-
-      // Remember agent-origin edits on OPEN consoles so the pull routes them
-      // into the diff review (editor keeps the baseline until accept/reject).
+      // Remember agent-origin edits even when the tab is not open yet (common
+      // create_console → immediate modify_console race: the modify poke can
+      // land while openConsoleFromServer is still fetching). The pull after
+      // the tab opens uses this + lastDraftOrigin to route into diff review.
       if (event.origin === "agent") {
         agentOriginConsoles.add(event.consoleId);
       }
+
+      const tab = useConsoleStore.getState().tabs[event.consoleId];
+      if (!tab) return; // not open yet — openConsoleFromServer reconciles
 
       // A tab that never synced (no draftRevision) counts as revision 0 so
       // even the server's first revision is pulled.
@@ -293,11 +295,19 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (!workspaceId || event.intent !== "open_console") return;
 
       const consoleStore = useConsoleStore.getState();
-      if (consoleStore.tabs[event.consoleId]) {
-        consoleStore.setActiveTab(event.consoleId);
-        return;
-      }
-      void consoleStore.openConsoleFromServer(workspaceId, event.consoleId);
+      void (async () => {
+        if (consoleStore.tabs[event.consoleId]) {
+          consoleStore.setActiveTab(event.consoleId);
+        } else {
+          await consoleStore.openConsoleFromServer(
+            workspaceId,
+            event.consoleId,
+          );
+        }
+        // Pokes for this console may have arrived before the tab existed
+        // (create → immediate modify). Reconcile against the server now.
+        void get().syncRevisions();
+      })();
     };
 
     const handleEvent = (event: RealtimeEvent) => {
@@ -318,6 +328,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
           set(state => {
             state.chatActivity[event.chatId] = event.state;
           });
+          // Agent turn finished: reconcile open consoles. Catches missed
+          // console.updated pokes (SSE blip, poke-before-tab-open race) and
+          // detached server-side tool runs that completed while this window
+          // was attached to the chat.
+          if (event.state === "idle" && event.chatId === get().activeChatId) {
+            scheduleSync();
+          }
           break;
       }
     };

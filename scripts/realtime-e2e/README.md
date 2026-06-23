@@ -23,6 +23,10 @@ hide divergence. Run it whenever the sync layer changes:
 | `03-agent-modalities` | create/modify/run/set-connection/open: Monaco shows agent edits, results render, user↔agent edits interleave without loss, tab stays a draft |
 | `04-dead-sse` | consoles created during a silently-dead SSE still appear (in-band chat stream); liveness watchdog reconnects ≲85s and repairs missed pokes (~2 min, real time) |
 | `05-stale-save-dual-guard` | agent edits (draftRevision-only) can't be silently reverted by a stale Cmd+S (dual version+draftRevision guard) |
+| `07-create-modify-same-turn` | create + modify in one agent turn; client converges without refresh (post-open revisions-sync) |
+| `08-modify-dead-sse` | **negative** — detached API agent + dead workspace SSE stays stale until reconnect/wake |
+| `08b-ui-modify-dead-sse` | browser chat stream pulls modify_console even when workspace SSE is dead |
+| `09-modify-live-sse` | modify in a second turn with live workspace SSE reaches Monaco (agent diff review) |
 
 ## One-time setup
 

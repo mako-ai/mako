@@ -3043,8 +3043,10 @@ const Chat: React.FC<ChatProps> = ({
   // loadSession (reopening a chat must not re-open every console it ever
   // touched — the dedicated consoles-restore payload handles that).
   const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
+  const handledConsoleModifyToolCallIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     handledConsoleOpenToolCallIdsRef.current = new Set();
+    handledConsoleModifyToolCallIdsRef.current = new Set();
   }, [chatId]);
   useEffect(() => {
     const workspaceId = currentWorkspace?.id;
@@ -3065,17 +3067,36 @@ const Chat: React.FC<ChatProps> = ({
           : p.type?.startsWith("tool-")
             ? p.type.slice("tool-".length)
             : undefined;
+      if (p.state !== "output-available") continue;
+      if (!p.toolCallId) continue;
+
+      // modify_console has no in-band content apply — pull the authoritative
+      // copy when the tool result streams in (same resumability as open).
+      if (toolName === "modify_console") {
+        if (!p.output?.success) continue;
+        if (handledConsoleModifyToolCallIdsRef.current.has(p.toolCallId)) {
+          continue;
+        }
+        handledConsoleModifyToolCallIdsRef.current.add(p.toolCallId);
+        void useRealtimeStore.getState().syncRevisions();
+        continue;
+      }
+
       if (toolName !== "create_console" && toolName !== "open_console") {
         continue;
       }
-      if (p.state !== "output-available") continue;
       const consoleId = p.output?.consoleId;
-      if (!p.toolCallId || !p.output?.success || !consoleId) continue;
+      if (!p.output?.success || !consoleId) continue;
       if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
       handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
-      void useConsoleStore
-        .getState()
-        .openConsoleFromServer(workspaceId, consoleId);
+      void (async () => {
+        await useConsoleStore
+          .getState()
+          .openConsoleFromServer(workspaceId, consoleId);
+        // create → immediate modify can drop workspace pokes while the tab
+        // is still opening; reconcile once the tab carries a revision base.
+        void useRealtimeStore.getState().syncRevisions();
+      })();
     }
   }, [messages, currentWorkspace?.id]);
 
