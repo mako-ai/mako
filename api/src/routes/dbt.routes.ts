@@ -10,10 +10,13 @@ import { Hono } from "hono";
 import { Readable } from "stream";
 import { Types } from "mongoose";
 import { z } from "zod";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import {
+  AuthenticatedContext,
+  createWorkspaceRouteMiddleware,
+} from "../middleware/workspace.middleware";
 import {
   DbtFile,
   DbtJob,
@@ -88,42 +91,7 @@ export const dbtRoutes = new Hono();
 
 dbtRoutes.use("*", unifiedAuthMiddleware);
 
-// Workspace access check — mirrors skills.ts, and resolves the caller's
-// workspace role (memberRole) so the RBAC policy below can gate mutations.
-dbtRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (!workspaceId) {
-    await next();
-    return;
-  }
-  const user = c.get("user");
-  const workspace = c.get("workspace");
-
-  if (workspace) {
-    if (workspace._id.toString() !== workspaceId) {
-      return c.json(
-        { success: false, error: "API key not authorized for this workspace" },
-        403,
-      );
-    }
-    // Workspace-scoped API keys are service credentials with full access.
-    c.set("memberRole", "owner");
-  } else if (user) {
-    const member = await workspaceService.getMember(workspaceId, user.id);
-    if (!member) {
-      return c.json(
-        { success: false, error: "Access denied to workspace" },
-        403,
-      );
-    }
-    c.set("memberRole", member.role);
-  } else {
-    return c.json({ success: false, error: "Unauthorized" }, 401);
-  }
-
-  enrichContextWithWorkspace(workspaceId);
-  await next();
-});
+dbtRoutes.use("*", createWorkspaceRouteMiddleware({ apiKeyRole: "owner" }));
 
 // RBAC policy lives in ../dbt/rbac.ts (pure + unit-tested). Reads (GET) are
 // open to any member incl. viewer; viewers are otherwise read-only;

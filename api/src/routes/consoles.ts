@@ -23,8 +23,11 @@ import {
   QueryStatus,
 } from "../services/query-execution.service";
 import { Types } from "mongoose";
-import { loggers, enrichContextWithWorkspace } from "../logging";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { loggers } from "../logging";
+import {
+  AuthenticatedContext,
+  createWorkspaceRouteMiddleware,
+} from "../middleware/workspace.middleware";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   isDescriptionGenAvailable,
@@ -94,54 +97,7 @@ const consoleManager = new ConsoleManager();
 
 // Apply unified auth middleware to all console routes
 consoleRoutes.use("*", unifiedAuthMiddleware);
-
-// Middleware to verify workspace access and enrich logging context
-consoleRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId") as string;
-  if (workspaceId) {
-    // Validate ObjectId format early to return 400 instead of 500
-    if (!Types.ObjectId.isValid(workspaceId)) {
-      return c.json(
-        { success: false, error: "Invalid workspace ID format" },
-        400,
-      );
-    }
-
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-
-    if (workspace) {
-      // For API key auth, verify the URL workspace matches the API key's workspace
-      if (workspace._id.toString() !== workspaceId) {
-        return c.json(
-          {
-            success: false,
-            error: "API key not authorized for this workspace",
-          },
-          403,
-        );
-      }
-      c.set("memberRole", "admin");
-    } else if (user) {
-      // For session auth, verify user has access to this workspace
-      const member = await workspaceService.getMember(workspaceId, user.id);
-      if (!member) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-      c.set("memberRole", member.role);
-    } else {
-      // Neither API key nor session auth succeeded - reject request
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-
-    // Only enrich logging context after authorization succeeds
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+consoleRoutes.use("*", createWorkspaceRouteMiddleware({ apiKeyRole: "admin" }));
 
 // Helper function to verify workspace access
 async function verifyWorkspaceAccess(

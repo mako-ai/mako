@@ -33,6 +33,80 @@ export interface AuthenticatedContext extends Context {
   set(key: "apiKey", value: any): void;
 }
 
+export interface WorkspaceRouteMiddlewareOptions {
+  /**
+   * Role assigned to workspace-scoped API keys for this route group. Omit when
+   * the route group does not rely on `memberRole` for API-key callers.
+   */
+  apiKeyRole?: string;
+  /**
+   * Set to false for route groups that only need an access check and do not
+   * read `memberRole` for session callers.
+   */
+  resolveSessionRole?: boolean;
+}
+
+/**
+ * Shared workspace-scoped route middleware for routers mounted below
+ * `/api/workspaces/:workspaceId/...`.
+ */
+export function createWorkspaceRouteMiddleware(
+  options: WorkspaceRouteMiddlewareOptions = {},
+) {
+  const { apiKeyRole, resolveSessionRole = true } = options;
+
+  return async (c: AuthenticatedContext, next: Next) => {
+    const workspaceId = c.req.param("workspaceId");
+    if (!workspaceId) {
+      await next();
+      return;
+    }
+
+    if (!Types.ObjectId.isValid(workspaceId)) {
+      return c.json(
+        { success: false, error: "Invalid workspace ID format" },
+        400,
+      );
+    }
+
+    const user = c.get("user");
+    const workspace = c.get("workspace");
+
+    if (workspace) {
+      if (workspace._id.toString() !== workspaceId) {
+        return c.json(
+          { success: false, error: "API key not authorized for this workspace" },
+          403,
+        );
+      }
+      if (apiKeyRole) {
+        c.set("memberRole", apiKeyRole);
+      }
+    } else if (user) {
+      if (resolveSessionRole) {
+        const member = await workspaceService.getMember(workspaceId, user.id);
+        if (!member) {
+          return c.json(
+            { success: false, error: "Access denied to workspace" },
+            403,
+          );
+        }
+        c.set("memberRole", member.role);
+      } else if (!(await workspaceService.hasAccess(workspaceId, user.id))) {
+        return c.json(
+          { success: false, error: "Access denied to workspace" },
+          403,
+        );
+      }
+    } else {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+
+    enrichContextWithWorkspace(workspaceId);
+    await next();
+  };
+}
+
 /**
  * Require workspace to be set for the request
  */

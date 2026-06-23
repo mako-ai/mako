@@ -14,10 +14,13 @@ import { inngest } from "../inngest";
 import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
 import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import {
+  AuthenticatedContext,
+  createWorkspaceRouteMiddleware,
+} from "../middleware/workspace.middleware";
 import {
   validateQuery,
   checkQuerySafety,
@@ -323,52 +326,10 @@ async function getDestinationEntityRowCountsBatch(params: {
 
 // Apply unified auth middleware to all flow routes
 flowRoutes.use("*", unifiedAuthMiddleware);
-
-// Middleware to verify workspace access and enrich logging context
-flowRoutes.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId");
-  if (workspaceId) {
-    // Validate ObjectId format early to return 400 instead of 500
-    if (!Types.ObjectId.isValid(workspaceId)) {
-      return c.json(
-        { success: false, error: "Invalid workspace ID format" },
-        400,
-      );
-    }
-
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-
-    if (workspace) {
-      // For API key auth, verify the URL workspace matches the API key's workspace
-      if (workspace._id.toString() !== workspaceId) {
-        return c.json(
-          {
-            success: false,
-            error: "API key not authorized for this workspace",
-          },
-          403,
-        );
-      }
-    } else if (user) {
-      // For session auth, verify user has access to this workspace
-      const hasAccess = await workspaceService.hasAccess(workspaceId, user.id);
-      if (!hasAccess) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-    } else {
-      // Neither API key nor session auth succeeded - reject request
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-
-    // Only enrich logging context after authorization succeeds
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+flowRoutes.use(
+  "*",
+  createWorkspaceRouteMiddleware({ resolveSessionRole: false }),
+);
 
 async function assertOwnerOrAdmin(
   c: AuthenticatedContext,

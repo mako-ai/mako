@@ -8,10 +8,9 @@ import {
 } from "../database/workspace-schema";
 import { Types } from "mongoose";
 import { nanoid } from "nanoid";
-import { loggers, enrichContextWithWorkspace } from "../logging";
+import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { workspaceService } from "../services/workspace.service";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
+import { createWorkspaceRouteMiddleware } from "../middleware/workspace.middleware";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
@@ -519,49 +518,7 @@ function didDashboardArtifactInputsChange(
 }
 
 app.use("*", unifiedAuthMiddleware);
-
-app.use("*", async (c: AuthenticatedContext, next) => {
-  const workspaceId = c.req.param("workspaceId") as string;
-  if (workspaceId) {
-    if (!Types.ObjectId.isValid(workspaceId)) {
-      return c.json(
-        { success: false, error: "Invalid workspace ID format" },
-        400,
-      );
-    }
-
-    const user = c.get("user");
-    const workspace = c.get("workspace");
-
-    if (workspace) {
-      if (workspace._id.toString() !== workspaceId) {
-        return c.json(
-          {
-            success: false,
-            error: "API key not authorized for this workspace",
-          },
-          403,
-        );
-      }
-      c.set("memberRole", "admin");
-    } else if (user) {
-      // Single membership lookup (used for both access check + role extraction).
-      const member = await workspaceService.getMember(workspaceId, user.id);
-      if (!member) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-      c.set("memberRole", member.role);
-    } else {
-      return c.json({ success: false, error: "Unauthorized" }, 401);
-    }
-
-    enrichContextWithWorkspace(workspaceId);
-  }
-  await next();
-});
+app.use("*", createWorkspaceRouteMiddleware({ apiKeyRole: "admin" }));
 
 // GET /api/workspaces/:workspaceId/dashboards - List dashboards as tree
 app.openapi(
