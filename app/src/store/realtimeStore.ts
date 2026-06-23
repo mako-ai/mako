@@ -556,15 +556,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
           if (!res.success) return;
 
           const store = useConsoleStore.getState();
-          // An agent edit can also RENAME the console (modify_console title).
-          // The tree only auto-refreshes on save-origin pokes, so detect a
-          // name change here (before applying mutates the tab) and refresh the
-          // sidebar tree once after the loop.
-          let treeNeedsRefresh = false;
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
+
+            // An agent edit can also RENAME the console (modify_console title).
+            // Patch the sidebar tree node by id IN PLACE (no full refetch, so
+            // no loading skeletons or layout shift) — the Apollo-style
+            // "update entity by id" pattern. tab.title here is the pre-apply
+            // value, so a real rename is detected before it is applied below.
             if (entry.name && tab && entry.name !== tab.title) {
-              treeNeedsRefresh = true;
+              useConsoleTreeStore
+                .getState()
+                .applyRemoteRename(workspaceId, entry.id, entry.name);
             }
 
             // Agent (modify_console) edits surface as a Monaco Accept/Reject
@@ -632,9 +635,6 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 store.applyRemoteConsoleEntry(entry);
                 break;
             }
-          }
-          if (treeNeedsRefresh) {
-            void useConsoleTreeStore.getState().fetchTree(workspaceId);
           }
           for (const deletedId of res.deleted) {
             const tab = store.tabs[deletedId];

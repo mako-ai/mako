@@ -63,11 +63,14 @@ function segmentsForTab(
         ];
       }
       const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
-      return plain([
-        "Consoles",
-        group,
-        ...tab.filePath.split("/").filter(Boolean),
-      ]);
+      // The folder trail comes from the stored path, but the LEAF is the
+      // console's live display name (tab.title). An agent rename updates the
+      // name/title but not the stored path, so reading the leaf from filePath
+      // showed a stale name in the breadcrumb while the tab strip was correct.
+      const pathParts = tab.filePath.split("/").filter(Boolean);
+      const folderParts = pathParts.slice(0, -1);
+      const leaf = tab.title || pathParts[pathParts.length - 1];
+      return plain(["Consoles", group, ...folderParts, leaf]);
     }
     case "table-data":
       return plain([
