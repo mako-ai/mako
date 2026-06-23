@@ -3089,9 +3089,17 @@ const Chat: React.FC<ChatProps> = ({
       if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
       handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
       if (opensTab) {
-        void useConsoleStore
-          .getState()
-          .openConsoleFromServer(workspaceId, p.output.consoleId as string);
+        const consoleId = p.output.consoleId as string;
+        void (async () => {
+          await useConsoleStore
+            .getState()
+            .openConsoleFromServer(workspaceId, consoleId);
+          // A create followed immediately by a modify can drop the modify's
+          // workspace poke while the tab is still opening; reconcile once the
+          // tab carries a revision base so it never sticks on create-time
+          // content.
+          void useRealtimeStore.getState().syncRevisions();
+        })();
       } else {
         void useRealtimeStore.getState().syncRevisions();
       }
