@@ -646,6 +646,28 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "search",
   },
+  fetch_url: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const url = (input as Record<string, unknown>)?.url;
+      if (typeof url === "string" && url.length > 0) {
+        const display = url.length > 48 ? `${url.slice(0, 45)}…` : url;
+        return `Fetching ${display}`;
+      }
+      return "Fetching URL";
+    },
+    icon: "external-link",
+  },
+  web_search: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching web: "${query}"` : "Searching the web";
+    },
+    icon: "search",
+  },
   read_self_directive: {
     domain: "memory",
     execution: "server",
