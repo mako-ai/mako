@@ -278,7 +278,7 @@ export default function PublicAppViewer({ token, content }: Props) {
           ref={iframeRef}
           title={`public-app-${token}`}
           srcDoc={srcDoc}
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
         {booting && !previewError && (

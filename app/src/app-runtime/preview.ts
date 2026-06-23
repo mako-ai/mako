@@ -194,6 +194,10 @@ export function buildPreviewHtml(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The frame is an opaque origin (no allow-same-origin), so a plain
+         <a href> can't navigate the top frame. Default every link to a new
+         tab so app links open externally instead of silently no-opping. -->
+    <base target="_blank" />
     <script type="importmap">${importMap}</script>
     <script src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"></script>
     <style>

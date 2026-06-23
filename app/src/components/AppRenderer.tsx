@@ -321,7 +321,7 @@ export default function AppRenderer({ appId }: { appId: string }) {
           title={`app-preview-${appId}`}
           data-mako-app-preview={appId}
           srcDoc={srcDoc}
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
         {booting && errors.length === 0 && (
