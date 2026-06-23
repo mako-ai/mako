@@ -19,6 +19,14 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
   - _Replaces: DataGrip, DBeaver, Postico_
 - **📊 AI Dashboards**: Build interactive dashboards from conversation. Cross-filtering, scheduled data refresh, Parquet materialization -- powered by DuckDB in the browser.
   - _Replaces: Metabase, Looker, manual BI pipelines_
+- **🧱 dbt Transforms**: Build, run, and schedule dbt Core projects in-app -- file IDE, jobs, run history, lineage, and GitHub sync.
+  - _Replaces: dbt Cloud_
+- **⚛️ React Apps**: Ask the agent to build live React apps wired to your data through secure, credential-free bindings.
+  - _Replaces: Lovable, v0, internal-tool builders_
+- **🕓 Version History**: Every console and dashboard save is an immutable snapshot you can browse and restore.
+  - _Replaces: Lost SQL files, manual backups_
+- **🖥️ Mako Desktop**: Native app that bundles a local agent so `localhost` databases work out of the box.
+  - _Replaces: SSH tunnels and bastion hops for local DBs_
 - **👥 Team Collaboration**: Share connections, version-control queries, and work together in real-time.
   - _Replaces: Passing credentials around, lost SQL files_
 - **⚡ Blazing Fast**: No Java or Electron bloat. Opens instantly in your browser and runs smooth.
@@ -49,6 +57,8 @@ Sync external SaaS data into Mako's data warehouse for querying and dashboards.
 | **Stripe**     | ✅ Live | Track payments, subscriptions, and billing data  |
 | **PostHog**    | ✅ Live | Analyze product analytics and user behavior      |
 | **Close.com**  | ✅ Live | Sync CRM data (leads, opportunities, activities) |
+| **Claap**      | ✅ Live | Sync recordings and workspace data               |
+| **Calendly**   | ✅ Live | Sync events, invitees, and event types           |
 | **GraphQL**    | ✅ Live | Query any GraphQL API with custom endpoints      |
 | **REST**       | ✅ Live | Query any REST API with custom endpoints         |
 | **BigQuery**   | ✅ Live | Sync BigQuery datasets into the warehouse        |
@@ -71,12 +81,13 @@ Sync external SaaS data into Mako's data warehouse for querying and dashboards.
 ┌───────────┼──────────┼──────────────────┼──────────────┐
 │  API (Hono + Node.js)                                  │
 │  ┌──────────────────────────────────────────────────┐  │
-│  │ Unified Agent (triage → Console / Dashboard /    │  │
-│  │                         Flow sub-agents)         │  │
+│  │ Unified Agent (expertise modes: Query /          │  │
+│  │   Dashboard / Sync Flow / React App / Transforms │  │
+│  │   / Explore, switched via enable_mode)           │  │
 │  └──────────────────────────────────────────────────┘  │
 │  ┌──────────────┐ ┌───────────────┐ ┌──────────────┐  │
 │  │  DB Drivers   │ │  Connectors   │ │  Dashboard   │  │
-│  │  (9 drivers)  │ │  (6 sources)  │ │  Engine      │  │
+│  │  (9 drivers)  │ │  (8 sources)  │ │  Engine      │  │
 │  │              │ │               │ │  (DuckDB     │  │
 │  │              │ │               │ │   + Parquet) │  │
 │  └──────────────┘ └───────────────┘ └──────────────┘  │
