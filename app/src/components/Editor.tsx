@@ -103,6 +103,7 @@ import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
+import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
 import {
   computeConsoleStateHash,
@@ -1401,9 +1402,9 @@ function Editor({
       }
 
       if (result.success) {
-        // Update file path and title
+        // Update file path and title (title = canonical leaf name)
         updateFilePath(tabId, savePath);
-        updateTitle(tabId, savePath);
+        updateTitle(tabId, consoleLeafName(savePath));
         updateAccess(tabId, currentTab?.access);
         updateDirty(tabId, true);
 
@@ -1715,7 +1716,7 @@ function Editor({
 
         // Update the tab properties
         updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, pendingSaveData.path);
+        updateTitle(tabId, consoleLeafName(pendingSaveData.path));
         updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
@@ -1814,7 +1815,7 @@ function Editor({
 
         if (result.success) {
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, savePath);
+          updateTitle(targetId, consoleLeafName(savePath));
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -1905,7 +1906,7 @@ function Editor({
         } else {
           // "new" — first-time save of a draft; update the originating tab.
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, savePath);
+          updateTitle(targetId, consoleLeafName(savePath));
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -2289,8 +2290,7 @@ function Editor({
                                 }}
                                 title={tab.title}
                               >
-                                {tab.title?.split("/").filter(Boolean).pop() ||
-                                  tab.title}
+                                {tab.title}
                               </span>
                               <IconButton
                                 component="span"

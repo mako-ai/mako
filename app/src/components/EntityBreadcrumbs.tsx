@@ -12,6 +12,7 @@ import { tabRevealTarget } from "../lib/explorer-reveal";
 import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
+import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
 
 interface BreadcrumbSegment {
   label: string;
@@ -63,13 +64,11 @@ function segmentsForTab(
         ];
       }
       const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
-      // The folder trail comes from the stored path, but the LEAF is the
-      // console's live display name (tab.title). An agent rename updates the
-      // name/title but not the stored path, so reading the leaf from filePath
-      // showed a stale name in the breadcrumb while the tab strip was correct.
-      const pathParts = tab.filePath.split("/").filter(Boolean);
-      const folderParts = pathParts.slice(0, -1);
-      const leaf = tab.title || pathParts[pathParts.length - 1];
+      // Single source of truth: the leaf is the live display name (tab.title);
+      // the folder trail is derived from the full path by stripping that leaf
+      // (robust to a leaf name that itself contains slashes — legacy data).
+      const leaf = tab.title || consoleLeafName(tab.filePath);
+      const folderParts = consoleFolderTrail(tab.filePath, leaf);
       return plain(["Consoles", group, ...folderParts, leaf]);
     }
     case "table-data":
