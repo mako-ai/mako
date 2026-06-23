@@ -265,8 +265,8 @@ importers:
         specifier: ^14.25.0
         version: 14.25.0
       undici:
-        specifier: ^8.5.0
-        version: 8.5.0
+        specifier: ^6.26.0
+        version: 6.26.0
       unpdf:
         specifier: ^1.6.2
         version: 1.6.2
@@ -10683,10 +10683,6 @@ packages:
   undici@7.25.0:
     resolution: {integrity: sha512-xXnp4kTyor2Zq+J1FfPI6Eq3ew5h6Vl0F/8d9XU5zZQf1tX9s2Su1/3PiMmUANFULpmksxkClamIZcaUqryHsQ==}
     engines: {node: '>=20.18.1'}
-
-  undici@8.5.0:
-    resolution: {integrity: sha512-xamtWoB1EshgjpmlXd7GGm2VfdDtw1+rD8uhry8pSNW3If6S8E0m2T2+orSKeZXEn/aPJMviCpDBA65WJt8zhg==}
-    engines: {node: '>=22.19.0'}
 
   unenv@2.0.0-rc.14:
     resolution: {integrity: sha512-od496pShMen7nOy5VmVJCnq8rptd45vh6Nx/r2iPbrba6pa6p+tS2ywuIHRZ/OBvSbQZB0kWvpO9XBNVFXHD3Q==}
@@ -23942,8 +23938,6 @@ snapshots:
   undici@6.26.0: {}
 
   undici@7.25.0: {}
-
-  undici@8.5.0: {}
 
   unenv@2.0.0-rc.14:
     dependencies:

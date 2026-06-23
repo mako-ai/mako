@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
-import { Agent, fetch as undiciFetch } from "undici";
+
+type UndiciModule = typeof import("undici");
 
 const BLOCKED_IP_RANGES = new Set([
   "private",
@@ -109,14 +110,33 @@ async function resolveAndValidateHostname(
   };
 }
 
-function createPinnedAgent(validatedIp: string, family: 4 | 6): Agent {
-  return new Agent({
+function createPinnedAgent(
+  undici: UndiciModule,
+  validatedIp: string,
+  family: 4 | 6,
+): InstanceType<UndiciModule["Agent"]> {
+  return new undici.Agent({
     connect: {
-      lookup(_hostname, _options, callback) {
+      lookup(
+        _hostname: string,
+        _options: unknown,
+        callback: (
+          err: NodeJS.ErrnoException | null,
+          address: string,
+          family: number,
+        ) => void,
+      ) {
         callback(null, validatedIp, family);
       },
     },
   });
+}
+
+let undiciModulePromise: Promise<UndiciModule> | undefined;
+
+async function loadUndici(): Promise<UndiciModule> {
+  undiciModulePromise ??= import("undici");
+  return undiciModulePromise;
 }
 
 async function readBodyWithLimit(
@@ -189,8 +209,13 @@ export async function safeFetch(
     const { signal, cleanup } = mergeSignals(timeoutMs, options.signal);
 
     try {
-      const agent = createPinnedAgent(resolved.address, resolved.family);
-      const response = await undiciFetch(currentUrl.toString(), {
+      const undici = await loadUndici();
+      const agent = createPinnedAgent(
+        undici,
+        resolved.address,
+        resolved.family,
+      );
+      const response = await undici.fetch(currentUrl.toString(), {
         method: "GET",
         redirect: "manual",
         signal,
