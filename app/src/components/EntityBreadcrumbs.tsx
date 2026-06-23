@@ -63,11 +63,7 @@ function segmentsForTab(
         ];
       }
       const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
-      return plain([
-        "Consoles",
-        group,
-        ...tab.filePath.split("/").filter(Boolean),
-      ]);
+      return plain(["Consoles", group, tab.title || tab.filePath]);
     }
     case "table-data":
       return plain([
