@@ -122,11 +122,14 @@ function createPinnedAgent(
         _options: unknown,
         callback: (
           err: NodeJS.ErrnoException | null,
-          address: string,
-          family: number,
+          address: string | Array<{ address: string; family: number }>,
+          family?: number,
         ) => void,
       ) {
-        callback(null, validatedIp, family);
+        // Node 22+ expects an array of { address, family }; older Node accepts
+        // (err, address, family). Passing both shapes keeps CI (Node 20) and
+        // local dev (Node 22+) working with pinned DNS resolution.
+        callback(null, [{ address: validatedIp, family }]);
       },
     },
   });
