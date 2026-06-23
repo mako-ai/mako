@@ -524,6 +524,7 @@ function Editor({
     databaseName?: string;
     comment?: string;
     access?: "private" | "workspace";
+    folderId?: string | null;
   } | null>(null);
 
   // Refs for query cancellation (per-tab to support parallel queries)
@@ -1431,7 +1432,13 @@ function Editor({
           );
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
+            .addConsole(
+              currentWorkspace.id,
+              savePath ?? "",
+              tabId,
+              null,
+              currentTab?.access,
+            );
         }
 
         if (currentTab?.metadata?.openScheduleOnSave) {
@@ -1708,6 +1715,7 @@ function Editor({
         tabViewModes[pendingSaveData.tabId],
         pendingSaveData.comment,
         pendingSaveData.access,
+        pendingSaveData.folderId,
       );
 
       if (result.success) {
@@ -1734,7 +1742,13 @@ function Editor({
         );
         useConsoleTreeStore
           .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
+          .addConsole(
+            currentWorkspace.id,
+            pendingSaveData.path,
+            tabId,
+            pendingSaveData.folderId,
+            pendingSaveData.access,
+          );
 
         setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
         setSnackbarOpen(true);
@@ -1794,6 +1808,7 @@ function Editor({
           tabViewModes[saveDialogTabId],
           undefined,
           section === "workspace" ? "workspace" : "private",
+          folderId,
         );
 
         if (result.error === "conflict" && result.conflict) {
@@ -1805,6 +1820,7 @@ function Editor({
             databaseId,
             databaseName,
             access: section === "workspace" ? "workspace" : "private",
+            folderId,
           });
           setConflictData(result.conflict);
           setConflictDialogOpen(true);
@@ -1884,6 +1900,7 @@ function Editor({
           databaseId,
           databaseName,
           access: section === "workspace" ? "workspace" : "private",
+          folderId,
         });
         setConflictData(result.conflict);
         setConflictDialogOpen(true);
@@ -2289,8 +2306,7 @@ function Editor({
                                 }}
                                 title={tab.title}
                               >
-                                {tab.title?.split("/").filter(Boolean).pop() ||
-                                  tab.title}
+                                {tab.title}
                               </span>
                               <IconButton
                                 component="span"

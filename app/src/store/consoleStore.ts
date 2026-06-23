@@ -205,6 +205,7 @@ interface ConsoleActions {
     resultsViewMode?: string,
     comment?: string,
     access?: "private" | "workspace",
+    folderId?: string | null,
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -1264,6 +1265,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         resultsViewMode,
         comment,
         access,
+        folderId,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
@@ -1291,6 +1293,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 resultsViewMode,
                 comment: comment ?? "",
                 access,
+                folderId,
                 isPrivate:
                   access === undefined ? undefined : access === "private",
                 expectedVersion,

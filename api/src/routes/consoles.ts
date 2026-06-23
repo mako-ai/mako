@@ -924,6 +924,10 @@ consoleRoutes.openapi(
           400,
         );
       }
+      const targetFolderId =
+        typeof folderId === "string" && Types.ObjectId.isValid(folderId)
+          ? folderId
+          : undefined;
 
       // connectionId is optional - consoles can be saved without being associated with a specific database
       let targetConnectionId = connectionId;
@@ -942,6 +946,7 @@ consoleRoutes.openapi(
       const existingConsole = await consoleManager.getConsoleByPath(
         consolePath,
         workspaceId,
+        targetFolderId,
       );
 
       // If console exists and has a different ID, check for conflict
@@ -990,7 +995,7 @@ consoleRoutes.openapi(
         databaseId,
         {
           id: consoleIdToUse, // Use existing console ID if overwriting placeholder, otherwise client ID
-          folderId,
+          folderId: targetFolderId,
           description,
           language,
           isPrivate,
@@ -1045,7 +1050,7 @@ consoleRoutes.openapi(
             } = await generateDescriptionAndEmbedding(
               {
                 code: content,
-                title: consolePath.split("/").pop() || consolePath,
+                title: consolePath,
                 connectionName: connDoc?.name,
                 databaseType: connDoc?.type,
                 databaseName,
@@ -1242,9 +1247,19 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       // If this is an explicit save with a path, check for path conflicts
       if (isExplicitSave && body.path) {
         const consolePath = body.path;
+        const hasFolderId = Object.prototype.hasOwnProperty.call(
+          body,
+          "folderId",
+        );
+        const targetFolderId =
+          typeof body.folderId === "string" &&
+          Types.ObjectId.isValid(body.folderId)
+            ? body.folderId
+            : undefined;
         const existingConsole = await consoleManager.getConsoleByPath(
           consolePath,
           workspaceId,
+          targetFolderId,
         );
 
         // If a different console exists at this path, return conflict
@@ -1265,26 +1280,12 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           );
         }
 
-        // Parse path to get folder and name
-        const parts = consolePath.split("/");
-        const consoleName = parts[parts.length - 1];
-        let folderId: string | undefined;
-        if (parts.length > 1) {
-          const folderPath = parts.slice(0, -1);
-          folderId = await consoleManager.findOrCreateFolderPath(
-            folderPath,
-            workspaceId,
-            user.id,
-          );
-        }
-
         const displayName = await getUserDisplayName(user.id);
 
-        // Update with path information (use upsert in case console hasn't been auto-saved yet)
+        // Update with explicit save information (use upsert in case console hasn't been auto-saved yet)
         const setFields: Record<string, any> = {
           code: body.content,
-          name: consoleName,
-          folderId: folderId ? new Types.ObjectId(folderId) : undefined,
+          name: consolePath,
           connectionId: body.connectionId
             ? new Types.ObjectId(body.connectionId)
             : undefined,
@@ -1296,6 +1297,11 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           // reconnect doesn't re-surface this as an agent diff.
           lastDraftOrigin: "user",
         };
+        if (hasFolderId) {
+          setFields.folderId = targetFolderId
+            ? new Types.ObjectId(targetFolderId)
+            : null;
+        }
         if (body.chartSpec !== undefined) setFields.chartSpec = body.chartSpec;
         if (body.resultsViewMode !== undefined) {
           setFields.resultsViewMode = body.resultsViewMode;
@@ -1561,6 +1567,10 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
 
     // Path-based save (explicit user save to folder)
     const consolePath = pathOrId;
+    const targetFolderId =
+      typeof body.folderId === "string" && Types.ObjectId.isValid(body.folderId)
+        ? body.folderId
+        : undefined;
 
     // connectionId is optional - consoles can be saved without being associated with a specific database
     let targetConnectionId = body.connectionId;
@@ -1582,7 +1592,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
       body.databaseName,
       body.databaseId,
       {
-        folderId: body.folderId,
+        folderId: targetFolderId,
         description: body.description,
         language: body.language,
         isPrivate: body.isPrivate,
@@ -1623,7 +1633,7 @@ consoleRoutes.put("/:path{.+}", async (c: Context) => {
           } = await generateDescriptionAndEmbedding(
             {
               code: body.content,
-              title: consolePath.split("/").pop() || consolePath,
+              title: consolePath,
               connectionName: connDoc?.name,
               databaseType: connDoc?.type,
               databaseName: body.databaseName,
