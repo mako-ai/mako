@@ -530,9 +530,15 @@ app.openapi(
         );
       }
 
+      // force: true re-queries the owner-defined source queries even when the
+      // dashboard definition is unchanged. Without it, the rebuild service
+      // reuses the cached parquet (no new parquetBuiltAt), so the viewer's
+      // "data changed?" poll never observes a fresh snapshot and times out.
+      // The 5-minute cooldown above guards against abusive/expensive re-runs.
       const queueResult = await queueDashboardArtifactRefresh({
         dashboardId: dashboard._id.toString(),
         workspaceId: dashboard.workspaceId.toString(),
+        force: true,
         triggerType: "manual",
       });
 
