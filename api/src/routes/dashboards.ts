@@ -10,7 +10,10 @@ import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import { loggers } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { createWorkspaceRouteMiddleware } from "../middleware/workspace.middleware";
+import {
+  createWorkspaceRouteMiddleware,
+  type AuthenticatedContext,
+} from "../middleware/workspace.middleware";
 import {
   DashboardDefinitionSchema,
   normalizeWidgetLayouts,
