@@ -278,6 +278,15 @@ export function createServerConsoleTools({
               // Mark agent origin so a reconnecting client surfaces this as a
               // reviewable diff even if it missed the realtime poke.
               lastDraftOrigin: "agent",
+              // Set the next revision explicitly (instead of $inc) so the bump
+              // is null-safe. Legacy consoles have no draftRevision field; the
+              // Mongoose schema default reports it as 1, but `$inc` on the
+              // absent DB field also yields 1 — colliding with the value the
+              // client already holds, so revisions-sync saw "no change" and the
+              // first agent edit/rename never reached the open tab. currentRevision
+              // is the schema-defaulted value (1 for legacy), so +1 always
+              // exceeds what the client has.
+              draftRevision: currentRevision + 1,
             };
             if (title) setFields.name = title;
 
@@ -288,7 +297,7 @@ export function createServerConsoleTools({
                 draftRevision:
                   currentRevision === 1 ? { $in: [1, null] } : currentRevision,
               },
-              { $set: setFields, $inc: { draftRevision: 1 } },
+              { $set: setFields },
               { new: true },
             );
 
@@ -454,8 +463,11 @@ export function createServerConsoleTools({
                 databaseId,
                 databaseName,
                 updatedAt: new Date(),
+                // Null-safe bump (see modify_console): the schema default
+                // reports a legacy console's revision as 1 while `$inc` on the
+                // absent field also yields 1, so set the next value explicitly.
+                draftRevision: (doc.draftRevision ?? 1) + 1,
               },
-              $inc: { draftRevision: 1 },
             },
             { new: true },
           );

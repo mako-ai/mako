@@ -556,8 +556,16 @@ export const useRealtimeStore = create<RealtimeStore>()(
           if (!res.success) return;
 
           const store = useConsoleStore.getState();
+          // An agent edit can also RENAME the console (modify_console title).
+          // The tree only auto-refreshes on save-origin pokes, so detect a
+          // name change here (before applying mutates the tab) and refresh the
+          // sidebar tree once after the loop.
+          let treeNeedsRefresh = false;
           for (const entry of res.changed) {
             const tab = store.tabs[entry.id];
+            if (entry.name && tab && entry.name !== tab.title) {
+              treeNeedsRefresh = true;
+            }
 
             // Agent (modify_console) edits surface as a Monaco Accept/Reject
             // diff instead of being applied silently. Route the pulled copy
@@ -624,6 +632,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
                 store.applyRemoteConsoleEntry(entry);
                 break;
             }
+          }
+          if (treeNeedsRefresh) {
+            void useConsoleTreeStore.getState().fetchTree(workspaceId);
           }
           for (const deletedId of res.deleted) {
             const tab = store.tabs[deletedId];

@@ -17,6 +17,7 @@ const scenarios = [
   "06-wake-triggers.mjs",
   "07-create-modify-same-turn.mjs",
   "10-run-dead-sse.mjs",
+  "11-rename-legacy-console.mjs",
   "99-modify-dead-sse-repro.mjs",
 ];
 
