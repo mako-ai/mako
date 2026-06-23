@@ -49,6 +49,7 @@ import {
 import { useConsoleStore } from "./store/consoleStore";
 import { useExplorerRevealStore } from "./store/explorerRevealStore";
 import { tabRevealTarget } from "./lib/explorer-reveal";
+import { consoleLeafName } from "./lib/console-name";
 import Chat from "./components/Chat";
 import DatabaseExplorer, {
   type CollectionInfo,
@@ -495,7 +496,9 @@ function MainApp() {
       databaseName?: string,
     ) => {
       openOrFocusConsoleTab(
-        path,
+        // Title is the LEAF name (canonical display name); the full path is
+        // kept as filePath for the breadcrumb folder trail + deep link.
+        consoleLeafName(path),
         content,
         connectionId,
         path,
