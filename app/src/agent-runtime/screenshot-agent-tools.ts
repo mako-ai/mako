@@ -518,7 +518,13 @@ async function analyzeImageQuality(
  * composite the returned PNGs over the parent capture at the iframe rects.
  */
 const APP_PREVIEW_IFRAME_SELECTOR = "iframe[data-mako-app-preview]";
-const APP_PREVIEW_CAPTURE_TIMEOUT_MS = 8000;
+// Per-iframe self-capture cap. Kept deliberately short: capture_screenshot is a
+// client-only, long-running tool, so the longer it runs the wider the window in
+// which a mobile lock / computer sleep / proxy idle timeout can interrupt the
+// turn and strand the card. Iframes are captured in parallel (Promise.all), so
+// this bounds the whole composite, not each iframe serially. A timed-out iframe
+// degrades gracefully (its region is reported as a capture failure).
+const APP_PREVIEW_CAPTURE_TIMEOUT_MS = 4000;
 let captureSeq = 0;
 
 function findAppPreviewIframes(target: HTMLElement): HTMLIFrameElement[] {

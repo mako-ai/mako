@@ -23,6 +23,8 @@ import {
   hasBlockedDraftSave,
   hasPendingAgentReview,
 } from "./consoleStore";
+import { useAppStore } from "./appStore";
+import { useDbtStore } from "./dbtStore";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
@@ -53,7 +55,32 @@ export type RealtimeEvent =
       intent: "open_console";
       consoleId: string;
     }
-  | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" };
+  | { type: "chat.activity"; chatId: string; state: "streaming" | "idle" }
+  | {
+      type: "app.updated";
+      appId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "dbt.file.updated";
+      projectId: string;
+      path: string;
+      deleted?: boolean;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "dashboard.updated";
+      dashboardId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    };
 
 export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
 
@@ -317,10 +344,59 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
+    // Server-executed app mutation tools (issue #475 pattern for apps): pull the
+    // authoritative app over HTTP and rebuild its preview when an OPEN app's
+    // version advances. Echo-suppressed by clientId; agent writes carry
+    // `agent:<chatId>` so they are applied (this tab did not make the edit).
+    const handleAppUpdated = (
+      event: Extract<RealtimeEvent, { type: "app.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const appStore = useAppStore.getState();
+      const open = appStore.openApps[event.appId];
+      if (!open) return; // not open in this window — explorer refreshes lazily
+      if ((open.version ?? 0) >= event.version) return; // stale / own echo
+      void (async () => {
+        const fresh = await useAppStore
+          .getState()
+          .fetchApp(workspaceId, event.appId);
+        // Rebuild the preview iframe so server-applied file edits render.
+        if (fresh) useAppStore.getState().bumpPreview(event.appId);
+      })();
+    };
+
+    // Server-executed dbt file mutation tools: pull the fresh file content (or
+    // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId.
+    const handleDbtFileUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.file.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      // Only touch projects this window has loaded.
+      if (!useDbtStore.getState().filePathsByProject[event.projectId]) return;
+      void useDbtStore
+        .getState()
+        .applyRemoteFileUpdate(
+          workspaceId,
+          event.projectId,
+          event.path,
+          event.deleted,
+        );
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
           handleConsoleUpdated(event);
+          break;
+        case "app.updated":
+          handleAppUpdated(event);
+          break;
+        case "dbt.file.updated":
+          handleDbtFileUpdated(event);
           break;
         case "console.deleted":
           handleConsoleDeleted(event);

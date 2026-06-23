@@ -71,6 +71,8 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import { useAppStore } from "../store/appStore";
+import { useDbtStore } from "../store/dbtStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
@@ -156,15 +158,39 @@ function toolNameFromPartType(partType: string): string {
     : partType;
 }
 
-// Diagnostics for the two *live* stream-disconnect signatures so they can be
+// Server-executed mutation tools (issue #475 pattern) whose open-tab sync we
+// ALSO reconcile off the resumable chat stream — in addition to the workspace
+// realtime poke (app.updated / dbt.file.updated) — so an open app / dbt tab
+// converges even when the workspace SSE is dead (mobile lock / laptop sleep).
+const APP_SERVER_MUTATION_TOOLS = new Set<string>([
+  "app_write_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "app_delete_data_binding",
+]);
+const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
+  "create_dbt_file",
+  "modify_dbt_file",
+  "delete_dbt_file",
+]);
+
+// Diagnostics for the *live* stream-disconnect signatures so they can be
 // investigated after the fact:
 //   - "orphan-rescue": a turn settled to `ready` while non-interactive tool
 //     cards were still pending (the silent SSE drop → 204 reconnect path).
-//   - "stream-error":  the SDK surfaced a thrown stream error (e.g. a 524).
+//   - "stream-error":  the SDK surfaced a thrown stream error (e.g. a 524 or a
+//     network drop when the tab is frozen by a mobile lock / computer sleep).
+//   - "wake-resume":   the tab woke (visibility/focus/pageshow/resume) with an
+//     in-flight turn, so we proactively reattached to the buffered stream.
+// `resumed` records whether we attempted a resume (reattach) rather than
+// poisoning the tool cards — the recovery path we want to confirm in prod.
 // Emits a structured console line for live debugging and a PostHog product
 // event so frequency / affected tools are queryable. Correlate with the
 // server's `mako.agent` logs (and the resume-endpoint 204 reasons) via chatId.
-type StreamInterruptionPath = "orphan-rescue" | "stream-error";
+type StreamInterruptionPath = "orphan-rescue" | "stream-error" | "wake-resume";
 
 function reportStreamInterruption(detail: {
   path: StreamInterruptionPath;
@@ -173,6 +199,7 @@ function reportStreamInterruption(detail: {
   toolNames: string[];
   recoveredToolNames?: string[];
   errorMessage?: string;
+  resumed?: boolean;
 }): void {
   console.warn("[Chat][stream-interrupted]", detail);
   trackEvent("ai_chat_stream_interrupted", {
@@ -184,6 +211,7 @@ function reportStreamInterruption(detail: {
     recovered_tool_names: detail.recoveredToolNames?.join(",") || "(none)",
     recovered_count: detail.recoveredToolNames?.length ?? 0,
     error_message: detail.errorMessage,
+    resumed: detail.resumed ?? false,
   });
 }
 
@@ -1992,6 +2020,15 @@ const Chat: React.FC<ChatProps> = ({
     new Map<string, ActiveClientToolCall>(),
   );
   const cancelledClientToolCallIdsRef = useRef(new Set<string>());
+  // Spaces + bounds onError → resume retries. A failed resume re-fires onError,
+  // so retrying instantly would burst; instead we schedule one delayed attempt
+  // (giving a brief network blip time to recover) and cap attempts per window
+  // before falling back to poisoning the tool cards.
+  const errorResumeRef = useRef<{
+    count: number;
+    windowStart: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ count: 0, windowStart: 0, timer: null });
   const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const queuedPromptsRef = useRef(queuedPrompts);
@@ -2544,7 +2581,7 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
-      cancelActiveClientToolCalls("stream-error");
+      const errorMessage = err instanceof Error ? err.message : String(err);
       const lastMessage = messagesRef.current.at(-1);
       const stalledToolNames =
         lastMessage?.role === "assistant"
@@ -2560,12 +2597,89 @@ const Chat: React.FC<ChatProps> = ({
               })
               .map(p => toolNameFromPartType(p.type as string))
           : [];
+
+      // Structured server errors (billing / model availability) arrive as JSON
+      // with a `code` — those are genuine and must NOT be resumed.
+      let isStructuredServerError = false;
+      try {
+        const parsed = JSON.parse(errorMessage);
+        isStructuredServerError = !!parsed && typeof parsed.code === "string";
+      } catch {
+        /* not JSON → network / stream drop */
+      }
+
+      // The turn's lifetime is decoupled from the HTTP connection: the server
+      // keeps generating and buffers a resumable stream after a client
+      // disconnect. A mobile lock / computer sleep freezes the tab and the OS
+      // kills the SSE socket; on wake the dead read surfaces here as a
+      // non-structured network/stream error (the user-reported "network error"
+      // / "Stream disconnected"). When the turn still looks live, reattach
+      // instead of poisoning the cards — the replay re-emits the tool outputs,
+      // and any in-flight client tool (e.g. a slow capture_screenshot) is left
+      // running so it can settle on its own.
+      const turnLooksLive =
+        statusRef.current === "streaming" ||
+        statusRef.current === "submitted" ||
+        useRealtimeStore.getState().chatActivity[chatIdRef.current] ===
+          "streaming" ||
+        document.visibilityState !== "visible" ||
+        stalledToolNames.length > 0;
+
+      const RESUME_RETRY_DELAY_MS = 1500;
+      const RESUME_RETRY_WINDOW_MS = 30_000;
+      const RESUME_MAX_RETRIES = 4;
+      const now = Date.now();
+      const resumeState = errorResumeRef.current;
+      if (now - resumeState.windowStart > RESUME_RETRY_WINDOW_MS) {
+        resumeState.windowStart = now;
+        resumeState.count = 0;
+      }
+      // Keep taking the resume branch while a retry is still scheduled, so we
+      // never poison the cards out from under a pending reattach.
+      const canRetryResume =
+        resumeState.count < RESUME_MAX_RETRIES || resumeState.timer !== null;
+
+      if (
+        !isStructuredServerError &&
+        turnLooksLive &&
+        canRetryResume &&
+        !manualStopRequestedRef.current
+      ) {
+        reportStreamInterruption({
+          path: "stream-error",
+          chatId,
+          status,
+          toolNames: stalledToolNames,
+          errorMessage,
+          resumed: true,
+        });
+        // Clear the SDK error so the hook can stream again, then reattach to
+        // the buffered turn after a short delay. The delay coalesces the burst
+        // of onError calls a failing reconnect produces and gives a brief
+        // network blip time to recover. A finished turn answers 204 (cheap
+        // no-op) and the orphan-rescue effect handles any stranded card.
+        clearError();
+        if (!resumeState.timer) {
+          resumeState.count += 1;
+          resumeState.timer = setTimeout(() => {
+            resumeState.timer = null;
+            void resumeStreamRef.current?.();
+          }, RESUME_RETRY_DELAY_MS);
+        }
+        return;
+      }
+
+      // Genuine / fatal error (or too many resume retries): fall back to the
+      // original behavior — cancel in-flight client tools and poison pending
+      // tool parts so the AI SDK unblocks the next sendMessage.
+      cancelActiveClientToolCalls("stream-error");
       reportStreamInterruption({
         path: "stream-error",
         chatId,
         status,
         toolNames: stalledToolNames,
-        errorMessage: err instanceof Error ? err.message : String(err),
+        errorMessage,
+        resumed: false,
       });
       // When the stream disconnects (e.g. 524 timeout), tool calls may be
       // stuck in "input-available" state. The AI SDK blocks sendMessage until
@@ -2601,6 +2715,8 @@ const Chat: React.FC<ChatProps> = ({
       );
     },
     onFinish: () => {
+      // The turn settled cleanly — reset the resume-retry budget.
+      errorResumeRef.current.count = 0;
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }
@@ -2614,6 +2730,11 @@ const Chat: React.FC<ChatProps> = ({
   // re-bound to a fresh Chat instance whenever chatId changes.
   const resumeStreamRef = useRef(resumeStream);
   resumeStreamRef.current = resumeStream;
+
+  // Latest status for use inside stable event-listener / callback closures
+  // (the wake handler and onError) without re-installing listeners every turn.
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const createCancellationOutput = useCallback(
     (toolName: string): Record<string, unknown> => ({
@@ -2980,6 +3101,84 @@ const Chat: React.FC<ChatProps> = ({
     setMessages,
   ]);
 
+  // Reattach the chat stream when the tab wakes. A mobile lock / computer sleep
+  // freezes the page and the OS silently kills the SSE socket; on wake the AI
+  // SDK does not re-reconnect on its own, so an in-flight turn would otherwise
+  // surface as a "stream error" (or strand a tool card). The server keeps
+  // generating and buffers the turn as a resumable stream, so resumeStream()
+  // replays the buffered + live chunks; a finished turn answers 204 (cheap
+  // no-op). Mirrors realtimeStore.wake() (visibilitychange + focus + pageshow +
+  // resume), throttled so a single wake burst fires the work once. Listeners
+  // are installed once (stable closure over refs) and never re-installed.
+  useEffect(() => {
+    const WAKE_THROTTLE_MS = 2000;
+    let lastWakeAt = 0;
+    // Stable across the component's life (useRef object identity never changes);
+    // captured for the cleanup to read the latest pending resume timer.
+    const resumeState = errorResumeRef.current;
+
+    const hasResumableTurn = (): boolean => {
+      if (manualStopRequestedRef.current) return false;
+      const s = statusRef.current;
+      if (s === "streaming" || s === "submitted") return true;
+      if (
+        useRealtimeStore.getState().chatActivity[chatIdRef.current] ===
+        "streaming"
+      ) {
+        return true;
+      }
+      // A tool card frozen mid-turn (non-terminal, non-HITL) means the turn was
+      // interrupted while we were away — worth a reattach.
+      const last = messagesRef.current.at(-1);
+      if (!last || last.role !== "assistant") return false;
+      return (last.parts ?? []).some(p => {
+        const pt = p.type as string;
+        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+        if (isHumanInTheLoopToolPartType(pt)) return false;
+        const st = (p as Record<string, unknown>).state as string;
+        return (
+          st !== "output-available" && st !== "output-error" && st !== "error"
+        );
+      });
+    };
+
+    const wake = () => {
+      const now = Date.now();
+      // A window switch fires a burst (focus + visibilitychange); the first one
+      // does the work.
+      if (now - lastWakeAt < WAKE_THROTTLE_MS) return;
+      lastWakeAt = now;
+      if (!hasResumableTurn()) return;
+      reportStreamInterruption({
+        path: "wake-resume",
+        chatId: chatIdRef.current,
+        status: statusRef.current,
+        toolNames: [],
+        resumed: true,
+      });
+      void resumeStreamRef.current?.();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", wake);
+    window.addEventListener("pageshow", wake);
+    // Page Lifecycle API: fired when the browser unfreezes a frozen tab.
+    document.addEventListener("resume", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("pageshow", wake);
+      document.removeEventListener("resume", wake);
+      if (resumeState.timer) {
+        clearTimeout(resumeState.timer);
+        resumeState.timer = null;
+      }
+    };
+  }, []);
+
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
   useRenderCount("Chat", {
@@ -3110,6 +3309,87 @@ const Chat: React.FC<ChatProps> = ({
         })();
       } else {
         void useRealtimeStore.getState().syncRevisions();
+      }
+    }
+  }, [messages, currentWorkspace?.id]);
+
+  // In-band app/dbt sync — the app/dbt analogue of the console reconcile above.
+  // The app_* and dbt file mutation tools execute SERVER-SIDE, so an OPEN app /
+  // dbt tab learns about the agent's write via the workspace realtime poke
+  // (app.updated / dbt.file.updated). That poke rides the workspace SSE, which
+  // a mobile lock / laptop sleep / proxy half-close can kill — so reconcile
+  // off the RESUMABLE CHAT STREAM too: when the tool result streams in (or is
+  // replayed after a wake reattach), refetch the open app / dbt file. This
+  // makes the open tab converge even under a dead workspace SSE (poke = fast
+  // path, this = robust backstop). Mirrors the console pattern (issue #475).
+  const handledEntitySyncToolCallIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    handledEntitySyncToolCallIdsRef.current = new Set();
+  }, [chatId]);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    for (const part of last.parts ?? []) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        state?: string;
+        toolCallId?: string;
+        input?: { appId?: string; projectId?: string; path?: string };
+        output?: { success?: boolean };
+      };
+      const toolName =
+        p.type === "dynamic-tool"
+          ? p.toolName
+          : p.type?.startsWith("tool-")
+            ? p.type.slice("tool-".length)
+            : undefined;
+      if (!toolName) continue;
+      const isAppEdit = APP_SERVER_MUTATION_TOOLS.has(toolName);
+      const isDbtEdit = DBT_SERVER_MUTATION_TOOLS.has(toolName);
+      if (!isAppEdit && !isDbtEdit) continue;
+      if (
+        p.state !== "output-available" ||
+        !p.toolCallId ||
+        !p.output?.success
+      ) {
+        continue;
+      }
+      if (handledEntitySyncToolCallIdsRef.current.has(p.toolCallId)) continue;
+      handledEntitySyncToolCallIdsRef.current.add(p.toolCallId);
+
+      if (isAppEdit) {
+        const appId = p.input?.appId;
+        // Only reconcile a tab that is actually open here (mirrors the
+        // realtime handler); fetchApp + bumpPreview rebuilds the preview.
+        if (appId && useAppStore.getState().openApps[appId]) {
+          void (async () => {
+            const fresh = await useAppStore
+              .getState()
+              .fetchApp(workspaceId, appId);
+            if (fresh) useAppStore.getState().bumpPreview(appId);
+          })();
+        }
+      } else {
+        const projectId = p.input?.projectId;
+        const path = p.input?.path;
+        // Only touch projects this window has loaded.
+        if (
+          projectId &&
+          path &&
+          useDbtStore.getState().filePathsByProject[projectId]
+        ) {
+          void useDbtStore
+            .getState()
+            .applyRemoteFileUpdate(
+              workspaceId,
+              projectId,
+              path,
+              toolName === "delete_dbt_file",
+            );
+        }
       }
     }
   }, [messages, currentWorkspace?.id]);

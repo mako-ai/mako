@@ -16,7 +16,12 @@ import { z } from "zod";
 
 const appIdField = z.string().describe("App ID (from list_open_apps)");
 
-const writeFileSchema = z.object({
+// NOTE: the mutation tools below (write/delete/rename file, add/remove
+// dependency, create/delete data binding) execute SERVER-SIDE (mirroring the
+// console #475 pattern) — see api/src/agent-lib/tools/server-app-tools.ts. Their
+// schemas are exported here so the server tools and the app's tool cards share
+// a single source of truth. They are intentionally NOT in `clientAppTools`.
+export const writeFileSchema = z.object({
   appId: appIdField,
   path: z
     .string()
@@ -24,12 +29,12 @@ const writeFileSchema = z.object({
   contents: z.string().describe("Full UTF-8 file contents to write"),
 });
 
-const deleteFileSchema = z.object({
+export const deleteFileSchema = z.object({
   appId: appIdField,
   path: z.string().describe("File path to delete"),
 });
 
-const renameFileSchema = z.object({
+export const renameFileSchema = z.object({
   appId: appIdField,
   from: z.string().describe("Existing file path"),
   to: z.string().describe("New file path"),
@@ -40,7 +45,7 @@ const readFileSchema = z.object({
   path: z.string().describe("File path to read"),
 });
 
-const addDependencySchema = z.object({
+export const addDependencySchema = z.object({
   appId: appIdField,
   name: z.string().describe("npm package name, e.g. d3"),
   version: z
@@ -49,12 +54,12 @@ const addDependencySchema = z.object({
     .describe("Semver range. Defaults to 'latest' when omitted."),
 });
 
-const removeDependencySchema = z.object({
+export const removeDependencySchema = z.object({
   appId: appIdField,
   name: z.string().describe("npm package name to remove"),
 });
 
-const createDataBindingSchema = z.object({
+export const createDataBindingSchema = z.object({
   appId: appIdField,
   name: z
     .string()
@@ -78,7 +83,7 @@ const createDataBindingSchema = z.object({
     ),
 });
 
-const deleteDataBindingSchema = z.object({
+export const deleteDataBindingSchema = z.object({
   appId: appIdField,
   name: z
     .string()
@@ -137,48 +142,6 @@ export const clientAppTools = {
   app_read_file: tool({
     description: "Read the full contents of a single file in the app.",
     inputSchema: readFileSchema,
-  }),
-  app_write_file: tool({
-    description:
-      "Create or overwrite a file with full contents. This is the primary " +
-      "editing tool — write the complete file, not a diff. Writing the " +
-      "entrypoint or any imported file refreshes the live preview.",
-    inputSchema: writeFileSchema,
-  }),
-  app_delete_file: tool({
-    description: "Delete a file from the app.",
-    inputSchema: deleteFileSchema,
-  }),
-  app_rename_file: tool({
-    description: "Rename/move a file within the app.",
-    inputSchema: renameFileSchema,
-  }),
-  app_add_dependency: tool({
-    description:
-      "Add an npm dependency to the app (e.g. d3, framer-motion, recharts). " +
-      "The dependency becomes importable from app code on the next preview build.",
-    inputSchema: addDependencySchema,
-  }),
-  app_remove_dependency: tool({
-    description: "Remove an npm dependency from the app.",
-    inputSchema: removeDependencySchema,
-  }),
-  app_create_data_binding: tool({
-    description:
-      "Create a named data binding that the app can read via useQuery(name) " +
-      "from '@mako/app-sdk'. The query runs server-side, scoped to the " +
-      "workspace — the app never sees credentials. Set materialization to " +
-      "'parquet' for DuckDB-WASM-backed analytics (then call materialize_binding). " +
-      "Use the SQL connections/tools to inspect schema and validate the query first.",
-    inputSchema: createDataBindingSchema,
-  }),
-  app_delete_data_binding: tool({
-    description:
-      "Delete a named data binding (data source) from the app. Use this to " +
-      "clean up orphaned or superseded bindings. Removes the binding from the " +
-      "app definition and persists the change. Confirm the binding name with " +
-      "list_data_sources first; the change is reflected there afterward.",
-    inputSchema: deleteDataBindingSchema,
   }),
   materialize_binding: tool({
     description:

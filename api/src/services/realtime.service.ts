@@ -58,6 +58,36 @@ export type RealtimeEvent =
       type: "chat.activity";
       chatId: string;
       state: "streaming" | "idle";
+    }
+  // Agent-driven mutation pokes for server-executed app/dbt/dashboard tools
+  // (the app/dbt/dashboard analogue of console.updated). Open tabs pull the
+  // authoritative document over normal HTTP when the carried version/path is
+  // newer than what they hold (poke-then-pull). `clientId` lets a tab suppress
+  // its own echoes; agent writes carry `agent:<chatId>`.
+  | {
+      type: "app.updated";
+      appId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "dbt.file.updated";
+      projectId: string;
+      path: string;
+      deleted?: boolean;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
+    }
+  | {
+      type: "dashboard.updated";
+      dashboardId: string;
+      version: number;
+      updatedBy: string;
+      clientId?: string;
+      origin: "agent" | "save";
     };
 
 function channelFor(workspaceId: string): string {

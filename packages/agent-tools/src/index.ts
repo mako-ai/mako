@@ -56,9 +56,27 @@ export { clientDashboardTools } from "./dashboard-tools";
 export { clientFlowTools } from "./flow-tools";
 
 export { clientAppTools } from "./app-tools";
+export {
+  // Schemas for the server-executed app mutation tools (registered with execute
+  // functions in api/src/agent-lib/tools/server-app-tools.ts).
+  writeFileSchema,
+  deleteFileSchema,
+  renameFileSchema,
+  addDependencySchema,
+  removeDependencySchema,
+  createDataBindingSchema,
+  deleteDataBindingSchema,
+} from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 
 export { clientDbtTools } from "./dbt-tools";
+export {
+  // Schemas for the server-executed dbt file tools (registered with execute
+  // functions in api/src/agent-lib/tools/dbt-tools.ts).
+  createDbtFileSchema,
+  modifyDbtFileSchema,
+  deleteDbtFileSchema,
+} from "./dbt-tools";
 export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";
