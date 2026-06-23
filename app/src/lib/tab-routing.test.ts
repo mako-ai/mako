@@ -107,6 +107,19 @@ describe("tab-routing", () => {
     const bindingUrl = tabUrlPath("t", FIXTURES["app-binding"]) as string;
     expect(fileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
     expect(bindingUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS.app);
+
+    // /x/:id/file|job|runs must not be captured by the bare console pattern.
+    const dbtFileUrl = tabUrlPath("t", FIXTURES["dbt-file"]) as string;
+    const dbtJobUrl = tabUrlPath("t", FIXTURES["dbt-job"]) as string;
+    const dbtRunsUrl = tabUrlPath("t", FIXTURES["dbt-runs"]) as string;
+    expect(dbtFileUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
+    expect(dbtJobUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
+    expect(dbtRunsUrl).not.toMatch(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
+  });
+
+  it("encodes nested dbt file paths in their URL", () => {
+    const url = tabUrlPath("t", FIXTURES["dbt-file"]) as string;
+    expect(url).toBe("/x/proj-1/file/models/stg.sql");
   });
 
   it("tabs missing their identifiers produce no URL instead of a broken one", () => {
