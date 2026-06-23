@@ -122,8 +122,8 @@ interface ConsoleActions {
    * it for Accept/Reject review instead of applying it silently. The editor
    * keeps the pre-agent baseline until resolveAgentReview runs. Cumulative
    * agent edits update the diff's "modified" side while preserving the
-   * original baseline. No-op when the proposed content already matches the
-   * tab (nothing to review).
+   * original baseline. Fast-forwards revision/metadata when the proposed
+   * content already matches the tab (nothing to review).
    */
   beginAgentReview: (entry: ConsoleRevisionSyncEntry) => void;
   /**
@@ -689,8 +689,14 @@ export const useConsoleStore = create<ConsoleStore>()(
         if (!tab) return;
         const existing = pendingAgentReviews.get(entry.id);
         // Nothing to review: the proposed content already matches the tab
-        // (e.g. a stale re-sync after the user just accepted, or an echo).
-        if (!existing && tab.content === entry.content) return;
+        // (e.g. a run-artifact bump, a stale re-sync after the user just
+        // accepted, or an echo). Still fast-forward the revision/metadata so
+        // future syncs and revision-checked writes use the server's current
+        // base.
+        if (!existing && tab.content === entry.content) {
+          get().fastForwardRemoteConsoleEntry(entry);
+          return;
+        }
         // Idempotent: same proposal already on screen — don't re-dispatch
         // (avoids resetting the diff scroll on every unrelated poke).
         if (
