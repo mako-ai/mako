@@ -1999,12 +1999,15 @@ const Chat: React.FC<ChatProps> = ({
     new Map<string, ActiveClientToolCall>(),
   );
   const cancelledClientToolCallIdsRef = useRef(new Set<string>());
-  // Bounds onError → resume retries so a genuinely-offline client can't spin in
-  // a clearError()/resumeStream() loop. Resets after a quiet window.
-  const errorResumeRef = useRef<{ at: number; count: number }>({
-    at: 0,
-    count: 0,
-  });
+  // Spaces + bounds onError → resume retries. A failed resume re-fires onError,
+  // so retrying instantly would burst; instead we schedule one delayed attempt
+  // (giving a brief network blip time to recover) and cap attempts per window
+  // before falling back to poisoning the tool cards.
+  const errorResumeRef = useRef<{
+    count: number;
+    windowStart: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ count: 0, windowStart: 0, timer: null });
   const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const queuedPromptsRef = useRef(queuedPrompts);
@@ -2601,10 +2604,19 @@ const Chat: React.FC<ChatProps> = ({
         document.visibilityState !== "visible" ||
         stalledToolNames.length > 0;
 
+      const RESUME_RETRY_DELAY_MS = 1500;
+      const RESUME_RETRY_WINDOW_MS = 30_000;
+      const RESUME_MAX_RETRIES = 4;
       const now = Date.now();
       const resumeState = errorResumeRef.current;
-      if (now - resumeState.at > 15_000) resumeState.count = 0;
-      const canRetryResume = resumeState.count < 3;
+      if (now - resumeState.windowStart > RESUME_RETRY_WINDOW_MS) {
+        resumeState.windowStart = now;
+        resumeState.count = 0;
+      }
+      // Keep taking the resume branch while a retry is still scheduled, so we
+      // never poison the cards out from under a pending reattach.
+      const canRetryResume =
+        resumeState.count < RESUME_MAX_RETRIES || resumeState.timer !== null;
 
       if (
         !isStructuredServerError &&
@@ -2612,8 +2624,6 @@ const Chat: React.FC<ChatProps> = ({
         canRetryResume &&
         !manualStopRequestedRef.current
       ) {
-        resumeState.at = now;
-        resumeState.count += 1;
         reportStreamInterruption({
           path: "stream-error",
           chatId,
@@ -2623,10 +2633,18 @@ const Chat: React.FC<ChatProps> = ({
           resumed: true,
         });
         // Clear the SDK error so the hook can stream again, then reattach to
-        // the buffered turn. A finished turn answers 204 (cheap no-op) and the
-        // orphan-rescue effect handles any genuinely stranded tool card.
+        // the buffered turn after a short delay. The delay coalesces the burst
+        // of onError calls a failing reconnect produces and gives a brief
+        // network blip time to recover. A finished turn answers 204 (cheap
+        // no-op) and the orphan-rescue effect handles any stranded card.
         clearError();
-        void resumeStreamRef.current?.();
+        if (!resumeState.timer) {
+          resumeState.count += 1;
+          resumeState.timer = setTimeout(() => {
+            resumeState.timer = null;
+            void resumeStreamRef.current?.();
+          }, RESUME_RETRY_DELAY_MS);
+        }
         return;
       }
 
@@ -2676,6 +2694,8 @@ const Chat: React.FC<ChatProps> = ({
       );
     },
     onFinish: () => {
+      // The turn settled cleanly — reset the resume-retry budget.
+      errorResumeRef.current.count = 0;
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }
@@ -3072,6 +3092,9 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     const WAKE_THROTTLE_MS = 2000;
     let lastWakeAt = 0;
+    // Stable across the component's life (useRef object identity never changes);
+    // captured for the cleanup to read the latest pending resume timer.
+    const resumeState = errorResumeRef.current;
 
     const hasResumableTurn = (): boolean => {
       if (manualStopRequestedRef.current) return false;
@@ -3128,6 +3151,10 @@ const Chat: React.FC<ChatProps> = ({
       window.removeEventListener("focus", wake);
       window.removeEventListener("pageshow", wake);
       document.removeEventListener("resume", wake);
+      if (resumeState.timer) {
+        clearTimeout(resumeState.timer);
+        resumeState.timer = null;
+      }
     };
   }, []);
 
