@@ -95,12 +95,16 @@ const RECONNECT_MAX_MS = 30_000;
 /** Batch bursts of pokes (e.g. agent patching repeatedly) into one pull. */
 const SYNC_DEBOUNCE_MS = 250;
 /**
- * Liveness watchdog: the server heartbeats every 25s, so a stream that has
- * been silent longer than this is dead even though no `error` event fired
- * (NAT/proxy half-close, sleeping machine). 70s tolerates two missed beats.
+ * Liveness watchdog: the server heartbeats every 15s (realtime.ts
+ * HEARTBEAT_INTERVAL_MS), so a stream that has been silent longer than this
+ * is dead even though no `error` event fired (NAT/proxy half-close, sleeping
+ * machine). 35s tolerates two missed beats. This bounds how long a MISSED
+ * poke can leave a window stale with no user interaction: the reconnect's
+ * `onopen` runs syncRevisions, so lowering this directly shrinks the
+ * worst-case "edited elsewhere but not shown here" window (≈35s + one sweep).
  */
-const WATCHDOG_STALE_MS = 70_000;
-const WATCHDOG_INTERVAL_MS = 15_000;
+const WATCHDOG_STALE_MS = 35_000;
+const WATCHDOG_INTERVAL_MS = 8_000;
 /**
  * Wake-trigger staleness: when the user comes back to this window (focus /
  * visibility / pageshow), a stream that hasn't produced a frame within ~1.5
@@ -109,7 +113,7 @@ const WATCHDOG_INTERVAL_MS = 15_000;
  * their sockets without firing an `error` event, so `status === "open"`
  * cannot be trusted on wake.
  */
-const WAKE_STALE_MS = 40_000;
+const WAKE_STALE_MS = 25_000;
 /** Collapse the burst of focus+visibility events one window switch fires. */
 const WAKE_THROTTLE_MS = 1_000;
 /**
