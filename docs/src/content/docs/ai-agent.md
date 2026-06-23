@@ -28,6 +28,7 @@ The console is a full SQL editor — not a chat window with code blocks you copy
 - **Reads before writing** — always checks the current console state before modifying
 - **Supports patching** — for small edits (adding a WHERE clause, fixing a column name), it patches specific lines instead of replacing everything
 - **Multiple consoles** — each query gets its own tab, organized by topic
+- **Reviewable edits** — agent edits to an existing console arrive as a Monaco Accept/Reject diff rather than overwriting your buffer. Your editor keeps the pre-agent baseline until you resolve the review: **Accept** adopts the agent's version, **Reject** reverts it. Cumulative edits across a turn diff against the original baseline, and a pending review re-surfaces if you reload or reconnect mid-edit. (Renames apply immediately as metadata, not part of the content diff.)
 
 ## Multi-Database Support
 
@@ -84,31 +85,47 @@ Beyond the always-on self-directive, Mako supports **skills** — named, workspa
 
 Every turn, Mako injects a compact index of every skill plus the top-3 auto-retrieved bodies (entity overlap 0.6 + semantic similarity 0.4). See [Skills](/skills/) for the full model, admin UI, and REST API.
 
-## Multi-Agent Architecture
+## Expertise Modes
 
-Different contexts activate different specialized agents:
+Mako runs a **single unified agent**, not a fleet of separate agents. Capability is loaded dynamically: the agent switches *expertise modes* mid-conversation via the `enable_mode` tool, and each mode unlocks a domain-specific toolset plus guidance. A set of core tools (memory, skills, search, version history, planning, mode-switching) is always available regardless of mode.
 
-### Console Agent (default)
+On a fresh request the default mode is picked from what you're looking at — a dashboard view opens in **Dashboard**, the flow editor in **Sync Flow**, an app in **React App**, a dbt file/job in **Transforms** — otherwise **Query**. The agent then switches as the task demands.
 
-Active when you're working in a console tab. This is the core SQL client experience — schema discovery, query writing, execution, and console delivery.
+| Mode | Does |
+|------|------|
+| **Query** (default) | Build and run queries in consoles (SQL, MongoDB), funnels, reports, and analyses |
+| **Dashboard** | Create and edit dashboards, widgets, data sources, filters, and charts |
+| **Sync Flow** | Configure database-to-database sync flows, query templates, and schema mapping |
+| **React App** | Build [React apps](/apps/) wired to workspace data — edit files, add dependencies, create data bindings |
+| **Transforms** | Build and run [dbt transformations](/transforms/) — edit project files, compile, test, and run models against the warehouse |
+| **Explore** | Read-only investigation across connections, consoles, dashboards, and memory |
 
-### Flow Agent
+`Explore` is read-only by design. Mode ids persist in chat history, so renames stay backward-compatible (the legacy `dbt` mode resolves to `transform`). Enabling a mode adds its tools — modes accumulate across a turn rather than replacing one another.
 
-Active in the flow editor. Helps configure database-to-database sync flows — inspects source and destination schemas, writes extraction queries with template placeholders, and validates before applying.
+### Plan Gate
 
-### Dashboard Agent
+There is no user-facing plan/agent toggle. The model decides when planning is worthwhile: the moment it calls `submit_plan` in a turn, mutating tools are hard-gated until you approve the plan. Read-only and lifecycle tools (e.g. `enable_mode`, `todo_write`, `ask_clarifying_questions`) stay available throughout.
 
-Active when working on a dashboard. Dashboards combine saved queries (consoles) into interactive visualizations powered by in-browser DuckDB and Vega-Lite charts.
+### Dashboard specifics
 
-Key capabilities:
-- **Data sources** — create dashboard-local query definitions materialized into a local DuckDB instance
-- **Widgets** — charts (Vega-Lite), KPI cards, and data tables that query the local data
-- **Cross-filtering** — clicking a bar or slice in one chart filters all other charts automatically
+Dashboards combine saved queries (consoles) into interactive visualizations powered by in-browser DuckDB and Vega-Lite charts:
+
+- **Data sources** — dashboard-local query definitions materialized into a local DuckDB instance
+- **Widgets** — charts (Vega-Lite), KPI cards, and data tables querying the local data
+- **Cross-filtering** — clicking a bar or slice in one chart filters all others automatically
 - **Global filters** — dashboard-level date range pickers, dropdowns, and search fields
-- **Debugging & Guardrails** — enforces cross-filter diagnosis and source-query edit safety, verifying causes before modifying charts or retrying broken SQL edits.
-- **Multi-dashboard** — multiple dashboards can be open simultaneously, each with its own isolated DuckDB instance
+- **Multi-dashboard** — multiple dashboards open simultaneously, each with its own isolated DuckDB instance
 
-The agent handles edit-mode locking, so concurrent users cannot conflict.
+Edit-mode locking is handled automatically so concurrent users cannot conflict.
+
+## Version-Aware Tools
+
+All modes share two always-on tools for inspecting the history of saved consoles and dashboards:
+
+- `browse_version_history` — list past versions of a console or dashboard with author, timestamp, and comment.
+- `get_version_snapshot` — fetch the full snapshot of a specific version.
+
+Both are workspace-scoped. See [Version History](/version-history/).
 
 ## Visual Inspection
 
@@ -146,11 +163,43 @@ When billing is disabled (self-hosted default), all models are available to all 
 
 ### Thinking / Reasoning Models
 
-Models tagged with `reasoning` in the Gateway catalog automatically enable extended thinking. Budget tokens are set to 10,000 by default.
+Models tagged with `reasoning` in the Gateway catalog automatically enable extended thinking.
+
+For Anthropic models, Mako picks between two thinking payloads:
+
+- **Adaptive** (Claude 4.6 and newer, including models without version-numbered IDs like Fable 5) — the model manages its own reasoning effort. Reasoning is streamed in summarized form.
+- **Manual** (pre-4.6 Claude models) — a fixed `budget_tokens` allowance, 10,000 tokens by default.
+
+The mode is resolved in three layers: probed capabilities persisted in the model catalog (populated at catalog refresh), an explicit per-model map, and a fallback of adaptive for any uncatalogued Claude model. If the chosen mode is still wrong, the API returns a 400 — Mako self-heals by persisting the corrected mode and retrying the call once, so users never see the error.
 
 ### Model Selection
 
 Users pick their preferred model in the chat UI. The model is persisted per-user in workspace settings. If a user's saved model becomes unavailable (e.g. billing downgrade), Mako falls back to the best available model for their plan.
+
+### Utility / Fast Model
+
+Cheap, high-volume tasks — AI-suggested version commit messages, summaries, and other internal helpers — run on a dedicated **utility model** instead of the user's chosen chat model. By default Mako auto-selects the cheapest capable tool-use model, cheapest first.
+
+A super admin can pin an explicit utility model from **Settings → Admin → Model curation** (`PUT /api/admin/catalog/defaults` with `utilityModelId`). The pinned model is promoted to the front of the ranking as long as it stays visible in the catalog; if it disappears, Mako falls back to the cheapest available model. Set it to `null` to return to automatic selection.
+
+## Long-Running Queries
+
+Queries that take a while no longer fail at a fixed timeout. When the agent calls `run_console`, the query runs as a *detached server-side task* that outlives the tool call:
+
+- If it finishes within a short soft timeout (`QUERY_SOFT_TIMEOUT_MS`, ~90s default), the rows come back immediately, as before.
+- If it's still running after that, `run_console` returns `{ status: "running", executionId }` and the query **keeps running** server-side — nothing is cancelled.
+
+The agent then polls `check_query_status` (with backoff) to fetch the result, and can stop a run with `cancel_query`:
+
+| Tool                 | What It Does                                                                                          |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| `run_console`        | Executes a console's query as a detached run; returns rows, or `status: "running"` + `executionId`   |
+| `check_query_status` | Polls a running query by `consoleId` (+ optional `executionId`); returns `running`/`success`/`error`/`cancelled` |
+| `cancel_query`       | Aborts a running detached query (task + engine-native cancel)                                         |
+
+Results land via the persisted `lastRun` record and the realtime `console.run.completed` pipeline, so result polling works across server instances for **every engine** — no re-attach and no Inngest dependency (multi-instance realtime fan-out uses `REDIS_URL`). A server-side hard cap (`QUERY_HARD_MAX_EXECUTION_MS`, 5 minutes default) aborts any detached run that exceeds it, so no query can run forever.
+
+The short, single-shot execute tools (`sql_execute_query`, `mongo_execute_query`) stay on a brief timeout (`AGENT_DIRECT_QUERY_TIMEOUT_MS`, 60s default) for quick exploration; when one times out, the agent moves the query into a console and uses the resumable `run_console` flow instead.
 
 ## Safety
 
