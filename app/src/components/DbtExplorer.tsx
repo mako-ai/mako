@@ -76,6 +76,16 @@ import {
   DBT_JINJA_LANGUAGE_ID,
   registerDbtJinjaLanguage,
 } from "../lib/dbt-monaco";
+import {
+  useExplorerRevealStore,
+  selectRevealFor,
+} from "../store/explorerRevealStore";
+import {
+  DBT_FILE_SEP,
+  DBT_DIR_SEP,
+  DBT_JOB_SEP,
+  DBT_RUNS_SEP,
+} from "../lib/explorer-reveal";
 
 function dbtDiffLanguage(path: string): string {
   if (path.endsWith(".sql")) return DBT_JINJA_LANGUAGE_ID;
@@ -91,10 +101,12 @@ import ExplorerShell from "./ExplorerShell";
 // Folder node:  "<projectId>::dir::<dirPath>"
 // File node:    "<projectId>::file::<filePath>"
 // Job node:     "<projectId>::job::<jobId>"
-const FILE_SEP = "::file::";
-const DIR_SEP = "::dir::";
-const JOB_SEP = "::job::";
-const RUNS_SEP = "::runs::";
+// Separators are sourced from explorer-reveal.ts so reveal ids never drift
+// from the ids this explorer builds (see 71-tab-entities rule).
+const FILE_SEP = DBT_FILE_SEP;
+const DIR_SEP = DBT_DIR_SEP;
+const JOB_SEP = DBT_JOB_SEP;
+const RUNS_SEP = DBT_RUNS_SEP;
 const JOBS_DIR = "__jobs";
 
 function dirname(path: string): string {
@@ -324,6 +336,8 @@ export function DbtExplorer() {
     }
     return null;
   }, [activeTab]);
+
+  const reveal = useExplorerRevealStore(selectRevealFor("dbt"));
 
   const expandedFolders = useExplorerStore(s => s.dbt.expandedFolders);
   const toggleDbtFolder = useExplorerStore(s => s.toggleDbtFolder);
@@ -1503,6 +1517,8 @@ export function DbtExplorer() {
                     mode="sidebar"
                     searchQuery={searchQuery}
                     activeItemId={activeItemId}
+                    revealNodeId={reveal?.nodeId}
+                    revealNonce={reveal?.nonce}
                     getItemIcon={getItemIcon}
                     getContextMenuItems={getContextMenuItems}
                     getRightAdornment={getRightAdornment}

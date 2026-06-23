@@ -14,6 +14,13 @@ import {
   focusAppFileTab,
   focusAppTab,
 } from "../app-runtime/shell";
+import {
+  focusDbtConsoleTab,
+  focusDbtFileTab,
+  focusDbtJobTab,
+  focusDbtRunsTab,
+} from "../dbt-runtime/shell";
+import { useDbtStore } from "../store/dbtStore";
 import { focusDashboardDataSourceTab } from "../dashboard-runtime/shell";
 import {
   TAB_DEEP_LINK_PATTERNS,
@@ -87,6 +94,10 @@ export function UrlSync() {
     const appFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-file"]);
     const appBindingMatch = path.match(TAB_DEEP_LINK_PATTERNS["app-binding"]);
     const appMatch = path.match(TAB_DEEP_LINK_PATTERNS.app);
+    const dbtFileMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-file"]);
+    const dbtJobMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-job"]);
+    const dbtRunsMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-runs"]);
+    const dbtConsoleMatch = path.match(TAB_DEEP_LINK_PATTERNS["dbt-console"]);
     const planMatch = path.match(TAB_DEEP_LINK_PATTERNS.plan);
     const settingsSectionMatch = path.match(TAB_DEEP_LINK_PATTERNS.settings);
     const settingsMatch = path.match(/^\/settings\/?$/);
@@ -246,6 +257,51 @@ export function UrlSync() {
             focusAppTab(appId, app?.title || "App");
           });
       }
+    } else if (dbtFileMatch) {
+      // /x/:projectId/file/:path
+      const projectId = dbtFileMatch[1];
+      const filePath = decodePathSegments(dbtFileMatch[2]);
+      setLeftPane("dbt");
+      // Helper dedupes against an existing tab and sets the active project.
+      focusDbtFileTab(projectId, filePath);
+    } else if (dbtJobMatch) {
+      // /x/:projectId/job/:jobId
+      const projectId = dbtJobMatch[1];
+      const jobId = dbtJobMatch[2];
+      setLeftPane("dbt");
+
+      const existingTab = Object.values(useConsoleStore.getState().tabs).find(
+        t =>
+          t.kind === "dbt-job" &&
+          t.metadata?.projectId === projectId &&
+          t.metadata?.jobId === jobId,
+      );
+
+      if (existingTab) {
+        setActiveTab(existingTab.id);
+      } else {
+        // Fetch jobs to resolve the title, then open the tab (placeholder
+        // title until then). focusDbtJobTab dedupes if a tab already exists.
+        useDbtStore
+          .getState()
+          .fetchJobs(currentWorkspace.id, projectId)
+          .then(() => {
+            const job = useDbtStore
+              .getState()
+              .jobsByProject[projectId]?.find(j => j._id === jobId);
+            focusDbtJobTab(projectId, jobId, job?.name || "Job");
+          });
+      }
+    } else if (dbtRunsMatch) {
+      // /x/:projectId/runs
+      const projectId = dbtRunsMatch[1];
+      setLeftPane("dbt");
+      focusDbtRunsTab(projectId, "Runs");
+    } else if (dbtConsoleMatch) {
+      // /x/:projectId — the project Console is the project home.
+      const projectId = dbtConsoleMatch[1];
+      setLeftPane("dbt");
+      focusDbtConsoleTab(projectId, "Console");
     } else if (planMatch) {
       // /p/:chatId — plans only exist within a chat session, so we can only
       // focus a plan tab that is already present in this browser's state.

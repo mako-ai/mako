@@ -6,6 +6,7 @@
 
 import { useConsoleStore } from "../store/consoleStore";
 import { useUIStore } from "../store/uiStore";
+import { useDbtStore } from "../store/dbtStore";
 
 export function getCurrentWorkspaceId(): string | null {
   return useUIStore.getState().currentWorkspaceId ?? null;
@@ -41,6 +42,7 @@ export function focusDbtFileTab(projectId: string, path: string): string {
       { replacePristine: false },
     );
 
+  useDbtStore.getState().setActiveProject(projectId);
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
@@ -65,6 +67,7 @@ export function focusDbtConsoleTab(projectId: string, title: string): string {
       { replacePristine: false },
     );
 
+  useDbtStore.getState().setActiveProject(projectId);
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
@@ -104,6 +107,7 @@ export function focusDbtRunsTab(
     consoleStore.updateMetadata(tabId, { projectId, focusRunId: runId });
   }
 
+  useDbtStore.getState().setActiveProject(projectId);
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
@@ -142,6 +146,7 @@ export function focusDbtJobTab(
       { replacePristine: false },
     );
 
+  useDbtStore.getState().setActiveProject(projectId);
   consoleStore.setActiveTab(tabId);
   return tabId;
 }
