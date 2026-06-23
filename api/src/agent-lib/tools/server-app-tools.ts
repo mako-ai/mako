@@ -210,8 +210,9 @@ export function createServerAppTools({
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
           const file = (doc.files ?? []).find(f => f.path === from);
-          if (!file)
+          if (!file) {
             return { success: false, error: `File not found: ${from}` };
+          }
           doc.files = normalizeAppFiles([
             ...(doc.files ?? []).filter(f => f.path !== from && f.path !== to),
             { path: to, contents: file.contents },

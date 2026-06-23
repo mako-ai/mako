@@ -413,6 +413,17 @@ interface DbtActions {
     from: string,
     to: string,
   ) => Promise<boolean>;
+  /**
+   * Apply a server-originated file change (agent server tools poke the realtime
+   * channel). Pulls fresh content for an open file, or drops a deleted file.
+   * Skips files with unsaved local edits to avoid clobbering the user's buffer.
+   */
+  applyRemoteFileUpdate: (
+    workspaceId: string,
+    projectId: string,
+    path: string,
+    deleted?: boolean,
+  ) => Promise<void>;
 
   fetchJobs: (workspaceId: string, projectId: string) => Promise<void>;
   saveJob: (
@@ -1045,6 +1056,48 @@ export const useDbtStore = create<DbtStore>()(
     createFile: async (workspaceId, projectId, path, content = "") => {
       get().writeFile(projectId, path, content);
       return get().persistFile(workspaceId, projectId, path);
+    },
+
+    applyRemoteFileUpdate: async (workspaceId, projectId, path, deleted) => {
+      if (deleted) {
+        set(state => {
+          delete state.filesByProject[projectId]?.[path];
+          const paths = state.filePathsByProject[projectId];
+          if (paths) {
+            state.filePathsByProject[projectId] = paths.filter(p => p !== path);
+          }
+        });
+        return;
+      }
+      // Don't clobber a dirty buffer the user is editing.
+      const entry = get().filesByProject[projectId]?.[path];
+      if (entry?.dirty) return;
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          file: { path: string; content: string };
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
+        );
+        const content = response.file?.content ?? "";
+        set(state => {
+          if (!state.filesByProject[projectId]) {
+            state.filesByProject[projectId] = {};
+          }
+          state.filesByProject[projectId][path] = {
+            content,
+            dirty: false,
+            loaded: true,
+          };
+          const paths = state.filePathsByProject[projectId];
+          if (paths && !paths.includes(path)) {
+            paths.push(path);
+            paths.sort();
+          }
+        });
+      } catch {
+        /* best-effort live refresh */
+      }
     },
 
     deleteFile: async (workspaceId, projectId, path) => {

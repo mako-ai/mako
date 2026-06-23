@@ -18,12 +18,23 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Types } from "mongoose";
 import {
+  createDbtFileSchema,
+  modifyDbtFileSchema,
+  deleteDbtFileSchema,
+} from "@mako/agent-tools";
+import {
   DatabaseConnection,
   DbtFile,
   DbtJob,
   DbtProject,
   DbtRun,
 } from "../../database/workspace-schema";
+import { publishRealtimeEvent } from "../../services/realtime.service";
+import {
+  createVersion,
+  getLatestVersionNumber,
+  getUserDisplayName,
+} from "../../services/entity-version.service";
 import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
@@ -108,7 +119,43 @@ function summarizeLogs(logs: DbtLogLine[], maxLines = 30): string[] {
   return selected.map(log => `[${log.level}] ${log.line}`);
 }
 
-export const createDbtServerTools = (workspaceId: string, userId?: string) => {
+/** Mirror of dbt.routes.ts isSafeDbtPath — block traversal / absolute paths. */
+function isSafeDbtPath(path: string): boolean {
+  return (
+    typeof path === "string" &&
+    path.length > 0 &&
+    path.length < 1024 &&
+    !path.startsWith("/") &&
+    !path.split("/").includes("..") &&
+    !path.includes("\\")
+  );
+}
+
+export const createDbtServerTools = (
+  workspaceId: string,
+  userId?: string,
+  options?: { chatId?: string },
+) => {
+  const agentClientId = `agent:${options?.chatId ?? "unknown"}`;
+
+  // Poke open dbt-file tabs to pull the new content (poke-then-pull, mirrors
+  // the console #475 realtime sync).
+  const publishFileUpdated = (
+    projectId: string,
+    path: string,
+    deleted?: boolean,
+  ) => {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.file.updated",
+      projectId,
+      path,
+      deleted,
+      updatedBy: userId ?? "agent",
+      clientId: agentClientId,
+      origin: "agent",
+    });
+  };
+
   const assertProject = async (projectId: string) => {
     if (!Types.ObjectId.isValid(projectId)) {
       throw new Error("Invalid dbt project id");
@@ -164,7 +211,155 @@ export const createDbtServerTools = (workspaceId: string, userId?: string) => {
     return null;
   };
 
+  // Snapshot a dbt file version (entity-version pattern, mirrors the route).
+  const snapshotVersion = async (
+    fileId: Types.ObjectId,
+    projectId: Types.ObjectId,
+    wsId: Types.ObjectId,
+    path: string,
+    content: string,
+  ) => {
+    try {
+      const latest = await getLatestVersionNumber(fileId, "dbt-file");
+      const savedBy = userId ?? "agent";
+      await createVersion({
+        entityType: "dbt-file",
+        entityId: fileId,
+        workspaceId: wsId,
+        snapshot: { path, content },
+        savedBy,
+        savedByName: userId ? await getUserDisplayName(userId) : "Agent",
+        comment: `Save ${path} (v${latest + 1})`,
+      });
+    } catch {
+      /* version history is best-effort */
+    }
+    void projectId;
+  };
+
   return {
+    create_dbt_file: tool({
+      description:
+        "Create a new file in a dbt project (e.g. a staging model + its " +
+        "schema.yml entry). Fails if the file already exists — use " +
+        "modify_dbt_file to change existing files. After writing models, " +
+        "verify with dbt_parse and dbt_compile_model.",
+      inputSchema: createDbtFileSchema,
+      execute: async ({ projectId, path, contents }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!isSafeDbtPath(path)) {
+            return { success: false, error: "Invalid file path" };
+          }
+          const existing = await DbtFile.findOne({
+            projectId: project._id,
+            path,
+            is_deleted: { $ne: true },
+          });
+          if (existing) {
+            return {
+              success: false,
+              error: `File already exists: ${path}. Use modify_dbt_file to change it.`,
+            };
+          }
+          const file = await DbtFile.findOneAndUpdate(
+            { projectId: project._id, path },
+            {
+              $set: {
+                content: contents ?? "",
+                updatedBy: userId,
+                is_deleted: false,
+                workspaceId: project.workspaceId,
+              },
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true },
+          );
+          await snapshotVersion(
+            file._id,
+            project._id,
+            project.workspaceId,
+            path,
+            contents ?? "",
+          );
+          await DbtProject.updateOne(
+            { _id: project._id },
+            { $currentDate: { updatedAt: true } },
+          );
+          publishFileUpdated(projectId, path);
+          return { success: true, path };
+        } catch (error) {
+          return toolError(error, "Failed to create dbt file");
+        }
+      },
+    }),
+
+    modify_dbt_file: tool({
+      description:
+        "Overwrite an existing dbt project file with full contents. The open " +
+        "editor tab updates live; every save snapshots a version for undo. " +
+        "After editing, verify with dbt_parse / dbt_compile_model.",
+      inputSchema: modifyDbtFileSchema,
+      execute: async ({ projectId, path, contents }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!isSafeDbtPath(path)) {
+            return { success: false, error: "Invalid file path" };
+          }
+          if ((contents ?? "").length > 1_000_000) {
+            return { success: false, error: "File too large (max 1MB)" };
+          }
+          const file = await DbtFile.findOneAndUpdate(
+            { projectId: project._id, path },
+            {
+              $set: {
+                content: contents ?? "",
+                updatedBy: userId,
+                is_deleted: false,
+                workspaceId: project.workspaceId,
+              },
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true },
+          );
+          await snapshotVersion(
+            file._id,
+            project._id,
+            project.workspaceId,
+            path,
+            contents ?? "",
+          );
+          await DbtProject.updateOne(
+            { _id: project._id },
+            { $currentDate: { updatedAt: true } },
+          );
+          publishFileUpdated(projectId, path);
+          return { success: true, path };
+        } catch (error) {
+          return toolError(error, "Failed to save dbt file");
+        }
+      },
+    }),
+
+    delete_dbt_file: tool({
+      description: "Delete a file from a dbt project.",
+      inputSchema: deleteDbtFileSchema,
+      execute: async ({ projectId, path }) => {
+        try {
+          const project = await assertProject(projectId);
+          const result = await DbtFile.updateOne(
+            { projectId: project._id, path },
+            { $set: { is_deleted: true, updatedBy: userId } },
+          );
+          if (result.matchedCount === 0) {
+            return { success: false, error: `File not found: ${path}` };
+          }
+          publishFileUpdated(projectId, path, true);
+          return { success: true, path };
+        } catch (error) {
+          return toolError(error, "Failed to delete dbt file");
+        }
+      },
+    }),
+
     dbt_create_project: tool({
       description:
         "Initialize a new dbt project in this workspace. Use this when " +

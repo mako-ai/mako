@@ -70,6 +70,13 @@ export {
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 
 export { clientDbtTools } from "./dbt-tools";
+export {
+  // Schemas for the server-executed dbt file tools (registered with execute
+  // functions in api/src/agent-lib/tools/dbt-tools.ts).
+  createDbtFileSchema,
+  modifyDbtFileSchema,
+  deleteDbtFileSchema,
+} from "./dbt-tools";
 export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";

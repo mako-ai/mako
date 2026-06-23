@@ -24,6 +24,7 @@ import {
   hasPendingAgentReview,
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
+import { useDbtStore } from "./dbtStore";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
@@ -366,6 +367,26 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
+    // Server-executed dbt file mutation tools: pull the fresh file content (or
+    // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId.
+    const handleDbtFileUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.file.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      // Only touch projects this window has loaded.
+      if (!useDbtStore.getState().filePathsByProject[event.projectId]) return;
+      void useDbtStore
+        .getState()
+        .applyRemoteFileUpdate(
+          workspaceId,
+          event.projectId,
+          event.path,
+          event.deleted,
+        );
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -373,6 +394,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app.updated":
           handleAppUpdated(event);
+          break;
+        case "dbt.file.updated":
+          handleDbtFileUpdated(event);
           break;
         case "console.deleted":
           handleConsoleDeleted(event);

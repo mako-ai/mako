@@ -562,10 +562,12 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
+  // dbt file mutation tools execute SERVER-SIDE (issue #475 pattern; see
+  // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts). Open editor
+  // tabs follow along via the realtime channel (dbt.file.updated).
   create_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -576,8 +578,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   modify_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -588,8 +589,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   delete_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Deleting ${path}` : "Deleting dbt file";

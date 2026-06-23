@@ -38,13 +38,17 @@ const readFileSchema = z.object({
   path: dbtPathField,
 });
 
-const createFileSchema = z.object({
+// NOTE: the file mutation tools (create/modify/delete) execute SERVER-SIDE
+// (issue #475 pattern) — see api/src/agent-lib/tools/dbt-tools.ts. Their schemas
+// are exported here so the server tools and the dbt IDE tool cards share a
+// single source of truth. They are intentionally NOT in `clientDbtTools`.
+export const createDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
   contents: z.string().describe("Full UTF-8 file contents"),
 });
 
-const modifyFileSchema = z.object({
+export const modifyDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
   contents: z
@@ -54,7 +58,7 @@ const modifyFileSchema = z.object({
     ),
 });
 
-const deleteFileSchema = z.object({
+export const deleteDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
 });
@@ -73,26 +77,7 @@ export const clientDbtTools = {
       "(models, schema.yml, dbt_project.yml, seeds, macros...).",
     inputSchema: readFileSchema,
   }),
-  create_dbt_file: tool({
-    description:
-      "Create a new file in a dbt project (e.g. a staging model + its " +
-      "schema.yml entry). Fails if the file already exists — use " +
-      "modify_dbt_file to change existing files. After writing models, " +
-      "verify with dbt_parse and dbt_compile_model.",
-    inputSchema: createFileSchema,
-  }),
-  modify_dbt_file: tool({
-    description:
-      "Overwrite an existing dbt project file with full contents. The open " +
-      "editor tab updates live; every save snapshots a version for undo. " +
-      "After editing, verify with dbt_parse / dbt_compile_model.",
-    inputSchema: modifyFileSchema,
-  }),
-  delete_dbt_file: tool({
-    description: "Delete a file from a dbt project.",
-    inputSchema: deleteFileSchema,
-  }),
 };
 
-export type DbtCreateFileInput = z.infer<typeof createFileSchema>;
-export type DbtModifyFileInput = z.infer<typeof modifyFileSchema>;
+export type DbtCreateFileInput = z.infer<typeof createDbtFileSchema>;
+export type DbtModifyFileInput = z.infer<typeof modifyDbtFileSchema>;
