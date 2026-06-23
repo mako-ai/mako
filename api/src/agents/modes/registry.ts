@@ -151,6 +151,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "mongo_list_collections",
   "mongo_inspect_collection",
   "mongo_execute_query",
+  "fetch_url",
+  "web_search",
 ];
 
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
@@ -205,6 +207,8 @@ const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_open_dashboards",
   "get_dashboard_state",
   "capture_screenshot",
+  "fetch_url",
+  "web_search",
 ];
 
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
