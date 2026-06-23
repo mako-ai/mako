@@ -156,15 +156,20 @@ function toolNameFromPartType(partType: string): string {
     : partType;
 }
 
-// Diagnostics for the two *live* stream-disconnect signatures so they can be
+// Diagnostics for the *live* stream-disconnect signatures so they can be
 // investigated after the fact:
 //   - "orphan-rescue": a turn settled to `ready` while non-interactive tool
 //     cards were still pending (the silent SSE drop → 204 reconnect path).
-//   - "stream-error":  the SDK surfaced a thrown stream error (e.g. a 524).
+//   - "stream-error":  the SDK surfaced a thrown stream error (e.g. a 524 or a
+//     network drop when the tab is frozen by a mobile lock / computer sleep).
+//   - "wake-resume":   the tab woke (visibility/focus/pageshow/resume) with an
+//     in-flight turn, so we proactively reattached to the buffered stream.
+// `resumed` records whether we attempted a resume (reattach) rather than
+// poisoning the tool cards — the recovery path we want to confirm in prod.
 // Emits a structured console line for live debugging and a PostHog product
 // event so frequency / affected tools are queryable. Correlate with the
 // server's `mako.agent` logs (and the resume-endpoint 204 reasons) via chatId.
-type StreamInterruptionPath = "orphan-rescue" | "stream-error";
+type StreamInterruptionPath = "orphan-rescue" | "stream-error" | "wake-resume";
 
 function reportStreamInterruption(detail: {
   path: StreamInterruptionPath;
@@ -173,6 +178,7 @@ function reportStreamInterruption(detail: {
   toolNames: string[];
   recoveredToolNames?: string[];
   errorMessage?: string;
+  resumed?: boolean;
 }): void {
   console.warn("[Chat][stream-interrupted]", detail);
   trackEvent("ai_chat_stream_interrupted", {
@@ -184,6 +190,7 @@ function reportStreamInterruption(detail: {
     recovered_tool_names: detail.recoveredToolNames?.join(",") || "(none)",
     recovered_count: detail.recoveredToolNames?.length ?? 0,
     error_message: detail.errorMessage,
+    resumed: detail.resumed ?? false,
   });
 }
 
@@ -1992,6 +1999,12 @@ const Chat: React.FC<ChatProps> = ({
     new Map<string, ActiveClientToolCall>(),
   );
   const cancelledClientToolCallIdsRef = useRef(new Set<string>());
+  // Bounds onError → resume retries so a genuinely-offline client can't spin in
+  // a clearError()/resumeStream() loop. Resets after a quiet window.
+  const errorResumeRef = useRef<{ at: number; count: number }>({
+    at: 0,
+    count: 0,
+  });
   const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const queuedPromptsRef = useRef(queuedPrompts);
@@ -2544,7 +2557,7 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
-      cancelActiveClientToolCalls("stream-error");
+      const errorMessage = err instanceof Error ? err.message : String(err);
       const lastMessage = messagesRef.current.at(-1);
       const stalledToolNames =
         lastMessage?.role === "assistant"
@@ -2560,12 +2573,74 @@ const Chat: React.FC<ChatProps> = ({
               })
               .map(p => toolNameFromPartType(p.type as string))
           : [];
+
+      // Structured server errors (billing / model availability) arrive as JSON
+      // with a `code` — those are genuine and must NOT be resumed.
+      let isStructuredServerError = false;
+      try {
+        const parsed = JSON.parse(errorMessage);
+        isStructuredServerError = !!parsed && typeof parsed.code === "string";
+      } catch {
+        /* not JSON → network / stream drop */
+      }
+
+      // The turn's lifetime is decoupled from the HTTP connection: the server
+      // keeps generating and buffers a resumable stream after a client
+      // disconnect. A mobile lock / computer sleep freezes the tab and the OS
+      // kills the SSE socket; on wake the dead read surfaces here as a
+      // non-structured network/stream error (the user-reported "network error"
+      // / "Stream disconnected"). When the turn still looks live, reattach
+      // instead of poisoning the cards — the replay re-emits the tool outputs,
+      // and any in-flight client tool (e.g. a slow capture_screenshot) is left
+      // running so it can settle on its own.
+      const turnLooksLive =
+        statusRef.current === "streaming" ||
+        statusRef.current === "submitted" ||
+        useRealtimeStore.getState().chatActivity[chatIdRef.current] ===
+          "streaming" ||
+        document.visibilityState !== "visible" ||
+        stalledToolNames.length > 0;
+
+      const now = Date.now();
+      const resumeState = errorResumeRef.current;
+      if (now - resumeState.at > 15_000) resumeState.count = 0;
+      const canRetryResume = resumeState.count < 3;
+
+      if (
+        !isStructuredServerError &&
+        turnLooksLive &&
+        canRetryResume &&
+        !manualStopRequestedRef.current
+      ) {
+        resumeState.at = now;
+        resumeState.count += 1;
+        reportStreamInterruption({
+          path: "stream-error",
+          chatId,
+          status,
+          toolNames: stalledToolNames,
+          errorMessage,
+          resumed: true,
+        });
+        // Clear the SDK error so the hook can stream again, then reattach to
+        // the buffered turn. A finished turn answers 204 (cheap no-op) and the
+        // orphan-rescue effect handles any genuinely stranded tool card.
+        clearError();
+        void resumeStreamRef.current?.();
+        return;
+      }
+
+      // Genuine / fatal error (or too many resume retries): fall back to the
+      // original behavior — cancel in-flight client tools and poison pending
+      // tool parts so the AI SDK unblocks the next sendMessage.
+      cancelActiveClientToolCalls("stream-error");
       reportStreamInterruption({
         path: "stream-error",
         chatId,
         status,
         toolNames: stalledToolNames,
-        errorMessage: err instanceof Error ? err.message : String(err),
+        errorMessage,
+        resumed: false,
       });
       // When the stream disconnects (e.g. 524 timeout), tool calls may be
       // stuck in "input-available" state. The AI SDK blocks sendMessage until
@@ -2614,6 +2689,11 @@ const Chat: React.FC<ChatProps> = ({
   // re-bound to a fresh Chat instance whenever chatId changes.
   const resumeStreamRef = useRef(resumeStream);
   resumeStreamRef.current = resumeStream;
+
+  // Latest status for use inside stable event-listener / callback closures
+  // (the wake handler and onError) without re-installing listeners every turn.
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const createCancellationOutput = useCallback(
     (toolName: string): Record<string, unknown> => ({
@@ -2979,6 +3059,77 @@ const Chat: React.FC<ChatProps> = ({
     recoverOrphanedClientToolCall,
     setMessages,
   ]);
+
+  // Reattach the chat stream when the tab wakes. A mobile lock / computer sleep
+  // freezes the page and the OS silently kills the SSE socket; on wake the AI
+  // SDK does not re-reconnect on its own, so an in-flight turn would otherwise
+  // surface as a "stream error" (or strand a tool card). The server keeps
+  // generating and buffers the turn as a resumable stream, so resumeStream()
+  // replays the buffered + live chunks; a finished turn answers 204 (cheap
+  // no-op). Mirrors realtimeStore.wake() (visibilitychange + focus + pageshow +
+  // resume), throttled so a single wake burst fires the work once. Listeners
+  // are installed once (stable closure over refs) and never re-installed.
+  useEffect(() => {
+    const WAKE_THROTTLE_MS = 2000;
+    let lastWakeAt = 0;
+
+    const hasResumableTurn = (): boolean => {
+      if (manualStopRequestedRef.current) return false;
+      const s = statusRef.current;
+      if (s === "streaming" || s === "submitted") return true;
+      if (
+        useRealtimeStore.getState().chatActivity[chatIdRef.current] ===
+        "streaming"
+      ) {
+        return true;
+      }
+      // A tool card frozen mid-turn (non-terminal, non-HITL) means the turn was
+      // interrupted while we were away — worth a reattach.
+      const last = messagesRef.current.at(-1);
+      if (!last || last.role !== "assistant") return false;
+      return (last.parts ?? []).some(p => {
+        const pt = p.type as string;
+        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+        if (isHumanInTheLoopToolPartType(pt)) return false;
+        const st = (p as Record<string, unknown>).state as string;
+        return (
+          st !== "output-available" && st !== "output-error" && st !== "error"
+        );
+      });
+    };
+
+    const wake = () => {
+      const now = Date.now();
+      // A window switch fires a burst (focus + visibilitychange); the first one
+      // does the work.
+      if (now - lastWakeAt < WAKE_THROTTLE_MS) return;
+      lastWakeAt = now;
+      if (!hasResumableTurn()) return;
+      reportStreamInterruption({
+        path: "wake-resume",
+        chatId: chatIdRef.current,
+        status: statusRef.current,
+        toolNames: [],
+        resumed: true,
+      });
+      void resumeStreamRef.current?.();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", wake);
+    window.addEventListener("pageshow", wake);
+    // Page Lifecycle API: fired when the browser unfreezes a frozen tab.
+    document.addEventListener("resume", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("pageshow", wake);
+      document.removeEventListener("resume", wake);
+    };
+  }, []);
 
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
