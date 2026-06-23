@@ -148,6 +148,13 @@ interface TabPaginationState {
   capApplied: boolean;
 }
 
+// A saved console's path uses "/" as a folder separator, so the tab label
+// shows only the leaf segment. Drafts (e.g. agent-created consoles) may carry a
+// literal "/" in their name, so we only strip folders here — at the explicit
+// "save to path" sites — and never when rendering an arbitrary tab title.
+const leafNameFromPath = (path: string): string =>
+  path.split("/").filter(Boolean).pop() || path;
+
 // Styled PanelResizeHandle components
 const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   height: "4px",
@@ -1403,7 +1410,7 @@ function Editor({
       if (result.success) {
         // Update file path and title
         updateFilePath(tabId, savePath);
-        updateTitle(tabId, savePath);
+        updateTitle(tabId, leafNameFromPath(savePath));
         updateAccess(tabId, currentTab?.access);
         updateDirty(tabId, true);
 
@@ -1715,7 +1722,7 @@ function Editor({
 
         // Update the tab properties
         updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, pendingSaveData.path);
+        updateTitle(tabId, leafNameFromPath(pendingSaveData.path));
         updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
@@ -1814,7 +1821,7 @@ function Editor({
 
         if (result.success) {
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, savePath);
+          updateTitle(targetId, leafNameFromPath(savePath));
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -1905,7 +1912,7 @@ function Editor({
         } else {
           // "new" — first-time save of a draft; update the originating tab.
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, savePath);
+          updateTitle(targetId, leafNameFromPath(savePath));
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -2289,8 +2296,7 @@ function Editor({
                                 }}
                                 title={tab.title}
                               >
-                                {tab.title?.split("/").filter(Boolean).pop() ||
-                                  tab.title}
+                                {tab.title}
                               </span>
                               <IconButton
                                 component="span"

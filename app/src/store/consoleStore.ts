@@ -1052,13 +1052,19 @@ export const useConsoleStore = create<ConsoleStore>()(
 
           if (res.success) {
             const content = res.content || "";
-            const filePath = res.path || res.name;
+            // Drafts (e.g. agent-created consoles) have no folder placement and
+            // their name may contain a literal "/". Only saved consoles carry a
+            // folder path, so gate filePath on isSaved — otherwise a draft's
+            // name leaks into filePath and breadcrumbs split it into fake
+            // folders. (Mirrors openConsoleFromServer.)
+            const isSaved = res.isSaved ?? !!res.path;
+            const filePath = isSaved ? res.path || res.name : undefined;
 
             get().openTab({
               id: res.id,
               title: res.name || res.path || "Console",
               content,
-              isSaved: res.isSaved ?? !!filePath,
+              isSaved,
               connectionId: res.connectionId,
               databaseId: res.databaseId,
               databaseName: res.databaseName,
@@ -1105,13 +1111,16 @@ export const useConsoleStore = create<ConsoleStore>()(
 
           if (res.success) {
             const content = res.content || "";
-            const filePath = res.path || res.name;
+            // See loadConsole: gate filePath on isSaved so a draft's literal
+            // "/" name never leaks into folder-path consumers.
+            const isSaved = res.isSaved ?? !!res.path;
+            const filePath = isSaved ? res.path || res.name : undefined;
 
             get().openTab({
               id: res.id,
               title: res.name || res.path || "Console",
               content,
-              isSaved: res.isSaved ?? !!filePath,
+              isSaved,
               connectionId: res.connectionId,
               databaseId: res.databaseId,
               databaseName: res.databaseName,
