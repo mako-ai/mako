@@ -13,6 +13,7 @@ import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-t
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
 import { createFlowTools } from "../flow";
 import { createVersionHistoryTools } from "../../agent-lib/tools/version-history-tools";
+import { createWebTools } from "../../agent-lib/tools/web-tools";
 import { UNIFIED_SYSTEM_PROMPT, buildCurrentScreenContext } from "./prompt";
 
 export const unifiedAgentMeta: AgentMeta = {
@@ -47,6 +48,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
   );
   const versionHistoryTools = createVersionHistoryTools(workspaceId);
   const dbtServerTools = createDbtServerTools(workspaceId, userId);
+  const webTools = createWebTools(context.toolExecutionContext);
 
   const {
     list_connections: _flowListConnections,
@@ -83,6 +85,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...consoleSearchTools,
       ...dashboardSearchTools,
       ...versionHistoryTools,
+      ...webTools,
     },
   };
 }
