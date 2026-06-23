@@ -103,6 +103,9 @@ The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoin
 | `GET`  | `/api/workspaces/:wid/consoles/list`        | List all consoles          |
 | `GET`  | `/api/workspaces/:wid/consoles/:id/details` | Get console details + code |
 | `POST` | `/api/workspaces/:wid/consoles/:id/execute` | Execute a saved console    |
+| `GET`  | `/api/workspaces/:wid/consoles/:id/versions`                 | List version history (paginated, newest first) |
+| `GET`  | `/api/workspaces/:wid/consoles/:id/versions/:version`        | Get a specific version snapshot |
+| `POST` | `/api/workspaces/:wid/consoles/:id/versions/:version/restore` | Restore the console to a past version |
 | `PUT` | `/api/workspaces/:wid/consoles/:id/schedule` | Create or update a saved console schedule (admin only) |
 | `DELETE` | `/api/workspaces/:wid/consoles/:id/schedule` | Remove a saved console schedule (admin only) |
 | `POST` | `/api/workspaces/:wid/consoles/:id/schedule/run` | Trigger a scheduled console immediately (admin only) |
@@ -114,7 +117,7 @@ The legacy unauthenticated `POST /api/execute` and `POST /api/run/:path` endpoin
 | `DELETE` | `/api/workspaces/:wid/consoles/:id/collaborators/:userId`   | Remove a collaborator (owner/admin only)     |
 | `PATCH`  | `/api/workspaces/:wid/consoles/:id/sharing`                 | Update general access (`{ access, workspaceRole }`; owner/admin only) |
 
-See [Console](/console/) for full API documentation with examples. Scheduled query endpoints require workspace admin access and use the same session/API-key authentication as other workspace endpoints.
+See [Console](/console/) for full API documentation with examples. Scheduled query endpoints require workspace admin access and use the same session/API-key authentication as other workspace endpoints. Version history is covered under [Version History](/version-history/).
 
 ## Flows
 
@@ -232,6 +235,7 @@ The response is a **Server-Sent Events (SSE)** stream:
 | `GET`    | `/api/workspaces/:wid/chats/:id` | Get chat details   |
 | `PUT`    | `/api/workspaces/:wid/chats/:id` | Update chat title  |
 | `DELETE` | `/api/workspaces/:wid/chats/:id` | Delete a chat      |
+| `GET`    | `/api/workspaces/:wid/chat-images/:attachmentId` | Fetch a stored chat image attachment (authenticated proxy) |
 
 
 ## Skills
@@ -278,6 +282,10 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 | `PUT`    | `/api/workspaces/:wid/dashboards/:did`                           | Update dashboard                     |
 | `DELETE` | `/api/workspaces/:wid/dashboards/:did`                           | Delete dashboard                     |
 | `POST`   | `/api/workspaces/:wid/dashboards/:did/duplicate`                 | Duplicate a dashboard                |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions`                  | List dashboard version history       |
+| `GET`    | `/api/workspaces/:wid/dashboards/:did/versions/:version`         | Get a specific dashboard version     |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/versions/:version/restore` | Restore dashboard to a past version  |
+| `POST`   | `/api/workspaces/:wid/dashboards/:did/version-comment`           | AI-suggested commit message for pending changes |
 | `GET`    | `/api/workspaces/:wid/dashboards/:did/collaborators`             | List per-user collaborators                  |
 | `POST`   | `/api/workspaces/:wid/dashboards/:did/collaborators`             | Add/update a collaborator (`{ userId, role }`, role `viewer`\|`editor`; owner/admin only) |
 | `PATCH`  | `/api/workspaces/:wid/dashboards/:did/collaborators/:userId`     | Change a collaborator's role (owner/admin only) |
@@ -305,6 +313,21 @@ All endpoints require authentication and workspace access. Agent-side CRUD is av
 | `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger`                | Trigger materialization for a data source       |
 | `POST` | `/api/workspaces/:wid/dashboards/:did/materialization/trigger-all`            | Trigger materialization for all data sources    |
 | `GET`  | `/api/workspaces/:wid/dashboards/:did/materialization/stream/:dataSourceId`   | Stream Parquet artifact (supports range requests) |
+
+## Apps
+
+React apps built inside the workspace ([Apps](/apps/)). Private apps are owner-only — admins and API keys cannot access another member's private app.
+
+| Method   | Endpoint                                                                | Description                                              |
+| -------- | ----------------------------------------------------------------------- | -------------------------------------------------------- |
+| `GET`    | `/api/workspaces/:wid/apps`                                             | List apps visible to the caller                          |
+| `POST`   | `/api/workspaces/:wid/apps`                                             | Create an app (scaffolds a React + TypeScript starter)   |
+| `GET`    | `/api/workspaces/:wid/apps/:id`                                         | Get an app (files, dependencies, data bindings)          |
+| `PUT`    | `/api/workspaces/:wid/apps/:id`                                         | Update an app (files, dependencies, bindings, access)    |
+| `DELETE` | `/api/workspaces/:wid/apps/:id`                                         | Delete an app                                            |
+| `POST`   | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialize`               | Build/rebuild a binding's Parquet artifact (`{force}`)   |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization`           | Poll a binding's materialization status                  |
+| `GET`    | `/api/workspaces/:wid/apps/:id/bindings/:bid/materialization/artifact`  | Stream the materialized Parquet artifact                 |
 
 ## Public Shares
 
