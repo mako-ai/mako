@@ -102,6 +102,30 @@ export function findParentArray<T extends ManagedTreeNode>(
 }
 
 /**
+ * The id of the folder directly containing `targetId`, or `null` when the node
+ * lives at the root. Returns `undefined` when `targetId` is not in the tree, so
+ * callers can distinguish "at root" from "not found".
+ */
+export function findParentFolderId<T extends ManagedTreeNode>(
+  nodes: T[],
+  targetId: string,
+  currentFolderId: string | null = null,
+): string | null | undefined {
+  for (const node of nodes) {
+    if (node.id === targetId) return currentFolderId;
+    if (node.isDirectory && node.children) {
+      const found = findParentFolderId(
+        node.children as T[],
+        targetId,
+        node.id ?? null,
+      );
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Client-side filter: case-insensitive match on node name.
  * Folders pass if their name matches or any descendant matches.
  */

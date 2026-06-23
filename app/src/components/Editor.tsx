@@ -90,6 +90,8 @@ import FileExplorerDialog from "./FileExplorerDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
+import { useConsoleTreeStore } from "../store/consoleTreeStore";
+import { findParentFolderId } from "../store/lib/tree-helpers";
 import { useShallow } from "zustand/react/shallow";
 import { useDashboardStore } from "../store/dashboardStore";
 import { useUIStore } from "../store/uiStore";
@@ -147,13 +149,6 @@ interface TabPaginationState {
   pageSize: number;
   capApplied: boolean;
 }
-
-// A saved console's path uses "/" as a folder separator, so the tab label
-// shows only the leaf segment. Drafts (e.g. agent-created consoles) may carry a
-// literal "/" in their name, so we only strip folders here — at the explicit
-// "save to path" sites — and never when rendering an arbitrary tab title.
-const leafNameFromPath = (path: string): string =>
-  path.split("/").filter(Boolean).pop() || path;
 
 // Styled PanelResizeHandle components
 const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
@@ -531,6 +526,7 @@ function Editor({
     databaseName?: string;
     comment?: string;
     access?: "private" | "workspace";
+    folderId?: string | null;
   } | null>(null);
 
   // Refs for query cancellation (per-tab to support parallel queries)
@@ -1410,7 +1406,7 @@ function Editor({
       if (result.success) {
         // Update file path and title
         updateFilePath(tabId, savePath);
-        updateTitle(tabId, leafNameFromPath(savePath));
+        updateTitle(tabId, savePath);
         updateAccess(tabId, currentTab?.access);
         updateDirty(tabId, true);
 
@@ -1438,7 +1434,13 @@ function Editor({
           );
           useConsoleTreeStore
             .getState()
-            .addConsole(currentWorkspace.id, savePath ?? "", tabId);
+            .addConsole(
+              currentWorkspace.id,
+              savePath ?? "",
+              tabId,
+              null,
+              currentTab?.access,
+            );
         }
 
         if (currentTab?.metadata?.openScheduleOnSave) {
@@ -1715,6 +1717,7 @@ function Editor({
         tabViewModes[pendingSaveData.tabId],
         pendingSaveData.comment,
         pendingSaveData.access,
+        pendingSaveData.folderId,
       );
 
       if (result.success) {
@@ -1722,7 +1725,7 @@ function Editor({
 
         // Update the tab properties
         updateFilePath(tabId, pendingSaveData.path);
-        updateTitle(tabId, leafNameFromPath(pendingSaveData.path));
+        updateTitle(tabId, pendingSaveData.path);
         updateAccess(tabId, pendingSaveData.access);
         updateDirty(tabId, true);
 
@@ -1741,7 +1744,13 @@ function Editor({
         );
         useConsoleTreeStore
           .getState()
-          .addConsole(currentWorkspace.id, pendingSaveData.path, tabId);
+          .addConsole(
+            currentWorkspace.id,
+            pendingSaveData.path,
+            tabId,
+            pendingSaveData.folderId,
+            pendingSaveData.access,
+          );
 
         setSnackbarMessage(`Console saved at '${pendingSaveData.path}.js'`);
         setSnackbarOpen(true);
@@ -1801,6 +1810,7 @@ function Editor({
           tabViewModes[saveDialogTabId],
           undefined,
           section === "workspace" ? "workspace" : "private",
+          folderId,
         );
 
         if (result.error === "conflict" && result.conflict) {
@@ -1812,6 +1822,7 @@ function Editor({
             databaseId,
             databaseName,
             access: section === "workspace" ? "workspace" : "private",
+            folderId,
           });
           setConflictData(result.conflict);
           setConflictDialogOpen(true);
@@ -1821,7 +1832,7 @@ function Editor({
 
         if (result.success) {
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, leafNameFromPath(savePath));
+          updateTitle(targetId, savePath);
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -1891,6 +1902,7 @@ function Editor({
           databaseId,
           databaseName,
           access: section === "workspace" ? "workspace" : "private",
+          folderId,
         });
         setConflictData(result.conflict);
         setConflictDialogOpen(true);
@@ -1912,7 +1924,7 @@ function Editor({
         } else {
           // "new" — first-time save of a draft; update the originating tab.
           updateFilePath(targetId, savePath);
-          updateTitle(targetId, leafNameFromPath(savePath));
+          updateTitle(targetId, savePath);
           updateAccess(
             targetId,
             section === "workspace" ? "workspace" : "private",
@@ -2978,14 +2990,35 @@ function Editor({
           if (!saveDialogTabId) return "";
           const tab = tabs[saveDialogTabId];
           if (!tab) return "";
+          // Names are literal (a "/" is part of the name, not a folder path);
+          // folder placement is carried separately via initialFolderId. Use the
+          // console's own name, not its filePath, so a foldered console's folder
+          // segments aren't baked back into the name on save.
           if (saveDialogMode === "save-as-copy") {
-            const base = tab.filePath || tab.title || "";
+            const base = tab.title || tab.filePath || "";
             return base ? `${base} (copy)` : "";
           }
           if (saveDialogMode === "rename-move") {
-            return tab.filePath || tab.title || "";
+            return tab.title || tab.filePath || "";
           }
           return tab.title || "";
+        })()}
+        initialFolderId={(() => {
+          // Default the picker to the console's current folder so rename-move
+          // doesn't silently relocate a foldered console to the root.
+          if (!saveDialogTabId || !currentWorkspace) return null;
+          if (saveDialogMode === "new") return null;
+          const treeState = useConsoleTreeStore.getState();
+          const inMy = findParentFolderId(
+            treeState.myConsoles[currentWorkspace.id] || [],
+            saveDialogTabId,
+          );
+          if (inMy !== undefined) return inMy;
+          const inWorkspace = findParentFolderId(
+            treeState.sharedWithWorkspace[currentWorkspace.id] || [],
+            saveDialogTabId,
+          );
+          return inWorkspace ?? null;
         })()}
         initialSection={
           saveDialogTabId && tabs[saveDialogTabId]?.access === "workspace"

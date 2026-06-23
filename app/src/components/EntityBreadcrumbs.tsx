@@ -63,10 +63,20 @@ function segmentsForTab(
         ];
       }
       const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
+      // filePath is "<folderPath>/<name>" for a foldered console, or just the
+      // (possibly slash-containing) name at the root. Strip the trailing name
+      // before splitting so a literal "/" inside the name isn't mistaken for a
+      // folder separator, while still surfacing real folders in the trail.
+      const name = tab.title || tab.filePath;
+      const folderPrefix =
+        tab.filePath.length > name.length && tab.filePath.endsWith(name)
+          ? tab.filePath.slice(0, tab.filePath.length - name.length)
+          : "";
       return plain([
         "Consoles",
         group,
-        ...tab.filePath.split("/").filter(Boolean),
+        ...folderPrefix.split("/").filter(Boolean),
+        name,
       ]);
     }
     case "table-data":

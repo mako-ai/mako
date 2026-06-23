@@ -5,7 +5,6 @@ import { api, unwrapBody } from "../api";
 import {
   findById,
   findParentArray,
-  findTargetArray,
   insertAlphabetically,
   insertAtTop,
   removeById,
@@ -132,7 +131,13 @@ interface TreeState {
   refresh: (workspaceId: string) => Promise<ConsoleEntry[]>;
   init: (workspaceId: string) => Promise<void>;
   setTree: (workspaceId: string, tree: ConsoleEntry[]) => void;
-  addConsole: (workspaceId: string, path: string, id: string) => void;
+  addConsole: (
+    workspaceId: string,
+    name: string,
+    id: string,
+    folderId?: string | null,
+    access?: ConsoleAccessLevel,
+  ) => void;
   searchConsoles: (workspaceId: string, query: string) => Promise<void>;
   clearSearch: () => void;
 
@@ -280,25 +285,27 @@ export const useConsoleTreeStore = create<TreeState>()(
       });
     },
 
-    addConsole: (workspaceId, path, id) => {
+    addConsole: (workspaceId, name, id, folderId, access) => {
       set(state => {
-        const tree = state.myConsoles[workspaceId] || [];
-        const segments = path.split("/").filter(Boolean);
-        const fileName = segments[segments.length - 1];
-        const folderSegments = segments.slice(0, -1);
-        const existing = removeById(tree, id);
-        const targetArray = findTargetArray(tree, folderSegments);
+        const existing = removeFromAnySection(state, workspaceId, id);
         const newConsole: ConsoleEntry = {
           ...(existing || {}),
-          name: fileName,
-          path,
+          name,
+          path: name,
           isDirectory: false,
           id,
+          folderId: folderId ?? undefined,
+          access: access ?? existing?.access,
         };
-        const destination = targetArray || tree;
-        insertAlphabetically(destination, newConsole);
-        state.myConsoles[workspaceId] = tree;
-        state.trees[workspaceId] = tree;
+        const targetSection = access === "workspace" ? "workspace" : "my";
+        insertIntoFolder(
+          state,
+          workspaceId,
+          newConsole,
+          folderId ?? null,
+          targetSection,
+        );
+        state.trees[workspaceId] = state.myConsoles[workspaceId] || [];
       });
     },
 

@@ -205,6 +205,7 @@ interface ConsoleActions {
     resultsViewMode?: string,
     comment?: string,
     access?: "private" | "workspace",
+    folderId?: string | null,
   ) => Promise<ConsoleSaveResponse>;
   deleteConsole: (
     workspaceId: string,
@@ -1055,8 +1056,8 @@ export const useConsoleStore = create<ConsoleStore>()(
             // Drafts (e.g. agent-created consoles) have no folder placement and
             // their name may contain a literal "/". Only saved consoles carry a
             // folder path, so gate filePath on isSaved — otherwise a draft's
-            // name leaks into filePath and breadcrumbs split it into fake
-            // folders. (Mirrors openConsoleFromServer.)
+            // name leaks into filePath, marking it pseudo-saved (a Cmd+S would
+            // skip the save dialog). Mirrors openConsoleFromServer.
             const isSaved = res.isSaved ?? !!res.path;
             const filePath = isSaved ? res.path || res.name : undefined;
 
@@ -1273,6 +1274,7 @@ export const useConsoleStore = create<ConsoleStore>()(
         resultsViewMode,
         comment,
         access,
+        folderId,
       ) => {
         try {
           const cleanPath = path.endsWith(".js") ? path.slice(0, -3) : path;
@@ -1300,6 +1302,7 @@ export const useConsoleStore = create<ConsoleStore>()(
                 resultsViewMode,
                 comment: comment ?? "",
                 access,
+                folderId,
                 isPrivate:
                   access === undefined ? undefined : access === "private",
                 expectedVersion,

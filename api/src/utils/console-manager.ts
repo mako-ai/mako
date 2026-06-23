@@ -476,33 +476,11 @@ export class ConsoleManager {
             workspaceId: new Types.ObjectId(workspaceId),
           });
         } else {
-          // Try to find by path
-          const parts = consolePath.split("/");
-          const consoleName = parts[parts.length - 1];
-
-          if (parts.length > 1) {
-            // Console is in a folder - need to find the folder first
-            const folderParts = parts.slice(0, -1);
-            const folderId = await this.findFolderByPath(
-              folderParts,
-              workspaceId,
-            );
-
-            savedConsole = await SavedConsole.findOne({
-              name: consoleName,
-              workspaceId: new Types.ObjectId(workspaceId),
-              folderId: folderId
-                ? new Types.ObjectId(folderId)
-                : { $exists: false },
-            });
-          } else {
-            // Console is at root level
-            savedConsole = await SavedConsole.findOne({
-              name: consoleName,
-              workspaceId: new Types.ObjectId(workspaceId),
-              folderId: { $exists: false },
-            });
-          }
+          savedConsole = await SavedConsole.findOne({
+            name: consolePath,
+            workspaceId: new Types.ObjectId(workspaceId),
+            $or: [{ folderId: null }, { folderId: { $exists: false } }],
+          });
         }
 
         if (savedConsole) {
@@ -756,7 +734,7 @@ export class ConsoleManager {
     databaseId?: string,
     options?: {
       id?: string; // Optional client-provided ID
-      folderId?: string;
+      folderId?: string | null;
       description?: string;
       language?: "sql" | "javascript" | "mongodb";
       isPrivate?: boolean;
@@ -764,21 +742,8 @@ export class ConsoleManager {
     },
   ): Promise<ISavedConsole> {
     try {
-      const parts = consolePath.split("/");
-      const consoleName = parts[parts.length - 1];
-
-      // Handle folder path from consolePath if not provided in options
-      let folderId = options?.folderId;
-
-      if (!folderId && parts.length > 1) {
-        // Extract folder path and find/create the folder
-        const folderParts = parts.slice(0, -1);
-        folderId = await this.ensureFolderPath(
-          folderParts,
-          workspaceId,
-          userId,
-        );
-      }
+      const consoleName = consolePath;
+      const folderId = options?.folderId ?? undefined;
 
       // Look up existing console - try by ID first, then by name + folder
       // The POST route handles conflict detection for new consoles
@@ -793,7 +758,7 @@ export class ConsoleManager {
         });
       }
 
-      // Fallback: look up by name + folder for path-based PUT requests
+      // Fallback: look up by exact name + folder for legacy path-based PUT requests.
       // Only match saved consoles (isSaved: true), not drafts
       if (!savedConsole) {
         const query: any = {
@@ -822,10 +787,10 @@ export class ConsoleManager {
 
       if (savedConsole) {
         // Update existing console (draft -> saved)
-        savedConsole.name = consoleName; // Update name (may change if draft is being saved with a path)
+        savedConsole.name = consoleName;
         savedConsole.folderId = folderId
           ? new Types.ObjectId(folderId)
-          : undefined; // Update folder (draft -> saved with path)
+          : undefined;
         savedConsole.code = content;
         savedConsole.isSaved = true; // Mark as explicitly saved (no longer a draft)
         savedConsole.updatedAt = new Date();
@@ -949,34 +914,13 @@ export class ConsoleManager {
     consoleId: string,
     newName: string,
     workspaceId: string,
-    userId: string,
+    _userId: string,
   ): Promise<boolean> {
     try {
-      // Parse the new name for potential folder path
-      const parts = newName.split("/");
-      const consoleName = parts[parts.length - 1];
-
-      let folderId: string | undefined = undefined;
-
-      if (parts.length > 1) {
-        // Extract folder path and find/create the folder
-        const folderParts = parts.slice(0, -1);
-        folderId = await this.ensureFolderPath(
-          folderParts,
-          workspaceId,
-          userId,
-        );
-      }
-
       const updateFields: any = {
-        name: consoleName,
+        name: newName,
         updatedAt: new Date(),
       };
-
-      // Update folderId if we have a folder path
-      if (parts.length > 1) {
-        updateFields.folderId = folderId ? new Types.ObjectId(folderId) : null;
-      }
 
       const result = await SavedConsole.updateOne(
         {
@@ -1094,30 +1038,11 @@ export class ConsoleManager {
           });
           return !!savedConsole;
         } else {
-          const parts = consolePath.split("/");
-          const consoleName = parts[parts.length - 1];
-
-          // Get folder ID if there's a folder path
-          let folderId: string | undefined;
-          if (parts.length > 1) {
-            const folderParts = parts.slice(0, -1);
-            folderId = await this.findFolderByPath(folderParts, workspaceId);
-          }
-
-          // Check for console with same name in same folder (or root if no folder)
-          const query: any = {
-            name: consoleName,
+          const savedConsole = await SavedConsole.findOne({
+            name: consolePath,
             workspaceId: new Types.ObjectId(workspaceId),
-          };
-
-          if (folderId) {
-            query.folderId = new Types.ObjectId(folderId);
-          } else {
-            // For root level consoles, check that folderId is null/undefined
-            query.$or = [{ folderId: null }, { folderId: { $exists: false } }];
-          }
-
-          const savedConsole = await SavedConsole.findOne(query);
+            $or: [{ folderId: null }, { folderId: { $exists: false } }],
+          });
           return !!savedConsole;
         }
       }
@@ -1138,28 +1063,13 @@ export class ConsoleManager {
   async getConsoleByPath(
     consolePath: string,
     workspaceId: string,
+    folderId?: string | null,
   ): Promise<ISavedConsole | null> {
     try {
-      const parts = consolePath.split("/");
-      const consoleName = parts[parts.length - 1];
-
-      // Get folder ID if there's a folder path
-      let folderId: string | undefined;
-      const hasFolder = parts.length > 1;
-      if (hasFolder) {
-        const folderParts = parts.slice(0, -1);
-        folderId = await this.findFolderByPath(folderParts, workspaceId);
-
-        // If path specifies a folder but it doesn't exist, no console can exist at this path
-        if (!folderId) {
-          return null;
-        }
-      }
-
-      // Build query for console with same name in same folder (or root if no folder)
+      // Build query for console with same exact name in the selected folder (or root).
       // Only match explicitly saved consoles (isSaved: true) - not drafts
       const query: any = {
-        name: consoleName,
+        name: consolePath,
         workspaceId: new Types.ObjectId(workspaceId),
         isSaved: true, // Only match saved consoles, not drafts
       };
@@ -1175,7 +1085,7 @@ export class ConsoleManager {
       // in case there are duplicate entries
       return await SavedConsole.findOne(query).sort({ updatedAt: -1 });
     } catch (error) {
-      console.error("Error getting console by path:", error);
+      logger.error("Error getting console by path", { error });
       return null;
     }
   }
