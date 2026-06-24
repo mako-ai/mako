@@ -32,6 +32,20 @@ A modern SQL client built for the AI era, replacing slow desktop tools with a fa
 - **⚡ Blazing Fast**: No Java or Electron bloat. Opens instantly in your browser and runs smooth.
   - _Replaces: Slow desktop database tools_
 
+## 📸 Screenshots
+
+**AI-powered console** — ask in plain English, get a verified query and live results.
+
+![AI-powered console](./website/public/screenshots/ai-console.webp)
+
+**Transforms (dbt)** — build, run, and schedule dbt Core projects with a file IDE, jobs, run history, and lineage.
+
+![dbt Transforms IDE](./website/public/screenshots/transforms-dbt.webp)
+
+**Apps** — build live React apps wired to your data, rendered in a sandboxed preview.
+
+![React Apps live preview](./website/public/screenshots/apps.webp)
+
 ## 🔌 Integrations
 
 ### Databases
