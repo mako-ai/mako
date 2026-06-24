@@ -68,7 +68,9 @@ interface ConnectorFormProps {
   variant?: "dialog" | "inline";
   open?: boolean;
   onClose?: () => void;
-  onSubmit: (data: any) => void;
+  onSubmit: (
+    data: any,
+  ) => void | Promise<{ success: boolean; isNew?: boolean } | void>;
   connector?: any | null;
   connectorTypes?: Array<{
     type: string;
@@ -124,6 +126,8 @@ function ConnectorForm({
     Record<string, boolean>
   >({});
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const draftRef = useRef<Record<string, any> | undefined>(
     tabId ? useConnectorStore.getState().drafts[tabId]?.values : undefined,
@@ -321,7 +325,7 @@ function ConnectorForm({
     return decryptedValues[fieldName];
   };
 
-  const onSubmitInternal = (values: Record<string, unknown>) => {
+  const onSubmitInternal = async (values: Record<string, unknown>) => {
     // form submitted
     const { dirtyFields } = form.formState;
     // Validate object_array required items before proceeding
@@ -439,15 +443,28 @@ function ConnectorForm({
     }
 
     if (!isNewConnector && Object.keys(payload).length === 0) {
-      console.warn("[ConnectorForm] no changes detected; skipping submit");
+      setSnackbarMessage("No changes to save");
       return;
     }
 
     // submitting payload
+    setIsSubmitting(true);
     try {
-      onSubmit(payload);
+      const result = await onSubmit(payload);
+      // A `void` return is treated as success (legacy callers); only an explicit
+      // `{ success: false }` suppresses the success toast.
+      const succeeded = !result || result.success !== false;
+      if (succeeded) {
+        setSuccessMessage(
+          isNewConnector
+            ? "Connector created successfully"
+            : "Connector updated successfully",
+        );
+      }
     } catch (err) {
       console.error("[ConnectorForm] onSubmit threw", err);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -1105,9 +1122,27 @@ function ConnectorForm({
           <Box
             sx={{ display: "flex", justifyContent: "flex-end", gap: 1, mt: 2 }}
           >
-            <Button onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant="contained" disableElevation>
-              {connector ? "Update" : "Create"}
+            <Button onClick={onClose} disabled={isSubmitting}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              variant="contained"
+              disableElevation
+              disabled={isSubmitting}
+              startIcon={
+                isSubmitting ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : undefined
+              }
+            >
+              {isSubmitting
+                ? connector
+                  ? "Updating…"
+                  : "Creating…"
+                : connector
+                  ? "Update"
+                  : "Create"}
             </Button>
           </Box>
         </>
@@ -1141,6 +1176,22 @@ function ConnectorForm({
         message={snackbarMessage}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
+
+      <Snackbar
+        open={!!successMessage}
+        autoHideDuration={4000}
+        onClose={() => setSuccessMessage(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      >
+        <Alert
+          onClose={() => setSuccessMessage(null)}
+          severity="success"
+          variant="filled"
+          sx={{ width: "100%" }}
+        >
+          {successMessage}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }
