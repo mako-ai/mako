@@ -351,6 +351,22 @@ export default function PublicAppViewer({
         await new Promise(resolve => setTimeout(resolve, 8000));
         const fresh = await reloadContent();
         if (fresh && latestMaterializedAt(fresh) !== before) {
+          // Pull the new snapshots into DuckDB *before* telling the booted app
+          // to re-query — otherwise its hooks could read the previous table.
+          // ensureBindingLoaded reloads in place (revision changed), and the
+          // shared per-table lock dedupes this with the content-change effect.
+          await Promise.all(
+            fresh.dataBindings.map(binding => {
+              const loadable = toLoadableBinding(binding);
+              return loadable
+                ? ensureBindingLoaded(duckAppId, loadable).catch(() => false)
+                : Promise.resolve(false);
+            }),
+          );
+          iframeRef.current?.contentWindow?.postMessage(
+            { type: PREVIEW_MESSAGE.dataRefresh },
+            "*",
+          );
           setRefreshNote(null);
           return;
         }

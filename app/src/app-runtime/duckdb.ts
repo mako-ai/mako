@@ -21,6 +21,8 @@ interface AppDuckDB {
   db: AsyncDuckDB;
   /** tableName -> loaded artifact revision (skip reload when unchanged). */
   loaded: Map<string, string>;
+  /** tableName -> in-flight load, so concurrent callers serialize per table. */
+  loading: Map<string, Promise<void>>;
 }
 
 const instances = new Map<string, AppDuckDB>();
@@ -40,7 +42,7 @@ async function getInstance(appId: string): Promise<AppDuckDB> {
 
   const promise = (async () => {
     const db = await createDuckDBInstance();
-    const inst: AppDuckDB = { db, loaded: new Map() };
+    const inst: AppDuckDB = { db, loaded: new Map(), loading: new Map() };
     instances.set(appId, inst);
     initializing.delete(appId);
     return inst;
@@ -70,19 +72,43 @@ export async function ensureBindingLoaded(
   const inst = await getInstance(appId);
   const table = bindingTableName(binding.name);
   const revision = cache.artifactRevision || cache.definitionHash || "";
+  const parquetUrl = cache.parquetUrl;
+
+  // Fast path: this exact snapshot is already loaded.
   if (inst.loaded.get(table) === revision) return true;
 
-  const response = await fetch(cache.parquetUrl, {
-    credentials: "include",
-    signal,
+  // Serialize loads for a table. The viewer preloads bindings in an effect at
+  // the same time the booted app issues on-demand reads (and several widgets
+  // can read the same binding at once); without this, two callers would
+  // DROP/CREATE the same table from separate connections concurrently, leaving
+  // it missing mid-rebuild — which surfaces as "data source not ready" until
+  // the user retries. Each load waits for the in-flight one, then re-checks the
+  // revision so it no-ops when the snapshot it needs already landed.
+  const prior = inst.loading.get(table) ?? Promise.resolve();
+  const result = prior.then(async () => {
+    if (inst.loaded.get(table) === revision) return true;
+    const response = await fetch(parquetUrl, {
+      credentials: "include",
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Failed to fetch parquet for "${binding.name}"`);
+    }
+    const buffer = await collectStreamBytes(response.body);
+    await loadParquetTable(inst.db, table, buffer);
+    inst.loaded.set(table, revision);
+    return true;
   });
-  if (!response.ok || !response.body) {
-    throw new Error(`Failed to fetch parquet for "${binding.name}"`);
-  }
-  const buffer = await collectStreamBytes(response.body);
-  await loadParquetTable(inst.db, table, buffer);
-  inst.loaded.set(table, revision);
-  return true;
+
+  // Keep the per-table chain alive for the next caller even if this load fails.
+  inst.loading.set(
+    table,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
 }
 
 /** Run analytical SQL against the app's loaded tables. */

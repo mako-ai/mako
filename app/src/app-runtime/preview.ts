@@ -29,6 +29,10 @@ export const PREVIEW_MESSAGE = {
   bindingResult: "mako-app:binding-result",
   runDuckDb: "mako-app:run-duckdb",
   duckDbResult: "mako-app:duckdb-result",
+  // host -> iframe: the app's materialized data changed (a refresh landed new
+  // parquet snapshots in the parent's DuckDB). The booted app re-runs its data
+  // hooks without a srcdoc rebuild, so the view updates while keeping UI state.
+  dataRefresh: "mako-app:data-refresh",
   capture: "mako-app:capture",
   captureResult: "mako-app:capture-result",
   setTheme: "mako-app:set-theme",
@@ -388,6 +392,25 @@ window.addEventListener("message", (event) => {
     resolve(data);
   }
 });
+
+// --- Data epoch: bumps when the host swaps in a fresh materialized snapshot
+// ("mako-app:data-refresh"). Data hooks depend on it, so they re-fetch when the
+// underlying parquet changes without rebuilding the (slow) srcdoc or losing the
+// running app's UI state. ---
+const dataListeners = new Set();
+let dataEpoch = 0;
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "mako-app:data-refresh") return;
+  dataEpoch++;
+  dataListeners.forEach((listener) => {
+    try {
+      listener(dataEpoch);
+    } catch (_) {
+      /* listener errors must not break other subscribers */
+    }
+  });
+});
 function runBinding(name, rowLimit) {
   return new Promise((resolve) => {
     const requestId = "req_" + ++reqSeq;
@@ -492,6 +515,14 @@ async function main() {
     useQuery(name, opts) {
       const rowLimit = opts ? opts.rowLimit : undefined;
       const [state, setState] = React.useState({ data: null, error: null, loading: true, truncated: false });
+      const [epoch, setEpoch] = React.useState(dataEpoch);
+      React.useEffect(() => {
+        const listener = (next) => setEpoch(next);
+        dataListeners.add(listener);
+        // Re-sync in case a refresh landed between render and subscribe.
+        setEpoch(dataEpoch);
+        return () => { dataListeners.delete(listener); };
+      }, []);
       React.useEffect(() => {
         let active = true;
         setState({ data: null, error: null, loading: true, truncated: false });
@@ -505,7 +536,7 @@ async function main() {
           }
         });
         return () => { active = false; };
-      }, [name, rowLimit]);
+      }, [name, rowLimit, epoch]);
       return state;
     },
     // Run analytical SQL over the app's materialized (parquet) tables in
@@ -517,6 +548,14 @@ async function main() {
     useDuckDB(sql, opts) {
       const rowLimit = opts ? opts.rowLimit : undefined;
       const [state, setState] = React.useState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
+      const [epoch, setEpoch] = React.useState(dataEpoch);
+      React.useEffect(() => {
+        const listener = (next) => setEpoch(next);
+        dataListeners.add(listener);
+        // Re-sync in case a refresh landed between render and subscribe.
+        setEpoch(dataEpoch);
+        return () => { dataListeners.delete(listener); };
+      }, []);
       React.useEffect(() => {
         let active = true;
         setState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
@@ -537,7 +576,7 @@ async function main() {
           }
         });
         return () => { active = false; };
-      }, [sql, rowLimit]);
+      }, [sql, rowLimit, epoch]);
       return state;
     },
     // Effective color mode: { theme: "light" | "dark" }. Tracks the host app
