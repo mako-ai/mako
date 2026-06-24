@@ -11,9 +11,16 @@ import { defineConfig } from "vitest/config";
  * Run offline contract/unit suites:   `pnpm --filter api run test:destinations`
  * Include gated real-DB integration:  `RUN_DB_INTEGRATION=1 pnpm --filter api run test:destinations`
  *
- * Integration suites (testcontainers / bigquery-emulator) self-skip unless
- * `RUN_DB_INTEGRATION=1` is set, so the default run stays fast and offline.
+ * `*.integration.test.ts` files are only *collected* when `RUN_DB_INTEGRATION`
+ * is set. This matters beyond skipping: those files import `testcontainers`
+ * (→ a newer `undici` than CI's Node ships), which throws at import/collection
+ * time. Excluding them from collection keeps the default offline run from ever
+ * loading that dependency.
  */
+const runIntegration =
+  process.env.RUN_DB_INTEGRATION === "1" ||
+  process.env.RUN_DB_INTEGRATION === "true";
+
 export default defineConfig({
   test: {
     environment: "node",
@@ -23,7 +30,12 @@ export default defineConfig({
       "src/sync-cdc/adapters/**/*.test.ts",
       "src/utils/bigquery-emulator.test.ts",
     ],
-    exclude: ["**/node_modules/**", "**/dist/**"],
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      // Gated: only collect (and thus import testcontainers) on demand.
+      ...(runIntegration ? [] : ["**/*.integration.test.ts"]),
+    ],
     // Spinning up a Postgres container / bigquery-emulator is slow on first pull.
     testTimeout: 120_000,
     hookTimeout: 180_000,
