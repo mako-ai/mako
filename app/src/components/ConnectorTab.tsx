@@ -5,6 +5,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
 import { useConnectorCatalogStore } from "../store/connectorCatalogStore";
 import { useConnectorEntitiesStore } from "../store/connectorEntitiesStore";
+import { useDataSourceEntitiesStore } from "../store/dataSourceEntitiesStore";
 import { useConnectorStore } from "../store/connectorStore";
 import { trackEvent } from "../lib/analytics";
 
@@ -47,6 +48,11 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     upsert: upsertConnector,
     entities,
   } = useConnectorEntitiesStore();
+
+  // The sidebar list (ConnectorExplorer) reads from a separate entity cache.
+  // Upsert into it too so a newly created/updated connector appears without a
+  // manual refresh.
+  const upsertDataSource = useDataSourceEntitiesStore(state => state.upsert);
 
   const [localSourceId, setLocalSourceId] = useState<string | undefined>(
     initialSourceId,
@@ -120,8 +126,11 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
     closeTab(tabId);
   };
 
-  const handleSubmit = async (formData: any) => {
-    if (!currentWorkspace) return;
+  const handleSubmit = async (
+    formData: any,
+  ): Promise<{ success: boolean; isNew: boolean }> => {
+    const isNew = !effectiveSourceId;
+    if (!currentWorkspace) return { success: false, isNew };
 
     try {
       const url = effectiveSourceId
@@ -136,10 +145,11 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
       });
       const data = await response.json();
       if (data.success) {
-        // update entity cache
-        if (currentWorkspace) {
-          upsertConnector({ ...data.data, workspaceId: currentWorkspace.id });
-        }
+        const entity = { ...data.data, workspaceId: currentWorkspace.id };
+        // Update the tab's entity cache and the sidebar list's cache so the
+        // connector shows/updates immediately without a manual refresh.
+        upsertConnector(entity);
+        upsertDataSource(entity);
         setError(null);
         updateTabIcon(data.data.type);
         // Update the tab title once after a successful save
@@ -149,7 +159,7 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
         deleteDraft(tabId);
 
         const newId = data.data._id;
-        if (!effectiveSourceId && newId) {
+        if (isNew && newId) {
           // Track connector creation
           trackEvent("connector_created", {
             connector_type: data.data.type,
@@ -160,13 +170,16 @@ const ConnectorTab: React.FC<ConnectorTabProps> = ({
           updateContent(tabId, newId);
           setLocalSourceId(newId);
         }
+        return { success: true, isNew };
       } else {
         const serverError = data.error || data.message || JSON.stringify(data);
         setError(serverError);
+        return { success: false, isNew };
       }
     } catch (err: any) {
       console.error("Error saving connector", err);
       setError(err.message || "Failed to save connector");
+      return { success: false, isNew };
     }
   };
 
