@@ -16,6 +16,8 @@
     "test": "tsx src/openapi/core.test.ts && tsx src/openapi/openapi.test.ts && tsx src/dbt/warm-dir-cache.test.ts && tsx src/connectors/stripe/connector.test.ts && tsx src/connectors/close/connector.test.ts && tsx src/connectors/pandadoc/connector.test.ts && tsx src/sync-cdc/idempotency.test.ts && tsx src/agent-lib/context/compaction.test.ts && tsx src/services/safe-fetch.service.test.ts && tsx src/agent-lib/tools/check-query-status-poll.test.ts",
     "test:dbt": "vitest run",
     "test:dbt:watch": "vitest",
+    "test:destinations": "vitest run --config vitest.destinations.config.ts",
+    "test:destinations:watch": "vitest --config vitest.destinations.config.ts",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext ts,tsx --fix"
   },
@@ -79,6 +81,7 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.3",
     "@types/bcrypt": "^5.0.2",
     "@types/cors": "^2.8.19",
     "@types/diff": "^8.0.0",
@@ -96,6 +99,7 @@
     "copyfiles": "^2.4.1",
     "eslint": "^8.57.1",
     "mongodb-memory-server": "^10.4.3",
+    "testcontainers": "^12.0.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vitest": "^2.1.9"

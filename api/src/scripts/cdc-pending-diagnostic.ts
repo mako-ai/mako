@@ -86,9 +86,13 @@ async function main(): Promise<void> {
   // ---- 1. WebhookEvent status distribution -----------------------------
   header("1. WebhookEvent.status distribution (ingest backlog)");
   const whByStatus = await webhooks
-    .aggregate([{ $group: { _id: "$status", n: { $sum: 1 } } }, { $sort: { n: -1 } }])
+    .aggregate([
+      { $group: { _id: "$status", n: { $sum: 1 } } },
+      { $sort: { n: -1 } },
+    ])
     .toArray();
-  for (const r of whByStatus) console.log(`  ${String(r._id).padEnd(12)} ${r.n}`);
+  for (const r of whByStatus)
+    console.log(`  ${String(r._id).padEnd(12)} ${r.n}`);
 
   const oldestPending = await webhooks
     .find({ status: "pending" })
@@ -120,7 +124,9 @@ async function main(): Promise<void> {
     ])
     .toArray();
   for (const r of whPendingByFlow) {
-    console.log(`  flow ${String(r._id)}  pending=${r.n}  oldest=${fmtAge(r.oldest)}`);
+    console.log(
+      `  flow ${String(r._id)}  pending=${r.n}  oldest=${fmtAge(r.oldest)}`,
+    );
   }
 
   // ---- 2. Orphaned apply (completed ingest, apply never finalized) ------
@@ -135,7 +141,9 @@ async function main(): Promise<void> {
     receivedAt: { $lte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
   });
   console.log(`  status=completed & applyStatus=pending : ${orphanApply}`);
-  console.log(`    of which older than 7d (reapable)     : ${orphanApplyStale}`);
+  console.log(
+    `    of which older than 7d (reapable)     : ${orphanApplyStale}`,
+  );
 
   // ---- 3. CdcChangeEvent materialization distribution -------------------
   header("3. CdcChangeEvent.materializationStatus distribution");
@@ -145,7 +153,8 @@ async function main(): Promise<void> {
       { $sort: { n: -1 } },
     ])
     .toArray();
-  for (const r of cdcByStatus) console.log(`  ${String(r._id).padEnd(12)} ${r.n}`);
+  for (const r of cdcByStatus)
+    console.log(`  ${String(r._id).padEnd(12)} ${r.n}`);
 
   header("3b. Top flow+entity by pending CdcChangeEvents");
   const cdcPendingByEntity = await cdc
@@ -205,8 +214,12 @@ async function main(): Promise<void> {
     .project({ flowId: 1, entity: 1, lastIngestSeq: 1, lastMaterializedSeq: 1 })
     .limit(TOP_N)
     .toArray();
-  console.log(`  entities behind (lastIngestSeq > lastMaterializedSeq): ${staleCursors}`);
-  console.log(`  entities with cursor AHEAD of ingest (drift): ${driftedCursors.length}`);
+  console.log(
+    `  entities behind (lastIngestSeq > lastMaterializedSeq): ${staleCursors}`,
+  );
+  console.log(
+    `  entities with cursor AHEAD of ingest (drift): ${driftedCursors.length}`,
+  );
   for (const r of driftedCursors) {
     console.log(
       `    flow ${String(r.flowId)} entity=${r.entity} ingestSeq=${r.lastIngestSeq} matSeq=${r.lastMaterializedSeq}`,
@@ -324,10 +337,14 @@ async function main(): Promise<void> {
     "backfillState.runId": { $exists: true, $ne: null },
   });
   console.log(`  CDC flows with streamState=paused      : ${pausedStreams}`);
-  console.log(`  CDC flows with incomplete backfill runId: ${incompleteBackfills}`);
+  console.log(
+    `  CDC flows with incomplete backfill runId: ${incompleteBackfills}`,
+  );
 
   // ---- 7. Index coverage check for the global cron-ingest query ---------
-  header("7. Index coverage for cron-ingest query find({status}).sort({receivedAt})");
+  header(
+    "7. Index coverage for cron-ingest query find({status}).sort({receivedAt})",
+  );
   const whIndexes = await webhooks.listIndexes().toArray();
   const idxKeys = whIndexes.map(i => JSON.stringify(i.key));
   const hasStatusReceivedAt = whIndexes.some(i => {
@@ -366,17 +383,31 @@ async function main(): Promise<void> {
   const pendingCdc = cdcByStatus.find(r => r._id === "pending")?.n || 0;
   console.log(`  pending WebhookEvents (ingest backlog) : ${pendingWh}`);
   console.log(`  pending CdcChangeEvents (mat. backlog) : ${pendingCdc}`);
-  console.log(`  >> orphaned-below-cursor pending       : ${totalOrphanedBelowCursor}  <-- the trap`);
-  console.log(`  >> invisible AND untriggered           : ${invisibleAndUntriggered}  <-- stuck forever`);
+  console.log(
+    `  >> orphaned-below-cursor pending       : ${totalOrphanedBelowCursor}  <-- the trap`,
+  );
+  console.log(
+    `  >> invisible AND untriggered           : ${invisibleAndUntriggered}  <-- stuck forever`,
+  );
   console.log(`  circuit-breaker-stuck entities         : ${failing.length}`);
-  console.log(`  drifted cursors (ingest<cursor)        : ${driftedCursors.length}`);
-  console.log(`  paused streams / incomplete backfills  : ${pausedStreams} / ${incompleteBackfills}`);
+  console.log(
+    `  drifted cursors (ingest<cursor)        : ${driftedCursors.length}`,
+  );
+  console.log(
+    `  paused streams / incomplete backfills  : ${pausedStreams} / ${incompleteBackfills}`,
+  );
   console.log("\nInterpretation:");
-  console.log("  - Big & growing pending WebhookEvents -> ingest throughput-bound");
-  console.log("    (cron */5, concurrency 1, batch 1000) and/or missing index.");
+  console.log(
+    "  - Big & growing pending WebhookEvents -> ingest throughput-bound",
+  );
+  console.log(
+    "    (cron */5, concurrency 1, batch 1000) and/or missing index.",
+  );
   console.log("  - Big pending CdcChangeEvents + failing entities -> real");
   console.log("    materialization errors held off by the circuit breaker.");
-  console.log("  - Drifted cursors -> orphaned pending; needs reprocess/force-drain.");
+  console.log(
+    "  - Drifted cursors -> orphaned pending; needs reprocess/force-drain.",
+  );
   console.log("  - Paused/backfilling flows -> consumer intentionally skips.");
 
   await mongoose.disconnect();

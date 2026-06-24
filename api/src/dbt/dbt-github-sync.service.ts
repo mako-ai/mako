@@ -233,7 +233,10 @@ export async function syncProjectFromRepo(
       ops.push(
         DbtFile.updateOne(
           { projectId: project._id, path: prev.path },
-          { $set: { is_deleted: true, updatedBy }, $unset: { repoBlobSha: "" } },
+          {
+            $set: { is_deleted: true, updatedBy },
+            $unset: { repoBlobSha: "" },
+          },
         ).exec(),
       );
     } else if (prev.repoBlobSha) {

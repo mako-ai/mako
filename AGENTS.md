@@ -79,3 +79,14 @@ account manually, flip `emailVerified` in the DB to log in.
   out of the box; on startup the API logs `Refreshed gateway models cache`. Core
   SQL-client flows (login, connections, console queries) work even without it.
   `BILLING_ENABLED=false` in `.env`, so nothing is billing-gated.
+
+### Testing sync destinations
+
+- Offline destination connector suite (driver dialect/write SQL, CDC MERGE
+  builder, `DestinationWriter` orchestration): `pnpm --filter api run test:destinations`.
+  Runs in `api-contract.yml`.
+- Gated real-DB round-trips (testcontainers Postgres + goccy bigquery-emulator)
+  self-skip unless `RUN_DB_INTEGRATION=1` (needs Docker); they run nightly via
+  `destination-integration.yml`.
+- Harness + helpers + local BigQuery emulator recipe:
+  [`api/src/databases/test-support/README.md`](api/src/databases/test-support/README.md).

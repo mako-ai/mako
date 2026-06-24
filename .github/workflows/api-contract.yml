@@ -52,6 +52,12 @@ jobs:
       - name: API contract tests
         run: pnpm --filter api run test
 
+      - name: API destination tests
+        # Offline destination connector suite (driver dialect/write SQL, CDC
+        # MERGE builder, DestinationWriter orchestration). Real-DB integration
+        # specs self-skip without RUN_DB_INTEGRATION (see destination-integration.yml).
+        run: pnpm --filter api run test:destinations
+
       - name: Frontend typed-client tests
         run: pnpm --filter app exec vitest run src/api/client.test.ts
 

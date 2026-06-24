@@ -38,8 +38,6 @@ import {
   substituteTemplates,
   detectTemplates,
 } from "../utils/template-substitution";
-import { BIGQUERY_WORKING_DATASET } from "../utils/bigquery-working-dataset";
-
 /**
  * Helper function to infer JavaScript type from a value
  */
@@ -118,23 +116,6 @@ export interface DbSyncChunkResult {
 }
 
 /**
- * Map source database types to BigQuery types
- * This ensures columns are created with correct BigQuery types regardless of source
- */
-function mapToBigQueryType(sourceType: string): string {
-  const t = sourceType.toUpperCase();
-  if (t === "TEXT" || t.includes("CHAR") || t.includes("CLOB")) return "STRING";
-  if (t === "INTEGER" || t === "INT" || t.includes("INT")) return "INT64";
-  if (t === "REAL" || t === "FLOAT" || t === "DOUBLE" || t === "NUMERIC") {
-    return "FLOAT64";
-  }
-  if (t === "BLOB") return "BYTES";
-  if (t.includes("BOOL")) return "BOOL";
-  if (t.includes("TIME") || t.includes("DATE")) return "TIMESTAMP";
-  return "STRING"; // Default to STRING for safety
-}
-
-/**
  * Unified destination writer that handles both MongoDB and SQL destinations
  */
 export class DestinationWriter {
@@ -149,6 +130,22 @@ export class DestinationWriter {
 
   constructor(config: DestinationConfig) {
     this.config = config;
+  }
+
+  /**
+   * Test-only seam: inject a driver + connection directly, bypassing the
+   * Mongoose lookup + registry resolution that `initialize()` performs. Lets
+   * unit tests exercise the engine-agnostic orchestration (column-type mapping,
+   * working-schema selection) without a database. Not used in production code.
+   *
+   * @internal
+   */
+  _injectForTest(
+    driver: DatabaseDriver,
+    connection: IDatabaseConnection,
+  ): void {
+    this.driver = driver;
+    this.connection = connection;
   }
 
   /**
@@ -181,15 +178,30 @@ export class DestinationWriter {
     return opts;
   }
 
-  private isBigQueryDestination(): boolean {
-    return this.connection?.type === "bigquery";
+  private getWorkingSchema(primarySchema?: string): string | undefined {
+    return this.driver?.getStagingSchema?.(primarySchema) ?? primarySchema;
   }
 
-  private getWorkingSchema(primarySchema?: string): string | undefined {
-    if (this.isBigQueryDestination()) {
-      return BIGQUERY_WORKING_DATASET;
+  /**
+   * Map inferred source column types to the destination's native types and,
+   * when the driver requires it, build the `columnTypes` map used for typed
+   * writes. No-op for destinations whose driver doesn't override these.
+   */
+  private applyDestinationColumnTypes(): void {
+    if (!this.inferredColumns) return;
+    const driver = this.driver;
+    const mapColumnType = driver?.mapColumnType?.bind(driver);
+    if (mapColumnType) {
+      this.inferredColumns = this.inferredColumns.map(c => ({
+        ...c,
+        type: mapColumnType(c.type),
+      }));
     }
-    return primarySchema;
+    if (driver?.requiresTypedColumns?.()) {
+      this.columnTypeMap = new Map(
+        this.inferredColumns.map(c => [c.name.toLowerCase(), c.type]),
+      );
+    }
   }
 
   private getTargetSchema(
@@ -208,9 +220,12 @@ export class DestinationWriter {
     }
 
     const createIfNotExists = this.config.tableDestination?.createIfNotExists;
+    // Always ensure a dedicated staging/working schema exists, even when the
+    // user didn't opt into table auto-creation (e.g. BigQuery's working dataset).
+    const stagingSchema = this.driver?.getStagingSchema?.(schema);
     const shouldEnsure =
       createIfNotExists ||
-      (this.isBigQueryDestination() && schema === BIGQUERY_WORKING_DATASET);
+      (stagingSchema !== undefined && schema === stagingSchema);
     if (!shouldEnsure || this.ensuredSqlSchemas.has(schema)) {
       return;
     }
@@ -711,13 +726,11 @@ export class DestinationWriter {
               nullable: true, // Default to nullable for safety
             }));
 
-            // For BigQuery: ensure types are valid BigQuery types
-            if (this.connection?.type === "bigquery") {
+            // typeCoercions are already in the destination's native format;
+            // just record them for typed writes when the driver needs them.
+            if (this.driver?.requiresTypedColumns?.()) {
               this.columnTypeMap = new Map(
-                this.inferredColumns.map(c => [
-                  c.name.toLowerCase(),
-                  c.type, // Already in BigQuery format from typeCoercions
-                ]),
+                this.inferredColumns.map(c => [c.name.toLowerCase(), c.type]),
               );
             }
           }
@@ -733,19 +746,7 @@ export class DestinationWriter {
               );
             }
 
-            // For BigQuery: map source types to BigQuery types
-            if (this.connection?.type === "bigquery") {
-              this.columnTypeMap = new Map(
-                this.inferredColumns.map(c => [
-                  c.name.toLowerCase(),
-                  mapToBigQueryType(c.type),
-                ]),
-              );
-              this.inferredColumns = this.inferredColumns.map(c => ({
-                ...c,
-                type: mapToBigQueryType(c.type),
-              }));
-            }
+            this.applyDestinationColumnTypes();
           } else {
             // Priority 3: Fallback to inferring from data (less reliable for NULLs)
             this.inferredColumns = this.driver.inferSchema?.(rows);
@@ -760,21 +761,7 @@ export class DestinationWriter {
               nullable: true,
             }));
 
-            // For BigQuery: map source types to BigQuery types and store for writes
-            // Use lowercase keys for case-insensitive lookup
-            if (this.connection?.type === "bigquery") {
-              this.columnTypeMap = new Map(
-                this.inferredColumns.map(c => [
-                  c.name.toLowerCase(),
-                  mapToBigQueryType(c.type),
-                ]),
-              );
-              // Update inferredColumns with mapped types for table creation
-              this.inferredColumns = this.inferredColumns.map(c => ({
-                ...c,
-                type: mapToBigQueryType(c.type),
-              }));
-            }
+            this.applyDestinationColumnTypes();
           }
         }
 
@@ -802,10 +789,7 @@ export class DestinationWriter {
       // batches that weren't in the schema when the table was first created.
       if (this.driver.addMissingColumns) {
         const schemaForEvolution =
-          targetSchema ||
-          (this.connection.type === "bigquery"
-            ? this.getWorkingSchema(primarySchema) || BIGQUERY_WORKING_DATASET
-            : "public");
+          targetSchema || this.getWorkingSchema(primarySchema) || "public";
         await this.driver.addMissingColumns(
           this.connection,
           targetTable,
