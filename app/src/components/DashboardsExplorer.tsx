@@ -20,6 +20,8 @@ import {
   Globe as GlobeIcon,
   User as UserIcon,
   Database as DataSourceIcon,
+  Folder as FolderIcon,
+  FolderOpen as FolderOpenIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
@@ -312,18 +314,25 @@ export function DashboardsExplorer() {
     setInfoTarget(node);
   }, []);
 
-  const getItemIcon = useCallback((node: ResourceTreeNode) => {
-    if (
-      node.id.includes(DASHBOARD_DATA_SOURCE_SEP) ||
-      node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)
-    ) {
-      return <DataSourceIcon size={16} strokeWidth={1.5} />;
-    }
-    if (node.access === "workspace") {
-      return <GlobeIcon size={16} strokeWidth={1.5} />;
-    }
-    return <LockIcon size={16} strokeWidth={1.5} />;
-  }, []);
+  const getItemIcon = useCallback(
+    (node: ResourceTreeNode, ctx?: { isExpanded: boolean }) => {
+      if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
+        return <DataSourceIcon size={16} strokeWidth={1.5} />;
+      }
+      if (node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)) {
+        return ctx?.isExpanded ? (
+          <FolderOpenIcon size={16} strokeWidth={1.5} />
+        ) : (
+          <FolderIcon size={16} strokeWidth={1.5} />
+        );
+      }
+      if (node.access === "workspace") {
+        return <GlobeIcon size={16} strokeWidth={1.5} />;
+      }
+      return <LockIcon size={16} strokeWidth={1.5} />;
+    },
+    [],
+  );
 
   const withDataSourceNodes = useCallback(
     (nodes: ResourceTreeNode[]): ResourceTreeNode[] =>
