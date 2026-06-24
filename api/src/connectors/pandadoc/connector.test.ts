@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import assert from "node:assert/strict";
 import { PandaDocConnector } from "./connector";
 
-function createConnector(config: Record<string, unknown> = {}) {
+function createConnector(
+  config: Record<string, unknown> = {},
+  settings: Record<string, unknown> = {},
+) {
   return new PandaDocConnector({
     id: "ds_pandadoc",
     name: "PandaDoc",
@@ -12,6 +15,7 @@ function createConnector(config: Record<string, unknown> = {}) {
       api_base_url: "https://api.pandadoc.com",
       ...config,
     },
+    settings,
   } as any);
 }
 
@@ -279,7 +283,173 @@ function testEntityMetadataIncludesLayoutSuggestion() {
 function testConfigSchemaWiresAllFields() {
   const schema = PandaDocConnector.getConfigSchema();
   const names = schema.fields.map(f => f.name);
-  assert.deepEqual(names, ["api_key", "api_base_url"]);
+  assert.deepEqual(names, [
+    "api_key",
+    "api_base_url",
+    "fetch_document_details",
+  ]);
+  const detailField = schema.fields.find(
+    f => f.name === "fetch_document_details",
+  );
+  assert.equal(detailField?.type, "boolean");
+  assert.equal(detailField?.default, true);
+}
+
+type FakeGet = (url: string, config?: { params?: unknown }) => Promise<unknown>;
+
+function injectFakeClient(connector: PandaDocConnector, get: FakeGet) {
+  (connector as unknown as { pandaDocApi: { get: FakeGet } }).pandaDocApi = {
+    get,
+  };
+}
+
+const DOCUMENT_LIST_RESPONSE = {
+  data: {
+    results: [
+      { id: "doc_1", name: "List Doc One", status: "document.completed" },
+      { id: "doc_2", name: "List Doc Two", status: "document.draft" },
+    ],
+  },
+};
+
+async function collectDocuments(
+  connector: PandaDocConnector,
+): Promise<Record<string, unknown>[]> {
+  const records: Record<string, unknown>[] = [];
+  await connector.fetchEntity({
+    entity: "documents",
+    onBatch: async batch => {
+      records.push(...(batch as Record<string, unknown>[]));
+    },
+  });
+  return records;
+}
+
+async function testBackfillHydratesDocumentDetails() {
+  const connector = createConnector();
+  const detailCalls: string[] = [];
+
+  injectFakeClient(connector, async url => {
+    if (url === "/public/v1/documents") {
+      return DOCUMENT_LIST_RESPONSE;
+    }
+    const match = url.match(/^\/public\/v1\/documents\/(.+)\/details$/);
+    if (match) {
+      const id = decodeURIComponent(match[1]);
+      detailCalls.push(id);
+      return {
+        data: {
+          id,
+          name: `Detail ${id}`,
+          fields: [{ name: "contract_start", value: "2024-01-01" }],
+          tokens: [{ name: "Client.Company", value: "Acme" }],
+          metadata: { contract_id: `c-${id}` },
+          pricing: { tables: [] },
+        },
+      };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  });
+
+  const records = await collectDocuments(connector);
+
+  assert.equal(records.length, 2);
+  assert.deepEqual(detailCalls.sort(), ["doc_1", "doc_2"]);
+
+  const doc1 = records.find(r => r.id === "doc_1");
+  assert.ok(doc1, "expected doc_1 in results");
+  // Rich nested objects only available from the details endpoint.
+  assert.ok(Array.isArray(doc1?.fields));
+  assert.ok(Array.isArray(doc1?.tokens));
+  assert.ok(doc1?.metadata && typeof doc1.metadata === "object");
+  // Detail values take precedence over the shallow list projection.
+  assert.equal(doc1?.name, "Detail doc_1");
+  // List-only fields still survive the merge.
+  assert.equal(doc1?.status, "document.completed");
+}
+
+async function testDetailHydrationCanBeDisabled() {
+  const connector = createConnector({ fetch_document_details: false });
+  let detailCalled = false;
+
+  injectFakeClient(connector, async url => {
+    if (url.includes("/details")) {
+      detailCalled = true;
+      return { data: {} };
+    }
+    return DOCUMENT_LIST_RESPONSE;
+  });
+
+  const records = await collectDocuments(connector);
+
+  assert.equal(detailCalled, false);
+  assert.equal(records.length, 2);
+  assert.equal(records[0].fields, undefined);
+  assert.equal(records[0].metadata, undefined);
+}
+
+async function testBackfillPaginatesAndHydratesAcrossChunks() {
+  // sync_batch_size 2 makes a "full page" two records, so the dataset spans
+  // multiple pages and multiple resumable chunks (the detail-hydration cap is 2
+  // pages/chunk). rate_limit_delay_ms 0 keeps the test fast.
+  const connector = createConnector(
+    {},
+    { sync_batch_size: 2, rate_limit_delay_ms: 0 },
+  );
+
+  const pages: Record<number, { id: string }[]> = {
+    1: [{ id: "d1" }, { id: "d2" }],
+    2: [{ id: "d3" }, { id: "d4" }],
+    3: [{ id: "d5" }],
+  };
+  const detailCalls: string[] = [];
+
+  injectFakeClient(connector, async (url, config) => {
+    if (url === "/public/v1/documents") {
+      const page = Number(
+        (config?.params as { page?: number } | undefined)?.page ?? 1,
+      );
+      return { data: { results: pages[page] ?? [] } };
+    }
+    const match = url.match(/^\/public\/v1\/documents\/(.+)\/details$/);
+    if (match) {
+      const id = decodeURIComponent(match[1]);
+      detailCalls.push(id);
+      return { data: { id, metadata: { hydrated: true } } };
+    }
+    throw new Error(`Unexpected URL ${url}`);
+  });
+
+  const records = await collectDocuments(connector);
+
+  assert.equal(records.length, 5);
+  assert.deepEqual(detailCalls.sort(), ["d1", "d2", "d3", "d4", "d5"]);
+  assert.ok(
+    records.every(
+      r => (r.metadata as { hydrated?: boolean } | undefined)?.hydrated === true,
+    ),
+    "every document should be hydrated across chunk boundaries",
+  );
+}
+
+async function testDetailFetchFailureKeepsListProjection() {
+  const connector = createConnector();
+
+  injectFakeClient(connector, async url => {
+    if (url.includes("/details")) {
+      throw new Error("HTTP 500: boom");
+    }
+    return DOCUMENT_LIST_RESPONSE;
+  });
+
+  const records = await collectDocuments(connector);
+
+  // A per-document detail failure must not fail the whole backfill; the list
+  // projection is retained instead.
+  assert.equal(records.length, 2);
+  const doc1 = records.find(r => r.id === "doc_1");
+  assert.equal(doc1?.name, "List Doc One");
+  assert.equal(doc1?.fields, undefined);
 }
 
 async function main() {
@@ -301,6 +471,10 @@ async function main() {
   await testResolveSchema();
   testEntityMetadataIncludesLayoutSuggestion();
   testConfigSchemaWiresAllFields();
+  await testBackfillHydratesDocumentDetails();
+  await testDetailHydrationCanBeDisabled();
+  await testBackfillPaginatesAndHydratesAcrossChunks();
+  await testDetailFetchFailureKeepsListProjection();
 }
 
 main().catch((error: unknown) => {
