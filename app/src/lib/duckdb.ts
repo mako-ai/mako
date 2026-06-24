@@ -581,12 +581,29 @@ export async function loadParquetTable(
   tableName: string,
   buffer: Uint8Array,
 ): Promise<number> {
-  await db.registerFileBuffer(`${tableName}.parquet`, buffer);
+  const fileName = `${tableName}.parquet`;
+  // Drop the table that references the previous buffer, then replace the
+  // registered file before re-registering. Re-registering a duckdb-wasm file
+  // buffer under an existing name without dropping it first leaves a stale
+  // handle, so a later read_parquet fails with "Invalid data" — this surfaces
+  // when an app reloads a refreshed snapshot in place (same table name, new
+  // bytes). On the first load dropTable/dropFile are harmless no-ops.
+  const dropConn = await db.connect();
+  try {
+    await dropConn.query(`DROP TABLE IF EXISTS "${tableName}"`);
+  } finally {
+    await dropConn.close();
+  }
+  try {
+    await db.dropFile(fileName);
+  } catch {
+    // File was not registered yet (first load) — nothing to drop.
+  }
+  await db.registerFileBuffer(fileName, buffer);
   const conn = await db.connect();
   try {
-    await conn.query(`DROP TABLE IF EXISTS "${tableName}"`);
     await conn.query(
-      `CREATE TABLE "${tableName}" AS SELECT * FROM read_parquet('${tableName}.parquet')`,
+      `CREATE TABLE "${tableName}" AS SELECT * FROM read_parquet('${fileName}')`,
     );
     const result = await conn.query(
       `SELECT count(*) as cnt FROM "${tableName}"`,
