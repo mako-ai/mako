@@ -21,6 +21,7 @@ import { withContextOverflowSelfHeal } from "../agent-lib/context-overflow-self-
 import {
   computeInputBudget,
   compactUiMessagesForBudget,
+  dedupeAssistantReasoning,
   elideOldToolOutputs,
   stripReplayedReasoning,
 } from "../agent-lib/context/compaction";
@@ -928,6 +929,25 @@ agentRoutes.openapi(
           workspaceId,
           modelId: resolvedModelId,
           strippedCount: reasoningStrip.strippedCount,
+        });
+      }
+      // Collapse duplicate reasoning parts on the assistant turn(s) preserved
+      // above. A persisted assistant message can accumulate duplicate thinking
+      // blocks (streamed parts merged with `originalMessages`, resumable-stream
+      // replay, persist→reload). On a tool-use continuation Anthropic requires
+      // the latest assistant message's thinking blocks to be replayed
+      // byte-for-byte unmodified, and a duplicate IS a modification — the turn
+      // is rejected with "thinking ... blocks in the latest assistant message
+      // cannot be modified", permanently wedging the chat. De-duping restores
+      // the original sequence so the turn round-trips.
+      const reasoningDedupe = dedupeAssistantReasoning(messagesForModel);
+      messagesForModel = reasoningDedupe.messages;
+      if (reasoningDedupe.changed) {
+        logger.info("De-duplicated replayed reasoning before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          removedCount: reasoningDedupe.removedCount,
         });
       }
       // Proactively keep the prompt under the model's context window. Budget is

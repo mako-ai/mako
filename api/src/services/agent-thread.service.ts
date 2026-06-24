@@ -491,6 +491,7 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
     type: string;
     text?: string;
     reasoning?: string;
+    providerMetadata?: unknown;
     toolCallId?: string;
     toolName?: string;
     input?: unknown;
@@ -521,10 +522,17 @@ function convertUIMessageToStoredFormat(msg: UIMessage): {
       }
 
       if (partType === "reasoning") {
-        // Reasoning parts may have text in 'text' or 'reasoning' field
+        // Reasoning parts may have text in 'text' or 'reasoning' field.
+        // Preserve providerMetadata (Anthropic extended-thinking `signature`):
+        // it MUST round-trip byte-for-byte so a reloaded chat can replay the
+        // thinking block on a tool-use continuation. Dropping it makes Anthropic
+        // reject the turn ("thinking ... blocks in the latest assistant message
+        // cannot be modified").
+        const providerMetadata = p.providerMetadata;
         return {
           type: "reasoning",
           reasoning: (p.reasoning as string) || (p.text as string),
+          ...(providerMetadata != null ? { providerMetadata } : {}),
         };
       }
 

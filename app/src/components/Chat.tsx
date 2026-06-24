@@ -3434,10 +3434,18 @@ const Chat: React.FC<ChatProps> = ({
                       return { type: "text", text: p.text || "" };
                     }
                     if (p.type === "reasoning") {
-                      // Handle both 'reasoning' and 'text' fields for reasoning parts
+                      // Handle both 'reasoning' and 'text' fields for reasoning parts.
+                      // Carry providerMetadata back (Anthropic extended-thinking
+                      // `signature`) so a continuation replays the thinking block
+                      // byte-for-byte; without it Anthropic rejects the turn with
+                      // "thinking ... blocks in the latest assistant message cannot
+                      // be modified".
                       return {
                         type: "reasoning",
                         text: p.reasoning || p.text || "",
+                        ...(p.providerMetadata != null
+                          ? { providerMetadata: p.providerMetadata }
+                          : {}),
                       };
                     }
                     // Tool parts: ensure state is set for UI rendering
