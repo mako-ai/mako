@@ -133,6 +133,22 @@ export class DestinationWriter {
   }
 
   /**
+   * Test-only seam: inject a driver + connection directly, bypassing the
+   * Mongoose lookup + registry resolution that `initialize()` performs. Lets
+   * unit tests exercise the engine-agnostic orchestration (column-type mapping,
+   * working-schema selection) without a database. Not used in production code.
+   *
+   * @internal
+   */
+  _injectForTest(
+    driver: DatabaseDriver,
+    connection: IDatabaseConnection,
+  ): void {
+    this.driver = driver;
+    this.connection = connection;
+  }
+
+  /**
    * Build InsertOptions with layout config from tableDestination
    */
   private getInsertOptionsWithLayout(): InsertOptions {

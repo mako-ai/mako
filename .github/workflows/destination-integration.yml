@@ -1,0 +1,44 @@
+name: Destination Integration (nightly)
+
+# Runs the gated, real-DB destination round-trip suites (testcontainers Postgres
+# + goccy bigquery-emulator) that self-skip in the per-PR offline run. Needs
+# Docker, so it runs nightly / on demand rather than on every PR.
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # 04:00 UTC nightly
+  workflow_dispatch: {}
+
+jobs:
+  integration:
+    name: Destination round-trip (testcontainers)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Workspace packages the API imports at runtime must be built first so
+      # `tsx`/vitest can resolve `@mako/schemas` / `@mako/agent-tools`.
+      - name: Build workspace packages
+        run: |
+          pnpm --filter @mako/schemas run build
+          pnpm --filter @mako/agent-tools run build
+
+      - name: Run gated destination integration suites
+        env:
+          RUN_DB_INTEGRATION: "1"
+        run: pnpm --filter api run test:destinations

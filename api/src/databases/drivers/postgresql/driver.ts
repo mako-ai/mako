@@ -91,10 +91,7 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
-  buildRowCountBatchQuery(
-    schema: string,
-    tableNames: string[],
-  ): string | null {
+  buildRowCountBatchQuery(schema: string, tableNames: string[]): string | null {
     if (tableNames.length === 0) return null;
     const inList = tableNames.map(escapeSqlLiteral).join(",");
     return `SELECT c.relname AS table_id, c.reltuples::bigint AS row_count FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${escapeSqlLiteral(
@@ -315,8 +312,8 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     const existingColumnsQuery = `
       SELECT column_name
       FROM information_schema.columns
-      WHERE table_schema = '${schema.replace(/'/g, "''")}'
-      AND table_name = '${tableName.replace(/'/g, "''")}';
+      WHERE table_schema = ${escapeSqlLiteral(schema)}
+      AND table_name = ${escapeSqlLiteral(tableName)};
     `;
     const existingColumnsResult = await this.executeQuery(
       database,
