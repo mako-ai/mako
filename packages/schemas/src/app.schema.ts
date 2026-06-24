@@ -50,6 +50,16 @@ export type AppBindingMaterialization = z.infer<
   typeof AppBindingMaterializationSchema
 >;
 
+export const AppBindingMaterializationScheduleSchema = z.object({
+  enabled: z.boolean(),
+  cron: z.string().nullable(),
+  timezone: z.string().optional(),
+  dataFreshnessTtlMs: z.number().nullable().optional(),
+});
+export type AppBindingMaterializationSchedule = z.infer<
+  typeof AppBindingMaterializationScheduleSchema
+>;
+
 export const AppBindingParquetStatusSchema = z.enum([
   "missing",
   "queued",
@@ -117,6 +127,7 @@ export const AppDataBindingSchema = z.object({
   databaseId: z.string().optional().describe("Optional sub-database id"),
   databaseName: z.string().optional().describe("Optional database name"),
   materialization: AppBindingMaterializationSchema.default("live"),
+  materializationSchedule: AppBindingMaterializationScheduleSchema.optional(),
   cache: AppBindingCacheSchema.optional(),
 });
 export type AppDataBinding = z.infer<typeof AppDataBindingSchema>;

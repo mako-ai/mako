@@ -20,6 +20,7 @@ import type { ConsoleTab, TabKind } from "../store/lib/types";
 export const APP_FILE_SEP = "::file::";
 export const APP_DIR_SEP = "::dir::";
 export const APP_BINDING_SEP = "::binding::";
+export const DASHBOARD_DATA_SOURCE_SEP = "::dashboard-data-source::";
 
 // dbt (Transforms) ResourceTree node-id encoding (kept in sync with
 // DbtExplorer, which imports these). Project node: "<projectId>";
@@ -68,9 +69,14 @@ export function tabRevealTarget(
       return id ? { explorer: "dashboards", nodeId: id } : null;
     }
     case "dashboard-data-source": {
-      // Data-source tabs live under their dashboard — reveal the dashboard row.
-      const id = meta.dashboardId as string | undefined;
-      return id ? { explorer: "dashboards", nodeId: id } : null;
+      const dashboardId = meta.dashboardId as string | undefined;
+      const dataSourceId = meta.dataSourceId as string | undefined;
+      return dashboardId && dataSourceId
+        ? {
+            explorer: "dashboards",
+            nodeId: `${dashboardId}${DASHBOARD_DATA_SOURCE_SEP}${dataSourceId}`,
+          }
+        : null;
     }
     case "app": {
       const appId = meta.appId as string | undefined;

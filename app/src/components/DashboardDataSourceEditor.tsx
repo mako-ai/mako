@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import {
   Database as MaterializeIcon,
+  CalendarClock as ScheduleIcon,
   History as HistoryIcon,
   Eye as PreviewIcon,
   CheckCircle2 as SuccessIcon,
@@ -27,6 +28,8 @@ import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import MaterializationScheduleControls from "./MaterializationScheduleControls";
+import type { MaterializationScheduleValue } from "../lib/materializationSchedule";
 
 interface PreviewResult {
   results: Record<string, unknown>[];
@@ -82,6 +85,9 @@ export default function DashboardDataSourceEditor({
   const [materializing, setMaterializing] = useState(false);
   const [previewingSnapshot, setPreviewingSnapshot] = useState(false);
   const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
+  const [scheduleAnchor, setScheduleAnchor] = useState<HTMLElement | null>(
+    null,
+  );
   const [historyRuns, setHistoryRuns] = useState<MaterializationRunRecord[]>(
     [],
   );
@@ -192,6 +198,19 @@ export default function DashboardDataSourceEditor({
   ]);
 
   const cache = dataSource?.cache;
+
+  const handleScheduleChange = useCallback(
+    (schedule: MaterializationScheduleValue) => {
+      if (!workspaceId || !dashboard) return;
+      useDashboardStore.setState(state => {
+        if (state.openDashboards[dashboardId]) {
+          state.openDashboards[dashboardId].materializationSchedule = schedule;
+        }
+      });
+      void saveDashboard(workspaceId, dashboardId);
+    },
+    [workspaceId, dashboard, dashboardId, saveDashboard],
+  );
 
   const handlePreviewSnapshot = useCallback(async () => {
     if (!workspaceId) return;
@@ -304,6 +323,14 @@ export default function DashboardDataSourceEditor({
           </span>
         </Tooltip>
       )}
+      <Tooltip title="Materialization schedule">
+        <IconButton
+          size="small"
+          onClick={e => setScheduleAnchor(e.currentTarget)}
+        >
+          <ScheduleIcon size={18} strokeWidth={1.5} />
+        </IconButton>
+      </Tooltip>
       <Tooltip title="Materialization history">
         <IconButton
           size="small"
@@ -443,6 +470,25 @@ export default function DashboardDataSourceEditor({
               );
             })
           )}
+        </Box>
+      </Popover>
+
+      <Popover
+        open={Boolean(scheduleAnchor)}
+        anchorEl={scheduleAnchor}
+        onClose={() => setScheduleAnchor(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Box sx={{ p: 1.5, width: 360 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Materialization settings
+          </Typography>
+          <MaterializationScheduleControls
+            value={dashboard.materializationSchedule}
+            onChange={handleScheduleChange}
+            disabled={dashboard.readOnly}
+            caption="Dashboard schedules apply to every data source in this dashboard."
+          />
         </Box>
       </Popover>
     </Box>

@@ -13,6 +13,7 @@ import {
 } from "@mui/material";
 import {
   Database as MaterializeIcon,
+  CalendarClock as ScheduleIcon,
   Info as InfoIcon,
   History as HistoryIcon,
   Eye as PreviewIcon,
@@ -27,6 +28,11 @@ import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import MaterializationScheduleControls from "./MaterializationScheduleControls";
+import {
+  defaultMaterializationSchedule,
+  type MaterializationScheduleValue,
+} from "../lib/materializationSchedule";
 
 interface PreviewResult {
   results: Record<string, unknown>[];
@@ -73,6 +79,9 @@ export default function AppBindingEditor({
   const [materializing, setMaterializing] = useState(false);
   const [previewingSnapshot, setPreviewingSnapshot] = useState(false);
   const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
+  const [scheduleAnchor, setScheduleAnchor] = useState<HTMLElement | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!appEntity && workspaceId) void fetchApp(workspaceId, appId);
@@ -136,6 +145,15 @@ export default function AppBindingEditor({
   }, [workspaceId, appId, bindingId, materializeBinding]);
 
   const bindingCache = binding?.cache;
+  const handleScheduleChange = useCallback(
+    (schedule: MaterializationScheduleValue) => {
+      if (!workspaceId) return;
+      updateBinding(appId, bindingId, { materializationSchedule: schedule });
+      void persistApp(workspaceId, appId);
+    },
+    [workspaceId, appId, bindingId, updateBinding, persistApp],
+  );
+
   const handlePreviewSnapshot = useCallback(async () => {
     if (!bindingCache?.parquetUrl) return;
     setPreviewingSnapshot(true);
@@ -273,6 +291,14 @@ export default function AppBindingEditor({
               </span>
             </Tooltip>
           )}
+          <Tooltip title="Materialization schedule">
+            <IconButton
+              size="small"
+              onClick={e => setScheduleAnchor(e.currentTarget)}
+            >
+              <ScheduleIcon size={18} strokeWidth={1.5} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Materialization history">
             <span>
               <IconButton
@@ -401,6 +427,32 @@ export default function AppBindingEditor({
               </Box>
             ))
           )}
+        </Box>
+      </Popover>
+
+      <Popover
+        open={Boolean(scheduleAnchor)}
+        anchorEl={scheduleAnchor}
+        onClose={() => setScheduleAnchor(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Box sx={{ p: 1.5, width: 360 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Materialization settings
+          </Typography>
+          <MaterializationScheduleControls
+            value={
+              binding.materializationSchedule ??
+              defaultMaterializationSchedule(false)
+            }
+            onChange={handleScheduleChange}
+            disabled={binding.materialization !== "parquet"}
+            caption={
+              binding.materialization === "parquet"
+                ? "This schedule refreshes only this app data source."
+                : "Switch this data source to Materialized before scheduling refreshes."
+            }
+          />
         </Box>
       </Popover>
     </Box>
