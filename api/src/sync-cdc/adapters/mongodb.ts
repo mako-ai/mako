@@ -5,11 +5,8 @@ import {
 } from "../../database/workspace-schema";
 import { databaseConnectionService } from "../../services/database-connection.service";
 import { loggers } from "../../logging";
-import {
-  normalizePayloadKeys,
-  resolveSourceTimestamp,
-  selectLatestChangePerRecord,
-} from "../normalization";
+import { normalizePayloadKeys, resolveSourceTimestamp } from "../normalization";
+import { materializeCdcEvents } from "../materialize";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 import type { Collection, Db, MongoClient } from "mongodb";
@@ -109,34 +106,18 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     const collection = await this.getCollection(params.layout.tableName);
     await this.ensureKeyIndex(collection, params.layout.keyColumns);
 
-    const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(e => e.operation === "upsert");
-    const deletes = latest.filter(e => e.operation === "delete");
-    const deleteMode =
-      params.flow.deleteMode || params.layout.deleteMode || "hard";
+    const materialized = materializeCdcEvents({
+      events: params.events,
+      layout: params.layout,
+      flow: params.flow,
+    });
 
     const ops: any[] = [];
 
-    for (const event of upserts) {
-      const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
-      const row = {
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      };
-
+    for (const row of [
+      ...materialized.upsertRows,
+      ...materialized.softDeleteRows,
+    ]) {
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
       ops.push({
         replaceOne: {
@@ -147,47 +128,17 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
       });
     }
 
-    if (deleteMode === "soft") {
-      for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        const deletedAt = new Date();
-        const row = {
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        };
-
-        const filter = this.buildKeyFilter(params.layout.keyColumns, row);
-        ops.push({
-          replaceOne: {
-            filter,
-            replacement: row,
-            upsert: true,
-          },
-        });
+    for (const event of materialized.hardDeleteEvents) {
+      const payload = normalizePayloadKeys(event.payload || {});
+      const dataSourceId =
+        payload._dataSourceId ?? materialized.fallbackDataSourceId ?? undefined;
+      const keyFilters: Record<string, unknown> = { id: event.recordId };
+      if (dataSourceId !== undefined) {
+        keyFilters._dataSourceId = dataSourceId;
       }
-    } else if (deletes.length > 0) {
-      for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const dataSourceId =
-          payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
-        const keyFilters: Record<string, unknown> = { id: event.recordId };
-        if (dataSourceId !== undefined) {
-          keyFilters._dataSourceId = dataSourceId;
-        }
-        ops.push({
-          deleteOne: { filter: keyFilters },
-        });
-      }
+      ops.push({
+        deleteOne: { filter: keyFilters },
+      });
     }
 
     if (ops.length > 0) {
@@ -200,7 +151,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
       });
     }
 
-    return { applied: latest.length };
+    return { applied: materialized.applied };
   }
 
   async applyBatch(params: {

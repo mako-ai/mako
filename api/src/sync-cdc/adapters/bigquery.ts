@@ -11,11 +11,8 @@ import {
   buildParquetFromBatches,
   type FieldMeta,
 } from "../../utils/streaming-parquet-builder";
-import {
-  normalizePayloadKeys,
-  resolveSourceTimestamp,
-  selectLatestChangePerRecord,
-} from "../normalization";
+import { normalizePayloadKeys, resolveSourceTimestamp } from "../normalization";
+import { materializeCdcEvents } from "../materialize";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 import { createHash } from "crypto";
@@ -394,55 +391,13 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       return { applied: 0 };
     }
 
-    const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(event => event.operation === "upsert");
-    const deletes = latest.filter(event => event.operation === "delete");
-    const deleteMode =
-      params.flow.deleteMode || params.layout.deleteMode || "hard";
+    const materialized = materializeCdcEvents({
+      events: params.events,
+      layout: params.layout,
+      flow: params.flow,
+    });
 
-    const rows: Record<string, unknown>[] = [];
-
-    for (const event of upserts) {
-      const payload = normalizePayloadKeys(event.payload || {});
-      const sourceTs = resolveSourceTimestamp(
-        payload,
-        new Date(event.sourceTs),
-      );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
-    }
-
-    if (deleteMode === "soft") {
-      for (const event of deletes) {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
-      }
-    }
+    const rows = [...materialized.upsertRows, ...materialized.softDeleteRows];
 
     if (rows.length > 0) {
       await this.writeViaParquet({
@@ -453,11 +408,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       });
     }
 
-    if (deleteMode === "hard" && deletes.length > 0) {
-      await this.hardDeleteBatch(params.layout, deletes, fallbackDataSourceId);
+    if (materialized.hardDeleteEvents.length > 0) {
+      await this.hardDeleteBatch(
+        params.layout,
+        materialized.hardDeleteEvents,
+        materialized.fallbackDataSourceId,
+      );
     }
 
-    return { applied: latest.length };
+    return { applied: materialized.applied };
   }
 
   async applyBatch(params: {

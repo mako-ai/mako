@@ -2,11 +2,8 @@ import { Types } from "mongoose";
 import type { IFlow } from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { loggers } from "../../logging";
-import {
-  normalizePayloadKeys,
-  resolveSourceTimestamp,
-  selectLatestChangePerRecord,
-} from "../normalization";
+import { normalizePayloadKeys, resolveSourceTimestamp } from "../normalization";
+import { materializeCdcEvents } from "../materialize";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 
@@ -47,33 +44,14 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     const writer = await this.createWriter(params.layout.tableName);
     (writer as any).config.deleteMode = params.flow.deleteMode;
 
-    const latest = selectLatestChangePerRecord(params.events);
-    const fallbackDataSourceId = params.flow.dataSourceId
-      ? String(params.flow.dataSourceId)
-      : undefined;
-    const upserts = latest.filter(event => event.operation === "upsert");
-    const deletes = latest.filter(event => event.operation === "delete");
+    const materialized = materializeCdcEvents({
+      events: params.events,
+      layout: params.layout,
+      flow: params.flow,
+    });
 
-    if (upserts.length > 0) {
-      const rows = upserts.map(event => {
-        const payload = normalizePayloadKeys(event.payload || {});
-        const sourceTs = resolveSourceTimestamp(
-          payload,
-          new Date(event.sourceTs),
-        );
-        return {
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: null,
-          is_deleted: false,
-          deleted_at: null,
-        };
-      });
-
-      const write = await writer.writeBatch(rows, {
+    if (materialized.upsertRows.length > 0) {
+      const write = await writer.writeBatch(materialized.upsertRows, {
         keyColumns: params.layout.keyColumns,
         conflictStrategy: "update",
       });
@@ -84,58 +62,36 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
       }
     }
 
-    if (deletes.length > 0) {
-      const deleteMode =
-        params.flow.deleteMode || params.layout.deleteMode || "hard";
-      if (deleteMode === "soft") {
-        const rows = deletes.map(event => {
-          const payload = normalizePayloadKeys(event.payload || {});
-          const sourceTs = resolveSourceTimestamp(
-            payload,
-            new Date(event.sourceTs),
-          );
-          return {
-            ...payload,
-            id: event.recordId,
-            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-            _mako_source_ts: sourceTs,
-            _mako_ingest_seq: Number(event.ingestSeq),
-            _mako_deleted_at: new Date(),
-            is_deleted: true,
-            deleted_at: new Date(),
-          };
-        });
+    if (materialized.softDeleteRows.length > 0) {
+      const write = await writer.writeBatch(materialized.softDeleteRows, {
+        keyColumns: params.layout.keyColumns,
+        conflictStrategy: "update",
+      });
+      if (!write.success) {
+        throw new Error(
+          write.error || "Failed to apply PostgreSQL CDC soft deletes",
+        );
+      }
+    }
 
-        const write = await writer.writeBatch(rows, {
-          keyColumns: params.layout.keyColumns,
-          conflictStrategy: "update",
-        });
-        if (!write.success) {
-          throw new Error(
-            write.error || "Failed to apply PostgreSQL CDC soft deletes",
-          );
-        }
-      } else {
-        for (const event of deletes) {
-          const payload = normalizePayloadKeys(event.payload || {});
-          const dataSourceId =
-            payload._dataSourceId ?? fallbackDataSourceId ?? undefined;
-          const keyFilters: Record<string, unknown> = { id: event.recordId };
-          if (dataSourceId !== undefined) {
-            keyFilters._dataSourceId = dataSourceId;
-          }
-          const remove = await writer.deleteByKeys(keyFilters);
-          if (!remove.success) {
-            throw new Error(
-              remove.error || "Failed to apply PostgreSQL CDC hard delete",
-            );
-          }
-        }
+    for (const event of materialized.hardDeleteEvents) {
+      const payload = normalizePayloadKeys(event.payload || {});
+      const dataSourceId =
+        payload._dataSourceId ?? materialized.fallbackDataSourceId ?? undefined;
+      const keyFilters: Record<string, unknown> = { id: event.recordId };
+      if (dataSourceId !== undefined) {
+        keyFilters._dataSourceId = dataSourceId;
+      }
+      const remove = await writer.deleteByKeys(keyFilters);
+      if (!remove.success) {
+        throw new Error(
+          remove.error || "Failed to apply PostgreSQL CDC hard delete",
+        );
       }
     }
 
     return {
-      applied: latest.length,
+      applied: materialized.applied,
     };
   }
 
