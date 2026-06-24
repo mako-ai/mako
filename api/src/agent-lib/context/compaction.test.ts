@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import type { UIMessage } from "ai";
-import { elideOldToolOutputs, stripReplayedReasoning } from "./compaction";
+import {
+  dedupeAssistantReasoning,
+  elideOldToolOutputs,
+  stripReplayedReasoning,
+} from "./compaction";
 import { estimateUiMessagesTokens } from "./token-estimate";
 
 function t(label: string, fn: () => void) {
@@ -249,6 +253,134 @@ t("no-op when there is no reasoning to strip", () => {
   const res = stripReplayedReasoning(msgs);
   assert.equal(res.changed, false);
   assert.equal(res.strippedCount, 0);
+});
+
+// --- dedupeAssistantReasoning ---------------------------------------------
+
+function reasoningPart(
+  text: string,
+  signature?: string,
+): Record<string, unknown> {
+  return {
+    type: "reasoning",
+    text,
+    ...(signature
+      ? { providerMetadata: { anthropic: { signature } } }
+      : {}),
+  };
+}
+
+function assistantParts(parts: Array<Record<string, unknown>>): UIMessage {
+  return { id: "a", role: "assistant", parts } as UIMessage;
+}
+
+t("dedupe: removes duplicate reasoning blocks sharing a signature", () => {
+  // Mirrors the prod bug: the same signed thinking block replayed twice
+  // (and a duplicated text part interleaved) on the latest assistant message.
+  const msgs: UIMessage[] = [
+    userMsg("u0", "rebuild my funnel"),
+    assistantParts([
+      { type: "step-start" },
+      reasoningPart("thinking A", "sigA"),
+      { type: "text", text: "Let me load skills." },
+      { type: "step-start" },
+      reasoningPart("thinking B", "sigB"),
+      { type: "step-start" },
+      reasoningPart("thinking A", "sigA"), // DUP of first
+      { type: "text", text: "Let me load skills." },
+      reasoningPart("thinking B", "sigB"), // DUP of second
+      { type: "text", text: "Now the full picture." },
+      {
+        type: "tool-ask_clarifying_questions",
+        toolCallId: "c1",
+        toolName: "ask_clarifying_questions",
+        input: {},
+        output: { ok: true },
+        state: "output-available",
+      },
+    ]),
+  ];
+  const res = dedupeAssistantReasoning(msgs);
+  assert.equal(res.changed, true);
+  assert.equal(res.removedCount, 2);
+  const a = res.messages.find(m => m.id === "a");
+  assert.ok(a);
+  const reasoning = (a.parts as Array<Record<string, unknown>>).filter(
+    p => p.type === "reasoning",
+  );
+  // Exactly the two original unique signed blocks survive, in order.
+  assert.equal(reasoning.length, 2);
+  assert.equal(reasoning[0].text, "thinking A");
+  assert.equal(reasoning[1].text, "thinking B");
+  // The surviving blocks retain their original signatures untouched.
+  assert.equal(
+    (reasoning[0].providerMetadata as { anthropic: { signature: string } })
+      .anthropic.signature,
+    "sigA",
+  );
+  // Non-reasoning parts (text duplicates included) are left intact.
+  const textParts = (a.parts as Array<Record<string, unknown>>).filter(
+    p => p.type === "text",
+  );
+  assert.equal(textParts.length, 3);
+});
+
+t("dedupe: keeps distinct signed blocks with identical text", () => {
+  // Interleaved thinking can legitimately produce two blocks with the same
+  // text but different signatures — both must survive.
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q"),
+    assistantParts([
+      reasoningPart("same words", "sig1"),
+      reasoningPart("same words", "sig2"),
+    ]),
+  ];
+  const res = dedupeAssistantReasoning(msgs);
+  assert.equal(res.changed, false);
+  assert.equal(res.removedCount, 0);
+});
+
+t("dedupe: falls back to text for signature-less (legacy) reasoning", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q"),
+    assistantParts([
+      reasoningPart("legacy thought"),
+      reasoningPart("legacy thought"), // DUP, no signature → text match
+      reasoningPart("other thought"),
+    ]),
+  ];
+  const res = dedupeAssistantReasoning(msgs);
+  assert.equal(res.changed, true);
+  assert.equal(res.removedCount, 1);
+  const a = res.messages.find(m => m.id === "a");
+  assert.ok(a);
+  const reasoning = (a.parts as Array<Record<string, unknown>>).filter(
+    p => p.type === "reasoning",
+  );
+  assert.equal(reasoning.length, 2);
+});
+
+t("dedupe: no-op when there are no duplicate reasoning parts", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q"),
+    assistantWithReasoning("a0", "unique answer"),
+  ];
+  const res = dedupeAssistantReasoning(msgs);
+  assert.equal(res.changed, false);
+  assert.equal(res.removedCount, 0);
+});
+
+t("dedupe: ignores user messages and empty/whitespace reasoning", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q"),
+    assistantParts([
+      reasoningPart("   "), // whitespace-only, no signature
+      reasoningPart("   "), // would collide on empty key — must NOT be dropped
+    ]),
+  ];
+  const res = dedupeAssistantReasoning(msgs);
+  assert.equal(res.changed, false);
+  assert.equal(res.removedCount, 0);
 });
 
 process.stdout.write("\nAll compaction tests passed.\n");

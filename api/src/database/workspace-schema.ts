@@ -589,6 +589,13 @@ export interface IMessagePart {
   type: string; // "text", "reasoning", "tool-{toolName}", "dynamic-tool"
   text?: string; // For text and reasoning parts
   reasoning?: string; // Alternative field for reasoning content
+  // Provider metadata for reasoning parts. Anthropic extended thinking returns a
+  // per-block `signature` (lives at providerMetadata.anthropic.signature). The
+  // signature MUST round-trip byte-for-byte: on a tool-use continuation Anthropic
+  // rejects the turn ("thinking ... blocks in the latest assistant message cannot
+  // be modified") if a replayed thinking block lacks/alters its original
+  // signature. Persisting it keeps reloaded chats continuable.
+  providerMetadata?: unknown;
   toolCallId?: string; // For tool parts
   toolName?: string; // For tool parts
   input?: unknown; // Tool input/arguments (named 'input' for AI SDK v6 compat, was 'args')
@@ -1784,6 +1791,12 @@ const ChatSchema = new Schema<IChat>(
             },
             text: String,
             reasoning: String,
+            // Anthropic extended-thinking signature (and any other provider
+            // metadata) for reasoning parts. Must persist so a reloaded chat can
+            // replay thinking blocks byte-for-byte on a tool-use continuation;
+            // otherwise Anthropic rejects the turn with "thinking ... blocks in
+            // the latest assistant message cannot be modified".
+            providerMetadata: Schema.Types.Mixed,
             toolCallId: String,
             toolName: String,
             input: Schema.Types.Mixed,
