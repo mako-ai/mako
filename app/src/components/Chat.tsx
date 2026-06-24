@@ -490,6 +490,7 @@ function getConsoleToolPresentation(
   input: unknown,
   output: unknown,
   connectionIconById: ReadonlyMap<string, string>,
+  state: ToolPartState,
 ): ConsoleToolPresentation | null {
   if (toolName !== "modify_console") return null;
 
@@ -508,11 +509,23 @@ function getConsoleToolPresentation(
     (typeof outputTitle === "string" ? outputTitle : undefined) ??
     "Untitled console";
 
+  // While the input is still streaming, the `content` field is partial, so a
+  // line-diff against the existing console re-aligns its +/- groupings on every
+  // token (interleaved → grouped as more text arrives) — the modify_console
+  // "blink like mad" the diff card showed under Virtuoso. Skip the live diff
+  // while streaming: with no diff, the card falls back to rendering the raw
+  // `content` as plain SQL, which grows append-only and streams smoothly
+  // (exactly the token-by-token write users want, same path as create_console).
+  // Once the content is complete (`input-available`/`output-available`) the diff
+  // is stable, so we show the proper red/green diff again — preferring the final
+  // server `outputDiff` when present.
   const outputDiff = outputObj?.diff;
   const diff =
     typeof outputDiff === "string" && outputDiff.length > 0
       ? outputDiff
-      : buildStreamingModificationDiff(inputObj, consoleTab);
+      : state === "input-streaming"
+        ? undefined
+        : buildStreamingModificationDiff(inputObj, consoleTab);
 
   return {
     consoleId,
@@ -958,6 +971,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
               part.input,
               cardOutput,
               connectionIconById,
+              cardState,
             );
             // Key by toolCallId when available so reordering/insertion in the
             // parts array doesn't remount completed tool cards. Falls back to

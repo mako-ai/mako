@@ -347,6 +347,14 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).not.toContain("rafIdRef");
   });
 
+  it("does NOT build a live modify_console diff while input is still streaming", () => {
+    // A line-diff of partial streamed content re-aligns its +/- groupings on
+    // every token (the modify_console "blink"). While input-streaming we show
+    // the raw SQL (append-only, smooth) and only render the diff once content
+    // is complete.
+    expect(chatSource).toMatch(/state === "input-streaming"\s*\?\s*undefined/);
+  });
+
   it("keys tool parts by toolCallId so completed cards don't remount", () => {
     // Remounting a finished tool card on every parts-array mutation drops
     // its internal expand/scroll state and causes a flicker. Keying by
