@@ -43,9 +43,11 @@ import {
 import type { AgentToolExecutionContext } from "../../agents/types";
 import {
   QUERY_SOFT_TIMEOUT_MS,
-  QUERY_POLL_BACKOFF_MS,
   QUERY_HARD_MAX_EXECUTION_MS,
+  QUERY_STATUS_POLL_WAIT_MS,
+  QUERY_STATUS_POLL_INTERVAL_MS,
 } from "../../config/long-running-queries";
+import { pollRunStatus } from "./check-query-status-poll";
 import { loggers } from "../../logging";
 
 const logger = loggers.agent();
@@ -63,11 +65,6 @@ function leafConsoleName(raw: string | undefined): string {
   const parts = value.split("/").filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : value;
 }
-
-/** First poll backoff hint surfaced to the agent (seconds). */
-const FIRST_POLL_BACKOFF_S = Math.round(
-  (QUERY_POLL_BACKOFF_MS[0] ?? 30_000) / 1000,
-);
 
 const consoleManager = new ConsoleManager();
 
@@ -626,7 +623,7 @@ export function createServerConsoleTools({
               elapsedMs: QUERY_SOFT_TIMEOUT_MS,
               message:
                 `Query is still running after ${Math.round(QUERY_SOFT_TIMEOUT_MS / 1000)}s and keeps running server-side. ` +
-                `Poll check_query_status (consoleId="${consoleId}", executionId="${executionId}") after ~${FIRST_POLL_BACKOFF_S}s to get the result. Do not re-run the query.`,
+                `Call check_query_status (consoleId="${consoleId}", executionId="${executionId}") to get the result — it blocks server-side until the query finishes (no need to wait or poll rapidly yourself). Do not re-run the query.`,
             };
           }
 
@@ -663,80 +660,29 @@ export function createServerConsoleTools({
     check_query_status: tool({
       description:
         'Poll the status of a console query started with run_console (DB-backed, works across server instances). Returns { status: "running", elapsedMs } while it runs, { status: "success", rowCount, preview } when it finishes, { status: "error", error }, or { status: "cancelled" }. ' +
-        'After run_console returns status="running", auto-poll this with backoff (~' +
-        QUERY_POLL_BACKOFF_MS.map(ms => `${Math.round(ms / 1000)}s`).join("/") +
-        `) until it finishes. The query is automatically aborted server-side at a hard cap (~${Math.round(QUERY_HARD_MAX_EXECUTION_MS / 60_000)} min); if that happens, rewrite it into smaller/narrower queries rather than retrying as-is. Never silently re-run the query while it is still running.`,
+        `This call BLOCKS server-side for up to ~${Math.round(QUERY_STATUS_POLL_WAIT_MS / 1000)}s, returning the instant the query settles — so you do NOT need to (and must NOT) add your own delay or spam rapid calls. After run_console returns status="running", just call this again; if it returns status="running" again, call it once more to keep waiting. ` +
+        `The query is automatically aborted server-side at a hard cap (~${Math.round(QUERY_HARD_MAX_EXECUTION_MS / 60_000)} min); if that happens, rewrite it into smaller/narrower queries rather than retrying as-is. Never silently re-run the query while it is still running.`,
       inputSchema: checkQueryStatusSchema,
-      execute: async ({ consoleId, executionId }) => {
-        const loaded = await loadConsole(consoleId);
-        if (isLoadError(loaded)) return { success: false, ...loaded };
-        const { doc } = loaded;
-
-        const lastRun = doc.lastRun;
-        if (!lastRun) {
-          return {
-            success: false,
-            error:
-              "No run found for this console yet. Use run_console to execute the query first.",
-          };
-        }
-
-        // If the caller pinned an executionId, only report when it matches the
-        // console's latest run (a newer run supersedes the one being polled).
-        if (
-          executionId &&
-          lastRun.executionId &&
-          lastRun.executionId !== executionId
-        ) {
-          return {
-            success: true,
-            status: "superseded" as const,
-            message:
-              "A newer run has started on this console; the execution you polled is no longer the latest. Re-run or check the latest run instead.",
-            latestExecutionId: lastRun.executionId,
-            latestStatus: lastRun.status,
-          };
-        }
-
-        if (lastRun.status === "running") {
-          const startedAtMs = lastRun.startedAt
-            ? new Date(lastRun.startedAt).getTime()
-            : new Date(lastRun.at).getTime();
-          return {
-            success: true,
-            status: "running" as const,
-            executionId: lastRun.executionId,
-            elapsedMs: Math.max(0, Date.now() - startedAtMs),
-            message:
-              "Still running. Keep polling with backoff, or escalate to the user after the poll window.",
-          };
-        }
-
-        if (lastRun.status === "success") {
-          return {
-            success: true,
-            status: "success" as const,
-            rowCount: lastRun.rowCount ?? 0,
-            durationMs: lastRun.durationMs,
-            preview: (lastRun.sampleRows ?? []).slice(0, RUN_PREVIEW_MAX_ROWS),
-            message: `Query finished: ${lastRun.rowCount ?? 0} row(s).`,
-          };
-        }
-
-        if (lastRun.status === "cancelled") {
-          return {
-            success: true,
-            status: "cancelled" as const,
-            error: lastRun.error || "Query was cancelled.",
-          };
-        }
-
-        return {
-          success: false,
-          status: "error" as const,
-          error: lastRun.error || "Query failed.",
-        };
-      },
+      execute: async ({ consoleId, executionId }) =>
+        // Long-poll: an LLM cannot sleep between tool calls, so if this returned
+        // instantly while the query is "running" the model re-invokes it every
+        // ~1s — flooding the chat UI (see the rapid-poll incident this fixes).
+        // pollRunStatus blocks (re-reading the DB-backed run artifact) until the
+        // run settles or the wait window elapses. The query keeps running
+        // server-side either way (hard cap still applies); we only throttle how
+        // often the agent gets a turn back.
+        pollRunStatus({
+          readRun: async () => {
+            const loaded = await loadConsole(consoleId);
+            if (isLoadError(loaded)) return { ok: false, error: loaded.error };
+            return { ok: true, lastRun: loaded.doc.lastRun };
+          },
+          executionId,
+          waitMs: QUERY_STATUS_POLL_WAIT_MS,
+          intervalMs: QUERY_STATUS_POLL_INTERVAL_MS,
+          signal: executionContext?.signal,
+          previewMaxRows: RUN_PREVIEW_MAX_ROWS,
+        }),
     }),
 
     cancel_query: tool({

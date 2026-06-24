@@ -189,7 +189,7 @@ Queries that take a while no longer fail at a fixed timeout. When the agent call
 - If it finishes within a short soft timeout (`QUERY_SOFT_TIMEOUT_MS`, ~90s default), the rows come back immediately, as before.
 - If it's still running after that, `run_console` returns `{ status: "running", executionId }` and the query **keeps running** server-side — nothing is cancelled.
 
-The agent then polls `check_query_status` (with backoff) to fetch the result, and can stop a run with `cancel_query`:
+The agent then calls `check_query_status` to fetch the result, and can stop a run with `cancel_query`. `check_query_status` **long-polls server-side** (`QUERY_STATUS_POLL_WAIT_MS`, ~30s default): it blocks until the run settles or the wait window elapses, then returns. This throttles the agent to roughly one poll per window — an LLM can't sleep between tool calls, so without server-side blocking it would re-poll every ~1s and flood the chat UI:
 
 | Tool                 | What It Does                                                                                          |
 | -------------------- | ---------------------------------------------------------------------------------------------------- |
