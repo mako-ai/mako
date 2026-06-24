@@ -1,0 +1,157 @@
+---
+title: "How to Connect to BigQuery from C# (.NET)"
+description: "Connect to BigQuery from C# with Google.Cloud.BigQuery.V2: ADC and service-account auth, running queries, named and positional parameters, reading results, cost controls, and the errors you actually hit."
+database: "bigquery"
+category: "how-to"
+tags: ["bigquery", "csharp", "dotnet", "google-cloud", "connection"]
+date: "2026-06-24"
+---
+
+Connecting to BigQuery from C# is unlike connecting to PostgreSQL or SQL Server: there is no host, no port, and no connection string. BigQuery is an API, so "connecting" means authenticating with Google Cloud credentials and pointing a client at a project. The auth setup is the real work; the query code is a few lines.
+
+There is one client that matters: `Google.Cloud.BigQuery.V2`, maintained by Google as part of the Google Cloud .NET libraries. Current version is 3.12.0 (as of June 2026). There is no ADO.NET provider in the usual sense, so Dapper and EF Core do not apply here -- you use the typed client directly.
+
+```bash
+dotnet add package Google.Cloud.BigQuery.V2
+```
+
+## Step 0: authentication
+
+The client uses Application Default Credentials (ADC), the same resolution every Google Cloud library uses. It looks for credentials in this order:
+
+1. The `GOOGLE_APPLICATION_CREDENTIALS` environment variable pointing at a service-account JSON key file.
+2. Credentials from `gcloud auth application-default login` (local development).
+3. The service account attached to the runtime (Cloud Run, GCE, GKE, Cloud Functions) when running inside Google Cloud.
+
+For local development, the cleanest path is a service-account key referenced by environment variable:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/key.json"
+```
+
+Treat that JSON file like a password: keep it out of source control, rotate it, and prefer workload identity federation over long-lived keys where your platform supports it. Inside Google Cloud, do not ship a key file at all -- attach a service account to the workload and ADC picks it up automatically.
+
+You can also load a credential explicitly in code, which is occasionally useful in scripts but should not be your default:
+
+```csharp
+using Google.Apis.Auth.OAuth2;
+using Google.Cloud.BigQuery.V2;
+
+var credential = GoogleCredential.FromFile("/path/to/key.json");
+var client = BigQueryClient.Create("your-project-id", credential);
+```
+
+## Connecting and querying
+
+With ADC in place, creating the client is one line. The "project" here is the **billing project** -- the one that pays for and runs the query, which is not necessarily where the data lives.
+
+```csharp
+using Google.Cloud.BigQuery.V2;
+
+var client = BigQueryClient.Create("your-billing-project-id");
+
+var sql = @"
+    SELECT name, SUM(number) AS total
+    FROM `bigquery-public-data.usa_names.usa_1910_2013`
+    WHERE state = 'TX'
+    GROUP BY name
+    ORDER BY total DESC
+    LIMIT 10";
+
+var results = await client.ExecuteQueryAsync(sql, parameters: null);
+
+foreach (var row in results)
+{
+    Console.WriteLine($"{row["name"]}: {row["total"]}");
+}
+```
+
+`ExecuteQueryAsync` runs the job, waits for completion, and returns the rows. Each `BigQueryRow` is indexed by column name or position. The values come back as boxed CLR types (`string`, `long`, `double`, `DateTime`), so cast as needed: `(long)row["total"]`.
+
+`BigQueryClient.Create` resolves credentials synchronously. There is also `CreateAsync` if you want to avoid any blocking during startup.
+
+## Parameters: never concatenate
+
+BigQuery supports both named (`@name`) and positional (`?`) parameters. Use them rather than interpolating values into the SQL string.
+
+```csharp
+var sql = @"
+    SELECT name, number
+    FROM `bigquery-public-data.usa_names.usa_1910_2013`
+    WHERE state = @state AND number > @min
+    ORDER BY number DESC
+    LIMIT 100";
+
+var parameters = new[]
+{
+    new BigQueryParameter("state", BigQueryDbType.String, "TX"),
+    new BigQueryParameter("min", BigQueryDbType.Int64, 5000L)
+};
+
+var results = await client.ExecuteQueryAsync(sql, parameters);
+```
+
+Pass `BigQueryDbType` explicitly. It is required when the value could be `null` (BigQuery cannot infer the type of a null) and removes ambiguity for numeric types. For positional parameters, build the query with `?` placeholders and set `BigQueryParameterMode.Positional` on the query options.
+
+## Cost controls: this is real money
+
+Unlike a database you provision, BigQuery's on-demand pricing bills by bytes scanned. A `SELECT *` over a large table is an expensive mistake you only notice on the invoice. Two guardrails belong in any non-trivial client.
+
+A **dry run** estimates bytes scanned without running the query or incurring cost:
+
+```csharp
+var job = await client.CreateQueryJobAsync(
+    sql,
+    parameters: null,
+    options: new QueryOptions { DryRun = true });
+
+var bytes = job.Resource.Statistics.Query.TotalBytesProcessed;
+Console.WriteLine($"This query would scan {bytes} bytes");
+```
+
+A **maximum bytes billed** cap makes BigQuery refuse a query that would scan more than a threshold, rather than letting it run up the bill:
+
+```csharp
+var options = new QueryOptions
+{
+    MaximumBytesBilled = 1_000_000_000 // 1 GB ceiling
+};
+var results = await client.ExecuteQueryAsync(sql, parameters: null, options: options);
+```
+
+If the query would exceed the cap, it fails fast with a billing error instead of scanning. Set this on anything user-facing.
+
+## The location trap
+
+BigQuery datasets live in a location (a region or multi-region like `US` or `EU`). If your dataset is in `EU` and you run a query without specifying the location, you can get a "Not found: Dataset" error that looks like a permissions or typo problem but is actually a location mismatch. Set the location on the query options when your data is not in the default multi-region:
+
+```csharp
+var options = new QueryOptions { /* ... */ };
+// for jobs, specify the location via the job creation options / dataset reference
+var job = await client.CreateQueryJobAsync(sql, parameters: null, options: options);
+```
+
+When a "table exists but BigQuery says it doesn't" error appears, check the dataset's location before anything else.
+
+## Billing project versus data project
+
+The project you pass to `BigQueryClient.Create` is the billing/compute project. The data you query can live in a different project -- you reference it with the fully qualified `` `project.dataset.table` `` syntax in the SQL. This split matters in larger organizations: you might run queries billed to your team's project against tables owned by a central data project. The service account needs read access (`bigquery.dataViewer`) on the data and job-creation rights (`bigquery.jobUser`) on the billing project.
+
+## Reading large result sets
+
+`ExecuteQueryAsync` is fine for results that fit comfortably in memory. For very large result sets, iterate the returned `BigQueryResults` lazily -- it pages through results rather than materializing everything at once -- and consider writing the query output to a destination table, then exporting, rather than streaming millions of rows through the client.
+
+## Errors you will actually hit
+
+| Error | Cause | Fix |
+|---|---|---|
+| `Could not load the default credentials` | ADC found no credentials | Set `GOOGLE_APPLICATION_CREDENTIALS`, run `gcloud auth application-default login`, or attach a service account |
+| `Not found: Dataset project:dataset` | Dataset is in a different location than the query, or a typo | Set the query location (`EU`, `asia-...`); verify the dataset name and project |
+| `Access Denied: ... permission bigquery.jobs.create` | Service account lacks job-creation rights on the billing project | Grant `roles/bigquery.jobUser` on the billing project |
+| `Access Denied: ... permission bigquery.tables.getData` | No read access to the data | Grant `roles/bigquery.dataViewer` on the dataset/table |
+| `Query exceeded limit for bytes billed` | `MaximumBytesBilled` cap hit (working as intended) | Narrow the query (select fewer columns, filter on partition/cluster keys) or raise the cap deliberately |
+| Boxed-cast `InvalidCastException` | Casting a `BigQueryRow` value to the wrong CLR type | Match the cast to the column type (`long` for INT64, `double` for FLOAT64, `DateTime` for TIMESTAMP) |
+
+## Where Mako fits
+
+Mako connects to BigQuery with AI-assisted SQL autocomplete, which helps when you are exploring datasets and figuring out which columns and partitions to query before you wire up `Google.Cloud.BigQuery.V2` and add cost controls. It is a read and query tool, not a connection library: you still use the Google client in your application code, and you still set your own `MaximumBytesBilled` caps. Try it free at mako.ai.
