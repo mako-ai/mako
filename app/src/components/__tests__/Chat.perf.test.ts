@@ -255,24 +255,6 @@ describe("StreamingToolCard memo comparator", () => {
     expect(compare(prev, next)).toBe(false);
   });
 
-  it("skips re-render while a modify_console edit streams its input (body shown in the console tab, not the card)", () => {
-    const prev = baseProps({
-      toolName: "modify_console",
-      state: "input-streaming",
-      input: { action: "replace", content: "SELECT" },
-      output: undefined,
-      labelOverride: "Revenue console",
-    });
-    const next = baseProps({
-      toolName: "modify_console",
-      state: "input-streaming",
-      input: { action: "replace", content: "SELECT 1" },
-      output: undefined,
-      labelOverride: "Revenue console",
-    });
-    expect(compare(prev, next)).toBe(true);
-  });
-
   it("re-renders when state transitions (e.g. input-streaming → output-available)", () => {
     const prev = baseProps({
       state: "input-streaming",
@@ -394,15 +376,6 @@ describe("StreamingToolCard structural guards", () => {
 
   it("defers building the heavy body strings until the body renders", () => {
     expect(cardSource).toMatch(/shouldRenderBody/);
-  });
-
-  it("suppresses modify_console body churn while input is still streaming", () => {
-    // The streaming SQL is shown live in the console tab, so re-highlighting a
-    // duplicate diff preview in the card on every token is pure churn.
-    expect(cardSource).toContain("suppressModifyConsoleStreamingPreview");
-    expect(cardSource).toMatch(
-      /next\.toolName === "modify_console" &&\s+next\.state === "input-streaming"/,
-    );
   });
 });
 

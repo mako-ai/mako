@@ -352,19 +352,6 @@ export const StreamingToolCard = React.memo(
 
     const hasCodePreview = Boolean(config.preview);
 
-    // While a `modify_console` edit is still streaming its input, the SQL is
-    // also being written live into the actual console tab — so re-highlighting
-    // a duplicate diff preview inside the card on every token is pure churn
-    // (the "re-render each token / blink" the user hit on the edit-console
-    // card). Suppress the card's streaming body until the edit settles; the
-    // final diff still renders once `state` leaves `input-streaming`. The memo
-    // comparator below also bails out of these per-token re-renders entirely.
-    const suppressModifyConsoleStreamingPreview =
-      toolName === "modify_console" && isStreaming;
-    const visibleBodyPreview = suppressModifyConsoleStreamingPreview
-      ? undefined
-      : bodyPreview;
-
     const [expanded, setExpanded] = useState(
       hasCodePreview ? !isDone && !isError : false,
     );
@@ -382,17 +369,16 @@ export const StreamingToolCard = React.memo(
 
     // Resolve code preview content (supports both string and object fields)
     const inputObj = input as Record<string, unknown> | undefined;
-    const rawContent =
-      config.preview && !suppressModifyConsoleStreamingPreview
-        ? inputObj?.[config.preview.field]
-        : undefined;
+    const rawContent = config.preview
+      ? inputObj?.[config.preview.field]
+      : undefined;
     const codeLanguage =
-      visibleBodyPreview?.language ?? config.preview?.language ?? "text";
+      bodyPreview?.language ?? config.preview?.language ?? "text";
 
     // Cheap presence checks (no serialization) so we can decide expandability
     // for collapsed cards without building the (potentially huge) body strings.
     const hasCode = Boolean(
-      visibleBodyPreview?.content ||
+      bodyPreview?.content ||
         (typeof rawContent === "string"
           ? rawContent.length > 0
           : rawContent != null),
@@ -411,14 +397,14 @@ export const StreamingToolCard = React.memo(
     const code = useMemo(() => {
       if (!shouldRenderBody || !hasCode) return "";
       const raw =
-        visibleBodyPreview?.content ??
+        bodyPreview?.content ??
         (typeof rawContent === "string"
           ? rawContent
           : rawContent && typeof rawContent === "object"
             ? JSON.stringify(rawContent, null, 2)
             : "");
       return capForDisplay(raw);
-    }, [shouldRenderBody, hasCode, visibleBodyPreview?.content, rawContent]);
+    }, [shouldRenderBody, hasCode, bodyPreview?.content, rawContent]);
 
     useEffect(() => {
       if (isStreaming && !userScrolled && codeContainerRef.current) {
@@ -733,17 +719,6 @@ export const StreamingToolCard = React.memo(
     if (prev.labelOverride !== next.labelOverride) return false;
     if (prev.leadingIconUrl !== next.leadingIconUrl) return false;
     if (prev.leadingIconAlt !== next.leadingIconAlt) return false;
-    // `modify_console` suppresses its streaming body preview (rendered live in
-    // the console tab instead), so its `input`/`bodyPreview` growing per token
-    // is invisible — skip those re-renders entirely. The `state` change out of
-    // `input-streaming` is still caught by the `prev.state !== next.state`
-    // check above, so the settled diff renders.
-    if (
-      next.toolName === "modify_console" &&
-      next.state === "input-streaming"
-    ) {
-      return true;
-    }
     if (prev.bodyPreview?.content !== next.bodyPreview?.content) return false;
     if (prev.bodyPreview?.language !== next.bodyPreview?.language) return false;
 
