@@ -1,6 +1,6 @@
 ---
 name: apps
-description: Load when building, editing, or debugging Mako React apps — app files, npm dependencies, data bindings, the @mako/app-sdk hooks (useQuery / useDuckDB), materialized Parquet/DuckDB bindings, and the live preview runtime.
+description: Load when building, editing, or debugging Mako React apps — app files, npm dependencies, data bindings, the @mako/app-sdk hooks (useQuery / useDuckDB / useLocation / useSearchParams / navigate), URL state and shareable deep links, materialized Parquet/DuckDB bindings, and the live preview runtime.
 entities:
   - app
   - apps
@@ -11,6 +11,15 @@ entities:
   - app-sdk
   - usequery
   - useduckdb
+  - uselocation
+  - usesearchparams
+  - navigate
+  - url state
+  - query params
+  - routing
+  - tabs
+  - deep link
+  - share link
   - parquet
   - preview
   - theme
@@ -115,6 +124,42 @@ const { theme } = useTheme(); // "light" | "dark", updates live on toggle
 
 Brand colors are fine for accents — just keep backgrounds, text, and borders on the
 tokens so both modes stay readable.
+
+### URL state & routing (shareable, reload-safe views)
+
+Persist view state — the open tab, active filters, a selected record, a sub-page —
+in the URL so a reload restores it and the link is shareable. The runtime projects
+the app's location onto the host's real URL in **both** contexts: embedded in Mako
+(`/a/:appId`) and the public share view (`/share/:token`). App query params stay
+readable on the address bar; the app's pathname rides in a reserved `_path` param.
+
+Use the injected hooks — do **not** reach for `window.history`, `window.location`,
+the URL hash, or a `react-router` `BrowserRouter`. The app runs in a sandboxed
+`about:srcdoc` iframe, so those can't write the real address bar and won't survive a
+reload or share; only these hooks bridge to the host:
+
+```tsx
+import { useLocation, useSearchParams, navigate } from "@mako/app-sdk";
+
+// Read the current location (re-renders on every change, incl. back/forward).
+const loc = useLocation(); // { pathname, search, hash, href, searchParams }
+
+// React-Router-style query params for tabs / filters.
+const [params, setParams] = useSearchParams();
+const tab = params.get("tab") ?? "overview";
+// Pass { replace: true } for high-frequency updates (typing in a filter, sliders)
+// so back/forward isn't flooded; the default pushes a new history entry.
+setParams(new URLSearchParams({ tab: "customers", c: "ES,FR" }), { replace: true });
+
+// Path-style routing for distinct views / detail pages.
+navigate("/customers/42");          // push a new entry (Back returns to the list)
+navigate("/", { replace: true });   // replace the current entry
+```
+
+Guidance: reach for this whenever the app has tabs, filters, or master→detail
+navigation a user would expect to bookmark or share. Use distinct **paths** for
+separate views (`/`, `/customers/42`) and **query params** for filters/sort within a
+view. Hashes (`#…`) are not carried across the bridge — keep state in the path/query.
 
 ### Constraints
 
