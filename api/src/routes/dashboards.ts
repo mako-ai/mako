@@ -31,8 +31,6 @@ import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-run
 import { DashboardManager } from "../utils/dashboard-manager";
 import {
   createVersion,
-  listVersions,
-  getVersion,
   getUserDisplayName,
 } from "../services/entity-version.service";
 import { generateDashboardVersionComment } from "../services/version-comment.service";
@@ -42,6 +40,7 @@ import {
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
 import { registerPublicShareRoutes } from "./lib/public-share-routes";
+import { registerVersionHistoryRoutes } from "./lib/version-history-routes";
 import {
   AUTH_SECURITY,
   OPEN_RESPONSES,
@@ -2290,265 +2289,63 @@ app.openapi(
 // Version history routes
 // ---------------------------------------------------------------------------
 
-// GET /api/workspaces/:workspaceId/dashboards/:id/versions
-app.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions",
-    tags: ["Dashboards"],
-    summary: "List dashboard versions",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      query: z.object({
-        limit: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "limit", in: "query" } }),
-        offset: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "offset", in: "query" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const userId = c.get("user")?.id;
-
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      if (!Types.ObjectId.isValid(id)) {
-        return c.json({ success: false, error: "Invalid dashboard ID" }, 400);
-      }
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-      if (!DashboardManager.canRead(dashboard, userId)) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      const limit = Math.min(
-        parseInt(c.req.query("limit") ?? "50", 10) || 50,
-        100,
-      );
-      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
-
-      const result = await listVersions(new Types.ObjectId(id), "dashboard", {
-        limit,
-        offset,
-      });
-
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      logger.error("Error listing dashboard versions", { error });
-      return c.json({ success: false, error: "Failed to list versions" }, 500);
-    }
+registerVersionHistoryRoutes(app, {
+  resourceName: "dashboard",
+  tag: "Dashboards",
+  entityType: "dashboard",
+  load: loadDashboardById,
+  canRead: (_c, dashboard, userId) =>
+    DashboardManager.canRead(dashboard, userId)
+      ? true
+      : { error: "Access denied" },
+  canWrite: (c, dashboard, userId) => {
+    const memberRole = c.get("memberRole");
+    const isAdmin = memberRole === "owner" || memberRole === "admin";
+    return DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)
+      ? true
+      : { error: "You do not have write access" };
   },
-);
+  restore: async ({ workspaceId, resourceId, version, snapshot }) => {
+    const snap = snapshot as Record<string, any>;
+    const restoreFields: Record<string, any> = {
+      title: snap.title,
+      description: snap.description,
+      dataSources: snap.dataSources,
+      widgets: snap.widgets,
+      relationships: snap.relationships,
+      globalFilters: snap.globalFilters,
+      crossFilter: snap.crossFilter,
+      layout: snap.layout,
+      materializationSchedule: snap.materializationSchedule,
+    };
 
-// GET /api/workspaces/:workspaceId/dashboards/:id/versions/:version
-app.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions/{version}",
-    tags: ["Dashboards"],
-    summary: "GET /{id}/versions/{version}",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const userId = c.get("user")?.id;
-
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
-
-      if (!Types.ObjectId.isValid(id) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid dashboard ID or version" },
-          400,
-        );
-      }
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
+    const restored = await Dashboard.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(resourceId),
         workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-      if (!DashboardManager.canRead(dashboard, userId)) {
-        return c.json({ success: false, error: "Access denied" }, 403);
-      }
-
-      const version = await getVersion(id, "dashboard", versionNum);
-      if (!version) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      return c.json({ success: true, version });
-    } catch (error) {
-      logger.error("Error getting dashboard version", { error });
-      return c.json({ success: false, error: "Failed to get version" }, 500);
-    }
-  },
-);
-
-// POST /api/workspaces/:workspaceId/dashboards/:id/versions/:version/restore
-app.openapi(
-  createRoute({
-    method: "post",
-    path: "/{id}/versions/{version}/restore",
-    tags: ["Dashboards"],
-    summary: "POST /{id}/versions/{version}/restore",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
       },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const id = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const body = await c.req.json().catch(() => ({}));
-      const userId = c.get("user")?.id;
+      { $set: restoreFields, $inc: { version: 1 } },
+      { new: true },
+    );
 
-      if (!userId) {
-        return c.json({ success: false, error: "Unauthorized" }, 401);
-      }
+    if (!restored) return null;
 
-      if (!Types.ObjectId.isValid(id) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid dashboard ID or version" },
-          400,
-        );
-      }
-
-      const dashboard = await Dashboard.findOne({
-        _id: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!dashboard) {
-        return c.json({ success: false, error: "Dashboard not found" }, 404);
-      }
-
-      const memberRole = c.get("memberRole");
-      const isAdmin = memberRole === "owner" || memberRole === "admin";
-      if (!DashboardManager.canWrite(dashboard, userId, isAdmin, memberRole)) {
-        return c.json(
-          { success: false, error: "You do not have write access" },
-          403,
-        );
-      }
-
-      const oldVersion = await getVersion(id, "dashboard", versionNum);
-      if (!oldVersion) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      const snap = oldVersion.snapshot as Record<string, any>;
-
-      const restoreFields: Record<string, any> = {
-        title: snap.title,
-        description: snap.description,
-        dataSources: snap.dataSources,
-        widgets: snap.widgets,
-        relationships: snap.relationships,
-        globalFilters: snap.globalFilters,
-        crossFilter: snap.crossFilter,
-        layout: snap.layout,
-        materializationSchedule: snap.materializationSchedule,
-      };
-
-      const restored = await Dashboard.findOneAndUpdate(
-        {
-          _id: new Types.ObjectId(id),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        { $set: restoreFields, $inc: { version: 1 } },
-        { new: true },
-      );
-
-      if (!restored) {
-        return c.json({ success: false, error: "Restore failed" }, 500);
-      }
-
-      const displayName = await getUserDisplayName(userId);
-      const comment = body.comment ?? `Restored from version ${versionNum}`;
-      await createVersion({
-        entityType: "dashboard",
-        entityId: new Types.ObjectId(id),
-        workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildDashboardSnapshot(restored.toObject()),
-        savedBy: userId,
-        savedByName: displayName,
-        comment,
-        restoredFrom: versionNum,
-      });
-
-      return c.json({
+    return {
+      snapshot: buildDashboardSnapshot(restored.toObject()),
+      response: {
         success: true,
-        message: `Restored to version ${versionNum}`,
+        message: `Restored to version ${version}`,
         data: sanitizeDashboardResponse(
           await hydrateDashboardArtifactUrls(restored.toObject() as any),
         ),
-      });
-    } catch (error) {
-      logger.error("Error restoring dashboard version", { error });
-      return c.json(
-        { success: false, error: "Failed to restore version" },
-        500,
-      );
-    }
+      },
+    };
   },
-);
+});
 
 // ── Sharing (collaborators, general access, public link) ──
 
-const loadDashboardById = async (c: AuthenticatedContext) => {
+async function loadDashboardById(c: AuthenticatedContext) {
   const workspaceId = c.req.param("workspaceId") as string;
   const id = c.req.param("id");
   if (!Types.ObjectId.isValid(id)) return null;
@@ -2556,7 +2353,7 @@ const loadDashboardById = async (c: AuthenticatedContext) => {
     _id: new Types.ObjectId(id),
     workspaceId: new Types.ObjectId(workspaceId),
   });
-};
+}
 
 registerCollaboratorRoutes(app, {
   resourceName: "Dashboard",

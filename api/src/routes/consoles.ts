@@ -41,8 +41,6 @@ import {
 import { createStreamingExportResponse } from "../utils/query-export-stream";
 import {
   createVersion,
-  listVersions,
-  getVersion,
   getUserDisplayName,
 } from "../services/entity-version.service";
 import { inngest } from "../inngest";
@@ -57,6 +55,7 @@ import {
   registerCollaboratorRoutes,
   registerSharingSettingsRoutes,
 } from "./lib/collaborator-routes";
+import { registerVersionHistoryRoutes } from "./lib/version-history-routes";
 
 /**
  * Map console language to query language for tracking
@@ -3278,273 +3277,60 @@ consoleRoutes.openapi(
 // Version history routes
 // ---------------------------------------------------------------------------
 
-// GET /api/workspaces/:workspaceId/consoles/:id/versions
-consoleRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions",
-    tags: ["Consoles"],
-    summary: "List console versions",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-      }),
-      query: z.object({
-        limit: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "limit", in: "query" } }),
-        offset: z
-          .string()
-          .optional()
-          .openapi({ param: { name: "offset", in: "query" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const user = c.get("user");
-
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!Types.ObjectId.isValid(consoleId)) {
-        return c.json({ success: false, error: "Invalid console ID" }, 400);
-      }
-
-      const consoleDoc = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!consoleDoc) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-
-      const limit = Math.min(
-        parseInt(c.req.query("limit") ?? "50", 10) || 50,
-        100,
-      );
-      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
-
-      const result = await listVersions(
-        new Types.ObjectId(consoleId),
-        "console",
-        { limit, offset },
-      );
-
-      return c.json({ success: true, ...result });
-    } catch (error) {
-      logger.error("Error listing console versions", { error });
-      return c.json({ success: false, error: "Failed to list versions" }, 500);
-    }
+registerVersionHistoryRoutes(consoleRoutes, {
+  resourceName: "console",
+  tag: "Consoles",
+  entityType: "console",
+  load: loadConsoleById,
+  canWrite: async (c, consoleDoc, userId) => {
+    const workspaceId = c.req.param("workspaceId") as string;
+    const member = await workspaceService.getMember(workspaceId, userId);
+    const isAdmin = member?.role === "owner" || member?.role === "admin";
+    return ConsoleManager.canWrite(consoleDoc, userId, isAdmin, member?.role)
+      ? true
+      : { error: "You do not have write access" };
   },
-);
+  restore: async ({ workspaceId, resourceId, version, snapshot }) => {
+    const snap = snapshot as Record<string, any>;
+    const restoreFields: Record<string, any> = {
+      code: snap.code,
+      name: snap.name,
+      language: snap.language,
+      description: snap.description,
+      chartSpec: snap.chartSpec,
+      resultsViewMode: snap.resultsViewMode,
+      mongoOptions: snap.mongoOptions,
+      connectionId: snap.connectionId
+        ? new Types.ObjectId(snap.connectionId)
+        : undefined,
+      databaseName: snap.databaseName,
+      databaseId: snap.databaseId,
+      folderId: snap.folderId ? new Types.ObjectId(snap.folderId) : null,
+      access: snap.access,
+    };
 
-// GET /api/workspaces/:workspaceId/consoles/:id/versions/:version
-consoleRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{id}/versions/{version}",
-    tags: ["Consoles"],
-    summary: "GET /{id}/versions/{version}",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const user = c.get("user");
-
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
-
-      if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid console ID or version" },
-          400,
-        );
-      }
-
-      const consoleDoc = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
+    const restored = await SavedConsole.findOneAndUpdate(
+      {
+        _id: new Types.ObjectId(resourceId),
         workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!consoleDoc) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-
-      const version = await getVersion(consoleId, "console", versionNum);
-      if (!version) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      return c.json({ success: true, version });
-    } catch (error) {
-      logger.error("Error getting console version", { error });
-      return c.json({ success: false, error: "Failed to get version" }, 500);
-    }
-  },
-);
-
-// POST /api/workspaces/:workspaceId/consoles/:id/versions/:version/restore
-consoleRoutes.openapi(
-  createRoute({
-    method: "post",
-    path: "/{id}/versions/{version}/restore",
-    tags: ["Consoles"],
-    summary: "POST /{id}/versions/{version}/restore",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        id: z.string().openapi({ param: { name: "id", in: "path" } }),
-        version: z.string().openapi({ param: { name: "version", in: "path" } }),
-      }),
-      body: {
-        required: false,
-        content: {
-          "application/json": { schema: z.record(z.string(), z.any()) },
-        },
       },
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId") as string;
-      const consoleId = c.req.param("id");
-      const versionNum = parseInt(c.req.param("version"), 10);
-      const body = await c.req.json().catch(() => ({}));
-      const user = c.get("user");
+      { $set: restoreFields, $inc: { version: 1 } },
+      { new: true },
+    ).lean();
 
-      if (!user || !(await workspaceService.hasAccess(workspaceId, user.id))) {
-        return c.json(
-          { success: false, error: "Access denied to workspace" },
-          403,
-        );
-      }
+    if (!restored) return null;
 
-      if (!Types.ObjectId.isValid(consoleId) || isNaN(versionNum)) {
-        return c.json(
-          { success: false, error: "Invalid console ID or version" },
-          400,
-        );
-      }
-
-      const consoleDoc = await SavedConsole.findOne({
-        _id: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      });
-      if (!consoleDoc) {
-        return c.json({ success: false, error: "Console not found" }, 404);
-      }
-
-      const member = await workspaceService.getMember(workspaceId, user.id);
-      const isAdmin = member?.role === "owner" || member?.role === "admin";
-      if (
-        !ConsoleManager.canWrite(consoleDoc, user.id, isAdmin, member?.role)
-      ) {
-        return c.json(
-          { success: false, error: "You do not have write access" },
-          403,
-        );
-      }
-
-      const oldVersion = await getVersion(consoleId, "console", versionNum);
-      if (!oldVersion) {
-        return c.json({ success: false, error: "Version not found" }, 404);
-      }
-
-      const snap = oldVersion.snapshot as Record<string, any>;
-
-      // Apply the snapshot to the console document. Includes every field
-      // captured in buildConsoleSnapshot so restore is a true revert.
-      const restoreFields: Record<string, any> = {
-        code: snap.code,
-        name: snap.name,
-        language: snap.language,
-        description: snap.description,
-        chartSpec: snap.chartSpec,
-        resultsViewMode: snap.resultsViewMode,
-        mongoOptions: snap.mongoOptions,
-        connectionId: snap.connectionId
-          ? new Types.ObjectId(snap.connectionId)
-          : undefined,
-        databaseName: snap.databaseName,
-        databaseId: snap.databaseId,
-        folderId: snap.folderId ? new Types.ObjectId(snap.folderId) : null,
-        access: snap.access,
-      };
-
-      const restored = await SavedConsole.findOneAndUpdate(
-        {
-          _id: new Types.ObjectId(consoleId),
-          workspaceId: new Types.ObjectId(workspaceId),
-        },
-        { $set: restoreFields, $inc: { version: 1 } },
-        { new: true },
-      ).lean();
-
-      if (!restored) {
-        return c.json({ success: false, error: "Restore failed" }, 500);
-      }
-
-      const displayName = await getUserDisplayName(user.id);
-      const comment = body.comment ?? `Restored from version ${versionNum}`;
-      await createVersion({
-        entityType: "console",
-        entityId: new Types.ObjectId(consoleId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildConsoleSnapshot(restored as ISavedConsole),
-        savedBy: user.id,
-        savedByName: displayName,
-        comment,
-        restoredFrom: versionNum,
-      });
-
-      return c.json({
+    return {
+      snapshot: buildConsoleSnapshot(restored as ISavedConsole),
+      response: {
         success: true,
-        message: `Restored to version ${versionNum}`,
+        message: `Restored to version ${version}`,
         console: {
           id: restored._id.toString(),
           name: restored.name,
           version: restored.version,
         },
-      });
-    } catch (error) {
-      logger.error("Error restoring console version", { error });
-      return c.json(
-        { success: false, error: "Failed to restore version" },
-        500,
-      );
-    }
+      },
+    };
   },
-);
+});
