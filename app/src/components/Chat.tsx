@@ -1673,7 +1673,7 @@ const ChatInputArea = React.memo(
             autoFocus
             multiline
             minRows={1}
-            maxRows={6}
+            maxRows={24}
             placeholder={
               editingPrompt ? "Edit queued message..." : "Ask Chat..."
             }
@@ -1698,7 +1698,7 @@ const ChatInputArea = React.memo(
             inputRef={inputRef}
             sx={{
               m: 0.5,
-              maxHeight: "50vh",
+              maxHeight: "60vh",
               overflowY: "auto",
               "& .MuiInputBase-input": {
                 fontSize: { xs: 16, sm: 14 },
