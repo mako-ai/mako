@@ -31,6 +31,7 @@ export function resolveSourceTimestamp(
     payload?.date_updated,
     payload?.updated_at,
     payload?.updatedAt,
+    payload?.date_modified,
     payload?.date_created,
     payload?.created_at,
     payload?.createdAt,

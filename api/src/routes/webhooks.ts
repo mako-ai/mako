@@ -107,6 +107,7 @@ router.openapi(
     const rawBodyBuffer = Buffer.from(await c.req.arrayBuffer());
     const rawBodyText = rawBodyBuffer.toString("utf8");
     const headers = c.req.header();
+    const query = c.req.query();
 
     try {
       const flow = await Flow.findOne({
@@ -145,6 +146,7 @@ router.openapi(
           payload: rawBodyText,
           headers: headers,
           secret: flow.webhookConfig.secret,
+          query,
         });
 
         if (!verificationResult.valid) {
