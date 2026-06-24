@@ -71,6 +71,36 @@ describe("buildPreviewHtml", () => {
     expect(payloadOf(buildPreviewHtml(app)).theme).toBeNull();
   });
 
+  it("wires the URL-state SDK (useLocation/useSearchParams/navigate) and bridge", () => {
+    const script = extractModuleScript(buildPreviewHtml(app));
+    // SDK surface exposed to app code.
+    expect(script).toContain("useLocation()");
+    expect(script).toContain("useSearchParams()");
+    expect(script).toContain("navigate(to, opts)");
+    // App-initiated changes are reported to the host…
+    expect(script).toContain("mako-app:navigate");
+    // …and external (host/back-forward) changes are applied without echoing.
+    expect(script).toContain("mako-app:location");
+    // The host-seeded location boots the router.
+    expect(script).toContain("currentLocation = payload.location");
+  });
+
+  it("embeds the host-seeded location in the payload (null = app root)", () => {
+    const payloadOf = (html: string) =>
+      JSON.parse(
+        String(
+          html
+            .split('<script id="mako-payload" type="application/json">')[1]
+            ?.split("</script>")[0],
+        ),
+      ) as { location: string | null };
+    expect(
+      payloadOf(buildPreviewHtml(app, { location: "/customers/42?tab=open" }))
+        .location,
+    ).toBe("/customers/42?tab=open");
+    expect(payloadOf(buildPreviewHtml(app)).location).toBeNull();
+  });
+
   it("wires live theme switching and the useTheme SDK hook in the bootstrap", () => {
     const script = extractModuleScript(buildPreviewHtml(app));
     // Parent-driven toggles (embedded in Mako)…
