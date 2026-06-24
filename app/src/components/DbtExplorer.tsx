@@ -218,6 +218,27 @@ function scheduleSummary(job: DbtJobItem): string {
   return `${job.schedule.cron} ${job.schedule.timezone ?? "UTC"}`;
 }
 
+/**
+ * MUI Chip color for a job's environment badge. Prod-like envs are flagged
+ * `warning` so destructive/scheduled prod runs stand out; the project default
+ * and dev-like envs get `info`, everything else stays neutral.
+ */
+function envBadgeColor(
+  envName: string,
+  defaultEnvironment?: string,
+): "warning" | "info" | "default" {
+  const lower = envName.trim().toLowerCase();
+  if (lower === "prod" || lower === "production") return "warning";
+  if (
+    lower === "dev" ||
+    lower === "development" ||
+    (defaultEnvironment != null && envName === defaultEnvironment)
+  ) {
+    return "info";
+  }
+  return "default";
+}
+
 /** Collapsible section header (dbt Studio "Version control" / "File explorer"). */
 function SectionHeader({
   label,
@@ -1688,6 +1709,28 @@ export function DbtExplorer() {
                               {scheduleSummary(job)}
                             </Box>
                           </Box>
+                          {job.environment && (
+                            <Tooltip title={`Environment: ${job.environment}`}>
+                              <Chip
+                                label={job.environment}
+                                size="small"
+                                variant="outlined"
+                                color={envBadgeColor(
+                                  job.environment,
+                                  activeProject.defaultEnvironment,
+                                )}
+                                sx={{
+                                  flexShrink: 0,
+                                  height: 18,
+                                  maxWidth: 90,
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  textTransform: "uppercase",
+                                  "& .MuiChip-label": { px: 0.625 },
+                                }}
+                              />
+                            </Tooltip>
+                          )}
                           <IconButton
                             size="small"
                             aria-label="Job actions"
