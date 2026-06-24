@@ -73,6 +73,12 @@ export interface WebhookHandlerOptions {
   payload: any;
   headers: Record<string, string | string[] | undefined>;
   secret?: string;
+  /**
+   * Inbound request query parameters. Some providers (e.g. PandaDoc) deliver
+   * their HMAC signature as a query parameter rather than a header, so the
+   * generic webhook receiver forwards them here for verification.
+   */
+  query?: Record<string, string | string[] | undefined>;
 }
 
 export interface ProvisionWebhookOptions {
@@ -456,6 +462,7 @@ export abstract class BaseConnector {
       payload?.date_updated,
       payload?.updated_at,
       payload?.updatedAt,
+      payload?.date_modified,
       payload?.date_created,
       payload?.created_at,
       payload?.createdAt,
