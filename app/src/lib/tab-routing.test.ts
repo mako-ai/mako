@@ -142,4 +142,15 @@ describe("tab-routing", () => {
     const url = tabUrlPath("t", FIXTURES["table-data"]) as string;
     expect(url).toBe("/t/651234567890abcdef1234/public/users?db=mydb");
   });
+
+  it("projects a running app's sub-location onto its /a/:id URL", () => {
+    const tab = baseTab({
+      kind: "app",
+      metadata: { appId: "app-1", appLocation: "/customers/9?tab=open&c=ES" },
+    });
+    const url = tabUrlPath("t", tab) as string;
+    expect(url).toBe("/a/app-1?tab=open&c=ES&_path=%2Fcustomers%2F9");
+    // The pathname (what hydration matches on) still resolves to the bare app.
+    expect(url.split("?")[0]).toMatch(TAB_DEEP_LINK_PATTERNS.app);
+  });
 });

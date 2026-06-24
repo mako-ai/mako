@@ -1,7 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, CircularProgress, Typography, Alert } from "@mui/material";
 import { useTheme } from "../../contexts/ThemeContext";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../../app-runtime/preview";
+import {
+  appLocationFromHostSearch,
+  appLocationToHostSearch,
+} from "../../app-runtime/app-location";
 import {
   ensureBindingLoaded,
   queryAppDuckDB,
@@ -79,6 +83,20 @@ export default function PublicAppViewer({ token, content }: Props) {
   effectiveModeRef.current = effectiveMode;
 
   const duckAppId = `share-${token}`;
+
+  // The public viewer owns its `/share/:token` URL directly (no tab system),
+  // so it seeds the app's location from the address bar on load and writes it
+  // back on navigate — making deep links + reloads restore the same view.
+  const initialAppLocationRef = useRef<string>(
+    appLocationFromHostSearch(window.location.search),
+  );
+
+  const writeAppLocation = useCallback((location: string, replace: boolean) => {
+    const next = window.location.pathname + appLocationToHostSearch(location);
+    if (next === window.location.pathname + window.location.search) return;
+    if (replace) window.history.replaceState(null, "", next);
+    else window.history.pushState(null, "", next);
+  }, []);
 
   // Preload all ready parquet bindings.
   useEffect(() => {
@@ -194,6 +212,10 @@ export default function PublicAppViewer({ token, content }: Props) {
               error: err instanceof Error ? err.message : "DuckDB query failed",
             }),
           );
+      } else if (data.type === PREVIEW_MESSAGE.navigate) {
+        if (typeof data.location === "string") {
+          writeAppLocation(data.location, !!data.replace);
+        }
       } else if (data.type === PREVIEW_MESSAGE.error) {
         setBooting(false);
         setPreviewError(String(data.message || "App failed to load"));
@@ -209,7 +231,22 @@ export default function PublicAppViewer({ token, content }: Props) {
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [duckAppId, content]);
+  }, [duckAppId, content, writeAppLocation]);
+
+  // Reflect browser back/forward into the booted iframe.
+  useEffect(() => {
+    const onPopState = () => {
+      iframeRef.current?.contentWindow?.postMessage(
+        {
+          type: PREVIEW_MESSAGE.location,
+          location: appLocationFromHostSearch(window.location.search),
+        },
+        "*",
+      );
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   // Keep the booted preview's theme in sync with system/theme changes.
   useEffect(() => {
@@ -229,7 +266,10 @@ export default function PublicAppViewer({ token, content }: Props) {
           dependencies: content.dependencies,
           entrypoint: content.entrypoint,
         } as Parameters<typeof buildPreviewHtml>[0],
-        { theme: effectiveModeRef.current },
+        {
+          theme: effectiveModeRef.current,
+          location: initialAppLocationRef.current,
+        },
       ),
     [content],
   );

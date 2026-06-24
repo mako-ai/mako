@@ -27,6 +27,7 @@ import {
   decodePathSegments,
   tabUrlPath,
 } from "../lib/tab-routing";
+import { appLocationFromHostSearch } from "../app-runtime/app-location";
 
 /**
  * UrlSync component
@@ -238,23 +239,26 @@ export function UrlSync() {
       // tab once the app loads.
       focusAppBindingTab(appId, bindingId, "Data source");
     } else if (appMatch) {
-      // /a/:appId
+      // /a/:appId (+ the running app's own location: readable query params and
+      // its pathname carried in the reserved `_path` param).
       const appId = appMatch[1];
       setLeftPane("apps");
+
+      const appLocation = appLocationFromHostSearch(window.location.search);
 
       const existingTab = Object.values(useConsoleStore.getState().tabs).find(
         t => t.kind === "app" && t.metadata?.appId === appId,
       );
 
       if (existingTab) {
-        setActiveTab(existingTab.id);
+        focusAppTab(appId, existingTab.title, appLocation);
       } else {
         // Fetch the app to get its title, then open the tab
         useAppStore
           .getState()
           .fetchApp(currentWorkspace.id, appId)
           .then(app => {
-            focusAppTab(appId, app?.title || "App");
+            focusAppTab(appId, app?.title || "App", appLocation);
           });
       }
     } else if (dbtFileMatch) {

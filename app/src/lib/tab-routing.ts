@@ -15,6 +15,7 @@
  * test in `tab-routing.test.ts` keeps the two directions in sync.
  */
 import type { ConsoleTab, TabKind } from "../store/lib/types";
+import { appLocationToHostSearch } from "../app-runtime/app-location";
 
 /** Encode a path that may contain slashes, keeping the slashes readable. */
 export function encodePathSegments(path: string): string {
@@ -96,7 +97,13 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
     }
     case "app": {
       const appId = tab.metadata?.appId as string | undefined;
-      return appId ? `/a/${appId}` : null;
+      if (!appId) return null;
+      // The running app projects its own location (path + query) onto the
+      // host URL: query params stay readable, the app pathname rides in the
+      // reserved `_path` param. The bare `/a/:appId` pathname is unchanged, so
+      // the deep-link pattern still matches.
+      const appLocation = tab.metadata?.appLocation as string | undefined;
+      return `/a/${appId}${appLocationToHostSearch(appLocation)}`;
     }
     case "app-file": {
       const appId = tab.metadata?.appId as string | undefined;
