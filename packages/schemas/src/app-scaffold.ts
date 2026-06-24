@@ -16,6 +16,12 @@ const APP_TSX = `// Read workspace data with the injected SDK once a data bindin
 //
 // Create bindings from the chat ("bind the revenue query") or the data panel.
 //
+// Keep view state (tabs, filters, selected record) in the URL so reloads
+// restore it and links are shareable — use the SDK, not window.history:
+//
+//   import { useSearchParams, navigate } from "@mako/app-sdk";
+//   const [params, setParams] = useSearchParams();
+//
 // Theming: the runtime provides CSS variables (--background, --foreground,
 // --card, --border, --muted-foreground, --primary, --chart-1..5, --radius, …)
 // that switch with light/dark automatically — use var(--token) instead of
@@ -86,6 +92,28 @@ import { useTheme } from "@mako/app-sdk";
 
 const { theme } = useTheme(); // "light" | "dark"
 \`\`\`
+
+## URL state (shareable, reload-safe)
+
+Keep view state — the open tab, active filters, a selected record — in the URL
+so reloads restore it and links are shareable. This works both inside Mako
+(\`/a/:appId\`) and in the public share view (\`/share/:token\`). Use the SDK
+hooks, not \`window.history\`/\`location\` (the app is sandboxed and those won't
+persist or share):
+
+\`\`\`tsx
+import { useLocation, useSearchParams, navigate } from "@mako/app-sdk";
+
+const loc = useLocation();              // { pathname, search, hash, href, searchParams }
+const [params, setParams] = useSearchParams();
+const tab = params.get("tab") ?? "overview";
+
+setParams({ tab: "customers" }, { replace: true }); // filters within a view
+navigate("/customers/42");                            // distinct view / detail page
+\`\`\`
+
+Use \`{ replace: true }\` for high-frequency updates (filter typing) so
+back/forward isn't flooded; the default pushes a new history entry.
 `;
 
 export const DEFAULT_APP_SCAFFOLD_FILES: AppFile[] = [
