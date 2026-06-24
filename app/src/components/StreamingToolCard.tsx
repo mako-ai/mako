@@ -351,6 +351,11 @@ export const StreamingToolCard = React.memo(
     const isActive = isStreaming || isExecuting;
 
     const hasCodePreview = Boolean(config.preview);
+    const suppressModifyConsoleStreamingPreview =
+      toolName === "modify_console" && isStreaming;
+    const visibleBodyPreview = suppressModifyConsoleStreamingPreview
+      ? undefined
+      : bodyPreview;
 
     const [expanded, setExpanded] = useState(
       hasCodePreview ? !isDone && !isError : false,
@@ -369,16 +374,17 @@ export const StreamingToolCard = React.memo(
 
     // Resolve code preview content (supports both string and object fields)
     const inputObj = input as Record<string, unknown> | undefined;
-    const rawContent = config.preview
-      ? inputObj?.[config.preview.field]
-      : undefined;
+    const rawContent =
+      config.preview && !suppressModifyConsoleStreamingPreview
+        ? inputObj?.[config.preview.field]
+        : undefined;
     const codeLanguage =
-      bodyPreview?.language ?? config.preview?.language ?? "text";
+      visibleBodyPreview?.language ?? config.preview?.language ?? "text";
 
     // Cheap presence checks (no serialization) so we can decide expandability
     // for collapsed cards without building the (potentially huge) body strings.
     const hasCode = Boolean(
-      bodyPreview?.content ||
+      visibleBodyPreview?.content ||
         (typeof rawContent === "string"
           ? rawContent.length > 0
           : rawContent != null),
@@ -397,14 +403,14 @@ export const StreamingToolCard = React.memo(
     const code = useMemo(() => {
       if (!shouldRenderBody || !hasCode) return "";
       const raw =
-        bodyPreview?.content ??
+        visibleBodyPreview?.content ??
         (typeof rawContent === "string"
           ? rawContent
           : rawContent && typeof rawContent === "object"
             ? JSON.stringify(rawContent, null, 2)
             : "");
       return capForDisplay(raw);
-    }, [shouldRenderBody, hasCode, bodyPreview?.content, rawContent]);
+    }, [shouldRenderBody, hasCode, visibleBodyPreview?.content, rawContent]);
 
     useEffect(() => {
       if (isStreaming && !userScrolled && codeContainerRef.current) {
@@ -719,9 +725,14 @@ export const StreamingToolCard = React.memo(
     if (prev.labelOverride !== next.labelOverride) return false;
     if (prev.leadingIconUrl !== next.leadingIconUrl) return false;
     if (prev.leadingIconAlt !== next.leadingIconAlt) return false;
+    if (
+      next.toolName === "modify_console" &&
+      next.state === "input-streaming"
+    ) {
+      return true;
+    }
     if (prev.bodyPreview?.content !== next.bodyPreview?.content) return false;
     if (prev.bodyPreview?.language !== next.bodyPreview?.language) return false;
-
     // Terminal states are immutable. Even if useChat handed us new cloned
     // references for `input` / `output` this tick, the contents are the
     // same — skip the render.

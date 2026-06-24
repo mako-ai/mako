@@ -3199,6 +3199,10 @@ const Chat: React.FC<ChatProps> = ({
     connectionIconById,
   });
 
+  const handleVirtuosoAtBottomStateChange = useCallback((next: boolean) => {
+    setIsAtBottom(next);
+  }, []);
+
   // Session management - fetch available chat sessions for history menu
   useEffect(() => {
     fetchSessionsRef.current?.();
@@ -4476,12 +4480,12 @@ const Chat: React.FC<ChatProps> = ({
             // survives streaming ticks and history inserts — mirrors the old
             // `key={message.id}`.
             computeItemKey={(_index, message) => message.id}
-            // Auto-stick to the tail while streaming, but only when the user is
-            // already at the bottom (don't yank them down if they scrolled up
-            // to read history). This preserves the old use-stick-to-bottom UX.
-            followOutput={isAtBottom ? "smooth" : false}
+            // Auto-stick to the tail only while the user is already at the
+            // bottom. Use immediate anchoring so repeated token ticks don't
+            // restart smooth-scroll animations and lag behind the stream.
+            followOutput={isAtBottom ? "auto" : false}
             initialTopMostItemIndex={Math.max(0, messages.length - 1)}
-            atBottomStateChange={setIsAtBottom}
+            atBottomStateChange={handleVirtuosoAtBottomStateChange}
             atBottomThreshold={120}
             increaseViewportBy={{ top: 600, bottom: 900 }}
             components={messageVirtuosoComponents}

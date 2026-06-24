@@ -255,6 +255,24 @@ describe("StreamingToolCard memo comparator", () => {
     expect(compare(prev, next)).toBe(false);
   });
 
+  it("skips re-render when modify_console input-streaming content grows offscreen", () => {
+    const prev = baseProps({
+      toolName: "modify_console",
+      state: "input-streaming",
+      input: { action: "replace", content: "SELECT" },
+      output: undefined,
+      labelOverride: "Revenue console",
+    });
+    const next = baseProps({
+      toolName: "modify_console",
+      state: "input-streaming",
+      input: { action: "replace", content: "SELECT 1" },
+      output: undefined,
+      labelOverride: "Revenue console",
+    });
+    expect(compare(prev, next)).toBe(true);
+  });
+
   it("re-renders when state transitions (e.g. input-streaming → output-available)", () => {
     const prev = baseProps({
       state: "input-streaming",
@@ -315,11 +333,10 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/computeItemKey=/);
   });
 
-  it("auto-follows the streaming tail only when at bottom", () => {
-    // followOutput pins to the newest message while streaming, but is disabled
-    // when the user has scrolled up to read history (so they're not yanked
-    // down). This replaces use-stick-to-bottom's equivalent behavior.
-    expect(chatSource).toMatch(/followOutput=\{isAtBottom \? .* : false\}/);
+  it("auto-follows the streaming tail instantly only when at bottom", () => {
+    // Repeated smooth-scroll animations lag behind token-by-token height
+    // changes; instant anchoring preserves bottom stickiness while streaming.
+    expect(chatSource).toContain('followOutput={isAtBottom ? "auto" : false}');
   });
 
   it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
@@ -365,6 +382,13 @@ describe("StreamingToolCard structural guards", () => {
 
   it("defers building the heavy body strings until the body renders", () => {
     expect(cardSource).toMatch(/shouldRenderBody/);
+  });
+
+  it("suppresses modify_console body churn while input is still streaming", () => {
+    expect(cardSource).toContain("suppressModifyConsoleStreamingPreview");
+    expect(cardSource).toMatch(
+      /toolName === "modify_console" &&\s+next\.state === "input-streaming"/,
+    );
   });
 });
 
