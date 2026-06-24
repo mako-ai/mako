@@ -57,6 +57,34 @@ export const QUERY_POLL_BACKOFF_MS = envIntList(
 );
 
 /**
+ * How long `check_query_status` BLOCKS server-side while a run is still
+ * `running` before returning `status: "running"`. The tool long-polls (re-reads
+ * the DB-backed run artifact every `QUERY_STATUS_POLL_INTERVAL_MS`) and returns
+ * early the moment the run settles.
+ *
+ * This is the throttle that fixes rapid-fire polling: an LLM cannot actually
+ * sleep between tool calls, so without a server-side wait it re-invokes
+ * `check_query_status` every ~1s (flooding the chat UI). Blocking here makes
+ * each poll naturally take ~one backoff interval regardless of how eagerly the
+ * model calls it. It does NOT change the hard execution cap — the query keeps
+ * running server-side and is still aborted at `QUERY_HARD_MAX_EXECUTION_MS`.
+ */
+export const QUERY_STATUS_POLL_WAIT_MS = envInt(
+  "QUERY_STATUS_POLL_WAIT_MS",
+  QUERY_POLL_BACKOFF_MS[0] ?? 30_000,
+);
+
+/**
+ * How often the blocking `check_query_status` long-poll re-reads the persisted
+ * run artifact while waiting for the run to settle. Small enough to surface a
+ * finished result promptly, large enough to avoid hammering the DB.
+ */
+export const QUERY_STATUS_POLL_INTERVAL_MS = envInt(
+  "QUERY_STATUS_POLL_INTERVAL_MS",
+  2_000,
+);
+
+/**
  * Server-side hard ceiling: a detached run is aborted (task + engine-native
  * cancel) once it exceeds this, so no query can run forever. This is an
  * absolute cap applied uniformly to every engine; it is also used as the

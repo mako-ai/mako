@@ -86,7 +86,7 @@ For dialect syntax and worked examples, load the matching system skill: \`dialec
 
 1. **Finishes quickly** → you get \`status: "success"\` with the rows. Done.
 2. **Still running after the soft timeout** → you get \`status: "running"\` plus an \`executionId\`. The query KEEPS RUNNING server-side. Then:
-   - **Auto-poll \`check_query_status\`** (pass the same \`consoleId\` + \`executionId\`) with backoff — roughly 30s, then 60s, then 90s. Do this silently; don't narrate every poll.
+   - **Call \`check_query_status\`** (pass the same \`consoleId\` + \`executionId\`). It BLOCKS server-side and returns the moment the query settles, so you do NOT need to space out your polls — never add your own delay or call it in a rapid loop. If it returns \`status: "running"\` again, simply call it once more to keep waiting. Do this silently; don't narrate every poll.
    - When it reports \`status: "success"\`, use the returned preview/rowCount as the result. \`status: "error"\` / \`"cancelled"\` end the wait.
    - **Never re-run the same query** while one is running, and never call \`cancel_query\` just to retry — that throws away in-progress work.
    - The query is **automatically aborted server-side at a hard cap (~5 min)**; when that happens \`check_query_status\` returns \`status: "error"\`/\`"cancelled"\`. If a query is too slow to finish in time, rewrite it into narrower queries (add filters / date ranges / LIMIT) and run those.
