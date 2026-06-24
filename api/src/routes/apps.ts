@@ -125,6 +125,7 @@ function serializeApp(doc: IMakoApp) {
       databaseId: b.databaseId,
       databaseName: b.databaseName,
       materialization: b.materialization ?? "live",
+      materializationSchedule: b.materializationSchedule,
       cache: b.cache
         ? {
             parquetArtifactKey: b.cache.parquetArtifactKey,

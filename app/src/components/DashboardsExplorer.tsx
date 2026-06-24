@@ -19,6 +19,7 @@ import {
   Lock as LockIcon,
   Globe as GlobeIcon,
   User as UserIcon,
+  Database as DataSourceIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
@@ -30,13 +31,19 @@ import {
   useExplorerRevealStore,
   selectRevealFor,
 } from "../store/explorerRevealStore";
-import { focusDashboardTab } from "../dashboard-runtime/shell";
+import {
+  focusDashboardDataSourceTab,
+  focusDashboardTab,
+} from "../dashboard-runtime/shell";
+import { DASHBOARD_DATA_SOURCE_SEP } from "../lib/explorer-reveal";
 import type { Dashboard } from "../dashboard-runtime/types";
 import { computeDashboardStateHash } from "../utils/stateHash";
 import ResourceTree, { type ResourceTreeNode } from "./ResourceTree";
 import ExplorerShell from "./ExplorerShell";
 
 const EMPTY_TREE: ResourceTreeNode[] = [];
+const DATA_SOURCES_DIR = "__datasources";
+const DASHBOARD_DATA_SOURCE_DIR_SEP = "::dashboard-data-sources::";
 const NEW_DASHBOARD_TEMPLATE = {
   title: "Untitled Dashboard",
   dataSources: [],
@@ -86,6 +93,8 @@ export function DashboardsExplorer() {
   const resortItem = useDashboardTreeStore(s => s.resortItem);
   const createDashboard = useDashboardStore(s => s.createDashboard);
   const duplicateDashboard = useDashboardStore(s => s.duplicateDashboard);
+  const openDashboard = useDashboardStore(s => s.openDashboard);
+  const openDashboards = useDashboardStore(s => s.openDashboards);
 
   const dashboardExpandedFolders = useExplorerStore(
     s => s.dashboard.expandedFolders,
@@ -107,6 +116,9 @@ export function DashboardsExplorer() {
   );
   const [moveTarget, setMoveTarget] = useState<ResourceTreeNode | null>(null);
   const [infoTarget, setInfoTarget] = useState<ResourceTreeNode | null>(null);
+  const [loadingDashboards, setLoadingDashboards] = useState<
+    Record<string, boolean>
+  >({});
 
   useEffect(() => {
     if (workspaceId) {
@@ -137,6 +149,15 @@ export function DashboardsExplorer() {
 
   const handleItemClick = useCallback(
     (node: ResourceTreeNode) => {
+      if (node.id.includes(DASHBOARD_DATA_SOURCE_SEP)) {
+        const [dashboardId, dataSourceId] = node.id.split(
+          DASHBOARD_DATA_SOURCE_SEP,
+        );
+        focusDashboardDataSourceTab(dashboardId, dataSourceId, node.name);
+        return;
+      }
+      if (node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)) return;
+
       const existingTab = Object.values(tabs).find(
         (tab: any) =>
           tab.kind === "dashboard" && tab.metadata?.dashboardId === node.id,
@@ -160,11 +181,26 @@ export function DashboardsExplorer() {
     setDeleteTarget(node);
   }, []);
 
+  const isDashboardEntryId = useCallback(
+    (id: string) =>
+      [...myDashboards, ...workspaceDashboards].some(function visit(
+        node: ResourceTreeNode,
+      ): boolean {
+        if (node.id === id) return !node.isDirectory;
+        return node.children?.some(visit) ?? false;
+      }),
+    [myDashboards, workspaceDashboards],
+  );
+
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget || !workspaceId) return;
-    await deleteItem(workspaceId, deleteTarget.id, deleteTarget.isDirectory);
+    await deleteItem(
+      workspaceId,
+      deleteTarget.id,
+      deleteTarget.isDirectory && !isDashboardEntryId(deleteTarget.id),
+    );
     setDeleteTarget(null);
-  }, [deleteTarget, workspaceId, deleteItem]);
+  }, [deleteTarget, workspaceId, deleteItem, isDashboardEntryId]);
 
   const handleDuplicate = useCallback(
     async (node: ResourceTreeNode) => {
@@ -217,6 +253,16 @@ export function DashboardsExplorer() {
   const handleMoveFolder = useCallback(
     (folderId: string, parentId: string | null, access?: string) => {
       if (!workspaceId) return;
+      const isDashboard = isDashboardEntryId(folderId);
+      if (isDashboard) {
+        moveItem(
+          workspaceId,
+          folderId,
+          parentId,
+          (access as "private" | "workspace") || undefined,
+        );
+        return;
+      }
       moveFolder(
         workspaceId,
         folderId,
@@ -224,15 +270,15 @@ export function DashboardsExplorer() {
         (access as "private" | "workspace") || undefined,
       );
     },
-    [workspaceId, moveFolder],
+    [workspaceId, isDashboardEntryId, moveItem, moveFolder],
   );
 
   const handleRenameItem = useCallback(
     (id: string, name: string, isDirectory: boolean) => {
       if (!workspaceId) return;
-      renameItem(workspaceId, id, name, isDirectory);
+      renameItem(workspaceId, id, name, isDirectory && !isDashboardEntryId(id));
     },
-    [workspaceId, renameItem],
+    [workspaceId, renameItem, isDashboardEntryId],
   );
 
   const handleResortItem = useCallback(
@@ -245,6 +291,12 @@ export function DashboardsExplorer() {
 
   const canManageItem = useCallback(
     (node: ResourceTreeNode) => {
+      if (
+        node.id.includes(DASHBOARD_DATA_SOURCE_SEP) ||
+        node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)
+      ) {
+        return false;
+      }
       if (isAdmin) return true;
       if (node.owner_id === user?.id) return true;
       return false;
@@ -261,11 +313,82 @@ export function DashboardsExplorer() {
   }, []);
 
   const getItemIcon = useCallback((node: ResourceTreeNode) => {
+    if (
+      node.id.includes(DASHBOARD_DATA_SOURCE_SEP) ||
+      node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP)
+    ) {
+      return <DataSourceIcon size={16} strokeWidth={1.5} />;
+    }
     if (node.access === "workspace") {
       return <GlobeIcon size={16} strokeWidth={1.5} />;
     }
     return <LockIcon size={16} strokeWidth={1.5} />;
   }, []);
+
+  const withDataSourceNodes = useCallback(
+    (nodes: ResourceTreeNode[]): ResourceTreeNode[] =>
+      nodes.map(node => {
+        if (node.isDirectory) {
+          return {
+            ...node,
+            entityType: "dashboard-folder",
+            children: node.children ? withDataSourceNodes(node.children) : [],
+          };
+        }
+
+        const loaded = openDashboards[node.id];
+        return {
+          ...node,
+          isDirectory: true,
+          entityType: "dashboard",
+          children: loaded
+            ? [
+                {
+                  id: `${node.id}${DASHBOARD_DATA_SOURCE_DIR_SEP}${DATA_SOURCES_DIR}`,
+                  name: "Data sources",
+                  path: DATA_SOURCES_DIR,
+                  isDirectory: true,
+                  entityType: "data-source-folder",
+                  children: loaded.dataSources.map(dataSource => ({
+                    id: `${node.id}${DASHBOARD_DATA_SOURCE_SEP}${dataSource.id}`,
+                    name: dataSource.name,
+                    path: `data-source/${dataSource.id}`,
+                    isDirectory: false,
+                    entityType: "data-source",
+                  })),
+                },
+              ]
+            : undefined,
+        };
+      }),
+    [openDashboards],
+  );
+
+  const handleLoadChildren = useCallback(
+    async (node: ResourceTreeNode) => {
+      if (!workspaceId) return;
+      if (
+        node.id.includes(DASHBOARD_DATA_SOURCE_SEP) ||
+        node.id.includes(DASHBOARD_DATA_SOURCE_DIR_SEP) ||
+        node.entityType !== "dashboard" ||
+        openDashboards[node.id] ||
+        loadingDashboards[node.id]
+      ) {
+        return;
+      }
+      setLoadingDashboards(state => ({ ...state, [node.id]: true }));
+      try {
+        await openDashboard(workspaceId, node.id);
+      } finally {
+        setLoadingDashboards(state => {
+          const next = { ...state };
+          delete next[node.id];
+          return next;
+        });
+      }
+    },
+    [workspaceId, openDashboard, openDashboards, loadingDashboards],
+  );
 
   const sectionsDef = useMemo(
     () => [
@@ -273,7 +396,7 @@ export function DashboardsExplorer() {
         key: "my",
         label: "My Dashboards",
         icon: <UserIcon size={16} strokeWidth={1.5} />,
-        nodes: myDashboards as ResourceTreeNode[],
+        nodes: withDataSourceNodes(myDashboards as ResourceTreeNode[]),
         droppableId: "__section_my",
         defaultAccess: "private" as const,
       },
@@ -281,12 +404,45 @@ export function DashboardsExplorer() {
         key: "workspace",
         label: "Workspace",
         icon: <GlobeIcon size={16} strokeWidth={1.5} />,
-        nodes: workspaceDashboards as ResourceTreeNode[],
+        nodes: withDataSourceNodes(workspaceDashboards as ResourceTreeNode[]),
         droppableId: "__section_workspace",
         defaultAccess: "workspace" as const,
       },
     ],
-    [myDashboards, workspaceDashboards],
+    [myDashboards, workspaceDashboards, withDataSourceNodes],
+  );
+
+  const folderOnlyNodes = useCallback(function onlyFolders(
+    nodes: ResourceTreeNode[],
+  ): ResourceTreeNode[] {
+    return nodes
+      .filter(node => node.isDirectory)
+      .map(node => ({
+        ...node,
+        children: node.children ? onlyFolders(node.children) : [],
+      }));
+  }, []);
+
+  const pickerSectionsDef = useMemo(
+    () => [
+      {
+        key: "my",
+        label: "My Dashboards",
+        icon: <UserIcon size={16} strokeWidth={1.5} />,
+        nodes: folderOnlyNodes(myDashboards as ResourceTreeNode[]),
+        droppableId: "__section_my",
+        defaultAccess: "private" as const,
+      },
+      {
+        key: "workspace",
+        label: "Workspace",
+        icon: <GlobeIcon size={16} strokeWidth={1.5} />,
+        nodes: folderOnlyNodes(workspaceDashboards as ResourceTreeNode[]),
+        droppableId: "__section_workspace",
+        defaultAccess: "workspace" as const,
+      },
+    ],
+    [myDashboards, workspaceDashboards, folderOnlyNodes],
   );
 
   const activeDashboardTabId = (() => {
@@ -294,6 +450,9 @@ export function DashboardsExplorer() {
     const tab = tabs[activeTabId];
     if (tab?.kind === "dashboard" && tab.metadata?.dashboardId) {
       return tab.metadata.dashboardId as string;
+    }
+    if (tab?.kind === "dashboard-data-source") {
+      return `${tab.metadata?.dashboardId}${DASHBOARD_DATA_SOURCE_SEP}${tab.metadata?.dataSourceId}`;
     }
     return null;
   })();
@@ -339,7 +498,7 @@ export function DashboardsExplorer() {
       >
         {({ searchQuery }) => (
           <ResourceTree
-            sections={sectionsDef}
+            sections={pickerSectionsDef}
             mode="sidebar"
             searchQuery={searchQuery}
             activeItemId={activeDashboardTabId}
@@ -352,6 +511,9 @@ export function DashboardsExplorer() {
             enableDelete
             enableNewFolder
             onItemClick={handleItemClick}
+            shouldFolderClickActivate={node => node.entityType === "dashboard"}
+            onLoadChildren={handleLoadChildren}
+            isLoadingChildren={node => !!loadingDashboards[node.id]}
             onMoveItem={handleMoveItem}
             onMoveFolder={handleMoveFolder}
             onRenameItem={handleRenameItem}
@@ -376,12 +538,15 @@ export function DashboardsExplorer() {
       {/* Delete Confirmation Dialog */}
       <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
         <DialogTitle>
-          Delete {deleteTarget?.isDirectory ? "Folder" : "Dashboard"}
+          Delete{" "}
+          {deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
+            ? "Folder"
+            : "Dashboard"}
         </DialogTitle>
         <DialogContent>
           <DialogContentText>
             Are you sure you want to delete &quot;{deleteTarget?.name}&quot;?
-            {deleteTarget?.isDirectory
+            {deleteTarget?.isDirectory && !isDashboardEntryId(deleteTarget.id)
               ? " All dashboards inside will be moved to the root level."
               : " This action cannot be undone."}
           </DialogContentText>
@@ -402,7 +567,10 @@ export function DashboardsExplorer() {
         fullWidth
       >
         <DialogTitle>
-          Move {moveTarget?.isDirectory ? "Folder" : "Dashboard"}
+          Move{" "}
+          {moveTarget?.isDirectory && !isDashboardEntryId(moveTarget.id)
+            ? "Folder"
+            : "Dashboard"}
         </DialogTitle>
         <DialogContent sx={{ p: 0, height: 320 }}>
           <ResourceTree
@@ -418,7 +586,10 @@ export function DashboardsExplorer() {
               if (!moveTarget || !workspaceId) return;
               const access =
                 sectionKey === "workspace" ? "workspace" : "private";
-              if (moveTarget.isDirectory) {
+              if (
+                moveTarget.isDirectory &&
+                !isDashboardEntryId(moveTarget.id)
+              ) {
                 moveFolder(workspaceId, moveTarget.id, folderId, access);
               } else {
                 moveItem(workspaceId, moveTarget.id, folderId, access);
@@ -481,7 +652,10 @@ function DashboardInfoDialog({
   return (
     <Dialog open={!!item} onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 1 }}>
-        {item?.isDirectory ? "Folder" : "Dashboard"} Information
+        {item?.isDirectory && item.entityType !== "dashboard"
+          ? "Folder"
+          : "Dashboard"}{" "}
+        Information
       </DialogTitle>
       <DialogContent sx={{ pt: 1 }}>
         <Stack spacing={2}>

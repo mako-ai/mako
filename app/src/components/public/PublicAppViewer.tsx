@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, CircularProgress, Typography, Alert } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  Typography,
+} from "@mui/material";
+import { RefreshCw } from "lucide-react";
 import { useTheme } from "../../contexts/ThemeContext";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../../app-runtime/preview";
 import {
@@ -47,6 +54,7 @@ export interface PublicAppContent {
 interface Props {
   token: string;
   content: PublicAppContent;
+  reloadContent: () => Promise<PublicAppContent | null>;
 }
 
 /** Adapt a public binding to the shape the app DuckDB loader expects. */
@@ -69,10 +77,26 @@ function toLoadableBinding(
   } as AppDataBinding;
 }
 
-export default function PublicAppViewer({ token, content }: Props) {
+function latestMaterializedAt(content: PublicAppContent): string | null {
+  const timestamps = content.dataBindings
+    .map(binding => binding.materializedAt)
+    .filter((value): value is string => !!value)
+    .sort();
+  return timestamps[timestamps.length - 1] ?? null;
+}
+
+export default function PublicAppViewer({
+  token,
+  content,
+  reloadContent,
+}: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [booting, setBooting] = useState(true);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
   // Anonymous visitors have no saved theme preference, so the ThemeProvider
   // default ("system") makes effectiveMode track the OS preference — exactly
@@ -274,6 +298,53 @@ export default function PublicAppViewer({ token, content }: Props) {
     [content],
   );
 
+  const hasMaterializedBindings = content.dataBindings.some(
+    binding => binding.materialization === "parquet",
+  );
+
+  const handleRefresh = async () => {
+    if (!hasMaterializedBindings) return;
+    setRefreshing(true);
+    setRefreshNote(null);
+    try {
+      const res = await fetch(`/api/share/${token}/refresh`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => null);
+      if (res.status === 429) {
+        const retryMin = Math.ceil((json?.retryAfterMs ?? 60000) / 60000);
+        setRefreshNote(
+          `Data was refreshed recently — try again in ~${retryMin} min.`,
+        );
+        return;
+      }
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error || "Failed to refresh");
+      }
+
+      setRefreshNote("Refreshing data…");
+      const before = latestMaterializedAt(contentRef.current);
+      for (let attempt = 0; attempt < 15; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 8000));
+        const fresh = await reloadContent();
+        if (fresh && latestMaterializedAt(fresh) !== before) {
+          setRefreshNote(null);
+          return;
+        }
+      }
+      setRefreshNote(
+        "Refresh is still running. Reload in a moment to see the latest snapshot.",
+      );
+    } catch (error) {
+      setRefreshNote(
+        error instanceof Error ? error.message : "Failed to refresh data.",
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <Box sx={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       <Box
@@ -293,6 +364,27 @@ export default function PublicAppViewer({ token, content }: Props) {
         <Typography variant="caption" color="text.secondary">
           Shared read-only view
         </Typography>
+        <Box sx={{ flex: 1 }} />
+        {refreshNote && (
+          <Typography variant="caption" color="text.secondary">
+            {refreshNote}
+          </Typography>
+        )}
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={
+            refreshing ? (
+              <CircularProgress size={14} />
+            ) : (
+              <RefreshCw size={14} />
+            )
+          }
+          onClick={() => void handleRefresh()}
+          disabled={!hasMaterializedBindings || refreshing}
+        >
+          {refreshing ? "Refreshing…" : "Refresh data"}
+        </Button>
       </Box>
 
       {previewError && (

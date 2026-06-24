@@ -29,6 +29,7 @@ import { dashboardRoutes } from "./dashboards";
 import { appRoutes } from "./apps";
 import { publicShareRoutes } from "./public-share";
 import { dashboardMaterializationRoutes } from "./dashboard-materialization";
+import { resourceDataSourceRoutes } from "./resource-data-sources";
 import { scheduledQueryRoutes } from "./scheduled-queries";
 import { notificationRulesRoutes } from "./notification-rules";
 import { devEmailPreviewRoutes } from "./dev-email-preview.routes";
@@ -79,6 +80,10 @@ export function registerApiRoutes(app: OpenAPIHono<AuthEnv>): void {
   app.route("/api/workspaces/:workspaceId/billing", billingRoutes);
   app.route("/api/workspaces/:workspaceId/dashboards", dashboardRoutes);
   app.route("/api/workspaces/:workspaceId/apps", appRoutes);
+  app.route(
+    "/api/workspaces/:workspaceId/data-sources",
+    resourceDataSourceRoutes,
+  );
   app.route(
     "/api/workspaces/:workspaceId/dashboards/:dashboardId",
     dashboardMaterializationRoutes,

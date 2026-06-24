@@ -237,20 +237,20 @@ export function AppsExplorer() {
         let children: ResourceTreeNode[] | undefined;
         if (loaded) {
           children = buildAppFileNodes(item.id, loaded.files);
-          if (loaded.dataBindings.length > 0) {
-            children.push({
-              id: `${item.id}${DIR_SEP}${DATA_SOURCES_DIR}`,
-              name: "Data sources",
-              path: DATA_SOURCES_DIR,
-              isDirectory: true,
-              children: loaded.dataBindings.map(b => ({
-                id: `${item.id}${BINDING_SEP}${b.id}`,
-                name: b.name,
-                path: `binding/${b.id}`,
-                isDirectory: false,
-              })),
-            });
-          }
+          children.push({
+            id: `${item.id}${DIR_SEP}${DATA_SOURCES_DIR}`,
+            name: "Data sources",
+            path: DATA_SOURCES_DIR,
+            isDirectory: true,
+            entityType: "data-source-folder",
+            children: loaded.dataBindings.map(b => ({
+              id: `${item.id}${BINDING_SEP}${b.id}`,
+              name: b.name,
+              path: `binding/${b.id}`,
+              isDirectory: false,
+              entityType: "data-source",
+            })),
+          });
         }
         return {
           id: item.id,

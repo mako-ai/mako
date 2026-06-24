@@ -10,7 +10,7 @@
  *   POST /api/share/:token/unlock     — verify password, set signed cookie
  *   GET  /api/share/:token/content    — sanitized dashboard/app definition
  *   GET  /api/share/:token/artifacts/:artifactId — stream snapshot parquet
- *   POST /api/share/:token/refresh    — throttled re-materialization (dash)
+ *   POST /api/share/:token/refresh    — throttled snapshot re-materialization
  */
 
 import crypto from "node:crypto";
@@ -30,7 +30,10 @@ import { loggers } from "../logging";
 import { buildDataSourceMaterializationStatus } from "../services/dashboard-materialization.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import { getBindingArtifactInfo } from "../services/app-binding-materialization.service";
+import {
+  getBindingArtifactInfo,
+  queueAppBindingMaterialization,
+} from "../services/app-binding-materialization.service";
 
 const logger = loggers.api("public-share");
 
@@ -455,7 +458,7 @@ app.openapi(
   },
 );
 
-// POST /:token/refresh — throttled snapshot refresh (dashboards only).
+// POST /:token/refresh — throttled snapshot refresh.
 // Only re-runs the owner-defined data source queries; anonymous viewers can
 // never execute arbitrary queries.
 app.openapi(
@@ -463,7 +466,7 @@ app.openapi(
     method: "post",
     path: "/{token}/refresh",
     tags: ["Public Shares"],
-    summary: "Refresh a dashboard share snapshot",
+    summary: "Refresh a public share snapshot",
     security: [],
     request: { params: TokenParam },
     responses: { ...OPEN_RESPONSES },
@@ -477,15 +480,20 @@ app.openapi(
       }
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
-      if (resource.type !== "dashboard") {
+      const doc = resource.doc;
+      if (
+        resource.type === "app" &&
+        !doc.dataBindings.some(binding => binding.materialization === "parquet")
+      ) {
         return c.json(
-          { success: false, error: "Refresh is only available for dashboards" },
+          {
+            success: false,
+            error: "No materialized app data sources to refresh",
+          },
           400,
         );
       }
-
-      const dashboard = resource.doc;
-      const last = dashboard.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
+      const last = doc.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
       const elapsed = Date.now() - last;
       if (elapsed < PUBLIC_REFRESH_COOLDOWN_MS) {
         const retryAfterMs = PUBLIC_REFRESH_COOLDOWN_MS - elapsed;
@@ -502,9 +510,10 @@ app.openapi(
 
       // Claim the cooldown slot atomically so concurrent anonymous viewers
       // can't queue duplicate refreshes.
-      const claimed = await Dashboard.findOneAndUpdate(
+      const model = resource.type === "dashboard" ? Dashboard : MakoApp;
+      const claimed = await model.findOneAndUpdate(
         {
-          _id: dashboard._id,
+          _id: doc._id,
           "publicShare.enabled": true,
           $or: [
             { "publicShare.lastPublicRefreshAt": { $exists: false } },
@@ -530,22 +539,49 @@ app.openapi(
         );
       }
 
-      // force: true re-queries the owner-defined source queries even when the
-      // dashboard definition is unchanged. Without it, the rebuild service
-      // reuses the cached parquet (no new parquetBuiltAt), so the viewer's
-      // "data changed?" poll never observes a fresh snapshot and times out.
-      // The 5-minute cooldown above guards against abusive/expensive re-runs.
-      const queueResult = await queueDashboardArtifactRefresh({
-        dashboardId: dashboard._id.toString(),
-        workspaceId: dashboard.workspaceId.toString(),
-        force: true,
-        triggerType: "manual",
-      });
+      let queued = false;
+      let alreadyRunning = false;
+      let dataSourceIds: string[] = [];
+
+      if (resource.type === "dashboard") {
+        // force: true re-queries the owner-defined source queries even when the
+        // dashboard definition is unchanged. Without it, the rebuild service
+        // reuses the cached parquet (no new parquetBuiltAt), so the viewer's
+        // "data changed?" poll never observes a fresh snapshot and times out.
+        // The 5-minute cooldown above guards against abusive/expensive re-runs.
+        const queueResult = await queueDashboardArtifactRefresh({
+          dashboardId: doc._id.toString(),
+          workspaceId: doc.workspaceId.toString(),
+          force: true,
+          triggerType: "manual",
+        });
+        queued = queueResult.queued;
+        alreadyRunning = !queueResult.queued;
+        dataSourceIds = queueResult.dataSourceIds;
+      } else {
+        const materializedBindings = doc.dataBindings.filter(
+          binding => binding.materialization === "parquet",
+        );
+        const results = await Promise.all(
+          materializedBindings.map(binding =>
+            queueAppBindingMaterialization({
+              workspaceId: doc.workspaceId.toString(),
+              appId: doc._id.toString(),
+              bindingId: binding.id,
+              force: true,
+            }),
+          ),
+        );
+        queued = results.some(result => result.queued);
+        alreadyRunning = results.some(result => result.alreadyRunning);
+        dataSourceIds = results.map(result => result.bindingId);
+      }
 
       return c.json({
         success: true,
-        queued: queueResult.queued,
-        alreadyRunning: !queueResult.queued,
+        queued,
+        alreadyRunning,
+        dataSourceIds,
         cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
       });
     } catch (error) {

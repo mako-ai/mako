@@ -3725,6 +3725,12 @@ export interface IMakoAppDataBinding {
   databaseId?: string;
   databaseName?: string;
   materialization: "live" | "parquet";
+  materializationSchedule?: {
+    enabled: boolean;
+    cron: string | null;
+    timezone?: string;
+    dataFreshnessTtlMs?: number | null;
+  };
   cache?: IMakoAppBindingCache;
 }
 
@@ -3815,6 +3821,12 @@ const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
       type: String,
       enum: ["live", "parquet"],
       default: "live",
+    },
+    materializationSchedule: {
+      enabled: { type: Boolean, default: false },
+      cron: { type: String, default: null },
+      timezone: { type: String, default: "UTC" },
+      dataFreshnessTtlMs: { type: Number, default: null },
     },
     cache: { type: MakoAppBindingCacheSchema, default: undefined },
   },

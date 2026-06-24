@@ -18,7 +18,10 @@ import {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
 } from "./functions/dashboard-refresh";
-import { appBindingMaterializeFunction } from "./functions/app-binding-materialize";
+import {
+  appBindingMaterializeFunction,
+  appBindingSchedulerFunction,
+} from "./functions/app-binding-materialize";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
 import { usageReportingFunction } from "./functions/usage-reporting";
 import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
@@ -89,6 +92,7 @@ export function getFunctions() {
         ...webhookFunctions,
         flowSchedulerFunction,
         dashboardSchedulerFunction,
+        appBindingSchedulerFunction,
         scheduledQuerySchedulerFunction,
         dbtSchedulerFunction,
       ];
@@ -139,6 +143,7 @@ export {
   dashboardSchedulerFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
+  appBindingSchedulerFunction,
   usageReportingFunction,
   modelCatalogRefreshFunction,
   scheduledQueryExecutorFunction,

@@ -81,6 +81,7 @@ export interface ResourceTreeNode {
   name: string;
   path: string;
   isDirectory: boolean;
+  entityType?: string;
   children?: ResourceTreeNode[];
   access?: "private" | "workspace";
   owner_id?: string;
@@ -821,7 +822,7 @@ function ResourceTreeInner(
         event.key.toLowerCase() === "d" &&
         focusItem &&
         enableDuplicate &&
-        !focusItem.isDirectory
+        (!focusItem.isDirectory || focusItem.entityType === "dashboard")
       ) {
         event.preventDefault();
         onDuplicateItem?.(focusItem);
@@ -1609,31 +1610,35 @@ function ResourceTreeInner(
                   Rename
                 </MenuItem>
               ),
-              enableDuplicate && !item.isDirectory && (
-                <MenuItem
-                  key="duplicate"
-                  onClick={() => {
-                    setContextMenu(null);
-                    onDuplicateItem?.(item);
-                  }}
-                >
-                  <Copy size={14} style={{ marginRight: 8 }} />
-                  Duplicate
-                </MenuItem>
-              ),
-              enableNewFolder && item.isDirectory && canManage && (
-                <MenuItem
-                  key="subfolder"
-                  onClick={async () => {
-                    setContextMenu(null);
-                    onExpandFolder(getExpansionKey(item));
-                    await triggerCreateFolder(item.id, item.access);
-                  }}
-                >
-                  <FolderPlus size={14} style={{ marginRight: 8 }} />
-                  New Subfolder
-                </MenuItem>
-              ),
+              enableDuplicate &&
+                (!item.isDirectory || item.entityType === "dashboard") && (
+                  <MenuItem
+                    key="duplicate"
+                    onClick={() => {
+                      setContextMenu(null);
+                      onDuplicateItem?.(item);
+                    }}
+                  >
+                    <Copy size={14} style={{ marginRight: 8 }} />
+                    Duplicate
+                  </MenuItem>
+                ),
+              enableNewFolder &&
+                item.isDirectory &&
+                item.entityType !== "dashboard" &&
+                canManage && (
+                  <MenuItem
+                    key="subfolder"
+                    onClick={async () => {
+                      setContextMenu(null);
+                      onExpandFolder(getExpansionKey(item));
+                      await triggerCreateFolder(item.id, item.access);
+                    }}
+                  >
+                    <FolderPlus size={14} style={{ marginRight: 8 }} />
+                    New Subfolder
+                  </MenuItem>
+                ),
               enableMove && canManage && onMoveRequest && (
                 <MenuItem
                   key="move"

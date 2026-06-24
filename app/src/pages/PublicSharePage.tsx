@@ -230,5 +230,18 @@ export default function PublicSharePage() {
     );
   }
 
-  return <PublicAppViewer token={token} content={content} />;
+  return (
+    <PublicAppViewer
+      token={token}
+      content={content}
+      reloadContent={async () => {
+        const next = await loadContent();
+        if (next && next.type === "app") {
+          setContent(next);
+          return next;
+        }
+        return null;
+      }}
+    />
+  );
 }
