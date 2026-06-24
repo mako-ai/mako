@@ -122,7 +122,21 @@ export default function PublicAppViewer({
     else window.history.pushState(null, "", next);
   }, []);
 
-  // Preload all ready parquet bindings.
+  // Tear down the app's DuckDB instance only when the viewer unmounts. This
+  // MUST NOT depend on `content`: the refresh poll calls reloadContent() (and
+  // thus setContent) on every attempt, so a content-keyed cleanup would
+  // dispose + recreate the instance every few seconds — wiping every loaded
+  // table out from under the running app and breaking its queries mid-refresh.
+  useEffect(() => {
+    return () => {
+      void disposeAppDuckDB(duckAppId);
+    };
+  }, [duckAppId]);
+
+  // (Re)load ready parquet bindings whenever content changes. ensureBindingLoaded
+  // is revision-cached (no-op when unchanged) and reloads in place when a new
+  // snapshot is ready, so bindings still mid-rematerialization keep their
+  // previously-loaded table instead of being dropped.
   useEffect(() => {
     for (const binding of content.dataBindings) {
       const loadable = toLoadableBinding(binding);
@@ -132,9 +146,6 @@ export default function PublicAppViewer({
         });
       }
     }
-    return () => {
-      void disposeAppDuckDB(duckAppId);
-    };
   }, [duckAppId, content]);
 
   // Bridge: serve binding + DuckDB requests from snapshot data only.
@@ -280,23 +291,34 @@ export default function PublicAppViewer({
     );
   }, [effectiveMode]);
 
-  // Theme comes from a ref on purpose: it only seeds the boot paint and must
-  // not rebuild the (slow, Babel-compiled) preview — set-theme handles toggles.
-  const srcDoc = useMemo(
+  // Rebuild the (slow, Babel-compiled) preview only when the app's *code*
+  // changes — never on data-only refreshes. The refresh poll swaps in a fresh
+  // `content` object every few seconds; keying the srcdoc on the whole object
+  // would reboot the iframe each time and reset the running app's UI state.
+  // Data bindings reach the app over the message bridge, not the srcdoc, so
+  // they're deliberately excluded from this signature.
+  const codeSignature = useMemo(
     () =>
-      buildPreviewHtml(
-        {
-          files: content.files,
-          dependencies: content.dependencies,
-          entrypoint: content.entrypoint,
-        } as Parameters<typeof buildPreviewHtml>[0],
-        {
-          theme: effectiveModeRef.current,
-          location: initialAppLocationRef.current,
-        },
-      ),
+      JSON.stringify({
+        entrypoint: content.entrypoint,
+        dependencies: content.dependencies,
+        files: content.files,
+      }),
     [content],
   );
+
+  // Theme comes from a ref on purpose: it only seeds the boot paint and must
+  // not rebuild the preview — set-theme handles toggles. The app code is parsed
+  // back from `codeSignature` so the memo recomputes only when the code changes.
+  const srcDoc = useMemo(() => {
+    const code = JSON.parse(codeSignature) as Parameters<
+      typeof buildPreviewHtml
+    >[0];
+    return buildPreviewHtml(code, {
+      theme: effectiveModeRef.current,
+      location: initialAppLocationRef.current,
+    });
+  }, [codeSignature]);
 
   const hasMaterializedBindings = content.dataBindings.some(
     binding => binding.materialization === "parquet",
