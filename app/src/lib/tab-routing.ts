@@ -39,11 +39,11 @@ export const TAB_DEEP_LINK_PATTERNS = {
   connectors: /^\/cx\/([a-zA-Z0-9-]+)/,
   "flow-editor": /^\/f\/([a-zA-Z0-9-]+)/,
   dashboard: /^\/d\/([a-zA-Z0-9-]+)\/?$/,
-  "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9-]+)/,
+  "dashboard-data-source": /^\/d\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   "table-data": /^\/t\/([a-zA-Z0-9-]+)\/([^/]+)\/([^/]+)\/?$/,
   app: /^\/a\/([a-zA-Z0-9-]+)\/?$/,
   "app-file": /^\/a\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
-  "app-binding": /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9-]+)/,
+  "app-binding": /^\/a\/([a-zA-Z0-9-]+)\/data\/([a-zA-Z0-9_-]+)/,
   plan: /^\/p\/([a-zA-Z0-9-]+)/,
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.

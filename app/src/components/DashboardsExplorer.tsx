@@ -498,7 +498,7 @@ export function DashboardsExplorer() {
       >
         {({ searchQuery }) => (
           <ResourceTree
-            sections={pickerSectionsDef}
+            sections={sectionsDef}
             mode="sidebar"
             searchQuery={searchQuery}
             activeItemId={activeDashboardTabId}
@@ -574,7 +574,7 @@ export function DashboardsExplorer() {
         </DialogTitle>
         <DialogContent sx={{ p: 0, height: 320 }}>
           <ResourceTree
-            sections={sectionsDef}
+            sections={pickerSectionsDef}
             mode="picker"
             showFiles={false}
             getItemIcon={getItemIcon}

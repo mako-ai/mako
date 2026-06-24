@@ -36,7 +36,7 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
   }),
   "dashboard-data-source": baseTab({
     kind: "dashboard-data-source",
-    metadata: { dashboardId: "dash-1", dataSourceId: "ds-1" },
+    metadata: { dashboardId: "dash-1", dataSourceId: "ds_1" },
   }),
   "table-data": baseTab({
     kind: "table-data",
@@ -51,7 +51,7 @@ const FIXTURES: Record<NonNullable<TabKind>, ConsoleTab> = {
   }),
   "app-binding": baseTab({
     kind: "app-binding",
-    metadata: { appId: "app-1", bindingId: "binding-1" },
+    metadata: { appId: "app-1", bindingId: "binding_1" },
   }),
   plan: baseTab({ kind: "plan", metadata: { chatId: "chat-1" } }),
   settings: baseTab({ kind: "settings", settingsSection: "models" }),
