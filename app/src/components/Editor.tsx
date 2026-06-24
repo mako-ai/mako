@@ -2732,7 +2732,10 @@ function Editor({
                       }}
                     />
                   ) : tab.kind === "app" ? (
-                    <AppRenderer appId={tab.metadata?.appId as string} />
+                    <AppRenderer
+                      appId={tab.metadata?.appId as string}
+                      tabId={tab.id}
+                    />
                   ) : tab.kind === "app-file" ? (
                     <AppFileEditor
                       tabId={tab.id}
