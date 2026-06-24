@@ -480,20 +480,25 @@ app.openapi(
       }
       const gate = requireUnlock(c, token, resource);
       if (gate) return gate;
-      const doc = resource.doc;
-      if (
-        resource.type === "app" &&
-        !doc.dataBindings.some(binding => binding.materialization === "parquet")
-      ) {
-        return c.json(
-          {
-            success: false,
-            error: "No materialized app data sources to refresh",
-          },
-          400,
-        );
+      if (resource.type === "app") {
+        const appDoc = resource.doc;
+        if (
+          !appDoc.dataBindings.some(
+            binding => binding.materialization === "parquet",
+          )
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: "No materialized app data sources to refresh",
+            },
+            400,
+          );
+        }
       }
-      const last = doc.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
+
+      const last =
+        resource.doc.publicShare?.lastPublicRefreshAt?.getTime() ?? 0;
       const elapsed = Date.now() - last;
       if (elapsed < PUBLIC_REFRESH_COOLDOWN_MS) {
         const retryAfterMs = PUBLIC_REFRESH_COOLDOWN_MS - elapsed;
@@ -510,23 +515,40 @@ app.openapi(
 
       // Claim the cooldown slot atomically so concurrent anonymous viewers
       // can't queue duplicate refreshes.
-      const model = resource.type === "dashboard" ? Dashboard : MakoApp;
-      const claimed = await model.findOneAndUpdate(
-        {
-          _id: doc._id,
-          "publicShare.enabled": true,
-          $or: [
-            { "publicShare.lastPublicRefreshAt": { $exists: false } },
-            {
-              "publicShare.lastPublicRefreshAt": {
-                $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+      const claimed =
+        resource.type === "dashboard"
+          ? await Dashboard.findOneAndUpdate(
+              {
+                _id: resource.doc._id,
+                "publicShare.enabled": true,
+                $or: [
+                  { "publicShare.lastPublicRefreshAt": { $exists: false } },
+                  {
+                    "publicShare.lastPublicRefreshAt": {
+                      $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+                    },
+                  },
+                ],
               },
-            },
-          ],
-        },
-        { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
-        { new: true },
-      );
+              { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
+              { new: true },
+            )
+          : await MakoApp.findOneAndUpdate(
+              {
+                _id: resource.doc._id,
+                "publicShare.enabled": true,
+                $or: [
+                  { "publicShare.lastPublicRefreshAt": { $exists: false } },
+                  {
+                    "publicShare.lastPublicRefreshAt": {
+                      $lte: new Date(Date.now() - PUBLIC_REFRESH_COOLDOWN_MS),
+                    },
+                  },
+                ],
+              },
+              { $set: { "publicShare.lastPublicRefreshAt": new Date() } },
+              { new: true },
+            );
       if (!claimed) {
         return c.json(
           {
@@ -544,14 +566,15 @@ app.openapi(
       let dataSourceIds: string[] = [];
 
       if (resource.type === "dashboard") {
+        const dashboard = resource.doc;
         // force: true re-queries the owner-defined source queries even when the
         // dashboard definition is unchanged. Without it, the rebuild service
         // reuses the cached parquet (no new parquetBuiltAt), so the viewer's
         // "data changed?" poll never observes a fresh snapshot and times out.
         // The 5-minute cooldown above guards against abusive/expensive re-runs.
         const queueResult = await queueDashboardArtifactRefresh({
-          dashboardId: doc._id.toString(),
-          workspaceId: doc.workspaceId.toString(),
+          dashboardId: dashboard._id.toString(),
+          workspaceId: dashboard.workspaceId.toString(),
           force: true,
           triggerType: "manual",
         });
@@ -559,14 +582,15 @@ app.openapi(
         alreadyRunning = !queueResult.queued;
         dataSourceIds = queueResult.dataSourceIds;
       } else {
-        const materializedBindings = doc.dataBindings.filter(
+        const appDoc = resource.doc;
+        const materializedBindings = appDoc.dataBindings.filter(
           binding => binding.materialization === "parquet",
         );
         const results = await Promise.all(
           materializedBindings.map(binding =>
             queueAppBindingMaterialization({
-              workspaceId: doc.workspaceId.toString(),
-              appId: doc._id.toString(),
+              workspaceId: appDoc.workspaceId.toString(),
+              appId: appDoc._id.toString(),
               bindingId: binding.id,
               force: true,
             }),

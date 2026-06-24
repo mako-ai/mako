@@ -127,16 +127,19 @@ app.openapi(
   async c => {
     try {
       const dataSources = await listResourceDataSources({
-        workspaceId: c.req.param("workspaceId"),
+        workspaceId: c.req.param("workspaceId") as string,
         resourceType: c.req.param("resourceType") as "dashboard" | "app",
-        resourceId: c.req.param("resourceId"),
+        resourceId: c.req.param("resourceId") as string,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
       });
       return c.json({ success: true, data: { dataSources } });
     } catch (error) {
       logger.error("Error listing resource data sources", { error });
-      return c.json({ success: false, error: errorMessage(error) }, errorStatus(error));
+      return c.json(
+        { success: false, error: errorMessage(error) },
+        errorStatus(error),
+      );
     }
   },
 );
@@ -154,17 +157,20 @@ app.openapi(
   async c => {
     try {
       const dataSource = await getResourceDataSource({
-        workspaceId: c.req.param("workspaceId"),
+        workspaceId: c.req.param("workspaceId") as string,
         resourceType: c.req.param("resourceType") as "dashboard" | "app",
-        resourceId: c.req.param("resourceId"),
-        dataSourceId: c.req.param("dataSourceId"),
+        resourceId: c.req.param("resourceId") as string,
+        dataSourceId: c.req.param("dataSourceId") as string,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
       });
       return c.json({ success: true, data: { dataSource } });
     } catch (error) {
       logger.error("Error getting resource data source", { error });
-      return c.json({ success: false, error: errorMessage(error) }, errorStatus(error));
+      return c.json(
+        { success: false, error: errorMessage(error) },
+        errorStatus(error),
+      );
     }
   },
 );
@@ -183,10 +189,10 @@ app.openapi(
     try {
       const body = await c.req.json().catch(() => ({}));
       const dataSource = await updateResourceDataSourceSettings({
-        workspaceId: c.req.param("workspaceId"),
+        workspaceId: c.req.param("workspaceId") as string,
         resourceType: c.req.param("resourceType") as "dashboard" | "app",
-        resourceId: c.req.param("resourceId"),
-        dataSourceId: c.req.param("dataSourceId"),
+        resourceId: c.req.param("resourceId") as string,
+        dataSourceId: c.req.param("dataSourceId") as string,
         settings: body,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
@@ -194,7 +200,10 @@ app.openapi(
       return c.json({ success: true, data: { dataSource } });
     } catch (error) {
       logger.error("Error updating resource data source settings", { error });
-      return c.json({ success: false, error: errorMessage(error) }, errorStatus(error));
+      return c.json(
+        { success: false, error: errorMessage(error) },
+        errorStatus(error),
+      );
     }
   },
 );
@@ -212,16 +221,19 @@ app.openapi(
   async c => {
     try {
       const result = await refreshResourceDataSources({
-        workspaceId: c.req.param("workspaceId"),
+        workspaceId: c.req.param("workspaceId") as string,
         resourceType: c.req.param("resourceType") as "dashboard" | "app",
-        resourceId: c.req.param("resourceId"),
+        resourceId: c.req.param("resourceId") as string,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
       });
       return c.json({ success: true, data: result });
     } catch (error) {
       logger.error("Error refreshing resource data sources", { error });
-      return c.json({ success: false, error: errorMessage(error) }, errorStatus(error));
+      return c.json(
+        { success: false, error: errorMessage(error) },
+        errorStatus(error),
+      );
     }
   },
 );
@@ -239,17 +251,20 @@ app.openapi(
   async c => {
     try {
       const result = await refreshResourceDataSources({
-        workspaceId: c.req.param("workspaceId"),
+        workspaceId: c.req.param("workspaceId") as string,
         resourceType: c.req.param("resourceType") as "dashboard" | "app",
-        resourceId: c.req.param("resourceId"),
-        dataSourceId: c.req.param("dataSourceId"),
+        resourceId: c.req.param("resourceId") as string,
+        dataSourceId: c.req.param("dataSourceId") as string,
         userId: c.get("user")?.id,
         memberRole: c.get("memberRole"),
       });
       return c.json({ success: true, data: result });
     } catch (error) {
       logger.error("Error refreshing resource data source", { error });
-      return c.json({ success: false, error: errorMessage(error) }, errorStatus(error));
+      return c.json(
+        { success: false, error: errorMessage(error) },
+        errorStatus(error),
+      );
     }
   },
 );
