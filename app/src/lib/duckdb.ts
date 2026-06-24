@@ -576,28 +576,28 @@ export async function loadNdjsonStreamTable(
   }
 }
 
+let parquetFileSeq = 0;
+
 export async function loadParquetTable(
   db: AsyncDuckDB,
   tableName: string,
   buffer: Uint8Array,
 ): Promise<number> {
-  const fileName = `${tableName}.parquet`;
-  // Drop the table that references the previous buffer, then replace the
-  // registered file before re-registering. Re-registering a duckdb-wasm file
-  // buffer under an existing name without dropping it first leaves a stale
-  // handle, so a later read_parquet fails with "Invalid data" — this surfaces
-  // when an app reloads a refreshed snapshot in place (same table name, new
-  // bytes). On the first load dropTable/dropFile are harmless no-ops.
+  // Register each buffer under a UNIQUE virtual filename. duckdb-wasm's
+  // registerFileBuffer/dropFile operate on the DB-global WASM virtual
+  // filesystem; repeatedly dropping + re-registering the SAME name (what an
+  // in-place snapshot reload did, since the name was derived only from the
+  // table) eventually leaves a stale handle, so a later read_parquet reads
+  // garbage and fails with "Invalid data: TProtocolException". A fresh name per
+  // load means we never re-register an existing name; the unique file is then
+  // dropped in `finally` to free worker memory. The table itself is still
+  // replaced under its stable name via DROP TABLE + CREATE TABLE.
+  const fileName = `${tableName}__${Date.now()}_${++parquetFileSeq}.parquet`;
   const dropConn = await db.connect();
   try {
     await dropConn.query(`DROP TABLE IF EXISTS "${tableName}"`);
   } finally {
     await dropConn.close();
-  }
-  try {
-    await db.dropFile(fileName);
-  } catch {
-    // File was not registered yet (first load) — nothing to drop.
   }
   await db.registerFileBuffer(fileName, buffer);
   const conn = await db.connect();
@@ -611,6 +611,13 @@ export async function loadParquetTable(
     return Number(result.getChild("cnt")?.get(0) ?? 0);
   } finally {
     await conn.close();
+    // Free the unique virtual file now that the table is materialized; a
+    // failure here is non-fatal (best-effort memory cleanup).
+    try {
+      await db.dropFile(fileName);
+    } catch {
+      // Best-effort cleanup; the file may already be gone.
+    }
   }
 }
 
