@@ -19,6 +19,7 @@ import { Connector } from "@google-cloud/cloud-sql-connector";
 import { loggers } from "../logging";
 import { sshTunnelManager, type SshTunnelConfig } from "./ssh-tunnel.service";
 import { databaseRegistry } from "../databases/registry";
+import { isLocalBigQueryEmulator } from "../utils/bigquery-emulator";
 import {
   type PreviewPageInfo,
   buildBigQueryCursor,
@@ -2390,6 +2391,25 @@ export class DatabaseConnectionService {
 
     const cached = this.bigQueryClientCache.get(cacheKey);
     const now = Date.now();
+
+    // Local emulator (e.g. goccy/bigquery-emulator): no auth. Skip the JWT/OAuth
+    // token exchange entirely and send a dummy bearer the emulator ignores. This
+    // lets local dev / integration tests run fully offline with fake credentials.
+    if (isLocalBigQueryEmulator(apiBaseUrl)) {
+      const emulatorClient = cached?.client || axios.create({ baseURL });
+      emulatorClient.defaults.headers.common["Authorization"] =
+        "Bearer emulator";
+      emulatorClient.defaults.headers.common["Content-Type"] =
+        "application/json";
+      const expiresAtMs = now + 365 * 24 * 60 * 60 * 1000;
+      this.bigQueryClientCache.set(cacheKey, {
+        client: emulatorClient,
+        token: "emulator",
+        expiresAtMs,
+      });
+      return emulatorClient;
+    }
+
     // Refresh token if expiring soon (within 2 minutes)
     const needsRefresh = !cached || cached.expiresAtMs - now < 2 * 60 * 1000;
 

@@ -16,6 +16,7 @@ module.exports = {
     'dist',
     '.eslintrc.cjs',
     'vitest.config.ts',
+    'vitest.destinations.config.ts',
     'node_modules',
     'scripts',
   ],

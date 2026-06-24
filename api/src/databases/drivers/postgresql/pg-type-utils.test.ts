@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import { describe, it, expect } from "vitest";
 import {
   mapPostgresOidToType,
   normalizePostgresFields,
@@ -6,56 +6,54 @@ import {
   stripTrailingSqlSemicolon,
 } from "./pg-type-utils";
 
-function testMapPostgresOidToType() {
-  assert.equal(mapPostgresOidToType(20), "BIGINT");
-  assert.equal(mapPostgresOidToType(701), "DOUBLE PRECISION");
-  assert.equal(mapPostgresOidToType(1043), "VARCHAR");
-}
+describe("mapPostgresOidToType", () => {
+  it("maps known OIDs to type names", () => {
+    expect(mapPostgresOidToType(20)).toBe("BIGINT");
+    expect(mapPostgresOidToType(701)).toBe("DOUBLE PRECISION");
+    expect(mapPostgresOidToType(1043)).toBe("VARCHAR");
+  });
+});
 
-function testNormalizePostgresFields() {
-  const fields = normalizePostgresFields([
-    { name: "total_leads", dataTypeID: 20 },
-    { name: "country", dataTypeID: 1043 },
-  ]);
+describe("normalizePostgresFields", () => {
+  it("annotates fields with their resolved type", () => {
+    const fields = normalizePostgresFields([
+      { name: "total_leads", dataTypeID: 20 },
+      { name: "country", dataTypeID: 1043 },
+    ]);
 
-  assert.deepEqual(fields, [
-    { name: "total_leads", dataTypeID: 20, type: "BIGINT" },
-    { name: "country", dataTypeID: 1043, type: "VARCHAR" },
-  ]);
-}
+    expect(fields).toEqual([
+      { name: "total_leads", dataTypeID: 20, type: "BIGINT" },
+      { name: "country", dataTypeID: 1043, type: "VARCHAR" },
+    ]);
+  });
+});
 
-function testNormalizePostgresRows() {
-  const fields = normalizePostgresFields([
-    { name: "total_leads", dataTypeID: 20 },
-    { name: "country", dataTypeID: 1043 },
-  ]);
+describe("normalizePostgresRows", () => {
+  it("coerces in-range bigints to numbers and leaves overflow as strings", () => {
+    const fields = normalizePostgresFields([
+      { name: "total_leads", dataTypeID: 20 },
+      { name: "country", dataTypeID: 1043 },
+    ]);
 
-  const rows = normalizePostgresRows(
-    [
-      { total_leads: "7401", country: "CH" },
-      { total_leads: "9223372036854775807", country: "FR" },
-    ],
-    fields,
-  );
+    const rows = normalizePostgresRows(
+      [
+        { total_leads: "7401", country: "CH" },
+        { total_leads: "9223372036854775807", country: "FR" },
+      ],
+      fields,
+    );
 
-  assert.equal(rows[0]?.total_leads, 7401);
-  assert.equal(rows[0]?.country, "CH");
-  assert.equal(rows[1]?.total_leads, "9223372036854775807");
-}
+    expect(rows[0]?.total_leads).toBe(7401);
+    expect(rows[0]?.country).toBe("CH");
+    expect(rows[1]?.total_leads).toBe("9223372036854775807");
+  });
+});
 
-function testStripTrailingSqlSemicolon() {
-  assert.equal(stripTrailingSqlSemicolon("SELECT 1;\n"), "SELECT 1");
-  assert.equal(
-    stripTrailingSqlSemicolon("SELECT * FROM foo"),
-    "SELECT * FROM foo",
-  );
-}
-
-function main() {
-  testMapPostgresOidToType();
-  testNormalizePostgresFields();
-  testNormalizePostgresRows();
-  testStripTrailingSqlSemicolon();
-}
-
-main();
+describe("stripTrailingSqlSemicolon", () => {
+  it("removes a trailing semicolon and whitespace", () => {
+    expect(stripTrailingSqlSemicolon("SELECT 1;\n")).toBe("SELECT 1");
+    expect(stripTrailingSqlSemicolon("SELECT * FROM foo")).toBe(
+      "SELECT * FROM foo",
+    );
+  });
+});

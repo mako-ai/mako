@@ -1,6 +1,11 @@
 import { promises as fs } from "fs";
 import { BigQuery } from "@google-cloud/bigquery";
 import {
+  isLocalBigQueryEmulator,
+  bigQueryEmulatorEndpoint,
+  bigQueryEmulatorHostPort,
+} from "../../utils/bigquery-emulator";
+import {
   DatabaseConnection,
   type IFlow,
   type IDatabaseConnection,
@@ -203,7 +208,7 @@ const escId = (id: string) => `\`${id.replace(/`/g, "\\`")}\``;
 // Pure MERGE statement builder.
 // ---------------------------------------------------------------------------
 
-interface BuildMergeStatementParams {
+export interface BuildMergeStatementParams {
   fullLive: string;
   fullStaging: string;
   /** All columns on the live table. */
@@ -216,7 +221,13 @@ interface BuildMergeStatementParams {
   entitySchema?: ConnectorEntitySchema;
 }
 
-function buildMergeStatement(p: BuildMergeStatementParams): string {
+/**
+ * Build the BigQuery CDC MERGE statement that materializes a deduplicated
+ * staging table into the live table. Exported for contract testing — the exact
+ * SQL shape (QUALIFY dedup, ordering guards, typed NULL inserts) is
+ * correctness-critical for the CDC pipeline.
+ */
+export function buildMergeStatement(p: BuildMergeStatementParams): string {
   const {
     fullLive,
     fullStaging,
@@ -1049,7 +1060,25 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const projectId = conn.project_id;
     const dataset = this.config.tableDestination.schema;
     const connLocation: string | undefined = conn.location;
-    const bq = new BigQuery({ projectId, credentials, location: connLocation });
+    const apiBaseUrl: string | undefined = conn.api_base_url;
+
+    const bqOptions: ConstructorParameters<typeof BigQuery>[0] = {
+      projectId,
+      credentials,
+      location: connLocation,
+    };
+    if (isLocalBigQueryEmulator(apiBaseUrl)) {
+      // Point the SDK (Parquet load jobs, dataset metadata) at the local
+      // emulator. The SDK only fully bypasses auth when BIGQUERY_EMULATOR_HOST
+      // is set, so set it alongside the explicit apiEndpoint.
+      bqOptions.apiEndpoint = bigQueryEmulatorEndpoint(apiBaseUrl as string);
+      if (!process.env.BIGQUERY_EMULATOR_HOST) {
+        process.env.BIGQUERY_EMULATOR_HOST = bigQueryEmulatorHostPort(
+          apiBaseUrl as string,
+        );
+      }
+    }
+    const bq = new BigQuery(bqOptions);
 
     if (!this._datasetLocation) {
       try {
