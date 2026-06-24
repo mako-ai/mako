@@ -49,6 +49,24 @@ const ENTITY_LIST_PATH: Record<SupportedEntity, string> = {
   members: "/public/v1/members",
 };
 
+// The document LIST endpoint only returns a shallow projection. The rich nested
+// objects (fields, tokens, metadata, pricing, products, grand_total,
+// recipients, ...) live exclusively on the per-document DETAILS endpoint, so
+// backfill must hydrate each listed document from here.
+const documentDetailPath = (documentId: string): string =>
+  `/public/v1/documents/${encodeURIComponent(documentId)}/details`;
+
+// How many document-detail requests to run concurrently while hydrating a list
+// page. Kept small so a backfill stays well under PandaDoc's rate limits while
+// still being meaningfully faster than a fully sequential loop.
+const DOCUMENT_DETAIL_CONCURRENCY = 5;
+
+// When detail hydration is on, every list page fans out into up to
+// `pageCount` extra detail requests. Cap the pages processed per resumable
+// chunk so a single chunk's wall-clock stays bounded; the resume cursor picks
+// up the remaining pages on the next chunk.
+const DETAIL_HYDRATION_MAX_PAGES_PER_CHUNK = 2;
+
 // All PandaDoc webhook triggers. document_deleted/template_deleted map to a
 // CDC delete; everything else is an upsert.
 const DOCUMENT_TRIGGERS = [
@@ -148,6 +166,15 @@ export class PandaDocConnector extends BaseConnector {
           type: "string",
           required: false,
           default: DEFAULT_BASE_URL,
+        },
+        {
+          name: "fetch_document_details",
+          label: "Fetch full document details",
+          type: "boolean",
+          required: false,
+          default: true,
+          helperText:
+            "Hydrate each document with its full detail (fields, tokens, metadata, pricing, products, recipients) during backfill. The document list endpoint omits these. Disable to reduce API calls if you hit rate limits.",
         },
       ],
     };
@@ -257,6 +284,76 @@ export class PandaDocConnector extends BaseConnector {
         ? batchSize
         : this.getBatchSize();
     return Math.min(Math.max(requested, 1), MAX_PAGE_LIMIT);
+  }
+
+  /**
+   * Whether to hydrate listed documents from the per-document details endpoint.
+   * Defaults to ON; the `fetch_document_details` config flag can disable it for
+   * rate-limit-constrained workspaces.
+   */
+  private shouldFetchDocumentDetails(): boolean {
+    const configured = this.dataSource.config.fetch_document_details;
+    return configured !== false && configured !== "false";
+  }
+
+  /**
+   * Hydrate each document from `GET /public/v1/documents/{id}/details`, merging
+   * the rich nested objects (fields, tokens, metadata, pricing, products,
+   * grand_total, recipients, ...) over the shallow list projection. Detail
+   * fetches run in small concurrent batches and a per-document failure falls
+   * back to the list projection rather than failing the whole backfill.
+   */
+  private async enrichDocumentsWithDetails(
+    records: Record<string, unknown>[],
+    rateLimitDelay: number,
+  ): Promise<Record<string, unknown>[]> {
+    if (records.length === 0 || !this.shouldFetchDocumentDetails()) {
+      return records;
+    }
+
+    const api = this.getClient();
+    const enriched = [...records];
+
+    for (let start = 0; start < enriched.length; start += DOCUMENT_DETAIL_CONCURRENCY) {
+      const batch = enriched.slice(start, start + DOCUMENT_DETAIL_CONCURRENCY);
+
+      await Promise.all(
+        batch.map(async (record, offset) => {
+          const documentId =
+            typeof record.id === "string" && record.id.length > 0
+              ? record.id
+              : undefined;
+          if (!documentId) return;
+
+          try {
+            const response = await this.executeWithRetry(() =>
+              api.get<Record<string, unknown>>(documentDetailPath(documentId)),
+            );
+            const detail = response.data;
+            if (detail && typeof detail === "object") {
+              enriched[start + offset] = withId("documents", {
+                ...record,
+                ...detail,
+              });
+            }
+          } catch (error) {
+            logger.warn(
+              "Failed to fetch PandaDoc document details; keeping list projection",
+              {
+                documentId,
+                error: formatPandaDocApiError(error),
+              },
+            );
+          }
+        }),
+      );
+
+      if (start + DOCUMENT_DETAIL_CONCURRENCY < enriched.length) {
+        await this.sleep(rateLimitDelay);
+      }
+    }
+
+    return enriched;
   }
 
   async testConnection(): Promise<ConnectionTestResult> {
@@ -403,10 +500,19 @@ export class PandaDocConnector extends BaseConnector {
     entity: SupportedEntity,
   ): Promise<FetchState> {
     const { onBatch, onProgress, since, state, batchSize } = options;
-    const maxIterations = options.maxIterations ?? 10;
     const api = this.getClient();
     const path = ENTITY_LIST_PATH[entity];
     const count = this.resolvePageCount(batchSize);
+    const rateLimitDelay = options.rateLimitDelay ?? this.getRateLimitDelay();
+
+    // Hydrating documents fans each page out into many detail requests, so cap
+    // the pages handled per chunk to keep the chunk's runtime bounded.
+    const hydrateDocuments =
+      entity === "documents" && this.shouldFetchDocumentDetails();
+    const maxIterations = Math.min(
+      options.maxIterations ?? 10,
+      hydrateDocuments ? DETAIL_HYDRATION_MAX_PAGES_PER_CHUNK : Number.MAX_SAFE_INTEGER,
+    );
 
     let page = (state?.page as number | undefined) ?? 1;
     let recordCount = state?.totalProcessed ?? 0;
@@ -421,11 +527,15 @@ export class PandaDocConnector extends BaseConnector {
         ? response.data.results
         : [];
 
-      const records = this.mapRecords(
+      let records = this.mapRecords(
         entity,
         results as Record<string, unknown>[],
         since,
       );
+
+      if (hydrateDocuments) {
+        records = await this.enrichDocumentsWithDetails(records, rateLimitDelay);
+      }
 
       if (records.length > 0) {
         await onBatch(records);
@@ -446,7 +556,7 @@ export class PandaDocConnector extends BaseConnector {
       }
 
       page++;
-      await this.sleep(options.rateLimitDelay ?? this.getRateLimitDelay());
+      await this.sleep(rateLimitDelay);
     }
 
     return {
@@ -501,10 +611,13 @@ export class PandaDocConnector extends BaseConnector {
   }
 
   async fetchEntity(options: FetchOptions): Promise<void> {
-    await this.fetchEntityChunk({
-      ...options,
-      maxIterations: Number.MAX_SAFE_INTEGER,
-    });
+    // Drain every chunk. Looping (rather than one giant maxIterations) keeps the
+    // internal per-chunk caps used for detail hydration from truncating a full,
+    // non-resumable fetch.
+    let state: FetchState | undefined;
+    do {
+      state = await this.fetchEntityChunk({ ...options, state });
+    } while (state.hasMore);
   }
 
   supportsWebhooks(): boolean {
