@@ -151,6 +151,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "mongo_list_collections",
   "mongo_inspect_collection",
   "mongo_execute_query",
+  "fetch_url",
+  "web_search",
 ];
 
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
@@ -171,6 +173,13 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_show",
   "dbt_create_job",
   "dbt_update_job",
+  // Git: commit/push edits to the connected repo (only when the user asks).
+  "dbt_git_status",
+  "dbt_commit_and_push",
+  "dbt_create_branch",
+  "dbt_switch_branch",
+  "dbt_list_branches",
+  "dbt_open_pull_request",
   // Discovery: inspect sources before writing staging models; preview built
   // tables after dbt_run_model.
   "list_connections",
@@ -198,6 +207,8 @@ const EXPLORE_MODE_TOOL_NAMES: string[] = [
   "list_open_dashboards",
   "get_dashboard_state",
   "capture_screenshot",
+  "fetch_url",
+  "web_search",
 ];
 
 export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {

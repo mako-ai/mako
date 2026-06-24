@@ -28,6 +28,12 @@ export interface AIModel {
   supportsThinking?: boolean;
   thinkingMode?: AnthropicThinkingMode;
   thinkingBudgetTokens?: number;
+  /**
+   * Maximum input+output tokens the model accepts, from the gateway catalog.
+   * `null` when upstream doesn't report it — callers must treat unknown as
+   * "skip proactive budgeting and lean on the reactive overflow backstop".
+   */
+  contextWindow?: number | null;
 }
 
 function catalogToAIModel(cm: CatalogModel): AIModel {
@@ -40,6 +46,7 @@ function catalogToAIModel(cm: CatalogModel): AIModel {
     supportsThinking: cm.supportsThinking,
     thinkingMode: cm.thinkingMode,
     thinkingBudgetTokens: cm.thinkingBudgetTokens,
+    contextWindow: cm.contextWindow,
   };
 }
 

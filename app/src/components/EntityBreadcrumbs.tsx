@@ -12,6 +12,7 @@ import { tabRevealTarget } from "../lib/explorer-reveal";
 import { useWorkspace } from "../contexts/workspace-context";
 import { SECTION_LABELS } from "../pages/settings/sections";
 import type { ConsoleTab, TabKind } from "../store/lib/types";
+import { consoleFolderTrail, consoleLeafName } from "../lib/console-name";
 
 interface BreadcrumbSegment {
   label: string;
@@ -63,11 +64,12 @@ function segmentsForTab(
         ];
       }
       const group = tab.access === "workspace" ? "Workspace" : "My Consoles";
-      return plain([
-        "Consoles",
-        group,
-        ...tab.filePath.split("/").filter(Boolean),
-      ]);
+      // Single source of truth: the leaf is the live display name (tab.title);
+      // the folder trail is derived from the full path by stripping that leaf
+      // (robust to a leaf name that itself contains slashes — legacy data).
+      const leaf = tab.title || consoleLeafName(tab.filePath);
+      const folderParts = consoleFolderTrail(tab.filePath, leaf);
+      return plain(["Consoles", group, ...folderParts, leaf]);
     }
     case "table-data":
       return plain([

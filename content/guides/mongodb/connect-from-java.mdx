@@ -1,0 +1,171 @@
+---
+title: "How to Connect to MongoDB from Java"
+description: "Connect to MongoDB from Java with the official driver: MongoClient lifecycle, connection strings, one-client-per-app pooling, SRV and Atlas, authentication, and the errors you actually hit in production."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "java", "mongo-java-driver", "mongoclient", "connection"]
+date: "2026-06-17"
+---
+
+MongoDB does not use JDBC. It has its own wire protocol and its own official Java driver, so connecting looks different from a relational database: you build one `MongoClient`, keep it for the life of the process, and let it manage a connection pool for you. This guide covers the driver, the client lifecycle that everyone gets wrong, connection strings, authentication, and the errors you will actually hit.
+
+## The driver
+
+| Library | Layer | When to use |
+|---|---|---|
+| `mongodb-driver-sync` | Official synchronous driver | Standard blocking applications. This is what most code uses. |
+| `mongodb-driver-reactivestreams` | Official reactive driver | Non-blocking stacks (Project Reactor, RxJava, WebFlux). |
+| Spring Data MongoDB | Repository abstraction | Spring apps. Sits on top of the sync driver. |
+| Morphia | ODM | Object-document mapping. Also layered on the driver. |
+
+There is no third-party "JDBC for MongoDB" you should reach for. The official driver is the foundation everything else builds on. This guide uses the synchronous driver.
+
+## Adding the dependency
+
+Maven:
+
+```xml
+<dependency>
+  <groupId>org.mongodb</groupId>
+  <artifactId>mongodb-driver-sync</artifactId>
+  <version>5.8.0</version>
+</dependency>
+```
+
+Gradle:
+
+```groovy
+implementation 'org.mongodb:mongodb-driver-sync:5.8.0'
+```
+
+The 5.8.0 release (May 2026) requires Java 8 or higher. Pulling in `mongodb-driver-sync` transitively brings `bson` and `mongodb-driver-core`, so you do not list those separately.
+
+## The basic connection
+
+```java
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoDatabase;
+import org.bson.Document;
+
+public class Example {
+    public static void main(String[] args) {
+        String uri = "mongodb://app_user:secret@localhost:27017/mydb";
+
+        try (MongoClient client = MongoClients.create(uri)) {
+            MongoDatabase db = client.getDatabase("mydb");
+            MongoCollection<Document> users = db.getCollection("users");
+
+            for (Document d : users.find()) {
+                System.out.println(d.toJson());
+            }
+        }
+    }
+}
+```
+
+`MongoClients.create()` does **not** open a connection immediately. The driver connects lazily and runs server discovery in the background. The first actual operation (`find()` here) is when a connection is established, so connection failures surface on first use, not at `create()`.
+
+## The one rule that matters: one client per application
+
+`MongoClient` is expensive to create and holds a connection pool. Create it **once** at application startup and reuse it everywhere. Creating a new client per request is the single most common MongoDB-from-Java mistake, and it exhausts connections fast:
+
+```java
+public final class Mongo {
+    public static final MongoClient CLIENT =
+        MongoClients.create(System.getenv("MONGODB_URI"));
+}
+```
+
+`MongoClient` is thread-safe; share the single instance across all threads. Only close it when the application shuts down. In the example above the try-with-resources block is fine for a short script, but in a long-running service you keep one client alive for the whole process.
+
+## Connection string format
+
+```
+mongodb://user:password@host:27017/database?options
+mongodb+srv://user:password@cluster.mongodb.net/database?options
+```
+
+The `mongodb+srv://` scheme is for Atlas and any DNS-seedlist deployment. It looks up the replica-set hosts from DNS SRV records, so you do not hardcode individual node hostnames, and it implies `tls=true` automatically.
+
+Two traps worth naming:
+
+- **Percent-encode credentials.** If your username or password contains `@`, `:`, `/`, or other reserved characters, they must be percent-encoded in the URI or the driver will misparse the host. A password of `p@ss` becomes `p%40ss`.
+- **`authSource` is separate from the database you query.** Users are usually created in the `admin` database, so even if you query `mydb`, you often need `?authSource=admin`. A wrong `authSource` produces an authentication failure that looks like a wrong password.
+
+## Connection pool sizing
+
+The driver manages a pool per server in the topology. Defaults are a maximum of 100 connections per server and a minimum of 0. Tune via the connection string:
+
+```
+mongodb://host:27017/?maxPoolSize=50&minPoolSize=5&maxIdleTimeMS=60000
+```
+
+Size the pool against the server's connection limit, divided across every application instance you run. Atlas tiers cap total connections, and many small services each defaulting to 100 will hit that ceiling.
+
+## Settings via the builder
+
+For TLS, timeouts, and pool tuning in code rather than the URI, use `MongoClientSettings`:
+
+```java
+import com.mongodb.ConnectionString;
+import com.mongodb.MongoClientSettings;
+import java.util.concurrent.TimeUnit;
+
+MongoClientSettings settings = MongoClientSettings.builder()
+    .applyConnectionString(new ConnectionString(System.getenv("MONGODB_URI")))
+    .applyToConnectionPoolSettings(b -> b.maxSize(50))
+    .applyToSocketSettings(b -> b.connectTimeout(5, TimeUnit.SECONDS))
+    .applyToClusterSettings(b -> b.serverSelectionTimeout(5, TimeUnit.SECONDS))
+    .build();
+
+MongoClient client = MongoClients.create(settings);
+```
+
+`serverSelectionTimeout` is worth setting low in services that should fail fast: by default the driver retries server selection for 30 seconds before throwing, which can make a down database look like a hung application.
+
+## Atlas connection checklist
+
+- Use the `mongodb+srv://` string from the Atlas UI; it implies TLS.
+- Add your application's egress IP to the Atlas **Network Access** allowlist, or connections time out with no useful error.
+- The database user is created under **Database Access**, typically authenticating against `admin`.
+
+## Inserting and querying
+
+```java
+MongoCollection<Document> events = db.getCollection("events");
+
+events.insertOne(new Document("userId", 42L).append("kind", "login"));
+
+Document one = events.find(new Document("userId", 42L)).first();
+```
+
+For many writes, use `insertMany` rather than a loop of `insertOne`, which batches them into far fewer round trips:
+
+```java
+List<Document> batch = events.stream()
+    .map(e -> new Document("userId", e.userId()).append("kind", e.kind()))
+    .toList();
+collection.insertMany(batch);
+```
+
+## Errors you will actually hit
+
+| Error | Cause | Fix |
+|---|---|---|
+| `MongoTimeoutException: ... No server chosen` | Server unreachable, wrong host, or IP not allowlisted | Check the host, Atlas Network Access, and firewall |
+| `MongoSecurityException ... Authentication failed` | Wrong password, or wrong `authSource` | Verify credentials; add `?authSource=admin` if the user lives there |
+| `IllegalArgumentException: The connection string contains invalid...` | Unencoded special character in user or password | Percent-encode the credentials |
+| `MongoSocketReadException` on `localhost` | Connecting to IPv6 `::1` while server binds IPv4 | Use `127.0.0.1` explicitly, or bind the server to both |
+| Connections climbing without bound | A new `MongoClient` created per request | Create one client at startup and reuse it |
+
+## Limitations to be honest about
+
+MongoDB is a document database with no JDBC layer, so relational tools and SQL-based drivers do not apply directly. Multi-document transactions exist (on replica sets since 4.0, sharded clusters since 4.2) but are not the default model the way they are in a relational database; the driver assumes you usually rely on single-document atomicity. None of that is a driver limitation; it is how MongoDB works.
+
+For loading data, see our [import JSON to MongoDB](/guides/import-json-to-mongodb) and [import CSV to MongoDB](/guides/import-csv-to-mongodb) guides. For a desktop way to browse collections, see [MongoDB GUI clients](/guides/mongodb-gui-client).
+
+---
+
+Mako connects to MongoDB, PostgreSQL, MySQL, and more, with AI-powered autocomplete for exploring your data. Try it free at mako.ai.

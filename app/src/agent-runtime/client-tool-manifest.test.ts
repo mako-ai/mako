@@ -10,6 +10,7 @@ import {
   AGENT_TOOL_MANIFEST,
   type AgentToolName,
   type AgentToolManifestEntry,
+  getAgentToolManifestEntry,
 } from "./client-tool-manifest";
 
 function manifestKeysFor(
@@ -78,5 +79,28 @@ describe("client tool manifest contracts", () => {
     expect(context).toContain("### Open Dashboards");
     expect(context).toContain("Revenue Dashboard");
     expect(context).toContain("dash_1");
+  });
+
+  it("registers web tools for chat tool cards", () => {
+    expect(getAgentToolManifestEntry("fetch_url")).toMatchObject({
+      execution: "server",
+      domain: "search",
+      icon: "external-link",
+    });
+    expect(getAgentToolManifestEntry("web_search")).toMatchObject({
+      execution: "server",
+      domain: "search",
+      icon: "search",
+    });
+    expect(
+      getAgentToolManifestEntry("fetch_url")?.getLabel({
+        url: "https://example.com",
+      }),
+    ).toBe("Fetching https://example.com");
+    expect(
+      getAgentToolManifestEntry("web_search")?.getLabel({
+        query: "PostgreSQL 17",
+      }),
+    ).toBe('Searching web: "PostgreSQL 17"');
   });
 });

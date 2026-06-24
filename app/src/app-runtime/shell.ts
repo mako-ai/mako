@@ -6,22 +6,45 @@ export function getCurrentWorkspaceId(): string | null {
   return useUIStore.getState().currentWorkspaceId ?? null;
 }
 
-/** Open (or focus) the full-screen preview tab for a React app. */
-export function focusAppTab(appId: string, title: string): string {
+/**
+ * Open (or focus) the full-screen preview tab for a React app.
+ *
+ * `appLocation` (a relative URL the app understands, e.g. `/customers?tab=1`)
+ * seeds the in-app router from a deep link. It is only applied when provided,
+ * so opening the app from the explorer never clobbers an already-navigated
+ * sub-location.
+ */
+export function focusAppTab(
+  appId: string,
+  title: string,
+  appLocation?: string,
+): string {
   const consoleStore = useConsoleStore.getState();
   const existingTab = Object.values(consoleStore.tabs).find(
     (tab: { kind?: string; metadata?: { appId?: string } }) =>
       tab.kind === "app" && tab.metadata?.appId === appId,
   );
 
-  const tabId =
-    existingTab?.id ??
-    consoleStore.openTab({
-      title,
-      content: "",
-      kind: "app",
-      metadata: { appId },
-    });
+  if (existingTab) {
+    if (typeof appLocation === "string") {
+      consoleStore.updateMetadata(existingTab.id, {
+        ...(existingTab.metadata ?? {}),
+        appId,
+        appLocation,
+      });
+    }
+    consoleStore.setActiveTab(existingTab.id);
+    useAppStore.getState().setActiveApp(appId);
+    return existingTab.id;
+  }
+
+  const tabId = consoleStore.openTab({
+    title,
+    content: "",
+    kind: "app",
+    metadata:
+      typeof appLocation === "string" ? { appId, appLocation } : { appId },
+  });
 
   consoleStore.setActiveTab(tabId);
   useAppStore.getState().setActiveApp(appId);

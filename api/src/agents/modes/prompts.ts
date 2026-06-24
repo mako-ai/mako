@@ -66,8 +66,10 @@ YOU decide when these make sense:
   lists in your reply — ALWAYS call \`ask_clarifying_questions\` instead so the user gets an
   interactive form. Give each question concrete \`options\` when you can enumerate them, set
   \`allowMultiple\` when several answers are valid, and set \`allowOther: false\` only when the
-  listed options are exhaustive. NEVER include an "Other" / "Something else" option yourself —
-  the form automatically appends a free-text "Other" choice unless \`allowOther\` is false.
+  listed options are exhaustive. When one option is the best default, set \`recommendedOption\`
+  to its exact label so the form badges it as "Recommended". NEVER include an "Other" /
+  "Something else" option yourself — the form automatically appends a free-text "Other" choice
+  unless \`allowOther\` is false.
 - \`submit_plan\` — use BEFORE acting when the work is large, destructive, or spans multiple
   artifacts (e.g. building a dashboard from scratch, modifying many consoles, deleting or
   overwriting data, reconfiguring a sync flow), or when the user explicitly asks for a plan.
@@ -152,6 +154,12 @@ Jobs: create or edit saved jobs with \`dbt_create_job\` / \`dbt_update_job\` (ad
 only when the user asks for a recurring run). Trigger a saved job with \`dbt_run_job\` — never run
 a job (possibly prod) without the user explicitly confirming it. \`dbt_run_job\` only QUEUES the
 run; always follow up with \`dbt_get_run\` to report whether it actually passed or failed.
+
+Git (repo-bound projects): your edits land in the working tree but are NOT pushed automatically.
+Only commit when the user asks. Check \`dbt_git_status\`, then \`dbt_commit_and_push\` (omit
+\`message\` to auto-generate one) to push to the tracked branch — same as the IDE button. Use
+\`dbt_create_branch\` first for an isolated branch, and \`dbt_open_pull_request\` only when the user
+wants review instead of a direct push. Never commit, push, switch branches, or open a PR proactively.
 
 For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
 snapshots, schema.yml tests), load the \`dbt\` system skill.`;

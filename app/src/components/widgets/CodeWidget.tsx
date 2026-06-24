@@ -41,6 +41,7 @@ const CodeWidget: React.FC<CodeWidgetProps> = ({
       <!DOCTYPE html>
       <html>
       <head>
+        <base target="_blank" />
         <style>
           body { margin: 0; padding: 8px; font-family: system-ui, sans-serif; }
           * { box-sizing: border-box; }
@@ -122,7 +123,7 @@ const CodeWidget: React.FC<CodeWidgetProps> = ({
       )}
       <iframe
         ref={iframeRef}
-        sandbox="allow-scripts"
+        sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
         style={{
           width: "100%",
           height: "100%",

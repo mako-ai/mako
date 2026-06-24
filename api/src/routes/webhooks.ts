@@ -170,7 +170,12 @@ router.openapi(
       const webhookEvent = new WebhookEvent({
         flowId,
         workspaceId,
-        eventId: event.id || uuidv4(),
+        // Close (and some other vendors) nest the unique event id at
+        // `event.event.id`; the top-level `event.id` is the OBJECT id, which is
+        // stable across updates. Falling back to it would defeat the
+        // (flowId,eventId) unique index for vendor retries. Prefer the nested
+        // event id, then top-level, then a random id as a last resort.
+        eventId: event.id || event.event?.id || uuidv4(),
         eventType:
           event.type ||
           event.event_type ||
@@ -219,7 +224,8 @@ router.openapi(
         const { entities: configuredEntities } =
           resolveConfiguredEntities(flow);
         const emittedEntities = (
-          connector.extractWebhookCdcRecords(event, webhookEvent.eventType) ?? []
+          connector.extractWebhookCdcRecords(event, webhookEvent.eventType) ??
+          []
         ).map(record => {
           const payload = (record.payload || {}) as Record<string, unknown>;
           if (record.entity === "activities" && payload._type) {

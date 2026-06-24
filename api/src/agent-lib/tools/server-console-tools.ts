@@ -52,6 +52,18 @@ const logger = loggers.agent();
 
 const RUN_PREVIEW_MAX_ROWS = 50;
 
+/**
+ * A console's `name` is the canonical LEAF display name (folder placement is
+ * `folderId`, never the name). Keep agent-set names as leaves so the agent
+ * cannot reintroduce slash-delimited "paths" into the name field — the UI
+ * shows `name` verbatim as the title/breadcrumb leaf/tree row.
+ */
+function leafConsoleName(raw: string | undefined): string {
+  const value = raw ?? "";
+  const parts = value.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : value;
+}
+
 /** First poll backoff hint surfaced to the agent (seconds). */
 const FIRST_POLL_BACKOFF_S = Math.round(
   (QUERY_POLL_BACKOFF_MS[0] ?? 30_000) / 1000,
@@ -278,8 +290,17 @@ export function createServerConsoleTools({
               // Mark agent origin so a reconnecting client surfaces this as a
               // reviewable diff even if it missed the realtime poke.
               lastDraftOrigin: "agent",
+              // Set the next revision explicitly (instead of $inc) so the bump
+              // is null-safe. Legacy consoles have no draftRevision field; the
+              // Mongoose schema default reports it as 1, but `$inc` on the
+              // absent DB field also yields 1 — colliding with the value the
+              // client already holds, so revisions-sync saw "no change" and the
+              // first agent edit/rename never reached the open tab. currentRevision
+              // is the schema-defaulted value (1 for legacy), so +1 always
+              // exceeds what the client has.
+              draftRevision: currentRevision + 1,
             };
-            if (title) setFields.name = title;
+            if (title) setFields.name = leafConsoleName(title) || title;
 
             const updated = await SavedConsole.findOneAndUpdate(
               {
@@ -288,7 +309,7 @@ export function createServerConsoleTools({
                 draftRevision:
                   currentRevision === 1 ? { $in: [1, null] } : currentRevision,
               },
-              { $set: setFields, $inc: { draftRevision: 1 } },
+              { $set: setFields },
               { new: true },
             );
 
@@ -362,7 +383,7 @@ export function createServerConsoleTools({
 
           const doc = await SavedConsole.create({
             workspaceId: new Types.ObjectId(workspaceId),
-            name: title || "Untitled",
+            name: leafConsoleName(title) || "Untitled",
             code: content || "",
             language,
             connectionId: connectionId
@@ -454,8 +475,11 @@ export function createServerConsoleTools({
                 databaseId,
                 databaseName,
                 updatedAt: new Date(),
+                // Null-safe bump (see modify_console): the schema default
+                // reports a legacy console's revision as 1 while `$inc` on the
+                // absent field also yields 1, so set the next value explicitly.
+                draftRevision: (doc.draftRevision ?? 1) + 1,
               },
-              $inc: { draftRevision: 1 },
             },
             { new: true },
           );

@@ -2406,6 +2406,10 @@ const WebhookEventSchema = new Schema<IWebhookEvent>(
 WebhookEventSchema.index({ flowId: 1, eventId: 1 }, { unique: true });
 WebhookEventSchema.index({ flowId: 1, status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
+// Supports the GLOBAL cron-ingest query in cdcMaterializeSchedulerFunction:
+// find({ status: "pending" }).sort({ receivedAt: 1 }). Without a flowId-free
+// index this query does a COLLSCAN + in-memory sort over the whole collection.
+WebhookEventSchema.index({ status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
 WebhookEventSchema.index(
   { receivedAt: 1 },

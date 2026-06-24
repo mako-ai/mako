@@ -1,0 +1,170 @@
+---
+title: "ClickHouse Window Functions: ROW_NUMBER, RANK, LAG, Running Totals"
+description: "How to use window functions in ClickHouse with OVER, PARTITION BY, and frame clauses. Covers ROW_NUMBER, RANK, LAG/LEAD, moving averages, and the RANGE-default gotcha."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "window-functions", "analytics", "olap"]
+date: "2026-06-04"
+---
+
+# ClickHouse Window Functions
+
+Window functions compute values across a set of rows related to the current row, without collapsing those rows into one. They are the standard way to express running totals, rankings, and row-to-row comparisons that would otherwise need self-joins.
+
+ClickHouse added window functions in version 21.1 (early 2021) and removed the experimental flag in 21.9. If you are on a recent release, they work out of the box.
+
+## Sample Schema
+
+```sql
+CREATE TABLE sales
+(
+    region      String,
+    sale_date   Date,
+    amount      UInt32
+)
+ENGINE = MergeTree
+ORDER BY (region, sale_date);
+
+INSERT INTO sales VALUES
+    ('north', '2026-01-01', 100),
+    ('north', '2026-01-02', 150),
+    ('north', '2026-01-03', 120),
+    ('south', '2026-01-01', 200),
+    ('south', '2026-01-02', 180);
+```
+
+## The Anatomy of a Window Function
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    sum(amount) OVER (PARTITION BY region ORDER BY sale_date) AS running_total
+FROM sales
+ORDER BY region, sale_date;
+```
+
+- `PARTITION BY region` splits rows into independent groups. The window restarts for each region.
+- `ORDER BY sale_date` orders rows within each partition. It also defines the default frame (see the gotcha below).
+- `OVER (...)` marks the function as a window function rather than a grouping aggregate.
+
+If you omit `PARTITION BY`, the whole result set is one partition.
+
+## Ranking Functions
+
+```sql
+SELECT
+    region,
+    amount,
+    row_number() OVER (PARTITION BY region ORDER BY amount DESC) AS rn,
+    rank()       OVER (PARTITION BY region ORDER BY amount DESC) AS rnk,
+    dense_rank() OVER (PARTITION BY region ORDER BY amount DESC) AS dense_rnk
+FROM sales;
+```
+
+- `row_number()` assigns a unique sequential number, even for ties.
+- `rank()` gives tied rows the same rank, then skips the next values (1, 1, 3).
+- `dense_rank()` gives tied rows the same rank without gaps (1, 1, 2).
+
+To get the top N rows per group, wrap this in a subquery and filter on `rn <= N`. ClickHouse also has `LIMIT N BY` for the simple "top N per key" case, which is often faster:
+
+```sql
+SELECT region, amount
+FROM sales
+ORDER BY region, amount DESC
+LIMIT 2 BY region;
+```
+
+`LIMIT BY` is a ClickHouse extension, not standard SQL. Reach for it when you only need top-N and don't need the rank value itself.
+
+## LAG and LEAD: Comparing to Neighboring Rows
+
+ClickHouse provides `lagInFrame` and `leadInFrame`. The plain `lag`/`lead` names are not the standard implementation here, so use the `InFrame` variants:
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    lagInFrame(amount) OVER w AS prev_amount,
+    amount - lagInFrame(amount) OVER w AS day_over_day
+FROM sales
+WINDOW w AS (PARTITION BY region ORDER BY sale_date
+             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+ORDER BY region, sale_date;
+```
+
+Two things to note. First, `lagInFrame` looks within the current frame, so to see all preceding and following rows you usually want an explicit `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` frame. Second, the `WINDOW` clause names a window once and reuses it, which keeps long queries readable.
+
+`lagInFrame` and `leadInFrame` accept an optional offset and default value: `lagInFrame(amount, 2, 0)` looks two rows back and returns 0 at the boundary.
+
+## Frame Clauses and the RANGE Default
+
+A frame restricts which rows within the partition the function sees. The two common modes:
+
+- `ROWS` counts physical rows relative to the current row.
+- `RANGE` works on logical value ranges, treating rows with equal `ORDER BY` values (peers) as one unit.
+
+The detail that trips people up: in ClickHouse, when you specify `ORDER BY` without an explicit frame, the default frame is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`. Because `RANGE` includes all peer rows, a running `sum` over a column with duplicate sort values will jump to the full peer-group total at each tie, not increment row by row. If you want strict row-by-row accumulation, be explicit:
+
+```sql
+sum(amount) OVER (PARTITION BY region ORDER BY sale_date
+                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+```
+
+One ClickHouse-specific limitation worth knowing (verified against the ClickHouse window-functions docs, as of June 2026): the `INTERVAL` syntax for a `DateTime` `RANGE OFFSET` frame is not supported. You cannot write `RANGE BETWEEN INTERVAL 7 DAY PRECEDING AND CURRENT ROW`. Instead you specify the offset as a number of seconds, or restructure the query to use `ROWS` over pre-bucketed data.
+
+## Moving Averages
+
+A 3-row moving average, including the current row and the two before it:
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    avg(amount) OVER (PARTITION BY region ORDER BY sale_date
+                      ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS moving_avg_3
+FROM sales
+ORDER BY region, sale_date;
+```
+
+At the start of each partition the frame simply contains fewer rows, so the first row's average is just its own value. This is correct behavior, not an edge case to guard against, but be aware your early data points are averaged over a smaller window.
+
+## First and Last Values in a Frame
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    first_value(amount) OVER w AS first_in_partition,
+    last_value(amount)  OVER w AS last_in_partition
+FROM sales
+WINDOW w AS (PARTITION BY region ORDER BY sale_date
+             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+ORDER BY region, sale_date;
+```
+
+`last_value` is the classic trap across every SQL engine: with the default frame ending at the current row, `last_value` returns the current row, not the partition's last row. The explicit `UNBOUNDED FOLLOWING` frame above fixes it.
+
+## Common Mistakes
+
+- **Forgetting the `lagInFrame` frame.** With the default `CURRENT ROW`-bounded frame, `lagInFrame` and `leadInFrame` can return defaults where you expected neighbors. Set an explicit wide frame.
+- **Assuming `RANGE` increments per row.** It groups peers. Use `ROWS` for true running counters.
+- **Reaching for `INTERVAL` in a frame.** Not supported; convert to seconds or pre-bucket.
+- **Using `lag`/`lead` instead of `lagInFrame`/`leadInFrame`.** Use the `InFrame` variants in ClickHouse.
+
+When you are exploring these on a real dataset, Mako's AI autocomplete can suggest the window and frame syntax as you type, which helps when you are switching between the `ROWS` and `RANGE` semantics.
+
+## Related Guides
+
+- [Import CSV to ClickHouse](/guides/import-csv-to-clickhouse) to load test data quickly.
+- [ClickHouse vs BigQuery](/guides/clickhouse-vs-bigquery) for choosing an analytical store.
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions) for combinators, uniq, and quantiles.
+- [Best ClickHouse GUI Client](/guides/clickhouse-gui-client) for running these queries interactively.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

@@ -45,6 +45,14 @@ export const clarifyingQuestionSchema = z.object({
       "For 'choice' questions, append an 'Other' free-text option (defaults to true). " +
         "Set false when the listed options are exhaustive.",
     ),
+  recommendedOption: z
+    .string()
+    .optional()
+    .describe(
+      "For single-choice questions, the exact label of the option you recommend as the " +
+        "best default. The form badges it with 'Recommended'. Must match one entry in " +
+        "'options' verbatim. Omit when you have no clear recommendation or when 'allowMultiple' is set.",
+    ),
 });
 
 export const askClarifyingQuestionsSchema = z.object({
@@ -89,6 +97,8 @@ export const clientPlanTools = {
       "which dashboard, scope, etc.). The user answers in an inline form; their answers are returned to you. " +
       "This is the ONLY way to ask the user questions — never present questions or option lists " +
       "as plain text in a reply. Prefer 'choice' questions with concrete options over free text. " +
+      "When one option is the best default, set 'recommendedOption' to its exact label so the form " +
+      "badges it as 'Recommended'. " +
       "Only ask what you genuinely need — do not ask questions you can answer with read-only tools.",
     inputSchema: askClarifyingQuestionsSchema,
     // No execute function - resolved by the client via an interactive form.

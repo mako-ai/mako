@@ -1,0 +1,114 @@
+---
+title: "ClickHouse SAMPLE Clause: Approximate Queries on Large Tables"
+description: "How sampling works in ClickHouse: declaring a SAMPLE BY key, the SAMPLE k / SAMPLE n / SAMPLE k OFFSET m forms, scaling aggregates with _sample_factor, determinism, and when approximate results are worth the speedup."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "sampling", "approximate-queries", "performance", "olap"]
+date: "2026-06-05"
+---
+
+# ClickHouse SAMPLE Clause
+
+The `SAMPLE` clause lets a `SELECT` run against a fraction of a table instead of every row. On a multi-billion-row table, reading 10% of the data and scaling the result up is often accurate enough for dashboards, exploratory analysis, and trend monitoring, and it returns in a fraction of the time. The tradeoff is approximation: you trade exactness for latency, and that is only a good trade when an estimate is acceptable.
+
+Sampling is not free to bolt on. It works only on tables in the `MergeTree` family, and only when a sampling expression was declared when the table was created. You cannot add `SAMPLE` to an arbitrary existing query if the table has no sampling key.
+
+## Declaring a Sampling Key
+
+The sampling key is part of the table definition, set with `SAMPLE BY`. It must be an expression over columns that are also in the primary key (`ORDER BY`), and it should produce a value that is uniformly distributed. The common pattern is to hash an identifier column with `sipHash64` and include that hash in both the ordering key and the sampling key.
+
+```sql
+CREATE TABLE hits
+(
+    event_date  Date,
+    user_id     UInt64,
+    url         String,
+    duration_ms UInt32
+)
+ENGINE = MergeTree
+ORDER BY (event_date, sipHash64(user_id))
+SAMPLE BY sipHash64(user_id);
+```
+
+Hashing the `user_id` matters: it spreads users evenly across the sampling range, so a 10% sample is a roughly random 10% of users rather than a contiguous block of IDs. It also makes sampling deterministic by user, which is what makes the same user appear in the same sample every time (useful when you want session-level consistency).
+
+## SAMPLE k: a Fraction of the Data
+
+The most common form is `SAMPLE k`, where `k` is between 0 and 1. Both fractional and decimal notation work, so `SAMPLE 0.1` and `SAMPLE 1/10` are the same.
+
+```sql
+SELECT
+    url,
+    count() * 10 AS approx_views
+FROM hits
+SAMPLE 0.1
+WHERE event_date = '2026-06-01'
+GROUP BY url
+ORDER BY approx_views DESC
+LIMIT 100;
+```
+
+ClickHouse does not rescale aggregates for you. Because the query saw roughly 10% of the rows, `count()` returns roughly a tenth of the true count, so you multiply by 10 by hand. The same applies to `sum()`. Averages and ratios (`avg()`, or a ratio of two counts) do not need scaling, because the factor cancels out in the division.
+
+## SAMPLE n: at Least n Rows
+
+`SAMPLE n`, where `n` is a large integer, asks for a sample of at least `n` rows rather than a fixed fraction.
+
+```sql
+SELECT count() * any(_sample_factor) AS approx_total
+FROM hits
+SAMPLE 1000000;
+```
+
+The catch is that you do not know in advance what fraction `n` rows represents, so you cannot hardcode a multiplier. ClickHouse exposes the `_sample_factor` virtual column for exactly this. It holds the dynamically computed coefficient (for a 10% sample it is 10), so multiplying an aggregate by it gives the scaled estimate without you knowing the fraction up front.
+
+```sql
+SELECT sum(duration_ms * _sample_factor) AS approx_total_duration
+FROM hits
+SAMPLE 1000000
+WHERE event_date = '2026-06-01';
+```
+
+Because the minimum unit ClickHouse reads is one granule (its size is the `index_granularity` setting, 8192 rows by default), `n` only makes sense when it is much larger than a single granule. Asking for `SAMPLE 100` on a granule of 8192 will still read a whole granule.
+
+## SAMPLE k OFFSET m
+
+`SAMPLE k OFFSET m` takes a `k` fraction starting from offset `m` (both 0 to 1). This lets you read non-overlapping slices, for example to spread a heavy computation across several queries or to cross-check two disjoint samples.
+
+```sql
+-- first 10%
+SELECT count() * 10 FROM hits SAMPLE 0.1 OFFSET 0;
+-- a different, non-overlapping 10%
+SELECT count() * 10 FROM hits SAMPLE 0.1 OFFSET 0.1;
+```
+
+## Determinism
+
+Sampling in ClickHouse is deterministic: it is a hash of the sampling key, not a random draw at query time. Running the same `SAMPLE 0.1` against unchanged data returns the same rows every time. That is what makes results reproducible across runs and comparable over time, but it also means a sample is not statistically independent between runs. If you need a genuinely fresh random subset, sampling is not the tool; it is built for consistency, not for redrawing.
+
+## When Sampling Is Worth It
+
+- Large `MergeTree` tables where a 1 to 10% estimate answers the question (traffic trends, top-N pages, rough cardinalities).
+- Interactive exploration where you want sub-second feedback before committing to a full-table query.
+- Repeatable dashboards where the same approximate number each run is fine, or even preferable.
+
+Sampling is the wrong choice when you need exact counts (billing, financial reconciliation, compliance), when the table is small enough that a full scan is already fast, or when the sampled column is skewed in a way that the sampling key does not capture. It also offers little benefit if the table has no sampling key, since adding one means recreating or rewriting the table.
+
+## Common Mistakes
+
+- **Forgetting to scale aggregates.** `count()` and `sum()` under `SAMPLE k` return the sampled magnitude. Multiply by `1/k` (or use `_sample_factor`) or your numbers are silently low.
+- **Sampling a table with no sampling key.** The query errors. The key must be declared at table creation as part of `SAMPLE BY`.
+- **Using a poorly distributed sampling key.** If the key is not uniform (for example, a raw sequential ID instead of its hash), the sample is biased and the scaled estimate is wrong.
+- **Treating the sample as random across runs.** It is deterministic. The same fraction returns the same rows; do not expect independent draws.
+
+When you are validating that a sampled estimate tracks the true value, Mako's AI autocomplete can help you write the paired full-scan and sampled queries side by side so you can compare them quickly.
+
+## Related Guides
+
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions) for the count and sum functions you scale after sampling.
+- [ClickHouse Date and Time Functions](/guides/clickhouse/date-functions) for the date filters that pair with sampling on time-series tables.
+- [ClickHouse Materialized Views](/guides/clickhouse/materialized-views) as an exact-rollup alternative when approximate answers are not acceptable.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

@@ -34,13 +34,24 @@ function scopeIdempotencyKey(flowId: Types.ObjectId, key: string): string {
   return `flow:${String(flowId)}:${key}`;
 }
 
-function buildIdempotencyKey(
+export function buildIdempotencyKey(
   input: CdcEventInput,
   payload: Record<string, unknown>,
   sourceTs: Date,
   flowId: Types.ObjectId,
 ): string {
-  if (input.idempotencyKey) {
+  // Only trust a connector-supplied idempotency key for NON-webhook sources.
+  //
+  // Webhook `changeId`s have proven unreliable: several connectors fall back to
+  // a value that is STABLE per (eventType, recordId) (e.g. Close emits
+  // `lead.updated:<recordId>` because the real event id is nested at
+  // `event.event.id` and never read). Keying on that collapses every subsequent
+  // update of a record onto a single idempotency key, so all but the FIRST
+  // change is silently deduped/dropped before it can be materialized — the
+  // destination then freezes at the first-seen state. For webhooks we therefore
+  // always derive a CONTENT-based key below: distinct changes never collide,
+  // while true re-deliveries (identical payload + sourceTs) still dedupe.
+  if (input.idempotencyKey && input.source !== "webhook") {
     return scopeIdempotencyKey(flowId, input.idempotencyKey);
   }
 
@@ -54,12 +65,21 @@ function buildIdempotencyKey(
     .update(stableStringify(payloadForHash))
     .digest("hex");
 
+  // Missing-sourceTs guard: resolveSourceTimestamp falls back to `new Date()`
+  // when the payload carries no usable timestamp. A "now" value would differ
+  // across re-deliveries and weaken dedupe, so when sourceTs is absent/invalid
+  // we drop it from the key and rely solely on the (always-present) payload
+  // hash. This never OVER-dedupes distinct content — at worst it allows a
+  // harmless duplicate upsert — so it cannot reintroduce the data-loss bug.
+  const hasReliableSourceTs =
+    sourceTs instanceof Date && !Number.isNaN(sourceTs.getTime());
+
   const rawKey = [
     input.source,
     input.entity,
     input.recordId,
     input.operation,
-    sourceTs.toISOString(),
+    hasReliableSourceTs ? sourceTs.toISOString() : "no-source-ts",
     payloadHash,
   ].join(":");
 
@@ -291,11 +311,22 @@ class MongoCdcEventStore implements CdcEventStore {
     afterIngestSeq: number;
     limit: number;
   }): Promise<CdcStoredEvent[]> {
+    // Authoritative selection is `materializationStatus: "pending"` ONLY —
+    // we intentionally do NOT gate on `ingestSeq > lastMaterializedSeq`.
+    //
+    // Gating on the cursor caused permanent "cursor drift": if the consumer
+    // cursor (lastMaterializedSeq) ever advanced past a still-pending event
+    // (e.g. the pending.length===0 branch jumping the cursor to lastIngestSeq
+    // under an Atlas primary/secondary read race), those pending rows became
+    // invisible forever — readAfter skipped them (ingestSeq <= cursor) and the
+    // scheduler's findStaleEntities no longer flagged the entity. Reading the
+    // OLDEST pending rows regardless of cursor makes the backlog self-draining
+    // and is safe: applied/dropped/failed rows already leave the pending set,
+    // and destination writes are idempotent upserts.
     const rows = await CdcChangeEvent.find({
       flowId: new Types.ObjectId(params.flowId),
       entity: params.entity,
       materializationStatus: "pending",
-      ingestSeq: { $gt: Math.max(params.afterIngestSeq, 0) },
     })
       .sort({ ingestSeq: 1 })
       .limit(Math.max(params.limit, 1))

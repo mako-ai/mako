@@ -2640,6 +2640,29 @@ flowRoutes.openapi(
       }
       await flow.save();
 
+      if (!created.signingSecret) {
+        // Some providers create the endpoint but omit the signing secret from
+        // the API response (e.g. Stripe restricted keys, rk_…). Without it the
+        // flow can't verify incoming webhooks, so surface an actionable error
+        // instead of reporting a misleading success. The endpoint URL is still
+        // persisted above so the user can find/reuse it.
+        return c.json(
+          {
+            success: false,
+            error:
+              `The ${connectorSource.type} webhook endpoint` +
+              (created.providerWebhookId
+                ? ` (${created.providerWebhookId})`
+                : "") +
+              " was created, but the provider did not return a signing secret. " +
+              "This typically happens with restricted API keys. Reveal the " +
+              "signing secret in your provider's dashboard and paste it into the " +
+              "Webhook Secret field, or use a full-access API key and re-provision.",
+          },
+          400,
+        );
+      }
+
       return c.json({
         success: true,
         data: {
@@ -2967,7 +2990,7 @@ flowRoutes.openapi(
         failedTotal,
         pendingByEntity,
         failedWebhookCount,
-        webhookPendingCount,
+        webhookApplyPendingCount,
         cdcByStatus,
         cdcBySource,
       ] = await Promise.all([
@@ -3207,7 +3230,14 @@ flowRoutes.openapi(
           consecutiveFailures: flow.backfillState?.consecutiveFailures ?? 0,
           lastError,
           backlogCount: totalBacklog,
-          webhookPendingCount,
+          // The UI "pending" counter must reflect the TRUE CDC materialization
+          // backlog (pending CdcChangeEvents + cursor lag), not the raw
+          // WebhookEvent.applyStatus count — the latter stays inflated by
+          // orphaned/deduped rows that will never materialize, which made the
+          // count look stuck at 50k+ even when nothing was actually pending.
+          webhookPendingCount: totalBacklog,
+          // Raw applyStatus=pending count kept for diagnostics only.
+          webhookApplyPendingCount,
           lagSeconds,
           lastMaterializedAt:
             materializedDates.sort((a, b) => b.getTime() - a.getTime())[0] ||

@@ -1,0 +1,136 @@
+---
+title: "MongoDB Capped Collections: Fixed-Size Circular Buffers"
+description: "How MongoDB capped collections work: creation with size and max, insertion-order guarantees, tailable cursors, the update trap, and why a TTL index is usually the better choice."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "capped-collections", "logging", "tailable-cursors", "nosql"]
+date: "2026-06-11"
+---
+
+A capped collection is a fixed-size collection that behaves like a circular buffer: documents are stored in insertion order, and once the collection fills its allocated space, the oldest documents are overwritten to make room for new ones. No TTL monitor, no delete statements, no maintenance -- the size cap enforces itself on every insert.
+
+That self-managing property made capped collections the classic answer for log storage, and MongoDB itself uses one for the replica set oplog. But the design comes with real restrictions, and MongoDB's own documentation now says most workloads are better served by a TTL index. This guide covers how capped collections work, where they still win, and when to skip them.
+
+## Creating a capped collection
+
+Capped collections must be created explicitly with `createCollection`:
+
+```javascript
+db.createCollection("log", {
+  capped: true,
+  size: 104857600,   // required: max size in bytes (100 MB)
+  max: 500000        // optional: max number of documents
+})
+```
+
+- `size` is required and is a byte limit. MongoDB rounds it up to the nearest multiple of 256.
+- `max` is optional. The size limit always applies regardless: if the byte cap is hit before the document count, old documents are still evicted.
+
+Inserts, queries, and reads work like a normal collection. The collection keeps an `_id` index by default.
+
+You can check whether a collection is capped, and convert an existing collection:
+
+```javascript
+db.log.isCapped()
+db.runCommand({ convertToCapped: "log", size: 104857600 })
+```
+
+`convertToCapped` takes a write lock on the database and drops any indexes except `_id` along the way, so treat it as a maintenance operation, not a casual command. Capped collections can also be resized in place with `collMod` (`cappedSize`, `cappedMax`) since MongoDB 6.0.
+
+## Insertion order and natural order
+
+The defining behavior of a capped collection is that documents are returned in insertion order when you read in natural order, with no index or sort needed:
+
+```javascript
+db.log.find()                          // oldest first
+db.log.find().sort({ $natural: -1 })   // newest first, still no index needed
+```
+
+This makes "give me the last 50 log lines" cheap:
+
+```javascript
+db.log.find().sort({ $natural: -1 }).limit(50)
+```
+
+One caveat: with multiple concurrent writers, MongoDB does not guarantee that reads return documents in exact insertion order. For single-writer logging this never matters; for multi-writer event ordering it can.
+
+## Tailable cursors
+
+Capped collections support tailable cursors -- the database equivalent of `tail -f`. A tailable cursor stays open after returning the last document and yields new documents as they are inserted:
+
+```javascript
+const cursor = db.log.find().tailable({ awaitData: true })
+while (cursor.hasNext()) {
+  processLogEntry(cursor.next())
+}
+```
+
+`awaitData` makes the server block briefly for new data instead of returning an empty batch immediately, which avoids hot-looping on the client. This is how replica set secondaries follow the oplog.
+
+Before change streams existed (MongoDB 3.6), tailing a capped collection was the standard way to build event feeds. Today, [change streams](/guides/mongodb/change-streams) are the better tool for reacting to data changes in normal collections -- they survive restarts via resume tokens and do not require capping anything. Tailable cursors remain relevant only when you control the collection and genuinely want a bounded message buffer.
+
+## The restrictions
+
+Capped collections trade flexibility for their ordering guarantees:
+
+- **No sharding.** Capped collections cannot be sharded, full stop. They are confined to one replica set's write throughput.
+- **No transactional writes.** You cannot write to a capped collection inside a transaction.
+- **No `$out`.** An aggregation cannot write its results into a capped collection.
+- **Not in Stable API V1.** If your driver connects with the versioned/Stable API, capped collection commands are not covered.
+- **No document deletion by you.** You cannot remove individual documents from a capped collection; eviction is automatic-only. To empty one, drop and recreate it.
+- **Avoid updates.** Updates that grow a document beyond its original footprint can fail or cause unexpected behavior, since the storage layout depends on stable document sizes. Treat capped collections as append-only in practice.
+
+Write throughput is also a consideration: capped collections serialize write operations, so concurrent insert performance is worse than a regular collection. The eviction machinery is on the write path.
+
+## Capped collection vs TTL index
+
+This is the decision most people are actually making, and MongoDB's documentation is direct about it: generally, TTL indexes offer better performance and more flexibility.
+
+A TTL index on a regular collection expires documents based on a date field:
+
+```javascript
+db.log.createIndex({ createdAt: 1 }, { expireAfterSeconds: 604800 })  // 7 days
+```
+
+Choose a **TTL index** when:
+
+- you want age-based retention ("keep 30 days") rather than size-based ("keep 1 GB")
+- you need updates, deletes, transactions, sharding, or `$out`
+- you have many concurrent writers and care about insert throughput
+
+Choose a **capped collection** when:
+
+- you need a hard upper bound on disk usage no matter the ingest rate -- TTL bounds age, not size, and a traffic spike can balloon a TTL collection before the expiry catches up
+- you want tailable cursors over a bounded buffer
+- you want guaranteed insertion-order reads without paying for an index
+
+Note that the two do not combine: TTL indexes are not supported on capped collections.
+
+If your data is time-stamped measurements rather than log lines, a [time series collection](/guides/mongodb/time-series-collections) with `expireAfterSeconds` is usually a better fit than either -- it gets you compression and time-range query performance on top of automatic expiry.
+
+## The oplog
+
+The most famous capped collection is `local.oplog.rs`, the replica set operation log. It demonstrates both the strength (bounded size, insertion order, tailable by secondaries) and a special case: unlike user capped collections, the oplog can temporarily grow past its configured size to preserve the majority commit point. You should not write to it, but reading it (or rather, using [change streams](/guides/mongodb/change-streams), which wrap it) is routine.
+
+## Practical example: bounded debug log
+
+```javascript
+db.createCollection("debug_log", { capped: true, size: 52428800 })  // 50 MB cap
+
+// app code appends freely; disk usage can never exceed 50 MB
+db.debug_log.insertOne({
+  ts: new Date(),
+  level: "warn",
+  msg: "retrying upstream call",
+  attempt: 3
+})
+
+// most recent entries first
+db.debug_log.find({ level: "error" }).sort({ $natural: -1 }).limit(20)
+```
+
+Note the query on `level` does a full scan unless you add a secondary index -- capped collections support them, and for a 50 MB collection a scan is often fine anyway.
+
+---
+
+Mako connects to MongoDB with AI-powered autocomplete, which helps when exploring collection options like capped sizes and TTL configuration. Try it free at mako.ai.

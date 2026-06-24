@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   CircularProgress,
@@ -14,8 +14,10 @@ import { useAuth } from "../contexts/auth-context";
 import { useTheme } from "../contexts/ThemeContext";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
+import { useConsoleStore } from "../store/consoleStore";
 import ShareDialog from "./ShareDialog";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
+import { appLocationFromHostSearch } from "../app-runtime/app-location";
 import {
   ensureBindingLoaded,
   queryAppDuckDB,
@@ -31,7 +33,13 @@ import {
  * `app-file` tabs (opened from the sidebar explorer); this tab only renders the
  * sandboxed preview and bridges data-binding requests to the workspace.
  */
-export default function AppRenderer({ appId }: { appId: string }) {
+export default function AppRenderer({
+  appId,
+  tabId,
+}: {
+  appId: string;
+  tabId?: string;
+}) {
   const { currentWorkspace } = useWorkspace();
   const { user } = useAuth();
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
@@ -54,6 +62,34 @@ export default function AppRenderer({ appId }: { appId: string }) {
   const runBinding = useAppStore(s => s.runBinding);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  // App router state lives on the owning tab's metadata (`appLocation`), so the
+  // single source of truth for the URL stays UrlSync (which derives the address
+  // bar from the active tab). Seeding the iframe reads it once, on boot; later
+  // navigations flow over postMessage and must never bump the srcdoc.
+  const initialAppLocationRef = useRef<string | null>(
+    tabId
+      ? ((useConsoleStore.getState().tabs[tabId]?.metadata?.appLocation as
+          | string
+          | undefined) ?? null)
+      : null,
+  );
+
+  // Persist an app-initiated location change onto the tab. UrlSync then writes
+  // it to the shareable URL; this is a no-op when nothing changed.
+  const applyAppLocation = useCallback(
+    (location: string) => {
+      if (!tabId) return;
+      const store = useConsoleStore.getState();
+      const tab = store.tabs[tabId];
+      if (!tab || tab.metadata?.appLocation === location) return;
+      store.updateMetadata(tabId, {
+        ...(tab.metadata ?? {}),
+        appLocation: location,
+      });
+    },
+    [tabId],
+  );
 
   // True from the moment a (re)built srcdoc is handed to the iframe until the
   // bootstrap posts ready/error. Loading deps from the CDN and transpiling
@@ -191,6 +227,8 @@ export default function AppRenderer({ appId }: { appId: string }) {
               error: err instanceof Error ? err.message : "DuckDB query failed",
             }),
           );
+      } else if (data.type === PREVIEW_MESSAGE.navigate) {
+        if (typeof data.location === "string") applyAppLocation(data.location);
       } else if (data.type === PREVIEW_MESSAGE.error) {
         setBooting(false);
         setPreviewErrors(appId, [
@@ -208,7 +246,29 @@ export default function AppRenderer({ appId }: { appId: string }) {
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [appId, workspaceId, appEntity, runBinding, setPreviewErrors]);
+  }, [
+    appId,
+    workspaceId,
+    appEntity,
+    runBinding,
+    setPreviewErrors,
+    applyAppLocation,
+  ]);
+
+  // Browser back/forward changes the host URL without a reload; mirror the new
+  // app location into the tab and push it to the (already-booted) iframe.
+  useEffect(() => {
+    const onPopState = () => {
+      const location = appLocationFromHostSearch(window.location.search);
+      applyAppLocation(location);
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: PREVIEW_MESSAGE.location, location },
+        "*",
+      );
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [applyAppLocation]);
 
   // Keep the booted preview's theme in sync with the host toggle.
   useEffect(() => {
@@ -223,7 +283,10 @@ export default function AppRenderer({ appId }: { appId: string }) {
   // must not trigger an expensive rebuild on toggle (set-theme handles that).
   const srcDoc = useMemo(() => {
     if (!appEntity) return "";
-    return buildPreviewHtml(appEntity, { theme: effectiveModeRef.current });
+    return buildPreviewHtml(appEntity, {
+      theme: effectiveModeRef.current,
+      location: initialAppLocationRef.current,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appEntity?._id, previewNonce]);
 
@@ -321,7 +384,7 @@ export default function AppRenderer({ appId }: { appId: string }) {
           title={`app-preview-${appId}`}
           data-mako-app-preview={appId}
           srcDoc={srcDoc}
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
           style={{ width: "100%", height: "100%", border: "none" }}
         />
         {booting && errors.length === 0 && (

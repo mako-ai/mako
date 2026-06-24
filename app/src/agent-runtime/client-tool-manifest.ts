@@ -431,10 +431,12 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
+  // App mutation tools execute SERVER-SIDE (issue #475 pattern; see
+  // api/src/agent-lib/tools/server-app-tools.ts). Open tabs follow along via
+  // the realtime channel (app.updated). Entries kept for tool-card UI.
   app_write_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -445,8 +447,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_delete_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Deleting ${path}` : "Deleting file";
@@ -455,15 +456,13 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_rename_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: () => "Renaming file",
     icon: "pencil",
   },
   app_add_dependency: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
@@ -473,8 +472,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_remove_dependency: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
       return name ? `Removing dependency ${name}` : "Removing dependency";
@@ -483,8 +481,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_create_data_binding: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
@@ -495,8 +492,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   app_delete_data_binding: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
       return name ? `Deleting data binding "${name}"` : "Deleting data binding";
@@ -566,10 +562,12 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "eye",
   },
+  // dbt file mutation tools execute SERVER-SIDE (issue #475 pattern; see
+  // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts). Open editor
+  // tabs follow along via the realtime channel (dbt.file.updated).
   create_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -580,8 +578,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   modify_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
@@ -592,8 +589,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   delete_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Deleting ${path}` : "Deleting dbt file";
@@ -643,6 +639,28 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: input => {
       const query = (input as Record<string, unknown>)?.query;
       return query ? `Searching "${query}"` : "Searching consoles";
+    },
+    icon: "search",
+  },
+  fetch_url: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const url = (input as Record<string, unknown>)?.url;
+      if (typeof url === "string" && url.length > 0) {
+        const display = url.length > 48 ? `${url.slice(0, 45)}…` : url;
+        return `Fetching ${display}`;
+      }
+      return "Fetching URL";
+    },
+    icon: "external-link",
+  },
+  web_search: {
+    domain: "search",
+    execution: "server",
+    getLabel: input => {
+      const query = (input as Record<string, unknown>)?.query;
+      return query ? `Searching web: "${query}"` : "Searching the web";
     },
     icon: "search",
   },

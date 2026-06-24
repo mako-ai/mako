@@ -1,0 +1,123 @@
+---
+title: "ClickHouse Data Skipping Indexes: minmax, set, and Bloom Filters"
+description: "How ClickHouse data skipping indexes work, the five index types (minmax, set, bloom_filter, ngrambf_v1, tokenbf_v1), how GRANULARITY controls the index block size, when a skip index actually helps, and the correlation rule that decides whether it skips anything at all."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "data-skipping-indexes", "minmax", "bloom-filter", "performance", "olap"]
+date: "2026-06-08"
+---
+
+# ClickHouse Data Skipping Indexes
+
+ClickHouse has no row-level secondary index like the B-tree indexes in PostgreSQL or MySQL. A column-oriented engine stores no individual rows on disk to point at, so the classic "index this column for fast lookups" model does not apply. Instead, ClickHouse offers *data skipping indexes*: secondary structures that store a small summary of each block of rows, so the query engine can skip blocks that cannot possibly match a `WHERE` condition.
+
+Understanding the difference matters, because a skip index that is configured against the wrong data distribution does nothing useful, and the symptom is silent: the query still returns correct results, just without skipping any data.
+
+## The Granule Model
+
+A MergeTree table is divided into *granules*, each 8192 rows by default (set by `index_granularity`). The sparse primary index stores one mark per granule. When a query filters on the primary key, ClickHouse uses those marks to read only the granules that can contain matching rows.
+
+A data skipping index sits one level above the granules. Its `GRANULARITY` setting says how many primary-index granules each skip-index block covers. With `GRANULARITY 4` and the default 8192-row granules, each skip-index entry summarizes 4 × 8192 = 32768 rows. For each such block the index stores a compact summary (a min/max pair, a small value set, or a Bloom filter). At query time, ClickHouse checks the summary first; if the block cannot match, it skips all of those granules without reading the column data.
+
+This is the key mental model: a skip index does not find matching rows. It rules out blocks that definitely do not match. Everything else gets read and filtered normally.
+
+## The Correlation Rule
+
+A skip index only helps when the indexed values are physically clustered on disk, which in practice means correlated with the table's `ORDER BY` key.
+
+If you index a column whose values are scattered uniformly across every block (for example, a random UUID), every block's summary will say "this value might be here," nothing gets skipped, and you have paid for an index that only adds write overhead. If instead the column changes slowly relative to the sort order (a status that stays constant for long runs of rows, a timestamp that broadly tracks the primary key), the per-block summaries are tight and ClickHouse can discard large ranges.
+
+Before adding a skip index, ask: within a single block of ~32k consecutive rows, how many distinct values does this column have? Few distinct values per block means the index will work. Roughly all distinct means it will not.
+
+## The Five Index Types
+
+### minmax
+
+Stores the minimum and maximum of the indexed expression per block. ClickHouse skips a block when the filter range falls entirely outside `[min, max]`.
+
+```sql
+ALTER TABLE events
+    ADD INDEX idx_price minmax(price) GRANULARITY 4;
+```
+
+Best for numeric or date columns whose values move monotonically or in slow runs relative to the sort key. It is cheap to store and the first thing to reach for on range filters (`>`, `<`, `BETWEEN`).
+
+### set
+
+Stores up to N distinct values per block (`set(N)`). A block is skipped if none of the filter's values appear in the stored set. `set(0)` stores an unbounded set, which only makes sense when the per-block cardinality is genuinely small.
+
+```sql
+ALTER TABLE events
+    ADD INDEX idx_country set(100) GRANULARITY 4;
+```
+
+Best for low-cardinality columns used with equality or `IN` filters, where each block holds only a handful of distinct values. If a block exceeds N distinct values, the set for that block is dropped and it can no longer be skipped.
+
+### bloom_filter
+
+Stores a Bloom filter of the indexed values per block, giving probabilistic membership tests with a tunable false-positive rate (default 0.025).
+
+```sql
+ALTER TABLE events
+    ADD INDEX idx_tag bloom_filter(0.01) GRANULARITY 4;
+```
+
+Best for higher-cardinality columns tested with equality or `IN`, including array `has()` checks. A Bloom filter can report a false positive (read a block that turns out not to match) but never a false negative (it will not skip a block that does match), so correctness is preserved. It works on columns where `set` would overflow.
+
+### ngrambf_v1
+
+A Bloom filter over n-grams of string data, for substring matching with `LIKE '%...%'` and similar.
+
+```sql
+ALTER TABLE logs
+    ADD INDEX idx_msg ngrambf_v1(4, 65536, 3, 0) GRANULARITY 4;
+```
+
+The parameters are n-gram size, filter size in bytes, number of hash functions, and a seed. Tuning these wrong is the usual reason an ngram index skips nothing: too small a filter size for the block's cardinality saturates the Bloom filter so every block reports a possible match.
+
+### tokenbf_v1
+
+A Bloom filter over whole tokens (split on non-alphanumeric characters) rather than n-grams, for word-level matching with functions like `hasToken`.
+
+```sql
+ALTER TABLE logs
+    ADD INDEX idx_words tokenbf_v1(30720, 3, 0) GRANULARITY 4;
+```
+
+Parameters are filter size, hash count, and seed. Use it for whole-word search where you do not need arbitrary substrings; it is smaller and faster than an n-gram filter for that case. For full-text needs, newer ClickHouse versions also offer a dedicated `text` index, which is purpose-built for tokenized full-text search and worth checking before hand-tuning a `tokenbf_v1`.
+
+## Verifying That a Skip Index Works
+
+Adding the index does not retroactively index existing parts. Build it for current data with:
+
+```sql
+ALTER TABLE events MATERIALIZE INDEX idx_price;
+```
+
+New inserts index themselves automatically. To confirm an index is actually skipping data, read the query plan with the indexes flag:
+
+```sql
+EXPLAIN indexes = 1
+SELECT count() FROM events WHERE price > 9000;
+```
+
+The output lists each index and shows granules before and after it was applied. If the "after" count equals the "before" count, the index skipped nothing, and the cause is almost always the correlation rule: the indexed column is not clustered enough within blocks. Either change the table's `ORDER BY` so the column clusters, lower `GRANULARITY` so each block covers fewer rows (tighter summaries, more index overhead), or accept that a skip index is not the right tool for that filter.
+
+## Common Mistakes
+
+- **Treating a skip index like a B-tree.** It does not speed up point lookups on scattered data. If the column is uncorrelated with the sort order, it will not skip anything.
+- **Indexing a column that is already the primary key.** The sparse primary index already handles it; a skip index adds nothing.
+- **Forgetting to materialize.** Existing parts stay unindexed until `MATERIALIZE INDEX` runs.
+- **Under-sizing a Bloom filter.** A saturated filter reports every block as a possible match, silently disabling skipping.
+
+When you are testing whether a skip index actually changes the granule count, Mako's AI autocomplete can help you draft the `EXPLAIN indexes = 1` queries and compare plans as you tune `GRANULARITY`.
+
+## Related Guides
+
+- [ClickHouse Partitioning](/guides/clickhouse/partitioning) for the coarser, partition-level pruning that complements skip indexes.
+- [ClickHouse MergeTree Table Engines](/guides/clickhouse/mergetree-engines) for the granule and parts model these indexes build on.
+- [ClickHouse String Functions](/guides/clickhouse/string-functions) for the substring and token operations that pair with ngram and token Bloom filters.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

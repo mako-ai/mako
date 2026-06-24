@@ -1,0 +1,96 @@
+---
+title: "Partitioning Alternatives in SQLite"
+description: "SQLite has no native partitioned tables. The practical alternatives: ATTACH DATABASE with UNION ALL across files, partial indexes, separate tables per partition with a UNION view, and when you have outgrown SQLite entirely."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "partitioning", "attach", "sharding", "scaling"]
+date: "2026-06-04"
+---
+
+If you have come from PostgreSQL or MySQL looking for `PARTITION BY RANGE` or declarative partitioned tables, the short answer is: SQLite does not have them. There is no `CREATE TABLE ... PARTITION BY` syntax and no partition pruning planner. What SQLite gives you instead is a set of primitives you can compose to get most of the same benefits. This guide covers the realistic alternatives and when each one is the right call.
+
+First, be honest about whether you need partitioning at all. SQLite handles databases into the hundreds of gigabytes and tables with hundreds of millions of rows on commodity hardware. A well-chosen index usually solves the problem people reach for partitioning to solve. Confirm with [EXPLAIN QUERY PLAN](/guides/sqlite/explain-query-plan) that your slow query is doing a full scan before you restructure anything.
+
+## Alternative 1: Partial indexes (the usual real answer)
+
+Most "I need to partition" requests are really "queries against recent/active rows are slow." A partial index targets exactly the subset you query:
+
+```sql
+-- Only index orders that are still open
+CREATE INDEX idx_open_orders ON orders(customer_id)
+WHERE status = 'open';
+```
+
+The index is smaller, faster to maintain, and the planner uses it whenever the query's `WHERE` clause implies the same condition. This gives you the "hot partition stays fast" benefit without splitting anything. Reach for this before any of the multi-table or multi-file options below.
+
+## Alternative 2: Separate tables plus a UNION ALL view
+
+You can split data by some key into discrete tables and stitch them back together with a view. This mimics range partitioning within a single database file:
+
+```sql
+CREATE TABLE events_2024 (id INTEGER PRIMARY KEY, ts TEXT, payload TEXT);
+CREATE TABLE events_2025 (id INTEGER PRIMARY KEY, ts TEXT, payload TEXT);
+
+CREATE VIEW events AS
+  SELECT * FROM events_2024
+  UNION ALL
+  SELECT * FROM events_2025;
+```
+
+Reads against `events` see everything. Writes have to target the correct underlying table, because a `UNION ALL` view is not writable on its own; you would add `INSTEAD OF INSERT` triggers (see the [triggers guide](/guides/sqlite/triggers)) to route inserts, or just write to the right table in application code.
+
+The catch: SQLite does not prune the `UNION ALL` branches the way a partitioned planner would. A query for `events` in 2025 still touches the 2024 branch unless your `WHERE` clause lets the planner eliminate it via the per-table indexes. Test it with EXPLAIN QUERY PLAN. This pattern is most useful when old partitions are cold and you want to drop or archive a whole year by simply dropping a table.
+
+## Alternative 3: ATTACH DATABASE -- one file per partition
+
+When the motivation is file size, backup granularity, or putting partitions on different disks, split across separate database files and query them together with `ATTACH DATABASE`:
+
+```sql
+-- Open the current database, then attach others
+ATTACH DATABASE 'events_2024.db' AS y2024;
+ATTACH DATABASE 'events_2025.db' AS y2025;
+
+-- Cross-file query
+SELECT ts, payload FROM y2024.events
+UNION ALL
+SELECT ts, payload FROM y2025.events
+WHERE ts >= '2025-01-01';
+```
+
+This is the closest thing SQLite has to physical partitioning. Each file is an independent SQLite database with its own page cache and can be backed up, copied, or deleted on its own. Archiving a year is `DETACH DATABASE y2024` plus moving the file.
+
+Limits worth knowing:
+
+- The number of attached databases is capped by `SQLITE_MAX_ATTACHED`, which defaults to 10 and has a hard ceiling of 125. You can raise it up to that ceiling at runtime with `sqlite3_limit(db, SQLITE_LIMIT_ATTACHED, n)`, but you cannot exceed 125. This rules out attach-based partitioning for anything with hundreds of partitions.
+- A transaction spanning multiple attached files is atomic only when the main database is in rollback-journal mode (or you enable the right settings); in WAL mode, atomic commits across attached databases are not guaranteed. If cross-partition atomic writes matter, verify your journaling setup.
+- Cross-database joins work but the planner optimizes each file's access using only that file's indexes.
+
+For the full mechanics of attaching, detaching, and the namespace rules, see the [ATTACH DATABASE guide](/guides/sqlite/attach-database).
+
+## Alternative 4: Application-level sharding
+
+Beyond a handful of partitions, the common production pattern is to shard in application code: a routing layer maps a key (user ID, tenant, time bucket) to a specific SQLite file and opens only that one. This is how many SQLite-per-tenant systems work -- one database file per customer. It sidesteps the attached-database cap entirely because each connection only opens the files it needs, and it gives you clean per-tenant backup and deletion.
+
+The cost is that any query spanning shards has to be fanned out and merged in application code; SQLite will not do it for you. If most of your queries are scoped to a single shard anyway (the typical multi-tenant case), this is a clean fit.
+
+## When you have outgrown SQLite
+
+Partitioning requests sometimes signal that the workload no longer suits an embedded, single-writer database. SQLite allows one writer at a time per database file. If you need:
+
+- declarative range/list/hash partitioning with automatic pruning,
+- many concurrent writers across partitions,
+- or partitions measured in the hundreds,
+
+then PostgreSQL (native declarative partitioning) or a distributed engine is the honest recommendation, and forcing it into SQLite will cost you more than the migration. The [PostgreSQL vs SQLite comparison](/guides/postgresql-vs-sqlite) covers where that line sits.
+
+## Quick decision guide
+
+- Slow queries on a hot subset -> partial index. Try this first.
+- Need to archive/drop whole ranges, single file is fine -> separate tables + UNION ALL view.
+- File size, separate disks, per-partition backup -> ATTACH DATABASE, up to ~10 partitions comfortably.
+- Many partitions, multi-tenant -> application-level sharding, one file per shard.
+- Real declarative partitioning or concurrent writers -> a different database.
+
+When you are comparing these layouts against your real query patterns, Mako's AI autocomplete can draft the UNION ALL view or the cross-attached query against your live schema and show you the query plan, so you can see whether the planner is pruning before you commit to a structure.
+
+Mako connects to SQLite and eight other databases with AI-powered autocomplete. Try it free at mako.ai.

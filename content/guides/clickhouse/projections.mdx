@@ -1,0 +1,139 @@
+---
+title: "ClickHouse Projections: Speeding Up Queries That Do Not Match Your Sort Key"
+description: "How projections work in ClickHouse: normal (reordering) projections and aggregating projections, how the optimizer picks them, the storage and write-amplification trade-offs, backfilling existing data, and when a materialized view is the better choice."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "sql", "projections", "mergetree", "query-optimization", "olap"]
+date: "2026-06-08"
+---
+
+# ClickHouse Projections
+
+A `MergeTree` table can only be physically sorted one way, by its `ORDER BY` key. That sort order and its sparse primary index are what make filtered queries fast. The problem is that real workloads query the same table many different ways, and only the queries that align with the sort key benefit from the index. Projections are ClickHouse's answer to that: each projection is a hidden, query-optimized copy of the table's data stored inside the same parts, with its own ordering or its own pre-computed aggregation.
+
+You can think of a projection as an additional table that lives attached to the original. When a query runs against the main table, the optimizer checks whether any projection can answer it with less data scanned, and if so it transparently reads from the projection instead. The query text does not change; the speedup is automatic.
+
+## Two Kinds of Projection
+
+There are two practical shapes:
+
+1. **Normal projections** store the same rows in a different order, giving you a second primary index on columns the main sort key does not cover.
+2. **Aggregating projections** pre-compute aggregates (similar to a materialized view) with an ordering aligned to the aggregation, so `GROUP BY` queries read pre-rolled-up data.
+
+### Normal Projection: A Second Sort Order
+
+Suppose your table is sorted by `(user_id, event_time)` but you frequently filter by `event_type`. Those queries cannot use the primary index and scan a lot of data. A normal projection sorted by `event_type` fixes that.
+
+```sql
+ALTER TABLE events ADD PROJECTION proj_by_type
+(
+    SELECT *
+    ORDER BY event_type
+);
+
+ALTER TABLE events MATERIALIZE PROJECTION proj_by_type;
+```
+
+Now a query like `SELECT * FROM events WHERE event_type = 'purchase'` can use the projection's `event_type` ordering to skip irrelevant granules, even though the main table is sorted by `user_id`.
+
+### Aggregating Projection: Pre-Computed Rollups
+
+If you repeatedly run the same aggregation, an aggregating projection stores the rolled-up result and keeps it incrementally up to date as new data arrives.
+
+```sql
+ALTER TABLE events ADD PROJECTION proj_daily_counts
+(
+    SELECT
+        event_type,
+        toDate(event_time) AS day,
+        count() AS cnt
+    GROUP BY event_type, day
+);
+
+ALTER TABLE events MATERIALIZE PROJECTION proj_daily_counts;
+```
+
+A matching query reads the pre-aggregated rows instead of scanning raw events:
+
+```sql
+SELECT event_type, toDate(event_time) AS day, count() AS cnt
+FROM events
+GROUP BY event_type, day;
+```
+
+The optimizer matches the query's grouping against the projection's structure. The aggregation in the query has to line up with what the projection precomputed; an aggregating projection only helps queries whose `GROUP BY` and aggregate functions match its definition.
+
+## How the Optimizer Chooses
+
+You can define more than one projection on a table. During query analysis ClickHouse picks the projection that scans the least data, without you changing the query. If no projection helps, it falls back to the base table. Projection use is controlled by the `optimize_use_projections` setting (on by default). To confirm a projection is actually being used, read the query plan:
+
+```sql
+EXPLAIN projections = 1
+SELECT event_type, count() FROM events GROUP BY event_type;
+```
+
+This shows whether a projection was selected and which one.
+
+## Backfilling Existing Data
+
+This is the most common surprise. When you `ADD PROJECTION`, only data inserted *after* that point is written into the projection. Existing parts are not touched until you explicitly materialize:
+
+```sql
+ALTER TABLE events MATERIALIZE PROJECTION proj_by_type;
+```
+
+`MATERIALIZE PROJECTION` rebuilds the projection for existing parts in the background. It is a mutation, so it can take time and I/O on a large table. Until it finishes, queries can only use the projection for the newer parts that already contain it.
+
+## Restrictions
+
+Projections do not support everything a normal query does. The key limitations:
+
+- No `LIMIT` or `OFFSET` in the projection definition.
+- No subqueries.
+- Aggregating projections only accelerate queries whose aggregation structure matches the projection.
+- A projection cannot reference columns outside the table or join other tables.
+- Some operations on the base table (certain `ALTER`s, lightweight deletes interacting with projections) have caveats depending on version; check behavior on your specific version before relying on it in production.
+
+## The Storage and Write Trade-Off
+
+Projections are not free. A normal projection that does `SELECT *` in a different order stores a full second copy of the data, so it can roughly double storage for that table, and if the projection orders by a column with poor compression it can use even more space than the source. Every insert also has to write into each projection, which multiplies write I/O. Aggregating projections are usually much smaller because they store rolled-up rows, which is part of why they are often the better trade-off.
+
+Budget for this. A table with three `SELECT *` normal projections is storing four copies of itself. Measure storage with `system.parts`:
+
+```sql
+SELECT
+    name AS projection,
+    sum(rows) AS rows,
+    formatReadableSize(sum(bytes_on_disk)) AS size
+FROM system.projection_parts
+WHERE table = 'events' AND active
+GROUP BY name;
+```
+
+## Projection or Materialized View?
+
+Projections and aggregating materialized views solve overlapping problems, and choosing between them trips people up.
+
+- **Projections** live inside the source table's parts, are managed automatically, and are chosen transparently by the optimizer. You query the original table and get the speedup for free. They are the simplest choice when you just want a second sort order or a rollup of the same table.
+- **Materialized views** write to a separate target table you query directly. They are more flexible: they can join, transform, route to a differently engined table (SummingMergeTree, AggregatingMergeTree), and fan out to multiple targets. But you have to query the target table yourself, and there is no automatic fallback.
+
+A rough rule: if you want a transparent speedup on the same table with no query changes, reach for a projection. If you need to reshape, route, or combine data into a separate structure, use a materialized view.
+
+## Common Mistakes
+
+- **Forgetting to materialize.** Adding a projection without `MATERIALIZE PROJECTION` leaves all existing data uncovered, so queries silently keep scanning the base table.
+- **Underestimating storage.** A `SELECT *` projection doubles the data. Three of them quadruple it. Check `system.projection_parts`.
+- **Expecting an aggregating projection to serve a different aggregation.** It only matches queries whose grouping and aggregates line up with its definition.
+- **Not verifying with EXPLAIN.** Assuming a projection is used without checking `EXPLAIN projections = 1`. If the query does not match, ClickHouse silently uses the base table.
+
+When you are tuning which projections actually get picked, Mako's AI autocomplete can help you draft the `EXPLAIN projections = 1` and `system.projection_parts` queries to confirm what the optimizer is doing.
+
+## Related Guides
+
+- [ClickHouse Materialized Views](/guides/clickhouse/materialized-views) for the separate-target-table alternative to aggregating projections.
+- [ClickHouse Partitioning](/guides/clickhouse/partitioning) for how data parts (which hold projections) are organized on disk.
+- [ClickHouse Aggregate Functions](/guides/clickhouse/aggregate-functions) for the aggregates you precompute in aggregating projections.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

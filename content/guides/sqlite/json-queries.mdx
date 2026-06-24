@@ -1,0 +1,147 @@
+---
+title: "Querying JSON in SQLite"
+description: "How to query JSON in SQLite: json_extract, the -> and ->> operators, json_each and json_tree, aggregation with json_group_array, indexing JSON paths, and the JSONB type added in 3.45.0."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "json", "data-engineering"]
+date: "2026-06-02"
+---
+
+SQLite stores JSON as ordinary text in a `TEXT` column and provides a set of functions to read and modify it. The JSON functions have been **built into the default build since version 3.38.0** (February 2022). Before that they lived in the optional JSON1 extension and had to be compiled in. If you are on 3.38.0 or later, everything in this guide works out of the box.
+
+There is no dedicated JSON column type for storage as text. You declare the column as `TEXT` and optionally guard it with a `CHECK (json_valid(col))` constraint.
+
+```sql
+CREATE TABLE events (
+  id      INTEGER PRIMARY KEY,
+  payload TEXT NOT NULL CHECK (json_valid(payload))
+);
+
+INSERT INTO events (payload) VALUES
+  ('{"user": "ada", "action": "login", "tags": ["web", "eu"]}');
+```
+
+## Extracting Values
+
+`json_extract()` pulls a value out of a JSON document using a path expression. Paths start with `$` for the document root, then use dot notation for object keys and `[n]` for array elements.
+
+```sql
+SELECT
+  json_extract(payload, '$.user')     AS user,
+  json_extract(payload, '$.tags[0]')  AS first_tag
+FROM events;
+```
+
+`json_extract` returns the SQL type that best matches the JSON value: `TEXT` for strings, `INTEGER` or `REAL` for numbers, `NULL` for JSON null, and a JSON string for objects and arrays.
+
+### The -> and ->> Operators
+
+SQLite added the `->` and `->>` operators in **version 3.38.0**, matching the syntax MySQL and PostgreSQL use.
+
+- `->` returns a JSON representation of the value (objects, arrays, and quoted strings stay as JSON text).
+- `->>` returns a plain SQL value (strings come back unquoted, the way `json_extract` returns them).
+
+```sql
+SELECT
+  payload -> '$.tags'   AS tags_json,   -- ["web","eu"]
+  payload ->> '$.user'  AS user_text    -- ada
+FROM events;
+```
+
+The right operand can be a full path like `'$.user'` or a bare key like `'user'`, which SQLite treats as `'$.user'`. For most filtering and joining you want `->>` because it returns a comparable scalar rather than a quoted JSON string.
+
+## Iterating Over Arrays and Objects
+
+`json_each()` and `json_tree()` are table-valued functions: they turn a JSON document into rows you can query with regular SQL. `json_each` walks one level; `json_tree` walks the entire tree recursively.
+
+```sql
+SELECT e.id, t.value AS tag
+FROM events e, json_each(e.payload, '$.tags') t;
+```
+
+This produces one row per array element, which is the standard way to "unnest" a JSON array into relational rows. Each row from `json_each` exposes columns including `key`, `value`, `type`, and `fullkey`.
+
+To find every node anywhere in a document, use `json_tree`:
+
+```sql
+SELECT fullkey, value
+FROM events, json_tree(payload)
+WHERE type = 'text';
+```
+
+## Building JSON
+
+The constructor functions go the other direction, assembling JSON from rows.
+
+```sql
+SELECT json_object('user', user, 'logins', cnt)
+FROM (
+  SELECT json_extract(payload, '$.user') AS user, COUNT(*) AS cnt
+  FROM events
+  GROUP BY 1
+);
+```
+
+`json_group_array()` and `json_group_object()` are aggregates that collect grouped rows into a single JSON array or object. They pair naturally with [aggregate functions](/guides/sqlite/aggregate-functions).
+
+```sql
+SELECT json_group_array(json_extract(payload, '$.user')) AS users
+FROM events;
+```
+
+## Modifying JSON
+
+`json_set`, `json_insert`, `json_replace`, and `json_remove` return a new JSON string with the change applied. They do not mutate in place; you assign the result back.
+
+```sql
+UPDATE events
+SET payload = json_set(payload, '$.action', 'logout')
+WHERE id = 1;
+```
+
+The difference between the three setters: `json_insert` only adds keys that do not already exist, `json_replace` only overwrites keys that do, and `json_set` does both.
+
+## Indexing JSON Paths
+
+Querying a JSON path scans every row unless you index the extracted value with an expression index (supported since SQLite 3.9.0).
+
+```sql
+CREATE INDEX idx_events_user
+  ON events (json_extract(payload, '$.user'));
+```
+
+A query that uses the exact same expression in its `WHERE` clause can then use the index:
+
+```sql
+SELECT * FROM events
+WHERE json_extract(payload, '$.user') = 'ada';
+```
+
+The expression in the index and the expression in the query must match for the planner to pick it up. For the mechanics of how SQLite chooses an index, see our [indexes guide](/guides/sqlite/indexes-explained) and [EXPLAIN QUERY PLAN guide](/guides/sqlite/explain-query-plan).
+
+## JSON vs. JSONB
+
+SQLite 3.45.0 (January 2024) added **JSONB**, a binary representation stored in a `BLOB`. It is not the same as PostgreSQL's JSONB and is not portable between the two. SQLite's JSONB skips the repeated parse-and-render cost of text JSON, so functions like `jsonb_extract` and `jsonb_set` can be faster on documents you read and write often.
+
+```sql
+-- Store binary JSON
+UPDATE events SET payload = jsonb(payload);
+-- Read it back as text when you need to display it
+SELECT json(payload) FROM events WHERE id = 1;
+```
+
+Use plain text JSON when you need human-readable storage or interoperability, and JSONB when the document is processed far more often than it is eyeballed. If you do not have a measured performance problem, text JSON is the simpler default.
+
+## Common Mistakes
+
+**Comparing `->` output to a plain string** -- `payload -> '$.user' = 'ada'` fails because `->` returns the quoted JSON string `"ada"`. Use `->>` for scalar comparisons.
+
+**Expecting an index on a different expression** -- an expression index only helps queries that use the identical expression. `json_extract(payload, '$.user')` and `payload ->> 'user'` are not treated as the same expression by the planner.
+
+**Storing invalid JSON** -- without a `CHECK (json_valid(...))` constraint, SQLite will happily store malformed text and the JSON functions will error only at read time.
+
+**Assuming JSONB is portable** -- SQLite JSONB is an internal format. Do not ship it between SQLite and other databases; convert with `json()` first.
+
+## Exploring These Queries
+
+Mako connects to SQLite with AI autocomplete that understands `json_extract`, `json_each`, and path expressions. Try it at [mako.ai](https://mako.ai).

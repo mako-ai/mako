@@ -689,8 +689,16 @@ export const useConsoleStore = create<ConsoleStore>()(
         if (!tab) return;
         const existing = pendingAgentReviews.get(entry.id);
         // Nothing to review: the proposed content already matches the tab
-        // (e.g. a stale re-sync after the user just accepted, or an echo).
-        if (!existing && tab.content === entry.content) return;
+        // (e.g. a run-artifact/metadata-only bump, an echo, or a stale
+        // re-sync after the user just accepted). Still FAST-FORWARD the
+        // revision/metadata to the server's current base — otherwise the tab
+        // keeps reporting its old draftRevision, so every later sync re-pulls
+        // this same "changed" entry and revision-checked writes use a stale
+        // base. (Returning without fast-forwarding was a real churn bug.)
+        if (!existing && tab.content === entry.content) {
+          get().fastForwardRemoteConsoleEntry(entry);
+          return;
+        }
         // Idempotent: same proposal already on screen — don't re-dispatch
         // (avoids resetting the diff scroll on every unrelated poke).
         if (
@@ -1151,6 +1159,11 @@ export const useConsoleStore = create<ConsoleStore>()(
                 tab.connectionId = res.connectionId;
                 tab.databaseId = res.databaseId;
                 tab.databaseName = res.databaseName;
+                // Canonical: the title is ALWAYS the leaf name from the server.
+                // Sidebar/search opens seed the tab with a placeholder (often
+                // the full path); reconcile it to the authoritative leaf so the
+                // tab strip, breadcrumb and document.title agree.
+                if (res.name) tab.title = res.name;
                 tab.filePath = filePath;
                 tab.access = res.access;
                 tab.owner_id = res.owner_id;

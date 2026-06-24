@@ -1,0 +1,151 @@
+---
+title: "Triggers in SQLite"
+description: "How SQLite triggers work: BEFORE, AFTER, and INSTEAD OF, the FOR EACH ROW-only model, the WHEN clause, OLD and NEW references, RAISE() for validation, and the pitfalls that bite people coming from PostgreSQL or MySQL."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "triggers", "raise", "schema"]
+date: "2026-06-04"
+---
+
+A trigger is a named database object that runs automatically when an `INSERT`, `UPDATE`, or `DELETE` happens on a table. SQLite has supported them since the early days, and they cover the common cases: enforcing a derived constraint, keeping an audit log, maintaining a denormalized value, or making a view writable. This guide covers the syntax, the references you get inside a trigger body, validation with `RAISE()`, and the differences that surprise people arriving from other databases.
+
+## The one model: FOR EACH ROW
+
+This is the first thing to internalize. SQLite triggers fire **once for each row** affected by the statement. There is no statement-level trigger. The grammar accepts the `FOR EACH ROW` keywords, but they are optional and decorative; row-level is the only behavior SQLite implements. `FOR EACH STATEMENT` is not supported and will raise a syntax error.
+
+If you update 1,000 rows, an `AFTER UPDATE` trigger runs 1,000 times. Plan accordingly: heavy work inside a trigger multiplies by the row count.
+
+## Syntax
+
+```sql
+CREATE TRIGGER [IF NOT EXISTS] trigger_name
+  [BEFORE | AFTER | INSTEAD OF] {INSERT | UPDATE [OF column, ...] | DELETE}
+  ON table_name
+  [FOR EACH ROW]
+  [WHEN condition]
+BEGIN
+  -- one or more statements, each terminated by a semicolon
+END;
+```
+
+A minimal audit trigger:
+
+```sql
+CREATE TABLE accounts (id INTEGER PRIMARY KEY, balance REAL);
+CREATE TABLE audit_log (
+  id        INTEGER PRIMARY KEY,
+  account   INTEGER,
+  old_bal   REAL,
+  new_bal   REAL,
+  changed_at TEXT DEFAULT current_timestamp
+);
+
+CREATE TRIGGER log_balance_change
+AFTER UPDATE OF balance ON accounts
+FOR EACH ROW
+BEGIN
+  INSERT INTO audit_log (account, old_bal, new_bal)
+  VALUES (OLD.id, OLD.balance, NEW.balance);
+END;
+```
+
+The `UPDATE OF balance` part means the trigger fires only when `balance` appears on the left-hand side of the `SET` clause. An update that touches other columns leaves this trigger dormant.
+
+## OLD and NEW
+
+Inside the trigger body you reference the affected row through two special table names:
+
+- `NEW` -- the row as it will be (available in `INSERT` and `UPDATE` triggers).
+- `OLD` -- the row as it was (available in `UPDATE` and `DELETE` triggers).
+
+So `INSERT` triggers see only `NEW`, `DELETE` triggers see only `OLD`, and `UPDATE` triggers see both.
+
+## BEFORE vs AFTER
+
+`BEFORE` triggers run before the row change is applied; `AFTER` triggers run after. For validation you usually want `BEFORE` so you can reject the change before it touches the table. For logging and cascading side effects, `AFTER` is the natural choice because the change is already committed to the table image.
+
+One caution the SQLite docs call out explicitly: in a `BEFORE` trigger, do not modify the same row that is being updated or deleted, because the operation that fired the trigger has not happened yet and the behavior is undefined. And note that you cannot rewrite the incoming row by assigning to `NEW.col` either -- `NEW` columns are read-only in SQLite. To transform an incoming value, reach for a generated column or an `INSTEAD OF` trigger on a view, not a `BEFORE` trigger.
+
+## Validation with RAISE()
+
+The cleanest way to reject a bad change is the `RAISE()` function inside a `WHEN`-guarded `BEFORE` trigger:
+
+```sql
+CREATE TRIGGER no_negative_balance
+BEFORE UPDATE OF balance ON accounts
+FOR EACH ROW
+WHEN NEW.balance < 0
+BEGIN
+  SELECT RAISE(ABORT, 'balance cannot go negative');
+END;
+```
+
+`RAISE()` takes one of four conflict resolutions:
+
+- `RAISE(ABORT, 'msg')` -- undo the current statement's changes, report the error. The default and the one you want most of the time.
+- `RAISE(FAIL, 'msg')` -- stop immediately but keep prior changes made by the same statement.
+- `RAISE(ROLLBACK, 'msg')` -- roll back the entire current transaction.
+- `RAISE(IGNORE)` -- abandon the current row and the rest of this trigger (and any triggers that fired it), but continue the statement. Takes no message.
+
+The `WHEN` clause is what makes this efficient: the trigger body runs only for rows matching the condition, so you are not calling `RAISE()` and catching it for every row.
+
+## INSTEAD OF triggers make views writable
+
+A normal view is read-only. `INSTEAD OF` triggers are the mechanism that lets you `INSERT`, `UPDATE`, or `DELETE` against a view by redirecting those operations to the underlying tables. They are only valid on views, never on ordinary tables.
+
+```sql
+CREATE VIEW active_accounts AS
+  SELECT id, balance FROM accounts WHERE balance > 0;
+
+CREATE TRIGGER active_accounts_delete
+INSTEAD OF DELETE ON active_accounts
+FOR EACH ROW
+BEGIN
+  UPDATE accounts SET balance = 0 WHERE id = OLD.id;
+END;
+```
+
+Now `DELETE FROM active_accounts WHERE id = 5` runs the trigger body instead of attempting a delete on the view itself.
+
+## The WHEN clause
+
+`WHEN` filters which rows actually run the body. It is evaluated per row, with access to `OLD` and `NEW`. Use it to keep trigger logic narrow rather than wrapping the body in an `IF`-style construct (which SQLite's trigger language does not have anyway):
+
+```sql
+CREATE TRIGGER touch_updated_at
+AFTER UPDATE ON accounts
+FOR EACH ROW
+WHEN OLD.balance <> NEW.balance
+BEGIN
+  UPDATE accounts SET balance = NEW.balance WHERE id = NEW.id;
+END;
+```
+
+## Things that differ from PostgreSQL and MySQL
+
+If you are arriving from another database, these catch people out:
+
+- **No statement-level triggers.** Covered above. PostgreSQL's `FOR EACH STATEMENT` has no equivalent.
+- **No trigger functions or procedural language.** The body is a list of plain SQL statements (`INSERT`, `UPDATE`, `DELETE`, `SELECT`). There is no PL/pgSQL, no variables, no loops. Logic lives in `WHEN` conditions and the SQL itself.
+- **`NEW` is read-only.** You cannot rewrite an incoming value by assigning to `NEW.col` in a `BEFORE` trigger the way some engines allow.
+- **Recursive triggers are off by default.** A trigger whose body modifies tables that fire other triggers will cascade only if `PRAGMA recursive_triggers = ON`. Otherwise a trigger cannot re-fire itself directly.
+- **Foreign-key actions are not triggers.** `ON DELETE CASCADE` and friends are handled by the foreign-key system, and (per the docs) those actions do not fire SQLite triggers. Do not expect an `AFTER DELETE` trigger to catch rows removed by a cascade.
+
+## Common mistakes
+
+- **Expecting one trigger fire per statement.** It fires per row. A bulk update runs the body many times.
+- **Putting expensive work in an `AFTER UPDATE` without an `UPDATE OF` or `WHEN` guard.** Every matching row pays the cost. Narrow the trigger to the column and condition you actually care about.
+- **Trying to validate by writing to `NEW`.** Use `RAISE(ABORT, ...)` to reject instead.
+- **Forgetting that dropping a table drops its triggers, but dropping a view requires you to recreate the `INSTEAD OF` triggers too.**
+
+To inspect every trigger defined in a database, query the schema table:
+
+```sql
+SELECT name, tbl_name, sql FROM sqlite_schema WHERE type = 'trigger';
+```
+
+For making a read-only view writable, the [SQLite views guide](/guides/sqlite/views) covers the `INSTEAD OF` pattern in more depth, and for deriving a column value without a trigger at all, see the [generated columns guide](/guides/sqlite/generated-columns).
+
+When you are working out whether a piece of logic belongs in a trigger, a generated column, or application code, Mako's AI autocomplete can draft the trigger against your live schema and show you the resulting `sqlite_schema` entry so you can see exactly what you created.
+
+Mako connects to SQLite and eight other databases with AI-powered autocomplete. Try it free at mako.ai.

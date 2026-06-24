@@ -17,6 +17,13 @@ import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
 import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
 import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
+import { withContextOverflowSelfHeal } from "../agent-lib/context-overflow-self-heal";
+import {
+  computeInputBudget,
+  compactUiMessagesForBudget,
+  elideOldToolOutputs,
+  stripReplayedReasoning,
+} from "../agent-lib/context/compaction";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
@@ -859,9 +866,13 @@ agentRoutes.openapi(
     // Self-heal wrapper: if the catalog still classifies this model as manual
     // thinking but Anthropic rejects the payload with the adaptive-only 400,
     // persist the corrected mode and retry the call transparently.
-    const model = resolvedModelId.startsWith("anthropic/")
+    const baseModel = resolvedModelId.startsWith("anthropic/")
       ? withThinkingSelfHeal(getModel(resolvedModelId), resolvedModelId)
       : getModel(resolvedModelId);
+    // Provider-agnostic backstop: if the prompt still overflows the context
+    // window (estimate was too optimistic, or contextWindow unknown), retry
+    // once with aggressively trimmed history instead of surfacing a raw 400.
+    const model = withContextOverflowSelfHeal(baseModel, resolvedModelId);
     logger.info("Using model", { model: resolvedModelId });
 
     /**
@@ -887,7 +898,70 @@ agentRoutes.openapi(
       const sanitizedMessages = sanitizeMessagesForModel(
         messagesWithAttachments,
       );
-      const modelMessages = await convertToModelMessages(sanitizedMessages);
+      // Always-on cost control (budget-independent): the client replays the
+      // entire `messages[]` every turn, so a long session re-sends every prior
+      // turn's full tool outputs on every request — re-billed as input tokens
+      // each time, even when the prompt comfortably fits the context window.
+      // Elide large tool outputs from older turns (keeping the most recent
+      // turns verbatim) before any budget math. This is the main lever against
+      // runaway spend on long chats. Runs even when `contextWindow` is unknown.
+      const elision = elideOldToolOutputs(sanitizedMessages);
+      let messagesForModel = elision.messages;
+      if (elision.changed) {
+        logger.info("Elided old tool outputs before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          elidedCount: elision.elidedCount,
+        });
+      }
+      // Strip replayed thinking/reasoning traces. `sendReasoning: true` persists
+      // the model's thinking and the client replays it every turn; a model never
+      // needs to re-read its own past thinking, and those blocks are re-billed as
+      // input tokens each request. Kept only on the assistant turn being
+      // continued with tool results (Anthropic interleaved-thinking requirement).
+      const reasoningStrip = stripReplayedReasoning(messagesForModel);
+      messagesForModel = reasoningStrip.messages;
+      if (reasoningStrip.changed) {
+        logger.info("Stripped replayed reasoning before generation", {
+          chatId,
+          workspaceId,
+          modelId: resolvedModelId,
+          strippedCount: reasoningStrip.strippedCount,
+        });
+      }
+      // Proactively keep the prompt under the model's context window. Budget is
+      // derived from the catalog `contextWindow` (provider-agnostic — every
+      // gateway model reports it); when unknown we skip this and rely on the
+      // reactive overflow backstop wrapping the model. Tool calls/results live
+      // as parts inside a single assistant UIMessage here, so compacting whole
+      // messages preserves tool call↔result pairing automatically.
+      const inputBudget = computeInputBudget({
+        contextWindow: modelDef?.contextWindow,
+        systemText: systemPrompt,
+        thinkingBudgetTokens: modelDef?.thinkingBudgetTokens,
+      });
+      if (inputBudget !== null) {
+        const compaction = await compactUiMessagesForBudget({
+          messages: messagesForModel,
+          budgetTokens: inputBudget,
+          summarize: true,
+          abortSignal: turnSignal,
+        });
+        messagesForModel = compaction.messages;
+        if (compaction.didCompact) {
+          logger.info("Compacted chat history before generation", {
+            chatId,
+            workspaceId,
+            modelId: resolvedModelId,
+            strategy: compaction.strategy,
+            estimatedTokensBefore: compaction.estimatedTokensBefore,
+            estimatedTokensAfter: compaction.estimatedTokensAfter,
+            budgetTokens: inputBudget,
+          });
+        }
+      }
+      const modelMessages = await convertToModelMessages(messagesForModel);
       if (includeVisionAttachments) {
         const screenshotVisionMessage = buildScreenshotVisionModelMessage(
           screenshotVisionAttachments,
@@ -1613,12 +1687,25 @@ agentRoutes.openapi(
     if (!access.ok) {
       // A not-yet-created chat (client-minted chatId, no turn sent) is a normal
       // "nothing to resume" case, not an error.
-      if (access.status === 404) return c.body(null, 204);
+      if (access.status === 404) {
+        // `reason` discriminates the three distinct 204 outcomes below so a
+        // benign "nothing to resume" can be told apart from a lost stream when
+        // investigating client-side disconnect reports.
+        logger.debug("Stream resume: nothing to resume", {
+          chatId,
+          reason: "chat-not-found",
+        });
+        return c.body(null, 204);
+      }
       return c.json({ error: "Cannot access chat stream" }, access.status);
     }
 
     const { activeStreamId } = access.chat;
     if (!activeStreamId) {
+      logger.debug("Stream resume: nothing to resume", {
+        chatId,
+        reason: "no-active-stream",
+      });
       return c.body(null, 204);
     }
 
@@ -1626,7 +1713,15 @@ agentRoutes.openapi(
       await getResumableStreamContext().resumeExistingStream(activeStreamId);
     if (!stream) {
       // Stale pointer: stream expired or was lost (e.g. process restart with
-      // the in-memory backend). Clear it so future mounts short-circuit.
+      // the in-memory backend, or a `/stop` handled by another instance). The
+      // client minted a turn but we can no longer reattach — this is the
+      // server-side counterpart of the client's silent-disconnect rescue.
+      logger.info("Stream resume: stale pointer, cannot reattach", {
+        chatId,
+        streamId: activeStreamId,
+        reason: "stale-pointer",
+      });
+      // Clear it so future mounts short-circuit.
       void Chat.updateOne(
         { _id: new ObjectId(chatId), activeStreamId },
         { $set: { activeStreamId: null } },
@@ -1640,9 +1735,15 @@ agentRoutes.openapi(
       chatId,
       streamId: activeStreamId,
     });
-    return new Response(stream.pipeThrough(new TextEncoderStream()), {
-      headers: UI_MESSAGE_STREAM_HEADERS,
-    });
+    // Keep the reattached connection warm during long silent tool gaps, same
+    // as the live POST branch. Without this, a client that resumes mid-turn is
+    // dropped by the edge proxy's idle timeout (~100s with no bytes) whenever a
+    // server-side tool runs quietly, stranding the resumed turn.
+    return withSseKeepAlive(
+      new Response(stream.pipeThrough(new TextEncoderStream()), {
+        headers: UI_MESSAGE_STREAM_HEADERS,
+      }),
+    );
   },
 );
 

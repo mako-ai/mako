@@ -15,6 +15,7 @@
  * test in `tab-routing.test.ts` keeps the two directions in sync.
  */
 import type { ConsoleTab, TabKind } from "../store/lib/types";
+import { appLocationToHostSearch } from "../app-runtime/app-location";
 
 /** Encode a path that may contain slashes, keeping the slashes readable. */
 export function encodePathSegments(path: string): string {
@@ -47,11 +48,12 @@ export const TAB_DEEP_LINK_PATTERNS = {
   settings: /^\/settings\/([a-z-]+)$/,
   // Legacy tab kind superseded by the settings "members" section.
   members: null,
-  // dbt tabs are opened from the Transforms explorer; not deep-linkable yet.
-  "dbt-file": null,
-  "dbt-job": null,
-  "dbt-console": null,
-  "dbt-runs": null,
+  // dbt (Transforms) tabs are addressed under /x/:projectId. The bare project
+  // URL is the Console (project home); runs/file/job hang off it.
+  "dbt-file": /^\/x\/([a-zA-Z0-9-]+)\/file\/(.+)$/,
+  "dbt-job": /^\/x\/([a-zA-Z0-9-]+)\/job\/([a-zA-Z0-9-]+)/,
+  "dbt-runs": /^\/x\/([a-zA-Z0-9-]+)\/runs\/?$/,
+  "dbt-console": /^\/x\/([a-zA-Z0-9-]+)\/?$/,
 } as const satisfies Record<NonNullable<TabKind>, RegExp | null>;
 
 /**
@@ -95,7 +97,13 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
     }
     case "app": {
       const appId = tab.metadata?.appId as string | undefined;
-      return appId ? `/a/${appId}` : null;
+      if (!appId) return null;
+      // The running app projects its own location (path + query) onto the
+      // host URL: query params stay readable, the app pathname rides in the
+      // reserved `_path` param. The bare `/a/:appId` pathname is unchanged, so
+      // the deep-link pattern still matches.
+      const appLocation = tab.metadata?.appLocation as string | undefined;
+      return `/a/${appId}${appLocationToHostSearch(appLocation)}`;
     }
     case "app-file": {
       const appId = tab.metadata?.appId as string | undefined;
@@ -119,11 +127,26 @@ export function tabUrlPath(tabId: string, tab: ConsoleTab): string | null {
         : "/settings";
     case "members":
       return null;
-    case "dbt-file":
-    case "dbt-job":
-    case "dbt-console":
-    case "dbt-runs":
-      return null;
+    case "dbt-file": {
+      const projectId = tab.metadata?.projectId as string | undefined;
+      const path = tab.metadata?.path as string | undefined;
+      return projectId && path
+        ? `/x/${projectId}/file/${encodePathSegments(path)}`
+        : null;
+    }
+    case "dbt-job": {
+      const projectId = tab.metadata?.projectId as string | undefined;
+      const jobId = tab.metadata?.jobId as string | undefined;
+      return projectId && jobId ? `/x/${projectId}/job/${jobId}` : null;
+    }
+    case "dbt-runs": {
+      const projectId = tab.metadata?.projectId as string | undefined;
+      return projectId ? `/x/${projectId}/runs` : null;
+    }
+    case "dbt-console": {
+      const projectId = tab.metadata?.projectId as string | undefined;
+      return projectId ? `/x/${projectId}` : null;
+    }
     default: {
       // Compile-time exhaustiveness: a new TabKind must be handled above.
       const exhaustivenessCheck: never = kind;

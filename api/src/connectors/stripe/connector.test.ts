@@ -90,7 +90,57 @@ async function testResolveSchema() {
   assert.equal(charge?.fields.currency?.type, "string");
   assert.equal(charge?.fields.billing_details?.type, "json");
 
+  // Invoice fields that were previously absent (and therefore string-coerced
+  // by the unknown-field policy) must now carry their real types.
+  const invoice = await connector.resolveSchema("invoices");
+  assert.equal(invoice?.fields.paid_out_of_band?.type, "boolean");
+  assert.equal(invoice?.fields.automatic_tax?.type, "json");
+  assert.equal(invoice?.fields.transfer_data?.type, "json");
+  assert.equal(invoice?.fields.subtotal_excluding_tax?.type, "integer");
+  assert.equal(invoice?.fields.total_excluding_tax?.type, "integer");
+  assert.equal(invoice?.fields.ending_balance?.type, "integer");
+
   assert.equal(await connector.resolveSchema("not_real"), null);
+}
+
+async function testSubscriptionsBackfillRequestsAllStatuses() {
+  const connector = createConnector();
+
+  const capturedParams: Array<Record<string, unknown>> = [];
+  (connector as any).stripe = {
+    subscriptions: {
+      list: async (params: Record<string, unknown>) => {
+        capturedParams.push(params);
+        return { data: [], has_more: false };
+      },
+    },
+  };
+
+  await connector.fetchEntity({
+    entity: "subscriptions",
+    onBatch: async () => {},
+  } as any);
+
+  assert.equal(capturedParams.length, 1);
+  // Without status:"all" Stripe omits canceled/incomplete_expired subs.
+  assert.equal(capturedParams[0].status, "all");
+}
+
+function testNoLegacySubscriptionWebhookEvents() {
+  const connector = createConnector();
+  // Stripe never emits bare `subscription.*` events (only
+  // `customer.subscription.*`); ensure the dead entries are gone.
+  assert.equal(connector.getWebhookEventMapping("subscription.created"), null);
+  assert.equal(connector.getWebhookEventMapping("subscription.updated"), null);
+  assert.equal(connector.getWebhookEventMapping("subscription.deleted"), null);
+
+  const events = connector.getSupportedWebhookEvents();
+  assert.ok(!events.includes("subscription.created"));
+  assert.ok(!events.includes("subscription.updated"));
+  assert.ok(!events.includes("subscription.deleted"));
+  // The real, prefixed events remain supported.
+  assert.ok(events.includes("customer.subscription.created"));
+  assert.ok(events.includes("customer.subscription.deleted"));
 }
 
 function testNormalizeBackfillRecordTsParityWithWebhook() {
@@ -269,8 +319,10 @@ async function main() {
   testResolveRecordTimestampHandlesMillisGuard();
   testResolveRecordTimestampFallsBackToStringFields();
   await testResolveSchema();
+  await testSubscriptionsBackfillRequestsAllStatuses();
   testNormalizeBackfillRecordTsParityWithWebhook();
   testPriceEventsMapToPricesEntity();
+  testNoLegacySubscriptionWebhookEvents();
   testWebhookEventsForEntities();
   testSupportsWebhookProvisioning();
   await testCreateWebhookSubscriptionPayload();

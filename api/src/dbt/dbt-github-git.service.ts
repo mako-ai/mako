@@ -17,6 +17,7 @@ import {
   getBlobContent,
   getRefCommit,
   getRepoInfo,
+  getRepoTree,
   listBranches,
   type TreeChange,
 } from "../integrations/github/github-api";
@@ -163,29 +164,37 @@ export async function commitAndPush(
     .lean();
   const byPath = new Map(files.map(f => [f.path, f]));
 
-  const treeChanges: TreeChange[] = status.changes.map(change => ({
-    path: repoPath(project, change.path),
-    content:
-      change.status === "deleted"
-        ? null
-        : (byPath.get(change.path)?.content ?? ""),
-  }));
-
   const { commitSha, treeSha } = await getRefCommit(owner, repo, branch, token);
-  const newSha = await commitChanges(
-    owner,
-    repo,
-    {
-      branch,
-      parentSha: commitSha,
-      baseTreeSha: treeSha,
-      message: params.message,
-      changes: treeChanges,
-    },
-    token,
+
+  // GitHub returns 422 GitRPC::BadObject if a tree entry deletes (sha:null) a
+  // path that isn't in base_tree. Phantom deletions (files removed upstream but
+  // still flagged is_deleted locally) would trip this, so drop any deletion
+  // whose path no longer exists on the branch and just reconcile it locally.
+  const baseTree = await getRepoTree(owner, repo, treeSha, token);
+  const baseTreePaths = new Set(
+    baseTree.entries.filter(e => e.type === "blob").map(e => e.path),
   );
 
-  // Reconcile local state to the just-pushed commit.
+  const treeChanges: TreeChange[] = [];
+  const phantomDeletions: string[] = [];
+  for (const change of status.changes) {
+    const path = repoPath(project, change.path);
+    if (change.status === "deleted") {
+      if (!baseTreePaths.has(path)) {
+        phantomDeletions.push(change.path);
+        continue;
+      }
+      treeChanges.push({ path, content: null });
+    } else {
+      treeChanges.push({
+        path,
+        content: byPath.get(change.path)?.content ?? "",
+      });
+    }
+  }
+
+  // Reconcile local state. Phantom deletions never reach GitHub but must still
+  // be cleaned up so they stop showing as pending changes.
   const ops: Array<Promise<unknown>> = [];
   for (const change of status.changes) {
     if (change.status === "deleted") {
@@ -202,6 +211,31 @@ export async function commitAndPush(
       );
     }
   }
+
+  // Nothing real to push (every change was a phantom deletion): heal local
+  // state without creating an empty commit.
+  if (treeChanges.length === 0) {
+    await Promise.all(ops);
+    return {
+      committed: false,
+      branch,
+      pushed: { added: 0, modified: 0, deleted: 0 },
+    };
+  }
+
+  const newSha = await commitChanges(
+    owner,
+    repo,
+    {
+      branch,
+      parentSha: commitSha,
+      baseTreeSha: treeSha,
+      message: params.message,
+      changes: treeChanges,
+    },
+    token,
+  );
+
   await Promise.all(ops);
 
   project.repo.lastSyncedSha = newSha;
@@ -216,7 +250,7 @@ export async function commitAndPush(
     pushed: {
       added: status.added,
       modified: status.modified,
-      deleted: status.deleted,
+      deleted: status.deleted - phantomDeletions.length,
     },
   };
 }

@@ -1,0 +1,126 @@
+---
+title: "Choosing Data Types in ClickHouse for Compression and Speed"
+description: "How data type choice drives compression and query speed in ClickHouse. Covers right-sizing integers, LowCardinality dictionary encoding and when it helps, Enum vs LowCardinality, the real cost of Nullable, FixedString, Date vs DateTime sizing, and avoiding String for everything."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "data-types", "lowcardinality", "compression", "schema-design", "olap"]
+date: "2026-06-08"
+---
+
+# Choosing Data Types in ClickHouse
+
+In an OLTP database the data type you pick is mostly about correctness. In ClickHouse it is also about money: type choice is one of the three biggest levers on compression, alongside the ordering key and codecs. Less data on disk means less I/O per query, and in a columnar engine that translates almost directly into query latency. This guide covers the type decisions that matter for an analytical schema and the traps that quietly bloat your storage.
+
+## Right-Size Your Integers
+
+ClickHouse offers `Int8/16/32/64/128/256` and unsigned `UInt8/16/32/64/128/256`. The numbers are bit widths, so `UInt8` holds 0 to 255 in one byte, `UInt32` holds up to ~4.3 billion in four bytes, and so on.
+
+Defaulting every integer to `Int64` because it is "safe" wastes bytes on every row. A status code that ranges 0 to 10 fits in `UInt8` and costs an eighth of what `UInt64` does before compression. Pick the smallest type that comfortably covers your range plus headroom:
+
+```sql
+CREATE TABLE pageviews (
+    user_id   UInt64,        -- genuinely large key space
+    status    UInt8,         -- 0..255 is plenty
+    duration  UInt16,        -- seconds, up to ~18 hours
+    bytes_out UInt32
+)
+ENGINE = MergeTree
+ORDER BY user_id;
+```
+
+Compression narrows the gap, since a column of small values in a wide type still compresses well, but it does not erase it. The narrower type also means less data decompressed and processed at query time, which compression does not help with.
+
+## Avoid String for Everything
+
+The most common schema mistake is storing everything as `String`: numbers, dates, enums, booleans. It works, and it is slow and large. Strings disable the semantics ClickHouse uses to filter and aggregate efficiently, and they compress worse than the typed equivalent. Store numbers as numeric types, timestamps as date/time types, and a fixed set of labels as `Enum` or `LowCardinality(String)`. The official best-practice guidance is blunt about this: use strict types, and reserve `String` for genuinely free-form text.
+
+## LowCardinality: Dictionary Encoding
+
+`LowCardinality(T)` changes the internal representation of a column to dictionary encoding. Instead of storing the full value in every row, ClickHouse keeps a dictionary of distinct values and stores a small integer index per row. For a column with few distinct values relative to its row count, this is a large win on both storage and query speed.
+
+```sql
+CREATE TABLE logs (
+    ts        DateTime,
+    level     LowCardinality(String),   -- 'info', 'warn', 'error', ...
+    service   LowCardinality(String),   -- a few dozen service names
+    message   String                    -- free-form, NOT LowCardinality
+)
+ENGINE = MergeTree
+ORDER BY ts;
+```
+
+The rule of thumb from ClickHouse's own guidance: `LowCardinality` pays off when a column has fewer than roughly 10,000 distinct values. Below that, the dictionary stays small and the integer indices compress beautifully. Above it, the dictionary itself grows large and you lose the benefit, sometimes making things worse than a plain `String`.
+
+`LowCardinality` wraps `String`, `FixedString`, `Date`, `DateTime`, and numeric types (except `Decimal`). Wrapping a high-cardinality column, or a type where it does not help, is exactly what the `allow_suspicious_low_cardinality_types` setting is there to discourage. Do not wrap a `user_id` or a free-text `message`.
+
+## Enum vs LowCardinality(String)
+
+Both handle a small set of recurring string labels. The difference is whether the set is fixed.
+
+`Enum8` / `Enum16` store an explicit, closed mapping of string to integer defined in the schema:
+
+```sql
+status Enum8('active' = 1, 'churned' = 2, 'trial' = 3)
+```
+
+This is the most compact option (one or two bytes per row, no separate dictionary) and it enforces the allowed values: inserting a label not in the enum is an error. The cost is rigidity. Adding a new label requires an `ALTER TABLE ... MODIFY COLUMN`, which means you must know the full set up front and accept schema changes to extend it.
+
+`LowCardinality(String)` is the pragmatic default when the set is stable but not strictly fixed: it gets most of the storage benefit, accepts new values without a schema change, and does not make you maintain an explicit mapping. Reach for `Enum` when the set is genuinely closed and you want the database to reject anything else (a state machine, a small fixed taxonomy). Reach for `LowCardinality(String)` when the set is small and slow-changing but you would rather not run a migration every time it grows.
+
+## The Real Cost of Nullable
+
+`Nullable(T)` is convenient and not free. ClickHouse implements it by storing a separate bitmap column alongside the data to mark which rows are NULL. That is extra storage and an extra read, and it blocks some optimizations. Wrapping every column in `Nullable` "just in case" is a measurable tax.
+
+Often you do not need it. If a sensible default carries the same meaning as "missing" for your queries, use the default instead:
+
+```sql
+-- Instead of: referrer Nullable(String)
+referrer String DEFAULT ''      -- empty string means "no referrer"
+
+-- Instead of: score Nullable(Int32)
+score Int32 DEFAULT 0           -- if 0 is unambiguous in your domain
+```
+
+Use `Nullable` when NULL is semantically distinct from any default value and you actually query for it (for example, "find rows where the measurement was never taken," where 0 is a legitimate measurement). Otherwise prefer a default and keep the column non-nullable.
+
+## FixedString: Only When Truly Fixed
+
+`FixedString(N)` stores exactly N bytes per value, padding shorter values with null bytes. It is the right choice for values that are genuinely a fixed width: a two-letter country code (`FixedString(2)`), a currency code, a hash of known length. For anything variable-length, plain `String` is better, because `FixedString` pads to the maximum and the padding wastes space and can leak into comparisons if you are not careful. The guidance: use `FixedString` only when the column values are strictly fixed-length.
+
+## Dates and Times
+
+`Date` is two bytes and covers day granularity to 2149. `Date32` extends the range at four bytes. `DateTime` is four bytes at second resolution; `DateTime64(precision)` adds sub-second precision at the cost of more bytes. Pick the coarsest resolution your queries need. If you only ever group by day, storing full `DateTime64(9)` nanosecond timestamps wastes bytes on precision you discard. See the [ClickHouse date functions guide](/guides/clickhouse/date-functions) for working with these once chosen.
+
+## A Worked Schema
+
+Putting it together for an events table:
+
+```sql
+CREATE TABLE events (
+    event_time DateTime,                              -- second resolution is enough
+    event_date Date DEFAULT toDate(event_time),       -- cheap, used in PARTITION BY
+    user_id    UInt64,                                -- large key space
+    event_type LowCardinality(String),               -- dozens of types, may grow
+    country    FixedString(2),                        -- ISO code, fixed width
+    status     Enum8('ok' = 1, 'fail' = 2),           -- closed set
+    latency_ms UInt32,                                -- right-sized
+    error_msg  String DEFAULT ''                      -- free text, '' means none
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(event_date)
+ORDER BY (event_type, user_id, event_time);
+```
+
+Every choice here is a storage decision: small integers where the range allows, dictionary encoding for repeating labels, a fixed-width type for the country code, an enum for the closed status set, and defaults instead of `Nullable`. None of it changes what the table can do; all of it changes what it costs.
+
+When you are profiling an existing schema, Mako's AI autocomplete can help you write the introspection queries against `system.columns` and `system.parts` to see compressed-vs-uncompressed sizes per column before deciding what to retype.
+
+## Related Guides
+
+- [ClickHouse MergeTree Table Engines](/guides/clickhouse/mergetree-engines) since the ordering key works with types to drive compression.
+- [ClickHouse Data Skipping Indexes](/guides/clickhouse/data-skipping-indexes) which depend on well-chosen types to be effective.
+- [Import CSV to ClickHouse](/guides/import-csv-to-clickhouse) where schema inference picks types you will often want to tighten.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

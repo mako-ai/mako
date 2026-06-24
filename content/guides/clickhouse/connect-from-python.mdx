@@ -1,0 +1,202 @@
+---
+title: "How to Connect to ClickHouse from Python"
+description: "Connect to ClickHouse from Python with clickhouse-connect or clickhouse-driver. Working code for HTTP and native protocol, async clients, inserts, pandas, and the port mistakes everyone makes."
+database: "clickhouse"
+category: "how-to"
+tags: ["clickhouse", "python", "clickhouse-connect", "clickhouse-driver", "connection"]
+date: "2026-06-12"
+---
+
+Python has two serious drivers for ClickHouse: **clickhouse-connect**, the official client maintained by ClickHouse Inc., and **clickhouse-driver**, the older community client. They speak different protocols to the server, which is the source of most connection errors people hit. This guide shows working code for both, plus async options and the gotchas around ports, inserts, and parameters.
+
+## Which driver should you use?
+
+| Driver | Maintainer | Protocol | Port | Async | Notes |
+|---|---|---|---|---|---|
+| clickhouse-connect | ClickHouse Inc. | HTTP(S) | 8123 / 8443 | Yes (`get_async_client`) | Default choice; pandas/Arrow built in; Python 3.10+ |
+| clickhouse-driver | Community (mymarilyn) | Native TCP | 9000 / 9440 | No (see asynch) | Mature, binary protocol, slightly different API |
+| asynch | Community | Native TCP | 9000 / 9440 | Only async | asyncio rewrite of the native protocol |
+
+Short version: new projects should use **clickhouse-connect**. It is the officially supported client, it is what ClickHouse Cloud documents, and it ships pandas, NumPy, and Arrow integration plus a SQLAlchemy dialect in one package (version 1.3.0 as of June 2026, requires Python 3.10+). Use **clickhouse-driver** if you specifically want the native TCP protocol -- it transfers compressed binary data and exposes some settings HTTP does not -- or if you are maintaining code that already uses it. For asyncio with the native protocol, use **asynch**; the older `aioch` wrapper has not been released since 2019 and should be avoided.
+
+## The port mistake everyone makes
+
+ClickHouse listens on multiple ports for different protocols, and pointing a driver at the wrong one fails with confusing errors:
+
+- **8123** -- HTTP (what clickhouse-connect uses by default)
+- **8443** -- HTTPS (what ClickHouse Cloud uses; clickhouse-connect switches to this when `secure=True` on the default ports)
+- **9000** -- native TCP (what clickhouse-driver uses)
+- **9440** -- native TCP over TLS
+
+If you point clickhouse-connect at 9000 you will get an HTTP error against a binary port; if you point clickhouse-driver at 8123 you will get an "Unexpected EOF" or packet parsing error. Match the driver to the port before debugging anything else.
+
+## clickhouse-connect (recommended)
+
+Install:
+
+```bash
+pip install clickhouse-connect
+```
+
+Connect and query:
+
+```python
+import os
+import clickhouse_connect
+
+client = clickhouse_connect.get_client(
+    host=os.environ["CLICKHOUSE_HOST"],   # e.g. "abc123.us-east-1.aws.clickhouse.cloud" or "localhost"
+    username=os.environ.get("CLICKHOUSE_USER", "default"),
+    password=os.environ["CLICKHOUSE_PASSWORD"],
+    database="default",
+    secure=True,  # HTTPS on 8443; omit for plain HTTP on localhost:8123
+)
+
+result = client.query("SELECT event_date, count() FROM events GROUP BY event_date ORDER BY event_date")
+for row in result.result_rows:
+    print(row)
+
+print(result.column_names)
+```
+
+`query()` returns a result object with `result_rows`, `column_names`, and metadata. For statements that return no data (DDL, `SET`, etc.) use `command()`:
+
+```python
+client.command("CREATE TABLE IF NOT EXISTS t (id UInt64, name String) ENGINE = MergeTree ORDER BY id")
+```
+
+### Query parameters
+
+clickhouse-connect supports server-side parameter binding with the `{name:Type}` syntax:
+
+```python
+result = client.query(
+    "SELECT * FROM events WHERE event_date >= {start:Date} AND user_id = {uid:UInt64}",
+    parameters={"start": "2026-01-01", "uid": 42},
+)
+```
+
+The type annotation is required -- ClickHouse validates and casts the value server-side. Never build queries with f-strings; user input in an analytical query is just as injectable as in OLTP.
+
+### Inserts are columnar-aware
+
+ClickHouse wants batches, not row-at-a-time inserts. `insert()` takes a list of rows plus column names:
+
+```python
+client.insert(
+    "events",
+    [[1, "signup", "2026-06-12 09:00:00"], [2, "login", "2026-06-12 09:01:00"]],
+    column_names=["user_id", "event_type", "ts"],
+)
+```
+
+Insert thousands of rows per call, not one. Single-row inserts create one data part each on a MergeTree table and will eventually trigger "too many parts" errors. If you have a streaming workload, buffer rows in your application and flush in batches, or use async inserts on the server side.
+
+### pandas and Arrow
+
+```python
+df = client.query_df("SELECT * FROM events LIMIT 100000")   # pandas DataFrame
+client.insert_df("events_copy", df)                          # DataFrame back in
+```
+
+`query_np` and `query_arrow` do the same for NumPy and Arrow. This is built into the package -- no extra adapter library needed.
+
+### Async client
+
+```python
+import clickhouse_connect
+
+async def main():
+    client = await clickhouse_connect.get_async_client(host="localhost", username="default", password="")
+    result = await client.query("SELECT 1")
+    print(result.result_rows)
+```
+
+The async client wraps the same HTTP transport in a thread pool executor, so it will not outrun the sync client on raw throughput -- it exists so you can use it inside an asyncio application without blocking the event loop.
+
+## clickhouse-driver (native protocol)
+
+Install:
+
+```bash
+pip install clickhouse-driver
+```
+
+Connect and query (note: port 9000, not 8123):
+
+```python
+import os
+from clickhouse_driver import Client
+
+client = Client(
+    host=os.environ["CLICKHOUSE_HOST"],
+    port=9000,
+    user=os.environ.get("CLICKHOUSE_USER", "default"),
+    password=os.environ["CLICKHOUSE_PASSWORD"],
+    database="default",
+)
+
+rows = client.execute("SELECT event_date, count() FROM events GROUP BY event_date")
+for row in rows:
+    print(row)
+```
+
+`execute()` returns a plain list of tuples. Parameters use `%(name)s` style with a dict:
+
+```python
+rows = client.execute(
+    "SELECT * FROM events WHERE user_id = %(uid)s",
+    {"uid": 42},
+)
+```
+
+Inserts pass values separately from the query -- never interpolate them into the SQL string:
+
+```python
+client.execute(
+    "INSERT INTO events (user_id, event_type) VALUES",
+    [(1, "signup"), (2, "login")],
+)
+```
+
+The same batching rule applies: large batches, few inserts.
+
+Two things to know about the native protocol: it transfers LZ4-compressed binary blocks, which is more compact than HTTP for large result sets, and it exposes query progress and profile info that the HTTP interface does not. The tradeoff is that you cannot reach it through HTTP load balancers or the ClickHouse Cloud HTTPS endpoint setup most proxies expect -- check that port 9440 is reachable before committing to it for a cloud deployment.
+
+For TLS:
+
+```python
+client = Client(host="...", port=9440, secure=True, user="default", password="...")
+```
+
+## SQLAlchemy
+
+clickhouse-connect ships its own dialect (`clickhouse_connect.cc_sqlalchemy`), aimed mainly at query workloads (it exists largely for Superset support). The community `clickhouse-sqlalchemy` package targets clickhouse-driver but has not had a release since mid-2024. Either way, treat SQLAlchemy with ClickHouse as a read/query convenience, not a full ORM experience -- ClickHouse is not an OLTP database and ORM-style row updates do not map onto it.
+
+## Embedded option: chdb
+
+If you want ClickHouse's SQL engine without a server -- the SQLite model -- `chdb` embeds ClickHouse in-process:
+
+```python
+import chdb
+print(chdb.query("SELECT count() FROM file('events.parquet')", "Pretty"))
+```
+
+Useful for local analytics on files; not a replacement for a server when multiple clients need the same data.
+
+## Common errors
+
+| Error | Likely cause |
+|---|---|
+| `Unexpected EOF while reading bytes` (clickhouse-driver) | Pointed native driver at HTTP port 8123 |
+| HTTP 400 / garbage response (clickhouse-connect) | Pointed HTTP driver at native port 9000 |
+| `Authentication failed: password is incorrect` | Wrong password, or user restricted by host/IP |
+| `Code: 516` | Same as above -- authentication failure code |
+| `Too many parts` on insert | Row-at-a-time inserts; batch them |
+| Connection timeout to ClickHouse Cloud | Missing `secure=True` or IP not in the cloud allowlist |
+
+## Verifying your connection
+
+Once connected, `SELECT version()` confirms the server, and `SELECT * FROM system.settings WHERE changed` shows what your session overrides. For exploring the data itself -- schemas in `system.tables`, part counts in `system.parts` -- a GUI saves round trips; see our [ClickHouse GUI client guide](/guides/clickhouse-gui-client) for the options. If you are loading data, the [CSV import guide](/guides/import-csv-to-clickhouse) covers the format settings that bite. And once you are querying, the [aggregate functions](/guides/clickhouse/aggregate-functions) and [materialized views](/guides/clickhouse/materialized-views) guides cover the ClickHouse-specific patterns that differ from OLTP SQL.
+
+Mako connects to ClickHouse with AI-powered autocomplete. Try it free at mako.ai.

@@ -1,0 +1,156 @@
+---
+title: "String Functions in SQLite"
+description: "A practical reference for SQLite string functions: substr, replace, instr, trim, length, printf/format, and concat. Covers 1-based indexing, the missing functions you'll wish existed, and how to work around them."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "sql", "strings", "text", "functions"]
+date: "2026-06-03"
+---
+
+SQLite ships a compact set of string functions. The list is shorter than PostgreSQL's or MySQL's, and a few functions you might expect (`left`, `right`, `reverse`, `split_part`, a native `regexp`) simply aren't there. Once you know what exists and what doesn't, the gaps are easy to work around.
+
+This guide covers the built-in scalar string functions. For combining values across rows, see `group_concat` in our [SQLite aggregate functions guide](/guides/sqlite/aggregate-functions).
+
+## The core set
+
+| Function | Returns |
+| --- | --- |
+| `length(X)` | Number of characters in text `X` (bytes for a BLOB) |
+| `substr(X, Y, Z)` | Substring of `X` starting at position `Y`, length `Z` |
+| `instr(X, Y)` | 1-based position of the first occurrence of `Y` in `X`, or 0 |
+| `replace(X, Y, Z)` | `X` with every occurrence of `Y` replaced by `Z` |
+| `trim`, `ltrim`, `rtrim` | Remove leading/trailing characters |
+| `upper(X)`, `lower(X)` | Case conversion (ASCII only by default) |
+| `printf` / `format` | Formatted string from a template |
+| `concat`, `concat_ws` | Join arguments into one string (3.44.0+) |
+
+## Indexing is 1-based
+
+`substr` and `instr` count from 1, not 0. This is the single most common mistake for people arriving from languages where strings are zero-indexed.
+
+```sql
+SELECT substr('database', 1, 4);   -- 'data'
+SELECT substr('database', 5);      -- 'base'  (no length = to the end)
+SELECT instr('database', 'base');  -- 5
+SELECT instr('database', 'xyz');   -- 0  (not found, not NULL)
+```
+
+A negative start position counts from the end of the string:
+
+```sql
+SELECT substr('database', -4);     -- 'base'
+SELECT substr('database', -4, 2);  -- 'ba'
+```
+
+`substring` is an accepted alias for `substr`, so both names work identically.
+
+## length counts characters, not bytes
+
+For a text value, `length` returns the number of characters. For a BLOB, it returns the number of bytes. If you need the byte count of text (for example, to check storage size of a UTF-8 string), use `octet_length`.
+
+```sql
+SELECT length('café');        -- 4  (characters)
+SELECT octet_length('café');  -- 5  (bytes: é is two bytes in UTF-8)
+```
+
+`length` stops at the first NUL character in a string, which can surprise you if your data contains embedded NULs.
+
+## Trimming
+
+All three trim functions take an optional second argument listing the characters to strip. Without it, they strip spaces.
+
+```sql
+SELECT trim('  hello  ');           -- 'hello'
+SELECT trim('xxhelloxx', 'x');      -- 'hello'
+SELECT ltrim('00042', '0');         -- '42'
+SELECT rtrim('path/to/file/', '/'); -- 'path/to/file'
+```
+
+The character argument is a *set* of characters, not a substring. `trim('abcabc', 'ab')` strips any leading or trailing `a` or `b`, returning `'c'`.
+
+## Concatenation: operator vs functions
+
+The classic way to join strings is the `||` operator:
+
+```sql
+SELECT 'user_' || id || '@example.com' FROM users;
+```
+
+A catch: `||` propagates NULL. If any operand is NULL, the whole result is NULL. Guard with `coalesce` when a column might be NULL:
+
+```sql
+SELECT first_name || ' ' || coalesce(last_name, '') FROM people;
+```
+
+Since version 3.44.0 (2023), SQLite has `concat` and `concat_ws`, which treat NULL arguments as empty strings instead:
+
+```sql
+SELECT concat('a', NULL, 'b');            -- 'ab'
+SELECT concat_ws('-', 2026, 06, 03);      -- '2026-6-3'
+SELECT concat_ws(', ', first, mid, last); -- skips any NULL parts
+```
+
+If you target older SQLite versions (common in embedded and mobile environments where the bundled library lags), stick with `||` plus `coalesce`.
+
+## printf and format
+
+`printf` formats a string from a C-style template. As of 3.38.0 (2022), `format` is an SQL-standard alias for the same function; use whichever reads better.
+
+```sql
+SELECT printf('%05d', 42);          -- '00042'  (zero-padded)
+SELECT printf('%.2f', 3.14159);     -- '3.14'
+SELECT printf('%s has %d rows', name, n) FROM stats;
+SELECT format('Order #%d: $%,.2f', id, total) FROM orders;
+```
+
+`printf` is the workhorse for zero-padding, fixed decimal places, and building consistent identifiers without juggling multiple `substr` calls.
+
+## replace for substitution
+
+`replace` swaps every occurrence, not just the first, and is case-sensitive:
+
+```sql
+SELECT replace('a.b.c.d', '.', '/');  -- 'a/b/c/d'
+SELECT replace('Hello', 'l', 'L');    -- 'HeLLo'
+```
+
+It is frequently used in `UPDATE` to fix data in place:
+
+```sql
+UPDATE urls SET path = replace(path, 'http://', 'https://');
+```
+
+There's no count-limited or position-limited replace. To replace only the first occurrence you'll combine `instr` and `substr`, or fall back to application code.
+
+## The functions that aren't there
+
+This is where SQLite differs most from other engines. None of the following are built in:
+
+- **`left` / `right`** -- use `substr(X, 1, n)` and `substr(X, -n)`.
+- **`reverse`** -- no native function. A recursive CTE can do it, but it's awkward; reverse in application code if you can.
+- **`split_part` / `string_to_array`** -- no native string splitting. For delimited data, a recursive CTE that repeatedly slices on `instr` is the usual workaround, or split before insert.
+- **`regexp_replace` / `regexp_substr`** -- SQLite has the `REGEXP` *operator* in its grammar, but no implementation is loaded by default. `x REGEXP y` raises an error unless you register a `regexp()` user function (the `sqlean` extensions provide one, as does most language tooling). `glob` and `like` cover simple wildcard matching without an extension.
+- **Unicode-aware `upper` / `lower`** -- the built-ins only case-fold ASCII. `upper('café')` returns `'CAFÉ'` only by luck of the byte; accented and non-Latin characters are left unchanged unless you build SQLite with the ICU extension.
+
+## Pattern matching with like and glob
+
+For matching rather than transforming, `like` is case-insensitive for ASCII and uses `%`/`_` wildcards; `glob` is case-sensitive and uses Unix-style `*`/`?`.
+
+```sql
+SELECT * FROM files WHERE name LIKE '%.csv';   -- ends in .csv, any case
+SELECT * FROM files WHERE name GLOB '*.csv';   -- ends in .csv, exact case
+```
+
+`like` only uses an index when the pattern has no leading wildcard and the column has the right collation, so `LIKE 'abc%'` can be indexed but `LIKE '%abc'` cannot.
+
+## Common mistakes
+
+- **Off-by-one from 0-based assumptions.** `substr(X, 0, 3)` does not behave like `substr(X, 1, 3)`; position 0 is treated as before the start and shortens the result. Start at 1.
+- **Expecting `instr` to return NULL on no match.** It returns 0. Test with `instr(...) > 0`, not `IS NOT NULL`.
+- **`||` swallowing rows to NULL.** One NULL operand nulls the entire concatenation. Use `coalesce` or `concat`.
+- **Assuming `upper`/`lower` handle accents.** They don't, without ICU. Normalize case in the application for non-ASCII text.
+- **Reaching for `regexp` and getting an error.** It's not loaded by default. Load an extension or rewrite with `like`/`glob`.
+
+When you're stacking `substr`, `instr`, and `replace` to reshape a column, Mako's AI autocomplete can draft the nested expression so you can check it against real rows before committing it to an `UPDATE`.
+
+Mako connects to SQLite and eight other databases with AI-powered autocomplete. Try it free at mako.ai.

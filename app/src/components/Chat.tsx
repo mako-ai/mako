@@ -56,7 +56,7 @@ import {
 } from "lucide-react";
 import { useTheme as useMuiTheme, keyframes } from "@mui/material/styles";
 import { useChat } from "@ai-sdk/react";
-import { useStickToBottom } from "use-stick-to-bottom";
+import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
   DefaultChatTransport,
   lastAssistantMessageIsCompleteWithToolCalls,
@@ -71,6 +71,8 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSchemaStore } from "../store/schemaStore";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useRealtimeStore } from "../store/realtimeStore";
+import { useAppStore } from "../store/appStore";
+import { useDbtStore } from "../store/dbtStore";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { ModelSelector } from "./ModelSelector";
 import { generateObjectId } from "../utils/objectId";
@@ -134,6 +136,83 @@ interface ChatSessionMeta {
   updatedAt?: string;
   /** Resume pointer set while a turn is generating server-side. */
   activeStreamId?: string | null;
+}
+
+// Human-in-the-loop tools resolve via an interactive card (the user answers /
+// approves), not via an `execute` result. They legitimately stay pending at
+// `input-available` with no output until the user acts, so any "settle the
+// dangling tool" cleanup must skip them — otherwise the card is torn down
+// before it can be answered. Part types are `tool-<toolName>`.
+const HUMAN_IN_THE_LOOP_TOOL_PART_TYPES = new Set([
+  "tool-ask_clarifying_questions",
+  "tool-submit_plan",
+]);
+
+function isHumanInTheLoopToolPartType(partType: string): boolean {
+  return HUMAN_IN_THE_LOOP_TOOL_PART_TYPES.has(partType);
+}
+
+function toolNameFromPartType(partType: string): string {
+  return partType.startsWith("tool-")
+    ? partType.slice("tool-".length)
+    : partType;
+}
+
+// Server-executed mutation tools (issue #475 pattern) whose open-tab sync we
+// ALSO reconcile off the resumable chat stream — in addition to the workspace
+// realtime poke (app.updated / dbt.file.updated) — so an open app / dbt tab
+// converges even when the workspace SSE is dead (mobile lock / laptop sleep).
+const APP_SERVER_MUTATION_TOOLS = new Set<string>([
+  "app_write_file",
+  "app_delete_file",
+  "app_rename_file",
+  "app_add_dependency",
+  "app_remove_dependency",
+  "app_create_data_binding",
+  "app_delete_data_binding",
+]);
+const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
+  "create_dbt_file",
+  "modify_dbt_file",
+  "delete_dbt_file",
+]);
+
+// Diagnostics for the *live* stream-disconnect signatures so they can be
+// investigated after the fact:
+//   - "orphan-rescue": a turn settled to `ready` while non-interactive tool
+//     cards were still pending (the silent SSE drop → 204 reconnect path).
+//   - "stream-error":  the SDK surfaced a thrown stream error (e.g. a 524 or a
+//     network drop when the tab is frozen by a mobile lock / computer sleep).
+//   - "wake-resume":   the tab woke (visibility/focus/pageshow/resume) with an
+//     in-flight turn, so we proactively reattached to the buffered stream.
+// `resumed` records whether we attempted a resume (reattach) rather than
+// poisoning the tool cards — the recovery path we want to confirm in prod.
+// Emits a structured console line for live debugging and a PostHog product
+// event so frequency / affected tools are queryable. Correlate with the
+// server's `mako.agent` logs (and the resume-endpoint 204 reasons) via chatId.
+type StreamInterruptionPath = "orphan-rescue" | "stream-error" | "wake-resume";
+
+function reportStreamInterruption(detail: {
+  path: StreamInterruptionPath;
+  chatId: string;
+  status: string;
+  toolNames: string[];
+  recoveredToolNames?: string[];
+  errorMessage?: string;
+  resumed?: boolean;
+}): void {
+  console.warn("[Chat][stream-interrupted]", detail);
+  trackEvent("ai_chat_stream_interrupted", {
+    interruption_path: detail.path,
+    chat_id: detail.chatId,
+    chat_status: detail.status,
+    tool_names: detail.toolNames.join(",") || "(none)",
+    tool_count: detail.toolNames.length,
+    recovered_tool_names: detail.recoveredToolNames?.join(",") || "(none)",
+    recovered_count: detail.recoveredToolNames?.length ?? 0,
+    error_message: detail.errorMessage,
+    resumed: detail.resumed ?? false,
+  });
 }
 
 // ── Per-tab chat session persistence ─────────────────────────────
@@ -1030,6 +1109,34 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
 
 ChatMessageRow.displayName = "ChatMessageRow";
 
+// List element Virtuoso renders the (windowed) message rows into. Rendered as
+// a MUI `<List dense component="div">` so the `dense` ListContext still reaches
+// each `ChatMessageRow`'s `<ListItem>` (context flows through Virtuoso's div
+// Item wrappers regardless of DOM nesting) while avoiding `<ul>` DOM-nesting
+// warnings. Virtuoso owns the inline `style` (it sets paddingTop/Bottom to
+// offset windowed items) so we must forward it onto the list element.
+const MessageVirtuosoList = React.memo(
+  React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+    function MessageVirtuosoList({ style, children }, ref) {
+      return (
+        <List dense component="div" ref={ref} style={style} sx={{ px: 1 }}>
+          {children}
+        </List>
+      );
+    },
+  ),
+);
+MessageVirtuosoList.displayName = "MessageVirtuosoList";
+
+// Virtuoso's `Components['List']` types `ref` as a `LegacyRef` (string refs
+// allowed), which is contravariant with forwardRef's `Ref`. The component is
+// structurally correct; this cast bridges that one incompatibility.
+const messageVirtuosoComponents: Components<ChatMessageRowProps["message"]> = {
+  List: MessageVirtuosoList as Components<
+    ChatMessageRowProps["message"]
+  >["List"],
+};
+
 // Isolated input component — owns its own `input` state so keystrokes
 // never re-render the (expensive) message list above it.
 
@@ -1594,11 +1701,11 @@ const ChatInputArea = React.memo(
               maxHeight: "50vh",
               overflowY: "auto",
               "& .MuiInputBase-input": {
-                fontSize: 14,
+                fontSize: { xs: 16, sm: 14 },
               },
               "& .MuiInputBase-root": {
                 p: 0,
-                fontSize: 14,
+                fontSize: { xs: 16, sm: 14 },
               },
               "& .MuiOutlinedInput-notchedOutline": {
                 border: "none",
@@ -1839,13 +1946,13 @@ const Chat: React.FC<ChatProps> = ({
   const [historyMenuAnchor, setHistoryMenuAnchor] =
     useState<null | HTMLElement>(null);
   const historyMenuOpen = Boolean(historyMenuAnchor);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const {
-    scrollRef: scrollContainerRef,
-    contentRef: scrollContentRef,
-    isAtBottom,
-    scrollToBottom,
-  } = useStickToBottom();
+  // Virtualized message list (react-virtuoso). Replaces use-stick-to-bottom:
+  // Virtuoso owns its own scroller and bottom-anchoring (`followOutput`), and
+  // only mounts visible rows + overscan so long chats stay light on
+  // DOM/memory/paint — critical on mobile. `isAtBottom` drives both the
+  // "scroll to bottom" button and whether streaming auto-follows the tail.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   // Track if we're viewing an existing chat from history (vs a new chat)
   // Moved before useChat so onFinish callback can access it
@@ -1913,6 +2020,15 @@ const Chat: React.FC<ChatProps> = ({
     new Map<string, ActiveClientToolCall>(),
   );
   const cancelledClientToolCallIdsRef = useRef(new Set<string>());
+  // Spaces + bounds onError → resume retries. A failed resume re-fires onError,
+  // so retrying instantly would burst; instead we schedule one delayed attempt
+  // (giving a brief network blip time to recover) and cap attempts per window
+  // before falling back to poisoning the tool cards.
+  const errorResumeRef = useRef<{
+    count: number;
+    windowStart: number;
+    timer: ReturnType<typeof setTimeout> | null;
+  }>({ count: 0, windowStart: 0, timer: null });
   const [activeClientToolCallCount, setActiveClientToolCallCount] = useState(0);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
   const queuedPromptsRef = useRef(queuedPrompts);
@@ -2465,7 +2581,106 @@ const Chat: React.FC<ChatProps> = ({
 
     onError: err => {
       console.error("[Chat] Error:", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const lastMessage = messagesRef.current.at(-1);
+      const stalledToolNames =
+        lastMessage?.role === "assistant"
+          ? (lastMessage.parts ?? [])
+              .filter(p => {
+                const pt = p.type as string;
+                if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") {
+                  return false;
+                }
+                if (isHumanInTheLoopToolPartType(pt)) return false;
+                const s = (p as Record<string, unknown>).state as string;
+                return s !== "output-available" && s !== "error";
+              })
+              .map(p => toolNameFromPartType(p.type as string))
+          : [];
+
+      // Structured server errors (billing / model availability) arrive as JSON
+      // with a `code` — those are genuine and must NOT be resumed.
+      let isStructuredServerError = false;
+      try {
+        const parsed = JSON.parse(errorMessage);
+        isStructuredServerError = !!parsed && typeof parsed.code === "string";
+      } catch {
+        /* not JSON → network / stream drop */
+      }
+
+      // The turn's lifetime is decoupled from the HTTP connection: the server
+      // keeps generating and buffers a resumable stream after a client
+      // disconnect. A mobile lock / computer sleep freezes the tab and the OS
+      // kills the SSE socket; on wake the dead read surfaces here as a
+      // non-structured network/stream error (the user-reported "network error"
+      // / "Stream disconnected"). When the turn still looks live, reattach
+      // instead of poisoning the cards — the replay re-emits the tool outputs,
+      // and any in-flight client tool (e.g. a slow capture_screenshot) is left
+      // running so it can settle on its own.
+      const turnLooksLive =
+        statusRef.current === "streaming" ||
+        statusRef.current === "submitted" ||
+        useRealtimeStore.getState().chatActivity[chatIdRef.current] ===
+          "streaming" ||
+        document.visibilityState !== "visible" ||
+        stalledToolNames.length > 0;
+
+      const RESUME_RETRY_DELAY_MS = 1500;
+      const RESUME_RETRY_WINDOW_MS = 30_000;
+      const RESUME_MAX_RETRIES = 4;
+      const now = Date.now();
+      const resumeState = errorResumeRef.current;
+      if (now - resumeState.windowStart > RESUME_RETRY_WINDOW_MS) {
+        resumeState.windowStart = now;
+        resumeState.count = 0;
+      }
+      // Keep taking the resume branch while a retry is still scheduled, so we
+      // never poison the cards out from under a pending reattach.
+      const canRetryResume =
+        resumeState.count < RESUME_MAX_RETRIES || resumeState.timer !== null;
+
+      if (
+        !isStructuredServerError &&
+        turnLooksLive &&
+        canRetryResume &&
+        !manualStopRequestedRef.current
+      ) {
+        reportStreamInterruption({
+          path: "stream-error",
+          chatId,
+          status,
+          toolNames: stalledToolNames,
+          errorMessage,
+          resumed: true,
+        });
+        // Clear the SDK error so the hook can stream again, then reattach to
+        // the buffered turn after a short delay. The delay coalesces the burst
+        // of onError calls a failing reconnect produces and gives a brief
+        // network blip time to recover. A finished turn answers 204 (cheap
+        // no-op) and the orphan-rescue effect handles any stranded card.
+        clearError();
+        if (!resumeState.timer) {
+          resumeState.count += 1;
+          resumeState.timer = setTimeout(() => {
+            resumeState.timer = null;
+            void resumeStreamRef.current?.();
+          }, RESUME_RETRY_DELAY_MS);
+        }
+        return;
+      }
+
+      // Genuine / fatal error (or too many resume retries): fall back to the
+      // original behavior — cancel in-flight client tools and poison pending
+      // tool parts so the AI SDK unblocks the next sendMessage.
       cancelActiveClientToolCalls("stream-error");
+      reportStreamInterruption({
+        path: "stream-error",
+        chatId,
+        status,
+        toolNames: stalledToolNames,
+        errorMessage,
+        resumed: false,
+      });
       // When the stream disconnects (e.g. 524 timeout), tool calls may be
       // stuck in "input-available" state. The AI SDK blocks sendMessage until
       // all tool calls are settled. Patch them to "error" so the chat remains
@@ -2476,6 +2691,7 @@ const Chat: React.FC<ChatProps> = ({
           const hasPending = msg.parts?.some(p => {
             const pt = p.type as string;
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+            if (isHumanInTheLoopToolPartType(pt)) return false;
             const s = (p as Record<string, unknown>).state as string;
             return s !== "output-available" && s !== "error";
           });
@@ -2485,6 +2701,7 @@ const Chat: React.FC<ChatProps> = ({
             parts: msg.parts.map(p => {
               const pt = p.type as string;
               if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
+              if (isHumanInTheLoopToolPartType(pt)) return p;
               const s = (p as Record<string, unknown>).state as string;
               if (s === "output-available" || s === "error") return p;
               return {
@@ -2498,6 +2715,8 @@ const Chat: React.FC<ChatProps> = ({
       );
     },
     onFinish: () => {
+      // The turn settled cleanly — reset the resume-retry budget.
+      errorResumeRef.current.count = 0;
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }
@@ -2511,6 +2730,11 @@ const Chat: React.FC<ChatProps> = ({
   // re-bound to a fresh Chat instance whenever chatId changes.
   const resumeStreamRef = useRef(resumeStream);
   resumeStreamRef.current = resumeStream;
+
+  // Latest status for use inside stable event-listener / callback closures
+  // (the wake handler and onError) without re-installing listeners every turn.
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const createCancellationOutput = useCallback(
     (toolName: string): Record<string, unknown> => ({
@@ -2588,6 +2812,89 @@ const Chat: React.FC<ChatProps> = ({
       }
     },
     [addToolOutput],
+  );
+
+  // Self-heal a client tool call that the live stream delivered but never got
+  // to dispatch (the SSE dropped, the SDK reconnected to a 204, and `status`
+  // settled to "ready" with the tool frozen at "input-available"). Because a
+  // completed run would be "output-available", a tool stuck at "input-available"
+  // provably never executed — so we can safely re-dispatch it through the exact
+  // same executor `onToolCall` would have used. Its result settles via
+  // `addToolOutput`, and `sendAutomaticallyWhen` resumes the turn, recovering
+  // transparently instead of poisoning the card with "Interrupted".
+  //
+  // Returns true if it took ownership of the call (recovering), false if the
+  // tool is not a client-executable family we can safely re-run (those still
+  // get the terminal error patch).
+  const recoveredToolCallIdsRef = useRef<Set<string>>(new Set());
+  const recoverOrphanedClientToolCall = useCallback(
+    (
+      toolName: string,
+      toolCallId: string,
+      input: Record<string, unknown>,
+    ): boolean => {
+      const name = toolName as AgentToolName;
+      let run:
+        | ((ctx: {
+            executionId: string;
+            signal: AbortSignal;
+          }) => Promise<Record<string, unknown> | null | undefined>)
+        | null = null;
+      if (APP_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = ({ executionId, signal }) =>
+          executeAppAgentTool(toolName, input, { executionId, signal });
+      } else if (DASHBOARD_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = ({ executionId, signal }) =>
+          executeDashboardAgentTool(toolName, input, { executionId, signal });
+      } else if (DBT_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = () => executeDbtAgentTool(toolName, input);
+      } else if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(name)) {
+        run = () => executeDataSourceTool(toolName, input);
+      }
+      if (!run) return false;
+
+      // Already recovering this exact call (effect re-ran before it settled):
+      // keep ownership so it isn't poisoned, but don't dispatch twice.
+      if (recoveredToolCallIdsRef.current.has(toolCallId)) return true;
+      recoveredToolCallIdsRef.current.add(toolCallId);
+
+      const active = registerActiveClientToolCall(toolName, toolCallId);
+      void (async () => {
+        try {
+          const output = await run({
+            executionId: active.executionId,
+            signal: active.abortController.signal,
+          });
+          if (active.abortController.signal.aborted) return;
+          await settleActiveClientToolCall(
+            toolName,
+            toolCallId,
+            output ?? {
+              success: false,
+              error: `Recovered tool "${toolName}" did not return a result.`,
+            },
+          );
+        } catch (recoverError) {
+          if (
+            manualStopRequestedRef.current ||
+            active.abortController.signal.aborted
+          ) {
+            return;
+          }
+          await settleActiveClientToolCall(toolName, toolCallId, {
+            success: false,
+            error:
+              recoverError instanceof Error
+                ? recoverError.message
+                : "Recovered tool execution failed",
+          });
+        } finally {
+          recoveredToolCallIdsRef.current.delete(toolCallId);
+        }
+      })();
+      return true;
+    },
+    [registerActiveClientToolCall, settleActiveClientToolCall],
   );
 
   // Aborting mid-stream can leave assistant tool calls stuck in
@@ -2695,27 +3002,76 @@ const Chat: React.FC<ChatProps> = ({
   useEffect(() => {
     if (status !== "ready" || activeClientToolCallCount > 0) return;
     if (activeClientToolCallsRef.current.size > 0) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    // Human-in-the-loop tools (clarifying questions / plan review) are *meant*
+    // to sit at "input-available" with no output until the user answers via
+    // their docked card — that is not an orphan. Patching them here would tear
+    // the card down before it can be answered (it surfaces as "Interrupted —
+    // stream disconnected"). Leave them pending.
+    const pendingToolParts = (last.parts ?? []).filter(p => {
+      const pt = p.type as string;
+      if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+      if (isHumanInTheLoopToolPartType(pt)) return false;
+      const s = (p as Record<string, unknown>).state as string;
+      return s !== "output-available" && s !== "output-error" && s !== "error";
+    });
+    if (pendingToolParts.length === 0) return;
+
+    // Try to self-heal first: re-dispatch any client-executable tool stuck at
+    // "input-available". The IDs we recover keep their card alive (the
+    // re-dispatch registers an active client tool call) and must NOT be
+    // poisoned below.
+    const recoveredCallIds = new Set<string>();
+    const recoveredToolNames: string[] = [];
+    const orphanedToolNames: string[] = [];
+    for (const part of pendingToolParts) {
+      const record = part as Record<string, unknown>;
+      const pt = part.type as string;
+      const toolName =
+        pt === "dynamic-tool"
+          ? ((record.toolName as string) ?? "")
+          : toolNameFromPartType(pt);
+      const toolCallId = record.toolCallId as string | undefined;
+      const input = (record.input ?? {}) as Record<string, unknown>;
+      if (
+        record.state === "input-available" &&
+        toolCallId &&
+        recoverOrphanedClientToolCall(toolName, toolCallId, input)
+      ) {
+        recoveredCallIds.add(toolCallId);
+        recoveredToolNames.push(toolName);
+      } else {
+        orphanedToolNames.push(toolName);
+      }
+    }
+
+    reportStreamInterruption({
+      path: "orphan-rescue",
+      chatId,
+      status,
+      toolNames: orphanedToolNames,
+      recoveredToolNames,
+    });
+
+    // Nothing left to poison — everything is being recovered.
+    if (orphanedToolNames.length === 0) return;
     setMessages(prev => {
       const lastIndex = prev.length - 1;
-      const last = prev[lastIndex];
-      if (!last || last.role !== "assistant") return prev;
-      const hasPending = last.parts?.some(p => {
-        const pt = p.type as string;
-        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
-        const s = (p as Record<string, unknown>).state as string;
-        return (
-          s !== "output-available" && s !== "output-error" && s !== "error"
-        );
-      });
-      if (!hasPending) return prev;
+      const lastMsg = prev[lastIndex];
+      if (!lastMsg || lastMsg.role !== "assistant") return prev;
       return prev.map((msg, i) => {
         if (i !== lastIndex) return msg;
         return {
           ...msg,
           parts: msg.parts.map(p => {
+            const record = p as Record<string, unknown>;
             const pt = p.type as string;
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
-            const s = (p as Record<string, unknown>).state as string;
+            if (isHumanInTheLoopToolPartType(pt)) return p;
+            // Leave parts we just handed to recovery untouched.
+            if (recoveredCallIds.has(record.toolCallId as string)) return p;
+            const s = record.state as string;
             if (
               s === "output-available" ||
               s === "output-error" ||
@@ -2736,7 +3092,92 @@ const Chat: React.FC<ChatProps> = ({
         };
       });
     });
-  }, [status, activeClientToolCallCount, setMessages]);
+  }, [
+    status,
+    activeClientToolCallCount,
+    messages,
+    chatId,
+    recoverOrphanedClientToolCall,
+    setMessages,
+  ]);
+
+  // Reattach the chat stream when the tab wakes. A mobile lock / computer sleep
+  // freezes the page and the OS silently kills the SSE socket; on wake the AI
+  // SDK does not re-reconnect on its own, so an in-flight turn would otherwise
+  // surface as a "stream error" (or strand a tool card). The server keeps
+  // generating and buffers the turn as a resumable stream, so resumeStream()
+  // replays the buffered + live chunks; a finished turn answers 204 (cheap
+  // no-op). Mirrors realtimeStore.wake() (visibilitychange + focus + pageshow +
+  // resume), throttled so a single wake burst fires the work once. Listeners
+  // are installed once (stable closure over refs) and never re-installed.
+  useEffect(() => {
+    const WAKE_THROTTLE_MS = 2000;
+    let lastWakeAt = 0;
+    // Stable across the component's life (useRef object identity never changes);
+    // captured for the cleanup to read the latest pending resume timer.
+    const resumeState = errorResumeRef.current;
+
+    const hasResumableTurn = (): boolean => {
+      if (manualStopRequestedRef.current) return false;
+      const s = statusRef.current;
+      if (s === "streaming" || s === "submitted") return true;
+      if (
+        useRealtimeStore.getState().chatActivity[chatIdRef.current] ===
+        "streaming"
+      ) {
+        return true;
+      }
+      // A tool card frozen mid-turn (non-terminal, non-HITL) means the turn was
+      // interrupted while we were away — worth a reattach.
+      const last = messagesRef.current.at(-1);
+      if (!last || last.role !== "assistant") return false;
+      return (last.parts ?? []).some(p => {
+        const pt = p.type as string;
+        if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
+        if (isHumanInTheLoopToolPartType(pt)) return false;
+        const st = (p as Record<string, unknown>).state as string;
+        return (
+          st !== "output-available" && st !== "output-error" && st !== "error"
+        );
+      });
+    };
+
+    const wake = () => {
+      const now = Date.now();
+      // A window switch fires a burst (focus + visibilitychange); the first one
+      // does the work.
+      if (now - lastWakeAt < WAKE_THROTTLE_MS) return;
+      lastWakeAt = now;
+      if (!hasResumableTurn()) return;
+      reportStreamInterruption({
+        path: "wake-resume",
+        chatId: chatIdRef.current,
+        status: statusRef.current,
+        toolNames: [],
+        resumed: true,
+      });
+      void resumeStreamRef.current?.();
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", wake);
+    window.addEventListener("pageshow", wake);
+    // Page Lifecycle API: fired when the browser unfreezes a frozen tab.
+    document.addEventListener("resume", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("pageshow", wake);
+      document.removeEventListener("resume", wake);
+      if (resumeState.timer) {
+        clearTimeout(resumeState.timer);
+        resumeState.timer = null;
+      }
+    };
+  }, []);
 
   const lastMessage = messages.at(-1);
   const lastMessageParts = lastMessage?.parts ?? [];
@@ -2792,14 +3233,25 @@ const Chat: React.FC<ChatProps> = ({
     };
   }, [chatId, currentWorkspace?.id]);
 
-  // In-band console opening: when a create_console / open_console tool
-  // result streams in (state "output-available"), open the console tab in
-  // THIS window. The chat stream is resumable, so unlike the legacy
-  // chat.ui-intent realtime poke this survives SSE drops, reconnects and
-  // page refreshes — the replayed part triggers the same idempotent open.
+  // In-band console sync: when a server-side console tool result streams in
+  // (state "output-available"), reconcile THIS window against the server
+  // draft. The chat stream is resumable, so unlike the workspace realtime
+  // poke channel this survives SSE drops, half-closes, frozen background
+  // tabs, reconnects and page refreshes — the replayed part triggers the
+  // same idempotent reconciliation.
+  //
+  //   - create_console / open_console -> open the tab here.
+  //   - modify_console / set_console_connection -> pull the authoritative
+  //     draft for open tabs (revision sync). Without this, an agent EDIT
+  //     reached the editor ONLY via the realtime poke; a missed poke (dead
+  //     SSE, or a poke that raced the tab open) left the editor stale until
+  //     the next focus/reconnect/watchdog/refresh — the reported "modify did
+  //     nothing until I refreshed" bug. create_console never had this problem
+  //     because it already rode the chat stream (asymmetry, issue #475).
+  //
   // Tool call ids seen in RESTORED history are pre-seeded into this set by
-  // loadSession (reopening a chat must not re-open every console it ever
-  // touched — the dedicated consoles-restore payload handles that).
+  // loadSession (reopening a chat must not re-open/re-sync every console it
+  // ever touched — the dedicated consoles-restore payload handles that).
   const handledConsoleOpenToolCallIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     handledConsoleOpenToolCallIdsRef.current = new Set();
@@ -2823,17 +3275,122 @@ const Chat: React.FC<ChatProps> = ({
           : p.type?.startsWith("tool-")
             ? p.type.slice("tool-".length)
             : undefined;
-      if (toolName !== "create_console" && toolName !== "open_console") {
-        continue;
-      }
+      const opensTab =
+        toolName === "create_console" || toolName === "open_console";
+      // Server console writes whose only client delivery is the realtime poke.
+      // run_console bumps the draft revision AND persists a run artifact
+      // (tab.lastRun); the revision sync refreshes both, and Editor.tsx
+      // reactively renders lastRun into the results panel — so reconciling
+      // here surfaces agent run RESULTS even when the run.completed poke was
+      // missed (dead/half-closed SSE), matching modify/set-connection.
+      const editsConsole =
+        toolName === "modify_console" ||
+        toolName === "set_console_connection" ||
+        toolName === "run_console";
+      if (!opensTab && !editsConsole) continue;
       if (p.state !== "output-available") continue;
-      const consoleId = p.output?.consoleId;
-      if (!p.toolCallId || !p.output?.success || !consoleId) continue;
+      if (!p.toolCallId || !p.output?.success) continue;
+      // Opening needs a consoleId; an edit reconciles all open tabs so it
+      // does not. Don't burn the dedupe slot on an opener that lacks an id.
+      if (opensTab && !p.output?.consoleId) continue;
       if (handledConsoleOpenToolCallIdsRef.current.has(p.toolCallId)) continue;
       handledConsoleOpenToolCallIdsRef.current.add(p.toolCallId);
-      void useConsoleStore
-        .getState()
-        .openConsoleFromServer(workspaceId, consoleId);
+      if (opensTab) {
+        const consoleId = p.output.consoleId as string;
+        void (async () => {
+          await useConsoleStore
+            .getState()
+            .openConsoleFromServer(workspaceId, consoleId);
+          // A create followed immediately by a modify can drop the modify's
+          // workspace poke while the tab is still opening; reconcile once the
+          // tab carries a revision base so it never sticks on create-time
+          // content.
+          void useRealtimeStore.getState().syncRevisions();
+        })();
+      } else {
+        void useRealtimeStore.getState().syncRevisions();
+      }
+    }
+  }, [messages, currentWorkspace?.id]);
+
+  // In-band app/dbt sync — the app/dbt analogue of the console reconcile above.
+  // The app_* and dbt file mutation tools execute SERVER-SIDE, so an OPEN app /
+  // dbt tab learns about the agent's write via the workspace realtime poke
+  // (app.updated / dbt.file.updated). That poke rides the workspace SSE, which
+  // a mobile lock / laptop sleep / proxy half-close can kill — so reconcile
+  // off the RESUMABLE CHAT STREAM too: when the tool result streams in (or is
+  // replayed after a wake reattach), refetch the open app / dbt file. This
+  // makes the open tab converge even under a dead workspace SSE (poke = fast
+  // path, this = robust backstop). Mirrors the console pattern (issue #475).
+  const handledEntitySyncToolCallIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    handledEntitySyncToolCallIdsRef.current = new Set();
+  }, [chatId]);
+  useEffect(() => {
+    const workspaceId = currentWorkspace?.id;
+    if (!workspaceId) return;
+    const last = messages.at(-1);
+    if (!last || last.role !== "assistant") return;
+    for (const part of last.parts ?? []) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        state?: string;
+        toolCallId?: string;
+        input?: { appId?: string; projectId?: string; path?: string };
+        output?: { success?: boolean };
+      };
+      const toolName =
+        p.type === "dynamic-tool"
+          ? p.toolName
+          : p.type?.startsWith("tool-")
+            ? p.type.slice("tool-".length)
+            : undefined;
+      if (!toolName) continue;
+      const isAppEdit = APP_SERVER_MUTATION_TOOLS.has(toolName);
+      const isDbtEdit = DBT_SERVER_MUTATION_TOOLS.has(toolName);
+      if (!isAppEdit && !isDbtEdit) continue;
+      if (
+        p.state !== "output-available" ||
+        !p.toolCallId ||
+        !p.output?.success
+      ) {
+        continue;
+      }
+      if (handledEntitySyncToolCallIdsRef.current.has(p.toolCallId)) continue;
+      handledEntitySyncToolCallIdsRef.current.add(p.toolCallId);
+
+      if (isAppEdit) {
+        const appId = p.input?.appId;
+        // Only reconcile a tab that is actually open here (mirrors the
+        // realtime handler); fetchApp + bumpPreview rebuilds the preview.
+        if (appId && useAppStore.getState().openApps[appId]) {
+          void (async () => {
+            const fresh = await useAppStore
+              .getState()
+              .fetchApp(workspaceId, appId);
+            if (fresh) useAppStore.getState().bumpPreview(appId);
+          })();
+        }
+      } else {
+        const projectId = p.input?.projectId;
+        const path = p.input?.path;
+        // Only touch projects this window has loaded.
+        if (
+          projectId &&
+          path &&
+          useDbtStore.getState().filePathsByProject[projectId]
+        ) {
+          void useDbtStore
+            .getState()
+            .applyRemoteFileUpdate(
+              workspaceId,
+              projectId,
+              path,
+              toolName === "delete_dbt_file",
+            );
+        }
+      }
     }
   }, [messages, currentWorkspace?.id]);
 
@@ -2924,6 +3481,22 @@ const Chat: React.FC<ChatProps> = ({
                           input: p.input ?? {},
                         };
                       }
+                      // A persisted, unanswered human-in-the-loop tool
+                      // (clarifying questions / plan review) is not an
+                      // interrupted tool: re-render its interactive card so the
+                      // user can still answer it. Answering sends the tool
+                      // result, which continues the turn from persisted
+                      // history. Keep it pending instead of marking it errored.
+                      if (
+                        typeof p.type === "string" &&
+                        isHumanInTheLoopToolPartType(p.type) &&
+                        toolState === "input-available"
+                      ) {
+                        return {
+                          ...p,
+                          input: p.input ?? {},
+                        };
+                      }
                       return {
                         ...p,
                         state: "output-error",
@@ -3001,6 +3574,23 @@ const Chat: React.FC<ChatProps> = ({
           }
 
           setMessages(convertedMessages);
+
+          // Virtuoso keeps ONE instance across chat switches (Chat isn't keyed
+          // by chatId), so its `initialTopMostItemIndex` — read once at mount —
+          // never re-applies when we bulk-load a different chat's history here.
+          // Without this, opening an existing chat from history can land
+          // mid-list or at the top. Pin to the newest message on the next
+          // frame (after the new data has rendered) so it deterministically
+          // opens at the bottom, matching the old stick-to-bottom behavior.
+          if (convertedMessages.length > 0) {
+            requestAnimationFrame(() => {
+              if (cancelled) return;
+              virtuosoRef.current?.scrollToIndex({
+                index: "LAST",
+                align: "end",
+              });
+            });
+          }
 
           // Restore consoles that were modified by the agent in this chat
           // The backend extracts console IDs from modify_console tool calls in the messages
@@ -3805,14 +4395,16 @@ const Chat: React.FC<ChatProps> = ({
         </Box>
       )}
 
-      {/* Messages */}
+      {/* Messages — Virtuoso owns the scroller; this Box is just a relative,
+          full-height flex container so the virtual list fills it and the
+          floating "scroll to bottom" button + mobile hero can overlay it. */}
       <Box
-        ref={scrollContainerRef}
         sx={{
           flex: 1,
-          overflow: "auto",
-          p: 1,
+          minHeight: 0,
           position: "relative",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
         {/* Mobile "Ask your data" home: hero + starter chips when empty */}
@@ -3876,32 +4468,50 @@ const Chat: React.FC<ChatProps> = ({
           </Box>
         )}
 
-        <div ref={scrollContentRef}>
-          <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
-            <List dense>
-              {messages.map((message, msgIdx) => (
-                <ChatMessageRow
-                  key={message.id}
-                  message={message}
-                  isLastMessage={msgIdx === messages.length - 1}
-                  isStreaming={status === "streaming"}
-                  onToolClick={handleToolClick}
-                  onConsoleTitleClick={handleConsoleTitleClick}
-                  connectionIconById={connectionIconById}
-                  paletteMode={paletteMode}
-                />
-              ))}
-            </List>
-          </React.Profiler>
-          <div ref={messagesEndRef} />
-        </div>
+        <React.Profiler id="Chat.message-list" onRender={onRenderDebug}>
+          <Virtuoso<ChatMessageRowProps["message"]>
+            ref={virtuosoRef}
+            data={messages}
+            // Stable key per message so a row's identity (and thus its memo)
+            // survives streaming ticks and history inserts — mirrors the old
+            // `key={message.id}`.
+            computeItemKey={(_index, message) => message.id}
+            // Auto-stick to the tail while streaming, but only when the user is
+            // already at the bottom (don't yank them down if they scrolled up
+            // to read history). This preserves the old use-stick-to-bottom UX.
+            followOutput={isAtBottom ? "smooth" : false}
+            initialTopMostItemIndex={Math.max(0, messages.length - 1)}
+            atBottomStateChange={setIsAtBottom}
+            atBottomThreshold={120}
+            increaseViewportBy={{ top: 600, bottom: 900 }}
+            components={messageVirtuosoComponents}
+            style={{ flex: 1 }}
+            itemContent={(msgIdx, message) => (
+              <ChatMessageRow
+                message={message}
+                isLastMessage={msgIdx === messages.length - 1}
+                isStreaming={status === "streaming"}
+                onToolClick={handleToolClick}
+                onConsoleTitleClick={handleConsoleTitleClick}
+                connectionIconById={connectionIconById}
+                paletteMode={paletteMode}
+              />
+            )}
+          />
+        </React.Profiler>
 
         {!isAtBottom && (
           <IconButton
-            onClick={() => scrollToBottom()}
+            onClick={() =>
+              virtuosoRef.current?.scrollToIndex({
+                index: messages.length - 1,
+                align: "end",
+                behavior: "smooth",
+              })
+            }
             size="small"
             sx={{
-              position: "sticky",
+              position: "absolute",
               bottom: 8,
               left: "50%",
               transform: "translateX(-50%)",

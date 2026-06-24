@@ -1,0 +1,192 @@
+---
+title: "How to Connect to PostgreSQL from C# (.NET)"
+description: "Connect to PostgreSQL from C# with Npgsql: ADO.NET basics, async commands, parameters, connection pooling, NpgsqlDataSource, Dapper and EF Core, SSL, and the errors you actually hit."
+database: "postgresql"
+category: "how-to"
+tags: ["postgresql", "csharp", "dotnet", "npgsql", "dapper", "ef-core", "connection"]
+date: "2026-06-22"
+---
+
+In .NET, PostgreSQL has one driver that matters: Npgsql (`Npgsql` on NuGet). It is the ADO.NET data provider for PostgreSQL, and everything else in the ecosystem sits on top of it: Dapper executes its SQL through Npgsql, and Entity Framework Core's PostgreSQL provider (`Npgsql.EntityFrameworkCore.PostgreSQL`) wraps it as well. This guide starts with raw ADO.NET, then layers on pooling, Dapper, and EF Core, and ends with the SSL and authentication errors you will actually hit.
+
+## The one driver, and what sits on it
+
+| Library | Layer | When to use |
+|---|---|---|
+| Npgsql | ADO.NET driver | Always. The actual wire-protocol driver. |
+| Dapper | Micro-ORM over ADO.NET | You want to write SQL and map results to objects with almost no boilerplate. |
+| Npgsql.EntityFrameworkCore.PostgreSQL | EF Core provider | Full ORM: LINQ, change tracking, migrations. Uses Npgsql underneath. |
+| Npgsql.DependencyInjection | DI helper | Registering `NpgsqlDataSource` in ASP.NET Core. |
+
+For a normal application you need Npgsql plus one of Dapper or EF Core. You never talk to PostgreSQL without Npgsql somewhere in the stack.
+
+## Adding the package
+
+```bash
+dotnet add package Npgsql
+```
+
+Npgsql 10.0 (current stable as of June 2026) targets modern .NET (.NET 8 and later). Npgsql 8.0 was the last release to support .NET Framework via .NET Standard 2.0; if you are still on .NET Framework, pin to the 8.x line.
+
+## A first connection with ADO.NET
+
+The raw ADO.NET pattern is `NpgsqlConnection` to `NpgsqlCommand` to a reader. Everything is `IDisposable`, so wrap it in `using` so connections return to the pool deterministically.
+
+```csharp
+using Npgsql;
+
+var connString = "Host=localhost;Port=5432;Username=postgres;Password=secret;Database=appdb";
+
+await using var conn = new NpgsqlConnection(connString);
+await conn.OpenAsync();
+
+await using var cmd = new NpgsqlCommand("SELECT id, email FROM users WHERE active = @active", conn);
+cmd.Parameters.AddWithValue("active", true);
+
+await using var reader = await cmd.ExecuteReaderAsync();
+while (await reader.ReadAsync())
+{
+    var id = reader.GetInt32(0);
+    var email = reader.GetString(1);
+    Console.WriteLine($"{id}: {email}");
+}
+```
+
+Use the async methods (`OpenAsync`, `ExecuteReaderAsync`, `ReadAsync`) in any server application. The synchronous versions block a thread pool thread for the duration of the network round trip, which scales badly under load.
+
+## Parameters: never concatenate
+
+The `@name` placeholder is how you avoid SQL injection. Npgsql binds the value separately from the query text.
+
+```csharp
+await using var cmd = new NpgsqlCommand(
+    "INSERT INTO users (email, age) VALUES (@email, @age) RETURNING id", conn);
+cmd.Parameters.AddWithValue("email", "a@example.com");
+cmd.Parameters.AddWithValue("age", 30);
+
+var newId = (int)(await cmd.ExecuteScalarAsync())!;
+```
+
+`AddWithValue` infers the PostgreSQL type from the .NET type, which is fine most of the time. When you need an exact type (for example to disambiguate `text` from `jsonb`, or to send a `NULL` of a specific type), use the typed overload:
+
+```csharp
+cmd.Parameters.Add(new NpgsqlParameter("data", NpgsqlTypes.NpgsqlDbType.Jsonb) { Value = jsonString });
+```
+
+Note PostgreSQL uses `RETURNING` to get the generated key back in the same round trip. There is no separate "last insert id" call as in MySQL.
+
+## NpgsqlDataSource: the modern entry point
+
+Since Npgsql 7.0, the recommended way to manage connections is `NpgsqlDataSource`, not raw connection strings passed around your code. A data source owns the pool and is the object you should create once and reuse for the life of the application.
+
+```csharp
+await using var dataSource = NpgsqlDataSource.Create(connString);
+
+await using var cmd = dataSource.CreateCommand("SELECT count(*) FROM users");
+var count = (long)(await cmd.ExecuteScalarAsync())!;
+```
+
+In ASP.NET Core, register it once with DI and inject `NpgsqlDataSource` (or `NpgsqlConnection`) wherever you need it:
+
+```csharp
+builder.Services.AddNpgsqlDataSource(connString);
+```
+
+This requires the `Npgsql.DependencyInjection` package. Resolve `NpgsqlDataSource` from the container; do not `new` up a data source per request, because each one carries its own pool.
+
+## Connection pooling
+
+Npgsql pools connections automatically and the pool is on by default. The connection string controls it:
+
+```
+Host=localhost;Username=postgres;Password=secret;Database=appdb;Minimum Pool Size=0;Maximum Pool Size=100
+```
+
+`Maximum Pool Size` defaults to 100. The number that matters is total connections across all your application instances versus PostgreSQL's `max_connections` (default 100). Five app instances each opening 100 connections is 500 connections against a server that allows 100, and the surplus get refused. Size `Maximum Pool Size` so that `instances x max pool` stays under `max_connections`, leaving headroom for admin connections.
+
+If you front PostgreSQL with PgBouncer in transaction-pooling mode, disable server-side prepared statement caching by adding `Max Auto Prepare=0` and avoid persistent prepared statements, because they break under transaction pooling.
+
+## Dapper: SQL with object mapping
+
+Dapper (current stable 2.1.79 as of June 2026) is a set of extension methods on `IDbConnection`. You still write SQL; Dapper handles parameter binding and maps result columns to your types.
+
+```csharp
+using Dapper;
+
+public record User(int Id, string Email, int Age);
+
+await using var conn = dataSource.OpenConnection();
+
+var users = await conn.QueryAsync<User>(
+    "SELECT id, email, age FROM users WHERE age > @minAge",
+    new { minAge = 18 });
+
+var one = await conn.QuerySingleOrDefaultAsync<User>(
+    "SELECT id, email, age FROM users WHERE id = @id",
+    new { id = 42 });
+```
+
+Dapper binds anonymous-object properties to named parameters, so injection safety is the same as raw Npgsql. It does no change tracking and generates no SQL for you, which is the point: you keep full control of the query.
+
+## EF Core: the full ORM
+
+For LINQ, migrations, and change tracking, use the Npgsql EF Core provider.
+
+```bash
+dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
+```
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+public class AppDbContext : DbContext
+{
+    public DbSet<User> Users => Set<User>();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options)
+        => options.UseNpgsql(connString);
+}
+
+// querying
+using var db = new AppDbContext();
+var adults = await db.Users.Where(u => u.Age >= 18).ToListAsync();
+```
+
+As of June 2026 the stable EF Core line is 10.x; match your `Npgsql.EntityFrameworkCore.PostgreSQL` major version to your EF Core major version (provider 10.x for EF Core 10). EF Core 11 exists only as preview at this time, so do not pin production to it.
+
+The long-running benchmark wisdom that "Dapper is several times faster than EF Core" has narrowed considerably in recent versions; for most CRUD workloads EF Core is fast enough and the productivity wins, while Dapper still pulls ahead for hot paths where you want hand-tuned SQL. A hybrid (EF Core for most of the app, Dapper for a few hot queries) is a common and reasonable choice.
+
+## SSL and the connection-security settings
+
+Npgsql controls TLS through `SSL Mode` in the connection string:
+
+```
+Host=db.example.com;Username=app;Password=secret;Database=appdb;SSL Mode=VerifyFull
+```
+
+| SSL Mode | Behavior |
+|---|---|
+| `Disable` | No TLS. Local only. |
+| `Prefer` | Use TLS if the server offers it, otherwise plaintext. |
+| `Require` | Demand TLS, but do not validate the server certificate. |
+| `VerifyCA` | Require TLS and validate the certificate chain. |
+| `VerifyFull` | Validate the chain and that the hostname matches. Use this for anything over a network. |
+
+Managed PostgreSQL (Azure Database for PostgreSQL, Amazon RDS, Supabase) requires TLS. Reach for `VerifyFull` and supply the provider's CA root rather than reflexively dropping to `Require`, which silently skips certificate validation and leaves you open to interception.
+
+## Errors you will actually hit
+
+| Error | Cause | Fix |
+|---|---|---|
+| `28P01: password authentication failed` | Wrong password or user, or `pg_hba.conf` rejects the auth method | Check credentials; confirm `pg_hba.conf` allows `scram-sha-256` from your host |
+| `3D000: database "x" does not exist` | Database not created, or typo in `Database=` | Create it, or correct the name |
+| `Npgsql.NpgsqlException: connection ... was refused` | Server not listening on host/port, or firewall | Check `Host`/`Port`, `listen_addresses`, and firewall rules |
+| `53300: too many clients already` | Pool max x instances exceeds server `max_connections` | Lower `Maximum Pool Size` or raise server `max_connections`/use PgBouncer |
+| `The remote certificate is invalid` | `VerifyFull`/`VerifyCA` without a trusted CA root | Install the provider's CA certificate; do not drop to `Require` in production |
+| `System.InvalidOperationException: An open data reader` | A reader is still open on the connection when you run another command | Finish reading (or use a new connection); set `Multiplexing` if you need concurrent commands |
+
+The "open data reader" error is the most common ADO.NET surprise: a single `NpgsqlConnection` runs one command at a time, so dispose readers (the `await using` pattern) before issuing the next command, or use separate connections from the pool.
+
+## Where Mako fits
+
+Mako connects to PostgreSQL with AI-assisted SQL autocomplete, which is handy when you are exploring a schema before you wire up Npgsql, Dapper, or EF Core. It is a read and query tool, not a connection library: you still use Npgsql in your application code. Try it free at mako.ai.

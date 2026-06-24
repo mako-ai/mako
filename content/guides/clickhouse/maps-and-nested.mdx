@@ -1,0 +1,155 @@
+---
+title: "Map, Nested, and Tuple in ClickHouse: Modeling Semi-Structured Data"
+description: "How to model key-value and repeated-group data in ClickHouse with Map(K, V), Nested, and Tuple. Covers m[k] access and its linear cost, mapKeys/mapValues subcolumns, mapContains, the Nested-is-parallel-arrays model, the flatten_nested setting, and when to reach for a Map versus a Nested versus parallel arrays."
+database: "clickhouse"
+category: "sql-how-to"
+tags: ["clickhouse", "map", "nested", "tuple", "data-modeling", "olap"]
+date: "2026-06-08"
+---
+
+# Map, Nested, and Tuple in ClickHouse
+
+ClickHouse gives you three ways to store more than one value in a single column: `Map(K, V)` for key-value pairs, `Nested` for repeated groups of related fields, and `Tuple` for a fixed, heterogeneous set of named or positional values. They overlap enough to be confusing and differ enough that picking the wrong one costs either query speed or schema sanity. This guide covers what each one actually is under the hood, how to read from it, and how to choose.
+
+## Map(K, V): Key-Value Pairs
+
+A `Map` stores an arbitrary set of key-value pairs per row. It is the natural fit for things like HTTP headers, label sets, or user attributes where the set of keys is open-ended.
+
+```sql
+CREATE TABLE events (
+    id UInt64,
+    tags Map(String, String)
+)
+ENGINE = MergeTree
+ORDER BY id;
+
+INSERT INTO events VALUES
+    (1, {'env': 'prod', 'region': 'eu'}),
+    (2, {'env': 'staging'});
+```
+
+You read a value with bracket syntax:
+
+```sql
+SELECT id, tags['env'] FROM events;
+```
+
+Two behaviors surprise people coming from other databases:
+
+**Missing keys return the value type's default, not NULL.** Asking for `tags['region']` on row 2 returns `''` (the default for `String`), not NULL. For an integer-valued map it would return `0`. If you need to distinguish "key absent" from "key present with default value," test for the key explicitly:
+
+```sql
+SELECT id FROM events WHERE mapContains(tags, 'region');
+```
+
+**Keys are not unique.** A `Map` in ClickHouse is internally an `Array(Tuple(K, V))`, so it can physically hold two entries with the same key. ClickHouse does not deduplicate on insert. If your source data can produce duplicate keys, clean it before insert or treat the map as best-effort.
+
+### The cost of m[k]
+
+Because a map is stored as an array of pairs, `tags['env']` is not a hash lookup. It scans the whole map for that row, so the operation is linear in the number of keys. For maps with a handful of keys this is irrelevant. For maps with hundreds or thousands of keys queried hot, it adds up.
+
+Two things help. First, the `keys` and `values` subcolumns let you read just one side of the map without materializing the whole structure:
+
+```sql
+SELECT tags.keys, tags.values FROM events;   -- same as mapKeys(tags), mapValues(tags)
+```
+
+Second, on recent versions you can switch a MergeTree map column to bucketed serialization, which splits pairs into substreams by hashed key so that `m['key']` only reads the relevant bucket instead of the entire column:
+
+```sql
+CREATE TABLE events2 (id UInt64, tags Map(String, String))
+ENGINE = MergeTree ORDER BY id
+SETTINGS map_serialization_version = 'with_buckets', max_buckets_in_map = 32;
+```
+
+This trades a little insert overhead for much faster single-key reads on wide maps. If your maps are small, leave the default.
+
+## Nested: Repeated Groups of Columns
+
+`Nested` models a "table inside a cell": a set of named, typed sub-columns that share a length per row. The canonical example is an order with line items.
+
+```sql
+CREATE TABLE orders (
+    order_id UInt64,
+    items Nested(
+        sku String,
+        qty UInt32,
+        price Decimal(10, 2)
+    )
+)
+ENGINE = MergeTree
+ORDER BY order_id;
+```
+
+The thing to understand is that, by default, `Nested` is syntactic sugar over parallel arrays. With the default `flatten_nested = 1`, the table above actually stores three columns named `items.sku Array(String)`, `items.qty Array(UInt32)`, and `items.price Array(Decimal(10,2))`. You insert and query them as arrays:
+
+```sql
+INSERT INTO orders VALUES
+    (100, ['A1', 'B2'], [3, 1], [9.99, 49.00]);
+
+SELECT order_id, items.sku, items.qty FROM orders;
+```
+
+The arrays for one row must all have the same length. ClickHouse validates this on insert, and a length mismatch is a runtime error, not a silent truncation.
+
+To get one row per line item, unfold with `ARRAY JOIN`:
+
+```sql
+SELECT order_id, items.sku AS sku, items.qty AS qty
+FROM orders
+ARRAY JOIN items;
+```
+
+For more on the unfold mechanics, multi-array lockstep behavior, and higher-order functions, see the [ClickHouse arrays guide](/guides/clickhouse/arrays).
+
+### flatten_nested and the dots problem
+
+The default flattening has two consequences worth knowing. First, because the sub-columns are real columns named with dots (`items.sku`), column names containing dots elsewhere in your schema can be accidentally interpreted as flattened Nested structures, triggering surprise array-length validation. The official guidance is to avoid dots in ordinary column names and use underscores instead.
+
+Second, with `SET flatten_nested = 0` (set before table creation), a `Nested` column is stored as a single `Array(Tuple(...))` rather than parallel arrays. That keeps the group together as one unit, which is closer to what most people expect coming from document databases, and avoids the dotted-column pitfalls. The flattened default is older behavior; the array-of-tuples representation is often the cleaner model for new tables, especially if you add or rename fields over time.
+
+## Tuple: A Fixed, Heterogeneous Record
+
+A `Tuple` is a fixed-shape record: a known number of fields, each with its own type, optionally named. Unlike a `Map`, the shape is part of the type and cannot vary per row. Unlike `Nested`, there is exactly one tuple per row (not a variable-length group).
+
+```sql
+SELECT (1, 'Ready') AS t, t.1 AS num, t.2 AS label;
+```
+
+Named tuples let you address fields by name, which is far more readable:
+
+```sql
+SELECT tuple(1, 'Ready')::Tuple(id UInt8, label String) AS t, t.label;
+```
+
+Tuples show up most often as intermediate values: the element type of a `Map` (`Array(Tuple(K, V))`), the return of functions that produce several values at once, or a way to carry a small fixed record without declaring separate columns. They are not usually the right top-level storage choice for analytical tables, because querying an individual tuple field still reads the whole tuple, and separate columns compress and scan better.
+
+### Converting between Tuple and Map
+
+You can cast a tuple of two parallel arrays into a map, which is handy when reshaping data:
+
+```sql
+SELECT CAST(([1, 2, 3], ['Ready', 'Steady', 'Go']), 'Map(UInt8, String)') AS m;
+-- {1:'Ready',2:'Steady',3:'Go'}
+```
+
+## Choosing Between Them
+
+- **Open-ended keys that vary per row** (labels, headers, sparse attributes): use `Map`. Accept the linear `m[k]` cost, or enable bucketed serialization if maps are wide and read-heavy.
+- **A repeated group of related fields with a stable schema** (line items, events within a session): use `Nested`, and consider `flatten_nested = 0` so the group stays one logical unit.
+- **A fixed, small record of mixed types**: use `Tuple`, usually as an intermediate value rather than primary storage.
+- **A handful of known attributes queried independently and filtered on**: skip all three and use plain columns. Separate columns compress better, support data-skipping indexes, and scan faster than any nested structure. Reach for `Map`/`Nested`/`Tuple` when the shape genuinely varies or the group is genuinely repeated, not to save a few `CREATE TABLE` lines.
+
+The honest tradeoff: nested structures buy you flexibility and lose you some of ClickHouse's columnar advantages, because reading one key or field often means touching the whole structure for that row. When the access pattern is "give me this one attribute, filtered," flat columns win.
+
+When you are reshaping unfamiliar semi-structured data, Mako's AI autocomplete can suggest the right `mapKeys`/`ARRAY JOIN`/tuple-access shape as you type, which helps given how easy it is to mix up the three.
+
+## Related Guides
+
+- [ClickHouse Arrays](/guides/clickhouse/arrays) for `ARRAY JOIN` and the higher-order functions that operate on Nested sub-columns.
+- [ClickHouse JSON Queries](/guides/clickhouse/json-queries) for the alternative when the structure is fully dynamic.
+- [Import JSON to ClickHouse](/guides/import-json-to-clickhouse) to load nested source data.
+
+---
+
+Mako connects to ClickHouse with AI-powered autocomplete for writing and exploring analytical queries. Try it free at [mako.ai](https://mako.ai).

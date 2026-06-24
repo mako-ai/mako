@@ -279,6 +279,10 @@ export class StripeConnector extends BaseConnector {
         case "subscriptions":
           response = await stripe.subscriptions.list({
             limit: batchSize,
+            // Stripe defaults to excluding canceled/incomplete_expired subs;
+            // without `status: "all"` the backfill silently drops all churned
+            // subscriptions, corrupting churn/retention/historical-MRR.
+            status: "all",
             ...(startingAfter && { starting_after: startingAfter }),
             ...(since && {
               created: { gte: Math.floor(since.getTime() / 1000) },
@@ -417,6 +421,10 @@ export class StripeConnector extends BaseConnector {
         case "subscriptions":
           response = await stripe.subscriptions.list({
             limit: batchSize,
+            // Stripe defaults to excluding canceled/incomplete_expired subs;
+            // without `status: "all"` the backfill silently drops all churned
+            // subscriptions, corrupting churn/retention/historical-MRR.
+            status: "all",
             ...(startingAfter && { starting_after: startingAfter }),
             ...(since && {
               created: { gte: Math.floor(since.getTime() / 1000) },
@@ -618,9 +626,6 @@ export class StripeConnector extends BaseConnector {
         entity: "subscriptions",
         operation: "delete",
       },
-      "subscription.created": { entity: "subscriptions", operation: "upsert" },
-      "subscription.updated": { entity: "subscriptions", operation: "upsert" },
-      "subscription.deleted": { entity: "subscriptions", operation: "delete" },
 
       // Charges/Payments
       "charge.succeeded": { entity: "charges", operation: "upsert" },
@@ -686,9 +691,6 @@ export class StripeConnector extends BaseConnector {
       "customer.subscription.created",
       "customer.subscription.updated",
       "customer.subscription.deleted",
-      "subscription.created",
-      "subscription.updated",
-      "subscription.deleted",
       // Charges
       "charge.succeeded",
       "charge.failed",

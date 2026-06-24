@@ -271,8 +271,12 @@ interface DbtState {
   filesByProject: Record<string, Record<string, DbtFileEntry>>;
   /** projectId → jobs. */
   jobsByProject: Record<string, DbtJobItem[]>;
-  /** projectId → recent runs (newest first). */
+  /** projectId → recent runs (newest first), unfiltered (project-wide view). */
   runsByProject: Record<string, DbtRunItem[]>;
+  /** jobId → recent runs for that job (newest first). Kept separate from
+   * `runsByProject` so the job view and the project-wide Runs view never
+   * clobber each other's list when both are mounted. */
+  runsByJob: Record<string, DbtRunItem[]>;
   /** runId → details incl. accumulated logs. */
   runDetails: Record<string, DbtRunDetails>;
   /** projectId → working-tree git status (repo-bound projects). */
@@ -409,6 +413,17 @@ interface DbtActions {
     from: string,
     to: string,
   ) => Promise<boolean>;
+  /**
+   * Apply a server-originated file change (agent server tools poke the realtime
+   * channel). Pulls fresh content for an open file, or drops a deleted file.
+   * Skips files with unsaved local edits to avoid clobbering the user's buffer.
+   */
+  applyRemoteFileUpdate: (
+    workspaceId: string,
+    projectId: string,
+    path: string,
+    deleted?: boolean,
+  ) => Promise<void>;
 
   fetchJobs: (workspaceId: string, projectId: string) => Promise<void>;
   saveJob: (
@@ -501,6 +516,7 @@ const initialState: DbtState = {
   filesByProject: {},
   jobsByProject: {},
   runsByProject: {},
+  runsByJob: {},
   runDetails: {},
   gitStatusByProject: {},
   settingsProjectId: null,
@@ -521,6 +537,21 @@ function errMessage(error: unknown, fallback: string): string {
  */
 function encodeDbtPath(path: string): string {
   return path.split("/").map(encodeURIComponent).join("/");
+}
+
+/**
+ * Refresh the working-tree git status for a repo-bound project after a file
+ * write. Fire-and-forget: keeps the "Commit & push (N)" badge in sync when the
+ * agent (or the editor) creates/modifies/deletes/renames files. No-op for
+ * projects without a repo binding (the status endpoint would 400).
+ */
+function refreshGitStatusForRepoProject(
+  get: () => DbtStore,
+  workspaceId: string,
+  projectId: string,
+): void {
+  const project = get().projects.find(p => p._id === projectId);
+  if (project?.repo) void get().fetchGitStatus(workspaceId, projectId);
 }
 
 export const useDbtStore = create<DbtStore>()(
@@ -614,6 +645,9 @@ export const useDbtStore = create<DbtStore>()(
           state.projects = state.projects.filter(p => p._id !== projectId);
           delete state.filePathsByProject[projectId];
           delete state.filesByProject[projectId];
+          for (const job of state.jobsByProject[projectId] ?? []) {
+            delete state.runsByJob[job._id];
+          }
           delete state.jobsByProject[projectId];
           delete state.runsByProject[projectId];
           if (state.activeProjectId === projectId) {
@@ -1006,6 +1040,7 @@ export const useDbtStore = create<DbtStore>()(
           const entry = state.filesByProject[projectId]?.[path];
           if (entry) entry.dirty = false;
         });
+        refreshGitStatusForRepoProject(get, workspaceId, projectId);
         return true;
       } catch (error) {
         set(state => {
@@ -1023,6 +1058,48 @@ export const useDbtStore = create<DbtStore>()(
       return get().persistFile(workspaceId, projectId, path);
     },
 
+    applyRemoteFileUpdate: async (workspaceId, projectId, path, deleted) => {
+      if (deleted) {
+        set(state => {
+          delete state.filesByProject[projectId]?.[path];
+          const paths = state.filePathsByProject[projectId];
+          if (paths) {
+            state.filePathsByProject[projectId] = paths.filter(p => p !== path);
+          }
+        });
+        return;
+      }
+      // Don't clobber a dirty buffer the user is editing.
+      const entry = get().filesByProject[projectId]?.[path];
+      if (entry?.dirty) return;
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          file: { path: string; content: string };
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
+        );
+        const content = response.file?.content ?? "";
+        set(state => {
+          if (!state.filesByProject[projectId]) {
+            state.filesByProject[projectId] = {};
+          }
+          state.filesByProject[projectId][path] = {
+            content,
+            dirty: false,
+            loaded: true,
+          };
+          const paths = state.filePathsByProject[projectId];
+          if (paths && !paths.includes(path)) {
+            paths.push(path);
+            paths.sort();
+          }
+        });
+      } catch {
+        /* best-effort live refresh */
+      }
+    },
+
     deleteFile: async (workspaceId, projectId, path) => {
       try {
         await apiClient.delete(
@@ -1035,6 +1112,7 @@ export const useDbtStore = create<DbtStore>()(
             state.filePathsByProject[projectId] = paths.filter(p => p !== path);
           }
         });
+        refreshGitStatusForRepoProject(get, workspaceId, projectId);
         return true;
       } catch (error) {
         set(state => {
@@ -1066,6 +1144,7 @@ export const useDbtStore = create<DbtStore>()(
               .sort();
           }
         });
+        refreshGitStatusForRepoProject(get, workspaceId, projectId);
         return true;
       } catch (error) {
         set(state => {
@@ -1158,7 +1237,12 @@ export const useDbtStore = create<DbtStore>()(
         }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/jobs/${jobId}/trigger`,
         );
-        await get().fetchRuns(workspaceId, projectId, jobId);
+        // Refresh both the job-scoped list (job view) and the unfiltered list
+        // (project-wide Runs view) so whichever is open shows the new run.
+        await Promise.all([
+          get().fetchRuns(workspaceId, projectId, jobId),
+          get().fetchRuns(workspaceId, projectId),
+        ]);
         return response.runId ?? null;
       } catch (error) {
         set(state => {
@@ -1179,7 +1263,14 @@ export const useDbtStore = create<DbtStore>()(
         }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/runs/${runId}/retry`,
         );
-        await get().fetchRuns(workspaceId, projectId, jobId);
+        // Refresh both lists: the retry may be triggered from the job view or
+        // the project-wide Runs view, and both should reflect the new run.
+        await Promise.all([
+          jobId
+            ? get().fetchRuns(workspaceId, projectId, jobId)
+            : Promise.resolve(),
+          get().fetchRuns(workspaceId, projectId),
+        ]);
         return response.runId ?? null;
       } catch (error) {
         set(state => {
@@ -1202,7 +1293,11 @@ export const useDbtStore = create<DbtStore>()(
           jobId ? { jobId, limit: "100" } : { limit: "100" },
         );
         set(state => {
-          state.runsByProject[projectId] = response.runs ?? [];
+          if (jobId) {
+            state.runsByJob[jobId] = response.runs ?? [];
+          } else {
+            state.runsByProject[projectId] = response.runs ?? [];
+          }
         });
       } catch (error) {
         set(state => {
@@ -1235,15 +1330,16 @@ export const useDbtStore = create<DbtStore>()(
         const merged: DbtRunDetails = { ...run, logs };
         set(state => {
           state.runDetails[runId] = merged;
-          // Keep the run list row in sync (status/duration changes).
-          const runs = state.runsByProject[projectId];
-          if (runs) {
-            const idx = runs.findIndex(r => r._id === runId);
-            if (idx >= 0) {
-              const { logs: _logs, logCursor: _cursor, ...listItem } = run;
-              runs[idx] = { ...runs[idx], ...listItem };
-            }
-          }
+          // Keep the run list row in sync (status/duration changes) in both the
+          // project-wide list and the per-job list.
+          const { logs: _logs, logCursor: _cursor, ...listItem } = run;
+          const syncList = (list: DbtRunItem[] | undefined) => {
+            if (!list) return;
+            const idx = list.findIndex(r => r._id === runId);
+            if (idx >= 0) list[idx] = { ...list[idx], ...listItem };
+          };
+          syncList(state.runsByProject[projectId]);
+          if (run.jobId) syncList(state.runsByJob[run.jobId]);
         });
         return merged;
       } catch (error) {
