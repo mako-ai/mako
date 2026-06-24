@@ -2980,6 +2980,51 @@ const Chat: React.FC<ChatProps> = ({
     activeClientToolCallCount > 0;
   isLoadingRef.current = isLoading;
 
+  // Stick to the streaming tail while a turn is generating.
+  //
+  // Virtuoso's `followOutput` only fires when the item COUNT changes, and its
+  // resize re-stick (`notAtBottomBecause === "SIZE_INCREASED"`) is only armed
+  // for ~100ms after a list refresh. But an entire assistant turn — thinking
+  // blocks, every tool card, and the final text — streams into a SINGLE
+  // message, growing one item without ever changing the count. So neither
+  // built-in mechanism keeps us pinned mid-turn: thinking blocks and tool
+  // cards stream in below the fold and the view never follows them down.
+  //
+  // Drive the follow ourselves: on each (throttled) `messages` tick while
+  // streaming, coalesce a single rAF that pins the scroller to the bottom.
+  // We use the handle's `scrollTo({ top })` (a direct scroll-position set on
+  // Virtuoso's scroller) rather than `scrollToIndex({ align: "end" })`: an
+  // index scroll re-derives its target from the last item's *current* measured
+  // size, so firing it every frame while that item is still growing/being
+  // re-measured makes the view bounce between the item's top and bottom (the
+  // "jumping/blinking"). Pinning the raw scroll position to the bottom each
+  // frame is self-correcting and never bounces upward. Gated on `isAtBottom`
+  // so scrolling up to read history is never yanked back down. This is the
+  // rAF-coalesced exception to the "no messages-dep DOM effect" rule
+  // (see .cursor/rules/75-chat-performance.mdc).
+  const followRafRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isLoading || !isAtBottom) return;
+    if (followRafRef.current !== null) return; // coalesce: one pin per frame
+    followRafRef.current = requestAnimationFrame(() => {
+      followRafRef.current = null;
+      virtuosoRef.current?.scrollTo({
+        top: Number.MAX_SAFE_INTEGER,
+        behavior: "auto",
+      });
+    });
+  }, [messages, isLoading, isAtBottom]);
+
+  useEffect(
+    () => () => {
+      if (followRafRef.current !== null) {
+        cancelAnimationFrame(followRafRef.current);
+        followRafRef.current = null;
+      }
+    },
+    [],
+  );
+
   // Rescue tool cards orphaned by a clean stream end.
   //
   // A tool card's "Running…" status is derived purely from the AI SDK tool
@@ -4476,10 +4521,16 @@ const Chat: React.FC<ChatProps> = ({
             // survives streaming ticks and history inserts — mirrors the old
             // `key={message.id}`.
             computeItemKey={(_index, message) => message.id}
-            // Auto-stick to the tail while streaming, but only when the user is
-            // already at the bottom (don't yank them down if they scrolled up
-            // to read history). This preserves the old use-stick-to-bottom UX.
-            followOutput={isAtBottom ? "smooth" : false}
+            // Auto-scroll during streaming is owned entirely by the rAF
+            // `scrollTo({ top })` follow effect above (it covers BOTH new-
+            // message appends and intra-message growth, since `messages`
+            // changes in both cases). `followOutput` is left OFF: Virtuoso's
+            // built-in follow does a `scrollToIndex({ align: "end" })` on every
+            // count change, which — racing our per-frame pin while the last
+            // item is being re-measured — reintroduces the top/bottom bounce
+            // ("jumping/blinking"). Mount/history-load anchoring is handled by
+            // `initialTopMostItemIndex` and the explicit post-load scroll.
+            followOutput={false}
             initialTopMostItemIndex={Math.max(0, messages.length - 1)}
             atBottomStateChange={setIsAtBottom}
             atBottomThreshold={120}

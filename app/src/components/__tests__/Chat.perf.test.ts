@@ -315,17 +315,28 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/computeItemKey=/);
   });
 
-  it("auto-follows the streaming tail only when at bottom", () => {
-    // followOutput pins to the newest message while streaming, but is disabled
-    // when the user has scrolled up to read history (so they're not yanked
-    // down). This replaces use-stick-to-bottom's equivalent behavior.
-    expect(chatSource).toMatch(/followOutput=\{isAtBottom \? .* : false\}/);
+  it("auto-follows the streaming tail via a coalesced rAF scrollTo, gated on isAtBottom", () => {
+    // Auto-scroll is owned by a coalesced requestAnimationFrame follow effect
+    // that pins the scroller to the bottom (`scrollTo({ top })`) on each
+    // streaming tick — NOT Virtuoso's `followOutput`. `followOutput` only fires
+    // on item-COUNT change (a whole turn streams into ONE message, so it never
+    // fires mid-turn) and, when it does, its `scrollToIndex({ align: "end" })`
+    // races our per-frame pin and bounces the view. So it must stay OFF.
+    expect(chatSource).toMatch(/followOutput=\{false\}/);
+    // The follow effect must coalesce with rAF, pin to the bottom, and be gated
+    // on isAtBottom (so scrolling up to read history isn't yanked down).
+    expect(chatSource).toMatch(/requestAnimationFrame/);
+    expect(chatSource).toMatch(
+      /scrollTo\(\{\s*top:\s*Number\.MAX_SAFE_INTEGER/,
+    );
+    expect(chatSource).toMatch(/if \(!isLoading \|\| !isAtBottom\) return;/);
   });
 
-  it("does NOT have a DIY useEffect([messages]) auto-scroll", () => {
-    const diyScrollPattern =
-      /useEffect\(\s*\(\)\s*=>\s*\{[^}]*scrollIntoView[^}]*\}\s*,\s*\[messages\]\)/s;
-    expect(chatSource).not.toMatch(diyScrollPattern);
+  it("does NOT have a DIY useEffect([messages]) scrollIntoView auto-scroll", () => {
+    // The follow effect uses Virtuoso's `scrollTo` handle (gated + rAF
+    // coalesced), never a raw per-chunk `scrollIntoView` on a DOM node, which
+    // fired every chunk and broke hover/click + caused jank.
+    expect(chatSource).not.toMatch(/scrollIntoView/);
   });
 
   it("does NOT have isNearBottomRef (old DIY scroll state)", () => {

@@ -79,25 +79,50 @@ Key pieces (in `Chat.tsx`):
 **Never revert to `messages.map(...)` over the full array.** That reintroduces
 the unbounded DOM that lags long chats on mobile.
 
-## Auto-scroll contract (Virtuoso `followOutput`)
+## Auto-scroll contract (rAF `scrollTo` follow)
 
-Bottom-anchoring is owned by Virtuoso, **not** `use-stick-to-bottom` (removed),
-and **not** a DIY `useEffect([messages])` → `scrollIntoView` (which fires on
-every chunk and causes scroll jank + broken hover/click events).
+Bottom-anchoring is owned by a **coalesced rAF follow effect**, **not**
+`use-stick-to-bottom` (removed), **not** a DIY `useEffect([messages])` →
+`scrollIntoView` (fires every chunk → jank + broken hover/click), and **not**
+Virtuoso's `followOutput`.
+
+**Why `followOutput` is OFF.** Virtuoso's `followOutput` only fires when the
+item **count** changes, and its resize re-stick (`notAtBottomBecause ===
+"SIZE_INCREASED"`) is only armed for ~100ms after a list refresh. But an entire
+assistant turn — thinking blocks, every tool card, and the final text — streams
+into a **single** message, growing one item without changing the count. So
+`followOutput` never fires mid-turn (thinking/tool cards stream in below the
+fold and the view never follows). Worse, when it *does* fire it runs
+`scrollToIndex({ align: "end" })`, which re-derives its target from the last
+item's current measured size — racing our per-frame pin while that item is being
+re-measured makes the view bounce between the item's top and bottom (visible as
+"jumping/blinking"). So `followOutput={false}`.
 
 Key pieces:
-- `followOutput={isAtBottom ? "smooth" : false}` — auto-sticks to the streaming
-  tail, but **only when the user is already at the bottom**, so scrolling up to
-  read history doesn't yank them back down.
+- **Streaming follow (the load-bearing piece):** a `useEffect` keyed on
+  `[messages, isLoading, isAtBottom]` schedules ONE coalesced
+  `requestAnimationFrame` per frame that calls
+  `virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })`.
+  - Use `scrollTo({ top })` (raw scroll-position set), **never**
+    `scrollToIndex({ align: "end" })` here — pinning the raw position to the
+    bottom each frame is self-correcting and never bounces upward, whereas an
+    index scroll bounces while the last item grows.
+  - Gated on `isAtBottom` so scrolling up to read history is never yanked down.
+  - `behavior: "auto"` (instant) — never `"smooth"`, which kicks off competing
+    animations on rapid streaming growth.
+  - rAF coalescing (a `followRafRef` guard) is the sanctioned exception to the
+    "no `messages`-dep DOM effect" rule; a separate unmount-only effect cancels
+    any pending frame.
 - `initialTopMostItemIndex={Math.max(0, messages.length - 1)}` — lands at the
   newest message on mount / chat switch.
 - `atBottomStateChange={setIsAtBottom}` + `atBottomThreshold={120}` — drives the
   `isAtBottom` state (note: this only flips when crossing the threshold, so it
   does **not** re-render per streaming chunk).
 - `virtuosoRef.current?.scrollToIndex({ index: messages.length - 1, align: "end" })`
-  — imperative scroll for the "scroll to bottom" button's `onClick`. The button
-  is `position: absolute` inside the relative parent `Box` (a sibling of
-  `<Virtuoso>`), since Virtuoso owns the scroller.
+  — imperative scroll for the "scroll to bottom" button's `onClick` (a one-shot
+  jump, so the bounce doesn't apply). The button is `position: absolute` inside
+  the relative parent `Box` (a sibling of `<Virtuoso>`), since Virtuoso owns the
+  scroller.
 - Opening an existing chat does an explicit `scrollToIndex({ index: "LAST" })`
   after the bulk `setMessages`, because Virtuoso keeps one instance across chat
   switches so `initialTopMostItemIndex` (mount-only) won't re-apply.
@@ -161,7 +186,9 @@ callback, not via a selector subscription.
 - [ ] No new `useEffect` depending on `messages` that touches the DOM
 - [ ] `experimental_throttle: 50` is present on `useChat`
 - [ ] Message list stays virtualized (`<Virtuoso data={messages}>`), never `messages.map`
-- [ ] Auto-scroll uses Virtuoso `followOutput`, not a DIY `useEffect`
+- [ ] Auto-scroll uses the coalesced rAF `scrollTo({ top })` follow effect
+      (gated on `isAtBottom`), **not** Virtuoso `followOutput` and **not**
+      a per-chunk `scrollToIndex`/`scrollIntoView`
 - [ ] Collapsed `StreamingToolCard` bodies unmount (`Collapse unmountOnExit`)
 - [ ] Any new child component inside `ChatMessageRow` is `React.memo`-wrapped
 - [ ] Zustand selectors return primitives, not object references
