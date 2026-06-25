@@ -13,7 +13,12 @@
 
 import { Types } from "mongoose";
 import { inngest } from "../client";
-import { DbtJob, DbtProject, DbtRun } from "../../database/workspace-schema";
+import {
+  DbtJob,
+  DbtProject,
+  DbtRun,
+  type DbtRunStatus,
+} from "../../database/workspace-schema";
 import { loggers } from "../../logging";
 import { parseDbtCommand } from "../../dbt/commands";
 import { loadDbtProjectSnapshot } from "../../dbt/dbt-project.service";
@@ -198,192 +203,214 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
     let failed = false;
     let errorMessage: string | undefined;
+    let unexpectedError: unknown;
     const allStepResults: ReturnType<typeof parseStepResults> = [];
 
-    for (let i = 0; i < runInfo.commands.length; i++) {
-      const commandText = runInfo.commands[i];
+    try {
+      for (let i = 0; i < runInfo.commands.length; i++) {
+        const commandText = runInfo.commands[i];
 
-      const stepOutcome = await step.run(`exec-cmd-${i}`, async () => {
-        // Snapshot (files + decrypted profile) is loaded inside the step so
-        // credentials never land in Inngest step state.
-        const snapshot = await loadDbtProjectSnapshot({
-          workspaceId: data.workspaceId,
-          projectId: data.projectId,
-          environmentName: runInfo.environment,
-        });
-        const parsed = parseDbtCommand(commandText);
-        const logWriter = createLogWriter(runObjectId);
+        const stepOutcome = await step.run(`exec-cmd-${i}`, async () => {
+          // Snapshot (files + decrypted profile) is loaded inside the step so
+          // credentials never land in Inngest step state.
+          const snapshot = await loadDbtProjectSnapshot({
+            workspaceId: data.workspaceId,
+            projectId: data.projectId,
+            environmentName: runInfo.environment,
+          });
+          const parsed = parseDbtCommand(commandText);
+          const logWriter = createLogWriter(runObjectId);
 
-        logWriter.onLog({
-          ts: new Date(),
-          level: "info",
-          line: `$ dbt ${parsed.argv.join(" ")}`,
-        });
+          logWriter.onLog({
+            ts: new Date(),
+            level: "info",
+            line: `$ dbt ${parsed.argv.join(" ")}`,
+          });
 
-        // Retry runs seed the prior run_results.json into target/ so
-        // `dbt retry` resumes at the failed/skipped nodes.
-        const restoreKeys = runInfo.restoreArtifactKeys;
-        const restoreTarget = restoreKeys
-          ? {
-              runResults: await readArtifactBuffer(restoreKeys.runResults),
-              manifest: await readArtifactBuffer(restoreKeys.manifest),
-            }
-          : undefined;
-        const deferState = await readArtifactBuffer(
-          runInfo.deferStateKey ?? undefined,
-        );
+          // Retry runs seed the prior run_results.json into target/ so
+          // `dbt retry` resumes at the failed/skipped nodes.
+          const restoreKeys = runInfo.restoreArtifactKeys;
+          const restoreTarget = restoreKeys
+            ? {
+                runResults: await readArtifactBuffer(restoreKeys.runResults),
+                manifest: await readArtifactBuffer(restoreKeys.manifest),
+              }
+            : undefined;
+          const deferState = await readArtifactBuffer(
+            runInfo.deferStateKey ?? undefined,
+          );
 
-        // Warm caches: skip a full re-parse (and `dbt deps` when packages are
-        // unchanged) by seeding the previous command/run's state. Best-effort.
-        const cacheScope = {
-          workspaceId: data.workspaceId,
-          projectId: data.projectId,
-          environment: runInfo.environment,
-        };
-        const packagesHash = computePackagesHash(snapshot.files);
-        const caches = await loadDbtCaches(cacheScope, packagesHash);
+          // Warm caches: skip a full re-parse (and `dbt deps` when packages are
+          // unchanged) by seeding the previous command/run's state. Best-effort.
+          const cacheScope = {
+            workspaceId: data.workspaceId,
+            projectId: data.projectId,
+            environment: runInfo.environment,
+          };
+          const packagesHash = computePackagesHash(snapshot.files);
+          const caches = await loadDbtCaches(cacheScope, packagesHash);
 
-        try {
-          // Deploy builds run in a warm dir (role=run), separate from the
-          // interactive (adhoc) dir so the two never block each other. The
-          // artifact caches above seed a cold instance; thereafter target/ and
-          // dbt_packages/ stay warm on disk across steps and runs.
-          const runOnce = (workingDir?: string) =>
-            runDbt({
-              files: snapshot.files,
-              profile: snapshot.profile,
-              commands: [parsed],
-              dbtVersion: snapshot.project.dbtVersion,
-              vars: snapshot.environment.vars,
-              // Cloud Run services deploy with --timeout=3600; leave buffer for
-              // snapshot loading + artifact upload within the step request.
-              commandTimeoutMs: 50 * 60 * 1000,
-              restoreTarget,
-              deferState,
-              seedPartialParse: caches.partialParse,
-              seedPackagesArchive: caches.packages,
-              skipDeps: caches.packagesFresh,
-              packagesHash,
-              workingDir,
-              onLog: logWriter.onLog,
-            });
-
-          let result: Awaited<ReturnType<typeof runDbt>> | undefined;
-          if (warmDirsEnabled()) {
-            try {
-              result = await withProjectDir(
-                { ...cacheScope, role: "run" },
-                dir => runOnce(dir),
-              );
-              // Positive signal so warm-dir engagement on the executor is
-              // observable; pairs with the fallback warn for a success rate.
-              logger.info("dbt warm dir used", {
-                event: "dbt_warm_dir",
-                outcome: "hit",
-                role: "run",
-                projectId: cacheScope.projectId,
-                environment: cacheScope.environment,
+          try {
+            // Deploy builds run in a warm dir (role=run), separate from the
+            // interactive (adhoc) dir so the two never block each other. The
+            // artifact caches above seed a cold instance; thereafter target/ and
+            // dbt_packages/ stay warm on disk across steps and runs.
+            const runOnce = (workingDir?: string) =>
+              runDbt({
+                files: snapshot.files,
+                profile: snapshot.profile,
+                commands: [parsed],
+                dbtVersion: snapshot.project.dbtVersion,
+                vars: snapshot.environment.vars,
+                // Cloud Run services deploy with --timeout=3600; leave buffer for
+                // snapshot loading + artifact upload within the step request.
+                commandTimeoutMs: 50 * 60 * 1000,
+                restoreTarget,
+                deferState,
+                seedPartialParse: caches.partialParse,
+                seedPackagesArchive: caches.packages,
+                skipDeps: caches.packagesFresh,
+                packagesHash,
+                workingDir,
+                onLog: logWriter.onLog,
               });
-            } catch (warmError) {
-              logger.warn(
-                "Warm dir run failed; falling back to throwaway dir",
-                {
+
+            let result: Awaited<ReturnType<typeof runDbt>> | undefined;
+            if (warmDirsEnabled()) {
+              try {
+                result = await withProjectDir(
+                  { ...cacheScope, role: "run" },
+                  dir => runOnce(dir),
+                );
+                // Positive signal so warm-dir engagement on the executor is
+                // observable; pairs with the fallback warn for a success rate.
+                logger.info("dbt warm dir used", {
                   event: "dbt_warm_dir",
-                  outcome: "fallback",
+                  outcome: "hit",
                   role: "run",
-                  error: String(warmError),
                   projectId: cacheScope.projectId,
                   environment: cacheScope.environment,
+                });
+              } catch (warmError) {
+                logger.warn(
+                  "Warm dir run failed; falling back to throwaway dir",
+                  {
+                    event: "dbt_warm_dir",
+                    outcome: "fallback",
+                    role: "run",
+                    error: String(warmError),
+                    projectId: cacheScope.projectId,
+                    environment: cacheScope.environment,
+                  },
+                );
+              }
+            }
+            if (!result) result = await runOnce(undefined);
+
+            // Persist refreshed caches for the next command/run.
+            // Skip the re-upload when nothing changed (the seeded cache is still
+            // current); the msgpack's embedded timestamps would otherwise make
+            // every hourly run re-push an effectively identical blob.
+            if (
+              result.artifacts.partialParse &&
+              (result.projectChanged || !caches.partialParse)
+            ) {
+              await saveParseCache(cacheScope, result.artifacts.partialParse);
+            }
+            if (result.artifacts.packagesArchive && packagesHash) {
+              await savePackagesCache(
+                cacheScope,
+                result.artifacts.packagesArchive,
+                packagesHash,
+              );
+            }
+
+            const commandResult = result.commandResults[0];
+            const stepResults = [
+              ...parseStepResults(commandResult?.runResults),
+              ...parseSourceFreshness(result.artifacts.sources),
+            ];
+
+            // Upload artifacts after every command — the last successful
+            // upload wins, which matches dbt's own target/ behavior.
+            const store = getDashboardArtifactStore();
+            const prefix = `dbt-artifacts/${data.workspaceId}/${data.runId}`;
+            const artifactKeys: Record<string, string> = {};
+            const uploads: Array<[string, Buffer | undefined, string]> = [
+              ["manifest", result.artifacts.manifest, "manifest.json"],
+              ["runResults", result.artifacts.runResults, "run_results.json"],
+              ["catalog", result.artifacts.catalog, "catalog.json"],
+              ["sources", result.artifacts.sources, "sources.json"],
+            ];
+            for (const [kind, buffer, filename] of uploads) {
+              if (!buffer) continue;
+              const key = `${prefix}/${filename}`;
+              try {
+                await store.putBuffer(buffer, key, "application/json");
+                artifactKeys[kind] = key;
+              } catch (uploadError) {
+                logger.warn("dbt artifact upload failed", {
+                  error: uploadError,
+                  key,
+                });
+              }
+            }
+
+            const update: Record<string, unknown> = {};
+            for (const [kind, key] of Object.entries(artifactKeys)) {
+              update[`artifactKeys.${kind}`] = key;
+            }
+            if (stepResults.length > 0 || Object.keys(update).length > 0) {
+              await DbtRun.updateOne(
+                { _id: runObjectId },
+                {
+                  ...(Object.keys(update).length > 0 ? { $set: update } : {}),
+                  ...(stepResults.length > 0
+                    ? { $push: { stepResults: { $each: stepResults } } }
+                    : {}),
                 },
               );
             }
-          }
-          if (!result) result = await runOnce(undefined);
 
-          // Persist refreshed caches for the next command/run.
-          // Skip the re-upload when nothing changed (the seeded cache is still
-          // current); the msgpack's embedded timestamps would otherwise make
-          // every hourly run re-push an effectively identical blob.
-          if (
-            result.artifacts.partialParse &&
-            (result.projectChanged || !caches.partialParse)
-          ) {
-            await saveParseCache(cacheScope, result.artifacts.partialParse);
+            return {
+              exitCode: commandResult?.exitCode ?? 1,
+              success: result.success,
+              stepResultCount: stepResults.length,
+              failedSteps: stepResults.filter(
+                stepResult =>
+                  stepResult.status === "error" || stepResult.status === "fail",
+              ).length,
+            };
+          } finally {
+            await logWriter.finish();
           }
-          if (result.artifacts.packagesArchive && packagesHash) {
-            await savePackagesCache(
-              cacheScope,
-              result.artifacts.packagesArchive,
-              packagesHash,
-            );
-          }
+        });
 
-          const commandResult = result.commandResults[0];
-          const stepResults = [
-            ...parseStepResults(commandResult?.runResults),
-            ...parseSourceFreshness(result.artifacts.sources),
-          ];
-
-          // Upload artifacts after every command — the last successful
-          // upload wins, which matches dbt's own target/ behavior.
-          const store = getDashboardArtifactStore();
-          const prefix = `dbt-artifacts/${data.workspaceId}/${data.runId}`;
-          const artifactKeys: Record<string, string> = {};
-          const uploads: Array<[string, Buffer | undefined, string]> = [
-            ["manifest", result.artifacts.manifest, "manifest.json"],
-            ["runResults", result.artifacts.runResults, "run_results.json"],
-            ["catalog", result.artifacts.catalog, "catalog.json"],
-            ["sources", result.artifacts.sources, "sources.json"],
-          ];
-          for (const [kind, buffer, filename] of uploads) {
-            if (!buffer) continue;
-            const key = `${prefix}/${filename}`;
-            try {
-              await store.putBuffer(buffer, key, "application/json");
-              artifactKeys[kind] = key;
-            } catch (uploadError) {
-              logger.warn("dbt artifact upload failed", {
-                error: uploadError,
-                key,
-              });
-            }
-          }
-
-          const update: Record<string, unknown> = {};
-          for (const [kind, key] of Object.entries(artifactKeys)) {
-            update[`artifactKeys.${kind}`] = key;
-          }
-          if (stepResults.length > 0 || Object.keys(update).length > 0) {
-            await DbtRun.updateOne(
-              { _id: runObjectId },
-              {
-                ...(Object.keys(update).length > 0 ? { $set: update } : {}),
-                ...(stepResults.length > 0
-                  ? { $push: { stepResults: { $each: stepResults } } }
-                  : {}),
-              },
-            );
-          }
-
-          return {
-            exitCode: commandResult?.exitCode ?? 1,
-            success: result.success,
-            stepResultCount: stepResults.length,
-            failedSteps: stepResults.filter(
-              stepResult =>
-                stepResult.status === "error" || stepResult.status === "fail",
-            ).length,
-          };
-        } finally {
-          await logWriter.finish();
+        if (!stepOutcome.success) {
+          failed = true;
+          errorMessage = `dbt command "${commandText}" exited with code ${stepOutcome.exitCode}`;
+          break;
         }
-      });
-
-      if (!stepOutcome.success) {
-        failed = true;
-        errorMessage = `dbt command "${commandText}" exited with code ${stepOutcome.exitCode}`;
-        break;
       }
+    } catch (error) {
+      // A step threw instead of returning a non-zero dbt exit code: snapshot
+      // load, artifact upload, the post-command DbtRun.updateOne, a per-command
+      // timeout, etc. Without catching here the function would reject and the
+      // "finalize-run" step below would never run, leaving the doc stuck on
+      // "running" (logs show dbt finished, but the status pill never flips).
+      // Route the failure through the same finalizer so the run always
+      // terminates, then rethrow after finalize for Inngest observability
+      // (mirrors scheduled-query.ts).
+      failed = true;
+      errorMessage =
+        error instanceof Error
+          ? error.message
+          : "dbt run executor failed unexpectedly";
+      unexpectedError = error;
+      logger.error("dbt run executor step threw; finalizing as error", {
+        runId: data.runId,
+        error,
+      });
     }
 
     await step.run("finalize-run", async () => {
@@ -488,6 +515,15 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         }
       }
     });
+
+    // Surface unexpected executor failures (a thrown step rather than a clean
+    // non-zero dbt exit) to Inngest after the run doc has been finalized as
+    // "error", so alerting still fires without leaving the run "running".
+    if (unexpectedError) {
+      throw unexpectedError instanceof Error
+        ? unexpectedError
+        : new Error(String(unexpectedError));
+    }
 
     return {
       runId: data.runId,
@@ -610,6 +646,45 @@ const DBT_RUN_STALL_MS = 60 * 60 * 1000;
 const DBT_RUN_QUEUED_STALL_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * dbt prints a terminal summary on its final stdout lines when the process
+ * exits ("Completed successfully" / "Done. PASS=.. ERROR=.. .. TOTAL=.."). When
+ * those lines are present the subprocess has definitively finished, so a
+ * "running" doc with no completedAt means the executor died during post-run
+ * finalization (artifact upload, the status write, or an instance recycle
+ * between steps). These can be finalized within minutes — and with the real
+ * success/error recovered from the summary — instead of waiting out the full
+ * DBT_RUN_STALL_MS log-silence window.
+ */
+const DBT_RUN_DONE_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Recover a run outcome from the tail of dbt's streamed logs. Returns the
+ * detected status, or null when dbt has not clearly finished (so the slow
+ * log-silence rule still applies).
+ */
+function detectDbtTerminalOutcome(
+  logs: Array<{ line?: string }> | undefined,
+): DbtRunStatus | null {
+  if (!logs?.length) return null;
+  // Newest lines are last; a small tail is enough to catch the summary block.
+  const tail = logs
+    .map(entry => entry.line ?? "")
+    .slice(-8)
+    .join("\n");
+  // `dbt build/run/test` summary, e.g. "Done. PASS=133 WARN=0 ERROR=0 ...".
+  const doneMatch = tail.match(/Done\.\s+PASS=\d+[^\n]*?ERROR=(\d+)/);
+  if (doneMatch) {
+    return Number(doneMatch[1]) > 0 ? "error" : "success";
+  }
+  // Non-build commands (compile/debug/parse) end with a plain banner.
+  if (/Completed successfully/.test(tail)) return "success";
+  if (/Encountered an error|Completed with \d+ error/.test(tail)) {
+    return "error";
+  }
+  return null;
+}
+
+/**
  * Run-history retention. dbt_runs embed capped logs + stepResults and would
  * otherwise grow unbounded. The parent job preserves last status/error in
  * `scheduledRun`, so pruning completed history rows past the window is safe.
@@ -648,31 +723,79 @@ export const dbtRunSweeperFunction = inngest.createFunction(
           startedAt: 1,
           createdAt: 1,
           jobId: 1,
-          logs: { $slice: -1 },
+          logs: { $slice: -8 },
         })
         .lean();
 
-      const abandoned = activeRuns.filter(run => {
+      // Classify each active run that needs sweeping, recovering the real
+      // outcome from dbt's terminal log summary where possible.
+      const abandoned: Array<{
+        run: (typeof activeRuns)[number];
+        status: DbtRunStatus;
+        error: string;
+        recoveredFromLogs: boolean;
+      }> = [];
+
+      for (const run of activeRuns) {
         if (run.status === "queued") {
           // Queued runs can legitimately wait behind the per-project
           // concurrency lock — only sweep clearly lost events.
-          return now - run.createdAt.getTime() > DBT_RUN_QUEUED_STALL_MS;
+          if (now - run.createdAt.getTime() > DBT_RUN_QUEUED_STALL_MS) {
+            abandoned.push({
+              run,
+              status: "error",
+              error:
+                "Run abandoned — queued event never executed (lost event or stuck behind concurrency lock)",
+              recoveredFromLogs: false,
+            });
+          }
+          continue;
         }
-        const lastActivity =
-          run.logs?.[0]?.ts ?? run.startedAt ?? run.createdAt;
-        return now - new Date(lastActivity).getTime() > DBT_RUN_STALL_MS;
-      });
 
-      for (const run of abandoned) {
+        const lastLine = run.logs?.[run.logs.length - 1];
+        const lastActivity = lastLine?.ts ?? run.startedAt ?? run.createdAt;
+        const idleMs = now - new Date(lastActivity).getTime();
+
+        // Fast path: dbt printed its terminal summary, so the subprocess
+        // finished and only finalization was lost. Recover the true outcome
+        // after a short grace instead of waiting out DBT_RUN_STALL_MS.
+        const terminalOutcome = detectDbtTerminalOutcome(run.logs);
+        if (terminalOutcome && idleMs > DBT_RUN_DONE_GRACE_MS) {
+          abandoned.push({
+            run,
+            status: terminalOutcome,
+            error:
+              terminalOutcome === "error"
+                ? "Run finalized from dbt output — executor died after dbt reported errors"
+                : "",
+            recoveredFromLogs: true,
+          });
+          continue;
+        }
+
+        // Slow path: no terminal summary — prolonged log silence means the
+        // executor process is gone (instance crash/deploy mid-step).
+        if (idleMs > DBT_RUN_STALL_MS) {
+          abandoned.push({
+            run,
+            status: "error",
+            error:
+              "Run abandoned — executor terminated without finalizing (instance crash or deploy)",
+            recoveredFromLogs: false,
+          });
+        }
+      }
+
+      for (const { run, status, error, recoveredFromLogs } of abandoned) {
+        const failedRun = status === "error";
         const completedAt = new Date();
         const updated = await DbtRun.updateOne(
           { _id: run._id, status: { $in: ["queued", "running"] } },
           {
             $set: {
-              status: "error",
+              status,
               completedAt,
-              error:
-                "Run abandoned — executor terminated without finalizing (instance crash or deploy)",
+              ...(error ? { error } : {}),
               ...(run.startedAt
                 ? {
                     durationMs:
@@ -692,12 +815,15 @@ export const dbtRunSweeperFunction = inngest.createFunction(
             {
               $set: {
                 "scheduledRun.lastAt": completedAt,
-                "scheduledRun.lastStatus": "error",
-                "scheduledRun.lastError": "Run abandoned by executor",
+                "scheduledRun.lastStatus": status,
+                "scheduledRun.lastError": failedRun
+                  ? error || "Run abandoned by executor"
+                  : undefined,
+                ...(failedRun ? {} : { "scheduledRun.consecutiveFailures": 0 }),
               },
               $inc: {
                 "scheduledRun.runCount": 1,
-                "scheduledRun.consecutiveFailures": 1,
+                ...(failedRun ? { "scheduledRun.consecutiveFailures": 1 } : {}),
               },
             },
           );
@@ -706,7 +832,8 @@ export const dbtRunSweeperFunction = inngest.createFunction(
         logger.warn("Swept abandoned dbt run", {
           runId: run._id.toString(),
           jobId: run.jobId?.toString(),
-          status: run.status,
+          status,
+          recoveredFromLogs,
         });
       }
 
