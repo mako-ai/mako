@@ -29,6 +29,27 @@ const surfaceSchema = z
   })
   .describe("Target surface that owns the data source(s)");
 
+// Input schemas are shared verbatim with the server-executed versions
+// (api/src/agent-lib/tools/server-data-source-tools.ts) so the tool surface
+// cannot drift between the client tool cards and the server `execute`.
+export const listDataSourcesSchema = z.object({ surface: surfaceSchema });
+
+export const inspectDataSourceSchema = z.object({
+  surface: surfaceSchema,
+  dataSource: z
+    .string()
+    .describe("Data source name (apps) or data source id (dashboards)"),
+});
+
+export const queryDuckdbSchema = z.object({
+  surface: surfaceSchema,
+  sql: z.string().describe("DuckDB SQL to execute"),
+});
+
+export type ListDataSourcesInput = z.infer<typeof listDataSourcesSchema>;
+export type InspectDataSourceInput = z.infer<typeof inspectDataSourceSchema>;
+export type QueryDuckdbInput = z.infer<typeof queryDuckdbSchema>;
+
 export const clientDataSourceTools = {
   list_data_sources: tool({
     description:
@@ -36,29 +57,23 @@ export const clientDataSourceTools = {
       "materialization mode, build status, and row counts. Works for both " +
       "surfaces — pass surface.kind and surface.id. Use this to understand what " +
       "data is available and how it was built.",
-    inputSchema: z.object({ surface: surfaceSchema }),
+    inputSchema: listDataSourcesSchema,
   }),
   inspect_data_source: tool({
     description:
       "Inspect one data source: its connection, query, column schema, and a few " +
-      "sample rows (from in-browser DuckDB when materialized, otherwise a live " +
-      "preview). Works for apps and dashboards.",
-    inputSchema: z.object({
-      surface: surfaceSchema,
-      dataSource: z
-        .string()
-        .describe("Data source name (apps) or data source id (dashboards)"),
-    }),
+      "sample rows (from the materialized Parquet artifact when available, " +
+      "otherwise a live preview). Works for apps and dashboards.",
+    inputSchema: inspectDataSourceSchema,
   }),
   query_duckdb: tool({
     description:
-      "Run analytical DuckDB SQL in the browser against a surface's in-memory " +
-      "tables and return the rows. Table names are the data source names (apps) " +
-      "or tableRefs (dashboards). Use to validate aggregations before writing " +
-      "them into app `useDuckDB` calls or dashboard widget SQL.",
-    inputSchema: z.object({
-      surface: surfaceSchema,
-      sql: z.string().describe("DuckDB SQL to execute"),
-    }),
+      "Run analytical DuckDB SQL against a surface's materialized tables and " +
+      "return the rows. Table names are the data source names (apps) or " +
+      "tableRefs (dashboards). Only read-only SELECT / WITH queries are allowed. " +
+      "Tables must be materialized to Parquet first (call materialize_binding " +
+      "for app bindings). Use to validate aggregations before writing them into " +
+      "app `useDuckDB` calls or dashboard widget SQL.",
+    inputSchema: queryDuckdbSchema,
   }),
 };

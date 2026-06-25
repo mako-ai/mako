@@ -80,6 +80,18 @@ export {
 export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";
+export {
+  // Schemas for the server-executed data-source tools (registered with execute
+  // functions in api/src/agent-lib/tools/server-data-source-tools.ts).
+  listDataSourcesSchema,
+  inspectDataSourceSchema,
+  queryDuckdbSchema,
+} from "./data-source-tools";
+export type {
+  ListDataSourcesInput,
+  InspectDataSourceInput,
+  QueryDuckdbInput,
+} from "./data-source-tools";
 
 export { clientScreenshotTools } from "./screenshot-tools";
 export type { CaptureScreenshotInput } from "./screenshot-tools";

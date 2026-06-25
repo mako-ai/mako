@@ -510,17 +510,19 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "database",
   },
+  // Data-source tools execute SERVER-SIDE (issue #475 pattern; see
+  // api/src/agent-lib/tools/server-data-source-tools.ts). They query the same
+  // materialized Parquet artifacts via node DuckDB, so they work with no
+  // attached browser. Entries kept for tool-card labels/icons/previews.
   list_data_sources: {
     domain: "database",
-    execution: "client",
-    clientExecutor: "data",
+    execution: "server",
     getLabel: () => "Listing data sources",
     icon: "list",
   },
   inspect_data_source: {
     domain: "database",
-    execution: "client",
-    clientExecutor: "data",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const ds = (input as Record<string, unknown>)?.dataSource;
@@ -530,8 +532,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   query_duckdb: {
     domain: "database",
-    execution: "client",
-    clientExecutor: "data",
+    execution: "server",
     longRunning: true,
     getLabel: () => "Running DuckDB query",
     icon: "play",
