@@ -523,17 +523,31 @@ async function main() {
         setEpoch(dataEpoch);
         return () => { dataListeners.delete(listener); };
       }, []);
+      // Tell a brand-new query (name/rowLimit changed -> blanking to a loading
+      // state is expected) apart from an in-place data refresh (epoch bumped,
+      // same query). On a refresh we keep the rows already on screen and swap
+      // them only once the new ones land, so a periodic refresh never flickers
+      // through an empty/loading frame. Seeded to null so the first run counts
+      // as a new query and still surfaces an initial-load error.
+      const queryKey = name + "\u0000" + String(rowLimit);
+      const keyRef = React.useRef(null);
       React.useEffect(() => {
         let active = true;
-        setState({ data: null, error: null, loading: true, truncated: false });
+        const isNewQuery = keyRef.current !== queryKey;
+        keyRef.current = queryKey;
+        if (isNewQuery) {
+          setState({ data: null, error: null, loading: true, truncated: false });
+        }
         runBinding(name, rowLimit).then((res) => {
           if (!active) return;
           if (res.success) {
             if (res.truncated) warnTruncated('useQuery("' + name + '")', res);
             setState({ data: res.rows, error: null, loading: false, truncated: !!res.truncated });
-          } else {
+          } else if (isNewQuery) {
             setState({ data: null, error: res.error || "Query failed", loading: false, truncated: false });
           }
+          // In-place refresh failure: keep the rows already on screen rather
+          // than flashing an error/empty frame; a later refresh corrects it.
         });
         return () => { active = false; };
       }, [name, rowLimit, epoch]);
@@ -556,9 +570,18 @@ async function main() {
         setEpoch(dataEpoch);
         return () => { dataListeners.delete(listener); };
       }, []);
+      // See useQuery: distinguish a new query (sql/rowLimit changed) from an
+      // in-place refresh (epoch bumped) so a refresh keeps the current result
+      // visible and swaps it only when the new one lands — no loading flicker.
+      const queryKey = sql + "\u0000" + String(rowLimit);
+      const keyRef = React.useRef(null);
       React.useEffect(() => {
         let active = true;
-        setState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
+        const isNewQuery = keyRef.current !== queryKey;
+        keyRef.current = queryKey;
+        if (isNewQuery) {
+          setState({ data: null, fields: null, error: null, loading: true, truncated: false, rowCount: null });
+        }
         runDuckDb(sql, rowLimit).then((res) => {
           if (!active) return;
           if (res.success) {
@@ -571,9 +594,11 @@ async function main() {
               truncated: !!res.truncated,
               rowCount: typeof res.rowCount === "number" ? res.rowCount : (res.rows ? res.rows.length : null),
             });
-          } else {
+          } else if (isNewQuery) {
             setState({ data: null, fields: null, error: res.error || "DuckDB query failed", loading: false, truncated: false, rowCount: null });
           }
+          // In-place refresh failure: keep the current result rather than
+          // flashing an error/empty frame; a later refresh corrects it.
         });
         return () => { active = false; };
       }, [sql, rowLimit, epoch]);
