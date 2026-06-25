@@ -48,6 +48,32 @@ const { data: totals } = useDuckDB(
 
 Data sources are visible under **Data sources** in the app's explorer tree, with a Live/Materialized mode control and materialization run history.
 
+## URL State & Routing
+
+Apps can keep view state — the active tab, applied filters, a selected record, a sub-page — in the URL, so a reload restores it and the link is shareable. This works both when the app is embedded in Mako (`/a/:appId`) and in the public share view (`/share/:token`).
+
+Because the app runs in a sandboxed `about:srcdoc` iframe, it can't write the real address bar directly. Reach for the injected `@mako/app-sdk` hooks instead of `window.history`, `window.location`, the URL hash, or a `react-router` `BrowserRouter` — those won't survive a reload or share:
+
+```tsx
+import { useLocation, useSearchParams, navigate } from "@mako/app-sdk";
+
+// Read the current location (re-renders on change, including Back/Forward).
+const loc = useLocation(); // { pathname, search, hash, href, searchParams }
+
+// React-Router-style query params for tabs / filters.
+const [params, setParams] = useSearchParams();
+const tab = params.get("tab") ?? "overview";
+// Pass { replace: true } for high-frequency updates (typing, sliders) so
+// Back/Forward isn't flooded; the default pushes a new history entry.
+setParams(new URLSearchParams({ tab: "customers", c: "ES,FR" }), { replace: true });
+
+// Path-style routing for distinct views / detail pages.
+navigate("/customers/42");        // push (Back returns to the list)
+navigate("/", { replace: true }); // replace the current entry
+```
+
+Use distinct **paths** for separate views (`/`, `/customers/42`) and **query params** for filters and sort within a view. The app's pathname rides on the host URL in a reserved `_path` param; query params stay readable on the address bar. Hashes (`#…`) are not carried across the bridge — keep state in the path or query.
+
 ## Access Control
 
 Apps follow the same model as dashboards:
