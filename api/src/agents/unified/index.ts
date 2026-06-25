@@ -8,6 +8,7 @@ import {
 } from "@mako/agent-tools";
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createServerAppTools } from "../../agent-lib/tools/server-app-tools";
+import { createServerDataSourceTools } from "../../agent-lib/tools/server-data-source-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -57,6 +58,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     userId,
     chatId: context.chatId,
   });
+  const serverDataSourceTools = createServerDataSourceTools({ workspaceId });
 
   const {
     list_connections: _flowListConnections,
@@ -88,6 +90,10 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...clientDbtTools,
       ...dbtServerTools,
       ...clientDataSourceTools,
+      // Server-executed data-source tools override the client (no-execute)
+      // versions of the same names so analytical queries run on the API with
+      // no attached browser. Must come after clientDataSourceTools.
+      ...serverDataSourceTools,
       ...flowUniqueTools,
       ...selfDirectiveTools,
       ...skillTools,
