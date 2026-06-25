@@ -1,0 +1,140 @@
+---
+title: "How to Connect to Snowflake from C# (.NET)"
+description: "Connect to Snowflake from C# with Snowflake.Data: account identifiers, key-pair auth after the password block, running queries, parameters, reading results, and the errors you actually hit."
+database: "snowflake"
+category: "how-to"
+tags: ["snowflake", "csharp", "dotnet", "ado-net", "connection"]
+date: "2026-06-25"
+---
+
+Snowflake is a cloud data warehouse, so connecting from C# looks a bit different from a local PostgreSQL or SQL Server connection: there is no host or port in the usual sense, the "server" is an account identifier, and as of late 2025 you can no longer log in with a single-factor password from a driver. The connection code itself is plain ADO.NET; the work is in the account identifier and the auth.
+
+There is one driver that matters: `Snowflake.Data`, the official .NET connector maintained by Snowflake. Current version is 5.7.0 (as of June 2026). It implements the ADO.NET interfaces (`SnowflakeDbConnection`, `SnowflakeDbCommand`, `SnowflakeDbDataReader`), so Dapper works on top of it. There is no Entity Framework Core provider from Snowflake, and there is no second serious community driver, so the choice is made for you.
+
+```bash
+dotnet add package Snowflake.Data
+```
+
+## The account identifier
+
+The first thing that trips people up is the `account` value. The recommended format is the organization-account name, `myorg-myaccount`, not the legacy account locator (`xy12345.eu-central-1`). You can find both in the Snowflake UI under Admin -> Accounts. The org-account form is the one to use in new code; the locator form still works but is being phased out and behaves differently across regions.
+
+You do not put a region in the connection string when you use the org-account identifier. That is a common mistake carried over from the old locator format.
+
+## Authentication after the November 2025 password block
+
+Snowflake began blocking single-factor password sign-ins for programmatic connections in November 2025. A bare `password=...` connection that worked in 2024 will now fail for human-owned accounts. For service connections the supported path is key-pair (JWT) authentication.
+
+Generate an unencrypted PKCS#8 private key and the matching public key:
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
+openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+```
+
+Register the public key on the Snowflake user (strip the header, footer, and newlines from `rsa_key.pub`):
+
+```sql
+ALTER USER my_service_user SET RSA_PUBLIC_KEY='MIIBIjANBgkqh...';
+```
+
+Then connect with `authenticator=snowflake_jwt` and point the driver at the private key file:
+
+```csharp
+using Snowflake.Data.Client;
+
+var connString =
+    "account=myorg-myaccount;" +
+    "user=my_service_user;" +
+    "authenticator=snowflake_jwt;" +
+    "private_key_file=/secure/path/rsa_key.p8;" +
+    "db=ANALYTICS;schema=PUBLIC;warehouse=COMPUTE_WH;role=ANALYST";
+
+await using var conn = new SnowflakeDbConnection(connString);
+await conn.OpenAsync();
+```
+
+If the key is encrypted, add `private_key_pwd=...`. For interactive local development, `authenticator=externalbrowser` opens your SSO login in a browser instead, which avoids handling keys at all.
+
+## Why warehouse, db, schema, and role belong in the connection string
+
+Snowflake will happily connect you without a warehouse and then fail the first query with `No active warehouse selected in the current session`. Likewise, omitting `role` leaves you on your default role, which may not see the objects you expect, producing confusing "object does not exist" errors that are really permission errors. Set all four (`warehouse`, `db`, `schema`, `role`) up front so the session is fully scoped before you run anything.
+
+## Running a query
+
+`Snowflake.Data` implements `DbDataReader`, so the pattern is standard ADO.NET:
+
+```csharp
+await using var cmd = conn.CreateCommand();
+cmd.CommandText = "SELECT id, name FROM customers LIMIT 10";
+
+await using var reader = await cmd.ExecuteReaderAsync();
+while (await reader.ReadAsync())
+{
+    var id = reader.GetInt64(0);
+    var name = reader.GetString(1);
+    Console.WriteLine($"{id}: {name}");
+}
+```
+
+One thing to watch: Snowflake returns unquoted identifiers in uppercase. A column you wrote as `select name` comes back as `NAME` when you read it by name (`reader["NAME"]`). Reading by ordinal, as above, sidesteps the issue entirely.
+
+## Parameters
+
+The connector uses positional parameters with `?` placeholders, and you must set the Snowflake type via `SnowflakeDbParameter`:
+
+```csharp
+using Snowflake.Data.Core;
+
+await using var cmd = conn.CreateCommand();
+cmd.CommandText = "SELECT id, name FROM customers WHERE country = ? AND created_at > ?";
+
+var p1 = (SnowflakeDbParameter)cmd.CreateParameter();
+p1.ParameterName = "1";
+p1.SFDataType = SFDataType.TEXT;
+p1.Value = "CH";
+cmd.Parameters.Add(p1);
+
+var p2 = (SnowflakeDbParameter)cmd.CreateParameter();
+p2.ParameterName = "2";
+p2.SFDataType = SFDataType.TIMESTAMP_NTZ;
+p2.Value = new DateTime(2026, 1, 1);
+cmd.Parameters.Add(p2);
+
+await using var reader = await cmd.ExecuteReaderAsync();
+```
+
+Setting `SFDataType` matters most when the value can be null, since the driver cannot infer the type from a null `Value`.
+
+## Dapper
+
+Because the connector is a real ADO.NET provider, Dapper (2.1.79 as of June 2026) works without anything Snowflake-specific:
+
+```csharp
+using Dapper;
+
+var rows = await conn.QueryAsync<Customer>(
+    "SELECT id, name FROM customers WHERE country = ?",
+    new { country = "CH" });
+```
+
+Note that Dapper's named-parameter convenience maps onto Snowflake's positional `?` placeholders, so parameter order is what counts, not the property name.
+
+## Sessions, not pools
+
+Snowflake connections are sessions against a remote warehouse, and they are relatively heavy to establish. The connector supports connection pooling, which is on by default and keyed by connection string; reuse the same connection string so pooled sessions are actually reused. For long-lived services, `CLIENT_SESSION_KEEP_ALIVE=true` (set as a connection parameter) keeps a session from expiring during idle periods. Do not hold a single connection open across an entire app and share it between threads; let the pool hand out sessions per unit of work.
+
+## Errors you actually hit
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `JWT token is invalid` | Public key not registered, or wrong private key | Re-run `ALTER USER ... SET RSA_PUBLIC_KEY`, confirm the key pair matches |
+| `No active warehouse selected in the current session` | No `warehouse` in connection string | Add `warehouse=...` (and confirm the role can use it) |
+| `Object does not exist or not authorized` | Wrong `role` or `db`/`schema` | Set `role`, `db`, `schema` explicitly; verify grants |
+| `Incorrect username or password` on a human account | Single-factor password blocked (Nov 2025) | Switch to `snowflake_jwt` or `externalbrowser` |
+| Account identifier not found | Using locator format or wrong region | Use `myorg-myaccount`; no region suffix needed |
+| Column read by name returns null | Identifier case mismatch | Read by ordinal, or match Snowflake's uppercase |
+
+Snowflake's compute is billed by warehouse runtime, so an idle warehouse left running from a forgotten connection costs money. Set `AUTO_SUSPEND` on the warehouse and let sessions close cleanly.
+
+For exploring Snowflake data and shaping queries before you wire them into C#, Mako connects to Snowflake with AI-powered autocomplete. Try it free at mako.ai.
