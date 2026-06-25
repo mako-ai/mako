@@ -79,40 +79,53 @@ Key pieces (in `Chat.tsx`):
 **Never revert to `messages.map(...)` over the full array.** That reintroduces
 the unbounded DOM that lags long chats on mobile.
 
-## Auto-scroll contract (rAF `scrollTo` follow)
+## Auto-scroll contract (`totalListHeightChanged` bottom-pin)
 
-Bottom-anchoring is owned by a **coalesced rAF follow effect**, **not**
-`use-stick-to-bottom` (removed), **not** a DIY `useEffect([messages])` →
-`scrollIntoView` (fires every chunk → jank + broken hover/click), and **not**
-Virtuoso's `followOutput`.
+Bottom-anchoring is owned by a **bottom-pin inside Virtuoso's
+`totalListHeightChanged` callback**, **not** `use-stick-to-bottom` (removed),
+**not** a DIY `useEffect([messages])` → `scrollIntoView` (fires every chunk →
+jank + broken hover/click), **not** a per-`messages`-tick rAF `scrollTo`
+(superseded — see below), and **not** Virtuoso's `followOutput`.
 
 **Why `followOutput` is OFF.** Virtuoso's `followOutput` only fires when the
-item **count** changes, and its resize re-stick (`notAtBottomBecause ===
-"SIZE_INCREASED"`) is only armed for ~100ms after a list refresh. But an entire
-assistant turn — thinking blocks, every tool card, and the final text — streams
-into a **single** message, growing one item without changing the count. So
-`followOutput` never fires mid-turn (thinking/tool cards stream in below the
-fold and the view never follows). Worse, when it *does* fire it runs
-`scrollToIndex({ align: "end" })`, which re-derives its target from the last
-item's current measured size — racing our per-frame pin while that item is being
-re-measured makes the view bounce between the item's top and bottom (visible as
-"jumping/blinking"). So `followOutput={false}`.
+item **count** changes, but an entire assistant turn — thinking blocks, every
+tool card, and the final text — streams into a **single** message, growing one
+item without changing the count. So `followOutput` never fires mid-turn
+(thinking/tool cards stream in below the fold and the view never follows), and
+when it *does* fire its `scrollToIndex({ align: "end" })` races the pin and
+bounces the view ("jumping/blinking"). So `followOutput={false}`.
+
+**Why not a per-`messages`-tick rAF.** The previous fix pinned the bottom in a
+one-shot `requestAnimationFrame` scheduled on each (throttled, ~50ms) `messages`
+tick. That only covers ~1 of every 3 frames. The interior blocks that change
+height asynchronously and non-monotonically — MUI `Collapse` on the thinking
+block + tool cards, and the `modify_console` diff re-render — animate over
+~300ms on frames where `messages` does **not** tick. On those frames Virtuoso's
+resize anchoring nudges `scrollTop` **up** (toward the message top) to keep
+content stable, and with no pin to counter it the view paints partway up — then
+the next `messages` tick pins it back down. That alternation **is** the
+top/bottom bounce. (`requestAnimationFrame` callbacks also run *before*
+ResizeObserver in the frame, so an rAF pin can't out-write Virtuoso's
+compensation on a resize frame anyway.) Plain-text turns never bounced because
+their growth is append-only at the bottom (monotonic), so anchor and pin agree.
 
 Key pieces:
-- **Streaming follow (the load-bearing piece):** a `useEffect` keyed on
-  `[messages, isLoading, isAtBottom]` schedules ONE coalesced
-  `requestAnimationFrame` per frame that calls
-  `virtuosoRef.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: "auto" })`.
-  - Use `scrollTo({ top })` (raw scroll-position set), **never**
-    `scrollToIndex({ align: "end" })` here — pinning the raw position to the
-    bottom each frame is self-correcting and never bounces upward, whereas an
-    index scroll bounces while the last item grows.
-  - Gated on `isAtBottom` so scrolling up to read history is never yanked down.
-  - `behavior: "auto"` (instant) — never `"smooth"`, which kicks off competing
-    animations on rapid streaming growth.
-  - rAF coalescing (a `followRafRef` guard) is the sanctioned exception to the
-    "no `messages`-dep DOM effect" rule; a separate unmount-only effect cancels
-    any pending frame.
+- **Streaming follow (the load-bearing piece):** Virtuoso's
+  `totalListHeightChanged={handleListHeightChanged}` callback fires as part of
+  Virtuoso's resize processing, **after** it applies its scroll compensation, so
+  setting `scroller.scrollTop = scroller.scrollHeight` there is the *last write
+  before paint on exactly the frames that resize* — the frames the old rAF pin
+  lost.
+  - Capture the scroller via `scrollerRef={el => { scrollerElRef.current = el }}`
+    and write its `scrollTop` directly (raw position set) — never
+    `scrollToIndex({ align: "end" })` (re-derives its target from the growing
+    last item and bounces).
+  - Gated on a **live `isAtBottomRef`** (read each call, not a stale closure) so
+    scrolling up to read history releases the pin immediately.
+  - Pin only while `isLoadingRef.current` is true **plus a bounded ~700ms
+    settling window** (`stickTailUntilRef`) after the turn ends, so the closing
+    Collapse animations / results panel don't strand the view at the message
+    top. Outside that window the pin no-ops (it never hijacks normal scrolling).
 - `initialTopMostItemIndex={Math.max(0, messages.length - 1)}` — lands at the
   newest message on mount / chat switch.
 - `atBottomStateChange={setIsAtBottom}` + `atBottomThreshold={120}` — drives the
@@ -186,9 +199,10 @@ callback, not via a selector subscription.
 - [ ] No new `useEffect` depending on `messages` that touches the DOM
 - [ ] `experimental_throttle: 50` is present on `useChat`
 - [ ] Message list stays virtualized (`<Virtuoso data={messages}>`), never `messages.map`
-- [ ] Auto-scroll uses the coalesced rAF `scrollTo({ top })` follow effect
-      (gated on `isAtBottom`), **not** Virtuoso `followOutput` and **not**
-      a per-chunk `scrollToIndex`/`scrollIntoView`
+- [ ] Auto-scroll pins the bottom in Virtuoso's `totalListHeightChanged`
+      callback (gated on a live `isAtBottomRef`), **not** Virtuoso `followOutput`,
+      **not** a per-`messages`-tick rAF `scrollTo`, and **not** a per-chunk
+      `scrollToIndex`/`scrollIntoView`
 - [ ] Collapsed `StreamingToolCard` bodies unmount (`Collapse unmountOnExit`)
 - [ ] Any new child component inside `ChatMessageRow` is `React.memo`-wrapped
 - [ ] Zustand selectors return primitives, not object references

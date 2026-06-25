@@ -3065,48 +3065,58 @@ const Chat: React.FC<ChatProps> = ({
 
   // Stick to the streaming tail while a turn is generating.
   //
-  // Virtuoso's `followOutput` only fires when the item COUNT changes, and its
-  // resize re-stick (`notAtBottomBecause === "SIZE_INCREASED"`) is only armed
-  // for ~100ms after a list refresh. But an entire assistant turn — thinking
-  // blocks, every tool card, and the final text — streams into a SINGLE
-  // message, growing one item without ever changing the count. So neither
-  // built-in mechanism keeps us pinned mid-turn: thinking blocks and tool
-  // cards stream in below the fold and the view never follows them down.
+  // Virtuoso's `followOutput` only fires when the item COUNT changes, but an
+  // entire assistant turn — thinking blocks, every tool card, and the final
+  // text — streams into a SINGLE message, growing one item without ever
+  // changing the count. So `followOutput` never fires mid-turn and the view
+  // doesn't follow the streaming content (it stays OFF on `<Virtuoso>`).
   //
-  // Drive the follow ourselves: on each (throttled) `messages` tick while
-  // streaming, coalesce a single rAF that pins the scroller to the bottom.
-  // We use the handle's `scrollTo({ top })` (a direct scroll-position set on
-  // Virtuoso's scroller) rather than `scrollToIndex({ align: "end" })`: an
-  // index scroll re-derives its target from the last item's *current* measured
-  // size, so firing it every frame while that item is still growing/being
-  // re-measured makes the view bounce between the item's top and bottom (the
-  // "jumping/blinking"). Pinning the raw scroll position to the bottom each
-  // frame is self-correcting and never bounces upward. Gated on `isAtBottom`
-  // so scrolling up to read history is never yanked back down. This is the
-  // rAF-coalesced exception to the "no messages-dep DOM effect" rule
-  // (see .cursor/rules/75-chat-performance.mdc).
-  const followRafRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!isLoading || !isAtBottom) return;
-    if (followRafRef.current !== null) return; // coalesce: one pin per frame
-    followRafRef.current = requestAnimationFrame(() => {
-      followRafRef.current = null;
-      virtuosoRef.current?.scrollTo({
-        top: Number.MAX_SAFE_INTEGER,
-        behavior: "auto",
-      });
-    });
-  }, [messages, isLoading, isAtBottom]);
+  // We instead pin the bottom inside Virtuoso's own `totalListHeightChanged`
+  // callback (`handleListHeightChanged`). The earlier approach pinned on each
+  // throttled `messages` tick via a one-shot rAF, but that only covers ~1 of
+  // every 3 frames: the interior blocks that change height asynchronously and
+  // non-monotonically (MUI `Collapse` on the thinking block + tool cards, and
+  // the `modify_console` diff re-render) animate over ~300ms on frames where
+  // `messages` does NOT tick. On those frames Virtuoso's resize anchoring
+  // nudges `scrollTop` UP (toward the message top) to keep content stable, and
+  // with no pin to counter it the view paints partway up — then the next
+  // `messages` tick pins it back down. That alternation is the top/bottom
+  // "jumping/blinking". Plain-text turns never bounced because their growth is
+  // append-only at the bottom (monotonic), so the anchor and the pin agree.
+  //
+  // `totalListHeightChanged` fires as part of Virtuoso's resize processing,
+  // AFTER it applies that compensation, so writing `scrollTop = scrollHeight`
+  // here is the last write before paint on exactly the frames that resize —
+  // the frames the old pin lost. Reading `isAtBottom` from a ref keeps history
+  // reading un-yanked the instant the user scrolls up.
+  const scrollerElRef = useRef<HTMLElement | Window | null>(null);
+  const isAtBottomRef = useRef(isAtBottom);
+  isAtBottomRef.current = isAtBottom;
 
-  useEffect(
-    () => () => {
-      if (followRafRef.current !== null) {
-        cancelAnimationFrame(followRafRef.current);
-        followRafRef.current = null;
-      }
-    },
-    [],
-  );
+  // Bounded settling window after a turn ends. The closing Collapse animations
+  // (thinking block, tool cards) and the results panel keep emitting height
+  // changes after `isLoading` flips false; without continuing to pin through
+  // them, Virtuoso's last upward compensation strands the view at the message
+  // top. Gated on `isAtBottom`, so it never hijacks a user who scrolled away.
+  const stickTailUntilRef = useRef(0);
+  const wasLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    if (wasLoadingRef.current && !isLoading) {
+      stickTailUntilRef.current = Date.now() + 700;
+    }
+    wasLoadingRef.current = isLoading;
+  }, [isLoading]);
+
+  const pinToBottom = useCallback(() => {
+    if (!isAtBottomRef.current) return;
+    if (!isLoadingRef.current && Date.now() > stickTailUntilRef.current) return;
+    const el = scrollerElRef.current;
+    if (el && el instanceof HTMLElement) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  const handleListHeightChanged = useCallback(() => {
+    pinToBottom();
+  }, [pinToBottom]);
 
   // Rescue tool cards orphaned by a clean stream end.
   //
@@ -4612,16 +4622,25 @@ const Chat: React.FC<ChatProps> = ({
             // survives streaming ticks and history inserts — mirrors the old
             // `key={message.id}`.
             computeItemKey={(_index, message) => message.id}
-            // Auto-scroll during streaming is owned entirely by the rAF
-            // `scrollTo({ top })` follow effect above (it covers BOTH new-
-            // message appends and intra-message growth, since `messages`
-            // changes in both cases). `followOutput` is left OFF: Virtuoso's
-            // built-in follow does a `scrollToIndex({ align: "end" })` on every
-            // count change, which — racing our per-frame pin while the last
-            // item is being re-measured — reintroduces the top/bottom bounce
-            // ("jumping/blinking"). Mount/history-load anchoring is handled by
+            // Auto-scroll during streaming is owned by the bottom-pin in
+            // `handleListHeightChanged` (wired to `totalListHeightChanged`
+            // below), gated on `isAtBottom`. `followOutput` is left OFF:
+            // it only fires on item-COUNT change (a whole turn streams into ONE
+            // message, so it never fires mid-turn) and its
+            // `scrollToIndex({ align: "end" })` races the pin and bounces the
+            // view. Mount/history-load anchoring is handled by
             // `initialTopMostItemIndex` and the explicit post-load scroll.
             followOutput={false}
+            // Capture the scroller so the height-change pin can set its
+            // scrollTop directly (last write before paint on resize frames).
+            scrollerRef={el => {
+              scrollerElRef.current = el;
+            }}
+            // Pin the bottom on every total-height change while streaming (and
+            // through the bounded post-turn settling window) — see the
+            // `handleListHeightChanged` comment for why this beats a per-frame
+            // rAF for the Collapse/diff resize bounce.
+            totalListHeightChanged={handleListHeightChanged}
             initialTopMostItemIndex={Math.max(0, messages.length - 1)}
             atBottomStateChange={setIsAtBottom}
             atBottomThreshold={120}
