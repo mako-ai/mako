@@ -315,27 +315,32 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(/computeItemKey=/);
   });
 
-  it("auto-follows the streaming tail via a coalesced rAF scrollTo, gated on isAtBottom", () => {
-    // Auto-scroll is owned by a coalesced requestAnimationFrame follow effect
-    // that pins the scroller to the bottom (`scrollTo({ top })`) on each
-    // streaming tick — NOT Virtuoso's `followOutput`. `followOutput` only fires
-    // on item-COUNT change (a whole turn streams into ONE message, so it never
-    // fires mid-turn) and, when it does, its `scrollToIndex({ align: "end" })`
-    // races our per-frame pin and bounces the view. So it must stay OFF.
+  it("auto-follows the streaming tail by pinning in totalListHeightChanged, gated on isAtBottom", () => {
+    // Auto-scroll is owned by a bottom-pin inside Virtuoso's
+    // `totalListHeightChanged` callback — NOT Virtuoso's `followOutput` and NOT
+    // a per-`messages`-tick rAF. `followOutput` only fires on item-COUNT change
+    // (a whole turn streams into ONE message, so it never fires mid-turn) and
+    // its `scrollToIndex({ align: "end" })` races the pin and bounces the view,
+    // so it must stay OFF. The previous rAF-on-messages-tick pin only covered
+    // ~1 of every 3 frames, so the interior Collapse/diff resizes (which fire
+    // between ticks) let Virtuoso's anchoring pull the view up → top/bottom
+    // bounce. Pinning in `totalListHeightChanged` runs after Virtuoso's
+    // compensation on exactly the resize frames, which fixes the bounce.
     expect(chatSource).toMatch(/followOutput=\{false\}/);
-    // The follow effect must coalesce with rAF, pin to the bottom, and be gated
-    // on isAtBottom (so scrolling up to read history isn't yanked down).
-    expect(chatSource).toMatch(/requestAnimationFrame/);
     expect(chatSource).toMatch(
-      /scrollTo\(\{\s*top:\s*Number\.MAX_SAFE_INTEGER/,
+      /totalListHeightChanged=\{handleListHeightChanged\}/,
     );
-    expect(chatSource).toMatch(/if \(!isLoading \|\| !isAtBottom\) return;/);
+    // The pin writes scrollTop on the captured scroller and is gated on the
+    // live isAtBottom ref (so scrolling up to read history isn't yanked down).
+    expect(chatSource).toMatch(/scrollerRef=\{/);
+    expect(chatSource).toMatch(/el\.scrollTop = el\.scrollHeight/);
+    expect(chatSource).toMatch(/if \(!isAtBottomRef\.current\) return;/);
   });
 
   it("does NOT have a DIY useEffect([messages]) scrollIntoView auto-scroll", () => {
-    // The follow effect uses Virtuoso's `scrollTo` handle (gated + rAF
-    // coalesced), never a raw per-chunk `scrollIntoView` on a DOM node, which
-    // fired every chunk and broke hover/click + caused jank.
+    // The follow pin sets scrollTop on Virtuoso's captured scroller inside its
+    // height-change callback, never a raw per-chunk `scrollIntoView` on a DOM
+    // node, which fired every chunk and broke hover/click + caused jank.
     expect(chatSource).not.toMatch(/scrollIntoView/);
   });
 
