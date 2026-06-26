@@ -2,13 +2,11 @@
  * General API client that handles authentication and error responses
  */
 import { getApiBasePath } from "./api-base-path";
+import { handleUnauthorized } from "./auth-redirect";
 
 interface ApiRequestOptions extends RequestInit {
   params?: Record<string, string>;
 }
-
-// Flag to prevent multiple 401 redirects
-let isRedirectingToLogin = false;
 
 class ApiClient {
   private basePath: string;
@@ -48,20 +46,10 @@ class ApiClient {
    * Handle API response and errors
    */
   private async handleResponse<T>(response: Response): Promise<T> {
-    // Handle 401 Unauthorized - redirect to login (but avoid redirect loop)
+    // Handle 401 Unauthorized - verify the session before redirecting so a
+    // transient 401 during a deploy doesn't bounce the user to /login.
     if (response.status === 401) {
-      // Clear any stored auth state
-      localStorage.removeItem("activeWorkspaceId");
-
-      // Only redirect if not already redirecting and not on login/register page
-      const currentPath = window.location.pathname;
-      const isAuthPage =
-        currentPath === "/login" || currentPath === "/register";
-
-      if (!isAuthPage && !isRedirectingToLogin) {
-        isRedirectingToLogin = true;
-        window.location.href = "/login";
-      }
+      void handleUnauthorized();
       throw new Error("Unauthorized");
     }
 
@@ -176,14 +164,7 @@ class ApiClient {
     });
 
     if (response.status === 401) {
-      localStorage.removeItem("activeWorkspaceId");
-      const currentPath = window.location.pathname;
-      const isAuthPage =
-        currentPath === "/login" || currentPath === "/register";
-      if (!isAuthPage && !isRedirectingToLogin) {
-        isRedirectingToLogin = true;
-        window.location.href = "/login";
-      }
+      void handleUnauthorized();
       throw new Error("Unauthorized");
     }
 
@@ -238,14 +219,7 @@ class ApiClient {
     });
 
     if (response.status === 401) {
-      localStorage.removeItem("activeWorkspaceId");
-      const currentPath = window.location.pathname;
-      const isAuthPage =
-        currentPath === "/login" || currentPath === "/register";
-      if (!isAuthPage && !isRedirectingToLogin) {
-        isRedirectingToLogin = true;
-        window.location.href = "/login";
-      }
+      void handleUnauthorized();
       throw new Error("Unauthorized");
     }
 

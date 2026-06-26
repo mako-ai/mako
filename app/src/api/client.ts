@@ -16,9 +16,8 @@
  */
 import createClient, { type Client, type Middleware } from "openapi-fetch";
 
+import { handleUnauthorized } from "../lib/auth-redirect";
 import type { paths } from "./schema";
-
-let isRedirectingToLogin = false;
 
 function activeWorkspaceId(): string | null {
   if (typeof localStorage === "undefined") return null;
@@ -35,18 +34,10 @@ const authMiddleware: Middleware = {
     return request;
   },
   onResponse({ response }) {
-    if (response.status === 401 && typeof window !== "undefined") {
-      try {
-        localStorage.removeItem("activeWorkspaceId");
-      } catch {
-        // ignore storage failures
-      }
-      const path = window.location.pathname;
-      const isAuthPage = path === "/login" || path === "/register";
-      if (!isAuthPage && !isRedirectingToLogin) {
-        isRedirectingToLogin = true;
-        window.location.href = "/login";
-      }
+    // Verify the session before redirecting so a transient 401 during a
+    // deploy doesn't bounce the user to /login (see lib/auth-redirect.ts).
+    if (response.status === 401) {
+      void handleUnauthorized();
     }
     return response;
   },
