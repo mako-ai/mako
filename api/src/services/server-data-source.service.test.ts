@@ -1,4 +1,4 @@
-/* eslint-disable no-console */
+/* eslint-disable no-console, no-process-exit */
 /**
  * Tests for the server-side data-source tools.
  *
@@ -9,8 +9,7 @@
  *   a database), mirroring seed-dev-admin's soft-fail.
  */
 import assert from "node:assert/strict";
-import { Types } from "mongoose";
-import mongoose from "mongoose";
+import mongoose, { Types } from "mongoose";
 import { buildParquetFromBatches } from "../utils/streaming-parquet-builder";
 import {
   storeArtifact,
