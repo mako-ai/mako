@@ -1,6 +1,6 @@
 ---
 title: SaaS Sync (Connectors)
-description: Pull data from SaaS tools like Stripe, Close CRM, Claap, Calendly, PostHog, and more into your data warehouse.
+description: Pull data from SaaS tools like Stripe, Close CRM, Claap, Calendly, PandaDoc, PostHog, and more into your data warehouse.
 ---
 
 :::caution[Experimental]
@@ -17,6 +17,7 @@ Connectors pull data from external services and sync it into your connected data
 | **Close CRM** | Close API       | Leads, Opportunities, Activities (10+ sub-types), Contacts, Users, Custom Fields. *Webhooks are automatically scoped to synced entities only.* |
 | **Claap**     | Claap API       | Recordings, Workspace. *Supports backfill and CDC webhooks (auto-provisioning via "Create in Claap").* |
 | **Calendly**  | Calendly API    | Organizations, Users, Groups, Event Types, Scheduled Events, Invitees, Contacts. *Real-time invitee + event-type webhooks (auto-provisioned); scheduled backfill covers the rest.* |
+| **PandaDoc**  | PandaDoc API    | Documents, Templates, Contacts, Members. *Document + template webhooks (CDC, auto-provisioned); scheduled backfill covers contacts and members. Documents are hydrated with full detail (fields, tokens, pricing, products, recipients) during backfill.* |
 | **PostHog**   | PostHog HogQL   | Dynamic — each configured HogQL query becomes an entity                          |
 | **GraphQL**   | Any GraphQL API | Dynamic — each configured query becomes an entity                                |
 | **BigQuery**  | Google BigQuery | Dynamic — each configured query becomes an entity                                |
