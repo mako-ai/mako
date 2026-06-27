@@ -633,6 +633,12 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "play",
   },
+  dbt_delete_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Deleting dbt job",
+    icon: "trash",
+  },
   search_consoles: {
     domain: "search",
     execution: "server",

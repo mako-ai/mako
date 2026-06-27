@@ -978,6 +978,36 @@ export const createDbtServerTools = (
       },
     }),
 
+    dbt_delete_job: tool({
+      description:
+        "Permanently delete a saved dbt job. Call read_dbt_project_tree first " +
+        "to confirm the job id and name. Only delete when the user explicitly " +
+        "asks — this removes the job definition and stops its schedule; past " +
+        "run history is kept.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        jobId: z.string().describe("dbt job ID (from read_dbt_project_tree)"),
+      }),
+      execute: async ({ projectId, jobId }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!Types.ObjectId.isValid(jobId)) {
+            return { success: false, error: "Invalid job id" };
+          }
+          const job = await DbtJob.findOne({
+            _id: new Types.ObjectId(jobId),
+            projectId: project._id,
+          });
+          if (!job) return { success: false, error: "Job not found" };
+          const name = job.name;
+          await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
+          return { success: true, jobId: job._id.toString(), name };
+        } catch (error) {
+          return toolError(error, "Failed to delete dbt job");
+        }
+      },
+    }),
+
     dbt_git_status: tool({
       description:
         "Show the working-tree git status of a repo-bound dbt project: which " +
