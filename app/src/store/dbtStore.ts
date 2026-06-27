@@ -103,6 +103,10 @@ export interface SyncResult {
   updated: number;
   deleted: number;
   skippedLarge: string[];
+  /** Files left untouched because they had uncommitted local edits. */
+  preservedLocal: string[];
+  /** The branch that was pulled (for user-facing feedback). */
+  branch?: string;
 }
 
 export interface GitFileStatus {
@@ -345,6 +349,7 @@ interface DbtActions {
   syncProjectFromGitHub: (
     workspaceId: string,
     projectId: string,
+    options?: { discard?: boolean },
   ) => Promise<SyncResult | null>;
   fetchGitStatus: (
     workspaceId: string,
@@ -762,11 +767,15 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
-    syncProjectFromGitHub: async (workspaceId, projectId) => {
+    syncProjectFromGitHub: async (workspaceId, projectId, options) => {
       try {
+        const query = options?.discard ? "?discard=true" : "";
         const response = await apiClient.post<
           { success: boolean; project: DbtProjectItem } & SyncResult
-        >(`/workspaces/${workspaceId}/dbt/projects/${projectId}/sync`, {});
+        >(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/sync${query}`,
+          {},
+        );
         set(state => {
           const idx = state.projects.findIndex(p => p._id === projectId);
           if (idx >= 0) state.projects[idx] = response.project;
@@ -779,6 +788,8 @@ export const useDbtStore = create<DbtStore>()(
           updated: response.updated,
           deleted: response.deleted,
           skippedLarge: response.skippedLarge ?? [],
+          preservedLocal: response.preservedLocal ?? [],
+          branch: response.project.repo?.branch,
         };
       } catch (error) {
         set(state => {

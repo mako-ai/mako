@@ -142,6 +142,23 @@ The agent can capture screenshots of the live UI for visual QA via the **`captur
 
 This lets the agent verify dashboard rendering (chart legibility, overlap, layout reflow) and debug UI issues by actually looking at the result rather than reasoning blind.
 
+## Web Access
+
+When a request needs information from the public internet — a pasted URL, an online document, or fresh facts not in your data — the agent reaches for two web tools (loaded via the `web` skill):
+
+| Tool | What It Does |
+|------|--------------|
+| `fetch_url` | Reads a specific public URL in full. Handles HTML, PDF, CSV, JSON, and plain text. Returns up to `max_chars` characters (20k default, 50k max). |
+| `web_search` | Searches the web for current information. Returns ranked results as `{ title, url, snippet }`. Follow up with `fetch_url` to read a result in full. |
+
+Typical flow: if you paste a URL, the agent calls `fetch_url` directly; for an open-ended question needing fresh context, it runs `web_search` first, then `fetch_url` on the best one or two results, and cites the source.
+
+**Limits:**
+
+- Public `http`/`https` URLs only — no authenticated pages and no internal/private networks (requests are validated by a safe-fetch guard).
+- Static fetch only — JavaScript is not executed, so client-rendered SPAs may return incomplete content.
+- `web_search` is only available when a search provider is configured for the workspace.
+
 ## AI Models
 
 Mako routes all AI requests through the **Vercel AI Gateway**, which provides access to 180+ models across Anthropic, OpenAI, Google, DeepSeek, and others. Only `AI_GATEWAY_API_KEY` is required — no individual provider API keys needed.

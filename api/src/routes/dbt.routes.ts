@@ -46,7 +46,9 @@ import {
 } from "../dbt/dbt-github-sync.service";
 import {
   commitAndPush,
+  commitToNewBranch,
   createProjectBranch,
+  deleteProjectBranch,
   getGitStatus,
   getProjectFileDiff,
   listProjectBranches,
@@ -769,7 +771,12 @@ dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
     if (!project.repo) {
       return badRequest(c, "Project is not connected to a repository");
     }
-    const result = await syncProjectFromRepo(project, getUserId(c));
+    // Safe by default: preserve uncommitted local edits unless the caller
+    // explicitly opts into letting the remote overwrite them (?discard=true).
+    const discard = c.req.query("discard") === "true";
+    const result = await syncProjectFromRepo(project, getUserId(c), {
+      preserveLocalEdits: !discard,
+    });
     return c.json({ success: true, ...result, project });
   } catch (error) {
     return serverError(c, error, "Failed to sync dbt project from GitHub");
@@ -781,14 +788,20 @@ dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
 // ---------------------------------------------------------------------------
 
 const commitSchema = z.object({ message: z.string().min(1).max(500) });
-const branchSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(255)
-    .regex(/^[^\s~^:?*[\\]+$/, "Invalid branch name"),
+const branchNameField = z
+  .string()
+  .min(1)
+  .max(255)
+  .regex(/^[^\s~^:?*[\\]+$/, "Invalid branch name");
+const branchSchema = z.object({ name: branchNameField });
+const commitToBranchSchema = z.object({
+  name: branchNameField,
+  message: z.string().min(1).max(500),
 });
-const switchBranchSchema = z.object({ branch: z.string().min(1).max(255) });
+const switchBranchSchema = z.object({
+  branch: z.string().min(1).max(255),
+  discardLocalChanges: z.boolean().optional(),
+});
 const pullRequestSchema = z.object({
   title: z.string().min(1).max(255),
   body: z.string().max(10_000).optional(),
@@ -937,6 +950,62 @@ dbtRoutes.post(
   },
 );
 
+// POST /projects/:projectId/git/commit-to-branch — atomic create-branch +
+// commit the working tree onto it (race-free promote).
+dbtRoutes.post(
+  "/projects/:projectId/git/commit-to-branch",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = commitToBranchSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await commitToNewBranch(project, {
+        branchName: parsed.data.name,
+        message: parsed.data.message,
+        updatedBy: getUserId(c),
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to commit to new branch");
+    }
+  },
+);
+
+// DELETE /projects/:projectId/git/branch/:name — delete a remote branch.
+dbtRoutes.delete(
+  "/projects/:projectId/git/branch/:name",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const name = c.req.param("name");
+      if (!name) {
+        return badRequest(c, "Branch name is required");
+      }
+      const result = await deleteProjectBranch(
+        project,
+        decodeURIComponent(name),
+      );
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to delete branch");
+    }
+  },
+);
+
 // POST /projects/:projectId/git/switch-branch — track + pull another branch.
 dbtRoutes.post(
   "/projects/:projectId/git/switch-branch",
@@ -957,6 +1026,7 @@ dbtRoutes.post(
         project,
         parsed.data.branch,
         getUserId(c),
+        { discardLocalChanges: parsed.data.discardLocalChanges ?? false },
       );
       return c.json({ success: true, ...result, project });
     } catch (error) {

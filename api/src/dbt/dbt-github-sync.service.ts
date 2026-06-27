@@ -16,6 +16,7 @@ import {
   type IDbtRepoBinding,
 } from "../database/workspace-schema";
 import { resolveRepoToken } from "../integrations/github/app-auth";
+import { gitBlobSha } from "../integrations/github/git-blob";
 import {
   getBlobContent,
   getBranchHeadSha,
@@ -160,20 +161,58 @@ export interface SyncResult {
   updated: number;
   deleted: number;
   skippedLarge: string[];
+  /**
+   * Paths skipped because they had uncommitted local edits and
+   * `preserveLocalEdits` was set — left untouched so the work isn't lost.
+   */
+  preservedLocal: string[];
+}
+
+export interface SyncOptions {
+  /**
+   * When true, never overwrite or soft-delete a file that has uncommitted local
+   * changes (locally added, or content diverged from its last-synced blob).
+   * Non-conflicting files still fast-forward to the remote. This makes a sync
+   * safe like `git pull` (which refuses to clobber a dirty working tree) and is
+   * used for background/automatic syncs (push webhooks, branch switches that
+   * the caller hasn't explicitly told to discard). Defaults to false, where the
+   * remote is the source of truth (an explicit, user-confirmed overwrite).
+   */
+  preserveLocalEdits?: boolean;
+}
+
+/** A file is locally modified if its current content no longer matches the
+ * blob recorded at the last sync/push — or it was added locally and never
+ * synced (no recorded blob). Soft-deleted rows are handled separately. */
+function isLocallyModified(prev: {
+  content?: string;
+  is_deleted?: boolean;
+  repoBlobSha?: string;
+}): boolean {
+  if (prev.is_deleted) return false;
+  if (!prev.repoBlobSha) return true; // locally added, never pushed
+  return gitBlobSha(prev.content ?? "") !== prev.repoBlobSha;
 }
 
 /**
  * Pull the latest repo state into an existing repo-bound project: upsert
  * changed files, soft-delete files no longer on the branch, and stamp the
  * project's lastSyncedSha/At.
+ *
+ * By default the remote wins (use only for explicit, user-confirmed pulls). For
+ * background syncs pass `{ preserveLocalEdits: true }` so a remote push or a
+ * branch switch can never silently destroy a user's uncommitted working-tree
+ * changes — those files are left exactly as-is and reported in `preservedLocal`.
  */
 export async function syncProjectFromRepo(
   project: IDbtProject,
   updatedBy: string,
+  options: SyncOptions = {},
 ): Promise<SyncResult> {
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
+  const preserveLocalEdits = options.preserveLocalEdits ?? false;
   const { sha, files, skippedLarge } = await fetchRepoDbtFiles(project.repo);
 
   const existing = await DbtFile.find({ projectId: project._id })
@@ -185,10 +224,20 @@ export async function syncProjectFromRepo(
   let added = 0;
   let updated = 0;
   let deleted = 0;
+  const preservedLocal: string[] = [];
 
   const ops: Array<Promise<unknown>> = [];
   for (const file of files) {
     const prev = existingByPath.get(file.path);
+
+    // Don't clobber a file the user is actively editing locally. Leave it
+    // untouched (and keep its old base blob) so it still shows as a pending
+    // change the user can review/commit, rather than vanishing.
+    if (preserveLocalEdits && prev && isLocallyModified(prev)) {
+      preservedLocal.push(file.path);
+      continue;
+    }
+
     if (!prev || prev.is_deleted) {
       added++;
     } else if (prev.content !== file.content) {
@@ -228,6 +277,15 @@ export async function syncProjectFromRepo(
   // nor discarded (the next pull would re-create it).
   for (const prev of existing) {
     if (remotePaths.has(prev.path)) continue;
+
+    // A locally-added file (never on this branch) is unsaved work, not a
+    // deletion. Under preserveLocalEdits, keep it instead of soft-deleting it —
+    // this is the exact case that used to wipe new models on a branch switch.
+    if (preserveLocalEdits && !prev.is_deleted && !prev.repoBlobSha) {
+      preservedLocal.push(prev.path);
+      continue;
+    }
+
     if (!prev.is_deleted) {
       deleted++;
       ops.push(
@@ -258,7 +316,7 @@ export async function syncProjectFromRepo(
   project.markModified("repo");
   await project.save();
 
-  return { sha, added, updated, deleted, skippedLarge };
+  return { sha, added, updated, deleted, skippedLarge, preservedLocal };
 }
 
 /** Build a DbtFile insert payload from fetched repo files (first import). */
