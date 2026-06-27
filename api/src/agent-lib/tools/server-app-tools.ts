@@ -9,9 +9,14 @@
  * detached chat (mobile lock / computer sleep) keeps working end-to-end because
  * the write no longer depends on a connected browser.
  *
- * Browser-only legs stay client-side: `run_app` (preview rebuild) and
- * `materialize_binding` (DuckDB-WASM materialization), plus the cheap reads
- * `list_open_apps` / `open_app` / `get_app_state` / `app_read_file`.
+ * Apps are now FULLY server-authoritative: not just the writes, but listing,
+ * creating, reading/inspecting, and materializing bindings all run against the
+ * MakoApp document here, so a headless / detached agent can build and operate
+ * an app end-to-end with no browser.
+ *
+ * The only browser-only leg is `run_app` (rebuild the sandboxed-iframe preview
+ * and read render/build errors); `open_app` is a pure UI tab-focus convenience.
+ * A headless agent skips both and works on the appId directly.
  *
  * Tool schemas live in @mako/agent-tools (shared with the app's tool cards).
  */
@@ -28,13 +33,22 @@ import {
   deleteDataBindingSchema,
   saveAppVersionSchema,
   restoreAppVersionSchema,
+  listAppsSchema,
+  createAppSchema,
+  getAppStateSchema,
+  appReadFileSchema,
+  materializeBindingSchema,
 } from "@mako/agent-tools";
-import { normalizeAppFiles } from "@mako/schemas";
+import { normalizeAppFiles, createAppScaffold } from "@mako/schemas";
 import {
   MakoApp,
   DatabaseConnection,
   type IMakoApp,
 } from "../../database/workspace-schema";
+import {
+  queueAppBindingMaterialization,
+  buildAppBindingMaterializationStatus,
+} from "../../services/app-binding-materialization.service";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import {
@@ -177,7 +191,218 @@ export function createServerAppTools({
     }
   };
 
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
   return {
+    list_open_apps: tool({
+      description:
+        "List the apps in this workspace (id, title, file count, and data " +
+        "binding names). Call this FIRST to discover app IDs before using other " +
+        "app tools. Returns all apps you can access — not just ones open in a UI " +
+        "tab — so it works headlessly.",
+      inputSchema: listAppsSchema,
+      execute: async () =>
+        wrap("list_open_apps", async () => {
+          const filter: Record<string, unknown> = {
+            workspaceId: new Types.ObjectId(workspaceId),
+          };
+          if (userId) {
+            filter.$or = [
+              { owner_id: userId },
+              { access: "workspace" },
+              { "sharedWith.userId": userId },
+            ];
+          }
+          const docs = await MakoApp.find(filter)
+            .sort({ updatedAt: -1 })
+            .limit(100)
+            .lean<IMakoApp[]>();
+          return {
+            success: true,
+            apps: docs.map(d => ({
+              id: d._id.toString(),
+              title: d.title,
+              fileCount: Array.isArray(d.files) ? d.files.length : 0,
+              dataBindings: (d.dataBindings ?? []).map(b => ({
+                name: b.name,
+                language: b.language,
+                materialization: b.materialization ?? "live",
+              })),
+            })),
+          };
+        }),
+    }),
+
+    create_app: tool({
+      description:
+        "Create a new React app from the default scaffold (React + TypeScript) " +
+        "and return its appId. Then use app_write_file to build features and " +
+        "app_add_dependency to add libraries. (In an attached browser, call " +
+        "open_app afterward to focus the new app's tab.)",
+      inputSchema: createAppSchema,
+      execute: async ({ title, description }) =>
+        wrap("create_app", async () => {
+          const scaffold = createAppScaffold(title || "Untitled App");
+          const created = await MakoApp.create({
+            workspaceId: new Types.ObjectId(workspaceId),
+            title: scaffold.title,
+            description: description ?? scaffold.description,
+            template: scaffold.template,
+            runtime: scaffold.runtime,
+            entrypoint: scaffold.entrypoint,
+            files: normalizeAppFiles(scaffold.files),
+            dependencies: scaffold.dependencies,
+            dataBindings: [],
+            access: "private",
+            owner_id: userId,
+            createdBy: userId ?? "agent",
+            version: 1,
+          });
+          return {
+            success: true,
+            appId: created._id.toString(),
+            title: created.title,
+            files: created.files.map(f => f.path),
+          };
+        }),
+    }),
+
+    get_app_state: tool({
+      description:
+        "Get the app definition from the server: file list (paths), dependencies, " +
+        "data bindings, entrypoint, runtime, and version/publish state. Use this " +
+        "to understand the project before editing. NOTE: live preview build/" +
+        "runtime errors are only available in an attached browser via run_app.",
+      inputSchema: getAppStateSchema,
+      execute: async ({ appId }) =>
+        wrap("get_app_state", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          return {
+            success: true,
+            appId,
+            title: doc.title,
+            runtime: doc.runtime,
+            entrypoint: doc.entrypoint,
+            version: doc.version,
+            publishedVersion: doc.publishedVersion,
+            files: (doc.files ?? []).map(f => f.path),
+            dependencies: doc.dependencies ?? {},
+            dataBindings: (doc.dataBindings ?? []).map(b => ({
+              name: b.name,
+              connectionId: b.connectionId,
+              language: b.language,
+              code: b.code,
+              materialization: b.materialization ?? "live",
+            })),
+          };
+        }),
+    }),
+
+    app_read_file: tool({
+      description: "Read the full contents of a single file in the app.",
+      inputSchema: appReadFileSchema,
+      execute: async ({ appId, path }) =>
+        wrap("app_read_file", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const file = (loaded.doc.files ?? []).find(f => f.path === path);
+          if (!file) return { success: false, error: `File not found: ${path}` };
+          return { success: true, path: file.path, contents: file.contents };
+        }),
+    }),
+
+    materialize_binding: tool({
+      description:
+        "Build (or rebuild) the Parquet artifact for a 'parquet' data binding. " +
+        "The build runs server-side in the background; this tool waits up to " +
+        "waitSeconds (default 120, max 600) and returns status 'building' if it " +
+        "is still running — call again to keep waiting, or use waitSeconds: 0 " +
+        "for an instant status check. Apps with an attached browser refresh " +
+        "automatically when the build is ready.",
+      inputSchema: materializeBindingSchema,
+      execute: async ({ appId, name, waitSeconds }) =>
+        wrap("materialize_binding", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          if (!(await canWrite(loaded.doc))) return denied(appId);
+          const binding = (loaded.doc.dataBindings ?? []).find(
+            b => b.name === name,
+          );
+          if (!binding) {
+            return { success: false, error: `No data binding named "${name}"` };
+          }
+          if (binding.materialization !== "parquet") {
+            return {
+              success: false,
+              error: `Binding "${name}" is 'live', not 'parquet' — nothing to materialize.`,
+            };
+          }
+          const queued = await queueAppBindingMaterialization({
+            workspaceId,
+            appId,
+            bindingId: binding.id,
+          });
+          const waitMs =
+            Math.min(Math.max(waitSeconds ?? 120, 0), 600) * 1000;
+          const deadline = Date.now() + waitMs;
+          let status: string = queued.status;
+          // Poll the doc until the background build terminates or the wait
+          // elapses (the build keeps running server-side either way).
+          while (
+            (status === "queued" || status === "building") &&
+            Date.now() < deadline
+          ) {
+            await sleep(2500);
+            const fresh = await MakoApp.findById(loaded.doc._id);
+            const st = fresh
+              ? buildAppBindingMaterializationStatus(fresh, binding.id)
+              : null;
+            if (!st) break;
+            status = st.status;
+          }
+          if (status === "ready") {
+            // Bump version + poke so an attached browser reloads the artifact
+            // into its DuckDB instance (headless callers ignore this).
+            const bumped = await MakoApp.findByIdAndUpdate(
+              loaded.doc._id,
+              { $inc: { version: 1 } },
+              { new: true },
+            );
+            publishRealtimeEvent(workspaceId, {
+              type: "app.updated",
+              appId,
+              version: bumped?.version ?? loaded.doc.version + 1,
+              updatedBy: userId ?? "agent",
+              clientId: agentClientId,
+              origin: "agent",
+            });
+            return {
+              success: true,
+              binding: { name, status: "ready" },
+              hint: `Materialized. Read it with useQuery("${name}") or useDuckDB(sql).`,
+            };
+          }
+          if (status === "error") {
+            return {
+              success: false,
+              binding: { name },
+              status: "error",
+              error: "Materialization failed. Check the binding query.",
+            };
+          }
+          return {
+            success: true,
+            binding: { name },
+            status: "building",
+            hint:
+              `Materialization of "${name}" is still running in the background. ` +
+              "Call materialize_binding again to keep waiting.",
+          };
+        }),
+    }),
+
     app_write_file: tool({
       description:
         "Create or overwrite a file with full contents. This is the primary " +

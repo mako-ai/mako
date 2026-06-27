@@ -414,11 +414,13 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "clock",
   },
+  // Full-server apps: list/create/read/inspect/materialize execute SERVER-SIDE
+  // (see api/src/agent-lib/tools/server-app-tools.ts). Entries kept for tool-card
+  // labels/icons. Only open_app and run_app remain browser-executed.
   list_open_apps: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
-    getLabel: () => "Listing open apps",
+    execution: "server",
+    getLabel: () => "Listing apps",
     icon: "list",
   },
   open_app: {
@@ -431,8 +433,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   create_app: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const title = (input as Record<string, unknown>)?.title;
@@ -442,15 +443,13 @@ export const AGENT_TOOL_MANIFEST = {
   },
   get_app_state: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: () => "Reading app state",
     icon: "eye",
   },
   app_read_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading file";
@@ -546,8 +545,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   materialize_binding: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
