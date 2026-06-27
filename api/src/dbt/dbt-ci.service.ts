@@ -69,7 +69,11 @@ export async function handlePushEvent(params: {
   let synced = 0;
   for (const project of projects) {
     try {
-      await syncProjectFromRepo(project, "github-webhook");
+      // preserveLocalEdits: a push to the tracked branch must never wipe a
+      // user's uncommitted working-tree changes (they'd be unrecoverable).
+      await syncProjectFromRepo(project, "github-webhook", {
+        preserveLocalEdits: true,
+      });
       synced++;
     } catch (error) {
       logger.warn("push auto-sync failed", {
@@ -147,7 +151,11 @@ export async function handlePullRequestEvent(
     if (!project.ci?.enabled) continue;
     try {
       // Pull the head into the working tree so the run reflects the PR.
-      await syncProjectFromRepo(project, "github-webhook");
+      // preserveLocalEdits: a background sync must never destroy a user's
+      // uncommitted working-tree changes.
+      await syncProjectFromRepo(project, "github-webhook", {
+        preserveLocalEdits: true,
+      });
 
       // Slim CI selection: state:modified+ when a prod manifest exists,
       // otherwise the downstream closure of the PR's changed models.

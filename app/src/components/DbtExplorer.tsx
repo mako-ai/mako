@@ -29,6 +29,8 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  Snackbar,
+  Alert,
   useTheme,
 } from "@mui/material";
 import { DiffEditor } from "@monaco-editor/react";
@@ -375,6 +377,12 @@ export function DbtExplorer() {
   const [generatingMessage, setGeneratingMessage] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitResult, setGitResult] = useState<string | null>(null);
+  const [syncSnack, setSyncSnack] = useState<{
+    severity: "success" | "info" | "warning" | "error";
+    message: string;
+    /** When set, the snackbar offers an "Overwrite local" re-pull action. */
+    projectId?: string;
+  } | null>(null);
   const [diffData, setDiffData] = useState<GitFileDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [branchTarget, setBranchTarget] = useState<string | null>(null);
@@ -604,14 +612,44 @@ export function DbtExplorer() {
   }, []);
 
   const handleSyncProject = useCallback(
-    async (projectId: string) => {
+    async (projectId: string, discard = false) => {
       if (!workspaceId) return;
       setSyncingProjectId(projectId);
-      const result = await syncProjectFromGitHub(workspaceId, projectId);
+      const result = await syncProjectFromGitHub(workspaceId, projectId, {
+        discard,
+      });
       setSyncingProjectId(null);
-      if (result) {
-        await fetchFiles(workspaceId, projectId);
-        await fetchGitStatus(workspaceId, projectId);
+      if (!result) {
+        setSyncSnack({
+          severity: "error",
+          message:
+            useDbtStore.getState().error.projects ?? "Pull from remote failed.",
+        });
+        return;
+      }
+      await fetchFiles(workspaceId, projectId);
+      await fetchGitStatus(workspaceId, projectId);
+
+      const ref = result.branch ?? "remote";
+      const changed = result.added + result.updated + result.deleted;
+      const kept = result.preservedLocal.length;
+      if (changed === 0 && kept === 0) {
+        setSyncSnack({
+          severity: "info",
+          message: `Already up to date with ${ref}.`,
+        });
+      } else {
+        const parts = `+${result.added} ~${result.updated} −${result.deleted}`;
+        setSyncSnack({
+          severity: kept > 0 ? "warning" : "success",
+          message:
+            `Pulled ${ref}: ${parts}` +
+            (kept > 0
+              ? ` · kept ${kept} file${kept === 1 ? "" : "s"} with uncommitted ` +
+                "local edits. Commit them, or overwrite with the remote."
+              : ""),
+          projectId: kept > 0 ? projectId : undefined,
+        });
       }
     },
     [workspaceId, syncProjectFromGitHub, fetchFiles, fetchGitStatus],
@@ -2296,6 +2334,39 @@ export function DbtExplorer() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={!!syncSnack}
+        autoHideDuration={syncSnack?.severity === "warning" ? 10000 : 6000}
+        onClose={() => setSyncSnack(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        {syncSnack ? (
+          <Alert
+            severity={syncSnack.severity}
+            variant="filled"
+            onClose={() => setSyncSnack(null)}
+            sx={{ maxWidth: 520 }}
+            action={
+              syncSnack.projectId ? (
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={() => {
+                    const pid = syncSnack.projectId;
+                    setSyncSnack(null);
+                    if (pid) void handleSyncProject(pid, true);
+                  }}
+                >
+                  Overwrite local
+                </Button>
+              ) : undefined
+            }
+          >
+            {syncSnack.message}
+          </Alert>
+        ) : undefined}
+      </Snackbar>
     </>
   );
 }

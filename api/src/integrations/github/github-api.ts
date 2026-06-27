@@ -355,6 +355,32 @@ export async function createBranch(
   });
 }
 
+/**
+ * Delete a branch ref. Treats "already gone" (404/422) as success so cleanup
+ * is idempotent; any other failure (e.g. protected branch, no permission) is
+ * surfaced.
+ */
+export async function deleteBranch(
+  owner: string,
+  repo: string,
+  branch: string,
+  token?: string,
+): Promise<void> {
+  try {
+    await ghFetch(
+      `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+      token,
+      { method: "DELETE" },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("GitHub 404") || message.includes("GitHub 422")) {
+      return; // ref already deleted — nothing to do
+    }
+    throw error;
+  }
+}
+
 /** Post a commit status (the GitHub "check" dot) on a SHA. context = "mako/ci". */
 export async function postCommitStatus(
   owner: string,

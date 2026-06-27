@@ -157,9 +157,17 @@ run; always follow up with \`dbt_get_run\` to report whether it actually passed 
 
 Git (repo-bound projects): your edits land in the working tree but are NOT pushed automatically.
 Only commit when the user asks. Check \`dbt_git_status\`, then \`dbt_commit_and_push\` (omit
-\`message\` to auto-generate one) to push to the tracked branch — same as the IDE button. Use
-\`dbt_create_branch\` first for an isolated branch, and \`dbt_open_pull_request\` only when the user
-wants review instead of a direct push. Never commit, push, switch branches, or open a PR proactively.
+\`message\` to auto-generate one) to push to the tracked branch — same as the IDE button. To put
+changes on a NEW branch for review, use \`dbt_commit_to_branch\` (atomic branch+commit) rather than
+\`dbt_create_branch\` + \`dbt_commit_and_push\` — the two-step version can race a concurrent commit and
+strand the changes on the wrong branch. Then \`dbt_open_pull_request\`. If a run builds from a stale
+checkout (fewer models/sources than the branch actually has, e.g. a merged PR not picked up), call
+\`dbt_sync_from_repo\` to re-pull the tracked branch. Use \`dbt_delete_branch\` to clean up merged or
+stray branches. Switching branches OVERWRITES the working tree: \`dbt_switch_branch\` refuses when
+there are uncommitted changes — commit them first, or pass \`discardLocalChanges\` only after the
+user confirms abandoning them. If a user reports lost/missing files, use
+\`dbt_list_recoverable_files\` + \`dbt_restore_file\` to recover soft-deleted work. Never commit, push,
+switch branches, sync, or open a PR proactively.
 
 For conventions (staging/marts layout, ref()/source(), materializations, incremental models,
 snapshots, schema.yml tests), load the \`dbt\` system skill.`;
