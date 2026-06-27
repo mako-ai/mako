@@ -490,19 +490,25 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       unregisterActiveRun(data.runId, runControl);
     }
 
-    // A triggered abort means this run was cancelled (subprocess SIGTERM/
-    // SIGKILL'd by the registry), not a genuine dbt failure — finalize it as
-    // "cancelled" with attribution rather than "error".
-    const wasCancelled = controller.signal.aborted;
-
     await step.run("finalize-run", async () => {
-      if (wasCancelled) {
-        await finalizeCancelledDbtRun(runObjectId);
+      const completedAt = new Date();
+      const run = await DbtRun.findById(runObjectId)
+        .select("startedAt status cancelledAt cancelledBy")
+        .lean();
+
+      // Detect cancellation from the PERSISTED marker, not the in-memory
+      // AbortController: Inngest replays the function body (and recreates the
+      // controller) on each step, so `controller.signal.aborted` is only true
+      // in the invocation that ran the subprocess — not in the later
+      // finalize-run replay. requestDbtRunCancel stages cancelledAt/cancelledBy
+      // (or flips status to "cancelled") before aborting, so the marker is
+      // durable. Without this a cancelled run would finalize as "error".
+      if (run?.status === "cancelled" || run?.cancelledAt) {
+        await finalizeCancelledDbtRun(runObjectId, run?.cancelledBy);
         logger.info("dbt run cancelled; finalized", { runId: data.runId });
         return;
       }
-      const completedAt = new Date();
-      const run = await DbtRun.findById(runObjectId).select("startedAt").lean();
+
       const durationMs = run?.startedAt
         ? completedAt.getTime() - new Date(run.startedAt).getTime()
         : undefined;
