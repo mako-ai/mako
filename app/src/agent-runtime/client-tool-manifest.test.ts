@@ -35,21 +35,38 @@ describe("client tool manifest contracts", () => {
     ).toEqual(Object.keys(clientConsoleTools).sort());
   });
 
-  it("matches the dashboard client executor schema keys", () => {
-    expect(
-      manifestKeysFor(toolName => {
-        return (
-          toolName.execution === "client" &&
-          toolName.clientExecutor === "dashboard"
-        );
-      }),
-    ).toEqual(Object.keys(clientDashboardTools).sort());
+  // Some tools defined in the shared client maps are ported to server-side
+  // execution (#475 — e.g. the chart template reads): they keep a no-execute
+  // placeholder in the package that the server `execute` overrides, plus a
+  // manifest entry purely for tool-card rendering. The bijection we care about
+  // is therefore (a) every package client tool has a manifest entry, and
+  // (b) every client-DISPATCHED manifest entry is backed by a package tool
+  // (so `onToolCall` never tries to dispatch a tool that doesn't exist).
+  it("matches the dashboard client tool schema keys", () => {
+    const dashboardToolKeys = Object.keys(clientDashboardTools).sort();
+    for (const name of dashboardToolKeys) {
+      expect(
+        getAgentToolManifestEntry(name),
+        `${name} is missing a manifest entry`,
+      ).toBeDefined();
+    }
+    for (const name of manifestKeysFor(
+      entry =>
+        entry.execution === "client" && entry.clientExecutor === "dashboard",
+    )) {
+      expect(
+        dashboardToolKeys,
+        `stale dashboard executor manifest entry: ${name}`,
+      ).toContain(name);
+    }
   });
 
   it("matches the chart client tool schema keys", () => {
+    // Manifest chart-domain entries are a clean bijection with clientChartTools
+    // (both client-executed and #475-ported reads share the chart domain).
     expect(
       manifestKeysFor(toolName => {
-        return toolName.execution === "client" && toolName.domain === "chart";
+        return toolName.domain === "chart";
       }),
     ).toEqual(Object.keys(clientChartTools).sort());
   });
