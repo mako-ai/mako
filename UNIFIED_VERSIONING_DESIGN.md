@@ -110,17 +110,29 @@ Two operations:
 
 - **Phase 0 — DONE (PR #595).** App `versionHistory` + restore + server agent
   tools (`app_save_version`, `app_restore_version`) + `browse_version_history`
-  extended to apps + file-aware history UI. This is the `versionHistory[]` layer
-  and is independent of the published split.
-- **Phase 1 — Apps draft/published split.** Add `MakoApp.published`; add a
-  Publish action (draft → published + snapshot); make public-share / viewers
-  render `published` (fallback to draft); restore targets the draft. Contained to
-  apps + public-share.
-- **Phase 2 — Dashboard unification.** Generalize a shared
-  draft/published/publish/restore service; migrate the dashboard draft off
-  Zustand to the server doc; port `clientDashboardTools` → server tools; add
-  `editLock`; wire `dashboard.updated` realtime refetch. Bigger and riskier;
-  unblocks the server-side dashboard agent.
+  extended to apps + file-aware history UI.
+- **Phase 1 — DONE (PR #595).** Apps draft/published split: `MakoApp.published`
+  + `publishedVersion`/`publishedAt`; saving a version publishes it
+  (draft → published + snapshot); public-share / viewers render `published`
+  (fallback to draft); restore targets the draft only; `hasUnpublishedChanges`
+  surfaced; UI relabelled to "Publish version".
+- **Phase 2 — DONE (PR #595), except the headless editing-tool port.**
+  Dashboards adopt the identical model: `Dashboard.published` +
+  `publishedVersion`/`publishedAt`; every explicit save (PATCH/PUT/create)
+  publishes; restore reverts the draft only; public-share renders `published`;
+  `dashboard.updated` realtime is now emitted on save/restore and consumed by
+  `handleDashboardUpdated` (poke-then-pull, guarded so it never clobbers a user
+  mid-edit or with unsaved changes); `hasUnpublishedChanges` surfaced;
+  `editLock` retained. `browse_version_history` / `get_version_snapshot` already
+  cover dashboards.
+  - **Remaining (Phase 2c, follow-up):** port the ~15 client dashboard editing
+    tools (`add_widget`, `modify_widget`, `create_data_source`, …) to
+    server-side `execute` tools (mirroring `server-app-tools`) so a fully
+    headless agent can mutate a dashboard's server draft without a browser. The
+    server-persisted draft + realtime now make this a mechanical port; it is
+    deliberately staged separately because it is large and touches the live
+    dashboard agent surface (each tool needs server-side layout/spec logic and
+    its own tests).
 
 ## Open product decision
 
