@@ -55,6 +55,7 @@ import {
   getGitStatus,
   listProjectBranches,
   listRecoverableFiles,
+  mergeProjectPullRequest,
   openProjectPullRequest,
   restoreDeletedFile,
   switchProjectBranch,
@@ -1473,6 +1474,63 @@ export const createDbtServerTools = (
           };
         } catch (error) {
           return toolError(error, "Failed to open pull request");
+        }
+      },
+    }),
+
+    dbt_merge_pull_request: tool({
+      description:
+        "Merge a GitHub pull request that was opened with dbt_open_pull_request, " +
+        "optionally delete its source branch, then switch the project back to " +
+        "the repo's default branch and sync the merged state into the working " +
+        "tree. Use when the user asks to promote/merge a PR — completes the " +
+        "full ship loop without manual GitHub UI steps. Returns the merge " +
+        "commit SHA, whether the branch was deleted, and confirmation the " +
+        "working tree is clean on the default branch.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        prNumber: z
+          .number()
+          .int()
+          .positive()
+          .describe("Pull request number returned by dbt_open_pull_request"),
+        mergeMethod: z
+          .enum(["merge", "squash", "rebase"])
+          .optional()
+          .describe('How to merge; defaults to "squash"'),
+        deleteBranch: z
+          .boolean()
+          .optional()
+          .describe(
+            "Delete the PR's source branch after merge; defaults to true",
+          ),
+      }),
+      execute: async ({
+        projectId,
+        prNumber,
+        mergeMethod,
+        deleteBranch,
+      }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await mergeProjectPullRequest(project, {
+            prNumber,
+            mergeMethod,
+            deleteBranch,
+            updatedBy: userId ?? "agent",
+          });
+          return {
+            success: true,
+            sha: result.sha,
+            branchDeleted: result.branchDeleted,
+            ...(result.branchDeleteWarning
+              ? { branchDeleteWarning: result.branchDeleteWarning }
+              : {}),
+            branch: result.branch,
+            workingTreeClean: result.workingTreeClean,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to merge pull request");
         }
       },
     }),

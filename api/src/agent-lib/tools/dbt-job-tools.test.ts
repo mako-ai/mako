@@ -44,6 +44,7 @@ vi.mock("../../dbt/dbt-github-git.service", () => ({
   createProjectBranch: vi.fn(),
   getGitStatus: vi.fn(),
   listProjectBranches: vi.fn(),
+  mergeProjectPullRequest: vi.fn(),
   openProjectPullRequest: vi.fn(),
   switchProjectBranch: vi.fn(),
 }));
