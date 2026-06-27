@@ -173,6 +173,7 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_show",
   "dbt_create_job",
   "dbt_update_job",
+  "dbt_delete_job",
   // Git: commit/push edits to the connected repo (only when the user asks).
   "dbt_git_status",
   "dbt_sync_from_repo",

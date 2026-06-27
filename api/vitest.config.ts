@@ -17,6 +17,7 @@ export default defineConfig({
       "src/dbt/**/*.test.ts",
       "src/integrations/github/**/*.test.ts",
       "src/routes/dbt.routes.integration.test.ts",
+      "src/agent-lib/tools/dbt-job-tools.test.ts",
     ],
     exclude: [
       "**/node_modules/**",
