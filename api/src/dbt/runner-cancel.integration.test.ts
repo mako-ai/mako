@@ -9,7 +9,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { mkdtemp, writeFile, chmod, rm } from "fs/promises";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseDbtCommand } from "./commands";
 import { runDbt } from "./runner.service";
 import type { RenderedProfile } from "./adapter-map";

@@ -640,6 +640,12 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Cancelling dbt run",
     icon: "square",
   },
+  dbt_delete_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Deleting dbt job",
+    icon: "trash",
+  },
   search_consoles: {
     domain: "search",
     execution: "server",
