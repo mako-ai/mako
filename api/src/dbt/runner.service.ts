@@ -344,6 +344,14 @@ async function reconcileWarmDir(
   return deleted;
 }
 
+/**
+ * How long a dbt subprocess gets to exit after SIGTERM before we escalate to
+ * SIGKILL. dbt traps SIGTERM to flush partial run_results.json / logs, so we
+ * give it a window to shut down cleanly, then force-kill so a cancel always
+ * frees the slot promptly even if dbt is wedged.
+ */
+const KILL_GRACE_MS = 15_000;
+
 function execDbtCommand(params: {
   bin: string;
   args: string[];
@@ -362,18 +370,43 @@ function execDbtCommand(params: {
 
     let stdoutBuffer = "";
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const timeout = setTimeout(() => {
+    // Graceful stop: SIGTERM, then SIGKILL if the process is still alive after
+    // KILL_GRACE_MS. Used by both the per-command timeout and an external abort
+    // (run cancellation). Idempotent — the close handler clears killTimer.
+    const terminate = (cause: string) => {
       params.onLog({
         ts: new Date(),
         level: "error",
-        line: `Command timed out after ${Math.round(params.timeoutMs / 1000)}s — sending SIGTERM`,
+        line: `${cause} — sending SIGTERM`,
       });
       child.kill("SIGTERM");
+      if (killTimer) return;
+      killTimer = setTimeout(() => {
+        if (settled) return;
+        params.onLog({
+          ts: new Date(),
+          level: "error",
+          line: `Process did not exit ${Math.round(KILL_GRACE_MS / 1000)}s after SIGTERM — sending SIGKILL`,
+        });
+        child.kill("SIGKILL");
+      }, KILL_GRACE_MS);
+    };
+
+    const timeout = setTimeout(() => {
+      terminate(
+        `Command timed out after ${Math.round(params.timeoutMs / 1000)}s`,
+      );
     }, params.timeoutMs);
 
-    const onAbort = () => child.kill("SIGTERM");
-    params.signal?.addEventListener("abort", onAbort, { once: true });
+    const onAbort = () => terminate("Run cancellation requested");
+    if (params.signal?.aborted) {
+      // Already aborted before spawn settled — stop the child immediately.
+      onAbort();
+    } else {
+      params.signal?.addEventListener("abort", onAbort, { once: true });
+    }
 
     const flushLines = (chunk: string, isStderr: boolean) => {
       if (isStderr) {
@@ -405,6 +438,7 @@ function execDbtCommand(params: {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       params.signal?.removeEventListener("abort", onAbort);
       reject(error);
     });
@@ -413,6 +447,7 @@ function execDbtCommand(params: {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       params.signal?.removeEventListener("abort", onAbort);
       if (stdoutBuffer.trim()) params.onLog(parseLogLine(stdoutBuffer.trim()));
       resolve(code ?? 1);

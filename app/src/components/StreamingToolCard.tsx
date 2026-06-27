@@ -31,6 +31,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Square,
   Table2,
   Trash2,
   Wrench,
@@ -116,6 +117,8 @@ function renderToolIcon(iconKey: ToolIconKey): React.ReactNode {
       return <Brain size={ICON_SIZE} />;
     case "shield-check":
       return <ShieldCheck size={ICON_SIZE} />;
+    case "square":
+      return <Square size={ICON_SIZE} />;
     case "help-circle":
       return <HelpCircle size={ICON_SIZE} />;
     default:

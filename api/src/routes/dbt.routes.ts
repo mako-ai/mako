@@ -1522,14 +1522,23 @@ dbtRoutes.post(
       if (!Types.ObjectId.isValid(runId)) {
         return badRequest(c, "Invalid run id");
       }
-      const cancelled = await requestDbtRunCancel({
+      const result = await requestDbtRunCancel({
         workspaceId: project.workspaceId.toString(),
         runId,
+        cancelledBy: getUserId(c),
       });
-      if (!cancelled) {
-        return badRequest(c, "Run is not cancellable (already finished?)");
+      if (!result) {
+        return c.json({ success: false, error: "Run not found" }, 404);
       }
-      return c.json({ success: true });
+      // Idempotent: an already-terminal run echoes its current status (no
+      // error), and the queued→running / finished-during-cancel races return
+      // the real status rather than failing.
+      return c.json({
+        success: true,
+        status: result.status,
+        cancelledAt: result.cancelledAt,
+        cancelledBy: result.cancelledBy,
+      });
     } catch (error) {
       return serverError(c, error, "Failed to cancel dbt run");
     }
