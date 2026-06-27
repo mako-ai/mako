@@ -348,9 +348,12 @@ async function reconcileWarmDir(
  * How long a dbt subprocess gets to exit after SIGTERM before we escalate to
  * SIGKILL. dbt traps SIGTERM to flush partial run_results.json / logs, so we
  * give it a window to shut down cleanly, then force-kill so a cancel always
- * frees the slot promptly even if dbt is wedged.
+ * frees the slot promptly even if dbt is wedged. Read per-call (not at module
+ * load) so DBT_KILL_GRACE_MS can be shortened in tests without import ordering.
  */
-const KILL_GRACE_MS = 15_000;
+function killGraceMs(): number {
+  return Number(process.env.DBT_KILL_GRACE_MS) || 15_000;
+}
 
 function execDbtCommand(params: {
   bin: string;
@@ -371,6 +374,7 @@ function execDbtCommand(params: {
     let stdoutBuffer = "";
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const graceMs = killGraceMs();
 
     // Graceful stop: SIGTERM, then SIGKILL if the process is still alive after
     // KILL_GRACE_MS. Used by both the per-command timeout and an external abort
@@ -388,10 +392,10 @@ function execDbtCommand(params: {
         params.onLog({
           ts: new Date(),
           level: "error",
-          line: `Process did not exit ${Math.round(KILL_GRACE_MS / 1000)}s after SIGTERM — sending SIGKILL`,
+          line: `Process did not exit ${Math.round(graceMs / 1000)}s after SIGTERM — sending SIGKILL`,
         });
         child.kill("SIGKILL");
-      }, KILL_GRACE_MS);
+      }, graceMs);
     };
 
     const timeout = setTimeout(() => {
