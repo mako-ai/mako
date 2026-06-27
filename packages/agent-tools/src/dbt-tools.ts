@@ -24,7 +24,10 @@ const dbtPathField = z
     "POSIX file path relative to the project root, e.g. models/staging/stg_orders.sql",
   );
 
-const readTreeSchema = z.object({
+// Read tool schemas execute SERVER-SIDE (read DbtProject/DbtFile/DbtJob) —
+// see api/src/agent-lib/tools/dbt-tools.ts. Exported for a single source of
+// truth with the dbt IDE tool cards.
+export const readDbtProjectTreeSchema = z.object({
   projectId: z
     .string()
     .optional()
@@ -33,7 +36,7 @@ const readTreeSchema = z.object({
     ),
 });
 
-const readFileSchema = z.object({
+export const readDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
 });
@@ -69,13 +72,13 @@ export const clientDbtTools = {
       "List dbt projects in the workspace, or the file tree + jobs of one " +
       "project when projectId is given. Call this FIRST to get project IDs " +
       "and file paths before using any other dbt tool.",
-    inputSchema: readTreeSchema,
+    inputSchema: readDbtProjectTreeSchema,
   }),
   read_dbt_file: tool({
     description:
       "Read the full contents of a single file in a dbt project " +
       "(models, schema.yml, dbt_project.yml, seeds, macros...).",
-    inputSchema: readFileSchema,
+    inputSchema: readDbtFileSchema,
   }),
 };
 

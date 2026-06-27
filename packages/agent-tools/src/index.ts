@@ -50,6 +50,11 @@ export type {
 } from "./console-tools";
 
 export { clientChartTools } from "./chart-tools";
+export {
+  // Schemas for the server-executed chart-template reads.
+  getChartTemplateSchema,
+  getChartTemplatesSchema,
+} from "./chart-tools";
 export type { ModifyChartSpecInput } from "./chart-tools";
 
 export { clientDashboardTools } from "./dashboard-tools";
@@ -66,6 +71,9 @@ export {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  // Schemas for the server-executed app read tools.
+  appReadFileSchema,
+  getAppStateSchema,
 } from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 
@@ -76,6 +84,9 @@ export {
   createDbtFileSchema,
   modifyDbtFileSchema,
   deleteDbtFileSchema,
+  // Schemas for the server-executed dbt read tools.
+  readDbtProjectTreeSchema,
+  readDbtFileSchema,
 } from "./dbt-tools";
 export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 

@@ -40,10 +40,15 @@ export const renameFileSchema = z.object({
   to: z.string().describe("New file path"),
 });
 
-const readFileSchema = z.object({
+// Read tool schemas execute SERVER-SIDE (read the authoritative MakoApp doc) —
+// see api/src/agent-lib/tools/server-app-tools.ts. Exported for a single source
+// of truth with the app's tool cards.
+export const appReadFileSchema = z.object({
   appId: appIdField,
   path: z.string().describe("File path to read"),
 });
+
+export const getAppStateSchema = z.object({ appId: appIdField });
 
 export const addDependencySchema = z.object({
   appId: appIdField,
@@ -137,11 +142,11 @@ export const clientAppTools = {
       "Get the app definition: file list (paths), dependencies, data bindings, " +
       "entrypoint, runtime, and the latest preview build/runtime errors. " +
       "Use this to understand the project and to read build errors before fixing them.",
-    inputSchema: z.object({ appId: appIdField }),
+    inputSchema: getAppStateSchema,
   }),
   app_read_file: tool({
     description: "Read the full contents of a single file in the app.",
-    inputSchema: readFileSchema,
+    inputSchema: appReadFileSchema,
   }),
   materialize_binding: tool({
     description:

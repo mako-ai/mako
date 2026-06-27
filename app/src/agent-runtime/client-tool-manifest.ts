@@ -374,17 +374,17 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Setting time dimension",
     icon: "clock",
   },
+  // Chart-template reads execute SERVER-SIDE (static @mako/schemas lookup; see
+  // api/src/agent-lib/tools/server-chart-tools.ts).
   get_chart_templates: {
     domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
+    execution: "server",
     getLabel: () => "Listing chart templates",
     icon: "list",
   },
   get_chart_template: {
     domain: "chart",
-    execution: "client",
-    clientExecutor: "dashboard",
+    execution: "server",
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
@@ -414,17 +414,17 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "plus",
   },
+  // App reads execute SERVER-SIDE against the saved doc (see
+  // api/src/agent-lib/tools/server-app-tools.ts).
   get_app_state: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: () => "Reading app state",
     icon: "eye",
   },
   app_read_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading file";
@@ -545,17 +545,17 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  // dbt reads execute SERVER-SIDE (DbtProject/DbtFile/DbtJob; see
+  // createDbtServerTools in api/src/agent-lib/tools/dbt-tools.ts).
   read_dbt_project_tree: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: () => "Reading dbt project tree",
     icon: "list",
   },
   read_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading dbt file";

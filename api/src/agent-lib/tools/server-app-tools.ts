@@ -9,9 +9,10 @@
  * detached chat (mobile lock / computer sleep) keeps working end-to-end because
  * the write no longer depends on a connected browser.
  *
- * Browser-only legs stay client-side: `run_app` (preview rebuild) and
- * `materialize_binding` (DuckDB-WASM materialization), plus the cheap reads
- * `list_open_apps` / `open_app` / `get_app_state` / `app_read_file`.
+ * Reads (`get_app_state`, `app_read_file`) also execute here against the saved
+ * doc. Browser-only legs stay client-side: `run_app` (preview rebuild),
+ * `materialize_binding` (DuckDB-WASM materialization), and `list_open_apps` /
+ * `open_app` (open-tab UI state).
  *
  * Tool schemas live in @mako/agent-tools (shared with the app's tool cards).
  */
@@ -26,6 +27,8 @@ import {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  appReadFileSchema,
+  getAppStateSchema,
 } from "@mako/agent-tools";
 import { normalizeAppFiles } from "@mako/schemas";
 import {
@@ -162,6 +165,51 @@ export function createServerAppTools({
   };
 
   return {
+    get_app_state: tool({
+      description:
+        "Get the app definition: file list (paths), dependencies, data bindings, " +
+        "entrypoint, and runtime. Use this to understand the project. " +
+        "(Live preview build/runtime errors come from run_app in an open browser.)",
+      inputSchema: getAppStateSchema,
+      execute: async ({ appId }) =>
+        wrap("get_app_state", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          return {
+            success: true,
+            appId,
+            title: doc.title,
+            runtime: doc.runtime,
+            entrypoint: doc.entrypoint,
+            files: (doc.files ?? []).map(f => f.path),
+            dependencies: doc.dependencies ?? {},
+            dataBindings: (doc.dataBindings ?? []).map(b => ({
+              name: b.name,
+              connectionId: b.connectionId,
+              language: b.language,
+              code: b.code,
+              materialization: b.materialization,
+            })),
+            version: doc.version,
+          };
+        }),
+    }),
+
+    app_read_file: tool({
+      description: "Read the full contents of a single file in the app.",
+      inputSchema: appReadFileSchema,
+      execute: async ({ appId, path }) =>
+        wrap("app_read_file", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          const file = (doc.files ?? []).find(f => f.path === path);
+          if (!file) return { success: false, error: `File not found: ${path}` };
+          return { success: true, path: file.path, contents: file.contents };
+        }),
+    }),
+
     app_write_file: tool({
       description:
         "Create or overwrite a file with full contents. This is the primary " +
