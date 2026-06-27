@@ -12,6 +12,7 @@ import {
   buildDashboardRuntimeContext,
 } from "./prompt";
 import { clientDashboardTools } from "@mako/agent-tools";
+import { createServerChartTools } from "../../agent-lib/tools/server-chart-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
 import { createDashboardSearchTools } from "../../agent-lib/tools/dashboard-search-tools";
@@ -65,6 +66,9 @@ export function dashboardAgentFactory(context: AgentContext): AgentConfig {
     ],
     tools: {
       ...clientDashboardTools,
+      // get_chart_templates/get_chart_template execute server-side; must come
+      // after clientDashboardTools (which carries their no-execute versions).
+      ...createServerChartTools(),
       ...selfDirectiveTools,
       ...consoleSearchTools,
       ...dashboardSearchTools,

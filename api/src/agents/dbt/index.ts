@@ -15,6 +15,7 @@ import type {
 } from "../types";
 import { clientDbtTools } from "@mako/agent-tools";
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
+import { createServerChartTools } from "../../agent-lib/tools/server-chart-tools";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { DBT_AGENT_PROMPT } from "./prompt";
@@ -99,6 +100,9 @@ export const dbtAgentFactory: AgentFactory = (
       ...universalTools,
       ...clientDbtTools,
       ...dbtServerTools,
+      // get_chart_template executes server-side; must come after the universal
+      // tools (which carry its no-execute version via clientChartTools).
+      ...createServerChartTools(),
       ...skillTools,
     },
   };
