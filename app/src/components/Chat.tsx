@@ -116,13 +116,11 @@ import {
   DASHBOARD_EXECUTOR_TOOL_NAMES,
   APP_EXECUTOR_TOOL_NAMES,
   DBT_EXECUTOR_TOOL_NAMES,
-  DATA_SOURCE_EXECUTOR_TOOL_NAMES,
   getAgentToolManifestEntry,
   type AgentToolName,
 } from "../agent-runtime/client-tool-manifest";
 import { executeAppAgentTool } from "../app-runtime/agent-tools";
 import { executeDbtAgentTool } from "../dbt-runtime/agent-tools";
-import { executeDataSourceTool } from "../agent-runtime/data-source-tools";
 import { UpgradePrompt } from "./UpgradePrompt";
 import {
   onRenderDebug,
@@ -2436,42 +2434,8 @@ const Chat: React.FC<ChatProps> = ({
           return;
         }
 
-        // --- Shared data source tools (apps + dashboards) ---
-        if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
-          const activeDataTool = registerActiveClientToolCall(
-            toolName,
-            toolCall.toolCallId,
-          );
-          void (async () => {
-            try {
-              const output = await executeDataSourceTool(toolName, input);
-              if (activeDataTool.abortController.signal.aborted) return;
-              settleActiveClientToolCall(
-                toolName,
-                toolCall.toolCallId,
-                output ?? {
-                  success: false,
-                  error: `Data source tool "${toolName}" did not return a result.`,
-                },
-              );
-            } catch (dataError) {
-              if (
-                manualStopRequestedRef.current ||
-                activeDataTool.abortController.signal.aborted
-              ) {
-                return;
-              }
-              settleActiveClientToolCall(toolName, toolCall.toolCallId, {
-                success: false,
-                error:
-                  dataError instanceof Error
-                    ? dataError.message
-                    : "Data source tool execution failed",
-              });
-            }
-          })();
-          return;
-        }
+        // Data-source tools (list_data_sources / inspect_data_source /
+        // query_duckdb) execute SERVER-SIDE (#475) — no client dispatch.
 
         // Handle flow agent client-side tools
         // get_form_state - Return current form configuration
@@ -2931,8 +2895,6 @@ const Chat: React.FC<ChatProps> = ({
           executeDashboardAgentTool(toolName, input, { executionId, signal });
       } else if (DBT_EXECUTOR_TOOL_NAMES.has(name)) {
         run = () => executeDbtAgentTool(toolName, input);
-      } else if (DATA_SOURCE_EXECUTOR_TOOL_NAMES.has(name)) {
-        run = () => executeDataSourceTool(toolName, input);
       }
       if (!run) return false;
 

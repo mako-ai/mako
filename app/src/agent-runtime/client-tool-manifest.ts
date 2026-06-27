@@ -38,8 +38,7 @@ export type ClientToolExecutor =
   | "dashboard"
   | "flow"
   | "app"
-  | "dbt"
-  | "data";
+  | "dbt";
 
 export interface ToolUiConfig {
   getLabel: (input?: unknown) => string;
@@ -941,10 +940,6 @@ export const APP_EXECUTOR_TOOL_NAMES = createToolNameSet(
 
 export const DBT_EXECUTOR_TOOL_NAMES = createToolNameSet(
   entry => entry.execution === "client" && entry.clientExecutor === "dbt",
-);
-
-export const DATA_SOURCE_EXECUTOR_TOOL_NAMES = createToolNameSet(
-  entry => entry.execution === "client" && entry.clientExecutor === "data",
 );
 
 export const LONG_RUNNING_DASHBOARD_TOOL_NAMES = createToolNameSet(
