@@ -28,6 +28,49 @@ export interface AppSnapshot {
   dataBindings: Array<Record<string, unknown>>;
 }
 
+/**
+ * Canonicalize a snapshot for comparison. Mongoose `minimize` (on by default)
+ * strips empty objects (e.g. `dependencies: {}`) when persisting the Mixed
+ * `published` field, so a naive JSON compare against a freshly-built draft
+ * snapshot reports phantom differences. Recursively drop `undefined` and empty
+ * objects and sort object keys so both sides normalize identically.
+ */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const v = canonicalize((value as Record<string, unknown>)[key]);
+      if (v === undefined) continue;
+      if (v && typeof v === "object" && !Array.isArray(v) &&
+        Object.keys(v).length === 0) {
+        continue; // drop empty objects (Mongoose minimize parity)
+      }
+      out[key] = v;
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Stable JSON used to compare a draft against its published snapshot. */
+function stableSnapshotJson(snapshot: unknown): string {
+  return JSON.stringify(canonicalize(snapshot ?? null));
+}
+
+/**
+ * True when the working draft differs from the last published snapshot (or the
+ * app has never been published). Drives the "unpublished changes" hint in the
+ * editor so users know the live/shared version is behind the draft.
+ */
+export function appHasUnpublishedChanges(doc: IMakoApp): boolean {
+  if (!doc.published) return true;
+  return (
+    stableSnapshotJson(buildAppSnapshot(doc)) !==
+    stableSnapshotJson(doc.published)
+  );
+}
+
 /** Freeze the current editable definition of an app into a snapshot. */
 export function buildAppSnapshot(doc: IMakoApp): AppSnapshot {
   return {
@@ -86,4 +129,6 @@ export function applyAppSnapshot(doc: IMakoApp, snapshot: AppSnapshot): void {
     materializationSchedule: b.materializationSchedule,
     cache: cacheById.get(b.id as string),
   })) as IMakoApp["dataBindings"];
+  // `dependencies` is a Mixed path — assignment isn't auto-tracked by Mongoose.
+  doc.markModified("dependencies");
 }

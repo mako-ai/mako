@@ -517,7 +517,7 @@ export function AppsExplorer() {
               <ListItemIcon>
                 <SaveVersionIcon size={16} strokeWidth={1.5} />
               </ListItemIcon>
-              Save version
+              Publish version
             </MenuItem>,
           );
         }
@@ -783,11 +783,11 @@ export function AppsExplorer() {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Save version of {saveVersionApp?.name}</DialogTitle>
+        <DialogTitle>Publish version of {saveVersionApp?.name}</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
-            Saves a restorable checkpoint of the app&apos;s current files,
-            dependencies, and data binding queries.
+            Snapshots the current draft into version history and publishes it as
+            the live version that shared links and viewers see.
           </DialogContentText>
           <TextField
             autoFocus
@@ -814,7 +814,7 @@ export function AppsExplorer() {
             variant="contained"
             disabled={savingVersion}
           >
-            {savingVersion ? "Saving..." : "Save version"}
+            {savingVersion ? "Publishing..." : "Publish version"}
           </Button>
         </DialogActions>
       </Dialog>

@@ -3763,6 +3763,17 @@ export interface IMakoApp extends Document {
   dependencies: Record<string, string>;
   dataBindings: IMakoAppDataBinding[];
   version: number;
+  /**
+   * Last published definition snapshot (draft/published split). The top-level
+   * fields above are the working DRAFT (autosaved on every edit); `published`
+   * is the committed definition that public/shared viewers render. Absent until
+   * the app is first published — readers fall back to the draft for back-compat.
+   * Shape matches `buildAppSnapshot` (no server-owned binding `cache`).
+   */
+  published?: Record<string, unknown>;
+  /** EntityVersion number that was published into `published`. */
+  publishedVersion?: number;
+  publishedAt?: Date;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
   workspaceRole?: ResourceShareRole;
@@ -3871,6 +3882,12 @@ const MakoAppSchema = new Schema<IMakoApp>(
     dependencies: { type: Schema.Types.Mixed, default: {} },
     dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
     version: { type: Number, default: 1 },
+    // Draft/published split: `published` holds the last committed definition
+    // snapshot (Mixed — same shape as buildAppSnapshot). Public/shared viewers
+    // render this; the top-level fields are the working draft.
+    published: { type: Schema.Types.Mixed, default: undefined },
+    publishedVersion: { type: Number },
+    publishedAt: { type: Date },
     access: {
       type: String,
       enum: ["private", "workspace"],

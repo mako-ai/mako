@@ -27,6 +27,10 @@ import {
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  buildAppSnapshot,
+  type AppSnapshot,
+} from "../services/app-version.service";
 import { buildDataSourceMaterializationStatus } from "../services/dashboard-materialization.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
@@ -205,30 +209,42 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
 }
 
 function buildAppContent(token: string, makoApp: IMakoApp) {
+  // Render the PUBLISHED definition (draft/published split) so a public viewer
+  // never sees half-edited or agent-in-progress work. Fall back to the live
+  // draft for apps that were never published (back-compat).
+  const def = (makoApp.published as AppSnapshot | undefined) ??
+    buildAppSnapshot(makoApp);
+  // Materialization artifacts are server-owned and keyed by binding id, so we
+  // hydrate artifact URLs from the LIVE binding caches (the published snapshot
+  // intentionally excludes `cache`).
+  const liveCacheById = new Map(
+    (makoApp.dataBindings || []).map(b => [b.id, b.cache]),
+  );
   return {
     type: "app" as const,
-    title: makoApp.title,
-    description: makoApp.description,
-    entrypoint: makoApp.entrypoint,
-    files: (makoApp.files || []).map(f => ({
+    title: def.title,
+    description: def.description,
+    entrypoint: def.entrypoint,
+    files: (def.files || []).map(f => ({
       path: f.path,
       contents: f.contents,
     })),
-    dependencies: makoApp.dependencies || {},
-    dataBindings: (makoApp.dataBindings || []).map(b => {
+    dependencies: def.dependencies || {},
+    dataBindings: (def.dataBindings || []).map(b => {
+      const cache = liveCacheById.get(b.id as string);
       const ready =
         b.materialization === "parquet" &&
-        b.cache?.parquetBuildStatus === "ready" &&
-        !!b.cache?.parquetArtifactKey;
+        cache?.parquetBuildStatus === "ready" &&
+        !!cache?.parquetArtifactKey;
       return {
         id: b.id,
         name: b.name,
         materialization: b.materialization ?? "live",
         ready,
-        rowCount: b.cache?.rowCount ?? null,
-        materializedAt: b.cache?.parquetBuiltAt ?? null,
+        rowCount: cache?.rowCount ?? null,
+        materializedAt: cache?.parquetBuiltAt ?? null,
         artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(b.id)}?rev=${encodeURIComponent(b.cache?.artifactRevision || "")}`
+          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(b.id))}?rev=${encodeURIComponent(cache?.artifactRevision || "")}`
           : null,
       };
     }),

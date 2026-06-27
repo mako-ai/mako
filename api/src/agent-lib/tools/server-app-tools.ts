@@ -352,10 +352,12 @@ export function createServerAppTools({
 
     app_save_version: tool({
       description:
-        "Save a named checkpoint of the app's current state to its version " +
-        "history. Apps autosave on every edit, so use this to mark meaningful " +
-        "milestones (before a risky refactor, after finishing a feature) that " +
-        "the user can review or restore later. Returns the new version number.",
+        "Save AND publish a version of the app's current state. Apps autosave " +
+        "the working draft on every edit; saving a version snapshots it into " +
+        "version history AND publishes that snapshot — it becomes the definition " +
+        "public/shared viewers render. Use it to mark meaningful milestones " +
+        "(after finishing a feature, before a risky refactor) and to push work " +
+        "live to viewers. Returns the new version number.",
       inputSchema: saveAppVersionSchema,
       execute: async ({ appId, comment }) =>
         wrap("app_save_version", async () => {
@@ -363,21 +365,26 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(appId);
+          const snapshot = buildAppSnapshot(doc);
           const created = await createVersion({
             entityType: "app",
             entityId: doc._id,
             workspaceId: new Types.ObjectId(workspaceId),
-            snapshot: buildAppSnapshot(doc) as unknown as Record<
-              string,
-              unknown
-            >,
+            snapshot: snapshot as unknown as Record<string, unknown>,
             savedBy: userId ?? "agent",
             savedByName: await savedByName(),
             comment: (comment ?? "").slice(0, 500),
           });
+          // Publish: the snapshot becomes the viewer-facing definition.
+          doc.published = snapshot as unknown as Record<string, unknown>;
+          doc.markModified("published"); // Mixed: assignment isn't auto-tracked
+          doc.publishedVersion = created.version;
+          doc.publishedAt = new Date();
+          await doc.save();
           return {
             success: true,
             version: created.version,
+            publishedVersion: created.version,
             createdAt: created.createdAt,
           };
         }),

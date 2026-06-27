@@ -95,26 +95,35 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
    app's explorer tree.
 
-### Version history & checkpoints
+### Version history, drafts & publishing
 
-Apps autosave on every edit, so the running `version` counter is not a restore
-point. To create restorable history, save **explicit checkpoints**:
+Apps use a **draft → published** split:
 
-- `app_save_version` — freeze the app's current files, dependencies, and data
-  binding queries into an immutable checkpoint with a short `comment`. Do this
-  at meaningful milestones: before a risky refactor, after finishing a feature,
-  or whenever the user asks to "save"/"snapshot"/"checkpoint" the app.
+- The files/dependencies/bindings you edit are the working **draft**, autosaved
+  on every edit. Editors (and you) always see the draft in the preview.
+- **Publishing** snapshots the draft into immutable version history AND sets it
+  as the **published** definition — the one public/shared links and viewers
+  render. So a half-finished or in-progress draft is never shown to viewers
+  until you publish.
+
+Tools:
+
+- `app_save_version` — snapshot the current draft into history **and publish it**
+  (it becomes the viewer-facing version). Use at meaningful milestones (after
+  finishing a feature, before a risky refactor) and whenever the user asks to
+  "save"/"publish"/"snapshot" the app. Give a short `comment`.
 - `browse_version_history` with `entityType: "app"` and the `appId` — list past
-  checkpoints (who, when, comment, and `restoredFrom`). Use `get_version_snapshot`
-  to inspect a specific version's files before restoring.
-- `app_restore_version` — revert the app to a checkpoint by version number. The
-  current state is preserved as a new checkpoint first, so restoring is never
-  lossy. Open tabs reload the reverted app automatically. Binding materialization
-  artifacts are kept (the snapshot stores query definitions, not parquet caches).
+  versions (who, when, comment, `restoredFrom`). Use `get_version_snapshot` to
+  inspect a version's files before restoring.
+- `app_restore_version` — revert the **draft** to a past version by number. The
+  current draft is snapshotted first, so restoring is never lossy; it does NOT
+  auto-publish (publish afterward to push the restored state live). Open tabs
+  reload automatically. Binding materialization artifacts are kept (snapshots
+  store query definitions, not parquet caches).
 
-Good habit: call `app_save_version` with a descriptive comment right before
-making sweeping edits the user might want to undo, so there is always a clean
-point to roll back to.
+Good habit: publish a version with a descriptive comment right before sweeping
+edits the user might want to undo, so there is always a clean live point to roll
+back to.
 
 ### Theming & dark mode
 

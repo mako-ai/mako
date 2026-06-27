@@ -33,6 +33,7 @@ import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.
 import {
   buildAppSnapshot,
   applyAppSnapshot,
+  appHasUnpublishedChanges,
   type AppSnapshot,
 } from "../services/app-version.service";
 import {
@@ -161,6 +162,9 @@ function serializeApp(doc: IMakoApp) {
         : undefined,
     })) as Array<Record<string, any>>,
     version: doc.version,
+    publishedVersion: doc.publishedVersion,
+    publishedAt: doc.publishedAt,
+    hasUnpublishedChanges: appHasUnpublishedChanges(doc),
     access: doc.access,
     workspaceRole: doc.workspaceRole ?? "viewer",
     sharedWith: (doc.sharedWith ?? []).map(s => ({
@@ -861,19 +865,30 @@ app.openapi(
         comment?: string;
       };
       const displayName = await getUserDisplayName(userId ?? "system");
+      const snapshot = buildAppSnapshot(doc);
       const created = await createVersion({
         entityType: "app",
         entityId: doc._id,
         workspaceId: new Types.ObjectId(workspaceId),
-        snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
+        snapshot: snapshot as unknown as Record<string, unknown>,
         savedBy: userId ?? "system",
         savedByName: displayName,
         comment: (body.comment ?? "").slice(0, 500),
       });
 
+      // Saving a version publishes it: the snapshot becomes the definition that
+      // public/shared viewers render. The working draft (top-level fields) is
+      // unchanged; it simply now matches `published`.
+      doc.published = snapshot as unknown as Record<string, unknown>;
+      doc.markModified("published"); // Mixed type: assignment isn't auto-tracked
+      doc.publishedVersion = created.version;
+      doc.publishedAt = new Date();
+      await doc.save();
+
       return c.json({
         success: true,
         version: created.version,
+        publishedVersion: created.version,
         createdAt: created.createdAt,
       });
     } catch (error) {

@@ -451,7 +451,7 @@ export function VersionHistoryPanel({
           <Box sx={{ px: 2, py: 4, textAlign: "center" }}>
             <Typography variant="body2" color="text.secondary">
               {entityType === "app"
-                ? "No saved versions yet. Use \u201CSave version\u201D to create a restorable checkpoint."
+                ? "No published versions yet. Use \u201CPublish version\u201D to snapshot and publish the current draft."
                 : "No version history yet. Versions are created each time you save."}
             </Typography>
           </Box>
