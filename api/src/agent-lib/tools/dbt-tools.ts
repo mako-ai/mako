@@ -48,12 +48,17 @@ import {
 } from "../../dbt/commands";
 import {
   commitAndPush,
+  commitToNewBranch,
   createProjectBranch,
+  deleteProjectBranch,
   getGitStatus,
   listProjectBranches,
+  listRecoverableFiles,
   openProjectPullRequest,
+  restoreDeletedFile,
   switchProjectBranch,
 } from "../../dbt/dbt-github-git.service";
+import { syncProjectFromRepo } from "../../dbt/dbt-github-sync.service";
 import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -978,6 +983,109 @@ export const createDbtServerTools = (
       },
     }),
 
+    dbt_sync_from_repo: tool({
+      description:
+        "Re-pull the latest commits from the project's tracked branch into the " +
+        "working tree (Mongo), the same as the IDE 'Sync/Pull' action. Use this " +
+        "when the project is building from a stale checkout — e.g. files were " +
+        "merged on the remote (a PR landed on main) but the project hasn't " +
+        "picked them up, so a run finds fewer models/sources than the branch " +
+        "actually has. SAFE BY DEFAULT: files you've edited locally but not yet " +
+        "committed are preserved (reported in `preservedLocal`), never " +
+        "overwritten — only non-conflicting files fast-forward to the remote. " +
+        "Pass discardLocalChanges:true to make the remote win and overwrite " +
+        "local edits (only after the user confirms). To pull a DIFFERENT " +
+        "branch, use dbt_switch_branch instead.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        discardLocalChanges: z
+          .boolean()
+          .optional()
+          .describe(
+            "Set true to let the remote overwrite uncommitted local edits. " +
+              "Default false keeps local edits and only fast-forwards the rest.",
+          ),
+      }),
+      execute: async ({ projectId, discardLocalChanges }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await syncProjectFromRepo(project, userId ?? "agent", {
+            preserveLocalEdits: !(discardLocalChanges ?? false),
+          });
+          return {
+            success: true,
+            branch: project.repo?.branch,
+            sha: result.sha,
+            added: result.added,
+            updated: result.updated,
+            deleted: result.deleted,
+            skippedLarge: result.skippedLarge,
+            preservedLocal: result.preservedLocal,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to sync from repo");
+        }
+      },
+    }),
+
+    dbt_list_recoverable_files: tool({
+      description:
+        "List soft-deleted dbt files whose content is still retained and can be " +
+        "restored. Use this to RECOVER work that disappeared — e.g. models that " +
+        "vanished after a branch switch/sync before the non-destructive guards " +
+        "existed. These files are not in the normal project tree. Returns each " +
+        "path with its retained content and when it was last edited; restore " +
+        "the ones you want with dbt_restore_file.",
+      inputSchema: z.object({ projectId: projectIdField }),
+      execute: async ({ projectId }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const files = await listRecoverableFiles(project);
+          return {
+            success: true,
+            count: files.length,
+            files: files.map(f => ({
+              path: f.path,
+              updatedAt: f.updatedAt,
+              updatedBy: f.updatedBy,
+              contentPreview: f.content.slice(0, 2000),
+              truncated: f.content.length > 2000,
+            })),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to list recoverable files");
+        }
+      },
+    }),
+
+    dbt_restore_file: tool({
+      description:
+        "Restore a soft-deleted dbt file (from dbt_list_recoverable_files) back " +
+        "into the working tree. It returns as a pending 'added' change you can " +
+        "review with dbt_git_status and then commit. Use to recover work lost " +
+        "to a destructive branch switch/sync.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        path: z
+          .string()
+          .min(1)
+          .describe("Project-relative path, e.g. models/staging/stg_x.sql"),
+      }),
+      execute: async ({ projectId, path }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await restoreDeletedFile(
+            project,
+            path.trim(),
+            userId ?? "agent",
+          );
+          return { success: true, path: result.path };
+        } catch (error) {
+          return toolError(error, "Failed to restore file");
+        }
+      },
+    }),
+
     dbt_git_status: tool({
       description:
         "Show the working-tree git status of a repo-bound dbt project: which " +
@@ -1075,11 +1183,81 @@ export const createDbtServerTools = (
       },
     }),
 
+    dbt_commit_to_branch: tool({
+      description:
+        "ATOMIC PROMOTE: create a new feature branch off the current branch and " +
+        "commit ALL working-tree changes onto it in a single, race-free step. " +
+        "PREFER THIS over dbt_create_branch + dbt_commit_and_push when the user " +
+        "wants their changes on a new branch for review: those two separate " +
+        "calls can race a concurrent commit and leave the changes on the wrong " +
+        "branch (e.g. main) with an empty feature branch. This tool does branch+" +
+        "commit under one lock so that cannot happen. Afterwards the project " +
+        "tracks the new branch with a clean tree — call dbt_open_pull_request " +
+        "to raise the PR. ONLY call after the user has asked you to commit/push.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        name: z
+          .string()
+          .min(1)
+          .max(255)
+          .describe("New branch name, e.g. 'feat/crm-conversation-mart'"),
+        message: z
+          .string()
+          .min(1)
+          .max(500)
+          .optional()
+          .describe("Commit message. Omit to auto-generate one from the diff."),
+      }),
+      execute: async ({ projectId, name, message }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          let commitMessage = message?.trim();
+          let generated = false;
+          if (!commitMessage) {
+            const ai = await generateDbtCommitMessage(project, {
+              workspaceId,
+              userId: userId ?? "agent",
+            });
+            if (ai) {
+              commitMessage = ai;
+              generated = true;
+            }
+          }
+          if (!commitMessage) {
+            return {
+              success: false,
+              error:
+                "Could not generate a commit message — provide `message` " +
+                "explicitly and retry.",
+            };
+          }
+          const result = await commitToNewBranch(project, {
+            branchName: name.trim(),
+            message: commitMessage,
+            updatedBy: userId ?? "agent",
+          });
+          return {
+            success: result.committed,
+            sha: result.sha,
+            branch: result.branch,
+            fromBranch: result.fromBranch,
+            message: commitMessage,
+            messageGenerated: generated,
+            pushed: result.pushed,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to commit to new branch");
+        }
+      },
+    }),
+
     dbt_create_branch: tool({
       description:
         "Create a new branch off the project's current branch head and check " +
-        "it out (track it). Use before dbt_commit_and_push when the user " +
-        "wants changes isolated on a feature branch. Branch content is " +
+        "it out (track it). NOTE: to put pending working-tree changes on a new " +
+        "branch, prefer dbt_commit_to_branch (atomic) — calling this then " +
+        "dbt_commit_and_push separately can race a concurrent commit. Use this " +
+        "only to branch with no pending changes. Branch content is " +
         "identical to the current branch — no re-sync needed.",
       inputSchema: z.object({
         projectId: projectIdField,
@@ -1103,22 +1281,37 @@ export const createDbtServerTools = (
     dbt_switch_branch: tool({
       description:
         "Switch the project's tracked branch and pull its contents into the " +
-        "working tree. This OVERWRITES local working-tree files with the " +
-        "target branch — only call when the user confirms, and after any " +
-        "pending changes are committed (check dbt_git_status first).",
+        "working tree. This OVERWRITES the working tree with the target branch. " +
+        "For safety it REFUSES if there are uncommitted changes (so a branch " +
+        "move can't silently destroy un-pushed work) — commit them first " +
+        "(dbt_commit_and_push or dbt_commit_to_branch), or pass " +
+        "discardLocalChanges:true to abandon them on purpose. Always run " +
+        "dbt_git_status before switching.",
       inputSchema: z.object({
         projectId: projectIdField,
         branch: z.string().min(1).max(255).describe("Existing branch to track"),
+        discardLocalChanges: z
+          .boolean()
+          .optional()
+          .describe(
+            "Set true to throw away uncommitted working-tree changes and force " +
+              "the switch. Only after the user explicitly confirms discarding.",
+          ),
       }),
-      execute: async ({ projectId, branch }) => {
+      execute: async ({ projectId, branch, discardLocalChanges }) => {
         try {
           const project = await assertRepoProject(projectId);
           const result = await switchProjectBranch(
             project,
             branch.trim(),
             userId ?? "agent",
+            { discardLocalChanges: discardLocalChanges ?? false },
           );
-          return { success: true, branch: result.branch };
+          return {
+            success: true,
+            branch: result.branch,
+            discardedChanges: result.discarded?.changes,
+          };
         } catch (error) {
           return toolError(error, "Failed to switch branch");
         }
@@ -1142,6 +1335,29 @@ export const createDbtServerTools = (
           };
         } catch (error) {
           return toolError(error, "Failed to list branches");
+        }
+      },
+    }),
+
+    dbt_delete_branch: tool({
+      description:
+        "Delete a remote branch from the project's repository — use to clean up " +
+        "a stray/merged feature branch (e.g. after its PR is merged, or an " +
+        "abandoned branch from a failed promote). Refuses to delete the branch " +
+        "the project currently tracks (switch away first with dbt_switch_branch) " +
+        "and the repo's default branch. Idempotent: deleting an already-gone " +
+        "branch succeeds. ONLY call after the user confirms the branch name.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        name: z.string().min(1).max(255).describe("Branch to delete"),
+      }),
+      execute: async ({ projectId, name }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const result = await deleteProjectBranch(project, name.trim());
+          return { success: true, deleted: result.deleted };
+        } catch (error) {
+          return toolError(error, "Failed to delete branch");
         }
       },
     }),

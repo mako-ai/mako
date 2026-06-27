@@ -27,15 +27,25 @@ runs execute against the project's warehouse environments (dev/prod).
 6. **Ship (git)** — for repo-bound projects, your file edits land in the working tree but are
    NOT pushed automatically. Only commit after the user explicitly asks. Then call
    \`dbt_git_status\` to confirm what changed, and \`dbt_commit_and_push\` (omit \`message\` to
-   auto-generate one) to push to the tracked branch. Use \`dbt_create_branch\` first when the
-   user wants an isolated branch, and \`dbt_open_pull_request\` when they want review instead of
-   a direct push.
+   auto-generate one) to push to the tracked branch. When the user wants changes on a NEW branch
+   for review, use \`dbt_commit_to_branch\` (atomic branch+commit) — NOT \`dbt_create_branch\` then
+   \`dbt_commit_and_push\`, which can race a concurrent commit and strand the changes on the wrong
+   branch. Then \`dbt_open_pull_request\`. If a build runs against a stale checkout (fewer
+   models/sources than the branch has, e.g. a merged PR not yet picked up), call
+   \`dbt_sync_from_repo\` to re-pull the tracked branch. Clean up merged/stray branches with
+   \`dbt_delete_branch\`.
 
 ## Rules
 
 - Never commit or push proactively — file edits stay in the working tree until the user asks
   you to commit. Prefer pushing to the tracked branch (mirrors the IDE button); only branch or
   open a PR when the user asks for it.
+- To promote working-tree changes onto a new branch, always use the atomic \`dbt_commit_to_branch\`
+  instead of separate branch + commit calls — the two-step flow is racy.
+- Switching branches OVERWRITES the working tree. \`dbt_switch_branch\` refuses when there are
+  uncommitted changes; commit them first, or pass \`discardLocalChanges\` only after the user
+  explicitly confirms abandoning them. If a user reports missing/lost files, recover them with
+  \`dbt_list_recoverable_files\` then \`dbt_restore_file\` before doing anything else.
 
 - Load the \`dbt\` system skill for materializations, incremental strategies, snapshots, and
   adapter quirks before writing non-trivial models.

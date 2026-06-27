@@ -7,13 +7,18 @@
  * blob SHA at the last import/sync/push, so the diff against the branch is a
  * pure local computation. Pushing builds a single commit via the Git Data API.
  */
-import { DbtFile, type IDbtProject } from "../database/workspace-schema";
+import {
+  DbtFile,
+  DbtProject,
+  type IDbtProject,
+} from "../database/workspace-schema";
 import { resolveRepoToken } from "../integrations/github/app-auth";
 import { gitBlobSha } from "../integrations/github/git-blob";
 import {
   commitChanges,
   createBranch,
   createPullRequest,
+  deleteBranch,
   getBlobContent,
   getRefCommit,
   getRepoInfo,
@@ -22,6 +27,59 @@ import {
   type TreeChange,
 } from "../integrations/github/github-api";
 import { syncProjectFromRepo } from "./dbt-github-sync.service";
+
+/**
+ * Per-project promise-chain lock. Every git mutation (commit, branch create,
+ * branch switch, atomic promote) runs through this so they can't interleave on
+ * stale in-memory copies of `project.repo.branch`. Mirrors the warm-dir lock in
+ * workspace-dir.service.ts: each acquirer waits on the previous holder.
+ *
+ * This is what closes the race that committed working-tree changes to `main`
+ * while a branch-create was mid-flight: concurrent callers are now serialized,
+ * and each re-reads `repo.branch` from Mongo inside the critical section instead
+ * of trusting whatever branch its caller loaded.
+ */
+const gitLocks = new Map<string, Promise<void>>();
+
+async function withProjectGitLock<T>(
+  projectId: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = gitLocks.get(projectId) ?? Promise.resolve();
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const chained = previous.then(() => gate);
+  gitLocks.set(projectId, chained);
+
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (gitLocks.get(projectId) === chained) gitLocks.delete(projectId);
+  }
+}
+
+/**
+ * Re-load the project document fresh from Mongo inside a locked section so we
+ * act on the current `repo.branch`/`lastSyncedSha`, not a stale copy the caller
+ * loaded before the lock was acquired.
+ */
+type RepoBoundProject = IDbtProject & {
+  repo: NonNullable<IDbtProject["repo"]>;
+};
+
+async function reloadRepoProject(
+  project: IDbtProject,
+): Promise<RepoBoundProject> {
+  const fresh = await DbtProject.findById(project._id);
+  if (!fresh?.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  return fresh as RepoBoundProject;
+}
 
 export interface GitFileStatus {
   path: string;
@@ -139,23 +197,43 @@ export interface CommitResult {
  * Commit all working-tree changes and push them to the tracked branch in a
  * single commit. Updates each file's recorded blob SHA and hard-deletes files
  * that were removed (so they don't linger as ghost deletions).
+ *
+ * Runs under the per-project git lock and re-reads the project inside it, so
+ * the commit always targets the branch that is actually current in Mongo — not
+ * a stale `repo.branch` from before a concurrent branch-create/switch.
  */
 export async function commitAndPush(
   project: IDbtProject,
   params: { message: string; updatedBy: string },
 ): Promise<CommitResult> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+    const status = await getGitStatus(fresh);
+    if (!status.hasChanges) {
+      return {
+        committed: false,
+        branch: fresh.repo.branch,
+        pushed: { added: 0, modified: 0, deleted: 0 },
+      };
+    }
+    return pushWorkingTree(fresh, status, params.message);
+  });
+}
+
+/**
+ * Build a single commit from the working tree and push it to the project's
+ * currently tracked branch (`project.repo.branch`). Updates each file's blob
+ * SHA and hard-deletes removed files. The caller MUST hold the project git lock
+ * and pass a freshly loaded `project` plus its computed `status`.
+ */
+async function pushWorkingTree(
+  project: IDbtProject,
+  status: GitStatus,
+  message: string,
+): Promise<CommitResult> {
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
-  const status = await getGitStatus(project);
-  if (!status.hasChanges) {
-    return {
-      committed: false,
-      branch: status.branch,
-      pushed: { added: 0, modified: 0, deleted: 0 },
-    };
-  }
-
   const token = await resolveRepoToken(project.repo.installationId);
   const { owner, repo, branch } = project.repo;
 
@@ -230,7 +308,7 @@ export async function commitAndPush(
       branch,
       parentSha: commitSha,
       baseTreeSha: treeSha,
-      message: params.message,
+      message,
       changes: treeChanges,
     },
     token,
@@ -255,6 +333,53 @@ export async function commitAndPush(
   };
 }
 
+export interface PromoteResult extends CommitResult {
+  /** Branch the new branch was forked from (the previously tracked branch). */
+  fromBranch: string;
+}
+
+/**
+ * Atomic "promote": create a feature branch off the currently tracked branch's
+ * HEAD and commit the working tree onto it — in one locked critical section, so
+ * no concurrent commit can land the changes on the wrong branch (e.g. main).
+ *
+ * This replaces the racy three-step branch → commit → PR dance: the branch and
+ * its commit are now inseparable. After this, the project tracks the new branch
+ * with a clean working tree; open a PR with `openProjectPullRequest`.
+ */
+export async function commitToNewBranch(
+  project: IDbtProject,
+  params: { branchName: string; message: string; updatedBy: string },
+): Promise<PromoteResult> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+    const status = await getGitStatus(fresh);
+    if (!status.hasChanges) {
+      throw new Error(
+        "No working-tree changes to promote — nothing to put on a new branch. " +
+          "The changes may already be committed (check dbt_git_status).",
+      );
+    }
+
+    const token = await resolveRepoToken(fresh.repo.installationId);
+    const { owner, repo } = fresh.repo;
+    const fromBranch = fresh.repo.branch;
+
+    // Fork the new branch from the branch we're currently tracking, then point
+    // the project at it BEFORE committing so pushWorkingTree targets the new
+    // branch. The commit's parent is the fork point, so the branch contains
+    // exactly the working-tree delta.
+    const { commitSha } = await getRefCommit(owner, repo, fromBranch, token);
+    await createBranch(owner, repo, params.branchName, commitSha, token);
+    fresh.repo.branch = params.branchName;
+    fresh.markModified("repo");
+    await fresh.save();
+
+    const result = await pushWorkingTree(fresh, status, params.message);
+    return { ...result, fromBranch };
+  });
+}
+
 export async function listProjectBranches(
   project: IDbtProject,
 ): Promise<string[]> {
@@ -273,38 +398,159 @@ export async function createProjectBranch(
   project: IDbtProject,
   branchName: string,
 ): Promise<{ branch: string }> {
-  if (!project.repo) {
-    throw new Error("Project is not connected to a repository");
-  }
-  const token = await resolveRepoToken(project.repo.installationId);
-  const { owner, repo } = project.repo;
-  const { commitSha } = await getRefCommit(
-    owner,
-    repo,
-    project.repo.branch,
-    token,
-  );
-  await createBranch(owner, repo, branchName, commitSha, token);
-  project.repo.branch = branchName;
-  project.markModified("repo");
-  await project.save();
-  return { branch: branchName };
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+    const token = await resolveRepoToken(fresh.repo.installationId);
+    const { owner, repo } = fresh.repo;
+    const { commitSha } = await getRefCommit(
+      owner,
+      repo,
+      fresh.repo.branch,
+      token,
+    );
+    await createBranch(owner, repo, branchName, commitSha, token);
+    fresh.repo.branch = branchName;
+    fresh.markModified("repo");
+    await fresh.save();
+    return { branch: branchName };
+  });
 }
 
-/** Switch the tracked branch and pull its contents into the working tree. */
+/**
+ * Switch the tracked branch and pull its contents into the working tree.
+ *
+ * This OVERWRITES the working tree with the target branch. To prevent silent
+ * data loss it REFUSES when there are uncommitted working-tree changes, unless
+ * the caller explicitly passes `discardLocalChanges`. (This is the guard that
+ * stops a branch move from eating un-pushed models, as happened before.)
+ */
 export async function switchProjectBranch(
   project: IDbtProject,
   branchName: string,
   updatedBy: string,
-): Promise<{ branch: string }> {
-  if (!project.repo) {
-    throw new Error("Project is not connected to a repository");
-  }
-  project.repo.branch = branchName;
-  project.markModified("repo");
-  await project.save();
-  await syncProjectFromRepo(project, updatedBy);
-  return { branch: branchName };
+  options: { discardLocalChanges?: boolean } = {},
+): Promise<{ branch: string; discarded?: GitStatus }> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+
+    let discarded: GitStatus | undefined;
+    if (!options.discardLocalChanges) {
+      const status = await getGitStatus(fresh);
+      if (status.hasChanges) {
+        const summary = `${status.added} added, ${status.modified} modified, ${status.deleted} deleted`;
+        throw new Error(
+          `Refusing to switch from "${fresh.repo.branch}" to "${branchName}": ` +
+            `${status.changes.length} uncommitted working-tree change(s) (${summary}) ` +
+            "would be lost. Commit them first (dbt_commit_and_push to push to the " +
+            "current branch, or dbt_commit_to_branch to move them to a new branch), " +
+            "or call again with discardLocalChanges to abandon them on purpose.",
+        );
+      }
+    } else {
+      // Record what we're discarding so the caller can surface/inspect it.
+      discarded = await getGitStatus(fresh);
+    }
+
+    fresh.repo.branch = branchName;
+    fresh.markModified("repo");
+    await fresh.save();
+    // Explicit, confirmed switch: remote is the source of truth.
+    await syncProjectFromRepo(fresh, updatedBy);
+    return discarded?.hasChanges
+      ? { branch: branchName, discarded }
+      : { branch: branchName };
+  });
+}
+
+/**
+ * Delete a remote branch. Refuses to delete the branch the project currently
+ * tracks (switch away first) and the repo's default branch. Idempotent: a
+ * branch that is already gone resolves successfully.
+ */
+export async function deleteProjectBranch(
+  project: IDbtProject,
+  branchName: string,
+): Promise<{ deleted: string }> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+    const token = await resolveRepoToken(fresh.repo.installationId);
+    const { owner, repo } = fresh.repo;
+    if (branchName === fresh.repo.branch) {
+      throw new Error(
+        `Cannot delete "${branchName}" — it is the project's currently tracked ` +
+          "branch. Switch to another branch first (dbt_switch_branch).",
+      );
+    }
+    const info = await getRepoInfo(owner, repo, token);
+    if (branchName === info.defaultBranch) {
+      throw new Error(
+        `Refusing to delete the repository's default branch "${branchName}".`,
+      );
+    }
+    await deleteBranch(owner, repo, branchName, token);
+    return { deleted: branchName };
+  });
+}
+
+export interface RecoverableFile {
+  path: string;
+  content: string;
+  updatedAt: Date;
+  updatedBy: string;
+}
+
+/**
+ * Soft-deleted files whose content is still retained in Mongo and can be
+ * restored — e.g. work hidden by a destructive branch switch/sync before the
+ * non-destructive guards landed. These don't appear in the normal file tree.
+ */
+export async function listRecoverableFiles(
+  project: IDbtProject,
+): Promise<RecoverableFile[]> {
+  const files = await DbtFile.find({
+    projectId: project._id,
+    is_deleted: true,
+  })
+    .select("path content updatedAt updatedBy")
+    .sort({ updatedAt: -1 })
+    .lean();
+  return files
+    .filter(f => (f.content ?? "").length > 0)
+    .map(f => ({
+      path: f.path,
+      content: f.content ?? "",
+      updatedAt: f.updatedAt,
+      updatedBy: f.updatedBy,
+    }));
+}
+
+/**
+ * Restore a soft-deleted file back into the working tree. It comes back as a
+ * pending "added" change (no recorded blob), so the user can review and commit
+ * it. Returns the restored content for confirmation.
+ */
+export async function restoreDeletedFile(
+  project: IDbtProject,
+  path: string,
+  updatedBy: string,
+): Promise<{ path: string; content: string }> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const file = await DbtFile.findOne({ projectId: project._id, path })
+      .select("content is_deleted")
+      .lean();
+    if (!file) {
+      throw new Error(`No file (recoverable or otherwise) at "${path}".`);
+    }
+    if (!file.is_deleted) {
+      // Already present in the working tree — nothing to restore.
+      return { path, content: file.content ?? "" };
+    }
+    await DbtFile.updateOne(
+      { projectId: project._id, path },
+      { $set: { is_deleted: false, updatedBy }, $unset: { repoBlobSha: "" } },
+    ).exec();
+    return { path, content: file.content ?? "" };
+  });
 }
 
 export async function openProjectPullRequest(
