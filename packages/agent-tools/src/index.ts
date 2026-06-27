@@ -66,6 +66,8 @@ export {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  saveAppVersionSchema,
+  restoreAppVersionSchema,
 } from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 

@@ -31,6 +31,18 @@ import {
 } from "../services/app-binding-materialization.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
+  buildAppSnapshot,
+  applyAppSnapshot,
+  type AppSnapshot,
+} from "../services/app-version.service";
+import {
+  createVersion,
+  listVersions,
+  getVersion,
+  getUserDisplayName,
+} from "../services/entity-version.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
+import {
   canReadResource,
   canWriteResource,
   canManageSharing,
@@ -756,6 +768,254 @@ app.openapi(
     } catch (error) {
       logger.error("Error serving app binding artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
+
+// ── Version history (explicit checkpoints) ──
+//
+// Apps autosave on every edit, so versions are explicit checkpoints rather
+// than per-save snapshots: POST creates one, restore reverts to one (and
+// records a fresh checkpoint with `restoredFrom`). Snapshots freeze the
+// editable definition (files + deps + binding queries); the server-owned
+// materialization cache is preserved by binding id on restore.
+
+// GET /{id}/versions — list checkpoints (newest first)
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions",
+    tags: ["Apps"],
+    summary: "List app versions",
+    security: AUTH_SECURITY,
+    request: {
+      params: AppIdParam,
+      query: z.object({
+        limit: z.string().optional(),
+        offset: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
+      const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
+      const result = await listVersions(new Types.ObjectId(id), "app", {
+        limit,
+        offset,
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      logger.error("Error listing app versions", { error });
+      return c.json({ success: false, error: "Failed to list versions" }, 500);
+    }
+  },
+);
+
+// POST /{id}/versions — create a checkpoint of the current app state
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/versions",
+    tags: ["Apps"],
+    summary: "Save an app version checkpoint",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam, body: AppBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const body = (await c.req.json().catch(() => ({}))) as {
+        comment?: string;
+      };
+      const displayName = await getUserDisplayName(userId ?? "system");
+      const created = await createVersion({
+        entityType: "app",
+        entityId: doc._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
+        savedBy: userId ?? "system",
+        savedByName: displayName,
+        comment: (body.comment ?? "").slice(0, 500),
+      });
+
+      return c.json({
+        success: true,
+        version: created.version,
+        createdAt: created.createdAt,
+      });
+    } catch (error) {
+      logger.error("Error saving app version", { error });
+      return c.json({ success: false, error: "Failed to save version" }, 500);
+    }
+  },
+);
+
+// GET /{id}/versions/{version} — full snapshot of one checkpoint
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/versions/{version}",
+    tags: ["Apps"],
+    summary: "Get an app version snapshot",
+    security: AUTH_SECURITY,
+    request: {
+      params: AppIdParam.extend({
+        version: z.string().openapi({ param: { name: "version", in: "path" } }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const versionNum = parseInt(c.req.param("version"), 10);
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id) || Number.isNaN(versionNum)) {
+        return c.json({ success: false, error: "Invalid request" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      const version = await getVersion(
+        id,
+        "app",
+        versionNum,
+        new Types.ObjectId(workspaceId),
+      );
+      if (!version) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+      return c.json({ success: true, version });
+    } catch (error) {
+      logger.error("Error fetching app version", { error });
+      return c.json({ success: false, error: "Failed to fetch version" }, 500);
+    }
+  },
+);
+
+// POST /{id}/versions/{version}/restore — revert the app to a checkpoint
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/versions/{version}/restore",
+    tags: ["Apps"],
+    summary: "Restore an app version",
+    security: AUTH_SECURITY,
+    request: {
+      params: AppIdParam.extend({
+        version: z.string().openapi({ param: { name: "version", in: "path" } }),
+      }),
+      body: AppBody,
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const versionNum = parseInt(c.req.param("version"), 10);
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id) || Number.isNaN(versionNum)) {
+        return c.json({ success: false, error: "Invalid request" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+      const old = await getVersion(
+        id,
+        "app",
+        versionNum,
+        new Types.ObjectId(workspaceId),
+      );
+      if (!old) {
+        return c.json({ success: false, error: "Version not found" }, 404);
+      }
+
+      applyAppSnapshot(doc, old.snapshot as unknown as AppSnapshot);
+      doc.version += 1;
+      await doc.save();
+
+      // Record the restore as a fresh checkpoint so history stays append-only.
+      const body = (await c.req.json().catch(() => ({}))) as {
+        comment?: string;
+      };
+      const displayName = await getUserDisplayName(userId ?? "system");
+      await createVersion({
+        entityType: "app",
+        entityId: doc._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
+        savedBy: userId ?? "system",
+        savedByName: displayName,
+        comment:
+          (body.comment ?? `Restored from version ${versionNum}`).slice(0, 500),
+        restoredFrom: versionNum,
+      });
+
+      // Poke open tabs so they pull the reverted definition and rebuild preview.
+      publishRealtimeEvent(workspaceId, {
+        type: "app.updated",
+        appId: doc._id.toString(),
+        version: doc.version,
+        updatedBy: userId ?? "system",
+        origin: "save",
+      });
+
+      return c.json({
+        success: true,
+        message: `Restored to version ${versionNum}`,
+        app: serializeApp(doc),
+      });
+    } catch (error) {
+      logger.error("Error restoring app version", { error });
+      return c.json(
+        { success: false, error: "Failed to restore version" },
+        500,
+      );
     }
   },
 );

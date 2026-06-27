@@ -120,6 +120,10 @@ if none is open. Edit with \`app_write_file\` (always write the COMPLETE file co
 diff). Read workspace data through named data bindings (\`app_create_data_binding\`), never by
 embedding credentials in app code.
 
+Apps autosave on every edit. Mark restorable milestones with \`app_save_version\` (before risky
+refactors or when the user asks to save/snapshot), browse them via \`browse_version_history\`
+(\`entityType: "app"\`), and revert with \`app_restore_version\` — restoring is never lossy.
+
 For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, materialized
 Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`
 system skill.`;

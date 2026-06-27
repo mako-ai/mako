@@ -26,6 +26,8 @@ import {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  saveAppVersionSchema,
+  restoreAppVersionSchema,
 } from "@mako/agent-tools";
 import { normalizeAppFiles } from "@mako/schemas";
 import {
@@ -35,6 +37,16 @@ import {
 } from "../../database/workspace-schema";
 import { workspaceService } from "../../services/workspace.service";
 import { publishRealtimeEvent } from "../../services/realtime.service";
+import {
+  createVersion,
+  getVersion,
+  getUserDisplayName,
+} from "../../services/entity-version.service";
+import {
+  buildAppSnapshot,
+  applyAppSnapshot,
+  type AppSnapshot,
+} from "../../services/app-version.service";
 import { canReadResource, canWriteResource } from "../../utils/resource-acl";
 import { loggers } from "../../logging";
 
@@ -107,6 +119,10 @@ export function createServerAppTools({
     if (!userId) return true; // workspace-scoped API-key automation
     return canWriteResource(doc, userId, await memberRole());
   };
+
+  // Display name stamped on version checkpoints the agent creates.
+  const savedByName = async (): Promise<string> =>
+    userId ? await getUserDisplayName(userId) : "Agent";
 
   // Persist a mutated app doc, then poke the workspace channel so open tabs
   // pull the new definition and rebuild their preview.
@@ -331,6 +347,87 @@ export function createServerAppTools({
           const version = await saveAndPublish(doc);
           const remaining = (doc.dataBindings ?? []).map(b => b.name);
           return { success: true, deleted: name, remaining, version };
+        }),
+    }),
+
+    app_save_version: tool({
+      description:
+        "Save a named checkpoint of the app's current state to its version " +
+        "history. Apps autosave on every edit, so use this to mark meaningful " +
+        "milestones (before a risky refactor, after finishing a feature) that " +
+        "the user can review or restore later. Returns the new version number.",
+      inputSchema: saveAppVersionSchema,
+      execute: async ({ appId, comment }) =>
+        wrap("app_save_version", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(appId);
+          const created = await createVersion({
+            entityType: "app",
+            entityId: doc._id,
+            workspaceId: new Types.ObjectId(workspaceId),
+            snapshot: buildAppSnapshot(doc) as unknown as Record<
+              string,
+              unknown
+            >,
+            savedBy: userId ?? "agent",
+            savedByName: await savedByName(),
+            comment: (comment ?? "").slice(0, 500),
+          });
+          return {
+            success: true,
+            version: created.version,
+            createdAt: created.createdAt,
+          };
+        }),
+    }),
+
+    app_restore_version: tool({
+      description:
+        "Restore the app to a previous version from its history (get the " +
+        "version number from browse_version_history). The current state is " +
+        "first preserved as a new checkpoint, so restoring is never lossy. " +
+        "Open tabs reload the reverted app automatically.",
+      inputSchema: restoreAppVersionSchema,
+      execute: async ({ appId, version, comment }) =>
+        wrap("app_restore_version", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(appId);
+          const old = await getVersion(
+            appId,
+            "app",
+            version,
+            new Types.ObjectId(workspaceId),
+          );
+          if (!old) {
+            return { success: false, error: `Version ${version} not found` };
+          }
+          applyAppSnapshot(doc, old.snapshot as unknown as AppSnapshot);
+          const newVersion = await saveAndPublish(doc);
+          await createVersion({
+            entityType: "app",
+            entityId: doc._id,
+            workspaceId: new Types.ObjectId(workspaceId),
+            snapshot: buildAppSnapshot(doc) as unknown as Record<
+              string,
+              unknown
+            >,
+            savedBy: userId ?? "agent",
+            savedByName: await savedByName(),
+            comment: (comment ?? `Restored from version ${version}`).slice(
+              0,
+              500,
+            ),
+            restoredFrom: version,
+          });
+          return {
+            success: true,
+            restoredFrom: version,
+            version: newVersion,
+          };
         }),
     }),
   };

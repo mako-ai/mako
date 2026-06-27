@@ -95,6 +95,27 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
    app's explorer tree.
 
+### Version history & checkpoints
+
+Apps autosave on every edit, so the running `version` counter is not a restore
+point. To create restorable history, save **explicit checkpoints**:
+
+- `app_save_version` — freeze the app's current files, dependencies, and data
+  binding queries into an immutable checkpoint with a short `comment`. Do this
+  at meaningful milestones: before a risky refactor, after finishing a feature,
+  or whenever the user asks to "save"/"snapshot"/"checkpoint" the app.
+- `browse_version_history` with `entityType: "app"` and the `appId` — list past
+  checkpoints (who, when, comment, and `restoredFrom`). Use `get_version_snapshot`
+  to inspect a specific version's files before restoring.
+- `app_restore_version` — revert the app to a checkpoint by version number. The
+  current state is preserved as a new checkpoint first, so restoring is never
+  lossy. Open tabs reload the reverted app automatically. Binding materialization
+  artifacts are kept (the snapshot stores query definitions, not parquet caches).
+
+Good habit: call `app_save_version` with a descriptive comment right before
+making sweeping edits the user might want to undo, so there is always a clean
+point to roll back to.
+
 ### Theming & dark mode
 
 Apps are themed by the runtime — do not build a theme system. The preview injects

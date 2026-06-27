@@ -90,6 +90,31 @@ export const deleteDataBindingSchema = z.object({
     .describe("Name of the data binding to delete (from list_data_sources)"),
 });
 
+export const saveAppVersionSchema = z.object({
+  appId: appIdField,
+  comment: z
+    .string()
+    .optional()
+    .describe(
+      "Short message describing this checkpoint, e.g. 'Add revenue chart'. " +
+        "Shown in the version history list.",
+    ),
+});
+
+export const restoreAppVersionSchema = z.object({
+  appId: appIdField,
+  version: z
+    .number()
+    .describe(
+      "Version number to restore (from browse_version_history). The current " +
+        "state is preserved as a new checkpoint, so a restore is never lossy.",
+    ),
+  comment: z
+    .string()
+    .optional()
+    .describe("Optional note explaining why this version was restored."),
+});
+
 const materializeBindingSchema = z.object({
   appId: appIdField,
   name: z.string().describe("Name of the parquet binding to (re)materialize"),

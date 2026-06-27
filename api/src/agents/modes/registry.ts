@@ -132,6 +132,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_remove_dependency",
   "app_create_data_binding",
   "app_delete_data_binding",
+  "app_save_version",
+  "app_restore_version",
   "materialize_binding",
   "run_app",
   // Shared surface-scoped data-source primitives (apps + dashboards)

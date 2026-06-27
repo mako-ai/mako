@@ -3541,7 +3541,11 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
+export type VersionableEntityType =
+  | "console"
+  | "dashboard"
+  | "dbt-file"
+  | "app";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -3566,7 +3570,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard", "dbt-file"],
+      enum: ["console", "dashboard", "dbt-file", "app"],
       required: true,
     },
     entityId: {
