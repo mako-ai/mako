@@ -90,7 +90,47 @@ export const deleteDataBindingSchema = z.object({
     .describe("Name of the data binding to delete (from list_data_sources)"),
 });
 
-const materializeBindingSchema = z.object({
+export const saveAppVersionSchema = z.object({
+  appId: appIdField,
+  comment: z
+    .string()
+    .optional()
+    .describe(
+      "Short message describing this checkpoint, e.g. 'Add revenue chart'. " +
+        "Shown in the version history list.",
+    ),
+});
+
+export const restoreAppVersionSchema = z.object({
+  appId: appIdField,
+  version: z
+    .number()
+    .describe(
+      "Version number to restore (from browse_version_history). The current " +
+        "state is preserved as a new checkpoint, so a restore is never lossy.",
+    ),
+  comment: z
+    .string()
+    .optional()
+    .describe("Optional note explaining why this version was restored."),
+});
+
+// Schemas for the server-executed app tools (registered with execute functions
+// in api/src/agent-lib/tools/server-app-tools.ts). Apps are fully
+// server-authoritative: list/create/read/inspect/materialize all run against
+// the MakoApp document so a headless / detached agent never needs a browser.
+export const listAppsSchema = z.object({});
+
+export const createAppSchema = z.object({
+  title: z.string().describe("App title"),
+  description: z.string().optional().describe("Brief description"),
+});
+
+export const getAppStateSchema = z.object({ appId: appIdField });
+
+export { readFileSchema as appReadFileSchema };
+
+export const materializeBindingSchema = z.object({
   appId: appIdField,
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
   waitSeconds: z
@@ -106,60 +146,23 @@ const materializeBindingSchema = z.object({
     ),
 });
 
-const createAppSchema = z.object({
-  title: z.string().describe("App title"),
-  description: z.string().optional().describe("Brief description"),
-});
-
+// Client-executed legs only: these depend on the browser preview (sandboxed
+// iframe) and the live UI tabs, so they cannot run server-side. A headless
+// agent simply does not call them — it operates on `appId` directly.
 export const clientAppTools = {
-  list_open_apps: tool({
-    description:
-      "List all open React App tabs. Returns each app's id, title, file count, " +
-      "dependency list, data bindings, and isActive flag. " +
-      "Call this FIRST to get app IDs before using any other app tool.",
-    inputSchema: z.object({}),
-  }),
   open_app: tool({
     description:
-      "Open a saved app by its ID into a tab and load its files. " +
-      "Returns the appId to use with other tools.",
+      "Open a saved app by its ID into a tab in the UI and load its files. " +
+      "UI convenience for an attached browser; headless flows can skip this and " +
+      "pass the appId directly to other tools.",
     inputSchema: z.object({ appId: z.string().describe("App ID to open") }),
-  }),
-  create_app: tool({
-    description:
-      "Create a new React app from the default scaffold (React + TypeScript). " +
-      "Opens it in a tab and returns the new appId. After creating, use " +
-      "app_write_file to build features and app_add_dependency to add libraries.",
-    inputSchema: createAppSchema,
-  }),
-  get_app_state: tool({
-    description:
-      "Get the app definition: file list (paths), dependencies, data bindings, " +
-      "entrypoint, runtime, and the latest preview build/runtime errors. " +
-      "Use this to understand the project and to read build errors before fixing them.",
-    inputSchema: z.object({ appId: appIdField }),
-  }),
-  app_read_file: tool({
-    description: "Read the full contents of a single file in the app.",
-    inputSchema: readFileSchema,
-  }),
-  materialize_binding: tool({
-    description:
-      "Build (or rebuild) the Parquet artifact for a 'parquet' data binding and " +
-      "load it into the app's DuckDB-WASM instance. Run this after creating or " +
-      "editing a parquet binding so useQuery/useDuckDB return fresh data. " +
-      "The build runs server-side in the background: the tool waits up to " +
-      "waitSeconds (default 120) and returns status 'building' if it is still " +
-      "running — that is not an error; the app picks up the data automatically " +
-      "when ready. To block until completion, call this tool again (it resumes " +
-      "waiting on the in-flight build); use waitSeconds: 0 for an instant " +
-      "status check.",
-    inputSchema: materializeBindingSchema,
   }),
   run_app: tool({
     description:
-      "Rebuild and reload the app preview. Use after a batch of edits, or to " +
-      "recover from a stuck preview. Returns any build/runtime errors.",
+      "Rebuild and reload the app's LIVE PREVIEW in the browser and return any " +
+      "build/runtime errors. This is the only browser-only app tool — use it to " +
+      "validate that edits render and to read preview errors. Requires an " +
+      "attached browser tab; it is not needed to author or persist an app.",
     inputSchema: z.object({ appId: appIdField }),
   }),
 };

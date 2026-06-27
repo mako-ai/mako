@@ -27,6 +27,10 @@ import {
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers } from "../logging";
+import {
+  buildAppSnapshot,
+  type AppSnapshot,
+} from "../services/app-version.service";
 import { buildDataSourceMaterializationStatus } from "../services/dashboard-materialization.service";
 import { queueDashboardArtifactRefresh } from "../services/dashboard-refresh-runner.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
@@ -162,12 +166,33 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
   const workspaceId = dashboard.workspaceId.toString();
   const dashboardId = dashboard._id.toString();
 
+  // Render the PUBLISHED definition (draft/published split) so a public viewer
+  // never sees a half-edited or restored-but-unpublished draft. Fall back to
+  // the live definition for dashboards that were never published (back-compat).
+  const def = (dashboard.published as Record<string, any> | undefined) ?? {
+    title: dashboard.title,
+    description: dashboard.description,
+    widgets: dashboard.widgets,
+    globalFilters: dashboard.globalFilters,
+    relationships: dashboard.relationships,
+    crossFilter: dashboard.crossFilter,
+    layout: dashboard.layout,
+    dataSources: dashboard.dataSources,
+  };
+
+  // Materialization artifacts are server-owned and keyed by data-source id, so
+  // compute status from the LIVE data source when present (freshest), falling
+  // back to the published snapshot's definition.
+  const liveDsById = new Map(
+    (dashboard.dataSources || []).map(ds => [String(ds.id), ds]),
+  );
   const dataSources = await Promise.all(
-    (dashboard.dataSources || []).map(async ds => {
+    ((def.dataSources as Array<Record<string, any>>) || []).map(async ds => {
+      const liveDs = liveDsById.get(String(ds.id)) ?? ds;
       const status = await buildDataSourceMaterializationStatus({
         workspaceId,
         dashboardId,
-        dataSource: ds,
+        dataSource: liveDs as any,
       });
       const ready = status.status === "ready" && !!status.artifactKey;
       return {
@@ -180,7 +205,7 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
         rowCount: status.rowCount,
         materializedAt: status.builtAt || status.lastMaterializedAt,
         artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(ds.id)}?rev=${encodeURIComponent(status.artifactRevision || "")}`
+          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(ds.id))}?rev=${encodeURIComponent(status.artifactRevision || "")}`
           : null,
       };
     }),
@@ -188,13 +213,13 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
 
   return {
     type: "dashboard" as const,
-    title: dashboard.title,
-    description: dashboard.description,
-    widgets: dashboard.widgets,
-    globalFilters: dashboard.globalFilters,
-    relationships: dashboard.relationships,
-    crossFilter: dashboard.crossFilter,
-    layout: dashboard.layout,
+    title: def.title,
+    description: def.description,
+    widgets: def.widgets,
+    globalFilters: def.globalFilters,
+    relationships: def.relationships,
+    crossFilter: def.crossFilter,
+    layout: def.layout,
     dataSources,
     refresh: {
       cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
@@ -205,30 +230,42 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
 }
 
 function buildAppContent(token: string, makoApp: IMakoApp) {
+  // Render the PUBLISHED definition (draft/published split) so a public viewer
+  // never sees half-edited or agent-in-progress work. Fall back to the live
+  // draft for apps that were never published (back-compat).
+  const def = (makoApp.published as AppSnapshot | undefined) ??
+    buildAppSnapshot(makoApp);
+  // Materialization artifacts are server-owned and keyed by binding id, so we
+  // hydrate artifact URLs from the LIVE binding caches (the published snapshot
+  // intentionally excludes `cache`).
+  const liveCacheById = new Map(
+    (makoApp.dataBindings || []).map(b => [b.id, b.cache]),
+  );
   return {
     type: "app" as const,
-    title: makoApp.title,
-    description: makoApp.description,
-    entrypoint: makoApp.entrypoint,
-    files: (makoApp.files || []).map(f => ({
+    title: def.title,
+    description: def.description,
+    entrypoint: def.entrypoint,
+    files: (def.files || []).map(f => ({
       path: f.path,
       contents: f.contents,
     })),
-    dependencies: makoApp.dependencies || {},
-    dataBindings: (makoApp.dataBindings || []).map(b => {
+    dependencies: def.dependencies || {},
+    dataBindings: (def.dataBindings || []).map(b => {
+      const cache = liveCacheById.get(b.id as string);
       const ready =
         b.materialization === "parquet" &&
-        b.cache?.parquetBuildStatus === "ready" &&
-        !!b.cache?.parquetArtifactKey;
+        cache?.parquetBuildStatus === "ready" &&
+        !!cache?.parquetArtifactKey;
       return {
         id: b.id,
         name: b.name,
         materialization: b.materialization ?? "live",
         ready,
-        rowCount: b.cache?.rowCount ?? null,
-        materializedAt: b.cache?.parquetBuiltAt ?? null,
+        rowCount: cache?.rowCount ?? null,
+        materializedAt: cache?.parquetBuiltAt ?? null,
         artifactUrl: ready
-          ? `/api/share/${token}/artifacts/${encodeURIComponent(b.id)}?rev=${encodeURIComponent(b.cache?.artifactRevision || "")}`
+          ? `/api/share/${token}/artifacts/${encodeURIComponent(String(b.id))}?rev=${encodeURIComponent(cache?.artifactRevision || "")}`
           : null,
       };
     }),

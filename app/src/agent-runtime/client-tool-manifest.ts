@@ -389,11 +389,39 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
+  dashboard_save_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const comment = (input as Record<string, unknown>)?.comment;
+      return comment
+        ? `Publishing version: "${comment}"`
+        : "Publishing dashboard version";
+    },
+    icon: "clock",
+  },
+  dashboard_restore_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const version = (input as Record<string, unknown>)?.version;
+      return version
+        ? `Restoring version ${version}`
+        : "Restoring dashboard version";
+    },
+    icon: "clock",
+  },
+  // Full-server apps: list/create/read/inspect/materialize execute SERVER-SIDE
+  // (see api/src/agent-lib/tools/server-app-tools.ts). Entries kept for tool-card
+  // labels/icons. Only open_app and run_app remain browser-executed.
   list_open_apps: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
-    getLabel: () => "Listing open apps",
+    execution: "server",
+    getLabel: () => "Listing apps",
     icon: "list",
   },
   open_app: {
@@ -406,8 +434,7 @@ export const AGENT_TOOL_MANIFEST = {
   },
   create_app: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const title = (input as Record<string, unknown>)?.title;
@@ -417,15 +444,13 @@ export const AGENT_TOOL_MANIFEST = {
   },
   get_app_state: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: () => "Reading app state",
     icon: "eye",
   },
   app_read_file: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading file";
@@ -500,10 +525,28 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "trash",
   },
+  app_save_version: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const comment = (input as Record<string, unknown>)?.comment;
+      return comment ? `Saving version: "${comment}"` : "Saving app version";
+    },
+    icon: "clock",
+  },
+  app_restore_version: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const version = (input as Record<string, unknown>)?.version;
+      return version ? `Restoring version ${version}` : "Restoring app version";
+    },
+    icon: "clock",
+  },
   materialize_binding: {
     domain: "app",
-    execution: "client",
-    clientExecutor: "app",
+    execution: "server",
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
@@ -546,17 +589,19 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
+  // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
+  // turn ("stream disconnected before tool completed") when the tab is slow or
+  // detached. See api/src/agent-lib/tools/dbt-tools.ts.
   read_dbt_project_tree: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: () => "Reading dbt project tree",
     icon: "list",
   },
   read_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading dbt file";

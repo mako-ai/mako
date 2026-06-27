@@ -28,12 +28,21 @@ entities:
 
 Apps are React projects rendered live in a tab. You build them by editing files.
 
+All app tools run server-side except the live preview: `list_open_apps`,
+`create_app`, `get_app_state`, `app_read_file`, the file/dependency/binding
+edits, `materialize_binding`, and versioning all operate on the server document,
+so you can build and operate an app with no browser attached. The only
+browser-only tool is `run_app` (rebuild the preview and read render/build
+errors); `open_app` just focuses a UI tab.
+
 ### Workflow
 
-1. Call `list_open_apps` to find the active app and its `appId`. If none is open,
-   use `create_app` (it scaffolds a React + TypeScript starter and opens a tab).
-2. Use `get_app_state` to see the file list, dependencies, data bindings, and any
-   current build/runtime errors before editing.
+1. Call `list_open_apps` to find the target app and its `appId`. If none exists,
+   use `create_app` (it scaffolds a React + TypeScript starter; in an attached
+   browser, call `open_app` afterward to focus its tab).
+2. Use `get_app_state` to see the file list, dependencies, data bindings,
+   entrypoint, and version before editing. (Live preview build/runtime errors are
+   only available in an attached browser via `run_app`.)
 3. Edit with `app_write_file` — always write the COMPLETE file contents, not a diff.
    The entrypoint defaults to `src/App.tsx` (default export is rendered).
 4. Add libraries with `app_add_dependency` (e.g. d3, recharts, framer-motion) before
@@ -85,8 +94,10 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    you genuinely need more rows, pass `useDuckDB(sql, { rowLimit: 2_000_000 })` or
    `{ rowLimit: null }` to disable the cap (costs memory + serialization time), and
    surface `truncated` in the UI whenever you render row-level data.
-6. After a batch of edits, if something looks wrong, call `get_app_state` (or `run_app`)
-   to read build/runtime errors and fix them. Iterate until the preview is error-free.
+6. After a batch of edits, in an attached browser call `run_app` to rebuild the
+   preview and read build/runtime errors, then fix them. Iterate until the preview
+   is error-free. (Headless, with no browser, you cannot render — rely on
+   `get_app_state` and careful editing.)
 7. Understand and validate data before coding against it using the shared data-source
    primitives (they work for apps and dashboards — pass `surface: { kind: "app", id: appId }`):
    `list_data_sources` shows every data source (connection, query, materialization, status);
@@ -94,6 +105,36 @@ Apps are React projects rendered live in a tab. You build them by editing files.
    SQL against the materialized tables so you can validate aggregations before writing
    `useDuckDB` calls. Data sources are also visible to the user under "Data sources" in the
    app's explorer tree.
+
+### Version history, drafts & publishing
+
+Apps use a **draft → published** split:
+
+- The files/dependencies/bindings you edit are the working **draft**, autosaved
+  on every edit. Editors (and you) always see the draft in the preview.
+- **Publishing** snapshots the draft into immutable version history AND sets it
+  as the **published** definition — the one public/shared links and viewers
+  render. So a half-finished or in-progress draft is never shown to viewers
+  until you publish.
+
+Tools:
+
+- `app_save_version` — snapshot the current draft into history **and publish it**
+  (it becomes the viewer-facing version). Use at meaningful milestones (after
+  finishing a feature, before a risky refactor) and whenever the user asks to
+  "save"/"publish"/"snapshot" the app. Give a short `comment`.
+- `browse_version_history` with `entityType: "app"` and the `appId` — list past
+  versions (who, when, comment, `restoredFrom`). Use `get_version_snapshot` to
+  inspect a version's files before restoring.
+- `app_restore_version` — revert the **draft** to a past version by number. The
+  current draft is snapshotted first, so restoring is never lossy; it does NOT
+  auto-publish (publish afterward to push the restored state live). Open tabs
+  reload automatically. Binding materialization artifacts are kept (snapshots
+  store query definitions, not parquet caches).
+
+Good habit: publish a version with a descriptive comment right before sweeping
+edits the user might want to undo, so there is always a clean live point to roll
+back to.
 
 ### Theming & dark mode
 

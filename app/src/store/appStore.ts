@@ -33,6 +33,11 @@ export interface AppEntity {
   dependencies: Record<string, string>;
   dataBindings: AppDataBinding[];
   version: number;
+  /** EntityVersion number last published (draft/published split). */
+  publishedVersion?: number;
+  publishedAt?: string;
+  /** True when the working draft differs from the published version. */
+  hasUnpublishedChanges?: boolean;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
   workspaceRole?: "viewer" | "editor";

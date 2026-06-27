@@ -32,6 +32,8 @@ import {
   Pencil as RenameIcon,
   Trash2 as DeleteIcon,
   Database as MaterializeIcon,
+  History as HistoryIcon,
+  Save as SaveVersionIcon,
 } from "lucide-react";
 import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -42,6 +44,8 @@ import {
   selectRevealFor,
 } from "../store/explorerRevealStore";
 import { useAppStore, type AppListItem } from "../store/appStore";
+import { useVersionStore } from "../store/versionStore";
+import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import {
   APP_FILE_SEP as FILE_SEP,
   APP_DIR_SEP as DIR_SEP,
@@ -192,6 +196,8 @@ export function AppsExplorer() {
   const materializeBinding = useAppStore(s => s.materializeBinding);
   const persistApp = useAppStore(s => s.persistApp);
   const setAppAccess = useAppStore(s => s.setAppAccess);
+  const bumpPreview = useAppStore(s => s.bumpPreview);
+  const saveVersion = useVersionStore(s => s.saveVersion);
 
   const activeTabId = useConsoleStore(s => s.activeTabId);
   const tabs = useConsoleStore(s => s.tabs);
@@ -222,6 +228,18 @@ export function AppsExplorer() {
     parsed: ParsedNode;
     name: string;
   } | null>(null);
+  // Version history: which app's history drawer is open.
+  const [historyApp, setHistoryApp] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  // Save-version dialog state.
+  const [saveVersionApp, setSaveVersionApp] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [saveVersionComment, setSaveVersionComment] = useState("");
+  const [savingVersion, setSavingVersion] = useState(false);
 
   useEffect(() => {
     if (workspaceId) void fetchList(workspaceId);
@@ -470,6 +488,41 @@ export function AppsExplorer() {
         );
       }
 
+      // Version history (read) + save checkpoint (write) for apps.
+      if (parsed.kind === "app") {
+        items.push(
+          <MenuItem
+            key="history"
+            onClick={() => {
+              setHistoryApp({ id: parsed.appId, name: node.name });
+              helpers.closeMenu();
+            }}
+          >
+            <ListItemIcon>
+              <HistoryIcon size={16} strokeWidth={1.5} />
+            </ListItemIcon>
+            Version history
+          </MenuItem>,
+        );
+        if (canManageNode(node)) {
+          items.push(
+            <MenuItem
+              key="save-version"
+              onClick={() => {
+                setSaveVersionApp({ id: parsed.appId, name: node.name });
+                setSaveVersionComment("");
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <SaveVersionIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Publish version
+            </MenuItem>,
+          );
+        }
+      }
+
       // Materialize action for parquet bindings.
       if (parsed.kind === "binding" && workspaceId) {
         const appEntity = openApps[parsed.appId];
@@ -573,6 +626,30 @@ export function AppsExplorer() {
     deleteFile,
     removeDataBinding,
     persistApp,
+  ]);
+
+  const handleSaveVersionConfirm = useCallback(async () => {
+    if (!saveVersionApp || !workspaceId) return;
+    setSavingVersion(true);
+    // Flush any pending local edits so the checkpoint matches what's on screen.
+    if (openApps[saveVersionApp.id]) {
+      await persistApp(workspaceId, saveVersionApp.id);
+    }
+    await saveVersion(
+      workspaceId,
+      "app",
+      saveVersionApp.id,
+      saveVersionComment.trim(),
+    );
+    setSavingVersion(false);
+    setSaveVersionApp(null);
+  }, [
+    saveVersionApp,
+    workspaceId,
+    openApps,
+    persistApp,
+    saveVersion,
+    saveVersionComment,
   ]);
 
   const actions = (
@@ -698,6 +775,66 @@ export function AppsExplorer() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Save version dialog */}
+      <Dialog
+        open={!!saveVersionApp}
+        onClose={() => !savingVersion && setSaveVersionApp(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Publish version of {saveVersionApp?.name}</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Snapshots the current draft into version history and publishes it as
+            the live version that shared links and viewers see.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="Comment (optional)"
+            placeholder="e.g. Add revenue chart"
+            value={saveVersionComment}
+            onChange={e => setSaveVersionComment(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handleSaveVersionConfirm();
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setSaveVersionApp(null)}
+            disabled={savingVersion}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSaveVersionConfirm}
+            variant="contained"
+            disabled={savingVersion}
+          >
+            {savingVersion ? "Publishing..." : "Publish version"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Version history drawer */}
+      {historyApp && (
+        <VersionHistoryPanel
+          open={!!historyApp}
+          onClose={() => setHistoryApp(null)}
+          entityType="app"
+          entityId={historyApp.id}
+          onRestore={() => {
+            if (workspaceId && historyApp) {
+              void fetchApp(workspaceId, historyApp.id).then(() =>
+                bumpPreview(historyApp.id),
+              );
+            }
+          }}
+        />
+      )}
     </>
   );
 }

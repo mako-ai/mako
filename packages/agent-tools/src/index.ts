@@ -66,6 +66,14 @@ export {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  saveAppVersionSchema,
+  restoreAppVersionSchema,
+  // Server-executed read/create/materialize tools (full-server apps).
+  listAppsSchema,
+  createAppSchema,
+  getAppStateSchema,
+  appReadFileSchema,
+  materializeBindingSchema,
 } from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 
@@ -76,6 +84,8 @@ export {
   createDbtFileSchema,
   modifyDbtFileSchema,
   deleteDbtFileSchema,
+  readDbtTreeSchema,
+  readDbtFileSchema,
 } from "./dbt-tools";
 export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 

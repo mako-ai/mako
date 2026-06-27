@@ -101,6 +101,12 @@ Dashboard tools require an explicit \`dashboardId\`; use \`list_open_dashboards\
 current IDs and pass that ID on every dashboard tool call. If no dashboard is open, use
 \`create_dashboard\` or \`open_dashboard\` first. Widget \`localSql\` always runs in DuckDB.
 
+Dashboards use a draft→published split: edits stay in the working draft for the user to
+review (don't auto-save). Only when the user asks to save/publish, call
+\`dashboard_save_version\` (publishes the draft + snapshots it for viewers). Browse history
+with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
+\`dashboard_restore_version\` (reverts the draft; publish afterward to push live).
+
 For dashboard creation, editing, widget SQL, Vega-Lite specs, layout, and cross-filtering
 guidance, load the \`dashboards\` system skill. If that skill points to a needed
 \`references/*.md\` file, use \`read_skill_resource\`.`;
@@ -119,6 +125,11 @@ require an explicit \`appId\` — use \`list_open_apps\` to get the current IDs,
 if none is open. Edit with \`app_write_file\` (always write the COMPLETE file contents, not a
 diff). Read workspace data through named data bindings (\`app_create_data_binding\`), never by
 embedding credentials in app code.
+
+Apps use a draft→published split: edits autosave to the draft; \`app_save_version\` snapshots the
+draft into history AND publishes it (what viewers/shared links render). Browse via
+\`browse_version_history\` (\`entityType: "app"\`); revert the draft with \`app_restore_version\`
+(never lossy; publish afterward to push the restored state live).
 
 For the full app-building workflow (data bindings, \`@mako/app-sdk\` hooks, materialized
 Parquet/DuckDB bindings, preview debugging, and runtime constraints), load the \`apps\`

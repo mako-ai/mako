@@ -3110,6 +3110,19 @@ export interface IDashboard extends Document {
     expiresAt: Date;
   };
 
+  /**
+   * Last published definition snapshot (draft/published split, mirrors
+   * MakoApp). The top-level definition fields are the working draft; `published`
+   * is what public/shared viewers render. Set on every explicit save (which
+   * also creates a version); a restore reverts the draft only, leaving
+   * `published` until the next save. Absent until first save — readers fall
+   * back to the live definition for back-compat. Shape = buildDashboardSnapshot.
+   */
+  published?: Record<string, unknown>;
+  /** EntityVersion number that was published into `published`. */
+  publishedVersion?: number;
+  publishedAt?: Date;
+
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
@@ -3441,6 +3454,13 @@ const DashboardSchema = new Schema<IDashboard>(
       expiresAt: { type: Date },
     },
 
+    // Draft/published split (mirrors MakoApp): `published` holds the last
+    // committed definition snapshot (Mixed — same shape as
+    // buildDashboardSnapshot). Public/shared viewers render this.
+    published: { type: Schema.Types.Mixed, default: undefined },
+    publishedVersion: { type: Number },
+    publishedAt: { type: Date },
+
     folderId: {
       type: Schema.Types.ObjectId,
       ref: "DashboardFolder",
@@ -3541,7 +3561,11 @@ export const Connector = mongoose.model<IConnector>(
  * EntityVersion — immutable append-only version snapshots for consoles and dashboards.
  * Every explicit save creates a new version record; history is never rewritten.
  */
-export type VersionableEntityType = "console" | "dashboard" | "dbt-file";
+export type VersionableEntityType =
+  | "console"
+  | "dashboard"
+  | "dbt-file"
+  | "app";
 
 export interface IEntityVersion extends Document {
   _id: Types.ObjectId;
@@ -3566,7 +3590,7 @@ const EntityVersionSchema = new Schema<IEntityVersion>(
     },
     entityType: {
       type: String,
-      enum: ["console", "dashboard", "dbt-file"],
+      enum: ["console", "dashboard", "dbt-file", "app"],
       required: true,
     },
     entityId: {
@@ -3759,6 +3783,17 @@ export interface IMakoApp extends Document {
   dependencies: Record<string, string>;
   dataBindings: IMakoAppDataBinding[];
   version: number;
+  /**
+   * Last published definition snapshot (draft/published split). The top-level
+   * fields above are the working DRAFT (autosaved on every edit); `published`
+   * is the committed definition that public/shared viewers render. Absent until
+   * the app is first published — readers fall back to the draft for back-compat.
+   * Shape matches `buildAppSnapshot` (no server-owned binding `cache`).
+   */
+  published?: Record<string, unknown>;
+  /** EntityVersion number that was published into `published`. */
+  publishedVersion?: number;
+  publishedAt?: Date;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
   workspaceRole?: ResourceShareRole;
@@ -3867,6 +3902,12 @@ const MakoAppSchema = new Schema<IMakoApp>(
     dependencies: { type: Schema.Types.Mixed, default: {} },
     dataBindings: { type: [MakoAppDataBindingSchema], default: [] },
     version: { type: Number, default: 1 },
+    // Draft/published split: `published` holds the last committed definition
+    // snapshot (Mixed — same shape as buildAppSnapshot). Public/shared viewers
+    // render this; the top-level fields are the working draft.
+    published: { type: Schema.Types.Mixed, default: undefined },
+    publishedVersion: { type: Number },
+    publishedAt: { type: Date },
     access: {
       type: String,
       enum: ["private", "workspace"],

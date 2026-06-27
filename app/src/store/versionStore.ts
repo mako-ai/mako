@@ -5,7 +5,10 @@ import { api, unwrap } from "../api";
 const VERSION_BASE = {
   console: "/api/workspaces/{workspaceId}/consoles/{id}/versions",
   dashboard: "/api/workspaces/{workspaceId}/dashboards/{id}/versions",
+  app: "/api/workspaces/{workspaceId}/apps/{id}/versions",
 } as const;
+
+export type VersionEntityType = keyof typeof VERSION_BASE;
 
 export interface VersionListItem {
   version: number;
@@ -27,25 +30,37 @@ interface VersionStoreState {
 
   fetchVersionHistory: (
     workspaceId: string,
-    entityType: "console" | "dashboard",
+    entityType: VersionEntityType,
     entityId: string,
     opts?: { limit?: number; offset?: number },
   ) => Promise<void>;
 
   fetchVersion: (
     workspaceId: string,
-    entityType: "console" | "dashboard",
+    entityType: VersionEntityType,
     entityId: string,
     version: number,
   ) => Promise<VersionDetail | null>;
 
   restoreVersion: (
     workspaceId: string,
-    entityType: "console" | "dashboard",
+    entityType: VersionEntityType,
     entityId: string,
     version: number,
     comment?: string,
   ) => Promise<{ success: boolean; error?: string }>;
+
+  /**
+   * Create an explicit checkpoint of the entity's current state. Only apps use
+   * this today (consoles/dashboards version implicitly on save); the base path
+   * map gates which entity types support it.
+   */
+  saveVersion: (
+    workspaceId: string,
+    entityType: VersionEntityType,
+    entityId: string,
+    comment?: string,
+  ) => Promise<{ success: boolean; version?: number; error?: string }>;
 
   clearHistory: (entityId: string) => void;
 }
@@ -126,6 +141,32 @@ export const useVersionStore = create<VersionStoreState>((set, get) => ({
       return {
         success: false,
         error: err instanceof Error ? err.message : "Restore failed",
+      };
+    }
+  },
+
+  saveVersion: async (workspaceId, entityType, entityId, comment) => {
+    // Only apps support explicit checkpoint creation today; consoles and
+    // dashboards version implicitly on save (no POST /versions endpoint).
+    if (entityType !== "app") {
+      return {
+        success: false,
+        error: `Explicit versions are not supported for ${entityType}`,
+      };
+    }
+    try {
+      const data = unwrap(
+        await api.POST("/api/workspaces/{workspaceId}/apps/{id}/versions", {
+          params: { path: { workspaceId, id: entityId } },
+          body: { comment: comment ?? "" },
+        }),
+      ) as { version?: number };
+      await get().fetchVersionHistory(workspaceId, entityType, entityId);
+      return { success: true, version: data.version };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : "Failed to save version",
       };
     }
   },

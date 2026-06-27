@@ -8,16 +8,19 @@ import {
 export const createVersionHistoryTools = (workspaceId: string) => ({
   browse_version_history: tool({
     description:
-      "Browse the version history of a saved console or dashboard. " +
+      "Browse the version history of a saved console, dashboard, or app. " +
       "Returns a list of past versions with who saved them, when, and their commit comment. " +
-      "Use after search_consoles or search_dashboards to inspect change history, " +
-      "understand who changed what, or help the user decide which version to restore. " +
-      "Pass the entityId from a search result.",
+      "Use after search_consoles, search_dashboards, or list_open_apps to inspect change history, " +
+      "understand who changed what, or help the user decide which version to restore " +
+      "(restore consoles/dashboards via their own flows; restore apps with app_restore_version). " +
+      "Pass the entityId from a search result (for apps, the appId).",
     inputSchema: z.object({
       entityType: z
-        .enum(["console", "dashboard"])
-        .describe("Whether this is a console or dashboard"),
-      entityId: z.string().describe("The ID of the console or dashboard"),
+        .enum(["console", "dashboard", "app"])
+        .describe("Whether this is a console, dashboard, or app"),
+      entityId: z
+        .string()
+        .describe("The ID of the console, dashboard, or app"),
       limit: z
         .number()
         .optional()
@@ -58,15 +61,18 @@ export const createVersionHistoryTools = (workspaceId: string) => ({
 
   get_version_snapshot: tool({
     description:
-      "Get the full snapshot of a specific version of a console or dashboard. " +
+      "Get the full snapshot of a specific version of a console, dashboard, or app. " +
       "Use this to show the user what a past version looked like, or to compare " +
       "with the current state. For consoles, the snapshot includes the code; " +
-      "for dashboards, it includes widgets, data sources, and layout.",
+      "for dashboards, it includes widgets, data sources, and layout; for apps, " +
+      "it includes the files, dependencies, and data binding queries.",
     inputSchema: z.object({
       entityType: z
-        .enum(["console", "dashboard"])
-        .describe("Whether this is a console or dashboard"),
-      entityId: z.string().describe("The ID of the console or dashboard"),
+        .enum(["console", "dashboard", "app"])
+        .describe("Whether this is a console, dashboard, or app"),
+      entityId: z
+        .string()
+        .describe("The ID of the console, dashboard, or app"),
       version: z.number().describe("The version number to retrieve"),
     }),
     execute: async ({ entityType, entityId, version }) => {

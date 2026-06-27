@@ -19,6 +19,8 @@ import {
   buildTableRef,
 } from "@mako/schemas";
 import { hydrateDashboardArtifactUrls } from "../services/dashboard-cache.service";
+import { snapshotsEqual } from "../services/snapshot-diff";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { buildDashboardDataSourceDefinitionHash } from "../services/dashboard-artifact-rebuild.service";
 import {
   isDashboardMaterializationEnabled,
@@ -292,6 +294,35 @@ function buildDashboardSnapshot(
   };
 }
 
+/**
+ * True when the working definition differs from the last published snapshot
+ * (or the dashboard was never published). Drives the "unpublished changes" hint
+ * so editors know the live/shared version is behind the working draft (e.g.
+ * after a restore, which reverts the draft without publishing).
+ */
+function dashboardHasUnpublishedChanges(
+  doc: IDashboard | Record<string, any>,
+): boolean {
+  if (!doc.published) return true;
+  return !snapshotsEqual(buildDashboardSnapshot(doc), doc.published);
+}
+
+/**
+ * Publish the current definition: stamp it onto a (Mongoose) dashboard doc as
+ * the viewer-facing `published` snapshot at the given version, and persist.
+ * Call after createVersion on every explicit save.
+ */
+async function publishDashboard(
+  doc: IDashboard,
+  version: number,
+): Promise<void> {
+  doc.published = buildDashboardSnapshot(doc.toObject());
+  doc.markModified("published"); // Mixed: assignment isn't auto-tracked
+  doc.publishedVersion = version;
+  doc.publishedAt = new Date();
+  await doc.save();
+}
+
 async function normalizeDashboardDataSources(
   workspaceId: string,
   inputDataSources: unknown,
@@ -445,6 +476,10 @@ function sanitizeDashboardResponse<
   delete dashboard.materializationMode;
   // Never leak the password hash; expose only safe public-share metadata.
   const loose = dashboard as Record<string, any>;
+  // Draft/published: expose a cheap dirty flag, then drop the (large) published
+  // snapshot from the editor payload — editors render the live draft fields.
+  loose.hasUnpublishedChanges = dashboardHasUnpublishedChanges(loose);
+  delete loose.published;
   if (loose.publicShare && typeof loose.publicShare === "object") {
     const ps = loose.publicShare as Record<string, unknown>;
     if (ps.enabled && ps.token) {
@@ -715,9 +750,9 @@ app.openapi(
 
       await dashboard.save();
 
-      // Create version 1 for the new dashboard
+      // Create version 1 for the new dashboard and publish it.
       const displayName = await getUserDisplayName(userId);
-      await createVersion({
+      const createdVersion = await createVersion({
         entityType: "dashboard",
         entityId: dashboard._id,
         workspaceId: new Types.ObjectId(workspaceId),
@@ -726,6 +761,7 @@ app.openapi(
         savedByName: displayName,
         comment: body.comment ?? "",
       });
+      await publishDashboard(dashboard, createdVersion.version);
 
       if (
         (dashboard.dataSources || []).length > 0 &&
@@ -1029,7 +1065,7 @@ app.openapi(
 
       // Create version record for the new state
       const putDisplayName = await getUserDisplayName(userId);
-      await createVersion({
+      const putVersion = await createVersion({
         entityType: "dashboard",
         entityId: updated._id,
         workspaceId: new Types.ObjectId(workspaceId),
@@ -1037,6 +1073,18 @@ app.openapi(
         savedBy: userId,
         savedByName: putDisplayName,
         comment: body.comment ?? "",
+      });
+      // A full update is a publish.
+      await publishDashboard(updated, putVersion.version);
+
+      publishRealtimeEvent(workspaceId, {
+        type: "dashboard.updated",
+        dashboardId: updated._id.toString(),
+        version: updated.version,
+        updatedBy: userId,
+        clientId:
+          typeof body.clientId === "string" ? body.clientId : undefined,
+        origin: "save",
       });
 
       if (
@@ -1262,7 +1310,7 @@ app.openapi(
 
       if (typeof body.comment === "string") {
         const patchDisplayName = await getUserDisplayName(userId);
-        await createVersion({
+        const createdVersion = await createVersion({
           entityType: "dashboard",
           entityId: dashboard._id,
           workspaceId: new Types.ObjectId(workspaceId),
@@ -1271,7 +1319,20 @@ app.openapi(
           savedByName: patchDisplayName,
           comment: body.comment,
         });
+        // Explicit save publishes: the snapshot becomes the viewer-facing def.
+        await publishDashboard(dashboard, createdVersion.version);
       }
+
+      // Poke open tabs (poke-then-pull) so other viewers reload the saved def.
+      publishRealtimeEvent(workspaceId, {
+        type: "dashboard.updated",
+        dashboardId: dashboard._id.toString(),
+        version: dashboard.version,
+        updatedBy: userId,
+        clientId:
+          typeof body.clientId === "string" ? body.clientId : undefined,
+        origin: "save",
+      });
 
       if (
         didDashboardArtifactInputsChange(
@@ -2567,6 +2628,17 @@ app.openapi(
         savedByName: displayName,
         comment,
         restoredFrom: versionNum,
+      });
+
+      // Restore reverts the working draft only (no publish): public/shared
+      // viewers keep seeing the published version until the next explicit save.
+      // Poke open editor tabs so they reload the reverted draft.
+      publishRealtimeEvent(workspaceId, {
+        type: "dashboard.updated",
+        dashboardId: restored._id.toString(),
+        version: restored.version,
+        updatedBy: userId,
+        origin: "save",
       });
 
       return c.json({

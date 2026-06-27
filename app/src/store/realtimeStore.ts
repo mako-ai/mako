@@ -24,7 +24,9 @@ import {
   hasPendingAgentReview,
 } from "./consoleStore";
 import { useAppStore } from "./appStore";
+import { useDashboardStore } from "./dashboardStore";
 import { useDbtStore } from "./dbtStore";
+import { computeDashboardStateHash } from "../utils/stateHash";
 import { decideRemoteApply } from "./lib/remoteApplyGate";
 import { useConsoleTreeStore } from "./consoleTreeStore";
 import type { ConsoleRevisionsSyncResponse } from "../lib/api-types";
@@ -356,7 +358,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (!workspaceId) return;
       const appStore = useAppStore.getState();
       const open = appStore.openApps[event.appId];
-      if (!open) return; // not open in this window — explorer refreshes lazily
+      if (!open) {
+        // Not open in this window — but the app list may have changed (e.g. the
+        // agent created/edited an app server-side). Refresh the explorer so new
+        // apps appear without a manual reload (browser follows the server).
+        void appStore.fetchList(workspaceId);
+        return;
+      }
       if ((open.version ?? 0) >= event.version) return; // stale / own echo
       void (async () => {
         const fresh = await useAppStore
@@ -387,6 +395,32 @@ export const useRealtimeStore = create<RealtimeStore>()(
         );
     };
 
+    // Server-persisted dashboard saves/restores (draft/published model): pull
+    // the authoritative dashboard for an OPEN dashboard when its version
+    // advances — but NEVER clobber a user mid-edit. Skips the reload if this
+    // tab is editing or holds unsaved local changes (their work wins until they
+    // save/discard); echo-suppressed by clientId; stale events ignored.
+    const handleDashboardUpdated = (
+      event: Extract<RealtimeEvent, { type: "dashboard.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const ds = useDashboardStore.getState();
+      const open = ds.openDashboards[event.dashboardId];
+      if (!open) return; // not open here — explorer/canvas refreshes lazily
+      if ((open.version ?? 0) >= event.version) return; // stale / own echo
+      if (ds.editingDashboards[event.dashboardId]) return; // don't stomp editor
+      const savedHash = ds.savedStateHashes[event.dashboardId];
+      if (
+        savedHash !== undefined &&
+        computeDashboardStateHash(open) !== savedHash
+      ) {
+        return; // unsaved local changes — preserve them
+      }
+      void ds.reloadDashboard(workspaceId, event.dashboardId);
+    };
+
     const handleEvent = (event: RealtimeEvent) => {
       switch (event.type) {
         case "console.updated":
@@ -394,6 +428,9 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app.updated":
           handleAppUpdated(event);
+          break;
+        case "dashboard.updated":
+          handleDashboardUpdated(event);
           break;
         case "dbt.file.updated":
           handleDbtFileUpdated(event);

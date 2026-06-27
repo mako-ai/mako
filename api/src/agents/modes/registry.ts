@@ -90,6 +90,8 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "set_time_dimension",
   "get_chart_templates",
   "get_chart_template",
+  "dashboard_save_version",
+  "dashboard_restore_version",
   "capture_screenshot",
   // Search + discovery for building data sources
   "search_dashboards",
@@ -132,6 +134,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_remove_dependency",
   "app_create_data_binding",
   "app_delete_data_binding",
+  "app_save_version",
+  "app_restore_version",
   "materialize_binding",
   "run_app",
   // Shared surface-scoped data-source primitives (apps + dashboards)
