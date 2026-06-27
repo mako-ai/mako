@@ -10,8 +10,11 @@
  * chart tools are pure. Safe to run in CI.
  */
 import assert from "node:assert/strict";
-import { unifiedAgentFactory } from "../../agents/unified/index";
+import { getAgentFactory } from "../../agents/index";
 import { createServerChartTools } from "./server-chart-tools";
+
+// Every agent a chat turn can resolve to.
+const AGENT_IDS = ["unified", "console", "dashboard", "dbt", "flow"];
 
 const SERVER_READ_TOOLS = [
   "get_chart_templates",
@@ -34,19 +37,34 @@ function runTool(tool: ExecutableTool, args: unknown) {
 }
 
 function testWiring() {
-  console.log("  wiring: read tools registered server-side with execute");
-  const cfg = unifiedAgentFactory({
-    workspaceId: "000000000000000000000000",
-  } as never);
-  const tools = cfg.tools as Record<string, ExecutableTool | undefined>;
-  for (const name of SERVER_READ_TOOLS) {
-    assert.equal(
-      typeof tools[name]?.execute,
-      "function",
-      `${name} must have a server execute`,
-    );
+  console.log("  wiring: read tools never exposed as no-execute on any agent");
+  // The manifest marks these tools `execution: "server"` globally, so ANY
+  // agent that exposes one must also register a server `execute` — otherwise
+  // the client won't dispatch it and the turn hangs. Check every agent.
+  const ctx = { workspaceId: "000000000000000000000000" } as never;
+  let sawUnifiedAll = false;
+  for (const agentId of AGENT_IDS) {
+    const factory = getAgentFactory(agentId);
+    assert.ok(factory, `agent "${agentId}" must be registered`);
+    const cfg = factory(ctx);
+    const tools = cfg.tools as Record<string, ExecutableTool | undefined>;
+    let presentCount = 0;
+    for (const name of SERVER_READ_TOOLS) {
+      const def = tools[name];
+      if (!def) continue;
+      presentCount++;
+      assert.equal(
+        typeof def.execute,
+        "function",
+        `agent "${agentId}" exposes ${name} without a server execute`,
+      );
+    }
+    if (agentId === "unified") {
+      sawUnifiedAll = presentCount === SERVER_READ_TOOLS.length;
+    }
+    console.log(`    ✓ ${agentId}: ${presentCount} read tool(s), all server-executed`);
   }
-  console.log("    ✓ all 6 read tools are server-executed");
+  assert.ok(sawUnifiedAll, "unified agent must expose all 6 read tools");
 }
 
 async function testChartTools() {

@@ -13,6 +13,7 @@ import type {
 } from "../types";
 import { UNIVERSAL_PROMPT_V2 } from "../../agent-lib/prompts/universal";
 import { createUniversalTools } from "../../agent-lib/tools/universal-tools";
+import { createServerChartTools } from "../../agent-lib/tools/server-chart-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -248,6 +249,9 @@ export const consoleAgentFactory: AgentFactory = (
     ],
     tools: {
       ...tools,
+      // get_chart_template executes server-side; must come after the universal
+      // tools (which carry its no-execute version via clientChartTools).
+      ...createServerChartTools(),
       ...selfDirectiveTools,
       ...skillTools,
       ...consoleSearchTools,
