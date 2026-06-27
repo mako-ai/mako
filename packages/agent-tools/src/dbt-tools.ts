@@ -1,17 +1,21 @@
 /**
- * Client-Side dbt Tools
+ * dbt tool schemas (shared source of truth for the dbt IDE tool cards).
  *
- * File-editing tools for the dbt IDE ("dbt Cloud replica"). Like the app
- * tools these have no `execute` function, so the AI SDK routes them to the
- * browser via `onToolCall`, where `executeDbtAgentTool` applies them to the
- * dbtStore (the same writeFile path the editor uses) and persists them.
+ * ALL dbt agent tools now execute SERVER-SIDE against the authoritative
+ * DbtProject/DbtFile/DbtJob documents (issue #475 pattern) — both the file
+ * mutations (create/modify/delete) AND the reads (read_dbt_project_tree /
+ * read_dbt_file). Reads moved server-side because a client-executed read leaves
+ * a tool call pending in the browser; if the tab is slow/backgrounded/detached
+ * the SSE turn tears down with "stream disconnected before tool completed".
+ * Reading the docs on the server keeps the turn entirely server-driven.
  *
- * Server-side verification tools (dbt_parse / dbt_compile_model /
- * dbt_run_model / dbt_run_job) live in api/src/agent-lib/tools/dbt-tools.ts
- * because they invoke the dbt runner.
+ * Verification tools (dbt_parse / dbt_compile_model / dbt_run_model /
+ * dbt_run_job) also live server-side because they invoke the dbt runner.
+ *
+ * `clientDbtTools` is therefore intentionally empty — no dbt tool is browser
+ * executed anymore.
  */
 
-import { tool } from "ai";
 import { z } from "zod";
 
 const projectIdField = z
@@ -24,7 +28,7 @@ const dbtPathField = z
     "POSIX file path relative to the project root, e.g. models/staging/stg_orders.sql",
   );
 
-const readTreeSchema = z.object({
+export const readDbtTreeSchema = z.object({
   projectId: z
     .string()
     .optional()
@@ -33,15 +37,14 @@ const readTreeSchema = z.object({
     ),
 });
 
-const readFileSchema = z.object({
+export const readDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
 });
 
-// NOTE: the file mutation tools (create/modify/delete) execute SERVER-SIDE
-// (issue #475 pattern) — see api/src/agent-lib/tools/dbt-tools.ts. Their schemas
-// are exported here so the server tools and the dbt IDE tool cards share a
-// single source of truth. They are intentionally NOT in `clientDbtTools`.
+// All dbt tools execute SERVER-SIDE (see api/src/agent-lib/tools/dbt-tools.ts).
+// Schemas are exported here so the server tools and the dbt IDE tool cards share
+// a single source of truth.
 export const createDbtFileSchema = z.object({
   projectId: projectIdField,
   path: dbtPathField,
@@ -63,21 +66,9 @@ export const deleteDbtFileSchema = z.object({
   path: dbtPathField,
 });
 
-export const clientDbtTools = {
-  read_dbt_project_tree: tool({
-    description:
-      "List dbt projects in the workspace, or the file tree + jobs of one " +
-      "project when projectId is given. Call this FIRST to get project IDs " +
-      "and file paths before using any other dbt tool.",
-    inputSchema: readTreeSchema,
-  }),
-  read_dbt_file: tool({
-    description:
-      "Read the full contents of a single file in a dbt project " +
-      "(models, schema.yml, dbt_project.yml, seeds, macros...).",
-    inputSchema: readFileSchema,
-  }),
-};
+// No dbt tools are browser-executed anymore — reads and writes alike run on the
+// server. Kept as an (empty) export so the agent wiring/types stay stable.
+export const clientDbtTools = {};
 
 export type DbtCreateFileInput = z.infer<typeof createDbtFileSchema>;
 export type DbtModifyFileInput = z.infer<typeof modifyDbtFileSchema>;

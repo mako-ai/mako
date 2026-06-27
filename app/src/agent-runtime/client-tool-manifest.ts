@@ -588,17 +588,19 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
+  // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
+  // turn ("stream disconnected before tool completed") when the tab is slow or
+  // detached. See api/src/agent-lib/tools/dbt-tools.ts.
   read_dbt_project_tree: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: () => "Reading dbt project tree",
     icon: "list",
   },
   read_dbt_file: {
     domain: "dbt",
-    execution: "client",
-    clientExecutor: "dbt",
+    execution: "server",
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
       return path ? `Reading ${path}` : "Reading dbt file";

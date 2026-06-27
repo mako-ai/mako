@@ -21,6 +21,8 @@ import {
   createDbtFileSchema,
   modifyDbtFileSchema,
   deleteDbtFileSchema,
+  readDbtTreeSchema,
+  readDbtFileSchema,
 } from "@mako/agent-tools";
 import {
   DatabaseConnection,
@@ -236,6 +238,96 @@ export const createDbtServerTools = (
   };
 
   return {
+    read_dbt_project_tree: tool({
+      description:
+        "List dbt projects in the workspace, or the file tree + jobs of one " +
+        "project when projectId is given. Call this FIRST to get project IDs " +
+        "and file paths before using any other dbt tool.",
+      inputSchema: readDbtTreeSchema,
+      execute: async ({ projectId }) => {
+        try {
+          if (!projectId) {
+            const projects = await DbtProject.find({
+              workspaceId: new Types.ObjectId(workspaceId),
+            })
+              .sort({ updatedAt: -1 })
+              .lean();
+            return {
+              success: true as const,
+              projects: projects.map(p => ({
+                id: p._id.toString(),
+                name: p.name,
+                defaultEnvironment: p.defaultEnvironment,
+                environments: (p.environments ?? []).map(env => ({
+                  name: env.name,
+                  targetSchema: env.targetSchema,
+                  connectionId: env.connectionId?.toString(),
+                })),
+              })),
+            };
+          }
+          const project = await assertProject(projectId);
+          const [files, jobs] = await Promise.all([
+            DbtFile.find({
+              projectId: project._id,
+              is_deleted: { $ne: true },
+            })
+              .select("path")
+              .sort({ path: 1 })
+              .lean(),
+            DbtJob.find({ projectId: project._id }).lean(),
+          ]);
+          return {
+            success: true as const,
+            projectId,
+            name: project.name,
+            defaultEnvironment: project.defaultEnvironment,
+            environments: project.environments,
+            files: files.map(f => f.path),
+            jobs: jobs.map(job => ({
+              id: job._id.toString(),
+              name: job.name,
+              environment: job.environment,
+              commands: job.commands,
+              schedule: job.schedule ?? null,
+              enabled: job.enabled,
+            })),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to read dbt project tree");
+        }
+      },
+    }),
+
+    read_dbt_file: tool({
+      description:
+        "Read the full contents of a single file in a dbt project " +
+        "(models, schema.yml, dbt_project.yml, seeds, macros...).",
+      inputSchema: readDbtFileSchema,
+      execute: async ({ projectId, path }) => {
+        try {
+          const project = await assertProject(projectId);
+          const file = await DbtFile.findOne({
+            projectId: project._id,
+            path,
+            is_deleted: { $ne: true },
+          })
+            .select("path content")
+            .lean();
+          if (!file) {
+            return { success: false as const, error: `File not found: ${path}` };
+          }
+          return {
+            success: true as const,
+            path: file.path,
+            contents: file.content ?? "",
+          };
+        } catch (error) {
+          return toolError(error, "Failed to read dbt file");
+        }
+      },
+    }),
+
     create_dbt_file: tool({
       description:
         "Create a new file in a dbt project (e.g. a staging model + its " +

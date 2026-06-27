@@ -84,6 +84,8 @@ export {
   createDbtFileSchema,
   modifyDbtFileSchema,
   deleteDbtFileSchema,
+  readDbtTreeSchema,
+  readDbtFileSchema,
 } from "./dbt-tools";
 export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
 
