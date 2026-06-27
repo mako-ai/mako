@@ -499,6 +499,25 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "trash",
   },
+  app_save_version: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const comment = (input as Record<string, unknown>)?.comment;
+      return comment ? `Saving version: "${comment}"` : "Saving app version";
+    },
+    icon: "clock",
+  },
+  app_restore_version: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const version = (input as Record<string, unknown>)?.version;
+      return version ? `Restoring version ${version}` : "Restoring app version";
+    },
+    icon: "clock",
+  },
   materialize_binding: {
     domain: "app",
     execution: "client",
