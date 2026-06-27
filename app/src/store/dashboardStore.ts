@@ -7,6 +7,7 @@ import {
   normalizeWidgetLayouts,
 } from "@mako/schemas";
 import { computeDashboardStateHash } from "../utils/stateHash";
+import { realtimeClientId } from "../lib/realtime-client-id";
 import { disposeDashboardRuntime } from "../dashboard-runtime/gateway";
 import {
   sanitizeEditableDashboardDefinition,
@@ -552,6 +553,9 @@ export const useDashboardStore = create<DashboardStoreState>()(
             ...editableDefinition,
             version: dashboard.version,
             comment: comment ?? "",
+            // Echo-suppression for the realtime dashboard.updated poke so this
+            // saving tab doesn't reload itself (draft/published model).
+            clientId: realtimeClientId,
           };
           // Read the raw result instead of unwrapping: a 409 carries a
           // structured VERSION_CONFLICT body that drives the conflict UI.

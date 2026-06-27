@@ -3110,6 +3110,19 @@ export interface IDashboard extends Document {
     expiresAt: Date;
   };
 
+  /**
+   * Last published definition snapshot (draft/published split, mirrors
+   * MakoApp). The top-level definition fields are the working draft; `published`
+   * is what public/shared viewers render. Set on every explicit save (which
+   * also creates a version); a restore reverts the draft only, leaving
+   * `published` until the next save. Absent until first save — readers fall
+   * back to the live definition for back-compat. Shape = buildDashboardSnapshot.
+   */
+  published?: Record<string, unknown>;
+  /** EntityVersion number that was published into `published`. */
+  publishedVersion?: number;
+  publishedAt?: Date;
+
   folderId?: Types.ObjectId;
   access: "private" | "workspace";
   /** Role granted to workspace members when access is "workspace". */
@@ -3440,6 +3453,13 @@ const DashboardSchema = new Schema<IDashboard>(
       lockedAt: { type: Date },
       expiresAt: { type: Date },
     },
+
+    // Draft/published split (mirrors MakoApp): `published` holds the last
+    // committed definition snapshot (Mixed — same shape as
+    // buildDashboardSnapshot). Public/shared viewers render this.
+    published: { type: Schema.Types.Mixed, default: undefined },
+    publishedVersion: { type: Number },
+    publishedAt: { type: Date },
 
     folderId: {
       type: Schema.Types.ObjectId,
