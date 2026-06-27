@@ -39,6 +39,7 @@ import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
+  requestDbtRunCancel,
   triggerDbtJobRun,
   triggerDbtRun,
 } from "../../dbt/dbt-run.service";
@@ -655,6 +656,48 @@ export const createDbtServerTools = (
           };
         } catch (error) {
           return toolError(error, "Failed to trigger job");
+        }
+      },
+    }),
+
+    dbt_cancel_run: tool({
+      description:
+        "Cancel a queued or running dbt run by runId. A queued run is " +
+        "cancelled before it starts (freeing the queue); a running run has " +
+        "its dbt subprocess terminated and any in-flight BigQuery jobs " +
+        "best-effort cancelled. Idempotent: cancelling an already-finished " +
+        "run is a no-op that returns its current status. Use after " +
+        "dbt_run_model / dbt_run_job (with the returned runId) when the user " +
+        "asks to stop a build.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        runId: z.string().describe("dbt run ID (from dbt_run_model / dbt_run_job)"),
+      }),
+      execute: async ({ projectId, runId }) => {
+        try {
+          await assertProject(projectId);
+          if (!Types.ObjectId.isValid(runId)) {
+            return { success: false, error: "Invalid run id" };
+          }
+          const result = await requestDbtRunCancel({
+            workspaceId,
+            runId,
+            cancelledBy: userId ?? "agent",
+          });
+          if (!result) return { success: false, error: "Run not found" };
+          return {
+            success: true,
+            runId,
+            status: result.status,
+            cancelledAt: result.cancelledAt,
+            cancelledBy: result.cancelledBy,
+            message:
+              result.status === "cancelled"
+                ? "Run cancelled."
+                : `Run is already ${result.status}; nothing to cancel.`,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to cancel run");
         }
       },
     }),

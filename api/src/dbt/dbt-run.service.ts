@@ -10,11 +10,23 @@ import { inngest } from "../inngest/client";
 import {
   DbtJob,
   DbtRun,
+  type DbtRunStatus,
   type IDbtJob,
   type IDbtRun,
 } from "../database/workspace-schema";
 import { parseDbtCommands } from "./commands";
+import { cancelLocalRun } from "./dbt-run-registry";
 import { loggers } from "../logging";
+
+const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
+  "success",
+  "error",
+  "cancelled",
+]);
+
+export function isTerminalDbtRunStatus(status: DbtRunStatus): boolean {
+  return TERMINAL_DBT_RUN_STATUSES.has(status);
+}
 
 const logger = loggers.api("dbt-run");
 
@@ -292,34 +304,155 @@ export async function triggerDbtRunRetry(params: {
   return run;
 }
 
+/**
+ * Flip a run that is still queued/running to the terminal "cancelled" status.
+ * Shared by the executor (when its subprocess was aborted) and the
+ * `dbt/run.cancel` finalizer so a cancel always lands exactly one terminal
+ * write. Idempotent (guarded on a non-terminal status) and an aggregation
+ * pipeline so it can preserve an already-staged cancelledBy/cancelledAt and
+ * compute durationMs from startedAt in a single atomic update.
+ */
+export async function finalizeCancelledDbtRun(
+  runId: Types.ObjectId | string,
+  fallbackCancelledBy?: string,
+): Promise<void> {
+  const _id = typeof runId === "string" ? new Types.ObjectId(runId) : runId;
+  await DbtRun.updateOne({ _id, status: { $in: ["queued", "running"] } }, [
+    {
+      $set: {
+        status: "cancelled",
+        completedAt: "$$NOW",
+        cancelledAt: { $ifNull: ["$cancelledAt", "$$NOW"] },
+        cancelledBy: {
+          $ifNull: ["$cancelledBy", fallbackCancelledBy ?? "user"],
+        },
+        error: { $ifNull: ["$error", "Cancelled"] },
+        durationMs: {
+          $cond: [
+            { $ifNull: ["$startedAt", false] },
+            {
+              $dateDiff: {
+                startDate: "$startedAt",
+                endDate: "$$NOW",
+                unit: "millisecond",
+              },
+            },
+            "$durationMs",
+          ],
+        },
+      },
+    },
+  ]);
+}
+
+export interface DbtRunCancelResult {
+  /** The run's status after the cancel attempt (may already be terminal). */
+  status: DbtRunStatus;
+  cancelledAt?: Date;
+  cancelledBy?: string;
+}
+
+/**
+ * Cancel a queued or running dbt run.
+ *
+ *  - **queued** → finalized to `cancelled` immediately (guarded on `queued`),
+ *    so the executor's `mark-running` claim no-ops and it never executes.
+ *  - **running** → stage the cancel attribution on the doc, then (a) abort the
+ *    local subprocess + best-effort cancel its BigQuery jobs via the in-process
+ *    registry and (b) emit `dbt/run.cancel` so Inngest `cancelOn` frees the
+ *    concurrency slot and the finalizer flips the status (covers the
+ *    cross-instance case where the worker runs elsewhere).
+ *  - **terminal** (success/error/cancelled) → idempotent no-op; returns the
+ *    current status with no side effects.
+ *
+ * Returns `null` only when the run does not exist. Otherwise returns the
+ * run's status; in the race where the run finishes just as cancel arrives, the
+ * real terminal status (e.g. `success`) is returned rather than an error.
+ */
 export async function requestDbtRunCancel(params: {
   workspaceId: string;
   runId: string;
-}): Promise<boolean> {
+  /** User id, or "agent" for automated cancels. */
+  cancelledBy?: string;
+}): Promise<DbtRunCancelResult | null> {
   const run = await DbtRun.findOne({
     _id: new Types.ObjectId(params.runId),
     workspaceId: new Types.ObjectId(params.workspaceId),
-  });
-  if (!run) return false;
-  // Only active runs can be cancelled; terminal runs (success/error/cancelled)
-  // are a no-op. The boolean return means "cancellation was initiated", which
-  // is true for both branches below (a queued run finalized here, or a running
-  // run signaled via cancelOn) — including the queued→running race, where the
-  // guarded update no-ops but the executor still honors the cancel event.
-  if (run.status !== "queued" && run.status !== "running") return false;
+  })
+    .select("status cancelledAt cancelledBy")
+    .lean();
+  if (!run) return null;
 
-  // cancelOn match in the executor; queued runs are finalized directly since
-  // the executor may not have started yet.
-  await inngest.send({
-    name: "dbt/run.cancel",
-    data: { runId: params.runId },
-  });
+  // Idempotent: a terminal run is a no-op that echoes the current status.
+  if (isTerminalDbtRunStatus(run.status)) {
+    return {
+      status: run.status,
+      cancelledAt: run.cancelledAt,
+      cancelledBy: run.cancelledBy,
+    };
+  }
 
-  await DbtRun.updateOne(
+  const cancelledBy = params.cancelledBy ?? "user";
+  const now = new Date();
+
+  // Queued runs are finalized synchronously (never start). Guarded on "queued"
+  // so a last-moment executor pickup (queued→running race) is never clobbered.
+  const queued = await DbtRun.findOneAndUpdate(
     { _id: run._id, status: "queued" },
-    { $set: { status: "cancelled", completedAt: new Date() } },
+    {
+      $set: {
+        status: "cancelled",
+        completedAt: now,
+        cancelledAt: now,
+        cancelledBy,
+      },
+    },
+    { new: true },
+  )
+    .select("status cancelledAt cancelledBy")
+    .lean();
+
+  // Always emit the cancel event: frees the Inngest concurrency slot (cancelOn)
+  // so the next queued run starts, and runs the finalizer as a cross-instance
+  // backstop. Carries cancelledBy so the finalizer can attribute it.
+  await inngest
+    .send({
+      name: "dbt/run.cancel",
+      data: { runId: params.runId, cancelledBy },
+    })
+    .catch(error => {
+      logger.warn("Failed to emit dbt/run.cancel event", {
+        error,
+        runId: params.runId,
+      });
+    });
+
+  if (queued) {
+    return {
+      status: "cancelled",
+      cancelledAt: queued.cancelledAt ?? now,
+      cancelledBy: queued.cancelledBy ?? cancelledBy,
+    };
+  }
+
+  // Not queued anymore → running (or it just finished). Stage attribution so
+  // the finalizer + UI can show who/when, then kill the local subprocess.
+  await DbtRun.updateOne(
+    { _id: run._id, status: "running" },
+    { $set: { cancelledAt: now, cancelledBy } },
   );
-  return true;
+  cancelLocalRun(params.runId, `Cancelled by ${cancelledBy}`);
+
+  // Re-read for the authoritative current status (handles the finish-just-as-
+  // cancel-arrives race: return the real terminal status, not an error).
+  const fresh = await DbtRun.findById(run._id)
+    .select("status cancelledAt cancelledBy")
+    .lean();
+  return {
+    status: fresh?.status ?? "running",
+    cancelledAt: fresh?.cancelledAt,
+    cancelledBy: fresh?.cancelledBy,
+  };
 }
 
 /** Recompute a job's next scheduled run after a schedule edit. */

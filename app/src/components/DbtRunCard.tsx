@@ -147,7 +147,8 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
       ? `dbt ${command}`
       : "dbt build";
 
-  const statusLabel = status ?? "queued";
+  const statusLabel =
+    cancelling && isActive ? "Cancelling…" : (status ?? "queued");
 
   return (
     <Box

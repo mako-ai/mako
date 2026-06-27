@@ -61,7 +61,7 @@ vi.mock("../dbt/dbt-project.service", () => ({
 vi.mock("../dbt/dbt-run.service", () => ({
   triggerDbtJobRun: vi.fn(async () => ({ _id: new Types.ObjectId() })),
   triggerDbtRunRetry: vi.fn(async () => ({ _id: new Types.ObjectId() })),
-  requestDbtRunCancel: vi.fn(async () => true),
+  requestDbtRunCancel: vi.fn(async () => ({ status: "cancelled" })),
   applyJobScheduleChange: vi.fn(async () => undefined),
   reconcileStaleQueuedRun: vi.fn(async (r: unknown) => r),
   reconcileStaleQueuedRuns: vi.fn(async (r: unknown) => r),
@@ -399,19 +399,36 @@ describe("runs lifecycle", () => {
     expect(res.run.logCursor).toBe(3);
   });
 
-  it("cancel returns 200 when cancellable, 400 otherwise", async () => {
+  it("cancel returns 200 with status, 404 when the run is unknown", async () => {
     const projectId = await createProjectAsOwner();
     const runId = await insertRun(projectId, { status: "running" });
 
-    cancelMock.mockResolvedValueOnce(true);
-    expect(
-      (await req("POST", `/projects/${projectId}/runs/${runId}/cancel`)).status,
-    ).toBe(200);
+    const cancelledAt = new Date();
+    cancelMock.mockResolvedValueOnce({
+      status: "cancelled",
+      cancelledAt,
+      cancelledBy: "user-1",
+    });
+    const ok = await req("POST", `/projects/${projectId}/runs/${runId}/cancel`);
+    expect(ok.status).toBe(200);
+    const body = await ok.json();
+    expect(body.status).toBe("cancelled");
+    expect(body.cancelledBy).toBe("user-1");
 
-    cancelMock.mockResolvedValueOnce(false);
+    // Idempotent: an already-terminal run echoes its status with a 200.
+    cancelMock.mockResolvedValueOnce({ status: "success" });
+    const idempotent = await req(
+      "POST",
+      `/projects/${projectId}/runs/${runId}/cancel`,
+    );
+    expect(idempotent.status).toBe(200);
+    expect((await idempotent.json()).status).toBe("success");
+
+    // Unknown run → null → 404.
+    cancelMock.mockResolvedValueOnce(null);
     expect(
       (await req("POST", `/projects/${projectId}/runs/${runId}/cancel`)).status,
-    ).toBe(400);
+    ).toBe(404);
   });
 
   it("retry returns the new runId when retriable, 400 otherwise", async () => {

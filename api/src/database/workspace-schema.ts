@@ -4383,6 +4383,10 @@ export interface IDbtRun extends Document {
   startedAt?: Date;
   completedAt?: Date;
   durationMs?: number;
+  /** When a cancel was requested / finalized (status === "cancelled"). */
+  cancelledAt?: Date;
+  /** User id that cancelled the run, or "agent" for automated cancels. */
+  cancelledBy?: string;
   /** Capped, batch-written log lines (parsed from --log-format json). */
   logs: IDbtRunLogLine[];
   /** Parsed from run_results.json after each command. */
@@ -4454,6 +4458,8 @@ const DbtRunSchema = new Schema<IDbtRun>(
     startedAt: { type: Date },
     completedAt: { type: Date },
     durationMs: { type: Number },
+    cancelledAt: { type: Date },
+    cancelledBy: { type: String },
     logs: {
       type: [
         new Schema<IDbtRunLogLine>(

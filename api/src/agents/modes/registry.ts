@@ -169,6 +169,7 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_compile_model",
   "dbt_run_model",
   "dbt_run_job",
+  "dbt_cancel_run",
   "dbt_get_run",
   "dbt_show",
   "dbt_create_job",

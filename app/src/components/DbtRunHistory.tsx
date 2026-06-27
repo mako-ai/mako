@@ -28,6 +28,7 @@ import {
   RotateCcw as RetryIcon,
   Download as DownloadIcon,
   Search as SearchIcon,
+  Square as StopIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
@@ -134,20 +135,26 @@ export default function DbtRunHistory({
   const runDetails = useDbtStore(s => s.runDetails);
   const fetchRunDetails = useDbtStore(s => s.fetchRunDetails);
   const retryRun = useDbtStore(s => s.retryRun);
+  const cancelRun = useDbtStore(s => s.cancelRun);
   const downloadRunArtifact = useDbtStore(s => s.downloadRunArtifact);
 
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [logQuery, setLogQuery] = useState("");
+  const [cancelling, setCancelling] = useState(false);
 
   const selectedRun = selectedRunId ? runDetails[selectedRunId] : undefined;
   const selectedRunListItem = runs.find(run => run._id === selectedRunId);
   const selectedStatus = selectedRun?.status ?? selectedRunListItem?.status;
+  const selectedDetail = selectedRun ?? selectedRunListItem;
+  const isActiveSelection =
+    selectedStatus === "running" || selectedStatus === "queued";
 
-  // Reset filters when switching runs.
+  // Reset filters + cancel state when switching runs.
   useEffect(() => {
     setStatusFilter("all");
     setLogQuery("");
+    setCancelling(false);
   }, [selectedRunId]);
 
   const stepResults = useMemo(
@@ -235,6 +242,35 @@ export default function DbtRunHistory({
     retryRun,
     onSelectRun,
   ]);
+
+  const handleCancel = useCallback(async () => {
+    if (!workspaceId || !selectedRunId || cancelling) return;
+    // Optimistically flip to "Cancelling…"; the poll/refetch reconciles it to
+    // "Cancelled" once the runner finalizes.
+    setCancelling(true);
+    await cancelRun(workspaceId, projectId, selectedRunId);
+    await fetchRunDetails(workspaceId, projectId, selectedRunId);
+  }, [
+    workspaceId,
+    projectId,
+    selectedRunId,
+    cancelling,
+    cancelRun,
+    fetchRunDetails,
+  ]);
+
+  // Clear the optimistic "Cancelling…" label once the run reaches a terminal
+  // status (cancelled/success/error) — the poll keeps fetching until then.
+  useEffect(() => {
+    if (cancelling && selectedStatus && !isActiveSelection) {
+      setCancelling(false);
+    }
+  }, [cancelling, selectedStatus, isActiveSelection]);
+
+  const cancelChipLabel =
+    cancelling && isActiveSelection
+      ? "Cancelling…"
+      : (selectedStatus ?? "queued");
 
   return (
     <Box sx={{ height: "100%", minHeight: 0 }}>
@@ -420,12 +456,11 @@ export default function DbtRunHistory({
                   size="small"
                   variant="outlined"
                   icon={
-                    selectedStatus === "running" ||
-                    selectedStatus === "queued" ? (
+                    isActiveSelection ? (
                       <CircularProgress size={10} />
                     ) : undefined
                   }
-                  label={selectedStatus ?? "queued"}
+                  label={cancelChipLabel}
                   sx={{
                     height: 20,
                     textTransform: "capitalize",
@@ -476,10 +511,39 @@ export default function DbtRunHistory({
                   {(selectedRun ?? selectedRunListItem)?.trigger} ·{" "}
                   {(selectedRun ?? selectedRunListItem)?.triggeredBy}
                 </Typography>
+                {selectedStatus === "cancelled" &&
+                  selectedDetail?.cancelledBy && (
+                    <Typography
+                      variant="caption"
+                      sx={{ color: "warning.main" }}
+                      title={absoluteTime(selectedDetail.cancelledAt)}
+                    >
+                      cancelled by {selectedDetail.cancelledBy}
+                      {selectedDetail.cancelledAt
+                        ? ` · ${relativeTime(selectedDetail.cancelledAt)}`
+                        : ""}
+                    </Typography>
+                  )}
                 {(selectedRun ?? selectedRunListItem)?.error && (
                   <Typography variant="caption" color="error">
                     {(selectedRun ?? selectedRunListItem)?.error}
                   </Typography>
+                )}
+                {isActiveSelection && (
+                  <Tooltip title="Stop this run (terminates the dbt process)">
+                    <span style={{ marginLeft: "auto" }}>
+                      <Button
+                        size="small"
+                        color="warning"
+                        variant="outlined"
+                        startIcon={<StopIcon size={14} />}
+                        onClick={handleCancel}
+                        disabled={cancelling}
+                      >
+                        {cancelling ? "Cancelling…" : "Cancel"}
+                      </Button>
+                    </span>
+                  </Tooltip>
                 )}
                 {selectedStatus === "error" && (
                   <Tooltip title="Re-run only the failed/skipped nodes">

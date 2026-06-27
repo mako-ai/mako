@@ -28,7 +28,20 @@ import {
   runDbt,
   type DbtLogLine,
 } from "../../dbt/runner.service";
-import { triggerDbtJobRun } from "../../dbt/dbt-run.service";
+import {
+  finalizeCancelledDbtRun,
+  triggerDbtJobRun,
+} from "../../dbt/dbt-run.service";
+import {
+  registerActiveRun,
+  unregisterActiveRun,
+  type ActiveRunControl,
+} from "../../dbt/dbt-run-registry";
+import {
+  cancelBigQueryJobs,
+  extractBigQueryJobIds,
+  type ParsedBigQueryJob,
+} from "../../dbt/bigquery-cancel.service";
 import {
   computePackagesHash,
   loadDbtCaches,
@@ -104,6 +117,28 @@ interface DbtRunRequestedEvent {
   projectId: string;
   runId: string;
   jobId?: string;
+}
+
+/**
+ * Mutable, process-local state backing a run's {@link ActiveRunControl}. The
+ * BigQuery credentials are filled in lazily once the executor loads the project
+ * snapshot inside the command step (so the registry can cancel warehouse jobs
+ * even though the registration happens before the snapshot is available).
+ */
+interface DbtRunCancelState {
+  bqJobs: Map<string, ParsedBigQueryJob>;
+  bqCredentials?: Record<string, unknown>;
+  bqLocation?: string;
+}
+
+/**
+ * Scan a streamed dbt log line for BigQuery job ids and remember them so a
+ * cancel can stop the warehouse query, not just the local subprocess.
+ */
+function captureBigQueryJobs(state: DbtRunCancelState, line: string): void {
+  for (const job of extractBigQueryJobIds(line)) {
+    state.bqJobs.set(job.jobId, job);
+  }
 }
 
 /** Read an artifact key into a Buffer, or undefined if missing/unreadable. */
@@ -206,6 +241,25 @@ export const dbtRunExecutorFunction = inngest.createFunction(
     let unexpectedError: unknown;
     const allStepResults: ReturnType<typeof parseStepResults> = [];
 
+    // Cancellation plumbing: an AbortController whose signal is passed into
+    // every runDbt call so a cancel can SIGTERM/SIGKILL the dbt subprocess, and
+    // a registry handle the cancel API path uses to reach this process. The
+    // BigQuery credentials are populated lazily from the snapshot below.
+    const controller = new AbortController();
+    const cancelState: DbtRunCancelState = { bqJobs: new Map() };
+    const runControl: ActiveRunControl = {
+      abort: reason => controller.abort(reason),
+      cancelWarehouseJobs: async () => {
+        if (!cancelState.bqCredentials || cancelState.bqJobs.size === 0) return;
+        await cancelBigQueryJobs({
+          credentials: cancelState.bqCredentials,
+          defaultLocation: cancelState.bqLocation,
+          jobs: [...cancelState.bqJobs.values()],
+        });
+      },
+    };
+    registerActiveRun(data.runId, runControl);
+
     try {
       for (let i = 0; i < runInfo.commands.length; i++) {
         const commandText = runInfo.commands[i];
@@ -218,10 +272,30 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             projectId: data.projectId,
             environmentName: runInfo.environment,
           });
+          // Stash BigQuery credentials so a cancel can stop in-flight warehouse
+          // jobs (best-effort; no-op for non-BigQuery adapters).
+          if (snapshot.profile.adapterPackage === "dbt-bigquery") {
+            const keyfile = snapshot.profile.keyfiles[0]?.content;
+            if (keyfile) {
+              try {
+                cancelState.bqCredentials = JSON.parse(keyfile) as Record<
+                  string,
+                  unknown
+                >;
+              } catch {
+                /* malformed keyfile — dbt surfaces its own error */
+              }
+            }
+          }
           const parsed = parseDbtCommand(commandText);
           const logWriter = createLogWriter(runObjectId);
+          // Tee the log stream to both the DB writer and the BQ job scraper.
+          const onLog = (line: DbtLogLine) => {
+            captureBigQueryJobs(cancelState, line.line);
+            logWriter.onLog(line);
+          };
 
-          logWriter.onLog({
+          onLog({
             ts: new Date(),
             level: "info",
             line: `$ dbt ${parsed.argv.join(" ")}`,
@@ -272,7 +346,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
                 skipDeps: caches.packagesFresh,
                 packagesHash,
                 workingDir,
-                onLog: logWriter.onLog,
+                signal: controller.signal,
+                onLog,
               });
 
             let result: Awaited<ReturnType<typeof runDbt>> | undefined;
@@ -411,11 +486,29 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         runId: data.runId,
         error,
       });
+    } finally {
+      unregisterActiveRun(data.runId, runControl);
     }
 
     await step.run("finalize-run", async () => {
       const completedAt = new Date();
-      const run = await DbtRun.findById(runObjectId).select("startedAt").lean();
+      const run = await DbtRun.findById(runObjectId)
+        .select("startedAt status cancelledAt cancelledBy")
+        .lean();
+
+      // Detect cancellation from the PERSISTED marker, not the in-memory
+      // AbortController: Inngest replays the function body (and recreates the
+      // controller) on each step, so `controller.signal.aborted` is only true
+      // in the invocation that ran the subprocess — not in the later
+      // finalize-run replay. requestDbtRunCancel stages cancelledAt/cancelledBy
+      // (or flips status to "cancelled") before aborting, so the marker is
+      // durable. Without this a cancelled run would finalize as "error".
+      if (run?.status === "cancelled" || run?.cancelledAt) {
+        await finalizeCancelledDbtRun(runObjectId, run?.cancelledBy);
+        logger.info("dbt run cancelled; finalized", { runId: data.runId });
+        return;
+      }
+
       const durationMs = run?.startedAt
         ? completedAt.getTime() - new Date(run.startedAt).getTime()
         : undefined;
@@ -546,22 +639,13 @@ export const dbtRunCancelFunction = inngest.createFunction(
   },
   { event: "dbt/run.cancel" },
   async ({ event, step }) => {
-    const runId = (event.data as { runId: string }).runId;
+    const { runId, cancelledBy } = event.data as {
+      runId: string;
+      cancelledBy?: string;
+    };
     await step.sleep("allow-executor-teardown", "10s");
     await step.run("finalize-cancelled", async () => {
-      await DbtRun.updateOne(
-        {
-          _id: new Types.ObjectId(runId),
-          status: { $in: ["queued", "running"] },
-        },
-        {
-          $set: {
-            status: "cancelled",
-            completedAt: new Date(),
-            error: "Cancelled by user",
-          },
-        },
-      );
+      await finalizeCancelledDbtRun(new Types.ObjectId(runId), cancelledBy);
     });
     return { runId };
   },

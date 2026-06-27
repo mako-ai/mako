@@ -192,6 +192,10 @@ export interface DbtRunItem {
   startedAt?: string;
   completedAt?: string;
   durationMs?: number;
+  /** Set when the run was cancelled. */
+  cancelledAt?: string;
+  /** User id (or "agent") that cancelled the run. */
+  cancelledBy?: string;
   stepResults?: DbtStepResult[];
   error?: string;
   createdAt: string;

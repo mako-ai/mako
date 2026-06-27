@@ -18,6 +18,7 @@ export type ToolIconKey =
   | "clock"
   | "brain"
   | "shield-check"
+  | "square"
   | "help-circle";
 
 export type AgentToolDomain =
@@ -632,6 +633,12 @@ export const AGENT_TOOL_MANIFEST = {
       return jobName ? `Running job "${jobName}"` : "Running dbt job";
     },
     icon: "play",
+  },
+  dbt_cancel_run: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Cancelling dbt run",
+    icon: "square",
   },
   dbt_delete_job: {
     domain: "dbt",
