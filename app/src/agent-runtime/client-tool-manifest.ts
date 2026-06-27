@@ -388,6 +388,32 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
+  save_dashboard_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const comment = (input as Record<string, unknown>)?.comment;
+      return comment
+        ? `Publishing version: "${comment}"`
+        : "Publishing dashboard version";
+    },
+    icon: "clock",
+  },
+  restore_dashboard_version: {
+    domain: "dashboard",
+    execution: "client",
+    clientExecutor: "dashboard",
+    longRunning: true,
+    getLabel: input => {
+      const version = (input as Record<string, unknown>)?.version;
+      return version
+        ? `Restoring version ${version}`
+        : "Restoring dashboard version";
+    },
+    icon: "clock",
+  },
   list_open_apps: {
     domain: "app",
     execution: "client",
