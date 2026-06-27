@@ -379,6 +379,27 @@ app.openapi(
         version: 1,
       });
 
+      // Seed an initial published version (v1) so every app has version history
+      // from creation — mirroring consoles/dashboards. Without this, an app only
+      // gets versions after an explicit "Publish version", so freshly-created
+      // apps showed an empty history.
+      const displayName = await getUserDisplayName(userId ?? "system");
+      const initialSnapshot = buildAppSnapshot(created);
+      const initialVersion = await createVersion({
+        entityType: "app",
+        entityId: created._id,
+        workspaceId: new Types.ObjectId(workspaceId),
+        snapshot: initialSnapshot as unknown as Record<string, unknown>,
+        savedBy: userId ?? "system",
+        savedByName: displayName,
+        comment: "App created",
+      });
+      created.published = initialSnapshot as unknown as Record<string, unknown>;
+      created.markModified("published");
+      created.publishedVersion = initialVersion.version;
+      created.publishedAt = new Date();
+      await created.save();
+
       return c.json({ success: true, app: serializeApp(created) }, 201);
     } catch (error) {
       logger.error("Error creating app", { error });
