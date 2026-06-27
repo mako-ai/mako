@@ -9,6 +9,7 @@ import {
 import { createDbtServerTools } from "../../agent-lib/tools/dbt-tools";
 import { createServerAppTools } from "../../agent-lib/tools/server-app-tools";
 import { createServerDataSourceTools } from "../../agent-lib/tools/server-data-source-tools";
+import { createServerChartTools } from "../../agent-lib/tools/server-chart-tools";
 import { createSelfDirectiveTools } from "../../agent-lib/tools/self-directive-tool";
 import { createSkillTools } from "../../agent-lib/tools/skill-tools";
 import { createConsoleSearchTools } from "../../agent-lib/tools/console-search-tools";
@@ -59,6 +60,7 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
     chatId: context.chatId,
   });
   const serverDataSourceTools = createServerDataSourceTools({ workspaceId });
+  const serverChartTools = createServerChartTools();
 
   const {
     list_connections: _flowListConnections,
@@ -101,6 +103,9 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...dashboardSearchTools,
       ...versionHistoryTools,
       ...webTools,
+      // Server-executed chart-template reads override the client (no-execute)
+      // versions of the same names; must come after the client tool spreads.
+      ...serverChartTools,
     },
   };
 }

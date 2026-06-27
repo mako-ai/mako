@@ -375,17 +375,17 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Setting time dimension",
     icon: "clock",
   },
+  // Chart-template reads execute SERVER-SIDE (static @mako/schemas lookup; see
+  // api/src/agent-lib/tools/server-chart-tools.ts).
   get_chart_templates: {
     domain: "dashboard",
-    execution: "client",
-    clientExecutor: "dashboard",
+    execution: "server",
     getLabel: () => "Listing chart templates",
     icon: "list",
   },
   get_chart_template: {
     domain: "chart",
-    execution: "client",
-    clientExecutor: "dashboard",
+    execution: "server",
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
@@ -442,6 +442,8 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "plus",
   },
+  // App reads execute SERVER-SIDE against the saved doc (see
+  // api/src/agent-lib/tools/server-app-tools.ts).
   get_app_state: {
     domain: "app",
     execution: "server",

@@ -50,6 +50,11 @@ export type {
 } from "./console-tools";
 
 export { clientChartTools } from "./chart-tools";
+export {
+  // Schemas for the server-executed chart-template reads.
+  getChartTemplateSchema,
+  getChartTemplatesSchema,
+} from "./chart-tools";
 export type { ModifyChartSpecInput } from "./chart-tools";
 
 export { clientDashboardTools } from "./dashboard-tools";

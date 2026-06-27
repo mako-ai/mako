@@ -38,6 +38,16 @@ export const modifyChartSpecSchema = z.object({
 
 export type ModifyChartSpecInput = z.infer<typeof modifyChartSpecSchema>;
 
+// Chart-template reads are pure static lookups (`@mako/schemas`) and execute
+// SERVER-SIDE — see api/src/agent-lib/tools/server-chart-tools.ts.
+export const getChartTemplateSchema = z.object({
+  templateId: z
+    .string()
+    .describe("Template ID (e.g. 'multi-series-line-hover', 'donut')"),
+});
+
+export const getChartTemplatesSchema = z.object({});
+
 export const clientChartTools = {
   modify_chart_spec: tool({
     description:
@@ -54,10 +64,6 @@ export const clientChartTools = {
       "Get a best-practice chart template with full vegaLiteSpec, SQL pattern, and implementation notes. " +
       "Use for complex patterns (e.g. multi-series hover rule, stacked bar, donut) instead of inventing specs from scratch. " +
       "Available IDs: multi-series-line-hover, time-series-area, grouped-bar, stacked-bar, horizontal-ranking, donut, kpi-sparkline.",
-    inputSchema: z.object({
-      templateId: z
-        .string()
-        .describe("Template ID (e.g. 'multi-series-line-hover', 'donut')"),
-    }),
+    inputSchema: getChartTemplateSchema,
   }),
 };
