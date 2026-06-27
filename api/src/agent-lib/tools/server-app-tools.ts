@@ -258,6 +258,16 @@ export function createServerAppTools({
             createdBy: userId ?? "agent",
             version: 1,
           });
+          // Poke the workspace so an attached browser's Apps explorer picks up
+          // the new app without a manual reload (browser follows the server).
+          publishRealtimeEvent(workspaceId, {
+            type: "app.updated",
+            appId: created._id.toString(),
+            version: created.version,
+            updatedBy: userId ?? "agent",
+            clientId: agentClientId,
+            origin: "agent",
+          });
           return {
             success: true,
             appId: created._id.toString(),

@@ -358,7 +358,13 @@ export const useRealtimeStore = create<RealtimeStore>()(
       if (!workspaceId) return;
       const appStore = useAppStore.getState();
       const open = appStore.openApps[event.appId];
-      if (!open) return; // not open in this window — explorer refreshes lazily
+      if (!open) {
+        // Not open in this window — but the app list may have changed (e.g. the
+        // agent created/edited an app server-side). Refresh the explorer so new
+        // apps appear without a manual reload (browser follows the server).
+        void appStore.fetchList(workspaceId);
+        return;
+      }
       if ((open.version ?? 0) >= event.version) return; // stale / own echo
       void (async () => {
         const fresh = await useAppStore
