@@ -20,10 +20,14 @@ import {
   createPullRequest,
   deleteBranch,
   getBlobContent,
+  getPullRequest,
   getRefCommit,
   getRepoInfo,
   getRepoTree,
   listBranches,
+  mergePullRequest,
+  tryDeleteBranch,
+  type MergeMethod,
   type TreeChange,
 } from "../integrations/github/github-api";
 import { syncProjectFromRepo } from "./dbt-github-sync.service";
@@ -578,4 +582,78 @@ export async function openProjectPullRequest(
     { title: params.title, head: branch, base, body: params.body },
     token,
   );
+}
+
+export interface MergePullRequestResult {
+  sha: string;
+  branchDeleted: boolean;
+  branchDeleteWarning?: string;
+  branch: string;
+  workingTreeClean: boolean;
+}
+
+/**
+ * Merge a GitHub pull request, optionally delete its head branch, then switch
+ * the project back to the repo default branch and sync the merged state into
+ * the working tree.
+ */
+export async function mergeProjectPullRequest(
+  project: IDbtProject,
+  params: {
+    prNumber: number;
+    mergeMethod?: MergeMethod;
+    deleteBranch?: boolean;
+    updatedBy: string;
+  },
+): Promise<MergePullRequestResult> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+    const token = await resolveRepoToken(fresh.repo.installationId);
+    const { owner, repo } = fresh.repo;
+
+    const pr = await getPullRequest(owner, repo, params.prNumber, token);
+    if (pr.state !== "open") {
+      throw new Error(
+        `Pull request #${params.prNumber} is ${pr.state} — only open PRs can be merged`,
+      );
+    }
+
+    const { sha } = await mergePullRequest(
+      owner,
+      repo,
+      params.prNumber,
+      { mergeMethod: params.mergeMethod ?? "squash" },
+      token,
+    );
+
+    const info = await getRepoInfo(owner, repo, token);
+    const defaultBranch = info.defaultBranch;
+
+    fresh.repo.branch = defaultBranch;
+    fresh.markModified("repo");
+    await fresh.save();
+    await syncProjectFromRepo(fresh, params.updatedBy);
+
+    let branchDeleted = false;
+    let branchDeleteWarning: string | undefined;
+    if (params.deleteBranch !== false) {
+      const deleteResult = await tryDeleteBranch(
+        owner,
+        repo,
+        pr.headRef,
+        token,
+      );
+      branchDeleted = deleteResult.deleted;
+      branchDeleteWarning = deleteResult.warning;
+    }
+
+    const status = await getGitStatus(fresh);
+    return {
+      sha,
+      branchDeleted,
+      branchDeleteWarning,
+      branch: defaultBranch,
+      workingTreeClean: !status.hasChanges,
+    };
+  });
 }

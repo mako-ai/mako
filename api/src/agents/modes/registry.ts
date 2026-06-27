@@ -185,6 +185,7 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_list_branches",
   "dbt_delete_branch",
   "dbt_open_pull_request",
+  "dbt_merge_pull_request",
   // Recovery: surface + restore work hidden by a destructive switch/sync.
   "dbt_list_recoverable_files",
   "dbt_restore_file",

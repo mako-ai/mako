@@ -444,6 +444,101 @@ export async function createPullRequest(
   return { number: json.number, htmlUrl: json.html_url };
 }
 
+export interface PullRequestInfo {
+  number: number;
+  headRef: string;
+  baseRef: string;
+  mergeable: boolean | null;
+  state: string;
+}
+
+export async function getPullRequest(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  token?: string,
+): Promise<PullRequestInfo> {
+  const res = await ghFetch(`/repos/${owner}/${repo}/pulls/${prNumber}`, token);
+  const json = (await res.json()) as {
+    number: number;
+    head: { ref: string };
+    base: { ref: string };
+    mergeable: boolean | null;
+    state: string;
+  };
+  return {
+    number: json.number,
+    headRef: json.head.ref,
+    baseRef: json.base.ref,
+    mergeable: json.mergeable,
+    state: json.state,
+  };
+}
+
+export type MergeMethod = "merge" | "squash" | "rebase";
+
+function parseGitHubErrorMessage(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { message?: string };
+    if (parsed.message) return parsed.message;
+  } catch {
+    // fall through
+  }
+  return body.slice(0, 500);
+}
+
+/** Merge a pull request. Surfaces GitHub's error message verbatim on failure. */
+export async function mergePullRequest(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  params: { mergeMethod: MergeMethod },
+  token?: string,
+): Promise<{ sha: string }> {
+  const headers = authHeaders(token);
+  headers["Content-Type"] = "application/json";
+  const res = await fetch(
+    `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/merge`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ merge_method: params.mergeMethod }),
+    },
+  );
+  const bodyText = await res.text();
+  if (!res.ok) {
+    throw new Error(parseGitHubErrorMessage(bodyText));
+  }
+  const json = JSON.parse(bodyText) as { sha: string };
+  return { sha: json.sha };
+}
+
+/**
+ * Delete a branch ref. Returns whether the ref is gone and an optional warning
+ * when deletion fails for a reason other than "already deleted".
+ */
+export async function tryDeleteBranch(
+  owner: string,
+  repo: string,
+  branch: string,
+  token?: string,
+): Promise<{ deleted: boolean; warning?: string }> {
+  try {
+    await ghFetch(
+      `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+      token,
+      { method: "DELETE" },
+    );
+    return { deleted: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("GitHub 404") || message.includes("GitHub 422")) {
+      return { deleted: true };
+    }
+    return { deleted: false, warning: message };
+  }
+}
+
 /** Repos an App installation can access (requires an installation token). */
 export async function listInstallationRepos(
   token: string,
