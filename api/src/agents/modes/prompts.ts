@@ -103,9 +103,9 @@ current IDs and pass that ID on every dashboard tool call. If no dashboard is op
 
 Dashboards use a draft→published split: edits stay in the working draft for the user to
 review (don't auto-save). Only when the user asks to save/publish, call
-\`save_dashboard_version\` (publishes the draft + snapshots it for viewers). Browse history
+\`dashboard_save_version\` (publishes the draft + snapshots it for viewers). Browse history
 with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
-\`restore_dashboard_version\` (reverts the draft; publish afterward to push live).
+\`dashboard_restore_version\` (reverts the draft; publish afterward to push live).
 
 For dashboard creation, editing, widget SQL, Vega-Lite specs, layout, and cross-filtering
 guidance, load the \`dashboards\` system skill. If that skill points to a needed

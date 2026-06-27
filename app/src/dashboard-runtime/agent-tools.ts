@@ -97,7 +97,7 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
   "open_dashboard",
   // Restore is a server-side revert + reload; it does not require holding the
   // edit lock (it replaces the open tab's state with the restored draft).
-  "restore_dashboard_version",
+  "dashboard_restore_version",
 ]);
 
 export async function executeDashboardAgentTool(
@@ -184,7 +184,7 @@ export async function executeDashboardAgentTool(
     }
   }
 
-  if (toolName === "restore_dashboard_version") {
+  if (toolName === "dashboard_restore_version") {
     const ctx = requireDashboardId(input);
     if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     const version =
@@ -217,11 +217,11 @@ export async function executeDashboardAgentTool(
       title: (d as any)?.title,
       message:
         `Restored the dashboard draft to version ${version}. This is not yet ` +
-        "published — call save_dashboard_version to push it live to viewers.",
+        "published — call dashboard_save_version to push it live to viewers.",
     };
   }
 
-  if (toolName === "save_dashboard_version") {
+  if (toolName === "dashboard_save_version") {
     const ctx = requireDashboardId(input);
     if (!ctx) return { success: false, error: DASHBOARD_ID_REQUIRED_ERROR };
     const comment = typeof input.comment === "string" ? input.comment : "";

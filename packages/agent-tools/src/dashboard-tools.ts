@@ -404,7 +404,7 @@ export const clientDashboardTools = {
       templateId: z.string().describe("Template ID from get_chart_templates"),
     }),
   }),
-  save_dashboard_version: tool({
+  dashboard_save_version: tool({
     description:
       "Save AND publish the dashboard's current edits as a new version. Persists " +
       "the working draft to the server, creates an immutable version snapshot in " +
@@ -414,13 +414,13 @@ export const clientDashboardTools = {
       "edit mode for the user to review. Give a short `comment`.",
     inputSchema: saveDashboardVersionSchema,
   }),
-  restore_dashboard_version: tool({
+  dashboard_restore_version: tool({
     description:
       "Restore the dashboard to a previous version (get the number from " +
       "browse_version_history with entityType:'dashboard'). Reverts the working " +
       "draft to that snapshot and reloads the dashboard; the current state is " +
       "preserved as a new version first, so it is never lossy. Restoring does " +
-      "NOT publish — call save_dashboard_version afterward to push the restored " +
+      "NOT publish — call dashboard_save_version afterward to push the restored " +
       "state live to viewers. This replaces any unsaved edits in the open tab.",
     inputSchema: restoreDashboardVersionSchema,
   }),

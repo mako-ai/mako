@@ -388,7 +388,7 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Reading chart template",
     icon: "eye",
   },
-  save_dashboard_version: {
+  dashboard_save_version: {
     domain: "dashboard",
     execution: "client",
     clientExecutor: "dashboard",
@@ -401,7 +401,7 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "clock",
   },
-  restore_dashboard_version: {
+  dashboard_restore_version: {
     domain: "dashboard",
     execution: "client",
     clientExecutor: "dashboard",

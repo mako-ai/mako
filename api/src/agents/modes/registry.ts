@@ -90,8 +90,8 @@ const DASHBOARD_MODE_TOOL_NAMES: string[] = [
   "set_time_dimension",
   "get_chart_templates",
   "get_chart_template",
-  "save_dashboard_version",
-  "restore_dashboard_version",
+  "dashboard_save_version",
+  "dashboard_restore_version",
   "capture_screenshot",
   // Search + discovery for building data sources
   "search_dashboards",
