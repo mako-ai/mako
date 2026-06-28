@@ -56,6 +56,11 @@ interface ConsoleActions {
        * one it opens.
        */
       replacePristine?: boolean;
+      /**
+       * Server-loaded agent drafts may have no EntityVersion baseline. In that
+       * case an unknown savedStateHash is intentional: Save must stay enabled.
+       */
+      preserveMissingSavedStateHash?: boolean;
     },
   ) => string;
   closeTab: (id: string) => void;
@@ -492,7 +497,7 @@ export const useConsoleStore = create<ConsoleStore>()(
 
         const savedStateHash =
           tab.savedStateHash ??
-          (tab.filePath
+          (tab.filePath && !options?.preserveMissingSavedStateHash
             ? computeConsoleStateHash(
                 content,
                 tab.connectionId,
@@ -1089,29 +1094,36 @@ export const useConsoleStore = create<ConsoleStore>()(
             const content = res.content || "";
             const filePath = res.path || res.name;
 
-            get().openTab({
-              id: res.id,
-              title: res.name || res.path || "Console",
-              content,
-              isSaved: res.isSaved ?? !!filePath,
-              savedStateHash: res.savedStateHash,
-              connectionId: res.connectionId,
-              databaseId: res.databaseId,
-              databaseName: res.databaseName,
-              filePath,
-              kind: "console",
-              chartSpec: res.chartSpec,
-              resultsViewMode: res.resultsViewMode,
-              schedule: res.schedule,
-              scheduledRun: res.scheduledRun,
-              access: res.access,
-              workspaceRole: res.workspaceRole,
-              owner_id: res.owner_id,
-              readOnly: res.readOnly,
-              metadata: options?.openScheduledRuns
-                ? { openScheduledRuns: true }
-                : undefined,
-            });
+            get().openTab(
+              {
+                id: res.id,
+                title: res.name || res.path || "Console",
+                content,
+                isSaved: res.isSaved ?? !!filePath,
+                savedStateHash: res.savedStateHash,
+                connectionId: res.connectionId,
+                databaseId: res.databaseId,
+                databaseName: res.databaseName,
+                filePath,
+                kind: "console",
+                chartSpec: res.chartSpec,
+                resultsViewMode: res.resultsViewMode,
+                schedule: res.schedule,
+                scheduledRun: res.scheduledRun,
+                access: res.access,
+                workspaceRole: res.workspaceRole,
+                owner_id: res.owner_id,
+                readOnly: res.readOnly,
+                metadata: options?.openScheduledRuns
+                  ? { openScheduledRuns: true }
+                  : undefined,
+              },
+              {
+                preserveMissingSavedStateHash:
+                  res.lastDraftOrigin === "agent" &&
+                  res.savedStateHash === undefined,
+              },
+            );
             get().setActiveTab(res.id);
           } else {
             set(state => {
@@ -1143,20 +1155,27 @@ export const useConsoleStore = create<ConsoleStore>()(
             const content = res.content || "";
             const filePath = res.path || res.name;
 
-            get().openTab({
-              id: res.id,
-              title: res.name || res.path || "Console",
-              content,
-              isSaved: res.isSaved ?? !!filePath,
-              savedStateHash: res.savedStateHash,
-              connectionId: res.connectionId,
-              databaseId: res.databaseId,
-              databaseName: res.databaseName,
-              filePath,
-              kind: "console",
-              chartSpec: res.chartSpec,
-              resultsViewMode: res.resultsViewMode,
-            });
+            get().openTab(
+              {
+                id: res.id,
+                title: res.name || res.path || "Console",
+                content,
+                isSaved: res.isSaved ?? !!filePath,
+                savedStateHash: res.savedStateHash,
+                connectionId: res.connectionId,
+                databaseId: res.databaseId,
+                databaseName: res.databaseName,
+                filePath,
+                kind: "console",
+                chartSpec: res.chartSpec,
+                resultsViewMode: res.resultsViewMode,
+              },
+              {
+                preserveMissingSavedStateHash:
+                  res.lastDraftOrigin === "agent" &&
+                  res.savedStateHash === undefined,
+              },
+            );
             get().setActiveTab(res.id);
           }
         } catch {
@@ -1268,7 +1287,12 @@ export const useConsoleStore = create<ConsoleStore>()(
               lastRun: res.lastRun,
               kind: "console",
             },
-            { replacePristine: false },
+            {
+              replacePristine: false,
+              preserveMissingSavedStateHash:
+                res.lastDraftOrigin === "agent" &&
+                res.savedStateHash === undefined,
+            },
           );
           get().setActiveTab(consoleId);
         } catch (e) {
@@ -1839,7 +1863,11 @@ export const useConsoleStore = create<ConsoleStore>()(
                 if (tab.isSaved === undefined) {
                   tab.isSaved = !!tab.filePath;
                 }
-                if (tab.savedStateHash === undefined && tab.filePath) {
+                if (
+                  tab.savedStateHash === undefined &&
+                  tab.filePath &&
+                  tab.initialContent !== undefined
+                ) {
                   const savedContent = tab.initialContent ?? tab.content ?? "";
                   const savedConnId = tab.savedConnectionId ?? tab.connectionId;
                   const savedDbId = tab.savedDatabaseId ?? tab.databaseId;

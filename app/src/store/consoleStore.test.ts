@@ -123,4 +123,25 @@ describe("consoleStore saved baseline reconciliation", () => {
     expect(computeConsoleStateHash(tab.content)).not.toBe(savedStateHash);
     expect(hasUnsavedLocalEdits(id)).toBe(true);
   });
+
+  it("does not synthesize a saved baseline for server-loaded legacy agent drafts", () => {
+    const id = "agent-server-open-console";
+    useConsoleStore.getState().openTab(
+      {
+        id,
+        title: "Legacy agent draft",
+        content: "select 2;",
+        isSaved: true,
+        filePath: "Legacy agent draft",
+        draftRevision: 2,
+        version: 1,
+        kind: "console",
+      },
+      { preserveMissingSavedStateHash: true },
+    );
+
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.savedStateHash).toBeUndefined();
+    expect(hasUnsavedLocalEdits(id)).toBe(true);
+  });
 });
