@@ -3982,6 +3982,7 @@ const Chat: React.FC<ChatProps> = ({
       if (!data) return;
 
       const currentStore = useConsoleStore.getState();
+      const isSaved = data.isSaved ?? !!data.path;
       currentStore.openTab(
         {
           id: consoleId,
@@ -3990,8 +3991,8 @@ const Chat: React.FC<ChatProps> = ({
           connectionId: data.connectionId,
           databaseId: data.databaseId,
           databaseName: data.databaseName,
-          filePath: data.path,
-          isSaved: true,
+          filePath: isSaved ? data.path || data.name : undefined,
+          isSaved,
           savedStateHash: data.savedStateHash,
         },
         {
