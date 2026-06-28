@@ -3743,21 +3743,13 @@ const Chat: React.FC<ChatProps> = ({
           // and fetches those consoles from the database
           if (data.consoles && data.consoles.length > 0) {
             const store = useConsoleStore.getState();
-            const existingTabs = Object.values(store.tabs);
+            const workspaceId = workspaceIdRef.current;
 
             for (const console of data.consoles) {
               // Check if console already exists in tabs (by ID)
-              const exists = existingTabs.some((t: any) => t.id === console.id);
-              if (!exists) {
-                // Add the console tab
-                store.openTab({
-                  id: console.id,
-                  title: console.title || "Untitled",
-                  content: console.content || "",
-                  connectionId: console.connectionId,
-                  databaseId: console.databaseId,
-                  databaseName: console.databaseName,
-                });
+              const exists = Boolean(store.tabs[console.id]);
+              if (!exists && workspaceId) {
+                await store.openConsoleFromServer(workspaceId, console.id);
               }
             }
 
