@@ -1863,22 +1863,6 @@ export const useConsoleStore = create<ConsoleStore>()(
                 if (tab.isSaved === undefined) {
                   tab.isSaved = !!tab.filePath;
                 }
-                if (
-                  tab.savedStateHash === undefined &&
-                  tab.filePath &&
-                  tab.initialContent !== undefined
-                ) {
-                  const savedContent = tab.initialContent ?? tab.content ?? "";
-                  const savedConnId = tab.savedConnectionId ?? tab.connectionId;
-                  const savedDbId = tab.savedDatabaseId ?? tab.databaseId;
-                  const savedDbName = tab.savedDatabaseName ?? tab.databaseName;
-                  tab.savedStateHash = computeConsoleStateHash(
-                    savedContent,
-                    savedConnId,
-                    savedDbId,
-                    savedDbName,
-                  );
-                }
                 delete tab.initialContent;
                 delete tab.dbContentHash;
                 delete tab.savedConnectionId;
