@@ -74,6 +74,16 @@ navigate("/", { replace: true }); // replace the current entry
 
 Use distinct **paths** for separate views (`/`, `/customers/42`) and **query params** for filters and sort within a view. The app's pathname rides on the host URL in a reserved `_path` param; query params stay readable on the address bar. Hashes (`#…`) are not carried across the bridge — keep state in the path or query.
 
+## Versioning & Publishing
+
+Apps autosave every edit, so what you (or the AI agent) work on is a **draft**. To create an immutable checkpoint, **save a version** — this snapshots the current draft into version history *and* **publishes** it.
+
+- Public and shared links render the **published** version, never the live draft, so viewers never see a half-finished edit.
+- **Restoring** a past version reverts the draft (snapshotting the current draft first, so it's never lossy) but does **not** auto-publish — save a version afterward to push the restored state live.
+- Materialized binding caches are preserved across restore.
+
+See [Version History](/version-history/) for the REST endpoints, response shapes, and the agent tools (`browse_version_history`, `get_version_snapshot`).
+
 ## Access Control
 
 Apps follow the same model as dashboards:
