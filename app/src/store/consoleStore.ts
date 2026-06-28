@@ -751,8 +751,8 @@ export const useConsoleStore = create<ConsoleStore>()(
 
         if (action === "accept") {
           // The server already holds the proposed content at proposedRevision;
-          // adopt it locally so the tab mirrors the server and autosave stays
-          // quiet. The editor buffer is set to the proposal by Console.
+          // adopt it locally so the tab mirrors the server's DRAFT and autosave
+          // stays quiet. The editor buffer is set to the proposal by Console.
           const newStateHash = computeConsoleStateHash(
             review.proposedContent,
             tab.connectionId,
@@ -764,10 +764,22 @@ export const useConsoleStore = create<ConsoleStore>()(
             if (!t) return;
             t.content = review.proposedContent;
             t.draftRevision = review.proposedRevision;
-            if (t.isSaved) t.savedStateHash = newStateHash;
+            // Deliberately DO NOT advance `savedStateHash` here. An agent
+            // modify_console is a DRAFT write: it bumps `draftRevision` only,
+            // never the explicit-save `version` that creates a version-history
+            // checkpoint. Treating the accepted draft as the explicit-save
+            // baseline made `hasUnsavedChanges` false, so the Save button went
+            // disabled even though the agent had changed the SQL — and because
+            // the agent never created a version, the user was left with no way
+            // to checkpoint the change into save history. Leaving the baseline
+            // on the last EXPLICIT save keeps the tab dirty (Save enabled) so a
+            // deliberate Save snapshots the agent's edit into version history.
             t.remoteUpdate = null;
           });
           blockedDraftSaves.delete(consoleId);
+          // The autosave-dedup baseline tracks the PERSISTED draft (now the
+          // agent content on the server), independent of the explicit-save
+          // baseline above — keep it current so a no-op autosave can't 409.
           lastSavedContentHash.set(consoleId, newStateHash);
           return;
         }
