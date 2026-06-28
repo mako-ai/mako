@@ -1,0 +1,171 @@
+---
+title: "How to Connect to MongoDB from PHP"
+description: "Connect to MongoDB from PHP with the ext-mongodb extension and the mongodb/mongodb library: the Client lifetime rule, CRUD, SRV strings, Atlas, authSource, pooling, transactions, and the errors you actually hit."
+database: "mongodb"
+category: "how-to"
+tags: ["mongodb", "php", "ext-mongodb", "mongodb-library", "atlas", "connection"]
+date: "2026-06-28"
+---
+
+MongoDB from PHP is built in two layers. At the bottom is `ext-mongodb`, a C extension that does the actual wire protocol, BSON encoding, and connection management. On top of it sits `mongodb/mongodb`, a Composer library that gives you the friendly `MongoDB\Client`, `Collection`, and helper APIs most code uses. You need both: the extension does the work, the library makes it pleasant. This guide covers installing both, the one lifetime rule people get wrong, CRUD, connection strings and Atlas, pooling, transactions, and the errors you will meet.
+
+## The two pieces
+
+```bash
+# 1. the C extension (does the real work)
+pecl install mongodb
+
+# 2. the high-level library (what your code calls)
+composer require mongodb/mongodb
+```
+
+As of June 2026 the extension is `ext-mongodb` 2.3.3 and the library is `mongodb/mongodb` 2.3.0, which requires PHP 8.1+ and `ext-mongodb` ^2.3. The two version lines track each other; keep them in step. The old `ext-mongo` extension (the one with the `Mongo` and `MongoClient` classes, no namespace) was abandoned years ago and does not work with modern MongoDB or PHP. If a tutorial uses `new MongoClient()` without a namespace, it is for the dead driver.
+
+Confirm the extension is loaded:
+
+```bash
+php -m | grep mongodb
+# expect: mongodb
+```
+
+This guide is written against PHP 8.5 (8.5.7 as of June 2026), but everything works on 8.1+.
+
+## Client: create one, reuse it
+
+The single most important rule: **`MongoDB\Client` is meant to be created once and reused for the lifetime of your request or process.** The underlying extension manages a connection pool per client. Constructing a new `Client` on every operation throws away that pool, opens fresh sockets each time, and will exhaust connections under load.
+
+```php
+<?php
+require 'vendor/autoload.php';
+
+$client = new MongoDB\Client('mongodb://localhost:27017');
+// reuse $client everywhere
+```
+
+In a long-running worker (Swoole, RoadRunner, a queue consumer) build the client once at boot and hand it around. In classic request-per-process PHP-FPM, one client per request is the natural unit; the connection itself is established lazily and reused within that request.
+
+Construction does not connect. The client connects lazily on the first real operation, so a wrong host or a down server surfaces as a timeout on your first query, not on `new Client()`. To fail fast at startup, ping:
+
+```php
+$client->getDatabase('admin')->command(['ping' => 1]);
+```
+
+## Basic CRUD
+
+The library exposes databases and collections you call methods on. Filters and documents are plain PHP arrays (or `BSON` objects).
+
+```php
+$collection = $client->shop->products; // database "shop", collection "products"
+
+// insert
+$result = $collection->insertOne([
+    'name'  => 'Widget',
+    'price' => 19.99,
+    'tags'  => ['hardware', 'new'],
+]);
+echo $result->getInsertedId(); // an ObjectId
+
+// find one
+$doc = $collection->findOne(['name' => 'Widget']);
+echo $doc['price']; // 19.99
+
+// find many (returns a cursor; iterate it)
+foreach ($collection->find(['price' => ['$gt' => 10]]) as $doc) {
+    echo "{$doc['name']}: {$doc['price']}\n";
+}
+
+// update
+$collection->updateOne(
+    ['name' => 'Widget'],
+    ['$set' => ['price' => 24.99]]
+);
+
+// delete
+$collection->deleteOne(['name' => 'Widget']);
+```
+
+By default documents come back as `MongoDB\Model\BSONDocument` objects that behave like arrays. If you would rather get plain PHP arrays or your own classes, pass a `typeMap`:
+
+```php
+$doc = $collection->findOne(
+    ['name' => 'Widget'],
+    ['typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']]
+);
+```
+
+## Update, not replace
+
+`updateOne` with `$set` changes only the fields you name. `replaceOne` swaps the entire document for the one you pass, dropping any field you forgot to include. The replacement is occasionally what you want, but it is the classic source of silent data loss. Default to `updateOne` with update operators (`$set`, `$inc`, `$push`) unless you genuinely mean "overwrite this whole document."
+
+## Connection strings, SRV, and Atlas
+
+The connection string carries host, credentials, and options:
+
+```php
+// standard
+$client = new MongoDB\Client('mongodb://appuser:secret@localhost:27017/?authSource=admin');
+
+// SRV (Atlas and most managed clusters)
+$client = new MongoDB\Client('mongodb+srv://appuser:secret@cluster0.abcde.mongodb.net/?retryWrites=true&w=majority');
+```
+
+Three things bite people here:
+
+- **`authSource`.** Authentication runs against the database where the user was created, not the one you query. If the user lives in `admin` but you connect to `shop`, you must pass `?authSource=admin` or authentication fails even with the correct password.
+- **Percent-encode credentials.** A password containing `@`, `:`, `/`, or `?` will corrupt the URI. Run it through `rawurlencode()` before building the string.
+- **`mongodb+srv://` implies TLS** and resolves the host list from DNS SRV records. If your network blocks SRV lookups, the connection fails before it starts. For Atlas you also must allowlist your server's egress IP, or every connection times out regardless of credentials.
+
+Pass credentials separately to keep them out of the URI:
+
+```php
+$client = new MongoDB\Client(
+    'mongodb://localhost:27017',
+    ['username' => 'appuser', 'password' => $secret, 'authSource' => 'admin']
+);
+```
+
+## Pooling and concurrency
+
+The extension maintains the pool for you; there is no separate pool object to configure as in some other ecosystems. The lever is `maxPoolSize` (default 100) in the connection options. Each PHP-FPM worker is its own process with its own client and its own pool, so your real ceiling is `maxPoolSize` × number of workers × instances. Keep that product under the connection limit of your server or Atlas tier, or you will hit connection-limit errors under load even though each individual worker looks fine.
+
+## Transactions
+
+Multi-document transactions require a replica set or sharded cluster (a standalone `mongod` cannot do them) and a session:
+
+```php
+$session = $client->startSession();
+$session->startTransaction();
+
+try {
+    $client->bank->accounts->updateOne(
+        ['_id' => 'a'], ['$inc' => ['balance' => -100]],
+        ['session' => $session]
+    );
+    $client->bank->accounts->updateOne(
+        ['_id' => 'b'], ['$inc' => ['balance' => 100]],
+        ['session' => $session]
+    );
+    $session->commitTransaction();
+} catch (\Throwable $e) {
+    $session->abortTransaction();
+    throw $e;
+}
+```
+
+You must pass the `session` to every operation that should be part of the transaction. Forgetting it on one write silently runs that write outside the transaction. Most single-document updates are already atomic on their own and need no transaction; reach for one only when you have to change multiple documents together.
+
+## Errors you actually hit
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `Class "MongoDB\Client" not found` | Library not installed or autoloader not required | `composer require mongodb/mongodb`; `require 'vendor/autoload.php'` |
+| `no suitable servers found` / timeout on first op | Wrong host/port, server down, or SRV DNS blocked | Ping at startup; check host; confirm SRV lookups resolve |
+| Authentication failed with correct password | Wrong `authSource` | Add `?authSource=admin` (or wherever the user was created) |
+| Connection refused on `localhost` | Resolved to IPv6 `::1`, server on IPv4 | Use `127.0.0.1` explicitly |
+| Atlas connection times out | Egress IP not allowlisted | Allowlist your server IP in Atlas Network Access |
+| Fields silently gone after update | Used `replaceOne` | Use `updateOne` with `$set` and other operators |
+| `Transaction numbers are only allowed on a replica set` | Transactions on a standalone server | Use a replica set or sharded cluster |
+
+For working with documents once connected, see [the MongoDB aggregation pipeline](/guides/mongodb/aggregation-pipeline), [query operators](/guides/mongodb/query-operators), and [indexes explained](/guides/mongodb/indexes-explained).
+
+Mako connects to MongoDB, PostgreSQL, MySQL, and more with AI-powered autocomplete for writing and exploring queries. Try it free at mako.ai.
