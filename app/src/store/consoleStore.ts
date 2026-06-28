@@ -435,6 +435,18 @@ const shouldAutoSave = (getState: () => ConsoleState, consoleId: string) => {
   return tab ? !tab.isSaved : true;
 };
 
+function savedStateHashForRemoteEntry(
+  entry: Pick<ConsoleRevisionSyncEntry, "lastDraftOrigin" | "savedStateHash">,
+  currentSavedStateHash: string | undefined,
+  entryStateHash: string,
+): string {
+  if (entry.savedStateHash !== undefined) return entry.savedStateHash;
+  if (entry.lastDraftOrigin === "agent" && currentSavedStateHash) {
+    return currentSavedStateHash;
+  }
+  return entryStateHash;
+}
+
 function normalizeScheduledRunSnapshotForTab(
   scheduledRun: ConsoleContentResponse["scheduledRun"],
 ): ConsoleTab["scheduledRun"] {
@@ -477,14 +489,16 @@ export const useConsoleStore = create<ConsoleStore>()(
           versionManagers.set(id, new ConsoleVersionManager(id));
         }
 
-        const savedStateHash = tab.filePath
-          ? computeConsoleStateHash(
-              content,
-              tab.connectionId,
-              tab.databaseId,
-              tab.databaseName,
-            )
-          : tab.savedStateHash;
+        const savedStateHash =
+          tab.savedStateHash ??
+          (tab.filePath
+            ? computeConsoleStateHash(
+                content,
+                tab.connectionId,
+                tab.databaseId,
+                tab.databaseName,
+              )
+            : undefined);
 
         set(state => {
           if (pristineTabId && pristineTabId !== id) {
@@ -636,10 +650,16 @@ export const useConsoleStore = create<ConsoleStore>()(
           t.draftRevision = entry.draftRevision;
           if (typeof entry.version === "number") t.version = entry.version;
           if (typeof entry.isSaved === "boolean") t.isSaved = entry.isSaved;
-          // The applied copy IS the persisted state: refresh the explicit-
-          // save baseline so hasUnsavedLocalEdits doesn't misread the tab as
-          // locally edited from now on.
-          if (t.isSaved) t.savedStateHash = newStateHash;
+          // Refresh the explicit-save baseline from the server when available.
+          // Agent drafts are not history versions, so they must not become the
+          // baseline that disables Save.
+          if (t.isSaved) {
+            t.savedStateHash = savedStateHashForRemoteEntry(
+              entry,
+              tab.savedStateHash,
+              newStateHash,
+            );
+          }
           t.remoteUpdate = null;
           t.lastRun = entry.lastRun ?? t.lastRun;
         });
@@ -675,7 +695,13 @@ export const useConsoleStore = create<ConsoleStore>()(
           t.draftRevision = entry.draftRevision;
           if (typeof entry.version === "number") t.version = entry.version;
           if (typeof entry.isSaved === "boolean") t.isSaved = entry.isSaved;
-          if (t.isSaved) t.savedStateHash = newStateHash;
+          if (t.isSaved) {
+            t.savedStateHash = savedStateHashForRemoteEntry(
+              entry,
+              tab.savedStateHash,
+              newStateHash,
+            );
+          }
           // Server matches local content: any conflict affordance is moot.
           t.remoteUpdate = null;
           t.lastRun = entry.lastRun ?? t.lastRun;
@@ -751,8 +777,9 @@ export const useConsoleStore = create<ConsoleStore>()(
 
         if (action === "accept") {
           // The server already holds the proposed content at proposedRevision;
-          // adopt it locally so the tab mirrors the server and autosave stays
-          // quiet. The editor buffer is set to the proposal by Console.
+          // adopt it locally so the tab mirrors the server. Do not advance
+          // savedStateHash: only explicit saves create history versions, and
+          // the Save button must stay enabled until the user saves this draft.
           const newStateHash = computeConsoleStateHash(
             review.proposedContent,
             tab.connectionId,
@@ -764,7 +791,6 @@ export const useConsoleStore = create<ConsoleStore>()(
             if (!t) return;
             t.content = review.proposedContent;
             t.draftRevision = review.proposedRevision;
-            if (t.isSaved) t.savedStateHash = newStateHash;
             t.remoteUpdate = null;
           });
           blockedDraftSaves.delete(consoleId);
@@ -1067,6 +1093,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               title: res.name || res.path || "Console",
               content,
               isSaved: res.isSaved ?? !!filePath,
+              savedStateHash: res.savedStateHash,
               connectionId: res.connectionId,
               databaseId: res.databaseId,
               databaseName: res.databaseName,
@@ -1120,6 +1147,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               title: res.name || res.path || "Console",
               content,
               isSaved: res.isSaved ?? !!filePath,
+              savedStateHash: res.savedStateHash,
               connectionId: res.connectionId,
               databaseId: res.databaseId,
               databaseName: res.databaseName,
@@ -1177,12 +1205,14 @@ export const useConsoleStore = create<ConsoleStore>()(
               }
             });
 
-            const savedStateHash = computeConsoleStateHash(
-              res.content || "",
-              res.connectionId,
-              res.databaseId,
-              res.databaseName,
-            );
+            const savedStateHash =
+              res.savedStateHash ??
+              computeConsoleStateHash(
+                res.content || "",
+                res.connectionId,
+                res.databaseId,
+                res.databaseName,
+              );
             get().updateSavedState(consoleId, isSaved, savedStateHash);
           }
 
@@ -1224,6 +1254,7 @@ export const useConsoleStore = create<ConsoleStore>()(
               databaseId: res.databaseId,
               databaseName: res.databaseName,
               isSaved,
+              savedStateHash: res.savedStateHash,
               filePath: isSaved ? res.path || res.name : undefined,
               access: res.access,
               workspaceRole: res.workspaceRole,

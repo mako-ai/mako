@@ -259,12 +259,14 @@ function ConsoleExplorer(
           const { computeConsoleStateHash } = await import(
             "../utils/stateHash"
           );
-          const savedStateHash = computeConsoleStateHash(
-            data.content,
-            data.connectionId,
-            data.databaseId,
-            data.databaseName,
-          );
+          const savedStateHash =
+            data.savedStateHash ??
+            computeConsoleStateHash(
+              data.content,
+              data.connectionId,
+              data.databaseId,
+              data.databaseName,
+            );
           updateSavedState(consoleId, true, savedStateHash);
         }
       } catch (e) {

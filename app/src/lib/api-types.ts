@@ -33,6 +33,8 @@ export interface ConsoleContentResponse {
   path?: string;
   name?: string;
   isSaved?: boolean;
+  /** Hash of the latest explicit-save snapshot, not the mutable draft. */
+  savedStateHash?: string;
   chartSpec?: Record<string, unknown>;
   resultsViewMode?: "table" | "json" | "chart";
   access?: "private" | "workspace";
@@ -114,6 +116,8 @@ export interface ConsoleRevisionSyncEntry {
   version?: number;
   /** Server truth for draft-vs-saved (drives autosave eligibility). */
   isSaved?: boolean;
+  /** Hash of the latest explicit-save snapshot, not the mutable draft. */
+  savedStateHash?: string;
   /**
    * Who produced the latest draft write ("agent" | "user"). Lets the client
    * surface an agent edit as a reviewable diff on reconnect/reload even when
