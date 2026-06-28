@@ -3978,30 +3978,7 @@ const Chat: React.FC<ChatProps> = ({
     if (!workspaceId) return;
 
     try {
-      const data = await store.fetchConsoleContent(workspaceId, consoleId);
-      if (!data) return;
-
-      const currentStore = useConsoleStore.getState();
-      const isSaved = data.isSaved ?? !!data.path;
-      currentStore.openTab(
-        {
-          id: consoleId,
-          title: data.name || data.path || "Untitled",
-          content: data.content || "",
-          connectionId: data.connectionId,
-          databaseId: data.databaseId,
-          databaseName: data.databaseName,
-          filePath: isSaved ? data.path || data.name : undefined,
-          isSaved,
-          savedStateHash: data.savedStateHash,
-        },
-        {
-          preserveMissingSavedStateHash:
-            data.lastDraftOrigin === "agent" &&
-            data.savedStateHash === undefined,
-        },
-      );
-      currentStore.setActiveTab(consoleId);
+      await store.openConsoleFromServer(workspaceId, consoleId);
     } catch {
       /* ignore focus failures */
     }
