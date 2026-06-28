@@ -81,7 +81,7 @@ interface ConsoleActions {
   updateSavedState: (
     id: string,
     isSaved: boolean,
-    savedStateHash: string,
+    savedStateHash: string | undefined,
   ) => void;
   updateChartSpec: (
     id: string,
@@ -439,11 +439,12 @@ function savedStateHashForRemoteEntry(
   entry: Pick<ConsoleRevisionSyncEntry, "lastDraftOrigin" | "savedStateHash">,
   currentSavedStateHash: string | undefined,
   entryStateHash: string,
-): string {
+): string | undefined {
   if (entry.savedStateHash !== undefined) return entry.savedStateHash;
   if (entry.lastDraftOrigin === "agent" && currentSavedStateHash) {
     return currentSavedStateHash;
   }
+  if (entry.lastDraftOrigin === "agent") return undefined;
   return entryStateHash;
 }
 
@@ -1207,12 +1208,14 @@ export const useConsoleStore = create<ConsoleStore>()(
 
             const savedStateHash =
               res.savedStateHash ??
-              computeConsoleStateHash(
-                res.content || "",
-                res.connectionId,
-                res.databaseId,
-                res.databaseName,
-              );
+              (isSaved && res.lastDraftOrigin === "agent"
+                ? undefined
+                : computeConsoleStateHash(
+                    res.content || "",
+                    res.connectionId,
+                    res.databaseId,
+                    res.databaseName,
+                  ));
             get().updateSavedState(consoleId, isSaved, savedStateHash);
           }
 

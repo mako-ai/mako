@@ -415,6 +415,7 @@ consoleRoutes.openapi(
         path: consoleData.path,
         isSaved: consoleData.isSaved,
         savedStateHash,
+        lastDraftOrigin: fullConsole?.lastDraftOrigin,
         chartSpec: consoleData.chartSpec,
         resultsViewMode: consoleData.resultsViewMode,
         access: consoleAccess,

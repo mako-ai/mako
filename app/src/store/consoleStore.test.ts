@@ -18,7 +18,7 @@ function resetConsoleStore(): void {
 function openSavedConsole(params: {
   id: string;
   content: string;
-  savedStateHash: string;
+  savedStateHash?: string;
   draftRevision?: number;
   version?: number;
 }): void {
@@ -90,6 +90,23 @@ describe("consoleStore saved baseline reconciliation", () => {
     const tab = useConsoleStore.getState().tabs[id];
     expect(tab.draftRevision).toBe(2);
     expect(tab.savedStateHash).toBe(savedStateHash);
+    expect(hasUnsavedLocalEdits(id)).toBe(true);
+  });
+
+  it("keeps legacy agent drafts dirty when no saved baseline hash exists", () => {
+    const id = "agent-legacy-console";
+    const agentContent = "select 2;";
+    openSavedConsole({
+      id,
+      content: agentContent,
+    });
+    useConsoleStore.getState().updateSavedState(id, true, undefined);
+
+    useConsoleStore.getState().beginAgentReview(agentEntry(id, agentContent));
+
+    const tab = useConsoleStore.getState().tabs[id];
+    expect(tab.draftRevision).toBe(2);
+    expect(tab.savedStateHash).toBeUndefined();
     expect(hasUnsavedLocalEdits(id)).toBe(true);
   });
 

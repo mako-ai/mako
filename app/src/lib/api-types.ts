@@ -35,6 +35,8 @@ export interface ConsoleContentResponse {
   isSaved?: boolean;
   /** Hash of the latest explicit-save snapshot, not the mutable draft. */
   savedStateHash?: string;
+  /** Latest draft writer; agent drafts without a saved hash must stay dirty. */
+  lastDraftOrigin?: "user" | "agent";
   chartSpec?: Record<string, unknown>;
   resultsViewMode?: "table" | "json" | "chart";
   access?: "private" | "workspace";

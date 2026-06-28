@@ -261,12 +261,14 @@ function ConsoleExplorer(
           );
           const savedStateHash =
             data.savedStateHash ??
-            computeConsoleStateHash(
-              data.content,
-              data.connectionId,
-              data.databaseId,
-              data.databaseName,
-            );
+            (data.lastDraftOrigin === "agent"
+              ? undefined
+              : computeConsoleStateHash(
+                  data.content,
+                  data.connectionId,
+                  data.databaseId,
+                  data.databaseName,
+                ));
           updateSavedState(consoleId, true, savedStateHash);
         }
       } catch (e) {
