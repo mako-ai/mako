@@ -370,9 +370,13 @@ export class ClaapConnector extends BaseConnector {
     limit?: number;
   }): Promise<ClaapListRecordingsResult> {
     const api = this.getClaapClient();
-    const params: Record<string, string | number> = {
+    const params: Record<string, string | number | boolean> = {
       limit: Math.min(options.limit ?? this.getBatchSize(), MAX_PAGE_LIMIT),
       sort: "created_asc",
+      // Opt into Claap's new AI output structure (`aiFields`). Without this the
+      // API returns the legacy `insightTemplates`, which stops being populated
+      // as of 2026-06-26.
+      returnAiFields: true,
     };
 
     if (options.cursor) {
