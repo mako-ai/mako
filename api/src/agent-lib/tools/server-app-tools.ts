@@ -258,6 +258,26 @@ export function createServerAppTools({
             createdBy: userId ?? "agent",
             version: 1,
           });
+          // Seed an initial published version (v1) so the app has version
+          // history from creation (mirrors consoles/dashboards + the REST route).
+          const initialSnapshot = buildAppSnapshot(created);
+          const initialVersion = await createVersion({
+            entityType: "app",
+            entityId: created._id,
+            workspaceId: new Types.ObjectId(workspaceId),
+            snapshot: initialSnapshot as unknown as Record<string, unknown>,
+            savedBy: userId ?? "agent",
+            savedByName: await savedByName(),
+            comment: "App created",
+          });
+          created.published = initialSnapshot as unknown as Record<
+            string,
+            unknown
+          >;
+          created.markModified("published");
+          created.publishedVersion = initialVersion.version;
+          created.publishedAt = new Date();
+          await created.save();
           // Poke the workspace so an attached browser's Apps explorer picks up
           // the new app without a manual reload (browser follows the server).
           publishRealtimeEvent(workspaceId, {

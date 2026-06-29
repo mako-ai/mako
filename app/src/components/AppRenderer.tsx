@@ -8,7 +8,11 @@ import {
   Chip,
   Alert,
 } from "@mui/material";
-import { RefreshCw as RefreshIcon, Share2 as ShareIcon } from "lucide-react";
+import {
+  RefreshCw as RefreshIcon,
+  Share2 as ShareIcon,
+  History as HistoryIcon,
+} from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useTheme } from "../contexts/ThemeContext";
@@ -16,6 +20,7 @@ import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
 import { useConsoleStore } from "../store/consoleStore";
 import ShareDialog from "./ShareDialog";
+import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 import { appLocationFromHostSearch } from "../app-runtime/app-location";
 import {
@@ -45,6 +50,7 @@ export default function AppRenderer({
   const isWorkspaceAdmin = useIsWorkspaceAdmin();
   const workspaceId = currentWorkspace?.id;
   const [shareOpen, setShareOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // The sandboxed preview inherits the host theme: the current mode seeds the
   // srcdoc, and later toggles are pushed via postMessage (rebuilding the
@@ -328,6 +334,11 @@ export default function AppRenderer({
           label={appEntity.runtime === "cdn" ? "CDN preview" : "WebContainer"}
         />
         <Box sx={{ flex: 1 }} />
+        <Tooltip title="Version history">
+          <IconButton size="small" onClick={() => setHistoryOpen(true)}>
+            <HistoryIcon size={18} strokeWidth={1.5} />
+          </IconButton>
+        </Tooltip>
         <Tooltip title="Share">
           <IconButton size="small" onClick={() => setShareOpen(true)}>
             <ShareIcon size={18} strokeWidth={1.5} />
@@ -339,6 +350,18 @@ export default function AppRenderer({
           </IconButton>
         </Tooltip>
       </Box>
+
+      <VersionHistoryPanel
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        entityType="app"
+        entityId={appId}
+        onRestore={() => {
+          if (workspaceId) {
+            void fetchApp(workspaceId, appId).then(() => bumpPreview(appId));
+          }
+        }}
+      />
 
       <ShareDialog
         open={shareOpen}
