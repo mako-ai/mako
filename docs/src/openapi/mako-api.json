@@ -17792,6 +17792,9 @@
                   },
                   "token": {
                     "type": "string"
+                  },
+                  "allowLiveQueries": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -19612,6 +19615,9 @@
                   },
                   "token": {
                     "type": "string"
+                  },
+                  "allowLiveQueries": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -21290,6 +21296,76 @@
           }
         },
         "operationId": "get_api_share_token_artifacts_artifactId"
+      }
+    },
+    "/api/share/{token}/binding/{bindingId}/execute": {
+      "post": {
+        "tags": [
+          "Public Shares"
+        ],
+        "summary": "Run a shared app's published live binding",
+        "security": [],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "token",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "bindingId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "2XX": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/GenericJsonResponse"
+                    },
+                    {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "5XX": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "post_api_share_token_binding_bindingId_execute"
       }
     },
     "/api/share/{token}/refresh": {

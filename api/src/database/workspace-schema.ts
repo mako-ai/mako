@@ -350,7 +350,11 @@ export type ConsoleAccessLevel = "private" | "workspace";
  *   member role are always capped to viewer).
  * - `publicShare` (dashboards + apps only) exposes the resource read-only at
  *   /share/:token, optionally protected by a bcrypt-hashed password. Public
- *   viewers only ever see materialized snapshot artifacts — never live data.
+ *   viewers see materialized snapshot artifacts by default. When the owner
+ *   opts in with `allowLiveQueries`, an app's public viewer may also re-run the
+ *   app's *published* (owner-defined, never viewer-supplied) live bindings
+ *   server-side under the owner's connection — read-only and row-capped, so
+ *   "live" never means "arbitrary".
  */
 export type ResourceShareRole = "viewer" | "editor";
 
@@ -371,6 +375,14 @@ export interface IPublicShare {
   createdBy?: string;
   /** Throttle marker for the anonymous "Refresh data" action (dashboards). */
   lastPublicRefreshAt?: Date;
+  /**
+   * Apps only. When true, the public viewer may execute the app's published
+   * live bindings server-side (read-only, row-capped, rate-limited) instead of
+   * being limited to frozen snapshots. Default false — existing shares stay
+   * snapshot-only. The query is always the owner's published SQL; the viewer
+   * never supplies SQL.
+   */
+  allowLiveQueries?: boolean;
 }
 
 /**
@@ -1510,6 +1522,7 @@ const PublicShareSchema = new Schema<IPublicShare>(
     createdAt: { type: Date },
     createdBy: { type: String },
     lastPublicRefreshAt: { type: Date },
+    allowLiveQueries: { type: Boolean, default: false },
   },
   { _id: false },
 );
