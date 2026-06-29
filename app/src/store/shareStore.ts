@@ -46,8 +46,6 @@ export interface PublicShareInfo {
   token?: string;
   hasPassword?: boolean;
   createdAt?: string;
-  /** Apps only: viewer may run published live bindings (not just snapshots). */
-  allowLiveQueries?: boolean;
 }
 
 export interface SharingSettings {
@@ -138,7 +136,6 @@ interface ShareStoreState {
       password?: string | null;
       rotateToken?: boolean;
       token?: string;
-      allowLiveQueries?: boolean;
     },
   ) => Promise<Result & { publicShare?: PublicShareInfo }>;
   disablePublicShare: (

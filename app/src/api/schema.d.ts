@@ -13503,7 +13503,6 @@ export interface operations {
                     password?: string | null;
                     rotateToken?: boolean;
                     token?: string;
-                    allowLiveQueries?: boolean;
                 };
             };
         };
@@ -14443,7 +14442,6 @@ export interface operations {
                     password?: string | null;
                     rotateToken?: boolean;
                     token?: string;
-                    allowLiveQueries?: boolean;
                 };
             };
         };

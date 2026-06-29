@@ -17792,9 +17792,6 @@
                   },
                   "token": {
                     "type": "string"
-                  },
-                  "allowLiveQueries": {
-                    "type": "boolean"
                   }
                 }
               }
@@ -19615,9 +19612,6 @@
                   },
                   "token": {
                     "type": "string"
-                  },
-                  "allowLiveQueries": {
-                    "type": "boolean"
                   }
                 }
               }

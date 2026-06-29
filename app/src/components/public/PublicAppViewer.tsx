@@ -38,8 +38,6 @@ export interface PublicAppContent {
   title: string;
   description?: string;
   entrypoint: string;
-  /** Owner opt-in: viewers may run published live bindings, not just snapshots. */
-  allowLiveQueries?: boolean;
   files: Array<{ path: string; contents: string }>;
   dependencies: Record<string, string>;
   dataBindings: Array<{
@@ -175,18 +173,10 @@ export default function PublicAppViewer({
           });
           return;
         }
-        // Live binding + owner opted in -> run the app's PUBLISHED query
-        // server-side (read-only, row-capped). The viewer never supplies SQL.
+        // Live binding -> run the app's PUBLISHED query server-side (read-only,
+        // row-capped, time-bounded). The viewer never supplies SQL. Parquet
+        // bindings fall through to the snapshot-artifact path below.
         if (binding.materialization !== "parquet") {
-          if (!content.allowLiveQueries) {
-            post({
-              type: PREVIEW_MESSAGE.bindingResult,
-              requestId: data.requestId,
-              success: false,
-              error: `Data for "${binding.name}" isn't available in the public view`,
-            });
-            return;
-          }
           void fetch(
             `/api/share/${token}/binding/${encodeURIComponent(binding.id)}/execute`,
             { method: "POST", credentials: "include" },

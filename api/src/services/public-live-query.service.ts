@@ -1,9 +1,10 @@
 /**
  * Public-share live query execution (apps only).
  *
- * Lets the anonymous `/share/:token` app viewer run an app's *published* live
- * bindings against the workspace database — but only when the owner has opted
- * in via `publicShare.allowLiveQueries`. The safety model is deliberately
+ * Lets the anonymous `/share/:token` app viewer run an app's *published*
+ * `live` bindings against the workspace database (parquet bindings serve their
+ * snapshot instead). The binding's own `materialization: "live"` is the opt-in
+ * — there is no separate share-level flag. The safety model is deliberately
  * narrow:
  *
  *   - The SQL is always the OWNER's published binding code, resolved from the
@@ -141,17 +142,20 @@ export async function executePublicAppLiveBinding(input: {
 }): Promise<PublicLiveQueryResult> {
   const { app, bindingId, token } = input;
 
-  if (!app.publicShare?.allowLiveQueries) {
-    return {
-      success: false,
-      error: "Live queries are not enabled for this shared app",
-      status: 403,
-    };
-  }
-
   const binding = findPublishedBinding(app, bindingId);
   if (!binding) {
     return { success: false, error: "Data source not found", status: 404 };
+  }
+
+  // Only `live` bindings execute on demand. Parquet bindings are served as
+  // frozen snapshot artifacts, so refuse live execution for them. (Legacy
+  // snapshots may omit `materialization`; it defaults to "live".)
+  if (binding.materialization === "parquet") {
+    return {
+      success: false,
+      error: "This data source is not configured for live queries",
+      status: 400,
+    };
   }
 
   // v1 supports SQL bindings only. MongoDB/JS live execution would need its own

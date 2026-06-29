@@ -242,16 +242,11 @@ function buildAppContent(token: string, makoApp: IMakoApp) {
   const liveCacheById = new Map(
     (makoApp.dataBindings || []).map(b => [b.id, b.cache]),
   );
-  // Owner opt-in: when enabled, the viewer may re-run live bindings via the
-  // /binding/:id/execute route below (still owner-published SQL, never the
-  // viewer's). Default off keeps existing shares snapshot-only.
-  const allowLiveQueries = !!makoApp.publicShare?.allowLiveQueries;
   return {
     type: "app" as const,
     title: def.title,
     description: def.description,
     entrypoint: def.entrypoint,
-    allowLiveQueries,
     files: (def.files || []).map(f => ({
       path: f.path,
       contents: f.contents,
@@ -502,9 +497,10 @@ app.openapi(
 );
 
 // POST /:token/binding/:bindingId/execute — run a published live binding.
-// Apps only, and only when the owner enabled `publicShare.allowLiveQueries`.
-// The SQL is always the owner's PUBLISHED binding code (never viewer-supplied),
-// executed read-only + row-capped + rate-limited under the owner's connection.
+// Apps only; the binding must be `materialization: "live"` (parquet bindings
+// serve their snapshot artifact instead). The SQL is always the owner's
+// PUBLISHED binding code (never viewer-supplied), executed read-only +
+// row-capped + time-bounded + rate-limited under the owner's connection.
 app.openapi(
   createRoute({
     method: "post",
