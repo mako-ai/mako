@@ -38,6 +38,7 @@ import {
   getBindingArtifactInfo,
   queueAppBindingMaterialization,
 } from "../services/app-binding-materialization.service";
+import { executePublicAppLiveBinding } from "../services/public-live-query.service";
 
 const logger = loggers.api("public-share");
 
@@ -241,11 +242,16 @@ function buildAppContent(token: string, makoApp: IMakoApp) {
   const liveCacheById = new Map(
     (makoApp.dataBindings || []).map(b => [b.id, b.cache]),
   );
+  // Owner opt-in: when enabled, the viewer may re-run live bindings via the
+  // /binding/:id/execute route below (still owner-published SQL, never the
+  // viewer's). Default off keeps existing shares snapshot-only.
+  const allowLiveQueries = !!makoApp.publicShare?.allowLiveQueries;
   return {
     type: "app" as const,
     title: def.title,
     description: def.description,
     entrypoint: def.entrypoint,
+    allowLiveQueries,
     files: (def.files || []).map(f => ({
       path: f.path,
       contents: f.contents,
@@ -491,6 +497,71 @@ app.openapi(
     } catch (error) {
       logger.error("Error streaming share artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
+
+// POST /:token/binding/:bindingId/execute — run a published live binding.
+// Apps only, and only when the owner enabled `publicShare.allowLiveQueries`.
+// The SQL is always the owner's PUBLISHED binding code (never viewer-supplied),
+// executed read-only + row-capped + rate-limited under the owner's connection.
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{token}/binding/{bindingId}/execute",
+    tags: ["Public Shares"],
+    summary: "Run a shared app's published live binding",
+    security: [],
+    request: {
+      params: TokenParam.extend({
+        bindingId: z.string().openapi({
+          param: { name: "bindingId", in: "path" },
+        }),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const bindingId = c.req.param("bindingId");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      if (resource.type !== "app") {
+        return c.json(
+          { success: false, error: "Live queries are only supported for apps" },
+          400,
+        );
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
+
+      const result = await executePublicAppLiveBinding({
+        app: resource.doc,
+        bindingId,
+        token,
+      });
+      if (!result.success) {
+        return c.json(
+          { success: false, error: result.error },
+          result.status as 400,
+        );
+      }
+      return c.json(
+        {
+          success: true,
+          rows: result.rows,
+          fields: result.fields,
+          rowCount: result.rowCount,
+        },
+        200,
+        { "Cache-Control": "private, no-store" },
+      );
+    } catch (error) {
+      logger.error("Error running public live binding", { error });
+      return c.json({ success: false, error: "Failed to run query" }, 500);
     }
   },
 );

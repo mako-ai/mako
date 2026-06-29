@@ -38,6 +38,8 @@ export interface PublicAppContent {
   title: string;
   description?: string;
   entrypoint: string;
+  /** Owner opt-in: viewers may run published live bindings, not just snapshots. */
+  allowLiveQueries?: boolean;
   files: Array<{ path: string; contents: string }>;
   dependencies: Record<string, string>;
   dataBindings: Array<{
@@ -164,15 +166,60 @@ export default function PublicAppViewer({
 
       if (data.type === PREVIEW_MESSAGE.runBinding) {
         const binding = content.dataBindings.find(b => b.name === data.binding);
-        const loadable = binding ? toLoadableBinding(binding) : null;
+        if (!binding) {
+          post({
+            type: PREVIEW_MESSAGE.bindingResult,
+            requestId: data.requestId,
+            success: false,
+            error: `No data binding named "${data.binding}"`,
+          });
+          return;
+        }
+        // Live binding + owner opted in -> run the app's PUBLISHED query
+        // server-side (read-only, row-capped). The viewer never supplies SQL.
+        if (binding.materialization !== "parquet") {
+          if (!content.allowLiveQueries) {
+            post({
+              type: PREVIEW_MESSAGE.bindingResult,
+              requestId: data.requestId,
+              success: false,
+              error: `Data for "${binding.name}" isn't available in the public view`,
+            });
+            return;
+          }
+          void fetch(
+            `/api/share/${token}/binding/${encodeURIComponent(binding.id)}/execute`,
+            { method: "POST", credentials: "include" },
+          )
+            .then(async res => {
+              const json = await res.json().catch(() => null);
+              if (!res.ok || !json?.success) {
+                throw new Error(json?.error || "Live query failed");
+              }
+              post({
+                type: PREVIEW_MESSAGE.bindingResult,
+                requestId: data.requestId,
+                success: true,
+                rows: json.rows || [],
+              });
+            })
+            .catch(err =>
+              post({
+                type: PREVIEW_MESSAGE.bindingResult,
+                requestId: data.requestId,
+                success: false,
+                error: err instanceof Error ? err.message : "Live query failed",
+              }),
+            );
+          return;
+        }
+        const loadable = toLoadableBinding(binding);
         if (!loadable) {
           post({
             type: PREVIEW_MESSAGE.bindingResult,
             requestId: data.requestId,
             success: false,
-            error: binding
-              ? `Data for "${binding.name}" isn't available in the public view`
-              : `No data binding named "${data.binding}"`,
+            error: `Data for "${binding.name}" isn't available in the public view`,
           });
           return;
         }
@@ -266,7 +313,7 @@ export default function PublicAppViewer({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [duckAppId, content, writeAppLocation]);
+  }, [duckAppId, content, writeAppLocation, token]);
 
   // Reflect browser back/forward into the booted iframe.
   useEffect(() => {
