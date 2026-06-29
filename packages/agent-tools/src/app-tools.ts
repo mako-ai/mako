@@ -90,6 +90,34 @@ export const deleteDataBindingSchema = z.object({
     .describe("Name of the data binding to delete (from list_data_sources)"),
 });
 
+export const updateDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe("Name of the existing data binding to update (from list_data_sources)"),
+  newName: z
+    .string()
+    .optional()
+    .describe("Rename the binding (update useQuery(name) callers in app code too)"),
+  connectionId: z
+    .string()
+    .optional()
+    .describe("Switch the workspace connection the query runs against"),
+  language: z.enum(["sql", "javascript", "mongodb"]).optional(),
+  code: z.string().optional().describe("Replace the query text/code"),
+  databaseId: z.string().optional(),
+  databaseName: z.string().optional(),
+  materialization: z
+    .enum(["live", "parquet"])
+    .optional()
+    .describe(
+      "Switch how the binding is read. 'live' runs the query server-side on " +
+        "every read (and, on a public share, executes the published query live " +
+        "for viewers — read-only & bounded). 'parquet' materializes to a " +
+        "DuckDB-WASM artifact (call materialize_binding after switching to it).",
+    ),
+});
+
 export const saveAppVersionSchema = z.object({
   appId: appIdField,
   comment: z

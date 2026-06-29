@@ -66,6 +66,7 @@ export {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  updateDataBindingSchema,
   saveAppVersionSchema,
   restoreAppVersionSchema,
   // Server-executed read/create/materialize tools (full-server apps).

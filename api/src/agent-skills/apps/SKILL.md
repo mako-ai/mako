@@ -58,12 +58,25 @@ errors); `open_app` just focuses a UI tab.
    Bindings run server-side and are workspace-scoped — never put credentials or raw
    connection strings in app code.
 
+   **Editing bindings:** to change an existing binding in place — switch its
+   `materialization` (`live` ⇄ `parquet`), replace `code`, change `connectionId`,
+   or rename it — call `app_update_data_binding` with the binding `name` and only
+   the fields to change. Use it to set a binding to live without recreating it.
+
    **Deleting bindings:** to remove an orphaned or superseded binding, call
    `app_delete_data_binding` with its `name`. It removes the binding from the app
    definition and persists the change; the returned `remaining` list (and a fresh
    `list_data_sources`) confirms it is actually gone. Do NOT use `app_delete_file`
    for bindings — bindings are not files, and that call will no-op and falsely
    report success.
+
+   **Live bindings on public shares:** a `live` binding (the default) runs its
+   published query server-side on every read — including for anonymous viewers of
+   a public `/share/:token` link, where it executes read-only, row-capped and
+   time-bounded under the owner's connection (the viewer never supplies SQL).
+   `parquet` bindings serve their frozen snapshot instead. So to ship a live
+   table/badge on a public link, just keep the binding `live` and publish with
+   `app_save_version`.
 
    **Materialized bindings (DuckDB):** set `materialization: "parquet"` to materialize
    the query into a Parquet artifact (same pipeline as dashboards) that is loaded into

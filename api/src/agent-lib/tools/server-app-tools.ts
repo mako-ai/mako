@@ -31,6 +31,7 @@ import {
   removeDependencySchema,
   createDataBindingSchema,
   deleteDataBindingSchema,
+  updateDataBindingSchema,
   saveAppVersionSchema,
   restoreAppVersionSchema,
   listAppsSchema,
@@ -602,6 +603,91 @@ export function createServerAppTools({
           const version = await saveAndPublish(doc);
           const remaining = (doc.dataBindings ?? []).map(b => b.name);
           return { success: true, deleted: name, remaining, version };
+        }),
+    }),
+
+    app_update_data_binding: tool({
+      description:
+        "Update an existing data binding in place: switch its materialization " +
+        "('live' vs 'parquet'), replace the query code, change the connection, " +
+        "or rename it. Only the fields you pass are changed. Use this to set a " +
+        "binding to live (e.g. so a public share runs it live) without " +
+        "recreating it. Confirm the binding name with list_data_sources first.",
+      inputSchema: updateDataBindingSchema,
+      execute: async input =>
+        wrap("app_update_data_binding", async () => {
+          const loaded = await loadApp(input.appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(input.appId);
+          const binding = (doc.dataBindings ?? []).find(
+            b => b.name === input.name,
+          );
+          if (!binding) {
+            return {
+              success: false,
+              error: `No data binding named "${input.name}"`,
+            };
+          }
+          if (input.connectionId !== undefined) {
+            const connCheck = await validateConnection(input.connectionId);
+            if (!connCheck.ok) return { success: false, error: connCheck.error };
+          }
+          if (
+            input.newName !== undefined &&
+            input.newName !== binding.name &&
+            (doc.dataBindings ?? []).some(b => b.name === input.newName)
+          ) {
+            return {
+              success: false,
+              error: `A data binding named "${input.newName}" already exists`,
+            };
+          }
+
+          // Changing what/where the query runs invalidates any built artifact,
+          // so drop the cache; the binding falls back to live/needs re-materialize.
+          const definitionChanged =
+            (input.code !== undefined && input.code !== binding.code) ||
+            (input.connectionId !== undefined &&
+              input.connectionId !== binding.connectionId) ||
+            (input.databaseId !== undefined &&
+              input.databaseId !== binding.databaseId) ||
+            (input.databaseName !== undefined &&
+              input.databaseName !== binding.databaseName) ||
+            (input.materialization !== undefined &&
+              input.materialization !== binding.materialization);
+
+          if (input.newName !== undefined) binding.name = input.newName;
+          if (input.connectionId !== undefined) {
+            binding.connectionId = input.connectionId;
+          }
+          if (input.language !== undefined) binding.language = input.language;
+          if (input.code !== undefined) binding.code = input.code;
+          if (input.databaseId !== undefined) {
+            binding.databaseId = input.databaseId;
+          }
+          if (input.databaseName !== undefined) {
+            binding.databaseName = input.databaseName;
+          }
+          if (input.materialization !== undefined) {
+            binding.materialization = input.materialization;
+          }
+          if (definitionChanged) binding.cache = undefined;
+          doc.markModified("dataBindings");
+
+          const version = await saveAndPublish(doc);
+          return {
+            success: true,
+            binding: {
+              name: binding.name,
+              materialization: binding.materialization,
+            },
+            version,
+            hint:
+              binding.materialization === "parquet"
+                ? `Call materialize_binding for "${binding.name}" to (re)build its snapshot.`
+                : `"${binding.name}" is live — read it with useQuery("${binding.name}"). On a public share it runs live (read-only, bounded).`,
+          };
         }),
     }),
 

@@ -516,6 +516,16 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "database",
     preview: { field: "code", language: "sql" },
   },
+  app_update_data_binding: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Updating data binding "${name}"` : "Updating data binding";
+    },
+    icon: "database",
+  },
   app_delete_data_binding: {
     domain: "app",
     execution: "server",
