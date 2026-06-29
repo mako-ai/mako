@@ -44,6 +44,7 @@ import {
   type ToolIconKey,
   type ToolUiConfig,
 } from "../agent-runtime/client-tool-manifest";
+import { getOutputSummary } from "./streaming-tool-card-summary";
 
 export type ToolPartState =
   | "input-streaming"
@@ -134,59 +135,6 @@ function getToolConfig(toolName: string): ToolUiConfig {
       icon: "help-circle",
     }
   );
-}
-
-function getOutputSummary(output: unknown): string | null {
-  if (output === null || output === undefined) return null;
-
-  const o = output as Record<string, unknown>;
-
-  if (o.success === false || o.error) {
-    const raw = o.error;
-    const err =
-      typeof raw === "string"
-        ? raw
-        : raw && typeof raw === "object" && "message" in raw
-          ? String((raw as { message: unknown }).message)
-          : "Failed";
-    return err.length > 50 ? err.slice(0, 50) + "…" : err;
-  }
-
-  if (o.state === "definition_updated") {
-    return "Definition saved only";
-  }
-  if (o.state === "loaded") {
-    if (typeof o.rowCount === "number") {
-      return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
-    }
-    return "Fresh data loaded";
-  }
-
-  if (Array.isArray(o.data)) {
-    return `${o.data.length} row${o.data.length !== 1 ? "s" : ""}`;
-  }
-  if (typeof o.rowCount === "number") {
-    return `${o.rowCount} row${o.rowCount !== 1 ? "s" : ""}`;
-  }
-
-  if (Array.isArray(output)) {
-    return `${output.length} result${output.length !== 1 ? "s" : ""}`;
-  }
-
-  if (Array.isArray(o.fields)) {
-    return `${o.fields.length} field${o.fields.length !== 1 ? "s" : ""}`;
-  }
-  if (Array.isArray(o.columns)) {
-    return `${o.columns.length} column${o.columns.length !== 1 ? "s" : ""}`;
-  }
-  if (Array.isArray(o.databases)) {
-    return `${o.databases.length} database${o.databases.length !== 1 ? "s" : ""}`;
-  }
-  if (Array.isArray(o.tables)) {
-    return `${o.tables.length} table${o.tables.length !== 1 ? "s" : ""}`;
-  }
-
-  return null;
 }
 
 function formatOutputForDisplay(output: unknown): string {

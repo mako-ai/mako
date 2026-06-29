@@ -679,17 +679,163 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "play",
   },
+  // dbt_get_run polls the runner for a run's status. Without an explicit entry
+  // it fell back to humanizeToolName ("Dbt Get Run"), which is what surfaced in
+  // the agent transcript after a build. Give it a human label + a clock icon.
+  dbt_get_run: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Checking dbt run status",
+    icon: "clock",
+  },
+  dbt_show: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const model = (input as Record<string, unknown>)?.model;
+      return model ? `Previewing ${model}` : "Previewing model";
+    },
+    icon: "eye",
+  },
+  dbt_create_project: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Creating dbt project "${name}"` : "Creating dbt project";
+    },
+    icon: "plus",
+  },
   dbt_cancel_run: {
     domain: "dbt",
     execution: "server",
     getLabel: () => "Cancelling dbt run",
     icon: "square",
   },
+  dbt_create_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Creating job "${name}"` : "Creating dbt job";
+    },
+    icon: "plus",
+  },
+  dbt_update_job: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Updating job "${name}"` : "Updating dbt job";
+    },
+    icon: "pencil",
+  },
   dbt_delete_job: {
     domain: "dbt",
     execution: "server",
     getLabel: () => "Deleting dbt job",
     icon: "trash",
+  },
+  dbt_sync_from_repo: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Syncing from repo",
+    icon: "download",
+  },
+  dbt_list_recoverable_files: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Listing recoverable files",
+    icon: "list",
+  },
+  dbt_restore_file: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Restoring ${path}` : "Restoring file";
+    },
+    icon: "plus",
+  },
+  dbt_git_status: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Checking git status",
+    icon: "eye",
+  },
+  dbt_commit_and_push: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: () => "Committing & pushing",
+    icon: "external-link",
+  },
+  dbt_commit_to_branch: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Committing to ${name}` : "Committing to new branch";
+    },
+    icon: "external-link",
+  },
+  dbt_create_branch: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Creating branch ${name}` : "Creating branch";
+    },
+    icon: "plus",
+  },
+  dbt_switch_branch: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const branch = (input as Record<string, unknown>)?.branch;
+      return branch ? `Switching to ${branch}` : "Switching branch";
+    },
+    icon: "link",
+  },
+  dbt_list_branches: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Listing branches",
+    icon: "list",
+  },
+  dbt_delete_branch: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Deleting branch ${name}` : "Deleting branch";
+    },
+    icon: "trash",
+  },
+  dbt_open_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const title = (input as Record<string, unknown>)?.title;
+      return title ? `Opening PR: ${title}` : "Opening pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_merge_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Merging PR #${prNumber}` : "Merging pull request";
+    },
+    icon: "external-link",
   },
   search_consoles: {
     domain: "search",
