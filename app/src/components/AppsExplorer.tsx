@@ -532,7 +532,12 @@ export function AppsExplorer() {
             <MenuItem
               key="materialize"
               onClick={() => {
-                void materializeBinding(workspaceId, parsed.appId, parsed.path);
+                void materializeBinding(
+                  workspaceId,
+                  parsed.appId,
+                  parsed.path,
+                  { force: true },
+                );
                 helpers.closeMenu();
               }}
             >

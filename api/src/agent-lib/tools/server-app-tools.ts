@@ -369,10 +369,15 @@ export function createServerAppTools({
               error: `Binding "${name}" is 'live', not 'parquet' — nothing to materialize.`,
             };
           }
+          // Explicit "rebuild" request: force past the definition-hash cache
+          // so the artifact is rebuilt from the current upstream data even when
+          // the binding query is unchanged. Without this, a rematerialize over
+          // an unchanged query is a no-op cache hit.
           const queued = await queueAppBindingMaterialization({
             workspaceId,
             appId,
             bindingId: binding.id,
+            force: true,
           });
           const waitMs =
             Math.min(Math.max(waitSeconds ?? 120, 0), 600) * 1000;

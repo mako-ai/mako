@@ -140,7 +140,10 @@ export default function AppBindingEditor({
   const handleMaterialize = useCallback(async () => {
     if (!workspaceId) return;
     setMaterializing(true);
-    await materializeBinding(workspaceId, appId, bindingId);
+    // Explicit user action = rebuild now. Force past the definition-hash cache
+    // so a rematerialize picks up new upstream data even when the query text
+    // is unchanged.
+    await materializeBinding(workspaceId, appId, bindingId, { force: true });
     setMaterializing(false);
   }, [workspaceId, appId, bindingId, materializeBinding]);
 

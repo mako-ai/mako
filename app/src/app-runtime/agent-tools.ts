@@ -239,7 +239,7 @@ export async function executeAppAgentTool(
         workspaceId,
         appId,
         binding.id,
-        { signal: options?.signal, timeoutMs },
+        { force: true, signal: options?.signal, timeoutMs },
       );
       if (result.status === "building") {
         // Not an error: the build continues server-side. Return so the agent
