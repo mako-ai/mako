@@ -144,6 +144,9 @@ const CLOSE_SUPPORTED_WEBHOOK_SELECTORS: CloseWebhookSelector[] = [
   { object_type: "status.opportunity", action: "created" },
   { object_type: "status.opportunity", action: "updated" },
   { object_type: "status.opportunity", action: "deleted" },
+  { object_type: "group", action: "created" },
+  { object_type: "group", action: "updated" },
+  { object_type: "group", action: "deleted" },
 ];
 
 const CLOSE_SUPPORTED_WEBHOOK_SELECTOR_KEYS = new Set(
@@ -714,6 +717,7 @@ export class CloseConnector extends BaseConnector {
       "lead_statuses",
       "opportunity_statuses",
       "outcomes",
+      "groups",
     ];
 
     const activitySubEntities = CLOSE_ACTIVITY_TYPES.map(
@@ -797,6 +801,12 @@ export class CloseConnector extends BaseConnector {
         label: "Outcomes",
         layoutSuggestion: lookupLayout,
       },
+      {
+        name: "groups",
+        label: "Groups",
+        description: "User groups (functional teams, e.g. Sales / CSM)",
+        layoutSuggestion: lookupLayout,
+      },
     ];
   }
 
@@ -834,6 +844,10 @@ export class CloseConnector extends BaseConnector {
 
     if (entity === "users") {
       return await this.fetchUsersChunk(options);
+    }
+
+    if (entity === "groups") {
+      return await this.fetchGroupsChunk(options);
     }
 
     if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
@@ -1635,6 +1649,15 @@ export class CloseConnector extends BaseConnector {
       return;
     }
 
+    // Groups expose functional-team membership; backfill all pages.
+    if (entity === "groups") {
+      await this.fetchGroupsChunk({
+        ...options,
+        maxIterations: Number.MAX_SAFE_INTEGER,
+      } as ResumableFetchOptions);
+      return;
+    }
+
     // Simple entities (statuses, types) — fetch all via pagination
     if (entity in CloseConnector.SIMPLE_ENTITY_ENDPOINTS) {
       await this.fetchSimpleEntityChunk(entity, options as any);
@@ -1874,6 +1897,82 @@ export class CloseConnector extends BaseConnector {
     custom_object_types: "/custom_object_type/",
     outcomes: "/outcome/",
   };
+
+  /**
+   * Fetch user groups (functional teams). Unlike the SIMPLE_ENTITY_ENDPOINTS,
+   * the `/group/` list endpoint only returns `name`/`members` when those
+   * fields are explicitly requested via `_fields`, so groups get their own
+   * fetcher that always sends the selector.
+   */
+  private async fetchGroupsChunk(
+    options: ResumableFetchOptions,
+  ): Promise<FetchState> {
+    const { onBatch, onProgress, state } = options;
+
+    if (state && !state.hasMore) {
+      return {
+        totalProcessed: state.totalProcessed,
+        hasMore: false,
+        iterationsInChunk: 0,
+      };
+    }
+
+    const api = this.getCloseClient();
+    const batchSize = options.batchSize || this.getBatchSize();
+    const rateLimitDelay = options.rateLimitDelay || this.getRateLimitDelay();
+    const maxIterations = options.maxIterations || 10;
+
+    let offset = state?.offset || 0;
+    let recordCount = state?.totalProcessed || 0;
+    let hasMore = true;
+    let iterations = 0;
+
+    while (hasMore && iterations < maxIterations) {
+      try {
+        const response = await api.get("/group/", {
+          params: {
+            _limit: batchSize,
+            _skip: offset,
+            // `/group/` omits name/members unless explicitly requested.
+            _fields: "id,name,members,organization_id",
+          },
+        });
+        const data = response.data.data || [];
+
+        if (data.length > 0) {
+          await onBatch(data);
+          recordCount += data.length;
+          if (onProgress) onProgress(recordCount, undefined);
+        }
+
+        hasMore = response.data.has_more || false;
+        if (hasMore) {
+          offset += batchSize;
+          iterations++;
+          await this.sleep(rateLimitDelay);
+        }
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 429) {
+          const retryAfter = parseInt(
+            error.response.headers["retry-after"] || "60",
+          );
+          logger.warn("Rate limited, waiting", {
+            retryAfterSeconds: retryAfter,
+          });
+          await this.sleep(retryAfter * 1000);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return {
+      offset,
+      totalProcessed: recordCount,
+      hasMore,
+      iterationsInChunk: iterations,
+    };
+  }
 
   private async fetchSimpleEntityChunk(
     entity: string,
@@ -2283,6 +2382,11 @@ export class CloseConnector extends BaseConnector {
       "opportunity.created": { entity: "opportunities", operation: "upsert" },
       "opportunity.updated": { entity: "opportunities", operation: "upsert" },
       "opportunity.deleted": { entity: "opportunities", operation: "delete" },
+
+      // Groups (functional teams). `group.updated` also fires on member add/remove.
+      "group.created": { entity: "groups", operation: "upsert" },
+      "group.updated": { entity: "groups", operation: "upsert" },
+      "group.deleted": { entity: "groups", operation: "delete" },
     };
 
     if (mappings[eventType]) return mappings[eventType];
@@ -2415,6 +2519,7 @@ export class CloseConnector extends BaseConnector {
       custom_objects: ["custom_object"],
       lead_statuses: ["status.lead"],
       opportunity_statuses: ["status.opportunity"],
+      groups: ["group"],
     };
 
     const relevantObjectTypes = new Set<string>();
