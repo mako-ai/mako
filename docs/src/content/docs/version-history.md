@@ -1,15 +1,15 @@
 ---
 title: Version History
-description: Immutable snapshots for saved consoles and dashboards — browse, view, and restore past versions.
+description: Immutable snapshots for saved consoles, dashboards, and apps — browse, view, restore, and publish past versions.
 ---
 
-Every saved console and dashboard has a full, immutable version history. Each explicit save creates a new version record capturing the complete state at that point in time. Versions are never rewritten or deleted.
+Every saved console, dashboard, and app has a full, immutable version history. Each explicit save creates a new version record capturing the complete state at that point in time. Versions are never rewritten or deleted.
 
 ## How It Works
 
-- Each console or dashboard carries a monotonically increasing `version` number on the main document. (Console drafts bump a separate `draftRevision` and do **not** create a version — only an explicit save does.)
+- Each console, dashboard, or app carries a monotonically increasing `version` number on the main document. (Console drafts bump a separate `draftRevision` and do **not** create a version — only an explicit save does.)
 - Every versioned save writes an `EntityVersion` record in MongoDB scoped to `(entityId, entityType, version)`, enforced by a unique index. dbt files are versioned through the same collection.
-- Snapshots capture the full entity state (for consoles: code, language, chart spec, connection; for dashboards: widgets, data sources, layout).
+- Snapshots capture the full entity state (for consoles: code, language, chart spec, connection; for dashboards: widgets, data sources, layout; for apps: files, dependencies, and data bindings).
 - Restoring a past version writes the old snapshot back into the main document **and** appends a new version record (with `restoredFrom` set), so the timeline is never lost.
 
 Retry logic handles the rare case of concurrent writers picking the same version number.
@@ -33,6 +33,17 @@ All endpoints live under the workspace path and require workspace membership.
 | `GET`  | `/api/workspaces/:wid/dashboards/:did/versions`                 | List versions (paginated, newest first)  |
 | `GET`  | `/api/workspaces/:wid/dashboards/:did/versions/:version`        | Get a specific version snapshot          |
 | `POST` | `/api/workspaces/:wid/dashboards/:did/versions/:version/restore` | Restore the dashboard to that version    |
+
+### Apps
+
+Apps autosave every edit, so versions are explicit **checkpoints** rather than per-save snapshots. Saving a version also **publishes** it (see [Drafts & publishing](#drafts--publishing-apps) below).
+
+| Method | Endpoint                                                  | Description                              |
+| ------ | --------------------------------------------------------- | ---------------------------------------- |
+| `GET`  | `/api/workspaces/:wid/apps/:id/versions`                  | List checkpoints (newest first)          |
+| `POST` | `/api/workspaces/:wid/apps/:id/versions`                  | Save a checkpoint of the current draft and publish it |
+| `GET`  | `/api/workspaces/:wid/apps/:id/versions/:version`         | Get a specific version snapshot          |
+| `POST` | `/api/workspaces/:wid/apps/:id/versions/:version/restore` | Restore the app's draft to that version  |
 
 ### Query Parameters (list endpoints)
 
@@ -95,9 +106,18 @@ Restoring bumps the entity to a new version (`N + 1`) whose record has `restored
 
 Optional body on restore: `{ "comment": "Reverting because X" }`. If omitted, the comment defaults to `"Restored from version N"`.
 
+## Drafts & publishing (apps)
+
+Apps use a **draft → published** split:
+
+- The files, dependencies, and bindings you edit are the working **draft**, autosaved on every edit. Editors (and the AI agent) always see the draft in the live preview.
+- **Saving a version** snapshots the current draft into history *and* sets it as the **published** definition — the one that public/shared links and viewers render. A half-finished or in-progress draft is therefore never shown to viewers until you save a version.
+- The app document tracks `publishedVersion`, `publishedAt`, and a `hasUnpublishedChanges` flag so the UI can show when the draft has drifted from what viewers see.
+- **Restoring** reverts the *draft* to a past checkpoint (snapshotting the current draft first, so it is never lossy). Restore does **not** auto-publish — save a version afterward to push the restored state live. Binding materialization caches are preserved by binding id across restore.
+
 ## UI
 
-Open the **version history panel** from any saved console or dashboard. It shows the full list of versions with author, timestamp, and commit comment. From there you can:
+Open the **version history panel** from any saved console, dashboard, or app. It shows the full list of versions with author, timestamp, and commit comment. From there you can:
 
 - Click a version to preview its snapshot
 - Restore any past version with one click
@@ -111,15 +131,15 @@ The assistant can inspect version history through two dedicated tools, which are
 
 ### `browse_version_history`
 
-Lists past versions of a console or dashboard. Returns authors, timestamps, and comments.
+Lists past versions of a console, dashboard, or app. Returns authors, timestamps, and comments.
 
-**Inputs:** `entityType` (`"console"` | `"dashboard"`), `entityId`, optional `limit` (default 10).
+**Inputs:** `entityType` (`"console"` | `"dashboard"` | `"app"`), `entityId`, optional `limit` (default 10).
 
 ### `get_version_snapshot`
 
-Fetches the full snapshot of a specific version — including code (consoles) or widgets/data sources/layout (dashboards).
+Fetches the full snapshot of a specific version — including code (consoles), widgets/data sources/layout (dashboards), or files/dependencies/bindings (apps).
 
-**Inputs:** `entityType`, `entityId`, `version`.
+**Inputs:** `entityType` (`"console"` | `"dashboard"` | `"app"`), `entityId`, `version`.
 
 Both tools are workspace-scoped: the assistant can only browse entities inside the current workspace.
 
