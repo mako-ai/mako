@@ -86,19 +86,41 @@ The fix has two parts, both keyed off a `turnStreaming` prop
    `stickTailUntilRef` pin window, so that end-of-turn shrink stays bottom-
    pinned too. (Verified: a 4-query streaming turn went from 4–5 upward jumps,
    worst −254px, to **0** upward jumps with the view glued, `avgLag≈7px`.)
-2. **Instant transitions during the turn.** The body renders
-   `<Collapse timeout={turnStreaming ? 0 : 300}>` so the remaining mid-turn
-   transition (a card *opening* when it becomes active) is a single discrete
-   frame, never an 18-frame animation that could drift the pin. History cards
-   keep the smooth 300ms animation.
+2. **The collapse is always instant** (`<Collapse timeout={0}>`). When the
+   deferred cards finally collapse at turn end, all of them shrink at once (the
+   message can lose ~1000px). An *animated* (300ms) collapse spans ~18 frames
+   and `totalListHeightChanged` doesn't fire on every frame, so the pin drifts
+   and strands the view above the conclusion — the same failure mode as the
+   streaming bounce, just at the end. A single-frame (instant) collapse fires
+   one height change the pin catches in one shot: the conclusion stays fixed at
+   the viewport bottom while the content above it compacts. (Verified: settle
+   `maxLag` dropped from ~1006px with the animation to ~1px instant.)
 
 `turnStreaming` is in the `StreamingToolCard` memo comparator (it flips at most
 once per turn, so it adds no per-chunk renders) so terminal cards still re-run
-their collapse effect / switch back to the animated timeout when the turn ends.
+their collapse effect when the turn ends.
 
 **Never reintroduce a mid-turn height *decrease* on the streaming message**
 (auto-collapsing cards, closing reasoning, removing rows). Append-only growth is
 what keeps the tail smooth.
+
+## End-of-turn settle (`stickTailUntilRef` + turn-end snapshot)
+
+The bottom-pin runs while `isLoadingRef` is true **plus a bounded settling
+window** after the turn ends (deferred collapses fire ~300ms later). Two
+non-obvious details make the settle land *on the conclusion* instead of
+stranding at the message top:
+
+- **Window length must outlast the deferred collapse.** It is `1200ms`
+  (collapse delay + instant collapse + margin), not the old `700ms`.
+- **The settling pin must NOT gate on the live `isAtBottom`.** The big
+  end-of-turn shrink momentarily flips `isAtBottom` false, which would disengage
+  the pin and let Virtuoso re-anchor to the item top. Instead, `pinToBottom`
+  snapshots whether the user was at the bottom *as the turn ended*
+  (`wasAtBottomAtTurnEndRef`, seeded from `isAtBottomRef` or a recent
+  `lastAtBottomAtRef`) and holds the bottom for the whole window based on that.
+  During streaming it still gates on the live `isAtBottomRef` so scrolling up to
+  read history releases the pin immediately.
 
 Key pieces (in `Chat.tsx`):
 - `<Virtuoso data={messages} computeItemKey={(_, m) => m.id} itemContent={...} />`

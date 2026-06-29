@@ -65,14 +65,17 @@ interface StreamingToolCardProps {
   onTitleClick?: () => void;
   onDetailClick?: () => void;
   /**
-   * True while the assistant turn this card belongs to is still streaming.
-   * When set, the expand/collapse body transition runs with `timeout={0}`
-   * (instant, single-frame) instead of the 300ms MUI animation. Animated
-   * height changes inside the single, growing streaming message span many
-   * frames and drift the chat's bottom-pin between Virtuoso resize callbacks
-   * (the "bounce"); a discrete one-frame height change is caught by the
-   * `totalListHeightChanged` pin in one shot. The smooth animation is kept
-   * for settled history cards (when this is false).
+   * True while the assistant turn this card belongs to is still streaming
+   * (`isStreaming && isLastMessage`). While set, a finished card is NOT
+   * auto-collapsed — it stays expanded until the turn ends. A whole turn
+   * streams into a SINGLE Virtuoso item; collapsing a card mid-turn shrinks
+   * that item, which yanks the chat's bottom-pin upward (a visible scroll
+   * snap/bounce that repeats per tool call). Deferring the collapse keeps the
+   * streaming message's height monotonic (append-only), so the view follows
+   * the tail straight down with no snap. (The body `<Collapse>` also always
+   * uses `timeout={0}` so the eventual collapse is a single discrete frame the
+   * `totalListHeightChanged` pin catches in one shot — an animated multi-frame
+   * collapse drifts the pin between resize callbacks.)
    */
   turnStreaming?: boolean;
   /**
@@ -623,11 +626,7 @@ export const StreamingToolCard = React.memo(
             `unmountOnExit` removes the syntax-highlighted DOM (and its many
             nodes) entirely when collapsed — critical for keeping the DOM small
             in long chats on mobile Safari. */}
-        <Collapse
-          in={expanded && hasVisibleBody}
-          timeout={turnStreaming ? 0 : 300}
-          unmountOnExit
-        >
+        <Collapse in={expanded && hasVisibleBody} timeout={0} unmountOnExit>
           {/* Code preview */}
           {code.length > 0 && (
             <Box

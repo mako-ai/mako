@@ -3094,23 +3094,49 @@ const Chat: React.FC<ChatProps> = ({
   const isAtBottomRef = useRef(isAtBottom);
   isAtBottomRef.current = isAtBottom;
 
-  // Bounded settling window after a turn ends. The closing Collapse animations
-  // (thinking block, tool cards) and the results panel keep emitting height
-  // changes after `isLoading` flips false; without continuing to pin through
-  // them, Virtuoso's last upward compensation strands the view at the message
-  // top. Gated on `isAtBottom`, so it never hijacks a user who scrolled away.
+  // Track the last time the view was at the bottom (updated in render). Used to
+  // decide whether to hold the bottom through the post-turn settling window
+  // even after the big end-of-turn collapse momentarily flips `isAtBottom`.
+  const lastAtBottomAtRef = useRef(0);
+  if (isAtBottom) lastAtBottomAtRef.current = Date.now();
+
+  // Bounded settling window after a turn ends. The end-of-turn collapse — the
+  // thinking blocks closing AND every finished tool card collapsing (deferred
+  // to here, see `StreamingToolCard`) — shrinks the single streaming message by
+  // a lot, all at once. Virtuoso reacts by re-anchoring to the (now much
+  // shorter) item's TOP, which strands the view at the top of the response
+  // unless we keep pinning the bottom through the shrink.
+  //
+  // The live `isAtBottom` can't gate this pin: the very shrink we're countering
+  // flips `isAtBottom` to false for a few frames, which would disengage the pin
+  // and let the strand happen. Instead we snapshot whether the user was at the
+  // bottom *as the turn ended* (`wasAtBottomAtTurnEndRef`) and hold the bottom
+  // for the whole window based on that — so a big collapse stays pinned, but a
+  // user who had scrolled up to read history is never yanked back down.
   const stickTailUntilRef = useRef(0);
+  const wasAtBottomAtTurnEndRef = useRef(false);
   const wasLoadingRef = useRef(isLoading);
   useEffect(() => {
     if (wasLoadingRef.current && !isLoading) {
-      stickTailUntilRef.current = Date.now() + 700;
+      // Window must outlast the deferred tool-card collapse (~300ms delay +
+      // ~300ms animation) plus margin.
+      stickTailUntilRef.current = Date.now() + 1200;
+      wasAtBottomAtTurnEndRef.current =
+        isAtBottomRef.current || Date.now() - lastAtBottomAtRef.current < 800;
     }
     wasLoadingRef.current = isLoading;
   }, [isLoading]);
 
   const pinToBottom = useCallback(() => {
-    if (!isAtBottomRef.current) return;
-    if (!isLoadingRef.current && Date.now() > stickTailUntilRef.current) return;
+    const streaming = isLoadingRef.current;
+    const settling = !streaming && Date.now() <= stickTailUntilRef.current;
+    if (!streaming && !settling) return;
+    // While streaming, release the instant the user scrolls up to read history.
+    // While settling, hold based on the turn-end snapshot (see above) so the
+    // end-of-turn collapse doesn't strand the view at the message top.
+    if (streaming ? !isAtBottomRef.current : !wasAtBottomAtTurnEndRef.current) {
+      return;
+    }
     const el = scrollerElRef.current;
     if (el && el instanceof HTMLElement) el.scrollTop = el.scrollHeight;
   }, []);

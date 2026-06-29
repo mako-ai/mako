@@ -330,11 +330,17 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(
       /totalListHeightChanged=\{handleListHeightChanged\}/,
     );
-    // The pin writes scrollTop on the captured scroller and is gated on the
-    // live isAtBottom ref (so scrolling up to read history isn't yanked down).
+    // The pin writes scrollTop on the captured scroller. While streaming it is
+    // gated on the live isAtBottom ref (so scrolling up to read history isn't
+    // yanked down). While settling after the turn ends it holds the bottom
+    // based on a snapshot of whether the user was at the bottom AS the turn
+    // ended (`wasAtBottomAtTurnEndRef`) — the live ref can't gate that because
+    // the big end-of-turn collapse momentarily flips isAtBottom false and would
+    // strand the view at the message top.
     expect(chatSource).toMatch(/scrollerRef=\{/);
     expect(chatSource).toMatch(/el\.scrollTop = el\.scrollHeight/);
-    expect(chatSource).toMatch(/if \(!isAtBottomRef\.current\) return;/);
+    expect(chatSource).toMatch(/streaming \? !isAtBottomRef\.current/);
+    expect(chatSource).toMatch(/wasAtBottomAtTurnEndRef/);
   });
 
   it("does NOT have a DIY useEffect([messages]) scrollIntoView auto-scroll", () => {
