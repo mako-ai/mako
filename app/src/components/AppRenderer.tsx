@@ -1,23 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
+  Button,
   CircularProgress,
   IconButton,
   Tooltip,
   Typography,
   Chip,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
+  TextField,
+  Snackbar,
 } from "@mui/material";
 import {
   RefreshCw as RefreshIcon,
   Share2 as ShareIcon,
   History as HistoryIcon,
+  UploadCloud as PublishIcon,
+  CheckCircle2 as PublishedIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useTheme } from "../contexts/ThemeContext";
 import { useIsWorkspaceAdmin } from "../hooks/useIsWorkspaceAdmin";
 import { useAppStore } from "../store/appStore";
+import { useVersionStore } from "../store/versionStore";
 import { useConsoleStore } from "../store/consoleStore";
 import ShareDialog from "./ShareDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
@@ -51,6 +62,10 @@ export default function AppRenderer({
   const workspaceId = currentWorkspace?.id;
   const [shareOpen, setShareOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [publishComment, setPublishComment] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [publishedNotice, setPublishedNotice] = useState<string | null>(null);
 
   // The sandboxed preview inherits the host theme: the current mode seeds the
   // srcdoc, and later toggles are pushed via postMessage (rebuilding the
@@ -66,6 +81,8 @@ export default function AppRenderer({
   const bumpPreview = useAppStore(s => s.bumpPreview);
   const setPreviewErrors = useAppStore(s => s.setPreviewErrors);
   const runBinding = useAppStore(s => s.runBinding);
+  const persistApp = useAppStore(s => s.persistApp);
+  const saveVersion = useVersionStore(s => s.saveVersion);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -96,6 +113,41 @@ export default function AppRenderer({
     },
     [tabId],
   );
+
+  // Owner or workspace admin may publish (mirrors the Share dialog's canManage).
+  const canManage =
+    !!appEntity &&
+    ((appEntity.owner_id ?? appEntity.createdBy) === user?.id ||
+      isWorkspaceAdmin);
+
+  // Promote the current draft to the published definition that shared links and
+  // viewers render. Flush pending edits first so the checkpoint matches the
+  // preview, then refresh so the toolbar's published state stops being stale.
+  const handlePublishConfirm = useCallback(async () => {
+    if (!workspaceId) return;
+    setPublishing(true);
+    try {
+      await persistApp(workspaceId, appId);
+      const result = await saveVersion(
+        workspaceId,
+        "app",
+        appId,
+        publishComment.trim(),
+      );
+      await fetchApp(workspaceId, appId);
+      setPublishOpen(false);
+      setPublishComment("");
+      setPublishedNotice(
+        result.success
+          ? result.version
+            ? `Published version ${result.version}`
+            : "Published"
+          : (result.error ?? "Failed to publish"),
+      );
+    } finally {
+      setPublishing(false);
+    }
+  }, [workspaceId, appId, persistApp, saveVersion, publishComment, fetchApp]);
 
   // True from the moment a (re)built srcdoc is handed to the iframe until the
   // bootstrap posts ready/error. Loading deps from the CDN and transpiling
@@ -333,7 +385,40 @@ export default function AppRenderer({
           variant="outlined"
           label={appEntity.runtime === "cdn" ? "CDN preview" : "WebContainer"}
         />
+        {appEntity.hasUnpublishedChanges && (
+          <Chip
+            size="small"
+            color="warning"
+            variant="outlined"
+            label="Unpublished changes"
+          />
+        )}
         <Box sx={{ flex: 1 }} />
+        {canManage &&
+          (appEntity.hasUnpublishedChanges ? (
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={<PublishIcon size={16} strokeWidth={1.5} />}
+              onClick={() => setPublishOpen(true)}
+            >
+              Publish
+            </Button>
+          ) : (
+            <Tooltip title="Draft matches the published version">
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  disabled
+                  startIcon={<PublishedIcon size={16} strokeWidth={1.5} />}
+                >
+                  Published
+                </Button>
+              </span>
+            </Tooltip>
+          ))}
         <Tooltip title="Version history">
           <IconButton size="small" onClick={() => setHistoryOpen(true)}>
             <HistoryIcon size={18} strokeWidth={1.5} />
@@ -380,6 +465,53 @@ export default function AppRenderer({
         onSharingChanged={changes =>
           useAppStore.getState().applySharingChanges(appId, changes)
         }
+      />
+
+      <Dialog
+        open={publishOpen}
+        onClose={() => !publishing && setPublishOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Publish {appEntity.title}</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            Snapshots the current draft into version history and publishes it as
+            the live version that shared links and viewers see.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            fullWidth
+            size="small"
+            label="Comment (optional)"
+            placeholder="e.g. Add revenue chart"
+            value={publishComment}
+            onChange={e => setPublishComment(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") void handlePublishConfirm();
+            }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPublishOpen(false)} disabled={publishing}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handlePublishConfirm}
+            variant="contained"
+            disabled={publishing}
+          >
+            {publishing ? "Publishing..." : "Publish"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar
+        open={!!publishedNotice}
+        autoHideDuration={4000}
+        onClose={() => setPublishedNotice(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        message={publishedNotice ?? ""}
       />
 
       {errors.length > 0 && (
