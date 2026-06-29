@@ -330,17 +330,23 @@ describe("Chat.tsx structural guards", () => {
     expect(chatSource).toMatch(
       /totalListHeightChanged=\{handleListHeightChanged\}/,
     );
-    // The pin writes scrollTop on the captured scroller. While streaming it is
-    // gated on the live isAtBottom ref (so scrolling up to read history isn't
-    // yanked down). While settling after the turn ends it holds the bottom
-    // based on a snapshot of whether the user was at the bottom AS the turn
-    // ended (`wasAtBottomAtTurnEndRef`) — the live ref can't gate that because
-    // the big end-of-turn collapse momentarily flips isAtBottom false and would
-    // strand the view at the message top.
+    // While streaming, the pin writes scrollTop on the captured scroller, gated
+    // on the live isAtBottom ref (so scrolling up to read history isn't yanked
+    // down). While settling after the turn ends, it instead uses Virtuoso's
+    // authoritative `scrollToIndex({ index: "LAST" })` (a raw scrollTop write
+    // loses the race to Virtuoso re-anchoring the big end-of-turn collapse to
+    // the item top), gated on a snapshot of whether the user was at the bottom
+    // AS the turn ended (`wasAtBottomAtTurnEndRef`) — the live ref can't gate
+    // that because the collapse momentarily flips isAtBottom false.
     expect(chatSource).toMatch(/scrollerRef=\{/);
     expect(chatSource).toMatch(/el\.scrollTop = el\.scrollHeight/);
-    expect(chatSource).toMatch(/streaming \? !isAtBottomRef\.current/);
+    expect(chatSource).toMatch(/if \(!isAtBottomRef\.current\) return;/);
     expect(chatSource).toMatch(/wasAtBottomAtTurnEndRef/);
+    // Settle uses the authoritative scrollToIndex, not a raw scrollTop write,
+    // so the end-of-turn collapse can't strand the view at the message top.
+    expect(chatSource).toMatch(
+      /Date\.now\(\) <= stickTailUntilRef\.current &&[\s\S]*?scrollToIndex\(\{ index: "LAST", align: "end" \}\)/,
+    );
   });
 
   it("does NOT have a DIY useEffect([messages]) scrollIntoView auto-scroll", () => {

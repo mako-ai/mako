@@ -3127,22 +3127,39 @@ const Chat: React.FC<ChatProps> = ({
     wasLoadingRef.current = isLoading;
   }, [isLoading]);
 
+  // Streaming follow: a raw `scrollTop = scrollHeight` write on the captured
+  // scroller. This is the smoothest way to track append-only growth — released
+  // the instant the user scrolls up (live `isAtBottomRef`) so reading history
+  // isn't yanked down.
   const pinToBottom = useCallback(() => {
-    const streaming = isLoadingRef.current;
-    const settling = !streaming && Date.now() <= stickTailUntilRef.current;
-    if (!streaming && !settling) return;
-    // While streaming, release the instant the user scrolls up to read history.
-    // While settling, hold based on the turn-end snapshot (see above) so the
-    // end-of-turn collapse doesn't strand the view at the message top.
-    if (streaming ? !isAtBottomRef.current : !wasAtBottomAtTurnEndRef.current) {
-      return;
-    }
+    if (!isAtBottomRef.current) return;
     const el = scrollerElRef.current;
     if (el && el instanceof HTMLElement) el.scrollTop = el.scrollHeight;
   }, []);
 
   const handleListHeightChanged = useCallback(() => {
-    pinToBottom();
+    if (isLoadingRef.current) {
+      pinToBottom();
+      return;
+    }
+    // Post-turn settle. The deferred tool-card collapse shrinks the single
+    // streaming message all at once; a raw `scrollTop` write can lose the race
+    // to Virtuoso re-anchoring the (now much shorter) item to its TOP, which
+    // strands the view at the top of the response. Virtuoso's own
+    // `scrollToIndex` is authoritative — it re-targets the last item's end and
+    // survives the re-measure — so use it to hold the conclusion at the bottom
+    // through the collapse. Gated on the turn-end snapshot (not the live
+    // `isAtBottom`, which the collapse transiently flips false) and the bounded
+    // window, so a user who scrolled up to read history is never yanked back.
+    // `scrollToIndex` is only safe here because the last item is no longer
+    // growing (during streaming it would re-derive a moving target and bounce —
+    // that path uses the raw `scrollTop` pin above).
+    if (
+      Date.now() <= stickTailUntilRef.current &&
+      wasAtBottomAtTurnEndRef.current
+    ) {
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+    }
   }, [pinToBottom]);
 
   // Rescue tool cards orphaned by a clean stream end.
