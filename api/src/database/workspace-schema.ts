@@ -2424,9 +2424,46 @@ WebhookEventSchema.index({ flowId: 1, applyStatus: 1, receivedAt: 1 });
 // index this query does a COLLSCAN + in-memory sort over the whole collection.
 WebhookEventSchema.index({ status: 1, receivedAt: 1 });
 WebhookEventSchema.index({ workspaceId: 1, receivedAt: -1 });
+// Tiered retention by applyStatus (anchored on receivedAt, which is required on
+// every doc so the four partial TTLs fully cover the collection). MongoDB allows
+// multiple TTL indexes on the same key when they differ by partialFilterExpression
+// (same pattern as cdc_change_events applied-vs-dropped). Successfully processed
+// events are purged quickly; errors are retained longer for debugging.
+/** Successfully processed -> short retention. */
 WebhookEventSchema.index(
   { receivedAt: 1 },
-  { expireAfterSeconds: 7 * 24 * 60 * 60 },
+  {
+    name: "webhookevents_applied_ttl_3d",
+    expireAfterSeconds: 3 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "applied" },
+  },
+);
+/** Awaiting destination apply -> safety net (matches prior flat behavior). */
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  {
+    name: "webhookevents_pending_ttl_7d",
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "pending" },
+  },
+);
+/** Intentionally skipped -> keep longer for audit. */
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  {
+    name: "webhookevents_dropped_ttl_7d",
+    expireAfterSeconds: 7 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "dropped" },
+  },
+);
+/** Errors -> retained longest for debugging. */
+WebhookEventSchema.index(
+  { receivedAt: 1 },
+  {
+    name: "webhookevents_failed_ttl_30d",
+    expireAfterSeconds: 30 * 24 * 60 * 60,
+    partialFilterExpression: { applyStatus: "failed" },
+  },
 );
 
 /**
