@@ -335,7 +335,15 @@ export const useAppStore = create<AppStore>()(
         if (res.success && res.app) {
           set(state => {
             const current = state.openApps[appId];
-            if (current) current.version = res.app.version;
+            if (current) {
+              current.version = res.app.version;
+              // Autosave bumps the draft; mirror the server-computed publish
+              // state so the preview toolbar's Publish button reflects whether
+              // the draft now differs from the published version.
+              current.publishedVersion = res.app.publishedVersion;
+              current.publishedAt = res.app.publishedAt;
+              current.hasUnpublishedChanges = res.app.hasUnpublishedChanges;
+            }
           });
         }
       } catch {
