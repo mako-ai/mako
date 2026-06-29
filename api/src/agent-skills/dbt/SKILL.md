@@ -129,6 +129,13 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
    (`select * from <dev_schema>.<model> limit 100`) — only after the run
    reaches `success`.
 
+> ALWAYS invoke these as real tool calls. NEVER write a tool name or its
+> arguments (`projectId`, `runId`, `waitMs`, etc.) as message text — e.g. do
+> not type `dbt_get_run <projectId> <runId> 60000` into your reply. If you want
+> to check a run, emit a `dbt_get_run` tool call; the user already sees live
+> progress in the run card. After a run finishes, reply with a short
+> human-readable summary, not raw IDs.
+
 ## Environments and jobs
 
 - Projects have environments (dev/prod) mapping to a workspace connection +
