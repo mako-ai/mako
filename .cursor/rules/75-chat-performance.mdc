@@ -64,6 +64,23 @@ DOM size, memory, paint, and scroll, especially on mobile. Memoization stops
 *re-renders* but does nothing about *mount cost / DOM size*; virtualization is
 the only thing that does.
 
+**Streaming tool cards collapse instantly (no animation).** A whole assistant
+turn streams into a **single** Virtuoso item, and that item's height changes
+**non-monotonically** when a finished tool card auto-collapses (it shrinks 800ms
+after resolving) while text keeps streaming below. With the default MUI
+`Collapse` 300ms animation, that shrink spans ~18 frames; the
+`totalListHeightChanged` pin (below) does not fire on every sub-pixel animation
+frame, so Virtuoso's resize anchoring nudges `scrollTop` **up** on the frames it
+misses → the view paints partway up, then the next reported height change pins
+it back down. That alternation **is** the bounce. `StreamingToolCard` takes a
+`turnStreaming` prop (`isStreaming && isLastMessage`) and renders its body
+`<Collapse timeout={turnStreaming ? 0 : 300}>` — during the active turn the
+expand/collapse is a **single discrete frame**, which `totalListHeightChanged`
+catches in one shot (no bounce). Settled history cards keep the smooth 300ms
+animation. `turnStreaming` is in the memo comparator (it flips at most once per
+turn, so it adds no per-chunk renders) so terminal cards still switch back to
+the animated timeout when the turn ends.
+
 Key pieces (in `Chat.tsx`):
 - `<Virtuoso data={messages} computeItemKey={(_, m) => m.id} itemContent={...} />`
   — `computeItemKey` by `message.id` keeps row identity (and memo) stable across

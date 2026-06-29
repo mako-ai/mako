@@ -65,6 +65,17 @@ interface StreamingToolCardProps {
   onTitleClick?: () => void;
   onDetailClick?: () => void;
   /**
+   * True while the assistant turn this card belongs to is still streaming.
+   * When set, the expand/collapse body transition runs with `timeout={0}`
+   * (instant, single-frame) instead of the 300ms MUI animation. Animated
+   * height changes inside the single, growing streaming message span many
+   * frames and drift the chat's bottom-pin between Virtuoso resize callbacks
+   * (the "bounce"); a discrete one-frame height change is caught by the
+   * `totalListHeightChanged` pin in one shot. The smooth animation is kept
+   * for settled history cards (when this is false).
+   */
+  turnStreaming?: boolean;
+  /**
    * Optional — used as a defensive check in the memo comparator so that
    * React re-renders if the underlying tool call identity actually changed.
    * In practice parents also use this as the React key, so unmount/remount
@@ -273,6 +284,7 @@ export const StreamingToolCard = React.memo(
     bodyPreview,
     onTitleClick,
     onDetailClick,
+    turnStreaming,
   }: StreamingToolCardProps) {
     const config = getToolConfig(toolName);
     const muiTheme = useMuiTheme();
@@ -595,7 +607,11 @@ export const StreamingToolCard = React.memo(
             `unmountOnExit` removes the syntax-highlighted DOM (and its many
             nodes) entirely when collapsed — critical for keeping the DOM small
             in long chats on mobile Safari. */}
-        <Collapse in={expanded && hasVisibleBody} timeout={300} unmountOnExit>
+        <Collapse
+          in={expanded && hasVisibleBody}
+          timeout={turnStreaming ? 0 : 300}
+          unmountOnExit
+        >
           {/* Code preview */}
           {code.length > 0 && (
             <Box
@@ -672,6 +688,11 @@ export const StreamingToolCard = React.memo(
     if (prev.leadingIconAlt !== next.leadingIconAlt) return false;
     if (prev.bodyPreview?.content !== next.bodyPreview?.content) return false;
     if (prev.bodyPreview?.language !== next.bodyPreview?.language) return false;
+    // `turnStreaming` flips at most once per turn (true→false when the turn
+    // ends), so re-rendering on it does not add per-chunk renders, but it must
+    // be honored even for terminal cards so the collapse transition switches
+    // from instant (streaming) back to the smooth 300ms animation (history).
+    if (prev.turnStreaming !== next.turnStreaming) return false;
 
     // Terminal states are immutable. Even if useChat handed us new cloned
     // references for `input` / `output` this tick, the contents are the

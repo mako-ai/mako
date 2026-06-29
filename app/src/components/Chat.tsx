@@ -1127,6 +1127,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                       }
                     : undefined
                 }
+                turnStreaming={isStreaming && isLastMessage}
                 onTitleClick={
                   consoleToolPresentation
                     ? () =>
