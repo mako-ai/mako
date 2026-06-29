@@ -478,6 +478,15 @@ export const OPPORTUNITY_STATUS_SCHEMA: Record<string, ConnectorFieldSchema> = {
   ...MAKO_SYSTEM_FIELDS,
 };
 
+export const GROUP_SCHEMA: Record<string, ConnectorFieldSchema> = {
+  id: { type: "string", required: true },
+  name: s(),
+  organization_id: s(),
+  // List of member user_ids (the actual team membership Close exposes).
+  members: j(),
+  ...MAKO_SYSTEM_FIELDS,
+};
+
 export const OUTCOME_SCHEMA: Record<string, ConnectorFieldSchema> = {
   id: { type: "string", required: true },
   name: s(),
@@ -527,6 +536,7 @@ export const CORE_ENTITY_SCHEMA_MAP: Record<
   lead_statuses: LEAD_STATUS_SCHEMA,
   opportunity_statuses: OPPORTUNITY_STATUS_SCHEMA,
   outcomes: OUTCOME_SCHEMA,
+  groups: GROUP_SCHEMA,
 };
 
 // ---------------------------------------------------------------------------
