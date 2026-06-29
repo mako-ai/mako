@@ -320,15 +320,31 @@ export const StreamingToolCard = React.memo(
     );
 
     useEffect(() => {
-      if ((isDone || isError) && hasCodePreview) {
-        const timer = setTimeout(() => setExpanded(false), 800);
-        return () => clearTimeout(timer);
-      }
-      if (isActive && hasCodePreview) {
+      if (!hasCodePreview) return;
+      if (isActive) {
         setExpanded(true);
         setUserScrolled(false);
+        return;
       }
-    }, [isDone, isError, isActive, hasCodePreview]);
+      if (isDone || isError) {
+        // While the assistant turn is still streaming, keep finished cards
+        // expanded instead of auto-collapsing them. A whole turn streams into
+        // a SINGLE Virtuoso item; collapsing a card mid-turn shrinks that item
+        // (by up to a few hundred px), which yanks the bottom-pinned view
+        // upward to the new bottom — a visible scroll "snap"/bounce that
+        // repeats for every tool call. Deferring the collapse keeps the
+        // streaming message's height monotonic (it only grows), so the view
+        // follows the tail straight down with no snap. The cards collapse once
+        // the turn settles (below), inside `Chat`'s post-turn pin window so
+        // that end-of-turn shrink stays bottom-pinned too.
+        if (turnStreaming) {
+          setExpanded(true);
+          return;
+        }
+        const timer = setTimeout(() => setExpanded(false), 300);
+        return () => clearTimeout(timer);
+      }
+    }, [isDone, isError, isActive, hasCodePreview, turnStreaming]);
 
     // Resolve code preview content (supports both string and object fields)
     const inputObj = input as Record<string, unknown> | undefined;

@@ -64,22 +64,41 @@ DOM size, memory, paint, and scroll, especially on mobile. Memoization stops
 *re-renders* but does nothing about *mount cost / DOM size*; virtualization is
 the only thing that does.
 
-**Streaming tool cards collapse instantly (no animation).** A whole assistant
-turn streams into a **single** Virtuoso item, and that item's height changes
-**non-monotonically** when a finished tool card auto-collapses (it shrinks 800ms
-after resolving) while text keeps streaming below. With the default MUI
-`Collapse` 300ms animation, that shrink spans ~18 frames; the
-`totalListHeightChanged` pin (below) does not fire on every sub-pixel animation
-frame, so Virtuoso's resize anchoring nudges `scrollTop` **up** on the frames it
-misses → the view paints partway up, then the next reported height change pins
-it back down. That alternation **is** the bounce. `StreamingToolCard` takes a
-`turnStreaming` prop (`isStreaming && isLastMessage`) and renders its body
-`<Collapse timeout={turnStreaming ? 0 : 300}>` — during the active turn the
-expand/collapse is a **single discrete frame**, which `totalListHeightChanged`
-catches in one shot (no bounce). Settled history cards keep the smooth 300ms
-animation. `turnStreaming` is in the memo comparator (it flips at most once per
-turn, so it adds no per-chunk renders) so terminal cards still switch back to
-the animated timeout when the turn ends.
+**Tool cards must NOT shrink mid-turn (the load-bearing anti-bounce rule).** A
+whole assistant turn streams into a **single** Virtuoso item. If that item's
+height ever **decreases** while the bottom-pin is engaged, the view snaps
+upward to the new (higher) bottom — a visible scroll bounce. The original
+culprit was `StreamingToolCard` auto-collapsing a finished card 800ms after it
+resolved *while the rest of the turn kept streaming*: every tool call produced a
+shrink → a snap (with the default 300ms `Collapse` animation it was worse — the
+shrink spanned ~18 frames and `totalListHeightChanged` doesn't fire on every
+sub-pixel frame, so Virtuoso's resize anchoring drifted `scrollTop` up on the
+frames the pin missed → oscillating jitter).
+
+The fix has two parts, both keyed off a `turnStreaming` prop
+(`isStreaming && isLastMessage`) threaded from `ChatMessageRow`:
+
+1. **Defer collapse until the turn settles.** While `turnStreaming`, finished
+   tool cards stay **expanded** (`StreamingToolCard`'s collapse effect early-
+   returns). The streaming message's height is therefore **monotonic** (it only
+   grows), so the view follows the tail straight down with zero upward snaps.
+   Cards collapse ~300ms after the turn ends — inside `Chat`'s ~700ms post-turn
+   `stickTailUntilRef` pin window, so that end-of-turn shrink stays bottom-
+   pinned too. (Verified: a 4-query streaming turn went from 4–5 upward jumps,
+   worst −254px, to **0** upward jumps with the view glued, `avgLag≈7px`.)
+2. **Instant transitions during the turn.** The body renders
+   `<Collapse timeout={turnStreaming ? 0 : 300}>` so the remaining mid-turn
+   transition (a card *opening* when it becomes active) is a single discrete
+   frame, never an 18-frame animation that could drift the pin. History cards
+   keep the smooth 300ms animation.
+
+`turnStreaming` is in the `StreamingToolCard` memo comparator (it flips at most
+once per turn, so it adds no per-chunk renders) so terminal cards still re-run
+their collapse effect / switch back to the animated timeout when the turn ends.
+
+**Never reintroduce a mid-turn height *decrease* on the streaming message**
+(auto-collapsing cards, closing reasoning, removing rows). Append-only growth is
+what keeps the tail smooth.
 
 Key pieces (in `Chat.tsx`):
 - `<Virtuoso data={messages} computeItemKey={(_, m) => m.id} itemContent={...} />`
