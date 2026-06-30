@@ -24,10 +24,29 @@ CI: offline suite runs in `api-contract.yml`; the gated suites run nightly in
 | --- | --- | --- |
 | Dialect contract | `drivers/destination-contract.test.ts` | Table-driven over every destination driver |
 | CDC SQL builder | `sync-cdc/adapters/bigquery-merge.test.ts` | Inline-snapshot the MERGE |
+| CDC repartition SQL | `sync-cdc/adapters/repartition-sql.test.ts` | Copy+swap statements (BigQuery + ClickHouse) |
+| CDC `_syncedAt` stamp | `sync-cdc/adapters/synced-at.test.ts` | `withSyncedAt` contract |
 | Driver write-SQL | `drivers/{postgresql,bigquery}/write-sql.test.ts` | Stub `executeQuery`, assert SQL |
 | Orchestration | `services/destination-writer.service.test.ts` | Via `_injectForTest` seam |
 | Emulator seam | `utils/bigquery-emulator.test.ts` | Host detection / endpoint helpers |
-| Integration (gated) | `drivers/**/**.integration.test.ts` | testcontainers / bigquery-emulator |
+| Integration (gated) | `drivers/**/**.integration.test.ts`, `sync-cdc/adapters/clickhouse-repartition.integration.test.ts` | testcontainers / bigquery-emulator |
+
+### ClickHouse in-place repartition (gated)
+
+`sync-cdc/adapters/clickhouse-repartition.integration.test.ts` runs the real
+copy+`EXCHANGE TABLES` swap and asserts the partition key changes while rows are
+preserved. It uses an external server when `CLICKHOUSE_TEST_HTTP` is set,
+otherwise testcontainers:
+
+```bash
+# Against an already-running ClickHouse (no Docker):
+RUN_DB_INTEGRATION=1 CLICKHOUSE_TEST_HTTP=http://localhost:8123 \
+  pnpm --filter api exec vitest run --config vitest.destinations.config.ts \
+  src/sync-cdc/adapters/clickhouse-repartition.integration.test.ts
+
+# Via testcontainers (requires Docker):
+RUN_DB_INTEGRATION=1 pnpm --filter api run test:destinations
+```
 
 ## Helpers (this folder)
 

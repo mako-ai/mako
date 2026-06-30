@@ -67,6 +67,55 @@ const escId = (id: string) => `\`${id.replace(/`/g, "``")}\``;
 
 const escStr = (val: string) => val.replace(/'/g, "''");
 
+/**
+ * ClickHouse `PARTITION BY` clause for a CDC layout (empty when unpartitioned).
+ * Exported for contract testing — partition expression shape is correctness
+ * critical for in-place repartition.
+ */
+export function clickHousePartitionClause(layout: CdcEntityLayout): string {
+  if (!layout.partitioning?.field) return "";
+  const field = escId(layout.partitioning.field);
+  const gran = (layout.partitioning.granularity || "day").toLowerCase();
+  switch (gran) {
+    case "hour":
+      return `PARTITION BY toStartOfHour(${field})`;
+    case "month":
+      return `PARTITION BY toYYYYMM(${field})`;
+    case "year":
+      return `PARTITION BY toYear(${field})`;
+    default:
+      return `PARTITION BY toYYYYMMDD(${field})`;
+  }
+}
+
+export interface ClickHouseRepartitionStatements {
+  createTmp: string;
+  copy: string;
+  exchange: string;
+}
+
+/**
+ * Build the happy-path statements that rewrite a live table's partition/sort
+ * layout in place: create a sibling table with the new layout, copy the rows,
+ * then atomically swap. Exported for contract testing + reuse by the gated
+ * integration suite.
+ */
+export function buildClickHouseRepartitionStatements(params: {
+  fullLive: string;
+  fullTmp: string;
+  partitionClause: string;
+  orderByColumns: string[];
+  sourceTsColumn?: string;
+}): ClickHouseRepartitionStatements {
+  const orderBy = params.orderByColumns.map(escId).join(", ");
+  const versionCol = escId(params.sourceTsColumn || "_mako_source_ts");
+  return {
+    createTmp: `CREATE TABLE ${params.fullTmp} AS ${params.fullLive} ENGINE = ReplacingMergeTree(${versionCol}) ${params.partitionClause} ORDER BY (${orderBy})`,
+    copy: `INSERT INTO ${params.fullTmp} SELECT * FROM ${params.fullLive}`,
+    exchange: `EXCHANGE TABLES ${params.fullLive} AND ${params.fullTmp}`,
+  };
+}
+
 interface ClickHouseAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -165,22 +214,6 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     await this.executeQuery(ddl);
   }
 
-  private partitionClauseFor(layout: CdcEntityLayout): string {
-    if (!layout.partitioning?.field) return "";
-    const field = escId(layout.partitioning.field);
-    const gran = (layout.partitioning.granularity || "day").toLowerCase();
-    switch (gran) {
-      case "hour":
-        return `PARTITION BY toStartOfHour(${field})`;
-      case "month":
-        return `PARTITION BY toYYYYMM(${field})`;
-      case "year":
-        return `PARTITION BY toYear(${field})`;
-      default:
-        return `PARTITION BY toYYYYMMDD(${field})`;
-    }
-  }
-
   async repartitionLiveTable(
     layout: CdcEntityLayout,
   ): Promise<{ repartitioned: boolean }> {
@@ -196,21 +229,21 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     const tmp = `${live}__repart_${Date.now().toString(36)}`;
     const fullLive = `${escId(db)}.${escId(live)}`;
     const fullTmp = `${escId(db)}.${escId(tmp)}`;
-    const partitionClause = this.partitionClauseFor(layout);
-    const keyColumns = layout.keyColumns.map(escId).join(", ");
 
     // Create a sibling table with the same columns but the new partitioning /
     // sort key, copy the current rows, then atomically swap. The caller pauses
     // the stream so no writes land on the old table during this window.
+    const stmts = buildClickHouseRepartitionStatements({
+      fullLive,
+      fullTmp,
+      partitionClause: clickHousePartitionClause(layout),
+      orderByColumns: layout.keyColumns,
+    });
     await this.executeQuery(`DROP TABLE IF EXISTS ${fullTmp}`);
-    await this.executeQuery(
-      `CREATE TABLE ${fullTmp} AS ${fullLive} ENGINE = ReplacingMergeTree(_mako_source_ts) ${partitionClause} ORDER BY (${keyColumns})`,
-    );
-    await this.executeQuery(
-      `INSERT INTO ${fullTmp} SELECT * FROM ${fullLive}`,
-    );
+    await this.executeQuery(stmts.createTmp);
+    await this.executeQuery(stmts.copy);
     try {
-      await this.executeQuery(`EXCHANGE TABLES ${fullLive} AND ${fullTmp}`);
+      await this.executeQuery(stmts.exchange);
       await this.executeQuery(`DROP TABLE IF EXISTS ${fullTmp}`);
     } catch (err) {
       // EXCHANGE TABLES requires the Atomic database engine; fall back to a
