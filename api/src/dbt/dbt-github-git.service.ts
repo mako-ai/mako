@@ -99,13 +99,78 @@ export interface GitStatus {
   hasChanges: boolean;
 }
 
+export interface GitStatusOptions {
+  /** Project-relative paths to include; omitted means the full working tree. */
+  paths?: string[];
+}
+
 function repoPath(project: IDbtProject, path: string): string {
   const subdir = project.repo?.subdirectory?.replace(/^\/+|\/+$/g, "");
   return subdir ? `${subdir}/${path}` : path;
 }
 
+function normalizeCommitPaths(paths?: string[]): string[] | undefined {
+  if (!paths) return undefined;
+  const normalized = [
+    ...new Set(
+      paths.map(path =>
+        path
+          .trim()
+          .replace(/^\.\/+/, "")
+          .replace(/^\/+/, ""),
+      ),
+    ),
+  ].filter(Boolean);
+  if (normalized.length === 0) {
+    throw new Error("At least one project-relative path is required.");
+  }
+  return normalized;
+}
+
+function summarizeChanges(branch: string, changes: GitFileStatus[]): GitStatus {
+  const added = changes.filter(c => c.status === "added").length;
+  const modified = changes.filter(c => c.status === "modified").length;
+  const deleted = changes.filter(c => c.status === "deleted").length;
+  return {
+    branch,
+    changes,
+    added,
+    modified,
+    deleted,
+    hasChanges: changes.length > 0,
+  };
+}
+
+function filterGitStatus(status: GitStatus, paths?: string[]): GitStatus {
+  const normalized = normalizeCommitPaths(paths);
+  if (!normalized) return status;
+
+  const changesByPath = new Map(
+    status.changes.map(change => [change.path, change]),
+  );
+  const selectedChanges = normalized
+    .map(path => changesByPath.get(path))
+    .filter((change): change is GitFileStatus => change !== undefined);
+  const missing = normalized.filter(path => !changesByPath.has(path));
+
+  if (missing.length > 0) {
+    const available = status.changes.map(change => change.path).join(", ");
+    throw new Error(
+      `Selected path(s) have no pending changes: ${missing.join(", ")}.` +
+        (available
+          ? ` Pending changed paths are: ${available}.`
+          : " The working tree is clean."),
+    );
+  }
+
+  return summarizeChanges(status.branch, selectedChanges);
+}
+
 /** Compute the working-tree status of a repo-bound project. */
-export async function getGitStatus(project: IDbtProject): Promise<GitStatus> {
+export async function getGitStatus(
+  project: IDbtProject,
+  options: GitStatusOptions = {},
+): Promise<GitStatus> {
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
@@ -130,17 +195,10 @@ export async function getGitStatus(project: IDbtProject): Promise<GitStatus> {
     }
   }
   changes.sort((a, b) => a.path.localeCompare(b.path));
-  const added = changes.filter(c => c.status === "added").length;
-  const modified = changes.filter(c => c.status === "modified").length;
-  const deleted = changes.filter(c => c.status === "deleted").length;
-  return {
-    branch: project.repo.branch,
-    changes,
-    added,
-    modified,
-    deleted,
-    hasChanges: changes.length > 0,
-  };
+  return filterGitStatus(
+    summarizeChanges(project.repo.branch, changes),
+    options.paths,
+  );
 }
 
 export interface GitFileDiff {
@@ -208,11 +266,11 @@ export interface CommitResult {
  */
 export async function commitAndPush(
   project: IDbtProject,
-  params: { message: string; updatedBy: string },
+  params: { message: string; updatedBy: string; paths?: string[] },
 ): Promise<CommitResult> {
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
-    const status = await getGitStatus(fresh);
+    const status = await getGitStatus(fresh, { paths: params.paths });
     if (!status.hasChanges) {
       return {
         committed: false,
@@ -353,11 +411,16 @@ export interface PromoteResult extends CommitResult {
  */
 export async function commitToNewBranch(
   project: IDbtProject,
-  params: { branchName: string; message: string; updatedBy: string },
+  params: {
+    branchName: string;
+    message: string;
+    updatedBy: string;
+    paths?: string[];
+  },
 ): Promise<PromoteResult> {
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
-    const status = await getGitStatus(fresh);
+    const status = await getGitStatus(fresh, { paths: params.paths });
     if (!status.hasChanges) {
       throw new Error(
         "No working-tree changes to promote — nothing to put on a new branch. " +

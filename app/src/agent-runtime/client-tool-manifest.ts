@@ -770,7 +770,12 @@ export const AGENT_TOOL_MANIFEST = {
     domain: "dbt",
     execution: "server",
     longRunning: true,
-    getLabel: () => "Committing & pushing",
+    getLabel: input => {
+      const paths = (input as Record<string, unknown>)?.paths;
+      return Array.isArray(paths) && paths.length > 0
+        ? `Committing ${paths.length} file${paths.length === 1 ? "" : "s"} & pushing`
+        : "Committing & pushing";
+    },
     icon: "external-link",
   },
   dbt_commit_to_branch: {
@@ -779,6 +784,12 @@ export const AGENT_TOOL_MANIFEST = {
     longRunning: true,
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
+      const paths = (input as Record<string, unknown>)?.paths;
+      const count =
+        Array.isArray(paths) && paths.length > 0 ? paths.length : null;
+      if (name && count) {
+        return `Committing ${count} file${count === 1 ? "" : "s"} to ${name}`;
+      }
       return name ? `Committing to ${name}` : "Committing to new branch";
     },
     icon: "external-link",

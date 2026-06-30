@@ -50,6 +50,11 @@ export interface CommitMessageTrackingContext {
   userEmail?: string;
 }
 
+export interface CommitMessageOptions {
+  /** Project-relative paths to summarize; omitted means the full working tree. */
+  paths?: string[];
+}
+
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}\n…(truncated)…` : value;
 }
@@ -69,8 +74,22 @@ function patchBody(patch: string): string {
 async function buildWorkingTreeDiff(project: IDbtProject): Promise<{
   diff: string;
   fileCount: number;
+} | null>;
+async function buildWorkingTreeDiff(
+  project: IDbtProject,
+  options: CommitMessageOptions,
+): Promise<{
+  diff: string;
+  fileCount: number;
+} | null>;
+async function buildWorkingTreeDiff(
+  project: IDbtProject,
+  options: CommitMessageOptions = {},
+): Promise<{
+  diff: string;
+  fileCount: number;
 } | null> {
-  const status = await getGitStatus(project);
+  const status = await getGitStatus(project, { paths: options.paths });
   if (!status.hasChanges) return null;
 
   const changes = status.changes.slice(0, MAX_FILES);
@@ -127,9 +146,10 @@ async function buildWorkingTreeDiff(project: IDbtProject): Promise<{
 export async function generateDbtCommitMessage(
   project: IDbtProject,
   trackingCtx?: CommitMessageTrackingContext,
+  options: CommitMessageOptions = {},
 ): Promise<string | null> {
   try {
-    const built = await buildWorkingTreeDiff(project);
+    const built = await buildWorkingTreeDiff(project, options);
     if (!built) return null;
 
     const utilityModel = await getUtilityModelId();
