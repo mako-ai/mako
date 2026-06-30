@@ -342,8 +342,11 @@ export interface BigQueryRepartitionStatements {
 
 /**
  * Build the statements that rewrite a live table's partition/cluster layout in
- * place: CTAS into a new-layout table, drop the old, rename the new. Exported
- * for contract testing + reuse by the gated integration suite.
+ * place: `CREATE OR REPLACE` a new-layout table from the current rows, drop the
+ * old table, then rename the new one into place. This is the swap BigQuery
+ * actually supports (no atomic EXCHANGE); the caller pauses the stream so the
+ * brief window where `live` is renamed is safe. Exported for contract testing +
+ * reuse by the gated integration suite.
  */
 export function buildBigQueryRepartitionStatements(params: {
   fullLive: string;
@@ -355,7 +358,7 @@ export function buildBigQueryRepartitionStatements(params: {
   const clusterClause = bigQueryClusterClause(params.layout);
   return {
     createTmp:
-      `CREATE TABLE ${params.fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${params.fullLive}`.replace(
+      `CREATE OR REPLACE TABLE ${params.fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${params.fullLive}`.replace(
         /\s+/g,
         " ",
       ),
@@ -464,16 +467,15 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
     };
 
-    // Copy current rows into a new table laid out with the desired partitioning
-    // / clustering, then swap (drop old, rename new). The caller pauses the
-    // stream so no writes land on the old table during this window.
+    // CREATE OR REPLACE a new-layout table from the current rows, drop the old
+    // table, then rename the new one in. The caller pauses the stream so the
+    // brief window where `live` is renamed is safe.
     const stmts = buildBigQueryRepartitionStatements({
       fullLive,
       fullTmp,
       liveName: live,
       layout,
     });
-    await run(`DROP TABLE IF EXISTS ${fullTmp}`);
     await run(stmts.createTmp);
     await run(stmts.dropLive);
     await run(stmts.rename);
