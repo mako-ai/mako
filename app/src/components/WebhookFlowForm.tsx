@@ -505,11 +505,8 @@ export function WebhookFlowForm({
 
       let newFlow;
       if (isNewMode) {
+        // Webhook flows are created as CDC by the API (no engine switch needed).
         newFlow = await createFlow(currentWorkspace.id, payload);
-        // Webhook flows are created as CDC by the API, so no engine switch is
-        // needed here (kept simple — the create payload already sets cdc).
-        const syncEngineOk = true;
-        void desiredSyncEngine;
 
         // Track flow creation
         trackEvent("flow_created", {
@@ -526,13 +523,6 @@ export function WebhookFlowForm({
 
         // Notify parent that a new flow has been created
         onSaved?.(newFlow._id);
-
-        if (!syncEngineOk) {
-          setError(SYNC_ENGINE_PERMISSION_ERROR);
-          // Keep the form open so the message stays visible; the flow itself
-          // was created, only the sync-engine change was rejected.
-          return;
-        }
 
         // Reset form with the new flow data to mark it as pristine
         reset(data);
