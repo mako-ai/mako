@@ -134,6 +134,8 @@ export interface CdcEventStore {
   deleteFlowEvents(params: {
     workspaceId: string;
     flowId: string;
+    /** Restrict deletion to these entities (omit/empty to delete all). */
+    entities?: string[];
   }): Promise<number>;
 }
 

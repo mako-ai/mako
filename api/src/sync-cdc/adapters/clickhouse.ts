@@ -12,6 +12,7 @@ import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
+  withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
@@ -40,6 +41,7 @@ function mapLogicalTypeToClickHouse(logicalType: ConnectorLogicalType): string {
 }
 
 const SYSTEM_COLUMN_TYPES: Record<string, string> = {
+  _syncedAt: "DateTime64(3)",
   _mako_ingest_seq: "Int64",
   _mako_source_ts: "DateTime64(3)",
   _mako_deleted_at: "Nullable(DateTime64(3))",
@@ -188,16 +190,18 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
         payload,
         new Date(event.sourceTs),
       );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
+      rows.push(
+        withSyncedAt({
+          ...payload,
+          id: event.recordId,
+          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+          _mako_source_ts: sourceTs,
+          _mako_ingest_seq: Number(event.ingestSeq),
+          _mako_deleted_at: null,
+          is_deleted: false,
+          deleted_at: null,
+        }),
+      );
     }
 
     if (deleteMode === "soft") {
@@ -208,16 +212,18 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
           new Date(event.sourceTs),
         );
         const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
+        rows.push(
+          withSyncedAt({
+            ...payload,
+            id: event.recordId,
+            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+            _mako_source_ts: sourceTs,
+            _mako_ingest_seq: Number(event.ingestSeq),
+            _mako_deleted_at: deletedAt,
+            is_deleted: true,
+            deleted_at: deletedAt,
+          }),
+        );
       }
     }
 
@@ -251,7 +257,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
 
     const rows = params.records.map(record => {
       const payload = normalizePayloadKeys(record);
-      return {
+      return withSyncedAt({
         ...payload,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -259,7 +265,7 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
           typeof payload._mako_ingest_seq === "number"
             ? payload._mako_ingest_seq
             : undefined,
-      };
+      });
     });
 
     await this.writeViaParquet({

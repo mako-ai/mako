@@ -453,6 +453,8 @@ interface FlowStore extends FlowStoreState {
     options?: {
       deleteDestination?: boolean;
       clearWebhookEvents?: boolean;
+      /** Restrict the resync to these entities (recreate only their tables). */
+      entities?: string[];
     },
   ) => Promise<boolean>;
   recoverCdcFlow: (
@@ -1168,6 +1170,9 @@ export const useFlowStore = create<FlowStore>()(
                 body: {
                   deleteDestination: options?.deleteDestination === true,
                   clearWebhookEvents: options?.clearWebhookEvents === true,
+                  ...(options?.entities && options.entities.length > 0
+                    ? { entities: options.entities }
+                    : {}),
                 },
               },
             ),

@@ -731,8 +731,12 @@ export class CloseConnector extends BaseConnector {
    * Get entity metadata with sub-entities for activities
    */
   getEntityMetadata(): EntityMetadata[] {
+    // Default to `_syncedAt` as the partition field: it is stamped on every
+    // destination write (insert/update), so partitions track last-sync time and
+    // every entity has a guaranteed, always-populated timestamp to partition on.
+    // Per-entity overrides (e.g. `date_created`) remain selectable in the flow UI.
     const defaultLayout = {
-      partitionField: "date_created",
+      partitionField: "_syncedAt",
       partitionGranularity: "day" as const,
       clusterFields: ["_dataSourceId", "id"],
     };
@@ -754,7 +758,7 @@ export class CloseConnector extends BaseConnector {
         label: "Activities",
         description: "All activity types from Close.com",
         layoutSuggestion: {
-          partitionField: "date_created",
+          partitionField: "_syncedAt",
           partitionGranularity: "day",
           clusterFields: ["_dataSourceId", "id"],
         },

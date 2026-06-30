@@ -17,6 +17,11 @@ import {
   Chip,
   Stack,
   Checkbox,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogContentText,
+  DialogActions,
 } from "@mui/material";
 import {
   Save as SaveIcon,
@@ -117,6 +122,7 @@ export function WebhookFlowForm({
     deleteFlow,
     fetchConnectors,
     provisionFlowWebhook,
+    resyncCdcFlow,
   } = useFlowStore();
 
   const connectorTypes = useConnectorCatalogStore(state => state.types);
@@ -157,6 +163,12 @@ export function WebhookFlowForm({
     flowId,
   );
   const [isNewMode, setIsNewMode] = useState(isNew);
+  // When a layout change on an existing flow requires recreating destination
+  // tables, hold the pending save until the user confirms the reset.
+  const [pendingLayoutReset, setPendingLayoutReset] = useState<{
+    data: FormData;
+    entities: string[];
+  } | null>(null);
   const [entityMetadata, setEntityMetadata] = useState<
     FlattenedConnectorEntity[]
   >([]);
@@ -421,7 +433,51 @@ export function WebhookFlowForm({
     };
   }, [clearError, currentWorkspace?.id]);
 
+  // Entities whose partition/granularity/cluster layout changed vs. the saved
+  // flow. A changed layout only takes effect when the destination table is
+  // recreated (BigQuery/ClickHouse partitioning + clustering are fixed at
+  // CREATE), so these entities require a destination reset to apply.
+  const getLayoutChangedEntities = (data: FormData): string[] => {
+    if (isNewMode || !currentFlowId) return [];
+    const flow = flows.find(f => f._id === currentFlowId);
+    const saved = new Map(
+      (flow?.entityLayouts || []).map((l: EntityLayoutConfig) => [l.entity, l]),
+    );
+    const sortedFields = (fields?: string[]) =>
+      JSON.stringify([...(fields || [])].sort());
+    const changed: string[] = [];
+    for (const layout of data.entityLayouts || []) {
+      if (layout.enabled === false) continue;
+      const prev = saved.get(layout.entity);
+      // A newly enabled entity has no existing table — it's created fresh with
+      // the chosen layout, so no reset is required.
+      if (!prev || prev.enabled === false) continue;
+      const partitionChanged =
+        (prev.partitionField || "") !== (layout.partitionField || "") ||
+        (prev.partitionGranularity || "") !==
+          (layout.partitionGranularity || "");
+      const clusterChanged =
+        sortedFields(prev.clusterFields) !== sortedFields(layout.clusterFields);
+      if (partitionChanged || clusterChanged) changed.push(layout.entity);
+    }
+    return changed;
+  };
+
   const onSubmit = async (data: FormData) => {
+    // For an existing CDC flow, a partition/cluster change must recreate the
+    // destination tables. Force the user to confirm the reset before saving.
+    const changedEntities = getLayoutChangedEntities(data);
+    if (changedEntities.length > 0) {
+      setPendingLayoutReset({ data, entities: changedEntities });
+      return;
+    }
+    await executeSave(data, {});
+  };
+
+  const executeSave = async (
+    data: FormData,
+    opts: { resetEntities?: string[] },
+  ) => {
     if (!currentWorkspace?.id) {
       setError("No workspace selected");
       console.error("No workspace selected");
@@ -547,6 +603,16 @@ export function WebhookFlowForm({
         if (!syncEngineOk) {
           setError(SYNC_ENGINE_PERMISSION_ERROR);
           return;
+        }
+
+        // A partition/cluster layout change only takes effect on freshly
+        // created tables, so recreate ONLY the changed entities' tables (drop +
+        // subset re-backfill) immediately after persisting the new layout.
+        if (opts.resetEntities && opts.resetEntities.length > 0) {
+          await resyncCdcFlow(currentWorkspace.id, currentFlowId, {
+            deleteDestination: true,
+            entities: opts.resetEntities,
+          });
         }
 
         // Reset form to mark it as pristine
@@ -675,6 +741,49 @@ export function WebhookFlowForm({
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <Dialog
+        open={pendingLayoutReset !== null}
+        onClose={() => !isSubmitting && setPendingLayoutReset(null)}
+      >
+        <DialogTitle>Reset destination tables?</DialogTitle>
+        <DialogContent>
+          <DialogContentText component="div">
+            You changed the partition or cluster layout for{" "}
+            <strong>{pendingLayoutReset?.entities.join(", ")}</strong>. These
+            settings are fixed when a destination table is created, so the
+            existing table(s) must be dropped and rebuilt for the change to take
+            effect.
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              Saving will delete only those destination table(s) and re-sync
+              (backfill) just those entities from scratch. Other entities are
+              unaffected. This cannot be undone.
+            </Alert>
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setPendingLayoutReset(null)}
+            disabled={isSubmitting}
+          >
+            Cancel
+          </Button>
+          <Button
+            color="warning"
+            variant="contained"
+            disabled={isSubmitting}
+            onClick={async () => {
+              const pending = pendingLayoutReset;
+              if (!pending) return;
+              setPendingLayoutReset(null);
+              await executeSave(pending.data, {
+                resetEntities: pending.entities,
+              });
+            }}
+          >
+            {isSubmitting ? "Resetting..." : "Save & reset tables"}
+          </Button>
+        </DialogActions>
+      </Dialog>
       {/* Top bar with action buttons */}
       <Box
         sx={{
@@ -1117,6 +1226,16 @@ export function WebhookFlowForm({
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>
                           Entities & Table Configuration
                         </Typography>
+                        {!isNewMode && (
+                          <Alert severity="warning" sx={{ mb: 1 }}>
+                            Changing the partition field, granularity, or
+                            cluster fields only affects how destination tables
+                            are created. Existing tables keep their current
+                            layout until you <strong>Reset sync</strong> with{" "}
+                            <strong>Delete destination tables</strong> enabled,
+                            which drops and rebuilds them with the new layout.
+                          </Alert>
+                        )}
                         <Box
                           sx={{
                             border: 1,
@@ -1257,7 +1376,7 @@ export function WebhookFlowForm({
                                         {...field}
                                         size="small"
                                         value={field.value || "_syncedAt"}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                       >
                                         {timestampFields.map(f => (
                                           <MenuItem key={f} value={f}>
@@ -1275,7 +1394,7 @@ export function WebhookFlowForm({
                                         {...field}
                                         size="small"
                                         value={field.value || "day"}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                       >
                                         <MenuItem value="hour">hour</MenuItem>
                                         <MenuItem value="day">day</MenuItem>
@@ -1292,7 +1411,7 @@ export function WebhookFlowForm({
                                         multiple
                                         size="small"
                                         value={field.value || []}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                         onChange={e =>
                                           field.onChange(
                                             typeof e.target.value === "string"

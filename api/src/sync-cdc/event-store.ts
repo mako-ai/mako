@@ -603,11 +603,17 @@ class MongoCdcEventStore implements CdcEventStore {
   async deleteFlowEvents(params: {
     workspaceId: string;
     flowId: string;
+    /** Restrict deletion to these entities (omit/empty to delete all). */
+    entities?: string[];
   }): Promise<number> {
-    const result = await CdcChangeEvent.deleteMany({
+    const query: Record<string, unknown> = {
       workspaceId: new Types.ObjectId(params.workspaceId),
       flowId: new Types.ObjectId(params.flowId),
-    });
+    };
+    if (params.entities && params.entities.length > 0) {
+      query.entity = { $in: params.entities };
+    }
+    const result = await CdcChangeEvent.deleteMany(query);
     return result.deletedCount || 0;
   }
 }

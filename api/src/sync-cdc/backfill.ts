@@ -511,6 +511,61 @@ export class CdcBackfillService {
     }
   }
 
+  /**
+   * Resync only a subset of a flow's entities. Used when a partition/cluster
+   * layout change requires recreating just the affected destination tables —
+   * unchanged entities keep their data and are not re-backfilled. Drops the
+   * targeted tables, clears those entities' stored CDC events + per-entity
+   * state, then triggers a subset backfill (`backfillEntities`).
+   */
+  async resyncEntities(params: {
+    workspaceId: string;
+    flowId: string;
+    entities: string[];
+    deleteDestination?: boolean;
+  }) {
+    const { workspaceId, flowId, deleteDestination } = params;
+    const entities = normalizeEntities(params.entities);
+    if (entities.length === 0) {
+      throw new Error("resyncEntities requires at least one entity");
+    }
+
+    const workspaceObjectId = new Types.ObjectId(workspaceId);
+    const flowObjectId = new Types.ObjectId(flowId);
+
+    const flow = await Flow.findOne({
+      _id: flowObjectId,
+      workspaceId: workspaceObjectId,
+    });
+    if (!flow) {
+      throw new Error("Flow not found");
+    }
+    if (flow.syncEngine !== "cdc") {
+      throw new Error("Resync requires syncEngine=cdc");
+    }
+
+    await assertCanStartBackfill(workspaceId, flowId);
+
+    // Scope all destructive operations to the requested entities so unchanged
+    // entities keep their destination data and CDC state.
+    await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId, entities });
+    await CdcEntityState.deleteMany({
+      workspaceId: workspaceObjectId,
+      flowId: flowObjectId,
+      entity: { $in: entities },
+    });
+
+    if (deleteDestination) {
+      await this.deleteDestinationTables(flow, entities);
+    }
+
+    // Subset backfill — only the targeted entities are re-fetched + rebuilt.
+    await this.startBackfill(workspaceId, flowId, {
+      entities,
+      reason: `Layout-change resync for entities: ${entities.join(", ")}`,
+    });
+  }
+
   async retryFailedMaterialization(params: {
     workspaceId: string;
     flowId: string;
@@ -1361,6 +1416,8 @@ export class CdcBackfillService {
       IFlow,
       "_id" | "tableDestination" | "destinationDatabaseId" | "entityLayouts"
     >,
+    /** Restrict to these entities (omit to drop all configured entities). */
+    onlyEntities?: string[],
   ) {
     if (
       !flow.tableDestination?.connectionId ||
@@ -1381,7 +1438,12 @@ export class CdcBackfillService {
       return;
     }
 
-    const enabledEntities = resolveConfiguredEntities(flow).entities;
+    const configuredEntities = resolveConfiguredEntities(flow).entities;
+    const scopeSet =
+      onlyEntities && onlyEntities.length > 0 ? new Set(onlyEntities) : null;
+    const enabledEntities = scopeSet
+      ? configuredEntities.filter(e => scopeSet.has(e))
+      : configuredEntities;
     const tablePrefix = flow.tableDestination.tableName || "";
     const schema = flow.tableDestination.schema;
     const stageSchema = driver.getStagingSchema?.(schema) ?? schema;
