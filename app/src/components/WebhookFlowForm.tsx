@@ -1058,10 +1058,10 @@ export function WebhookFlowForm({
                         </Typography>
                         {!isNewMode && (
                           <Alert severity="warning" sx={{ mb: 1 }}>
-                            Changing the partition field or granularity only
-                            affects how destination tables are created. Existing
-                            tables keep their current partitioning until you{" "}
-                            <strong>Reset sync</strong> with{" "}
+                            Changing the partition field, granularity, or
+                            cluster fields only affects how destination tables
+                            are created. Existing tables keep their current
+                            layout until you <strong>Reset sync</strong> with{" "}
                             <strong>Delete destination tables</strong> enabled,
                             which drops and rebuilds them with the new layout.
                           </Alert>
@@ -1241,7 +1241,7 @@ export function WebhookFlowForm({
                                         multiple
                                         size="small"
                                         value={field.value || []}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                         onChange={e =>
                                           field.onChange(
                                             typeof e.target.value === "string"
