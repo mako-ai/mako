@@ -2,13 +2,12 @@ import { inngest } from "./client";
 import {
   flowFunction,
   flowSchedulerFunction,
+  cdcScheduledBackfillFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
 } from "./functions/flow";
 import {
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -61,8 +60,6 @@ const baseFunctions = [
 ];
 
 const allWebhookFunctions = [
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,
@@ -91,6 +88,7 @@ export function getFunctions() {
         ...baseFunctions,
         ...webhookFunctions,
         flowSchedulerFunction,
+        cdcScheduledBackfillFunction,
         dashboardSchedulerFunction,
         appBindingSchedulerFunction,
         scheduledQuerySchedulerFunction,
@@ -128,14 +126,13 @@ export { inngest };
 export {
   flowFunction,
   flowSchedulerFunction,
+  cdcScheduledBackfillFunction,
   manualFlowFunction,
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
   flowRunTerminalFanoutFunction,
   notificationDeliverFunction,
   syncBackfillEntityFunction,
-  webhookEventProcessFunction,
-  webhookEventProcessCdcFunction,
   webhookRetryFunction,
   cdcMaterializeFunction,
   cdcMaterializeSchedulerFunction,

@@ -1,11 +1,9 @@
 import { inngest } from "../client";
-import { enqueueWebhookProcess } from "../webhook-process-enqueue";
 import {
   Flow,
   IFlow,
   Connector as DataSource,
   DatabaseConnection,
-  WebhookEvent,
 } from "../../database/workspace-schema";
 import { performSync, SyncLogger } from "../../services/sync-executor.service";
 import {
@@ -651,23 +649,13 @@ export const flowFunction = inngest.createFunction(
         };
       }
 
-      // Backfill for webhook-triggered flows should run as full sync.
-      // This ensures a complete reload instead of incremental upserts.
+      // Legacy real-time webhook processing has been decommissioned: webhook
+      // flows must run on the CDC engine. A non-CDC webhook backfill can only
+      // happen for a flow that was never migrated to a CDC-capable destination.
       if (backfill && flow.type === "webhook" && !isCdcEnabled) {
-        (flow as any).syncMode = "full";
-        logger.info("Backfill mode: using full sync for webhook flow", {
-          flowId,
-        });
-
-        await step.run("enable-webhook-backfill-gate", async () => {
-          await Flow.findByIdAndUpdate(flowId, {
-            $set: {
-              "backfillState.status": "running",
-              "backfillState.startedAt": new Date(),
-              "backfillState.completedAt": null,
-            },
-          });
-        });
+        throw new Error(
+          `Webhook flow ${flowId} is not CDC-enabled. Legacy webhook backfill has been removed — migrate the flow to a CDC-capable destination (syncEngine=cdc with a tableDestination).`,
+        );
       }
 
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
@@ -1567,139 +1555,6 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook") {
-        const replayResult = await step.run(
-          "trigger-webhook-replay",
-          async () => {
-            await touchHeartbeat(executionId);
-            const flowObjectId = new Types.ObjectId(flowId);
-            const replayBatchSize = Math.max(
-              parseInt(process.env.WEBHOOK_REPLAY_BATCH_SIZE || "1000", 10) ||
-                1000,
-              100,
-            );
-            // 0 (default) means unbounded replay in this completion pass.
-            const maxReplayEvents = Math.max(
-              parseInt(process.env.WEBHOOK_REPLAY_MAX_EVENTS || "0", 10) || 0,
-              0,
-            );
-            const replayCutoff = new Date();
-
-            const routingConn = flow.destinationDatabaseId
-              ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-                  .select("type")
-                  .lean()
-              : null;
-            const webhookDestinationTypeHint = routingConn?.type;
-
-            const replayFilter: Record<string, unknown> = {
-              flowId: flowObjectId,
-              applyStatus: "pending",
-              receivedAt: { $lte: replayCutoff },
-            };
-            if (isCdcEnabled) {
-              replayFilter.status = "pending";
-            }
-
-            const totalPending =
-              await WebhookEvent.countDocuments(replayFilter);
-
-            let queued = 0;
-            let batches = 0;
-            let lastReceivedAt: Date | null = null;
-            let lastEventId: string | null = null;
-
-            while (maxReplayEvents === 0 || queued < maxReplayEvents) {
-              await throwIfExecutionCancelled("webhook-replay-loop", {
-                queued,
-                totalPending,
-              });
-              const cursorClause: Record<string, unknown> =
-                lastReceivedAt && lastEventId
-                  ? {
-                      $or: [
-                        { receivedAt: { $gt: lastReceivedAt } },
-                        {
-                          receivedAt: lastReceivedAt,
-                          eventId: { $gt: lastEventId },
-                        },
-                      ],
-                    }
-                  : {};
-
-              const pendingBatch = (await WebhookEvent.find({
-                ...replayFilter,
-                ...cursorClause,
-              })
-                .sort({ receivedAt: 1, eventId: 1 })
-                .limit(replayBatchSize)
-                .select({ eventId: 1, receivedAt: 1 })
-                .lean()) as Array<{ eventId: string; receivedAt?: Date }>;
-
-              if (pendingBatch.length === 0) {
-                break;
-              }
-
-              for (const pendingEvent of pendingBatch) {
-                if (maxReplayEvents > 0 && queued >= maxReplayEvents) break;
-                await enqueueWebhookProcess({
-                  flowId,
-                  eventId: pendingEvent.eventId,
-                  isReplay: true,
-                  flow: {
-                    syncEngine: flow.syncEngine,
-                    destinationDatabaseId: flow.destinationDatabaseId,
-                    tableDestination: flow.tableDestination,
-                  },
-                  destinationTypeHint: webhookDestinationTypeHint,
-                });
-                queued += 1;
-              }
-
-              const tail: { eventId: string; receivedAt?: Date } =
-                pendingBatch[pendingBatch.length - 1];
-              lastReceivedAt = tail.receivedAt
-                ? new Date(tail.receivedAt)
-                : lastReceivedAt;
-              lastEventId = tail.eventId || lastEventId;
-              batches += 1;
-            }
-
-            return {
-              queued,
-              totalPending,
-              replayCutoff: replayCutoff.toISOString(),
-              batches,
-              capped: maxReplayEvents > 0 ? queued >= maxReplayEvents : false,
-              maxReplayEvents: maxReplayEvents > 0 ? maxReplayEvents : null,
-              remainingEstimate: Math.max(totalPending - queued, 0),
-            };
-          },
-        );
-
-        logger.info("Triggered deferred webhook replay", {
-          flowId,
-          queued: replayResult.queued,
-          totalPending: replayResult.totalPending,
-          replayCutoff: replayResult.replayCutoff,
-          batches: replayResult.batches,
-          capped: replayResult.capped,
-          maxReplayEvents: replayResult.maxReplayEvents,
-          remainingEstimate: replayResult.remainingEstimate,
-        });
-
-        if (!isCdcEnabled) {
-          await step.run("disable-webhook-backfill-gate", async () => {
-            await Flow.findByIdAndUpdate(flowId, {
-              $set: {
-                "backfillState.status": "completed",
-                "backfillState.completedAt": new Date(),
-              },
-            });
-          });
-        }
-      }
-
       if (backfill && flow.type === "webhook" && isCdcEnabled) {
         await step.run("mark-cdc-backfill-complete", async () => {
           await markCdcBackfillCompletedForFlow({
@@ -2110,14 +1965,6 @@ export const flowFunction = inngest.createFunction(
           });
           throw error;
         }
-        await step.run("disable-webhook-backfill-gate-on-failure", async () => {
-          await Flow.findByIdAndUpdate(flowId, {
-            $set: {
-              "backfillState.status": "error",
-              "backfillState.completedAt": new Date(),
-            },
-          });
-        });
       }
 
       throw error;
@@ -2347,6 +2194,112 @@ export const flowSchedulerFunction = inngest.createFunction(
       executed: executedFlows.length,
       flows: executedFlows,
     };
+  },
+);
+
+// Scheduled CDC full backfill - triggers a periodic full reconciliation
+// backfill for CDC flows that opted into `backfillSchedule`. The live stream
+// stays active between runs; this just kicks `cdcBackfillService.startBackfill`
+// on the configured cadence.
+export const cdcScheduledBackfillFunction = inngest.createFunction(
+  {
+    id: "cdc-scheduled-backfill",
+    name: "Run Scheduled CDC Backfills",
+  },
+  { cron: "*/5 * * * *" },
+  async ({ step, logger }) => {
+    const flows = (await step.run(
+      "fetch-backfill-scheduled-flows",
+      async () => {
+        const found = await Flow.find({
+          syncEngine: "cdc",
+          "backfillSchedule.enabled": true,
+          enabled: { $ne: false },
+        }).lean();
+        return found;
+      },
+    )) as unknown as IFlow[];
+
+    const now = new Date();
+    const triggered: string[] = [];
+
+    for (const flow of flows) {
+      const flowId = flow._id.toString();
+      const workspaceId = String(flow.workspaceId);
+      const schedule = flow.backfillSchedule;
+      const cron = schedule?.cron;
+      if (!cron) continue;
+
+      const shouldRun = await step.run(`check-backfill-${flowId}`, async () => {
+        const backfillLogger = getSyncLogger(
+          `cdc-backfill-scheduler.${flowId}`,
+        );
+        try {
+          // Don't pile up: skip if a backfill is already in flight, the
+          // stream is paused, or an execution is currently running.
+          if (flow.backfillState?.status === "running") {
+            return false;
+          }
+          if (flow.streamState === "paused") {
+            return false;
+          }
+          const activeExecution = await Flow.db
+            .collection("flow_executions")
+            .findOne({
+              flowId: new Types.ObjectId(flowId),
+              status: "running",
+            });
+          if (activeExecution) {
+            return false;
+          }
+
+          const tz = schedule?.timezone || "UTC";
+          const lastRun = schedule?.lastRunAt
+            ? new Date(schedule.lastRunAt)
+            : new Date(0);
+
+          const nextRunFromLast = CronExpressionParser.parse(cron, {
+            currentDate: lastRun,
+            tz,
+          })
+            .next()
+            .toDate();
+
+          return nextRunFromLast <= now;
+        } catch (error) {
+          backfillLogger.error("Failed to evaluate CDC backfill schedule", {
+            flowId,
+            cron,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return false;
+        }
+      });
+
+      if (!shouldRun) continue;
+
+      await step.run(`trigger-backfill-${flowId}`, async () => {
+        // Stamp lastRunAt first so a slow/failed start doesn't re-trigger every
+        // cron tick (next attempt waits for the next cron occurrence).
+        await Flow.updateOne(
+          { _id: new Types.ObjectId(flowId) },
+          { $set: { "backfillSchedule.lastRunAt": now } },
+        );
+        await cdcBackfillService.startBackfill(workspaceId, flowId, {
+          reason: "Scheduled full backfill",
+        });
+      });
+
+      triggered.push(flowId);
+    }
+
+    logger.info("Scheduled CDC backfill runner completed", {
+      checked: flows.length,
+      triggered: triggered.length,
+      flowIds: triggered,
+    });
+
+    return { checked: flows.length, triggered: triggered.length };
   },
 );
 

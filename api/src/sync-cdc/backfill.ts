@@ -1,7 +1,6 @@
 import * as crypto from "crypto";
 import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
-import { resolveWebhookEventName } from "../inngest/webhook-process-enqueue";
 import {
   CdcChangeEvent,
   CdcEntityState,
@@ -1315,63 +1314,39 @@ export class CdcBackfillService {
     trigger: string,
   ): Promise<number> {
     try {
-      const stuckWebhookEvents = await WebhookEvent.find({
+      // Legacy per-event enqueue (`webhook/event.process`) was decommissioned.
+      // For CDC flows, pending WebhookEvents are picked up by the CDC scheduler
+      // cron (`cdcMaterializeSchedulerFunction`) on its next cycle, so there is
+      // nothing to enqueue here. Re-arm any stuck non-pending events back to
+      // "pending" so the cron re-ingests them, and report the backlog size.
+      await WebhookEvent.updateMany(
+        {
+          flowId: new Types.ObjectId(flowId),
+          workspaceId: new Types.ObjectId(workspaceId),
+          status: "processing",
+          attempts: { $lt: 5 },
+        },
+        { $set: { status: "pending" } },
+      );
+
+      const pendingCount = await WebhookEvent.countDocuments({
         flowId: new Types.ObjectId(flowId),
         status: "pending",
         attempts: { $lt: 5 },
-      })
-        .sort({ receivedAt: 1 })
-        .limit(500)
-        .select({ eventId: 1 })
-        .lean();
-
-      if (stuckWebhookEvents.length === 0) return 0;
-
-      const flow = await Flow.findById(flowId)
-        .select("syncEngine destinationDatabaseId tableDestination")
-        .lean();
-      const destConn = flow?.destinationDatabaseId
-        ? await DatabaseConnection.findById(flow.destinationDatabaseId)
-            .select("type")
-            .lean()
-        : null;
-
-      const eventName = resolveWebhookEventName(
-        flow
-          ? {
-              syncEngine: flow.syncEngine,
-              tableDestination: flow.tableDestination,
-            }
-          : undefined,
-        destConn?.type,
-      );
-
-      const CHUNK = 100;
-      for (let i = 0; i < stuckWebhookEvents.length; i += CHUNK) {
-        const batch = stuckWebhookEvents.slice(i, i + CHUNK);
-        await inngest.send(
-          batch.map(evt => ({
-            name: eventName,
-            data: {
-              flowId,
-              workspaceId,
-              eventId: (evt as any).eventId,
-              isReplay: true,
-            },
-          })),
-        );
-      }
-
-      log.info("Drained pending WebhookEvents", {
-        flowId,
-        workspaceId,
-        trigger,
-        count: stuckWebhookEvents.length,
       });
 
-      return stuckWebhookEvents.length;
+      if (pendingCount > 0) {
+        log.info("Pending WebhookEvents awaiting CDC cron ingest", {
+          flowId,
+          workspaceId,
+          trigger,
+          count: pendingCount,
+        });
+      }
+
+      return pendingCount;
     } catch (error) {
-      log.warn("Failed to drain pending WebhookEvents", {
+      log.warn("Failed to inspect pending WebhookEvents", {
         flowId,
         workspaceId,
         trigger,

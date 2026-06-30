@@ -972,8 +972,6 @@ jobs:
             --set-env-vars LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY} \
             --set-env-vars LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL} \
             --set-env-vars LANGFUSE_TRACING_ENVIRONMENT=${LANGFUSE_TRACING_ENVIRONMENT} \
-            --set-env-vars WEBHOOK_SQL_PROCESS_CONCURRENCY=3 \
-            --set-env-vars WEBHOOK_CDC_PROCESS_CONCURRENCY=10 \
             --set-env-vars CDC_MATERIALIZE_CONCURRENCY=8 \
             --set-env-vars SYNC_BULK_FLUSH_BATCH_SIZE=2000 \
             --set-env-vars SYNC_BULK_MONGO_TO_PARQUET_CHUNK=100 \

@@ -79,6 +79,9 @@ interface FormData {
     schema?: string;
   };
   entityLayouts?: EntityLayoutConfig[];
+  backfillScheduleEnabled?: boolean;
+  backfillScheduleCron?: string;
+  backfillScheduleTimezone?: string;
 }
 
 const STEPS = [
@@ -86,7 +89,7 @@ const STEPS = [
   { label: "Destination", description: "Configure destination database" },
   {
     label: "Sync Configuration",
-    description: "Choose sync engine and delete behavior",
+    description: "Delete behavior and scheduled backfill",
   },
   {
     label: "Entity Configuration",
@@ -196,21 +199,24 @@ export function WebhookFlowForm({
     defaultValues: {
       dataSourceId: "",
       destinationDatabaseId: "",
-      syncEngine: "legacy",
+      syncEngine: "cdc",
       deleteMode: "hard",
       tableDestination: {
         tablePrefix: "",
         schema: "",
       },
       entityLayouts: [],
+      backfillScheduleEnabled: false,
+      backfillScheduleCron: "0 3 * * *",
+      backfillScheduleTimezone: "UTC",
     },
   });
 
   const watchDataSourceId = watch("dataSourceId");
   const watchDestinationId = watch("destinationDatabaseId");
-  const watchSyncEngine = watch("syncEngine") || "legacy";
   const watchEntityLayouts = watch("entityLayouts") || [];
   const watchDeleteMode = watch("deleteMode");
+  const watchBackfillScheduleEnabled = watch("backfillScheduleEnabled");
   const selectedConnector = connectors.find(ds => ds._id === watchDataSourceId);
   const selectedConnectorType = selectedConnector?.type;
   const selectedWebhookCapabilities = selectedConnectorType
@@ -256,17 +262,7 @@ export function WebhookFlowForm({
         setValue("deleteMode", "soft");
       }
     }
-    if (isCdcCapableDest && isNewMode && watchSyncEngine !== "cdc") {
-      setValue("syncEngine", "cdc");
-    }
-  }, [
-    isBigQueryDest,
-    isCdcCapableDest,
-    setValue,
-    watchDeleteMode,
-    watchSyncEngine,
-    isNewMode,
-  ]);
+  }, [isBigQueryDest, setValue, watchDeleteMode]);
 
   // Fetch entity metadata from the connector API and build per-entity layout
   // defaults. Schema-driven: connectors expose entities + layout suggestions
@@ -384,8 +380,12 @@ export function WebhookFlowForm({
         const formData: FormData = {
           dataSourceId: dataSourceId || "",
           destinationDatabaseId: destinationDatabaseId || "",
-          syncEngine: flow.syncEngine || "legacy",
+          // Webhook flows are CDC-only (legacy engine decommissioned).
+          syncEngine: "cdc",
           deleteMode: flow.deleteMode || "hard",
+          backfillScheduleEnabled: flow.backfillSchedule?.enabled ?? false,
+          backfillScheduleCron: flow.backfillSchedule?.cron || "0 3 * * *",
+          backfillScheduleTimezone: flow.backfillSchedule?.timezone || "UTC",
         };
 
         if (flow.tableDestination) {
@@ -449,12 +449,24 @@ export function WebhookFlowForm({
         "clickhouse",
         "mongodb",
       ];
+      // Webhook flows are CDC-only — the destination MUST be CDC-capable.
+      if (!cdcCapableTypes.includes(selectedDestination?.type || "")) {
+        throw new Error(
+          "Webhook flows require a CDC-capable destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB).",
+        );
+      }
+
+      const backfillSchedule = {
+        enabled: Boolean(data.backfillScheduleEnabled),
+        cron: (data.backfillScheduleCron || "").trim(),
+        timezone: data.backfillScheduleTimezone || "UTC",
+      };
       if (
-        data.syncEngine === "cdc" &&
-        !cdcCapableTypes.includes(selectedDestination?.type || "")
+        backfillSchedule.enabled &&
+        backfillSchedule.cron.split(" ").filter(Boolean).length < 5
       ) {
         throw new Error(
-          "CDC engine requires a supported destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB).",
+          "A valid cron expression is required to enable the scheduled backfill.",
         );
       }
 
@@ -464,10 +476,11 @@ export function WebhookFlowForm({
         dataSourceId: data.dataSourceId,
         destinationDatabaseId: data.destinationDatabaseId,
         syncMode: "incremental",
-        syncEngine: data.syncEngine || "legacy",
+        syncEngine: "cdc",
         enabled: true,
         webhookSecret: data.webhookSecret || "",
         deleteMode: isBigQueryDest ? "soft" : data.deleteMode || "hard",
+        backfillSchedule,
       };
 
       if (isCdcCapableDest && data.tableDestination?.schema) {
@@ -483,7 +496,7 @@ export function WebhookFlowForm({
           .map(l => l.entity);
       }
 
-      const desiredSyncEngine = data.syncEngine || "legacy";
+      const desiredSyncEngine = "cdc" as const;
       const currentSyncEngine =
         !isNewMode && currentFlowId
           ? (flows.find(flow => flow._id === currentFlowId)?.syncEngine ??
@@ -492,17 +505,8 @@ export function WebhookFlowForm({
 
       let newFlow;
       if (isNewMode) {
+        // Webhook flows are created as CDC by the API (no engine switch needed).
         newFlow = await createFlow(currentWorkspace.id, payload);
-        // setSyncEngine swallows its error and returns false (e.g. 403 when the
-        // user isn't owner/admin). Capture it before fetchFlows wipes storeError.
-        const syncEngineOk =
-          desiredSyncEngine === "legacy"
-            ? true
-            : await setSyncEngine(
-                currentWorkspace.id,
-                newFlow._id,
-                desiredSyncEngine,
-              );
 
         // Track flow creation
         trackEvent("flow_created", {
@@ -519,13 +523,6 @@ export function WebhookFlowForm({
 
         // Notify parent that a new flow has been created
         onSaved?.(newFlow._id);
-
-        if (!syncEngineOk) {
-          setError(SYNC_ENGINE_PERMISSION_ERROR);
-          // Keep the form open so the message stays visible; the flow itself
-          // was created, only the sync-engine change was rejected.
-          return;
-        }
 
         // Reset form with the new flow data to mark it as pristine
         reset(data);
@@ -958,28 +955,18 @@ export function WebhookFlowForm({
               {renderStepHeader(2)}
               <AccordionDetails>
                 <Stack spacing={3}>
-                  <Controller
-                    name="syncEngine"
-                    control={control}
-                    render={({ field }) => (
-                      <FormControl fullWidth>
-                        <InputLabel>Sync engine</InputLabel>
-                        <Select {...field} label="Sync engine">
-                          <MenuItem value="legacy">legacy</MenuItem>
-                          <MenuItem value="cdc" disabled={!isCdcCapableDest}>
-                            cdc
-                          </MenuItem>
-                        </Select>
-                        <FormHelperText>
-                          {watchSyncEngine === "cdc"
-                            ? "CDC mode enabled for this flow."
-                            : isCdcCapableDest
-                              ? "CDC is opt-in per flow; legacy remains default."
-                              : "CDC requires a supported destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB)."}
-                        </FormHelperText>
-                      </FormControl>
-                    )}
-                  />
+                  <Alert
+                    severity={isCdcCapableDest ? "info" : "warning"}
+                    sx={{ "& .MuiAlert-message": { width: "100%" } }}
+                  >
+                    <Typography variant="body2">
+                      <strong>Sync engine: CDC.</strong> Webhook flows stream
+                      changes through the CDC pipeline (the legacy real-time
+                      webhook engine has been removed).
+                      {!isCdcCapableDest &&
+                        " Select a CDC-capable destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB) to continue."}
+                    </Typography>
+                  </Alert>
 
                   <Controller
                     name="deleteMode"
@@ -1012,6 +999,80 @@ export function WebhookFlowForm({
                       </FormControl>
                     )}
                   />
+
+                  <Box
+                    sx={{
+                      border: 1,
+                      borderColor: "divider",
+                      borderRadius: 1,
+                      p: 2,
+                    }}
+                  >
+                    <Controller
+                      name="backfillScheduleEnabled"
+                      control={control}
+                      render={({ field }) => (
+                        <Box
+                          sx={{ display: "flex", alignItems: "center", gap: 1 }}
+                        >
+                          <Checkbox
+                            checked={Boolean(field.value)}
+                            onChange={e => field.onChange(e.target.checked)}
+                          />
+                          <Box>
+                            <Typography variant="subtitle2">
+                              Scheduled full backfill
+                            </Typography>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                            >
+                              Periodically re-runs a complete backfill to
+                              reconcile drift. The live webhook stream stays
+                              active between runs.
+                            </Typography>
+                          </Box>
+                        </Box>
+                      )}
+                    />
+
+                    {watchBackfillScheduleEnabled && (
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={2}
+                        sx={{ mt: 2 }}
+                      >
+                        <Controller
+                          name="backfillScheduleCron"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              label="Cron expression"
+                              placeholder="0 3 * * *"
+                              size="small"
+                              fullWidth
+                              helperText="e.g. '0 3 * * *' = daily at 03:00"
+                            />
+                          )}
+                        />
+                        <Controller
+                          name="backfillScheduleTimezone"
+                          control={control}
+                          render={({ field }) => (
+                            <TextField
+                              {...field}
+                              label="Timezone"
+                              placeholder="UTC"
+                              size="small"
+                              fullWidth
+                              helperText="IANA timezone (e.g. UTC, Europe/Berlin)"
+                            />
+                          )}
+                        />
+                      </Stack>
+                    )}
+                  </Box>
 
                   <Box
                     sx={{ display: "flex", justifyContent: "flex-end", pt: 1 }}
