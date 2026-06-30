@@ -67,6 +67,10 @@ export interface PublicDashboardContent {
     id: string;
     name: string;
     tableRef: string;
+    // Live data sources are never served to anonymous public viewers (they'd
+    // require server-side query execution per view); they arrive as not-ready
+    // with no artifact and are skipped when loading tables.
+    materialization?: "live" | "parquet";
     ready: boolean;
     rowCount: number | null;
     materializedAt: string | null;

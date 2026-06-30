@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Box, Typography } from "@mui/material";
+import {
+  Box,
+  Typography,
+  ToggleButtonGroup,
+  ToggleButton,
+  Tooltip,
+} from "@mui/material";
+import { Info as InfoIcon } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
@@ -277,8 +284,58 @@ export default function DashboardDataSourceEditor({
     };
   });
 
+  const isParquet = (dataSource.materialization ?? "parquet") === "parquet";
+
+  const leadingControls = (
+    <>
+      <Typography variant="caption" color="text.secondary">
+        Data
+      </Typography>
+      <ToggleButtonGroup
+        size="small"
+        exclusive
+        value={dataSource.materialization ?? "parquet"}
+        disabled={dashboard.readOnly}
+        onChange={(_e, value) => {
+          if (value && workspaceId) {
+            updateDataSource(dashboardId, dataSourceId, {
+              materialization: value,
+            });
+            void saveDashboard(workspaceId, dashboardId);
+          }
+        }}
+      >
+        <ToggleButton value="live">Live</ToggleButton>
+        <ToggleButton value="parquet">Materialized</ToggleButton>
+      </ToggleButtonGroup>
+      <Tooltip
+        title={
+          <Box sx={{ p: 0.5 }}>
+            <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
+              <b>Live</b> — the query streams from the connection each time the
+              dashboard loads. Always fresh; not shown in public shares.
+            </Typography>
+            <Typography variant="caption" display="block">
+              <b>Materialized</b> — the query is snapshotted to a Parquet file
+              and loaded into DuckDB, so widgets render fast and public viewers
+              get a cached snapshot. Click <b>Materialize</b> to build/refresh.
+            </Typography>
+          </Box>
+        }
+      >
+        <InfoIcon
+          size={15}
+          strokeWidth={1.5}
+          style={{ opacity: 0.6, cursor: "help" }}
+        />
+      </Tooltip>
+    </>
+  );
+
   const headerExtras = (
     <DataSourceMaterializationControls
+      leadingControls={leadingControls}
+      showMaterializeControls={isParquet}
       buildStatus={cache?.parquetBuildStatus ?? null}
       rowCount={cache?.rowCount ?? null}
       builtAtMs={
@@ -295,7 +352,7 @@ export default function DashboardDataSourceEditor({
       schedule={dashboard.materializationSchedule}
       onScheduleChange={handleScheduleChange}
       scheduleDisabled={dashboard.readOnly}
-      scheduleCaption="Dashboard schedules apply to every data source in this dashboard."
+      scheduleCaption="Dashboard schedules apply to every materialized data source in this dashboard."
       history={historyItems}
       onOpenHistory={loadHistory}
     />
