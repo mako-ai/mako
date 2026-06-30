@@ -319,6 +319,54 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     .join("\n");
 }
 
+/**
+ * BigQuery `PARTITION BY` clause for a CDC layout (empty when unpartitioned).
+ * Exported for contract testing.
+ */
+export function bigQueryPartitionClause(layout: CdcEntityLayout): string {
+  if (!layout.partitioning?.field) return "";
+  const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
+  return `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
+}
+
+export function bigQueryClusterClause(layout: CdcEntityLayout): string {
+  if (!layout.clustering?.fields?.length) return "";
+  return `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
+}
+
+export interface BigQueryRepartitionStatements {
+  createTmp: string;
+  dropLive: string;
+  rename: string;
+}
+
+/**
+ * Build the statements that rewrite a live table's partition/cluster layout in
+ * place: `CREATE OR REPLACE` a new-layout table from the current rows, drop the
+ * old table, then rename the new one into place. This is the swap BigQuery
+ * actually supports (no atomic EXCHANGE); the caller pauses the stream so the
+ * brief window where `live` is renamed is safe. Exported for contract testing +
+ * reuse by the gated integration suite.
+ */
+export function buildBigQueryRepartitionStatements(params: {
+  fullLive: string;
+  fullTmp: string;
+  liveName: string;
+  layout: CdcEntityLayout;
+}): BigQueryRepartitionStatements {
+  const partitionClause = bigQueryPartitionClause(params.layout);
+  const clusterClause = bigQueryClusterClause(params.layout);
+  return {
+    createTmp:
+      `CREATE OR REPLACE TABLE ${params.fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${params.fullLive}`.replace(
+        /\s+/g,
+        " ",
+      ),
+    dropLive: `DROP TABLE ${params.fullLive}`,
+    rename: `ALTER TABLE ${params.fullTmp} RENAME TO ${escId(params.liveName)}`,
+  };
+}
+
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -395,6 +443,52 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
       dataset,
       columnCount: stagingColumnNames.length,
     });
+  }
+
+  async repartitionLiveTable(
+    layout: CdcEntityLayout,
+  ): Promise<{ repartitioned: boolean }> {
+    const { bq, projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
+    const live = layout.tableName;
+
+    const [exists] = await bq.dataset(dataset).table(live).exists();
+    if (!exists) return { repartitioned: false };
+
+    const tmp = `${live}__repart_${Date.now().toString(36)}`;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(live)}`;
+    const fullTmp = `${escId(projectId)}.${escId(dataset)}.${escId(tmp)}`;
+
+    const run = async (sql: string) => {
+      const r = await databaseConnectionService.executeQuery(destination, sql, {
+        location: datasetLocation,
+        bigQueryJobMaxWaitMs: 15 * 60 * 1000,
+      });
+      if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
+    };
+
+    // CREATE OR REPLACE a new-layout table from the current rows, drop the old
+    // table, then rename the new one in. The caller pauses the stream so the
+    // brief window where `live` is renamed is safe.
+    const stmts = buildBigQueryRepartitionStatements({
+      fullLive,
+      fullTmp,
+      liveName: live,
+      layout,
+    });
+    await run(stmts.createTmp);
+    await run(stmts.dropLive);
+    await run(stmts.rename);
+
+    invalidateCachedSchema(getSchemaCacheKey(projectId, dataset, live));
+    log.info("Repartitioned live table in place", {
+      liveTable: live,
+      dataset,
+      partition: layout.partitioning?.field,
+      granularity: layout.partitioning?.granularity,
+      cluster: layout.clustering?.fields,
+    });
+    return { repartitioned: true };
   }
 
   async applyEvents(params: {

@@ -745,18 +745,19 @@ export function WebhookFlowForm({
         open={pendingLayoutReset !== null}
         onClose={() => !isSubmitting && setPendingLayoutReset(null)}
       >
-        <DialogTitle>Reset destination tables?</DialogTitle>
+        <DialogTitle>Rebuild destination tables?</DialogTitle>
         <DialogContent>
           <DialogContentText component="div">
             You changed the partition or cluster layout for{" "}
             <strong>{pendingLayoutReset?.entities.join(", ")}</strong>. These
             settings are fixed when a destination table is created, so the
-            existing table(s) must be dropped and rebuilt for the change to take
-            effect.
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              Saving will delete only those destination table(s) and re-sync
-              (backfill) just those entities from scratch. Other entities are
-              unaffected. This cannot be undone.
+            table(s) must be rebuilt for the change to take effect.
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Saving rebuilds only those table(s) in place — the existing rows
+              are copied into a new table with the new layout and swapped in, so
+              no data is re-fetched from the source. If a table can&apos;t be
+              copied, it falls back to a full re-sync. Other entities are
+              unaffected.
             </Alert>
           </DialogContentText>
         </DialogContent>
@@ -780,7 +781,7 @@ export function WebhookFlowForm({
               });
             }}
           >
-            {isSubmitting ? "Resetting..." : "Save & reset tables"}
+            {isSubmitting ? "Rebuilding..." : "Save & rebuild tables"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1227,13 +1228,13 @@ export function WebhookFlowForm({
                           Entities & Table Configuration
                         </Typography>
                         {!isNewMode && (
-                          <Alert severity="warning" sx={{ mb: 1 }}>
+                          <Alert severity="info" sx={{ mb: 1 }}>
                             Changing the partition field, granularity, or
-                            cluster fields only affects how destination tables
-                            are created. Existing tables keep their current
-                            layout until you <strong>Reset sync</strong> with{" "}
-                            <strong>Delete destination tables</strong> enabled,
-                            which drops and rebuilds them with the new layout.
+                            cluster fields rebuilds the affected destination
+                            table(s) when you save: existing rows are copied
+                            into a new table with the new layout and swapped in
+                            (no re-sync from the source). You&apos;ll be asked
+                            to confirm.
                           </Alert>
                         )}
                         <Box

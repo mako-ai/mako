@@ -69,6 +69,19 @@ export interface CdcDestinationAdapter {
     flowId: string,
     options?: { stagingSuffix?: string },
   ): Promise<void>;
+
+  /**
+   * Rewrite an existing live table's partitioning/clustering in place by
+   * copying its current rows into a freshly-laid-out table and atomically
+   * swapping it in — avoiding a full re-fetch from the source. Returns
+   * `repartitioned: false` when the live table does not exist yet (the caller
+   * should fall back to a backfill). Throws on failure (caller falls back).
+   * Only implemented for warehouses where partitioning/clustering is fixed at
+   * CREATE (BigQuery, ClickHouse).
+   */
+  repartitionLiveTable?(layout: CdcEntityLayout): Promise<{
+    repartitioned: boolean;
+  }>;
 }
 
 export function resolveCdcDestinationAdapter(params: {
