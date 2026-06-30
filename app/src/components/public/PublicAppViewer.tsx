@@ -40,6 +40,8 @@ export interface PublicAppContent {
   entrypoint: string;
   /** Owner opt-in: viewers may run published live bindings, not just snapshots. */
   allowLiveQueries?: boolean;
+  /** Owner opt-in: show an "Ask AI" chat panel over the data. */
+  chatEnabled?: boolean;
   files: Array<{ path: string; contents: string }>;
   dependencies: Record<string, string>;
   dataBindings: Array<{

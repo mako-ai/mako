@@ -19,6 +19,20 @@ import bcrypt from "bcrypt";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
+import {
+  streamText,
+  convertToModelMessages,
+  stepCountIs,
+  type UIMessage,
+} from "ai";
+import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import { getDefaultFreeModelId } from "../agent-lib/ai-models";
+import {
+  buildPublicChatSystemPrompt,
+  buildPublicChatTools,
+  type PublicChatContext,
+  type PublicChatTable,
+} from "../agents/public-share";
 import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   Dashboard,
@@ -161,6 +175,74 @@ function clientIp(c: Context): string {
   );
 }
 
+// ── Public chat rate limiting (in-memory, per token+IP) ──
+
+/** Chat turns allowed per token+IP inside the window. */
+const CHAT_MAX_TURNS = 30;
+const CHAT_WINDOW_MS = 10 * 60 * 1000;
+/** How many steps the public agent may take before stopping. */
+const PUBLIC_CHAT_MAX_STEPS = 16;
+/** Bounds on client-supplied context so a public link can't bloat the prompt. */
+const MAX_CHAT_TABLES = 25;
+const MAX_CHAT_COLUMNS = 80;
+const MAX_CHAT_SAMPLE_ROWS = 3;
+const MAX_CHAT_MESSAGES = 60;
+
+const chatAttempts = new Map<string, { count: number; resetAt: number }>();
+
+function isChatRateLimited(key: string): boolean {
+  const now = Date.now();
+  const entry = chatAttempts.get(key);
+  if (!entry || entry.resetAt < now) {
+    chatAttempts.set(key, { count: 1, resetAt: now + CHAT_WINDOW_MS });
+    return false;
+  }
+  entry.count += 1;
+  if (chatAttempts.size > 10_000) {
+    for (const [k, v] of chatAttempts) {
+      if (v.resetAt < now) chatAttempts.delete(k);
+    }
+  }
+  return entry.count > CHAT_MAX_TURNS;
+}
+
+/** Coerce + bound the viewer-supplied table context used to ground the agent. */
+function sanitizeChatTables(raw: unknown): PublicChatTable[] {
+  if (!Array.isArray(raw)) return [];
+  const tables: PublicChatTable[] = [];
+  for (const item of raw.slice(0, MAX_CHAT_TABLES)) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const name = typeof rec.name === "string" ? rec.name.slice(0, 200) : "";
+    if (!name) continue;
+    const columnsRaw = Array.isArray(rec.columns) ? rec.columns : [];
+    const columns = columnsRaw
+      .slice(0, MAX_CHAT_COLUMNS)
+      .map(c => {
+        const cr = (c ?? {}) as Record<string, unknown>;
+        return {
+          name: typeof cr.name === "string" ? cr.name.slice(0, 200) : "",
+          type: typeof cr.type === "string" ? cr.type.slice(0, 80) : "unknown",
+        };
+      })
+      .filter(c => c.name);
+    const sampleRows = Array.isArray(rec.sampleRows)
+      ? (rec.sampleRows.slice(0, MAX_CHAT_SAMPLE_ROWS) as Record<
+          string,
+          unknown
+        >[])
+      : undefined;
+    tables.push({
+      name,
+      label: typeof rec.label === "string" ? rec.label.slice(0, 200) : undefined,
+      rowCount: typeof rec.rowCount === "number" ? rec.rowCount : null,
+      columns,
+      sampleRows,
+    });
+  }
+  return tables;
+}
+
 // ── Content sanitizers (never expose SQL, connection ids, or hashes) ──
 
 async function buildDashboardContent(token: string, dashboard: IDashboard) {
@@ -222,6 +304,7 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
     crossFilter: def.crossFilter,
     layout: def.layout,
     dataSources,
+    chatEnabled: !!dashboard.publicShare?.allowChat,
     refresh: {
       cooldownMs: PUBLIC_REFRESH_COOLDOWN_MS,
       lastRefreshAt:
@@ -252,6 +335,7 @@ function buildAppContent(token: string, makoApp: IMakoApp) {
     description: def.description,
     entrypoint: def.entrypoint,
     allowLiveQueries,
+    chatEnabled: !!makoApp.publicShare?.allowChat,
     files: (def.files || []).map(f => ({
       path: f.path,
       contents: f.contents,
@@ -719,6 +803,130 @@ app.openapi(
     } catch (error) {
       logger.error("Error refreshing public share", { error });
       return c.json({ success: false, error: "Failed to refresh" }, 500);
+    }
+  },
+);
+
+// POST /:token/chat — anonymous "Ask AI" turn over the shared data.
+//
+// Token-gated (+ optional password cookie), opt-in via publicShare.allowChat,
+// rate-limited per token+IP, and ephemeral (nothing is persisted). The agent is
+// read-only and its only tool (`query_data`) runs CLIENT-side against the
+// viewer's local DuckDB — the server never queries a workspace database here.
+const ChatStreamResponses = {
+  ...OPEN_RESPONSES,
+  200: {
+    description: "Streaming agent response (AI SDK UI message stream / SSE).",
+    content: { "text/event-stream": { schema: z.string() } },
+  },
+};
+
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{token}/chat",
+    tags: ["Public Shares"],
+    summary: "Ask the shared dashboard/app a question (anonymous AI chat)",
+    security: [],
+    request: {
+      params: TokenParam,
+      body: {
+        required: true,
+        content: {
+          "application/json": { schema: z.record(z.string(), z.any()) },
+        },
+      },
+    },
+    responses: { ...ChatStreamResponses },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
+
+      if (!resource.doc.publicShare?.allowChat) {
+        return c.json(
+          { success: false, error: "AI chat is not enabled for this link" },
+          403,
+        );
+      }
+
+      if (isChatRateLimited(`${token}:${clientIp(c)}`)) {
+        return c.json(
+          { success: false, error: "Too many questions — please slow down." },
+          429,
+        );
+      }
+
+      const body = (await c.req.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      const messages = Array.isArray(body.messages)
+        ? (body.messages.slice(-MAX_CHAT_MESSAGES) as UIMessage[])
+        : [];
+      if (messages.length === 0) {
+        return c.json({ success: false, error: "No messages provided" }, 400);
+      }
+
+      const ctxRaw = (body.context ?? {}) as Record<string, unknown>;
+      const tables = sanitizeChatTables(ctxRaw.tables);
+
+      const published = resource.doc.published as
+        | Record<string, unknown>
+        | undefined;
+      const description =
+        (typeof published?.description === "string"
+          ? published.description
+          : undefined) ??
+        (typeof resource.doc.description === "string"
+          ? resource.doc.description
+          : undefined);
+
+      const chatContext: PublicChatContext = {
+        resourceType: resource.type,
+        title: resource.doc.title,
+        description,
+        liveData:
+          resource.type === "app" &&
+          !!resource.doc.publicShare?.allowLiveQueries,
+        tables,
+      };
+
+      const modelId = await getDefaultFreeModelId();
+      const result = streamText({
+        model: getModel(modelId),
+        system: buildPublicChatSystemPrompt(chatContext),
+        messages: convertToModelMessages(messages),
+        tools: buildPublicChatTools(),
+        stopWhen: stepCountIs(PUBLIC_CHAT_MAX_STEPS),
+        abortSignal: c.req.raw.signal,
+        providerOptions: buildProviderOptions({
+          userId: "public-share",
+          workspaceId: resource.doc.workspaceId.toString(),
+          agentId: "public-share",
+          invocationType: "public-chat",
+        }),
+      });
+
+      // Drain server-side so generation completes even if the model finishes
+      // before the client reads everything; errors are surfaced in the stream.
+      void result.consumeStream({
+        onError: error => logger.warn("Public chat stream error", { error }),
+      });
+
+      return result.toUIMessageStreamResponse({
+        sendReasoning: false,
+        generateMessageId: () => crypto.randomUUID(),
+      });
+    } catch (error) {
+      logger.error("Error running public share chat", { error });
+      return c.json({ success: false, error: "Failed to run chat" }, 500);
     }
   },
 );

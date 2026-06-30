@@ -13504,6 +13504,7 @@ export interface operations {
                     rotateToken?: boolean;
                     token?: string;
                     allowLiveQueries?: boolean;
+                    allowChat?: boolean;
                 };
             };
         };
@@ -14444,6 +14445,7 @@ export interface operations {
                     rotateToken?: boolean;
                     token?: string;
                     allowLiveQueries?: boolean;
+                    allowChat?: boolean;
                 };
             };
         };

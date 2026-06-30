@@ -15,6 +15,7 @@ import PublicDashboardViewer, {
 import PublicAppViewer, {
   type PublicAppContent,
 } from "../components/public/PublicAppViewer";
+import PublicShareChat from "../components/public/PublicShareChat";
 
 /**
  * Anonymous viewer for public share links (/share/:token).
@@ -215,33 +216,43 @@ export default function PublicSharePage() {
 
   if (content.type === "dashboard") {
     return (
-      <PublicDashboardViewer
+      <>
+        <PublicDashboardViewer
+          token={token}
+          content={content}
+          reloadContent={async () => {
+            const next = await loadContent();
+            if (next && next.type === "dashboard") {
+              setContent(next);
+              return next;
+            }
+            return null;
+          }}
+        />
+        {content.chatEnabled && (
+          <PublicShareChat token={token} content={content} />
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <PublicAppViewer
         token={token}
         content={content}
         reloadContent={async () => {
           const next = await loadContent();
-          if (next && next.type === "dashboard") {
+          if (next && next.type === "app") {
             setContent(next);
             return next;
           }
           return null;
         }}
       />
-    );
-  }
-
-  return (
-    <PublicAppViewer
-      token={token}
-      content={content}
-      reloadContent={async () => {
-        const next = await loadContent();
-        if (next && next.type === "app") {
-          setContent(next);
-          return next;
-        }
-        return null;
-      }}
-    />
+      {content.chatEnabled && (
+        <PublicShareChat token={token} content={content} />
+      )}
+    </>
   );
 }

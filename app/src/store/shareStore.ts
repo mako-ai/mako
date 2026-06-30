@@ -48,6 +48,8 @@ export interface PublicShareInfo {
   createdAt?: string;
   /** Apps only: viewer may run published live bindings (not just snapshots). */
   allowLiveQueries?: boolean;
+  /** Dashboards + apps: viewers get an "Ask AI" chat panel over the data. */
+  allowChat?: boolean;
 }
 
 export interface SharingSettings {
@@ -139,6 +141,7 @@ interface ShareStoreState {
       rotateToken?: boolean;
       token?: string;
       allowLiveQueries?: boolean;
+      allowChat?: boolean;
     },
   ) => Promise<Result & { publicShare?: PublicShareInfo }>;
   disablePublicShare: (

@@ -72,6 +72,8 @@ export interface PublicDashboardContent {
     materializedAt: string | null;
     artifactUrl: string | null;
   }>;
+  /** Owner opt-in: show an "Ask AI" chat panel over the snapshot data. */
+  chatEnabled?: boolean;
   refresh: { cooldownMs: number; lastRefreshAt: string | null };
 }
 

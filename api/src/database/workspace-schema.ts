@@ -383,6 +383,14 @@ export interface IPublicShare {
    * never supplies SQL.
    */
   allowLiveQueries?: boolean;
+  /**
+   * Dashboards + apps. When true, the public viewer gets an "Ask AI" chat panel
+   * that answers questions about the shared data. The agent is read-only and
+   * runs entirely against the data the viewer already loaded (materialized
+   * snapshots in browser DuckDB, plus live bindings when `allowLiveQueries` is
+   * also on) — it never reaches arbitrary workspace tables. Default false.
+   */
+  allowChat?: boolean;
 }
 
 /**
@@ -1523,6 +1531,7 @@ const PublicShareSchema = new Schema<IPublicShare>(
     createdBy: { type: String },
     lastPublicRefreshAt: { type: Date },
     allowLiveQueries: { type: Boolean, default: false },
+    allowChat: { type: Boolean, default: false },
   },
   { _id: false },
 );
