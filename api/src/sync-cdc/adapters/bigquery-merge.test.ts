@@ -115,6 +115,25 @@ describe("buildMergeStatement", () => {
     expect(sql).not.toContain("`extra` = __stg.`extra`");
   });
 
+  it("refreshes _syncedAt on update by including it in the UPDATE SET clause", () => {
+    const sql = buildMergeStatement(
+      params({
+        columns: ["id", "name", "_syncedAt"],
+        stagingCols: new Set(["id", "name", "_syncedAt"]),
+        liveTypes: new Map([
+          ["id", "INT64"],
+          ["name", "STRING"],
+          ["_syncedAt", "TIMESTAMP"],
+        ]),
+      }),
+    );
+    // `_syncedAt` is stamped fresh on every materialized row (see withSyncedAt),
+    // so an updated row must overwrite the live `_syncedAt`.
+    const setClause = sql.split("THEN UPDATE SET ")[1]?.split("\n")[0] ?? "";
+    expect(setClause).toContain("`_syncedAt` = __stg.`_syncedAt`");
+    expect(sql).toContain("SAFE_CAST(`_syncedAt` AS TIMESTAMP) AS `_syncedAt`");
+  });
+
   it("supports composite keys", () => {
     const sql = buildMergeStatement(
       params({

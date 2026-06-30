@@ -9,6 +9,7 @@ import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
+  withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
@@ -126,7 +127,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
         payload,
         new Date(event.sourceTs),
       );
-      const row = {
+      const row = withSyncedAt({
         ...payload,
         id: event.recordId,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
@@ -135,7 +136,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
         _mako_deleted_at: null,
         is_deleted: false,
         deleted_at: null,
-      };
+      });
 
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
       ops.push({
@@ -155,7 +156,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
           new Date(event.sourceTs),
         );
         const deletedAt = new Date();
-        const row = {
+        const row = withSyncedAt({
           ...payload,
           id: event.recordId,
           _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
@@ -164,7 +165,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
           _mako_deleted_at: deletedAt,
           is_deleted: true,
           deleted_at: deletedAt,
-        };
+        });
 
         const filter = this.buildKeyFilter(params.layout.keyColumns, row);
         ops.push({
@@ -219,7 +220,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
 
     const ops = params.records.map(record => {
       const payload = normalizePayloadKeys(record);
-      const row = {
+      const row = withSyncedAt({
         ...payload,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -227,7 +228,7 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
           typeof payload._mako_ingest_seq === "number"
             ? payload._mako_ingest_seq
             : undefined,
-      };
+      });
 
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
       return {

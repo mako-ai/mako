@@ -20,6 +20,7 @@ import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
+  withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
@@ -150,6 +151,7 @@ export function mapLogicalTypeToBigQuery(
 }
 
 const SYSTEM_COLUMN_TYPES: Record<string, string> = {
+  _syncedAt: "TIMESTAMP",
   _mako_ingest_seq: "INT64",
   _mako_source_ts: "TIMESTAMP",
   _mako_deleted_at: "TIMESTAMP",
@@ -422,16 +424,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         payload,
         new Date(event.sourceTs),
       );
-      rows.push({
-        ...payload,
-        id: event.recordId,
-        _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-        _mako_source_ts: sourceTs,
-        _mako_ingest_seq: Number(event.ingestSeq),
-        _mako_deleted_at: null,
-        is_deleted: false,
-        deleted_at: null,
-      });
+      rows.push(
+        withSyncedAt({
+          ...payload,
+          id: event.recordId,
+          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+          _mako_source_ts: sourceTs,
+          _mako_ingest_seq: Number(event.ingestSeq),
+          _mako_deleted_at: null,
+          is_deleted: false,
+          deleted_at: null,
+        }),
+      );
     }
 
     if (deleteMode === "soft") {
@@ -442,16 +446,18 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
           new Date(event.sourceTs),
         );
         const deletedAt = new Date();
-        rows.push({
-          ...payload,
-          id: event.recordId,
-          _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
-          _mako_source_ts: sourceTs,
-          _mako_ingest_seq: Number(event.ingestSeq),
-          _mako_deleted_at: deletedAt,
-          is_deleted: true,
-          deleted_at: deletedAt,
-        });
+        rows.push(
+          withSyncedAt({
+            ...payload,
+            id: event.recordId,
+            _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
+            _mako_source_ts: sourceTs,
+            _mako_ingest_seq: Number(event.ingestSeq),
+            _mako_deleted_at: deletedAt,
+            is_deleted: true,
+            deleted_at: deletedAt,
+          }),
+        );
       }
     }
 
@@ -497,7 +503,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
         date_deleted?: unknown;
       };
       const makoDeletedAt = this.coerceToDate(payload._mako_deleted_at);
-      return {
+      return withSyncedAt({
         ...payloadWithoutDeletedAt,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -507,7 +513,7 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
             : undefined,
         _mako_deleted_at: makoDeletedAt,
         deleted_at: makoDeletedAt,
-      };
+      });
     });
 
     return this.writeViaParquet({

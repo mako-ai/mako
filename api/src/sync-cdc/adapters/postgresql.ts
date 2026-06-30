@@ -6,6 +6,7 @@ import {
   normalizePayloadKeys,
   resolveSourceTimestamp,
   selectLatestChangePerRecord,
+  withSyncedAt,
 } from "../normalization";
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
@@ -61,7 +62,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           payload,
           new Date(event.sourceTs),
         );
-        return {
+        return withSyncedAt({
           ...payload,
           id: event.recordId,
           _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
@@ -70,7 +71,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           _mako_deleted_at: null,
           is_deleted: false,
           deleted_at: null,
-        };
+        });
       });
 
       const write = await writer.writeBatch(rows, {
@@ -94,7 +95,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
             payload,
             new Date(event.sourceTs),
           );
-          return {
+          return withSyncedAt({
             ...payload,
             id: event.recordId,
             _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
@@ -103,7 +104,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
             _mako_deleted_at: new Date(),
             is_deleted: true,
             deleted_at: new Date(),
-          };
+          });
         });
 
         const write = await writer.writeBatch(rows, {
@@ -156,7 +157,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
 
     const rows = params.records.map(record => {
       const payload = normalizePayloadKeys(record || {});
-      return {
+      return withSyncedAt({
         ...payload,
         _dataSourceId: payload._dataSourceId ?? fallbackDataSourceId,
         _mako_source_ts: resolveSourceTimestamp(payload),
@@ -164,7 +165,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           typeof payload._mako_ingest_seq === "number"
             ? payload._mako_ingest_seq
             : undefined,
-      };
+      });
     });
 
     const write = await writer.writeBatch(rows, {

@@ -1056,6 +1056,16 @@ export function WebhookFlowForm({
                         <Typography variant="subtitle2" sx={{ mb: 1 }}>
                           Entities & Table Configuration
                         </Typography>
+                        {!isNewMode && (
+                          <Alert severity="warning" sx={{ mb: 1 }}>
+                            Changing the partition field or granularity only
+                            affects how destination tables are created. Existing
+                            tables keep their current partitioning until you{" "}
+                            <strong>Reset sync</strong> with{" "}
+                            <strong>Delete destination tables</strong> enabled,
+                            which drops and rebuilds them with the new layout.
+                          </Alert>
+                        )}
                         <Box
                           sx={{
                             border: 1,
@@ -1196,7 +1206,7 @@ export function WebhookFlowForm({
                                         {...field}
                                         size="small"
                                         value={field.value || "_syncedAt"}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                       >
                                         {timestampFields.map(f => (
                                           <MenuItem key={f} value={f}>
@@ -1214,7 +1224,7 @@ export function WebhookFlowForm({
                                         {...field}
                                         size="small"
                                         value={field.value || "day"}
-                                        disabled={!isEnabled || !isNewMode}
+                                        disabled={!isEnabled}
                                       >
                                         <MenuItem value="hour">hour</MenuItem>
                                         <MenuItem value="day">day</MenuItem>
