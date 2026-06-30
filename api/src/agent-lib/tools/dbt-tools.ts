@@ -85,6 +85,25 @@ const projectIdField = z
   .string()
   .describe("dbt project ID (from read_dbt_project_tree)");
 
+const dbtCommitPathsField = z
+  .array(
+    z
+      .string()
+      .min(1)
+      .max(1000)
+      .describe(
+        "Project-relative changed file path, e.g. models/staging/stg_orders.sql",
+      ),
+  )
+  .min(1)
+  .max(100)
+  .optional()
+  .describe(
+    "Optional project-relative changed paths to commit. Omit to commit all " +
+      "working-tree changes; pass this when dbt_git_status shows unrelated " +
+      "pending files that should stay uncommitted.",
+  );
+
 function toolError(error: unknown, fallback: string) {
   return {
     success: false,
@@ -1280,10 +1299,12 @@ export const createDbtServerTools = (
 
     dbt_commit_and_push: tool({
       description:
-        "Commit ALL working-tree changes and push them to the project's " +
-        "currently tracked branch in a single commit — the same action as the " +
-        "IDE 'Commit & push' button. ONLY call this after the user has " +
-        "explicitly asked you to commit/push (or clearly confirmed it in the " +
+        "Commit working-tree changes and push them to the project's " +
+        "currently tracked branch in a single commit. By default this commits " +
+        "ALL pending changes (the same action as the IDE 'Commit & push' " +
+        "button); pass `paths` to commit only specific changed files when " +
+        "dbt_git_status shows unrelated pending work. ONLY call this after " +
+        "the user has explicitly asked you to commit/push (or clearly confirmed it in the " +
         "conversation); never commit proactively. If you omit `message`, a " +
         "Conventional Commits message is generated automatically from the " +
         "diff. Returns the new commit sha and per-type counts. To put changes " +
@@ -1297,8 +1318,9 @@ export const createDbtServerTools = (
           .max(500)
           .optional()
           .describe("Commit message. Omit to auto-generate one from the diff."),
+        paths: dbtCommitPathsField,
       }),
-      execute: async ({ projectId, message }) => {
+      execute: async ({ projectId, message, paths }) => {
         try {
           const project = await assertRepoProject(projectId);
           const status = await getGitStatus(project);
@@ -1313,10 +1335,14 @@ export const createDbtServerTools = (
           let commitMessage = message?.trim();
           let generated = false;
           if (!commitMessage) {
-            const ai = await generateDbtCommitMessage(project, {
-              workspaceId,
-              userId: userId ?? "agent",
-            });
+            const ai = await generateDbtCommitMessage(
+              project,
+              {
+                workspaceId,
+                userId: userId ?? "agent",
+              },
+              { paths },
+            );
             if (ai) {
               commitMessage = ai;
               generated = true;
@@ -1334,6 +1360,7 @@ export const createDbtServerTools = (
           const result = await commitAndPush(project, {
             message: commitMessage,
             updatedBy: userId ?? "agent",
+            paths,
           });
           return {
             success: result.committed,
@@ -1352,7 +1379,10 @@ export const createDbtServerTools = (
     dbt_commit_to_branch: tool({
       description:
         "ATOMIC PROMOTE: create a new feature branch off the current branch and " +
-        "commit ALL working-tree changes onto it in a single, race-free step. " +
+        "commit working-tree changes onto it in a single, race-free step. By " +
+        "default this commits ALL pending changes; pass `paths` to commit only " +
+        "specific changed files when unrelated pending work should stay " +
+        "uncommitted. " +
         "PREFER THIS over dbt_create_branch + dbt_commit_and_push when the user " +
         "wants their changes on a new branch for review: those two separate " +
         "calls can race a concurrent commit and leave the changes on the wrong " +
@@ -1373,17 +1403,22 @@ export const createDbtServerTools = (
           .max(500)
           .optional()
           .describe("Commit message. Omit to auto-generate one from the diff."),
+        paths: dbtCommitPathsField,
       }),
-      execute: async ({ projectId, name, message }) => {
+      execute: async ({ projectId, name, message, paths }) => {
         try {
           const project = await assertRepoProject(projectId);
           let commitMessage = message?.trim();
           let generated = false;
           if (!commitMessage) {
-            const ai = await generateDbtCommitMessage(project, {
-              workspaceId,
-              userId: userId ?? "agent",
-            });
+            const ai = await generateDbtCommitMessage(
+              project,
+              {
+                workspaceId,
+                userId: userId ?? "agent",
+              },
+              { paths },
+            );
             if (ai) {
               commitMessage = ai;
               generated = true;
@@ -1401,6 +1436,7 @@ export const createDbtServerTools = (
             branchName: name.trim(),
             message: commitMessage,
             updatedBy: userId ?? "agent",
+            paths,
           });
           return {
             success: result.committed,

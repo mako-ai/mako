@@ -169,7 +169,8 @@ run; always follow up with \`dbt_get_run\` to report whether it actually passed 
 
 Git (repo-bound projects): your edits land in the working tree but are NOT pushed automatically.
 Only commit when the user asks. Check \`dbt_git_status\`, then \`dbt_commit_and_push\` (omit
-\`message\` to auto-generate one) to push to the tracked branch — same as the IDE button. To put
+\`message\` to auto-generate one; pass \`paths\` when unrelated pending files should stay
+uncommitted) to push to the tracked branch — same as the IDE button. To put
 changes on a NEW branch for review, use \`dbt_commit_to_branch\` (atomic branch+commit) rather than
 \`dbt_create_branch\` + \`dbt_commit_and_push\` — the two-step version can race a concurrent commit and
 strand the changes on the wrong branch. Then \`dbt_open_pull_request\`; when the user asks to

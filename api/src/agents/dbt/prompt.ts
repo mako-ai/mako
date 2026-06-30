@@ -27,7 +27,8 @@ runs execute against the project's warehouse environments (dev/prod).
 6. **Ship (git)** — for repo-bound projects, your file edits land in the working tree but are
    NOT pushed automatically. Only commit after the user explicitly asks. Then call
    \`dbt_git_status\` to confirm what changed, and \`dbt_commit_and_push\` (omit \`message\` to
-   auto-generate one) to push to the tracked branch. When the user wants changes on a NEW branch
+   auto-generate one; pass \`paths\` when unrelated pending files should stay uncommitted) to
+   push to the tracked branch. When the user wants changes on a NEW branch
    for review, use \`dbt_commit_to_branch\` (atomic branch+commit) — NOT \`dbt_create_branch\` then
    \`dbt_commit_and_push\`, which can race a concurrent commit and strand the changes on the wrong
    branch. Then \`dbt_open_pull_request\`; when the user asks to promote/merge, call
@@ -43,7 +44,8 @@ runs execute against the project's warehouse environments (dev/prod).
   you to commit. Prefer pushing to the tracked branch (mirrors the IDE button); only branch or
   open a PR when the user asks for it.
 - To promote working-tree changes onto a new branch, always use the atomic \`dbt_commit_to_branch\`
-  instead of separate branch + commit calls — the two-step flow is racy.
+  instead of separate branch + commit calls — the two-step flow is racy. Pass \`paths\` if only
+  some pending files belong in the commit.
 - Switching branches OVERWRITES the working tree. \`dbt_switch_branch\` refuses when there are
   uncommitted changes; commit them first, or pass \`discardLocalChanges\` only after the user
   explicitly confirms abandoning them. If a user reports missing/lost files, recover them with

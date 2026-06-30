@@ -41,6 +41,7 @@ vi.mock("../../dbt/dbt-run.service", () => ({
 }));
 vi.mock("../../dbt/dbt-github-git.service", () => ({
   commitAndPush: vi.fn(),
+  commitToNewBranch: vi.fn(),
   createProjectBranch: vi.fn(),
   getGitStatus: vi.fn(),
   listProjectBranches: vi.fn(),
@@ -58,6 +59,12 @@ vi.mock("../../services/scheduled-query-schedule.service", () => ({
 // Imported after the mocks are registered.
 import { createDbtServerTools } from "./dbt-tools";
 import { DbtJob, DbtProject } from "../../database/workspace-schema";
+import {
+  commitAndPush,
+  commitToNewBranch,
+  getGitStatus,
+} from "../../dbt/dbt-github-git.service";
+import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -69,6 +76,8 @@ type ToolResult = {
   error?: string;
   jobId?: string;
   name?: string;
+  branch?: string;
+  sha?: string;
 };
 
 const tools = createDbtServerTools(WS, "u1", { chatId: "chat1" });
@@ -77,6 +86,36 @@ function deleteJob(input: DeleteJobInput): Promise<ToolResult> {
   // The AI SDK tool() wraps execute; call it the way the SDK does at runtime.
   return (
     tools.dbt_delete_job.execute as (i: DeleteJobInput) => Promise<ToolResult>
+  )(input);
+}
+
+function commitAndPushTool(input: {
+  projectId: string;
+  message?: string;
+  paths?: string[];
+}): Promise<ToolResult> {
+  return (
+    tools.dbt_commit_and_push.execute as (i: {
+      projectId: string;
+      message?: string;
+      paths?: string[];
+    }) => Promise<ToolResult>
+  )(input);
+}
+
+function commitToBranchTool(input: {
+  projectId: string;
+  name: string;
+  message?: string;
+  paths?: string[];
+}): Promise<ToolResult> {
+  return (
+    tools.dbt_commit_to_branch.execute as (i: {
+      projectId: string;
+      name: string;
+      message?: string;
+      paths?: string[];
+    }) => Promise<ToolResult>
   )(input);
 }
 
@@ -94,6 +133,30 @@ async function seedProject(): Promise<string> {
     ],
     defaultEnvironment: "dev",
     createdBy: "tester",
+  });
+  return project._id.toString();
+}
+
+async function seedRepoProject(): Promise<string> {
+  const project = await DbtProject.create({
+    workspaceId: new Types.ObjectId(WS),
+    name: "Analytics",
+    environments: [
+      {
+        name: "dev",
+        connectionId: new Types.ObjectId(CONN),
+        targetSchema: "analytics",
+        threads: 4,
+      },
+    ],
+    defaultEnvironment: "dev",
+    createdBy: "tester",
+    repo: {
+      owner: "acme",
+      repo: "analytics",
+      branch: "main",
+      installationId: 123,
+    },
   });
   return project._id.toString();
 }
@@ -196,5 +259,94 @@ describe("dbt_delete_job", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not found|access denied/i);
     expect(await DbtJob.countDocuments({ _id: job._id })).toBe(1);
+  });
+});
+
+describe("dbt git commit tools", () => {
+  it("passes selected paths through generated-message commit and push", async () => {
+    const projectId = await seedRepoProject();
+    const paths = ["models/marts/dim_account.sql"];
+    vi.mocked(getGitStatus).mockResolvedValue({
+      branch: "main",
+      hasChanges: true,
+      added: 0,
+      modified: 2,
+      deleted: 0,
+      changes: [
+        { path: "models/marts/dim_account.sql", status: "modified" },
+        { path: "models/marts/fct_orders.sql", status: "modified" },
+      ],
+    });
+    vi.mocked(generateDbtCommitMessage).mockResolvedValue(
+      "fix: update account mart",
+    );
+    vi.mocked(commitAndPush).mockResolvedValue({
+      committed: true,
+      sha: "abc123",
+      branch: "main",
+      pushed: { added: 0, modified: 1, deleted: 0 },
+    });
+
+    const result = await commitAndPushTool({ projectId, paths });
+
+    expect(result.success).toBe(true);
+    expect(generateDbtCommitMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: expect.objectContaining({ branch: "main" }),
+      }),
+      { workspaceId: WS, userId: "u1" },
+      { paths },
+    );
+    expect(commitAndPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: expect.objectContaining({ branch: "main" }),
+      }),
+      {
+        message: "fix: update account mart",
+        updatedBy: "u1",
+        paths,
+      },
+    );
+  });
+
+  it("passes selected paths through commit-to-branch", async () => {
+    const projectId = await seedRepoProject();
+    const paths = ["models/staging/stg_crm_activity.sql"];
+    vi.mocked(generateDbtCommitMessage).mockResolvedValue(
+      "feat: add activity staging",
+    );
+    vi.mocked(commitToNewBranch).mockResolvedValue({
+      committed: true,
+      sha: "def456",
+      branch: "feat/activity",
+      fromBranch: "main",
+      pushed: { added: 1, modified: 0, deleted: 0 },
+    });
+
+    const result = await commitToBranchTool({
+      projectId,
+      name: "feat/activity",
+      paths,
+    });
+
+    expect(result.success).toBe(true);
+    expect(generateDbtCommitMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: expect.objectContaining({ branch: "main" }),
+      }),
+      { workspaceId: WS, userId: "u1" },
+      { paths },
+    );
+    expect(commitToNewBranch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repo: expect.objectContaining({ branch: "main" }),
+      }),
+      {
+        branchName: "feat/activity",
+        message: "feat: add activity staging",
+        updatedBy: "u1",
+        paths,
+      },
+    );
   });
 });
