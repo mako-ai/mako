@@ -22,7 +22,7 @@ import {
   dryRunDbSync,
 } from "../services/destination-writer.service";
 import { cdcBackfillService } from "../sync-cdc/backfill";
-import { getCdcFlowStats, syncMachineService } from "../sync-cdc/sync-state";
+import { syncMachineService } from "../sync-cdc/sync-state";
 import { databaseRegistry } from "../databases/registry";
 import { cdcLiveTableName, cdcStageTableName } from "../sync-cdc/normalization";
 import { resolveConfiguredEntities } from "../sync-cdc/entity-selection";
@@ -4221,136 +4221,6 @@ flowRoutes.openapi(
       return c.json({ success: true, data: execution.logs || [] });
     } catch (error) {
       logger.error("Error getting execution logs", { error });
-      return c.json({ success: false, error: "Server error" }, 500);
-    }
-  },
-);
-
-// GET webhook stats for a flow
-flowRoutes.openapi(
-  createRoute({
-    method: "get",
-    path: "/{flowId}/webhook/stats",
-    tags: ["Flows"],
-    summary: "GET /{flowId}/webhook/stats",
-    security: AUTH_SECURITY,
-    request: {
-      params: z.object({
-        workspaceId: z
-          .string()
-          .openapi({ param: { name: "workspaceId", in: "path" } }),
-        flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
-      }),
-    },
-    responses: { ...OPEN_RESPONSES },
-  }),
-  async c => {
-    try {
-      const workspaceId = c.req.param("workspaceId");
-      const flowId = c.req.param("flowId");
-
-      const flow = await Flow.findOne({
-        _id: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-        type: "webhook",
-      });
-
-      if (!flow) {
-        return c.json({ success: false, error: "Webhook flow not found" }, 404);
-      }
-
-      // Get recent webhook events
-      const recentEvents = await WebhookEvent.find({
-        flowId: new Types.ObjectId(flowId),
-        workspaceId: new Types.ObjectId(workspaceId),
-      })
-        .sort({ receivedAt: -1 })
-        .limit(100)
-        .lean();
-
-      // Calculate stats
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const [
-        eventsToday,
-        completedToday,
-        failedToday,
-        totalCount,
-        deferredCount,
-        runningFullSyncExecution,
-        cdcStats,
-      ] = await Promise.all([
-        WebhookEvent.countDocuments({
-          flowId: new Types.ObjectId(flowId),
-          receivedAt: { $gte: today },
-        }),
-        WebhookEvent.countDocuments({
-          flowId: new Types.ObjectId(flowId),
-          receivedAt: { $gte: today },
-          status: "completed",
-        }),
-        WebhookEvent.countDocuments({
-          flowId: new Types.ObjectId(flowId),
-          receivedAt: { $gte: today },
-          status: "failed",
-        }),
-        WebhookEvent.countDocuments({
-          flowId: new Types.ObjectId(flowId),
-        }),
-        WebhookEvent.countDocuments({
-          flowId: new Types.ObjectId(flowId),
-          applyStatus: "pending",
-        }),
-        FlowExecution.findOne({
-          flowId: new Types.ObjectId(flowId),
-          status: "running",
-          "context.syncMode": "full",
-        })
-          .select({ _id: 1 })
-          .lean(),
-        getCdcFlowStats({ flowId }),
-      ]);
-      // Only use terminal events for success-rate math.
-      // Pending/processing events should not be counted as successful.
-      const terminalToday = completedToday + failedToday;
-      const successRate =
-        terminalToday > 0 ? (completedToday / terminalToday) * 100 : 100;
-      const backfillActive = Boolean(
-        flow.backfillState?.status === "running" || runningFullSyncExecution,
-      );
-
-      const stats = {
-        webhookUrl:
-          flow.type === "webhook"
-            ? generateWebhookEndpoint(
-                workspaceId as string,
-                flowId as string,
-                getRequestBaseUrl(c),
-              )
-            : flow.webhookConfig?.endpoint,
-        lastReceived: flow.webhookConfig?.lastReceivedAt
-          ? new Date(flow.webhookConfig.lastReceivedAt).toISOString()
-          : null,
-        totalReceived: totalCount,
-        eventsToday,
-        deferredCount,
-        backfillActive,
-        cdc: cdcStats,
-        successRate: Math.round(successRate),
-        recentEvents: recentEvents.slice(0, 10).map(event => ({
-          eventId: event.eventId,
-          eventType: event.eventType,
-          receivedAt: event.receivedAt,
-          status: event.status,
-          applyStatus: event.applyStatus,
-          processingDurationMs: event.processingDurationMs,
-        })),
-      };
-
-      return c.json({ success: true, data: stats });
-    } catch (error) {
-      logger.error("Error getting webhook stats", { error });
       return c.json({ success: false, error: "Server error" }, 500);
     }
   },

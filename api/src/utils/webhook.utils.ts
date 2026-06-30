@@ -40,35 +40,6 @@ export function verifyWebhookSignature(
 }
 
 /**
- * Format webhook stats for display
- */
-export function formatWebhookStats(flow: any): {
-  lastReceived: string;
-  totalReceived: number;
-  receivedToday: number;
-  successRate: number;
-} {
-  const lastReceived = flow.webhookConfig?.lastReceivedAt
-    ? new Date(flow.webhookConfig.lastReceivedAt).toLocaleString()
-    : "Never";
-
-  const totalReceived = flow.webhookConfig?.totalReceived || 0;
-
-  // TODO: Calculate receivedToday from webhook events collection
-  const receivedToday = 0;
-
-  // TODO: Calculate success rate from webhook events
-  const successRate = 100;
-
-  return {
-    lastReceived,
-    totalReceived,
-    receivedToday,
-    successRate,
-  };
-}
-
-/**
  * @deprecated Use connector.extractWebhookData() and connector.getWebhookEventMapping() instead
  * Parse webhook payload to extract entity ID and type
  */

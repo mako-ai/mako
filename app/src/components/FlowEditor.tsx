@@ -4,7 +4,6 @@ import { ScheduledFlowForm } from "./ScheduledFlowForm";
 import { WebhookFlowForm } from "./WebhookFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
-import { WebhookStats } from "./WebhookStats";
 import { BackfillPanel } from "./BackfillPanel";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useFlowStore } from "../store/flowStore";
@@ -45,7 +44,6 @@ export function FlowEditor({
   // Determine flow type - for new flows, use the prop; for existing, check the flow
   const isWebhookFlow =
     currentFlow?.type === "webhook" || (!currentFlow && flowType === "webhook");
-  const isCdcFlow = currentFlow?.syncEngine === "cdc";
 
   // Check if this is a database-to-database flow
   const isDbFlow =
@@ -128,22 +126,13 @@ export function FlowEditor({
               onEdit={handleEditClick}
             />
           )}
-          {currentFlowId &&
-            isWebhookFlow &&
-            currentWorkspace &&
-            (isCdcFlow ? (
-              <BackfillPanel
-                workspaceId={currentWorkspace.id}
-                flowId={currentFlowId}
-                onEdit={handleEditClick}
-              />
-            ) : (
-              <WebhookStats
-                workspaceId={currentWorkspace.id}
-                flowId={currentFlowId}
-                onEdit={handleEditClick}
-              />
-            ))}
+          {currentFlowId && isWebhookFlow && currentWorkspace && (
+            <BackfillPanel
+              workspaceId={currentWorkspace.id}
+              flowId={currentFlowId}
+              onEdit={handleEditClick}
+            />
+          )}
         </>
       )}
     </Box>

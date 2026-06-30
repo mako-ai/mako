@@ -449,17 +449,6 @@ export interface FlowLogsResponse {
   total: number;
 }
 
-export interface WebhookStatsResponse {
-  success: boolean;
-  stats?: {
-    totalCalls: number;
-    successfulCalls: number;
-    failedCalls: number;
-    avgResponseTime: number;
-  };
-  error?: string;
-}
-
 // ==================== Connector Endpoints ====================
 
 export interface ConnectorResponse {
