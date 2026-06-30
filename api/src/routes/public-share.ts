@@ -902,7 +902,7 @@ app.openapi(
       const result = streamText({
         model: getModel(modelId),
         system: buildPublicChatSystemPrompt(chatContext),
-        messages: convertToModelMessages(messages),
+        messages: await convertToModelMessages(messages),
         tools: buildPublicChatTools(),
         stopWhen: stepCountIs(PUBLIC_CHAT_MAX_STEPS),
         abortSignal: c.req.raw.signal,
