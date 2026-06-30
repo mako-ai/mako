@@ -65,6 +65,20 @@ interface StreamingToolCardProps {
   onTitleClick?: () => void;
   onDetailClick?: () => void;
   /**
+   * True while the assistant turn this card belongs to is still streaming
+   * (`isStreaming && isLastMessage`). While set, a finished card is NOT
+   * auto-collapsed — it stays expanded until the turn ends. A whole turn
+   * streams into a SINGLE Virtuoso item; collapsing a card mid-turn shrinks
+   * that item, which yanks the chat's bottom-pin upward (a visible scroll
+   * snap/bounce that repeats per tool call). Deferring the collapse keeps the
+   * streaming message's height monotonic (append-only), so the view follows
+   * the tail straight down with no snap. (The body `<Collapse>` also always
+   * uses `timeout={0}` so the eventual collapse is a single discrete frame the
+   * `totalListHeightChanged` pin catches in one shot — an animated multi-frame
+   * collapse drifts the pin between resize callbacks.)
+   */
+  turnStreaming?: boolean;
+  /**
    * Optional — used as a defensive check in the memo comparator so that
    * React re-renders if the underlying tool call identity actually changed.
    * In practice parents also use this as the React key, so unmount/remount
@@ -273,6 +287,7 @@ export const StreamingToolCard = React.memo(
     bodyPreview,
     onTitleClick,
     onDetailClick,
+    turnStreaming,
   }: StreamingToolCardProps) {
     const config = getToolConfig(toolName);
     const muiTheme = useMuiTheme();
@@ -308,15 +323,31 @@ export const StreamingToolCard = React.memo(
     );
 
     useEffect(() => {
-      if ((isDone || isError) && hasCodePreview) {
-        const timer = setTimeout(() => setExpanded(false), 800);
-        return () => clearTimeout(timer);
-      }
-      if (isActive && hasCodePreview) {
+      if (!hasCodePreview) return;
+      if (isActive) {
         setExpanded(true);
         setUserScrolled(false);
+        return;
       }
-    }, [isDone, isError, isActive, hasCodePreview]);
+      if (isDone || isError) {
+        // While the assistant turn is still streaming, keep finished cards
+        // expanded instead of auto-collapsing them. A whole turn streams into
+        // a SINGLE Virtuoso item; collapsing a card mid-turn shrinks that item
+        // (by up to a few hundred px), which yanks the bottom-pinned view
+        // upward to the new bottom — a visible scroll "snap"/bounce that
+        // repeats for every tool call. Deferring the collapse keeps the
+        // streaming message's height monotonic (it only grows), so the view
+        // follows the tail straight down with no snap. The cards collapse once
+        // the turn settles (below), inside `Chat`'s post-turn pin window so
+        // that end-of-turn shrink stays bottom-pinned too.
+        if (turnStreaming) {
+          setExpanded(true);
+          return;
+        }
+        const timer = setTimeout(() => setExpanded(false), 300);
+        return () => clearTimeout(timer);
+      }
+    }, [isDone, isError, isActive, hasCodePreview, turnStreaming]);
 
     // Resolve code preview content (supports both string and object fields)
     const inputObj = input as Record<string, unknown> | undefined;
@@ -595,7 +626,7 @@ export const StreamingToolCard = React.memo(
             `unmountOnExit` removes the syntax-highlighted DOM (and its many
             nodes) entirely when collapsed — critical for keeping the DOM small
             in long chats on mobile Safari. */}
-        <Collapse in={expanded && hasVisibleBody} timeout={300} unmountOnExit>
+        <Collapse in={expanded && hasVisibleBody} timeout={0} unmountOnExit>
           {/* Code preview */}
           {code.length > 0 && (
             <Box
@@ -672,6 +703,11 @@ export const StreamingToolCard = React.memo(
     if (prev.leadingIconAlt !== next.leadingIconAlt) return false;
     if (prev.bodyPreview?.content !== next.bodyPreview?.content) return false;
     if (prev.bodyPreview?.language !== next.bodyPreview?.language) return false;
+    // `turnStreaming` flips at most once per turn (true→false when the turn
+    // ends), so re-rendering on it does not add per-chunk renders, but it must
+    // be honored even for terminal cards so the collapse transition switches
+    // from instant (streaming) back to the smooth 300ms animation (history).
+    if (prev.turnStreaming !== next.turnStreaming) return false;
 
     // Terminal states are immutable. Even if useChat handed us new cloned
     // references for `input` / `output` this tick, the contents are the
