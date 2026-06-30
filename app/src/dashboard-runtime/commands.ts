@@ -247,6 +247,7 @@ export function buildDashboardDataSource(input: {
   timeDimension?: string;
   rowLimit?: number;
   origin?: DashboardDataSourceOrigin;
+  materialization?: "live" | "parquet";
 }): DashboardDataSource {
   return {
     id: nanoid(),
@@ -256,6 +257,7 @@ export function buildDashboardDataSource(input: {
     origin: input.origin,
     timeDimension: input.timeDimension,
     rowLimit: input.rowLimit,
+    materialization: input.materialization ?? "parquet",
     computedColumns: [],
   };
 }
@@ -266,6 +268,7 @@ export async function createDashboardDataSource(options: {
   query: DashboardQueryDefinition;
   timeDimension?: string;
   rowLimit?: number;
+  materialization?: "live" | "parquet";
   dashboardId?: string;
   signal?: AbortSignal;
 }): Promise<DashboardDataSource> {
@@ -276,6 +279,7 @@ export async function createDashboardDataSource(options: {
     query: options.query,
     timeDimension: options.timeDimension,
     rowLimit: options.rowLimit,
+    materialization: options.materialization,
     origin: { type: "local" },
   });
 

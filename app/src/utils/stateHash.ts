@@ -46,6 +46,7 @@ export function computeDashboardStateHash(dashboard: {
     computedColumns?: unknown[];
     timeDimension?: string;
     rowLimit?: number;
+    materialization?: "live" | "parquet";
   }>;
   relationships: unknown[];
   globalFilters: unknown[];
@@ -76,6 +77,7 @@ export function computeDashboardStateHash(dashboard: {
       computedColumns: ds.computedColumns,
       timeDimension: ds.timeDimension,
       rowLimit: ds.rowLimit,
+      materialization: ds.materialization,
     })),
     relationships: dashboard.relationships,
     globalFilters: dashboard.globalFilters,
