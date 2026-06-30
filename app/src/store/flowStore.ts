@@ -77,6 +77,15 @@ const flowSchema = z.object({
   queries: z.array(flowQuerySchema).nullable().optional(),
   syncMode: z.enum(["full", "incremental"]),
   syncEngine: z.enum(["legacy", "cdc"]).optional(),
+  backfillSchedule: z
+    .object({
+      enabled: z.boolean().optional(),
+      cron: z.string().nullable().optional(),
+      timezone: z.string().nullable().optional(),
+      lastRunAt: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
   syncState: z
     .enum(["idle", "backfill", "catchup", "live", "paused", "degraded"])
     .optional(),

@@ -873,6 +873,19 @@ export interface IFlow extends Document {
     cron?: string;
     timezone?: string;
   };
+  /**
+   * Optional periodic full backfill cadence for CDC flows. Independent of
+   * `schedule` (which only drives `type: scheduled` batch runs). When enabled,
+   * `cdcScheduledBackfillFunction` triggers `cdcBackfillService.startBackfill`
+   * on the cron cadence so a streaming CDC flow gets a periodic full
+   * reconciliation while the live stream stays active between runs.
+   */
+  backfillSchedule?: {
+    enabled: boolean;
+    cron?: string;
+    timezone?: string;
+    lastRunAt?: Date;
+  };
   webhookConfig?: {
     endpoint: string;
     secret: string;
@@ -2131,6 +2144,28 @@ const FlowSchema = new Schema<IFlow>(
         default: "UTC",
       },
     },
+    backfillSchedule: {
+      enabled: {
+        type: Boolean,
+        default: false,
+      },
+      cron: {
+        type: String,
+        validate: {
+          validator: function (v: string) {
+            if (!v) return true;
+            const fields = v.split(" ");
+            return fields.length === 5 || fields.length === 6;
+          },
+          message: "Invalid cron expression",
+        },
+      },
+      timezone: {
+        type: String,
+        default: "UTC",
+      },
+      lastRunAt: Date,
+    },
     webhookConfig: {
       endpoint: {
         type: String,
@@ -2327,6 +2362,7 @@ FlowSchema.index({ destinationDatabaseId: 1 });
 FlowSchema.index({ "tableDestination.connectionId": 1 }, { sparse: true });
 FlowSchema.index({ nextRunAt: 1 });
 FlowSchema.index({ workspaceId: 1, syncEngine: 1 });
+FlowSchema.index({ syncEngine: 1, "backfillSchedule.enabled": 1 });
 
 /**
  * FlowExecution Schema (binds to 'flow_executions' collection)

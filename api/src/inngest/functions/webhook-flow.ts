@@ -6,11 +6,8 @@ import {
   DatabaseConnection,
   CdcEntityState,
 } from "../../database/workspace-schema";
-import { getSyncLogger } from "../logging";
 import { connectorRegistry } from "../../connectors/registry";
 import type { BaseConnector } from "../../connectors/base/BaseConnector";
-import { createDestinationWriter } from "../../services/destination-writer.service";
-import { getEntityTableName } from "../../sync/sync-orchestrator";
 import { Types } from "mongoose";
 import { hasCdcDestinationAdapter } from "../../sync-cdc/adapters/registry";
 import { isEntityEnabledForFlow } from "../../sync-cdc/entity-selection";
@@ -22,12 +19,6 @@ import { cdcIngestService } from "../../sync-cdc/ingest";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { reconcileOrphanedWebhookApplyStatus } from "../../sync-cdc/cdc-orphan-applystatus";
-import { enqueueWebhookProcess } from "../webhook-process-enqueue";
-
-const WEBHOOK_SQL_PROCESS_CONCURRENCY = Math.max(
-  parseInt(process.env.WEBHOOK_SQL_PROCESS_CONCURRENCY || "5", 10) || 5,
-  1,
-);
 
 const CDC_MATERIALIZE_CONCURRENCY = Math.max(
   parseInt(process.env.CDC_MATERIALIZE_CONCURRENCY || "8", 10) || 8,
@@ -141,552 +132,6 @@ function buildWebhookCdcRecords(params: {
   return { records: out, extractedCount: rawRecords.length };
 }
 
-async function runWebhookEventProcess({
-  event,
-  step,
-}: {
-  event: { data: Record<string, unknown> };
-  step: {
-    run: (name: string, fn: () => Promise<unknown>) => Promise<unknown>;
-  };
-}) {
-  const { flowId, eventId } = event.data as {
-    flowId: string;
-    eventId: string;
-  };
-  const logger = getSyncLogger(`webhook.${flowId}`);
-
-  logger.debug("Processing webhook event", { flowId, eventId });
-
-  // Load webhook row and flip to processing in one step (fewer Inngest round-trips).
-  const webhookEvent = (await step.run("prepare-webhook-event", async () => {
-    const doc = await WebhookEvent.findOne({ flowId, eventId });
-    if (!doc) {
-      throw new Error(`Webhook event not found: ${eventId}`);
-    }
-    await WebhookEvent.updateOne(
-      { _id: doc._id },
-      {
-        $set: { status: "processing" },
-        $inc: { attempts: 1 },
-      },
-    );
-    return doc.toObject();
-  })) as any; // Type assertion needed due to Inngest step typing
-
-  // Process the event (load Flow here so we do not pay a separate step.run for it).
-  const result = (await step.run("process-event", async () => {
-    const stepStartedAt = Date.now();
-
-    const processWebhookJob = async () => {
-      try {
-        const flowDoc = await Flow.findById(flowId);
-        if (!flowDoc) {
-          logger.warn("Flow not found – marking webhook event as dropped", {
-            flowId,
-            eventId: webhookEvent.eventId,
-          });
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                applyStatus: "dropped",
-                processedAt: new Date(),
-                applyError: {
-                  code: "FLOW_NOT_FOUND",
-                  message: `Flow ${flowId} no longer exists`,
-                },
-                processingDurationMs:
-                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-              },
-            },
-          );
-          return { processed: false, reason: `Flow ${flowId} not found` };
-        }
-        const flow: any = flowDoc.toObject();
-
-        const dataSource = await DataSource.findById(flow.dataSourceId);
-        const database = await DatabaseConnection.findById(
-          flow.destinationDatabaseId,
-        );
-
-        if (!dataSource || !database) {
-          logger.warn(
-            "Data source or database not found – marking webhook event as dropped",
-            {
-              flowId,
-              eventId: webhookEvent.eventId,
-              dataSourceId: flow.dataSourceId,
-              databaseId: flow.destinationDatabaseId,
-            },
-          );
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                applyStatus: "dropped",
-                processedAt: new Date(),
-                applyError: {
-                  code: "MISSING_DEPENDENCY",
-                  message: `Data source or database for flow ${flowId} no longer exists`,
-                },
-                processingDurationMs:
-                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-              },
-            },
-          );
-          return {
-            processed: false,
-            reason: "Data source or database not found",
-          };
-        }
-
-        // Get MongoDB connection through mongoose
-        const dbConnection = Flow.db;
-        // Use the actual database name from connection, not the label
-        const dbName = database.connection.database || database.name;
-        const db = dbConnection.useDb(dbName);
-
-        // Get the connector for event mapping
-        const connector = connectorRegistry.getConnector(dataSource);
-        if (!connector) {
-          throw new Error(`Connector not found for type: ${dataSource.type}`);
-        }
-
-        // Get event mapping
-        const eventType = webhookEvent.eventType;
-        const mapping = connector.getWebhookEventMapping(eventType);
-
-        if (!mapping) {
-          logger.warn("Unknown event type", {
-            eventType,
-            eventId: webhookEvent.eventId,
-            connectorType: dataSource.type,
-          });
-
-          // Mark as completed even if we don't process it
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                applyStatus: "applied",
-                appliedAt: new Date(),
-                processedAt: new Date(),
-                processingDurationMs:
-                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-              },
-              $unset: { applyError: "" },
-            },
-          );
-
-          return { processed: false, reason: "Unknown event type" };
-        }
-
-        // Fan out into every entity the connector emits for this event
-        // (e.g. Calendly invitee.created -> invitees + scheduled_events).
-        const { records, extractedCount } = buildWebhookCdcRecords({
-          connector,
-          dataSource: { id: dataSource.id, name: dataSource.name },
-          flow,
-          webhookEvent: {
-            eventId: webhookEvent.eventId,
-            eventType,
-            rawPayload: webhookEvent.rawPayload,
-            receivedAt: webhookEvent.receivedAt,
-          },
-        });
-
-        const destinationType = database.type;
-        const isCdcEnabled =
-          flow.syncEngine === "cdc" &&
-          Boolean(flow.tableDestination?.connectionId) &&
-          hasCdcDestinationAdapter(destinationType);
-
-        // The mapping exists but the connector produced no usable record:
-        // a malformed/unexpected payload. Throw so Inngest retries and the
-        // event is surfaced as failed (matches the legacy extract-failed path).
-        if (extractedCount === 0) {
-          throw new Error("Failed to extract data from webhook event");
-        }
-
-        // Records were extracted but all got filtered out by the flow's
-        // enabled-entity selection. Intentional drop, not a failure.
-        if (records.length === 0) {
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                applyStatus: "dropped",
-                applyError: {
-                  code: "ENTITY_DISABLED",
-                  message: `No enabled entity for event ${eventType} in flow configuration`,
-                },
-                processedAt: new Date(),
-                processingDurationMs:
-                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-              },
-              $unset: { appliedAt: "" },
-            },
-          );
-          return {
-            processed: false,
-            reason: `No enabled entity for event ${eventType}`,
-          };
-        }
-
-        const primaryRecord = records[0];
-
-        if (isCdcEnabled && flow.tableDestination?.connectionId) {
-          await cdcIngestService.appendNormalizedEvents({
-            workspaceId: String(flow.workspaceId),
-            flowId: String(flowId),
-            events: records.map(record => ({
-              entity: record.entity,
-              recordId: record.recordId,
-              operation: record.operation,
-              payload: record.payload,
-              sourceTs: record.sourceTs,
-              source: "webhook" as const,
-              changeId: record.changeId,
-              webhookEventId: String(webhookEvent._id),
-            })),
-          });
-
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                processedAt: new Date(),
-                entity: primaryRecord.entity,
-                operation: primaryRecord.operation,
-                recordId: primaryRecord.recordId,
-                applyStatus: "pending",
-                processingDurationMs:
-                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-              },
-              $inc: { applyAttempts: 1 },
-              $unset: { applyError: "" },
-            },
-          );
-
-          logger.info("Queued webhook event for BigQuery CDC materialization", {
-            eventId: webhookEvent.eventId,
-            flowId,
-            entities: records.map(r => r.entity),
-          });
-
-          return {
-            processed: true,
-            reason: "Queued for CDC materialization",
-            entity: primaryRecord.entity,
-            operation: primaryRecord.operation,
-          };
-        }
-
-        // ========== SQL/BigQuery destination path ==========
-        if (flow.tableDestination?.connectionId) {
-          for (const record of records) {
-            const entityLayout = (flow.entityLayouts || []).find(
-              (l: any) =>
-                l.entity === record.entity ||
-                l.entity === record.entity.split(":")[0],
-            );
-            const entityTableName = getEntityTableName(
-              flow.tableDestination.tableName,
-              record.entity,
-            );
-
-            const entityTableDest = {
-              ...flow.tableDestination,
-              tableName: entityTableName,
-              connectionId: new Types.ObjectId(
-                flow.tableDestination.connectionId,
-              ),
-              partitioning: entityLayout
-                ? {
-                    enabled: true,
-                    type: "time" as const,
-                    field: entityLayout.partitionField,
-                    granularity: entityLayout.partitionGranularity || "day",
-                  }
-                : flow.tableDestination.partitioning,
-              clustering: entityLayout?.clusterFields?.length
-                ? {
-                    enabled: true,
-                    fields: entityLayout.clusterFields,
-                  }
-                : flow.tableDestination.clustering,
-            };
-
-            const writer = await createDestinationWriter(
-              {
-                destinationDatabaseId: new Types.ObjectId(
-                  flow.destinationDatabaseId,
-                ),
-                destinationDatabaseName: flow.destinationDatabaseName,
-                tableDestination: entityTableDest,
-              },
-              dataSource.name,
-            );
-            (writer as any).config.deleteMode = flow.deleteMode;
-
-            logger.info("Processing webhook event (SQL destination)", {
-              eventType,
-              entity: record.entity,
-              operation: record.operation,
-              id: record.recordId,
-              table: entityTableName,
-            });
-
-            if (record.operation === "upsert") {
-              const result = await writer.writeBatch([record.payload], {
-                keyColumns: ["id", "_dataSourceId"],
-                conflictStrategy: "update",
-              });
-              if (!result.success) {
-                throw new Error(`SQL upsert failed: ${result.error}`);
-              }
-            } else if (record.operation === "delete") {
-              const deleteMode = flow.deleteMode || "hard";
-              if (deleteMode === "soft") {
-                const softDeleteDoc = {
-                  ...record.payload,
-                  is_deleted: true,
-                  deleted_at: new Date(),
-                };
-                const result = await writer.writeBatch([softDeleteDoc], {
-                  keyColumns: ["id", "_dataSourceId"],
-                  conflictStrategy: "update",
-                });
-                if (!result.success) {
-                  throw new Error(`SQL soft delete failed: ${result.error}`);
-                }
-              } else {
-                const result = await writer.deleteByKeys({
-                  id: record.recordId,
-                  _dataSourceId: dataSource.id,
-                });
-                if (!result.success) {
-                  throw new Error(`SQL hard delete failed: ${result.error}`);
-                }
-              }
-            }
-          }
-
-          await WebhookEvent.updateOne(
-            { _id: webhookEvent._id },
-            {
-              $set: {
-                status: "completed",
-                processedAt: new Date(),
-                entity: primaryRecord.entity,
-                operation: primaryRecord.operation,
-                recordId: primaryRecord.recordId,
-                applyStatus: "applied",
-                appliedAt: new Date(),
-                processingDurationMs:
-                  Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-              },
-              $inc: { applyAttempts: 1 },
-              $unset: { applyError: "" },
-            },
-          );
-
-          logger.info("Webhook event processed (SQL)", {
-            eventId: webhookEvent.eventId,
-            eventType,
-            entities: records.map(r => r.entity),
-          });
-
-          return {
-            processed: true,
-            entity: primaryRecord.entity,
-            operation: primaryRecord.operation,
-          };
-        }
-
-        // ========== Legacy MongoDB destination path ==========
-        for (const record of records) {
-          const baseEntity = record.entity.split(":")[0];
-          const collectionName = `${dataSource.name}_${baseEntity}`;
-          const collection = db.collection(collectionName);
-
-          const stagingCollectionName = `${collectionName}_staging`;
-          let stagingCollection = null;
-          try {
-            const stagingCol = db.collection(stagingCollectionName);
-            const indexes = await stagingCol.indexes();
-            if (indexes && indexes.length > 0) {
-              stagingCollection = stagingCol;
-            }
-          } catch {
-            logger.debug("No staging collection found", {
-              stagingCollection: stagingCollectionName,
-            });
-          }
-
-          if (record.operation === "upsert") {
-            await collection.updateOne(
-              { id: record.recordId },
-              { $set: record.payload },
-              { upsert: true },
-            );
-            if (stagingCollection) {
-              await stagingCollection.updateOne(
-                { id: record.recordId },
-                { $set: record.payload },
-                { upsert: true },
-              );
-            }
-          } else if (record.operation === "delete") {
-            await collection.deleteOne({ id: record.recordId });
-            if (stagingCollection) {
-              await stagingCollection.deleteOne({ id: record.recordId });
-            }
-          }
-        }
-
-        await WebhookEvent.updateOne(
-          { _id: webhookEvent._id },
-          {
-            $set: {
-              status: "completed",
-              processedAt: new Date(),
-              entity: primaryRecord.entity,
-              operation: primaryRecord.operation,
-              recordId: primaryRecord.recordId,
-              applyStatus: "applied",
-              appliedAt: new Date(),
-              processingDurationMs:
-                Date.now() - new Date(webhookEvent.receivedAt).getTime(),
-            },
-            $inc: { applyAttempts: 1 },
-            $unset: { applyError: "" },
-          },
-        );
-
-        logger.info("Webhook event processed successfully", {
-          eventId: webhookEvent.eventId,
-          eventType,
-          entities: records.map(r => r.entity),
-        });
-
-        return {
-          processed: true,
-          entity: primaryRecord.entity,
-          operation: primaryRecord.operation,
-        };
-      } catch (error) {
-        // Mark event as failed
-        await WebhookEvent.updateOne(
-          { _id: webhookEvent._id },
-          {
-            $set: {
-              status: "failed",
-              applyStatus: "failed",
-              applyError: {
-                message: error instanceof Error ? error.message : String(error),
-                code: "APPLY_FAILED",
-              },
-              error: {
-                message: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined,
-              },
-            },
-            $inc: { applyAttempts: 1 },
-          },
-        );
-
-        logger.error("Failed to process webhook event", {
-          eventId: webhookEvent.eventId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-
-        throw error;
-      }
-    };
-
-    try {
-      const jobResult = (await processWebhookJob()) as {
-        processed: boolean;
-        [key: string]: unknown;
-      };
-      await Flow.updateOne(
-        { _id: flowId },
-        {
-          $set: {
-            lastRunAt: new Date(),
-            lastSuccessAt: jobResult.processed ? new Date() : undefined,
-          },
-          $inc: { runCount: 1 },
-        },
-      );
-      logger.info("webhook_process_step_completed", {
-        flowId,
-        eventId,
-        stepDurationMs: Date.now() - stepStartedAt,
-        processed: jobResult.processed,
-      });
-      return jobResult;
-    } catch (error) {
-      logger.warn("webhook_process_step_failed", {
-        flowId,
-        eventId,
-        stepDurationMs: Date.now() - stepStartedAt,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
-  })) as any;
-
-  return {
-    success: true,
-    eventId: webhookEvent.eventId,
-    processed: (result as { processed: boolean }).processed,
-    details: result,
-  };
-}
-
-/**
- * Process webhook events that apply directly to the warehouse (non-CDC table path).
- * Keep concurrency low — each run can issue DML against BigQuery/SQL.
- */
-export const webhookEventProcessFunction = inngest.createFunction(
-  {
-    id: "webhook-event-process",
-    name: "Process Webhook Event",
-    concurrency: {
-      limit: WEBHOOK_SQL_PROCESS_CONCURRENCY,
-      key: "event.data.flowId",
-    },
-  },
-  { event: "webhook/event.process" },
-  runWebhookEventProcess,
-);
-
-/**
- * @deprecated CDC ingest is now handled by the 2-min cron scheduler.
- * Kept as a no-op so Inngest doesn't error on in-flight events during deploy.
- */
-export const webhookEventProcessCdcFunction = inngest.createFunction(
-  {
-    id: "webhook-event-process-cdc",
-    name: "Process Webhook Event (CDC ingest) [DEPRECATED]",
-  },
-  { event: "webhook/event.process.cdc" },
-  async () => {
-    return {
-      skipped: true,
-      reason: "Deprecated — CDC ingest moved to cron scheduler",
-    };
-  },
-);
-
 /**
  * webhookCleanupFunction — REMOVED.
  * Superseded by a TTL index on webhookevents.receivedAt (7 days).
@@ -696,8 +141,10 @@ export const webhookEventProcessCdcFunction = inngest.createFunction(
 /**
  * Retry failed / stuck webhook events.
  *
- * CDC events: resets status to "pending" so the 2-min cron picks them up.
- * Non-CDC events: resets to "pending" and re-enqueues via Inngest.
+ * All webhook flows are CDC: this resets failed and stale-processing events to
+ * "pending" so the CDC scheduler cron re-ingests them on its next cycle. There
+ * is no per-event Inngest enqueue anymore (the legacy `webhook/event.process`
+ * pipeline was decommissioned).
  */
 export const webhookRetryFunction = inngest.createFunction(
   {
@@ -730,7 +177,7 @@ export const webhookRetryFunction = inngest.createFunction(
         return { retried: 0, failed: 0, staleProcessing: 0 };
       }
 
-      // Reset all to pending
+      // Reset all to pending — the CDC scheduler cron picks them up.
       await WebhookEvent.updateMany(
         { _id: { $in: allEvents.map(e => e._id) } },
         {
@@ -739,55 +186,16 @@ export const webhookRetryFunction = inngest.createFunction(
         },
       );
 
-      // Non-CDC events need explicit Inngest enqueue since the cron
-      // only handles CDC flows. Look up which flows are CDC to decide.
-      const flowIds = [...new Set(allEvents.map(e => e.flowId.toString()))];
-      const flows = await Flow.find({ _id: { $in: flowIds } })
-        .select("_id syncEngine destinationDatabaseId tableDestination")
-        .lean();
-
-      const cdcFlowIds = new Set<string>();
-      for (const f of flows) {
-        if (!f.destinationDatabaseId) continue;
-        const dest = await DatabaseConnection.findById(f.destinationDatabaseId)
-          .select("type")
-          .lean();
-        if (
-          f.syncEngine === "cdc" &&
-          Boolean((f as any).tableDestination?.connectionId) &&
-          hasCdcDestinationAdapter(dest?.type)
-        ) {
-          cdcFlowIds.add(f._id.toString());
-        }
-      }
-
-      let nonCdcEnqueued = 0;
-      for (const evt of allEvents) {
-        if (!cdcFlowIds.has(evt.flowId.toString())) {
-          try {
-            await enqueueWebhookProcess({
-              flowId: evt.flowId.toString(),
-              eventId: evt.eventId,
-            });
-            nonCdcEnqueued++;
-          } catch {
-            // Will be picked up on the next retry cycle
-          }
-        }
-      }
-
       logger.info("Reset webhook events to pending for retry", {
         total: allEvents.length,
         failed: failedEvents.length,
         staleProcessing: staleProcessingEvents.length,
-        nonCdcEnqueued,
       });
 
       return {
         retried: allEvents.length,
         failed: failedEvents.length,
         staleProcessing: staleProcessingEvents.length,
-        nonCdcEnqueued,
       };
     });
 
@@ -1173,8 +581,19 @@ async function ingestPendingWebhookEvents(logger: {
       hasCdcDestinationAdapter(destinationType);
 
     if (!isCdcEnabled) {
-      // Non-CDC events shouldn't reach the cron ingest. Mark as completed
-      // so they don't loop. The non-CDC SQL path uses its own Inngest event.
+      // Legacy real-time webhook processing was decommissioned: all webhook
+      // flows must be CDC. A non-CDC webhook flow can only exist if it was
+      // never migrated (e.g. a Mongo-collection destination with no CDC
+      // adapter). Drop with a loud warning so it surfaces for manual review
+      // instead of silently looping forever.
+      logger.warn(
+        "Dropping webhook events for non-CDC flow (legacy webhook path removed)",
+        {
+          flowId,
+          destinationType,
+          count: events.length,
+        },
+      );
       await WebhookEvent.updateMany(
         { _id: { $in: events.map(e => e._id) } },
         {
@@ -1184,7 +603,7 @@ async function ingestPendingWebhookEvents(logger: {
             processedAt: new Date(),
             applyError: {
               code: "NOT_CDC_FLOW",
-              message: `Flow ${flowId} is not a CDC flow — event should use the SQL webhook path`,
+              message: `Flow ${flowId} is not a CDC flow — legacy webhook processing has been removed. Migrate this flow to a CDC-capable destination.`,
             },
           },
         },
@@ -1383,7 +802,7 @@ async function ingestPendingWebhookEvents(logger: {
 }
 
 /**
- * Unified CDC scheduler: runs every 2 minutes.
+ * Unified CDC scheduler: runs every 5 minutes.
  *
  * Step 1 — Ingest: finds pending WebhookEvents, normalizes them into
  * CdcChangeEvents, and marks them as completed.

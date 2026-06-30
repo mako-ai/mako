@@ -11,8 +11,6 @@ import {
 } from "../database/workspace-schema";
 import { Types, PipelineStage } from "mongoose";
 import { inngest } from "../inngest";
-import { enqueueWebhookProcess } from "../inngest/webhook-process-enqueue";
-import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
 import { generateWebhookEndpoint } from "../utils/webhook.utils";
 import { loggers, enrichContextWithWorkspace } from "../logging";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
@@ -716,11 +714,31 @@ flowRoutes.openapi(
             ? body.destinationDatabaseName.trim()
             : undefined,
         syncMode: body.syncMode || "full",
-        syncEngine: "legacy",
+        // Webhook flows run exclusively on the CDC engine (the legacy real-time
+        // webhook pipeline has been decommissioned). Scheduled batch flows keep
+        // the legacy direct-write engine by default.
+        syncEngine: flowType === "webhook" ? "cdc" : "legacy",
         syncStateUpdatedAt: new Date(),
         enabled: true,
         createdBy: userId,
       };
+
+      // Optional periodic full-backfill cadence (CDC flows only).
+      if (flowType === "webhook" && body.backfillSchedule) {
+        const sched = body.backfillSchedule;
+        const enabled = Boolean(sched.enabled);
+        const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
+        if (enabled && cron) {
+          flowData.backfillSchedule = {
+            enabled: true,
+            cron,
+            timezone:
+              typeof sched.timezone === "string" && sched.timezone.trim()
+                ? sched.timezone.trim()
+                : "UTC",
+          };
+        }
+      }
 
       // Add source-specific fields
       if (sourceType === "database") {
@@ -1178,6 +1196,23 @@ flowRoutes.openapi(
         (flow as any).entityLayouts = body.entityLayouts;
       }
 
+      // Periodic full backfill cadence (CDC flows only). The dedicated
+      // /backfill-schedule endpoint offers the same behavior for API consumers.
+      if (body.backfillSchedule !== undefined && flow.syncEngine === "cdc") {
+        const sched = body.backfillSchedule || {};
+        const enabled = Boolean(sched.enabled);
+        const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
+        flow.backfillSchedule = {
+          enabled,
+          cron: enabled ? cron : flow.backfillSchedule?.cron,
+          timezone:
+            typeof sched.timezone === "string" && sched.timezone.trim()
+              ? sched.timezone.trim()
+              : flow.backfillSchedule?.timezone || "UTC",
+          lastRunAt: flow.backfillSchedule?.lastRunAt,
+        };
+      }
+
       // Update webhook-specific fields
       if (flow.type === "webhook" && flow.webhookConfig) {
         flow.webhookConfig.endpoint = generateWebhookEndpoint(
@@ -1581,6 +1616,19 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
+      // The legacy real-time webhook pipeline has been decommissioned —
+      // webhook flows must run on the CDC engine.
+      if (flow.type === "webhook" && syncEngine === "legacy") {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Webhook flows must use the CDC engine — the legacy webhook engine has been removed",
+          },
+          400,
+        );
+      }
+
       flow.syncEngine = syncEngine;
       if (syncEngine === "legacy") {
         flow.streamState = "idle";
@@ -1609,6 +1657,110 @@ flowRoutes.openapi(
       });
     } catch (error) {
       logger.error("Error updating sync engine", { error });
+      return c.json(
+        {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        },
+        500,
+      );
+    }
+  },
+);
+
+// POST /api/workspaces/:workspaceId/flows/:flowId/backfill-schedule
+// Configure (or disable) a periodic full backfill cadence for a CDC flow.
+flowRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{flowId}/backfill-schedule",
+    tags: ["Flows"],
+    summary: "POST /{flowId}/backfill-schedule",
+    security: AUTH_SECURITY,
+    request: {
+      params: z.object({
+        workspaceId: z
+          .string()
+          .openapi({ param: { name: "workspaceId", in: "path" } }),
+        flowId: z.string().openapi({ param: { name: "flowId", in: "path" } }),
+      }),
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: z.object({
+              enabled: z.boolean(),
+              cron: z.string().optional(),
+              timezone: z.string().optional(),
+            }),
+          },
+        },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const flowId = c.req.param("flowId") as string;
+      const authorizationError = await assertOwnerOrAdmin(c, workspaceId);
+      if (authorizationError) return authorizationError;
+
+      const body = await c.req.json();
+      const enabled = Boolean(body?.enabled);
+      const cron = typeof body?.cron === "string" ? body.cron.trim() : "";
+      const timezone =
+        typeof body?.timezone === "string" && body.timezone.trim().length > 0
+          ? body.timezone.trim()
+          : "UTC";
+
+      if (enabled) {
+        const fields = cron.split(" ").filter(Boolean);
+        if (fields.length !== 5 && fields.length !== 6) {
+          return c.json(
+            {
+              success: false,
+              error: "A valid cron expression is required to enable a schedule",
+            },
+            400,
+          );
+        }
+      }
+
+      const flow = await Flow.findOne({
+        _id: new Types.ObjectId(flowId),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!flow) {
+        return c.json({ success: false, error: "Flow not found" }, 404);
+      }
+      if (flow.syncEngine !== "cdc") {
+        return c.json(
+          {
+            success: false,
+            error: "Scheduled backfill requires syncEngine=cdc",
+          },
+          400,
+        );
+      }
+
+      flow.backfillSchedule = {
+        enabled,
+        cron: enabled ? cron : flow.backfillSchedule?.cron,
+        timezone,
+        lastRunAt: flow.backfillSchedule?.lastRunAt,
+      };
+      await flow.save();
+
+      return c.json({
+        success: true,
+        data: {
+          flowId: flow._id,
+          backfillSchedule: flow.backfillSchedule,
+        },
+      });
+    } catch (error) {
+      logger.error("Error updating backfill schedule", { error });
       return c.json(
         {
           success: false,
@@ -4412,33 +4564,11 @@ flowRoutes.openapi(
         );
       }
 
-      // Non-CDC flows need explicit Inngest enqueue
-      const flowDoc = await Flow.findById(flowId)
-        .select("syncEngine destinationDatabaseId tableDestination")
-        .lean();
-      const destConn =
-        flowDoc?.destinationDatabaseId != null
-          ? await DatabaseConnection.findById(flowDoc.destinationDatabaseId)
-              .select("type")
-              .lean()
-          : null;
-      const isCdc =
-        flowDoc?.syncEngine === "cdc" &&
-        Boolean((flowDoc as any).tableDestination?.connectionId) &&
-        hasCdcDestinationAdapter(destConn?.type);
-
-      if (!isCdc) {
-        await enqueueWebhookProcess({
-          flowId: event.flowId.toString(),
-          eventId: event.eventId,
-        });
-      }
-
+      // All webhook flows are CDC: the scheduler cron re-ingests pending events.
       return c.json({
         success: true,
-        message: isCdc
-          ? "Webhook event reset to pending — will be picked up by next cron cycle"
-          : "Webhook event queued for retry",
+        message:
+          "Webhook event reset to pending — will be picked up by the next CDC cron cycle",
         data: { eventId },
       });
     } catch (error) {
@@ -4500,44 +4630,12 @@ flowRoutes.openapi(
         },
       );
 
-      // Non-CDC flows: enqueue each event via Inngest
-      const flowDoc = await Flow.findById(flowId)
-        .select("syncEngine destinationDatabaseId tableDestination")
-        .lean();
-      const destConn =
-        flowDoc?.destinationDatabaseId != null
-          ? await DatabaseConnection.findById(flowDoc.destinationDatabaseId)
-              .select("type")
-              .lean()
-          : null;
-      const isCdc =
-        flowDoc?.syncEngine === "cdc" &&
-        Boolean((flowDoc as any).tableDestination?.connectionId) &&
-        hasCdcDestinationAdapter(destConn?.type);
-
-      let enqueued = 0;
-      if (!isCdc) {
-        for (const evt of failedEvents) {
-          try {
-            await enqueueWebhookProcess({
-              flowId: evt.flowId.toString(),
-              eventId: evt.eventId,
-            });
-            enqueued++;
-          } catch {
-            logger.warn("Failed to enqueue event during retry-all", {
-              eventId: evt.eventId,
-            });
-          }
-        }
-      }
-
+      // All webhook flows are CDC: the scheduler cron re-ingests pending events.
       return c.json({
         success: true,
         data: {
           retried: failedEvents.length,
           total: failedEvents.length,
-          enqueued,
         },
       });
     } catch (error) {
