@@ -471,12 +471,12 @@ export function WebhookFlowForm({
       setPendingLayoutReset({ data, entities: changedEntities });
       return;
     }
-    await executeSave(data, { resetTables: false });
+    await executeSave(data, {});
   };
 
   const executeSave = async (
     data: FormData,
-    opts: { resetTables: boolean },
+    opts: { resetEntities?: string[] },
   ) => {
     if (!currentWorkspace?.id) {
       setError("No workspace selected");
@@ -609,11 +609,12 @@ export function WebhookFlowForm({
         }
 
         // A partition/cluster layout change only takes effect on freshly
-        // created tables, so recreate the destination tables (drop + full
-        // re-backfill) immediately after persisting the new layout.
-        if (opts.resetTables) {
+        // created tables, so recreate ONLY the changed entities' tables (drop +
+        // subset re-backfill) immediately after persisting the new layout.
+        if (opts.resetEntities && opts.resetEntities.length > 0) {
           await resyncCdcFlow(currentWorkspace.id, currentFlowId, {
             deleteDestination: true,
+            entities: opts.resetEntities,
           });
         }
 
@@ -756,8 +757,9 @@ export function WebhookFlowForm({
             existing table(s) must be dropped and rebuilt for the change to take
             effect.
             <Alert severity="warning" sx={{ mt: 2 }}>
-              Saving will delete the affected destination table(s) and trigger a
-              full re-sync (backfill) from scratch. This cannot be undone.
+              Saving will delete only those destination table(s) and re-sync
+              (backfill) just those entities from scratch. Other entities are
+              unaffected. This cannot be undone.
             </Alert>
           </DialogContentText>
         </DialogContent>
@@ -776,7 +778,9 @@ export function WebhookFlowForm({
               const pending = pendingLayoutReset;
               if (!pending) return;
               setPendingLayoutReset(null);
-              await executeSave(pending.data, { resetTables: true });
+              await executeSave(pending.data, {
+                resetEntities: pending.entities,
+              });
             }}
           >
             {isSubmitting ? "Resetting..." : "Save & reset tables"}

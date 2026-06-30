@@ -2718,6 +2718,26 @@ flowRoutes.openapi(
       );
       if (authorizationError) return authorizationError;
       const body = await c.req.json().catch(() => ({}));
+      const entities = Array.isArray(body.entities)
+        ? (body.entities as unknown[]).filter(
+            (e): e is string => typeof e === "string" && e.length > 0,
+          )
+        : [];
+
+      if (entities.length > 0) {
+        // Scoped resync: only recreate/re-backfill the listed entities.
+        await cdcBackfillService.resyncEntities({
+          workspaceId,
+          flowId,
+          entities,
+          deleteDestination: Boolean(body.deleteDestination),
+        });
+        return c.json({
+          success: true,
+          message: `CDC resync started for ${entities.length} entit${entities.length === 1 ? "y" : "ies"}`,
+        });
+      }
+
       await cdcBackfillService.resyncFlow({
         workspaceId,
         flowId,
