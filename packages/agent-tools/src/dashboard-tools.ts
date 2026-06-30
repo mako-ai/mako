@@ -208,6 +208,16 @@ const createDataSourceSchema = z.object({
     .number()
     .optional()
     .describe("Optional row limit for materialization"),
+  materialization: z
+    .enum(["live", "parquet"])
+    .default("parquet")
+    .describe(
+      "'parquet' (default) materializes the query to a cached artifact loaded " +
+        "into DuckDB — fast for aggregation and served to public shares. " +
+        "'live' streams the query server-side into DuckDB on every dashboard " +
+        "load (always fresh, not shown in anonymous public shares). Mirrors " +
+        "app data binding materialization.",
+    ),
 });
 
 const updateDataSourceQuerySchema = z.object({
@@ -236,6 +246,13 @@ const updateDataSourceQuerySchema = z.object({
   databaseName: z.string().optional().describe("Updated database name"),
   timeDimension: z.string().optional().describe("Updated default time column"),
   rowLimit: z.number().optional().describe("Updated row limit"),
+  materialization: z
+    .enum(["live", "parquet"])
+    .optional()
+    .describe(
+      "Switch this data source between 'live' (stream on every load) and " +
+        "'parquet' (cached materialized artifact).",
+    ),
   startLine: z
     .number()
     .optional()

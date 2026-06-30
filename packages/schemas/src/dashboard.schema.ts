@@ -38,6 +38,22 @@ export const DashboardDataSourceOriginSchema = z.object({
   importedAt: z.string().optional(),
 });
 
+/**
+ * How a dashboard data source's data reaches the widgets — mirrors app data
+ * bindings:
+ * - `parquet` (default): the query is materialized to a Parquet artifact and
+ *   loaded into DuckDB-WASM. Fast for aggregation; served to public shares.
+ * - `live`: the query is streamed server-side into the DuckDB table on every
+ *   load (no cache). Always fresh; not available in anonymous public shares.
+ */
+export const DashboardDataSourceMaterializationSchema = z.enum([
+  "live",
+  "parquet",
+]);
+export type DashboardDataSourceMaterialization = z.infer<
+  typeof DashboardDataSourceMaterializationSchema
+>;
+
 export const DashboardMaterializationScheduleSchema = z.object({
   enabled: z.boolean(),
   cron: z.string().nullable(),
@@ -53,6 +69,7 @@ export const DashboardDataSourceSchema = z.object({
   origin: DashboardDataSourceOriginSchema.optional(),
   timeDimension: z.string().optional(),
   rowLimit: z.number().optional(),
+  materialization: DashboardDataSourceMaterializationSchema.default("parquet"),
   cache: z
     .object({
       lastRefreshedAt: z.string().optional(),

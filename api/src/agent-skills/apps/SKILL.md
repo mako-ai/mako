@@ -84,6 +84,15 @@ errors); `open_app` just focuses a UI tab.
    Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
    live useQuery for small, always-fresh lookups.
 
+   **Scheduled refresh:** a parquet binding can auto-refresh on a cron — set
+   `materializationSchedule` when creating it, or call `app_set_binding_schedule`
+   (e.g. `{ enabled: true, cron: "0 * * * *" }` for hourly, `"0 0 * * *"` for
+   daily) on an existing one. This mirrors dashboard data-source schedules. Only
+   parquet bindings can be scheduled (live bindings always run fresh). Scheduled
+   refresh runs in production; in local dev trigger a build with
+   `materialize_binding`. An explicit `materialize_binding` always rebuilds from
+   current upstream data (it force-refreshes past the query-definition cache).
+
    **Result row cap:** rows delivered to the app are capped per query/binding read
    (default 500,000 — the bridge into the sandboxed iframe). Both hooks return
    `truncated: true` when rows beyond the cap were dropped, and `useDuckDB` also

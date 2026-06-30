@@ -134,6 +134,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_remove_dependency",
   "app_create_data_binding",
   "app_delete_data_binding",
+  "app_set_binding_schedule",
   "app_save_version",
   "app_restore_version",
   "materialize_binding",

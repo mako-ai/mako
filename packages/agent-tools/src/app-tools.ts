@@ -59,6 +59,31 @@ export const removeDependencySchema = z.object({
   name: z.string().describe("npm package name to remove"),
 });
 
+/**
+ * Per-binding materialization schedule. Mirrors
+ * `AppBindingMaterializationScheduleSchema` in `@mako/schemas`; kept as a local
+ * zod object so the agent-tools package stays dependency-light.
+ */
+export const bindingMaterializationScheduleSchema = z.object({
+  enabled: z.boolean().describe("Whether scheduled auto-refresh is enabled"),
+  cron: z
+    .string()
+    .nullable()
+    .describe(
+      "5-field cron expression (e.g. '0 * * * *' = hourly, '0 0 * * *' = " +
+        "daily). Required when enabled; pass null when disabled.",
+    ),
+  timezone: z
+    .string()
+    .optional()
+    .describe("IANA timezone for the cron (defaults to UTC)"),
+  dataFreshnessTtlMs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("Optional freshness window in ms used for staleness badges"),
+});
+
 export const createDataBindingSchema = z.object({
   appId: appIdField,
   name: z
@@ -80,6 +105,14 @@ export const createDataBindingSchema = z.object({
         "enabling fast client-side analytical SQL via useDuckDB(sql). " +
         "Use 'parquet' for analytics/aggregation over larger result sets; after " +
         "creating a parquet binding, call materialize_binding to build it.",
+    ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Optional cron schedule that auto-refreshes a 'parquet' binding. Only " +
+        "applies when materialization is 'parquet' (ignored/disabled for " +
+        "'live'). You can also set or change this later with " +
+        "app_set_binding_schedule.",
     ),
 });
 
@@ -129,6 +162,33 @@ export const createAppSchema = z.object({
 export const getAppStateSchema = z.object({ appId: appIdField });
 
 export { readFileSchema as appReadFileSchema };
+
+export const setBindingScheduleSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe(
+      "Name of the parquet binding to schedule (from list_data_sources)",
+    ),
+  enabled: z.boolean().describe("Turn the scheduled auto-refresh on or off"),
+  cron: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "5-field cron expression. Required when enabling. E.g. '0 * * * *' = " +
+        "hourly, '0 */6 * * *' = every 6h, '0 0 * * *' = daily.",
+    ),
+  timezone: z
+    .string()
+    .optional()
+    .describe("IANA timezone for the cron (defaults to UTC)"),
+  dataFreshnessTtlMs: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("Optional freshness window in ms used for staleness badges"),
+});
 
 export const materializeBindingSchema = z.object({
   appId: appIdField,

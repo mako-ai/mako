@@ -74,6 +74,8 @@ export {
   getAppStateSchema,
   appReadFileSchema,
   materializeBindingSchema,
+  setBindingScheduleSchema,
+  bindingMaterializationScheduleSchema,
 } from "./app-tools";
 export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
 

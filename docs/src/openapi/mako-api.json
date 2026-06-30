@@ -229,6 +229,14 @@
                 "tableRef": {
                   "type": "string"
                 },
+                "materialization": {
+                  "type": "string",
+                  "enum": [
+                    "live",
+                    "parquet"
+                  ],
+                  "default": "parquet"
+                },
                 "query": {
                   "type": "object",
                   "properties": {

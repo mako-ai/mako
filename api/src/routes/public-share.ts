@@ -190,6 +190,27 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
   const dataSources = await Promise.all(
     ((def.dataSources as Array<Record<string, any>>) || []).map(async ds => {
       const liveDs = liveDsById.get(String(ds.id)) ?? ds;
+      const materialization =
+        (liveDs as { materialization?: string }).materialization === "live"
+          ? "live"
+          : "parquet";
+      // Live data sources execute server-side per viewer; anonymous public
+      // viewers never get live execution, so expose them as not-ready with no
+      // artifact (mirrors the public app viewer refusing live bindings).
+      if (materialization === "live") {
+        return {
+          id: ds.id,
+          name: ds.name,
+          tableRef: ds.tableRef,
+          timeDimension: ds.timeDimension,
+          computedColumns: ds.computedColumns,
+          materialization,
+          ready: false,
+          rowCount: null,
+          materializedAt: null,
+          artifactUrl: null,
+        };
+      }
       const status = await buildDataSourceMaterializationStatus({
         workspaceId,
         dashboardId,
@@ -202,6 +223,7 @@ async function buildDashboardContent(token: string, dashboard: IDashboard) {
         tableRef: ds.tableRef,
         timeDimension: ds.timeDimension,
         computedColumns: ds.computedColumns,
+        materialization,
         ready,
         rowCount: status.rowCount,
         materializedAt: status.builtAt || status.lastMaterializedAt,
@@ -599,6 +621,21 @@ app.openapi(
             {
               success: false,
               error: "No materialized app data sources to refresh",
+            },
+            400,
+          );
+        }
+      } else if (resource.type === "dashboard") {
+        const dashboardDoc = resource.doc;
+        if (
+          !(dashboardDoc.dataSources || []).some(
+            ds => ds.materialization !== "live",
+          )
+        ) {
+          return c.json(
+            {
+              success: false,
+              error: "No materialized dashboard data sources to refresh",
             },
             400,
           );

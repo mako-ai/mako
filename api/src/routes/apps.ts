@@ -26,9 +26,14 @@ import { AppDefinitionSchema, normalizeAppFiles } from "@mako/schemas";
 import {
   queueAppBindingMaterialization,
   buildAppBindingMaterializationStatus,
+  buildAppBindingDefinitionHash,
   hydrateAppBindingUrls,
   getBindingArtifactInfo,
 } from "../services/app-binding-materialization.service";
+import {
+  validateDashboardMaterializationSchedule,
+  isDashboardMaterializationEnabled,
+} from "../services/dashboard-materialization-schedule.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
 import {
   buildAppSnapshot,
@@ -362,6 +367,30 @@ app.openapi(
       if (!bindingCheck.ok) {
         return c.json({ success: false, error: bindingCheck.error }, 400);
       }
+      // Validate each binding's materialization schedule cron (parity with the
+      // dashboard create path), normalizing live bindings to a disabled schedule.
+      try {
+        for (const binding of def.dataBindings) {
+          if (!binding.materializationSchedule) continue;
+          binding.materializationSchedule =
+            validateDashboardMaterializationSchedule(
+              binding.materialization === "parquet"
+                ? binding.materializationSchedule
+                : { ...binding.materializationSchedule, enabled: false },
+            );
+        }
+      } catch (error) {
+        return c.json(
+          {
+            success: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : "Invalid materialization schedule",
+          },
+          400,
+        );
+      }
 
       const created = await MakoApp.create({
         workspaceId: new Types.ObjectId(workspaceId),
@@ -484,6 +513,12 @@ app.openapi(
 
       const body = (await c.req.json()) as Record<string, unknown>;
 
+      // Snapshot of bindings before the update, keyed by id — used after save
+      // to detect which scheduled parquet bindings changed definition so we
+      // can proactively rebuild them (parity with dashboard auto-refresh).
+      let priorBindingsById: Map<string, IMakoApp["dataBindings"][number]> | null =
+        null;
+
       if (typeof body.title === "string" && body.title.trim()) {
         doc.title = body.title.trim();
       }
@@ -516,22 +551,51 @@ app.openapi(
         // Cache is server-owned: preserve the existing materialized cache by id;
         // never trust client-provided cache. Take only the query definition.
         const existingById = new Map(doc.dataBindings.map(b => [b.id, b]));
-        doc.dataBindings = bindings.map(b => {
-          const id = b.id || nanoid(10);
-          const prior = existingById.get(id);
-          return {
-            id,
-            name: b.name,
-            connectionId: b.connectionId,
-            language: b.language || "sql",
-            code: b.code ?? "",
-            databaseId: b.databaseId,
-            databaseName: b.databaseName,
-            materialization:
-              b.materialization === "parquet" ? "parquet" : "live",
-            cache: prior?.cache,
-          };
-        }) as IMakoApp["dataBindings"];
+        priorBindingsById = existingById;
+        try {
+          doc.dataBindings = bindings.map(b => {
+            const id = b.id || nanoid(10);
+            const prior = existingById.get(id);
+            const materialization =
+              b.materialization === "parquet" ? "parquet" : "live";
+            // Validate + persist the per-binding schedule (mirrors how
+            // dashboards validate `materializationSchedule` on save). Only
+            // parquet bindings can be scheduled, so a live binding keeps any
+            // prior schedule but is forced disabled.
+            const rawSchedule =
+              b.materializationSchedule ?? prior?.materializationSchedule;
+            const materializationSchedule = rawSchedule
+              ? validateDashboardMaterializationSchedule(
+                  materialization === "parquet"
+                    ? rawSchedule
+                    : { ...rawSchedule, enabled: false },
+                )
+              : undefined;
+            return {
+              id,
+              name: b.name,
+              connectionId: b.connectionId,
+              language: b.language || "sql",
+              code: b.code ?? "",
+              databaseId: b.databaseId,
+              databaseName: b.databaseName,
+              materialization,
+              materializationSchedule,
+              cache: prior?.cache,
+            };
+          }) as IMakoApp["dataBindings"];
+        } catch (error) {
+          return c.json(
+            {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Invalid materialization schedule",
+            },
+            400,
+          );
+        }
       }
       const wantsAccessChange =
         (body.access === "private" || body.access === "workspace") &&
@@ -559,6 +623,32 @@ app.openapi(
 
       doc.version += 1;
       await doc.save();
+
+      // Mechanism parity with dashboards: when a scheduled parquet binding's
+      // query definition changes, proactively rebuild its artifact so the
+      // materialized data stays in sync without a manual materialize. Gated on
+      // the binding's own schedule being enabled (apps schedule per-binding).
+      if (priorBindingsById) {
+        for (const binding of doc.dataBindings) {
+          if (binding.materialization !== "parquet") continue;
+          if (!isDashboardMaterializationEnabled(binding.materializationSchedule)) {
+            continue;
+          }
+          const prior = priorBindingsById.get(binding.id);
+          const changed =
+            !prior ||
+            buildAppBindingDefinitionHash(prior) !==
+              buildAppBindingDefinitionHash(binding);
+          if (changed) {
+            void queueAppBindingMaterialization({
+              workspaceId,
+              appId: id,
+              bindingId: binding.id,
+              force: true,
+            }).catch(() => undefined);
+          }
+        }
+      }
 
       return c.json({ success: true, app: serializeApp(doc) });
     } catch (error) {

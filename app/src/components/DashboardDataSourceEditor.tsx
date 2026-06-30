@@ -2,21 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Box,
   Typography,
-  Button,
-  Chip,
+  ToggleButtonGroup,
+  ToggleButton,
   Tooltip,
-  IconButton,
-  Popover,
-  Divider,
 } from "@mui/material";
-import {
-  Database as MaterializeIcon,
-  CalendarClock as ScheduleIcon,
-  History as HistoryIcon,
-  Eye as PreviewIcon,
-  CheckCircle2 as SuccessIcon,
-  XCircle as ErrorIcon,
-} from "lucide-react";
+import { Info as InfoIcon } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useWorkspace } from "../contexts/workspace-context";
 import {
@@ -28,7 +18,9 @@ import { previewParquetArtifact } from "../lib/parquet-preview";
 import Console from "./Console";
 import ResultsTable from "./ResultsTable";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
-import MaterializationScheduleControls from "./MaterializationScheduleControls";
+import DataSourceMaterializationControls, {
+  type MaterializationHistoryItem,
+} from "./DataSourceMaterializationControls";
 import type { MaterializationScheduleValue } from "../lib/materializationSchedule";
 
 interface PreviewResult {
@@ -84,10 +76,6 @@ export default function DashboardDataSourceEditor({
   const [running, setRunning] = useState(false);
   const [materializing, setMaterializing] = useState(false);
   const [previewingSnapshot, setPreviewingSnapshot] = useState(false);
-  const [historyAnchor, setHistoryAnchor] = useState<HTMLElement | null>(null);
-  const [scheduleAnchor, setScheduleAnchor] = useState<HTMLElement | null>(
-    null,
-  );
   const [historyRuns, setHistoryRuns] = useState<MaterializationRunRecord[]>(
     [],
   );
@@ -250,19 +238,15 @@ export default function DashboardDataSourceEditor({
     }
   }, [workspaceId, dashboardId, dataSourceId, cache]);
 
-  const openHistory = useCallback(
-    async (anchor: HTMLElement) => {
-      setHistoryAnchor(anchor);
-      if (!workspaceId) return;
-      const runs = await fetchMaterializationRuns(
-        workspaceId,
-        dashboardId,
-        dataSourceId,
-      );
-      setHistoryRuns(runs);
-    },
-    [workspaceId, dashboardId, dataSourceId, fetchMaterializationRuns],
-  );
+  const loadHistory = useCallback(async () => {
+    if (!workspaceId) return;
+    const runs = await fetchMaterializationRuns(
+      workspaceId,
+      dashboardId,
+      dataSourceId,
+    );
+    setHistoryRuns(runs);
+  }, [workspaceId, dashboardId, dataSourceId, fetchMaterializationRuns]);
 
   if (!dashboard) {
     return (
@@ -281,65 +265,97 @@ export default function DashboardDataSourceEditor({
     );
   }
 
-  const headerExtras = (
-    <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, ml: 1 }}>
-      <Button
+  const historyItems: MaterializationHistoryItem[] = historyRuns.map(run => {
+    const finishedAt = run.finishedAt ? new Date(run.finishedAt) : null;
+    const startedAt = run.startedAt
+      ? new Date(run.startedAt)
+      : new Date(run.requestedAt);
+    const durationMs =
+      finishedAt && startedAt
+        ? finishedAt.getTime() - startedAt.getTime()
+        : null;
+    return {
+      id: run.runId,
+      status: run.status === "ready" ? "ready" : "error",
+      at: run.requestedAt,
+      rowCount: run.rowCount ?? null,
+      durationMs,
+      error: run.error ?? null,
+    };
+  });
+
+  const isParquet = (dataSource.materialization ?? "parquet") === "parquet";
+
+  const leadingControls = (
+    <>
+      <Typography variant="caption" color="text.secondary">
+        Data
+      </Typography>
+      <ToggleButtonGroup
         size="small"
-        variant="outlined"
-        startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
-        onClick={() => void handleMaterialize()}
-        disabled={materializing}
+        exclusive
+        value={dataSource.materialization ?? "parquet"}
+        disabled={dashboard.readOnly}
+        onChange={(_e, value) => {
+          if (value && workspaceId) {
+            updateDataSource(dashboardId, dataSourceId, {
+              materialization: value,
+            });
+            void saveDashboard(workspaceId, dashboardId);
+          }
+        }}
       >
-        {materializing ? "Materializing…" : "Materialize"}
-      </Button>
-      {cache?.parquetBuildStatus && (
-        <Chip
-          size="small"
-          variant="outlined"
-          color={
-            cache.parquetBuildStatus === "ready"
-              ? "success"
-              : cache.parquetBuildStatus === "error"
-                ? "error"
-                : "default"
-          }
-          label={
-            cache.parquetBuildStatus === "ready" && cache.rowCount != null
-              ? `${cache.rowCount.toLocaleString()} rows`
-              : cache.parquetBuildStatus
-          }
+        <ToggleButton value="live">Live</ToggleButton>
+        <ToggleButton value="parquet">Materialized</ToggleButton>
+      </ToggleButtonGroup>
+      <Tooltip
+        title={
+          <Box sx={{ p: 0.5 }}>
+            <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
+              <b>Live</b> — the query streams from the connection each time the
+              dashboard loads. Always fresh; not shown in public shares.
+            </Typography>
+            <Typography variant="caption" display="block">
+              <b>Materialized</b> — the query is snapshotted to a Parquet file
+              and loaded into DuckDB, so widgets render fast and public viewers
+              get a cached snapshot. Click <b>Materialize</b> to build/refresh.
+            </Typography>
+          </Box>
+        }
+      >
+        <InfoIcon
+          size={15}
+          strokeWidth={1.5}
+          style={{ opacity: 0.6, cursor: "help" }}
         />
-      )}
-      {cache?.parquetBuildStatus === "ready" && (
-        <Tooltip title="Preview the materialized data">
-          <span>
-            <IconButton
-              size="small"
-              onClick={() => void handlePreviewSnapshot()}
-              disabled={previewingSnapshot}
-            >
-              <PreviewIcon size={18} strokeWidth={1.5} />
-            </IconButton>
-          </span>
-        </Tooltip>
-      )}
-      <Tooltip title="Materialization schedule">
-        <IconButton
-          size="small"
-          onClick={e => setScheduleAnchor(e.currentTarget)}
-        >
-          <ScheduleIcon size={18} strokeWidth={1.5} />
-        </IconButton>
       </Tooltip>
-      <Tooltip title="Materialization history">
-        <IconButton
-          size="small"
-          onClick={e => void openHistory(e.currentTarget)}
-        >
-          <HistoryIcon size={18} strokeWidth={1.5} />
-        </IconButton>
-      </Tooltip>
-    </Box>
+    </>
+  );
+
+  const headerExtras = (
+    <DataSourceMaterializationControls
+      leadingControls={leadingControls}
+      showMaterializeControls={isParquet}
+      buildStatus={cache?.parquetBuildStatus ?? null}
+      rowCount={cache?.rowCount ?? null}
+      builtAtMs={
+        cache?.parquetBuiltAt ? Date.parse(cache.parquetBuiltAt) : null
+      }
+      dataFreshnessTtlMs={
+        dashboard.materializationSchedule?.dataFreshnessTtlMs ?? null
+      }
+      onMaterialize={() => void handleMaterialize()}
+      materializing={materializing}
+      canPreview={cache?.parquetBuildStatus === "ready"}
+      onPreviewSnapshot={() => void handlePreviewSnapshot()}
+      previewing={previewingSnapshot}
+      schedule={dashboard.materializationSchedule}
+      onScheduleChange={handleScheduleChange}
+      scheduleDisabled={dashboard.readOnly}
+      scheduleCaption="Dashboard schedules apply to every materialized data source in this dashboard."
+      history={historyItems}
+      onOpenHistory={loadHistory}
+    />
   );
 
   return (
@@ -394,103 +410,6 @@ export default function DashboardDataSourceEditor({
           </Panel>
         </PanelGroup>
       </Box>
-
-      {/* Materialization history */}
-      <Popover
-        open={Boolean(historyAnchor)}
-        anchorEl={historyAnchor}
-        onClose={() => setHistoryAnchor(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        <Box sx={{ p: 1.5, minWidth: 320, maxWidth: 460 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            Materialization history
-          </Typography>
-          {historyRuns.length === 0 ? (
-            <Typography variant="caption" color="text.secondary">
-              No runs yet.
-            </Typography>
-          ) : (
-            historyRuns.map((run, i) => {
-              const finishedAt = run.finishedAt
-                ? new Date(run.finishedAt)
-                : null;
-              const startedAt = run.startedAt
-                ? new Date(run.startedAt)
-                : new Date(run.requestedAt);
-              const durationMs =
-                finishedAt && startedAt
-                  ? finishedAt.getTime() - startedAt.getTime()
-                  : null;
-              return (
-                <Box key={run.runId}>
-                  {i > 0 && <Divider sx={{ my: 0.5 }} />}
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                    {run.status === "ready" ? (
-                      <SuccessIcon
-                        size={16}
-                        strokeWidth={1.5}
-                        style={{
-                          color: "var(--mui-palette-success-main, green)",
-                        }}
-                      />
-                    ) : (
-                      <ErrorIcon
-                        size={16}
-                        strokeWidth={1.5}
-                        style={{
-                          color: "var(--mui-palette-error-main, crimson)",
-                        }}
-                      />
-                    )}
-                    <Typography variant="caption" sx={{ flex: 1 }}>
-                      {new Date(run.requestedAt).toLocaleString()}
-                    </Typography>
-                    {run.status === "ready" && run.rowCount != null && (
-                      <Typography variant="caption" color="text.secondary">
-                        {run.rowCount.toLocaleString()} rows
-                      </Typography>
-                    )}
-                    {durationMs != null && durationMs >= 0 && (
-                      <Typography variant="caption" color="text.secondary">
-                        {(durationMs / 1000).toFixed(1)}s
-                      </Typography>
-                    )}
-                  </Box>
-                  {run.error && (
-                    <Typography
-                      variant="caption"
-                      color="error"
-                      sx={{ display: "block", pl: 3, whiteSpace: "pre-wrap" }}
-                    >
-                      {run.error}
-                    </Typography>
-                  )}
-                </Box>
-              );
-            })
-          )}
-        </Box>
-      </Popover>
-
-      <Popover
-        open={Boolean(scheduleAnchor)}
-        anchorEl={scheduleAnchor}
-        onClose={() => setScheduleAnchor(null)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        <Box sx={{ p: 1.5, width: 360 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            Materialization settings
-          </Typography>
-          <MaterializationScheduleControls
-            value={dashboard.materializationSchedule}
-            onChange={handleScheduleChange}
-            disabled={dashboard.readOnly}
-            caption="Dashboard schedules apply to every data source in this dashboard."
-          />
-        </Box>
-      </Popover>
     </Box>
   );
 }

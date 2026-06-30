@@ -3274,6 +3274,11 @@ export interface IDashboardDataSource {
   origin?: IDashboardDataSourceOrigin;
   timeDimension?: string;
   rowLimit?: number;
+  /**
+   * How the data reaches widgets. `parquet` (default) materializes to a cached
+   * artifact; `live` streams the query server-side into DuckDB on every load.
+   */
+  materialization: "live" | "parquet";
   computedColumns?: Array<{
     name: string;
     expression: string;
@@ -3357,6 +3362,11 @@ const DashboardSchema = new Schema<IDashboard>(
         },
         timeDimension: { type: String },
         rowLimit: { type: Number },
+        materialization: {
+          type: String,
+          enum: ["live", "parquet"],
+          default: "parquet",
+        },
         computedColumns: [
           {
             name: { type: String, required: true },

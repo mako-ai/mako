@@ -483,6 +483,7 @@ export async function executeDashboardAgentTool(
             : undefined,
         rowLimit:
           typeof input.rowLimit === "number" ? input.rowLimit : undefined,
+        materialization: input.materialization === "live" ? "live" : "parquet",
         dashboardId: ctx.dashboardId,
         query: {
           connectionId: input.connectionId,
@@ -632,6 +633,11 @@ export async function executeDashboardAgentTool(
             typeof input.rowLimit === "number"
               ? input.rowLimit
               : existing.rowLimit,
+          materialization:
+            input.materialization === "live" ||
+            input.materialization === "parquet"
+              ? input.materialization
+              : existing.materialization,
           query: {
             ...existing.query,
             connectionId:

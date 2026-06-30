@@ -35,6 +35,10 @@ function hashString(value: string): string {
   return String(hash >>> 0);
 }
 
+function isLiveDataSource(dataSource: DashboardDataSource): boolean {
+  return dataSource.materialization === "live";
+}
+
 function buildDataSourceDefinitionVersion(
   dataSource: DashboardDataSource,
 ): string {
@@ -43,6 +47,8 @@ function buildDataSourceDefinitionVersion(
     rowLimit: dataSource.rowLimit ?? null,
     query: dataSource.query,
     computedColumns: dataSource.computedColumns ?? [],
+    // Toggling live<->parquet must invalidate any cached DuckDB load.
+    materialization: dataSource.materialization ?? "parquet",
   };
   return hashString(JSON.stringify(payload));
 }
@@ -73,7 +79,13 @@ type DashboardRuntimeContext = "builder" | "viewer";
 
 export function resolveActiveSource(options: {
   skipParquet: boolean;
+  dataSource?: DashboardDataSource;
 }): DashboardDataSourceActiveSource {
+  // A persistent live data source streams the query on every load, distinct
+  // from a draft edit-preview stream of an otherwise-materialized source.
+  if (options.dataSource && isLiveDataSource(options.dataSource)) {
+    return "live_stream";
+  }
   if (options.skipParquet) {
     return "draft_stream";
   }
@@ -109,6 +121,9 @@ export function buildDataSourceLoadVersion(options: {
 }): string {
   const definitionHash = buildDataSourceDefinitionVersion(options.dataSource);
   const activeSource = resolveActiveSource(options);
+  if (activeSource === "live_stream") {
+    return `live:${definitionHash}`;
+  }
   if (activeSource === "draft_stream") {
     return `draft:${definitionHash}`;
   }
@@ -528,7 +543,11 @@ async function loadDashboardDataSourceWithFallback(options: {
       return {
         rowCount: totalRows ?? loadedRowCount,
         loadPath: "arrow_stream",
-        activeSource: skipParquet ? "draft_stream" : "live_stream",
+        activeSource: isLiveDataSource(dataSource)
+          ? "live_stream"
+          : skipParquet
+            ? "draft_stream"
+            : "live_stream",
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -630,7 +649,11 @@ async function loadDashboardDataSourceWithFallback(options: {
         },
       ),
       loadPath: "ndjson_stream",
-      activeSource: skipParquet ? "draft_stream" : "live_stream",
+      activeSource: isLiveDataSource(dataSource)
+        ? "live_stream"
+        : skipParquet
+          ? "draft_stream"
+          : "live_stream",
     };
   };
 
@@ -848,16 +871,21 @@ export async function materializeDashboardDataSource(options: {
     dataSource,
     force = false,
     runtimeContext = "builder",
-    skipParquet = false,
     signal,
   } = options;
+  // Live data sources always stream the query server-side (there is no
+  // artifact), exactly like the draft-preview stream path. Parquet sources use
+  // the published artifact unless the caller explicitly requests a draft stream
+  // (e.g. an edit-mode preview before the artifact is rebuilt).
+  const skipParquet =
+    options.skipParquet === true || isLiveDataSource(dataSource);
   const session = await ensureDashboardSession(dashboard._id);
   const runtimeStore = useDashboardRuntimeStore.getState();
   const loadVersion = buildDataSourceLoadVersion({
     dataSource,
     skipParquet,
   });
-  const requestedSource = resolveActiveSource({ skipParquet });
+  const requestedSource = resolveActiveSource({ skipParquet, dataSource });
   const cachedVersion = session.dataSourceVersions.get(dataSource.id);
   const cache = (dataSource.cache || {}) as {
     definitionHash?: string;

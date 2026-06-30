@@ -89,6 +89,7 @@ const DashboardDataSourceSchema = z.object({
   id: z.string(),
   name: z.string(),
   tableRef: z.string(),
+  materialization: z.enum(["live", "parquet"]).default("parquet"),
   query: DashboardQuerySchema,
   origin: z
     .object({
@@ -442,6 +443,7 @@ async function normalizeDashboardDataSources(
             : undefined,
           timeDimension: ds.timeDimension,
           rowLimit: ds.rowLimit,
+          materialization: ds.materialization === "live" ? "live" : "parquet",
           computedColumns: ds.computedColumns || [],
           cache: existingCacheById.get(String(id)),
         };

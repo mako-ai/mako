@@ -38,8 +38,10 @@ import {
   getAppStateSchema,
   appReadFileSchema,
   materializeBindingSchema,
+  setBindingScheduleSchema,
 } from "@mako/agent-tools";
 import { normalizeAppFiles, createAppScaffold } from "@mako/schemas";
+import { validateDashboardMaterializationSchedule } from "../../services/dashboard-materialization-schedule.service";
 import {
   MakoApp,
   DatabaseConnection,
@@ -549,6 +551,26 @@ export function createServerAppTools({
           if (!connCheck.ok) return { success: false, error: connCheck.error };
           const materialization =
             input.materialization === "parquet" ? "parquet" : "live";
+          // Validate the optional schedule (cron) the same way the HTTP routes
+          // do. Live bindings can't be scheduled, so force it disabled.
+          let materializationSchedule;
+          if (input.materializationSchedule) {
+            try {
+              materializationSchedule = validateDashboardMaterializationSchedule(
+                materialization === "parquet"
+                  ? input.materializationSchedule
+                  : { ...input.materializationSchedule, enabled: false },
+              );
+            } catch (error) {
+              return {
+                success: false,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid materialization schedule",
+              };
+            }
+          }
           const created = {
             id: nanoid(10),
             name: input.name,
@@ -558,6 +580,7 @@ export function createServerAppTools({
             databaseId: input.databaseId,
             databaseName: input.databaseName,
             materialization,
+            materializationSchedule,
             cache: undefined,
           };
           // Replace any existing binding with the same name (mirrors the client
@@ -575,6 +598,64 @@ export function createServerAppTools({
               materialization === "parquet"
                 ? `Call materialize_binding for "${created.name}", then read it with useQuery("${created.name}") or run analytics with useDuckDB(sql) from '@mako/app-sdk'.`
                 : `Read it in app code with useQuery("${created.name}") from '@mako/app-sdk'.`,
+          };
+        }),
+    }),
+
+    app_set_binding_schedule: tool({
+      description:
+        "Set or clear the materialization schedule on an existing 'parquet' " +
+        "data binding so its artifact auto-refreshes on a cron. Use this when " +
+        "the user wants a data source to refresh periodically (e.g. hourly or " +
+        "daily) instead of only on demand. Pass enabled:false to turn the " +
+        "schedule off. The binding must be 'parquet' (live bindings always run " +
+        "fresh and can't be scheduled). Confirm the name with list_data_sources.",
+      inputSchema: setBindingScheduleSchema,
+      execute: async ({ appId, name, enabled, cron, timezone, dataFreshnessTtlMs }) =>
+        wrap("app_set_binding_schedule", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(appId);
+          const binding = (doc.dataBindings ?? []).find(b => b.name === name);
+          if (!binding) {
+            return { success: false, error: `No data binding named "${name}"` };
+          }
+          if (binding.materialization !== "parquet") {
+            return {
+              success: false,
+              error:
+                `Binding "${name}" is 'live'. Switch it to 'parquet' ` +
+                "materialization before scheduling refreshes.",
+            };
+          }
+          let schedule;
+          try {
+            schedule = validateDashboardMaterializationSchedule({
+              enabled,
+              cron: cron ?? null,
+              timezone,
+              dataFreshnessTtlMs,
+            });
+          } catch (error) {
+            return {
+              success: false,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Invalid materialization schedule",
+            };
+          }
+          binding.materializationSchedule = schedule;
+          doc.markModified("dataBindings");
+          const version = await saveAndPublish(doc);
+          return {
+            success: true,
+            binding: { name, materializationSchedule: schedule },
+            version,
+            hint: schedule.enabled
+              ? `"${name}" will auto-refresh on schedule (${schedule.cron}, ${schedule.timezone}). Scheduled refresh runs in production; in local dev trigger it with materialize_binding.`
+              : `Scheduled refresh for "${name}" is now off.`,
           };
         }),
     }),

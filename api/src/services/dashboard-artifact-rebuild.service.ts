@@ -130,8 +130,11 @@ export async function rebuildDashboardArtifacts(
       `Dashboard ${input.dashboardId} does not belong to workspace ${input.workspaceId}`,
     );
   }
-  const filteredDataSources = dashboard.dataSources.filter(ds =>
-    input.dataSourceIds?.length ? input.dataSourceIds.includes(ds.id) : true,
+  const filteredDataSources = dashboard.dataSources.filter(
+    ds =>
+      // Live sources stream on read and have no artifact to build.
+      ds.materialization !== "live" &&
+      (input.dataSourceIds?.length ? input.dataSourceIds.includes(ds.id) : true),
   );
 
   const results: RebuildDashboardArtifactsResult["results"] = [];
