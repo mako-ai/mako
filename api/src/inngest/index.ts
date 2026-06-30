@@ -22,6 +22,7 @@ import {
   appBindingSchedulerFunction,
 } from "./functions/app-binding-materialize";
 import { syncBackfillEntityFunction } from "./functions/sync-entity";
+import { cdcRepartitionFunction } from "./functions/cdc-repartition";
 import { usageReportingFunction } from "./functions/usage-reporting";
 import { modelCatalogRefreshFunction } from "./functions/model-catalog-refresh";
 import {
@@ -46,6 +47,7 @@ const baseFunctions = [
   cancelFlowFunction,
   cleanupAbandonedFlowsFunction,
   syncBackfillEntityFunction,
+  cdcRepartitionFunction,
   dashboardRefreshFunction,
   cleanupAbandonedMaterializationRunsFunction,
   appBindingMaterializeFunction,
