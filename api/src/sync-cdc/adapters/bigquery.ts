@@ -397,6 +397,62 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
   }
 
+  private partitionClauseFor(layout: CdcEntityLayout): string {
+    if (!layout.partitioning?.field) return "";
+    const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
+    return `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
+  }
+
+  private clusterClauseFor(layout: CdcEntityLayout): string {
+    if (!layout.clustering?.fields?.length) return "";
+    return `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
+  }
+
+  async repartitionLiveTable(
+    layout: CdcEntityLayout,
+  ): Promise<{ repartitioned: boolean }> {
+    const { bq, projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
+    const live = layout.tableName;
+
+    const [exists] = await bq.dataset(dataset).table(live).exists();
+    if (!exists) return { repartitioned: false };
+
+    const tmp = `${live}__repart_${Date.now().toString(36)}`;
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(live)}`;
+    const fullTmp = `${escId(projectId)}.${escId(dataset)}.${escId(tmp)}`;
+    const partitionClause = this.partitionClauseFor(layout);
+    const clusterClause = this.clusterClauseFor(layout);
+
+    const run = async (sql: string) => {
+      const r = await databaseConnectionService.executeQuery(destination, sql, {
+        location: datasetLocation,
+        bigQueryJobMaxWaitMs: 15 * 60 * 1000,
+      });
+      if (!r.success) throw new Error(r.error || `BigQuery DDL failed: ${sql}`);
+    };
+
+    // Copy current rows into a new table laid out with the desired partitioning
+    // / clustering, then swap (drop old, rename new). The caller pauses the
+    // stream so no writes land on the old table during this window.
+    await run(`DROP TABLE IF EXISTS ${fullTmp}`);
+    await run(
+      `CREATE TABLE ${fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${fullLive}`,
+    );
+    await run(`DROP TABLE ${fullLive}`);
+    await run(`ALTER TABLE ${fullTmp} RENAME TO ${escId(live)}`);
+
+    invalidateCachedSchema(getSchemaCacheKey(projectId, dataset, live));
+    log.info("Repartitioned live table in place", {
+      liveTable: live,
+      dataset,
+      partition: layout.partitioning?.field,
+      granularity: layout.partitioning?.granularity,
+      cluster: layout.clustering?.fields,
+    });
+    return { repartitioned: true };
+  }
+
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
