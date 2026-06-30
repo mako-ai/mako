@@ -165,6 +165,76 @@ export class ClickHouseDestinationAdapter implements CdcDestinationAdapter {
     await this.executeQuery(ddl);
   }
 
+  private partitionClauseFor(layout: CdcEntityLayout): string {
+    if (!layout.partitioning?.field) return "";
+    const field = escId(layout.partitioning.field);
+    const gran = (layout.partitioning.granularity || "day").toLowerCase();
+    switch (gran) {
+      case "hour":
+        return `PARTITION BY toStartOfHour(${field})`;
+      case "month":
+        return `PARTITION BY toYYYYMM(${field})`;
+      case "year":
+        return `PARTITION BY toYear(${field})`;
+      default:
+        return `PARTITION BY toYYYYMMDD(${field})`;
+    }
+  }
+
+  async repartitionLiveTable(
+    layout: CdcEntityLayout,
+  ): Promise<{ repartitioned: boolean }> {
+    const db = this.getDatabase();
+    const live = layout.tableName;
+
+    const existsResult = await this.executeQuery(
+      `SELECT count() AS c FROM system.tables WHERE database = '${escStr(db)}' AND name = '${escStr(live)}'`,
+    );
+    const exists = Number(existsResult?.data?.[0]?.c || 0) > 0;
+    if (!exists) return { repartitioned: false };
+
+    const tmp = `${live}__repart_${Date.now().toString(36)}`;
+    const fullLive = `${escId(db)}.${escId(live)}`;
+    const fullTmp = `${escId(db)}.${escId(tmp)}`;
+    const partitionClause = this.partitionClauseFor(layout);
+    const keyColumns = layout.keyColumns.map(escId).join(", ");
+
+    // Create a sibling table with the same columns but the new partitioning /
+    // sort key, copy the current rows, then atomically swap. The caller pauses
+    // the stream so no writes land on the old table during this window.
+    await this.executeQuery(`DROP TABLE IF EXISTS ${fullTmp}`);
+    await this.executeQuery(
+      `CREATE TABLE ${fullTmp} AS ${fullLive} ENGINE = ReplacingMergeTree(_mako_source_ts) ${partitionClause} ORDER BY (${keyColumns})`,
+    );
+    await this.executeQuery(
+      `INSERT INTO ${fullTmp} SELECT * FROM ${fullLive}`,
+    );
+    try {
+      await this.executeQuery(`EXCHANGE TABLES ${fullLive} AND ${fullTmp}`);
+      await this.executeQuery(`DROP TABLE IF EXISTS ${fullTmp}`);
+    } catch (err) {
+      // EXCHANGE TABLES requires the Atomic database engine; fall back to a
+      // (non-atomic) RENAME swap, which the paused stream makes safe.
+      log.warn("EXCHANGE TABLES failed, falling back to RENAME swap", {
+        live,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      const old = `${live}__repart_old_${Date.now().toString(36)}`;
+      await this.executeQuery(
+        `RENAME TABLE ${fullLive} TO ${escId(db)}.${escId(old)}, ${fullTmp} TO ${fullLive}`,
+      );
+      await this.executeQuery(`DROP TABLE IF EXISTS ${escId(db)}.${escId(old)}`);
+    }
+
+    log.info("Repartitioned live table in place", {
+      liveTable: live,
+      database: db,
+      partition: layout.partitioning?.field,
+      granularity: layout.partitioning?.granularity,
+    });
+    return { repartitioned: true };
+  }
+
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;

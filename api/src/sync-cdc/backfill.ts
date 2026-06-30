@@ -15,8 +15,16 @@ import {
 import { loggers } from "../logging";
 import { databaseRegistry } from "../databases/registry";
 import { resolveConfiguredEntities } from "./entity-selection";
-import { hasCdcDestinationAdapter } from "./adapters/registry";
+import {
+  hasCdcDestinationAdapter,
+  resolveCdcDestinationAdapter,
+  resolveEntityPartitioning,
+  resolveEntityClustering,
+  buildCdcEntityLayout,
+} from "./adapters/registry";
 import { cdcLiveTableName, cdcStageTableName } from "./normalization";
+import { syncConnectorRegistry } from "../sync/connector-registry";
+import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { getCdcEventStore } from "./event-store";
 import { cdcSyncStateService } from "./sync-state";
 import { resolveOrphanedWebhookApplyStatusForFlow } from "./cdc-orphan-applystatus";
@@ -524,19 +532,16 @@ export class CdcBackfillService {
     flowId: string;
     entities: string[];
     deleteDestination?: boolean;
-  }) {
+  }): Promise<{ repartitioned: string[]; backfilled: string[] }> {
     const { workspaceId, flowId, deleteDestination } = params;
     const entities = normalizeEntities(params.entities);
     if (entities.length === 0) {
       throw new Error("resyncEntities requires at least one entity");
     }
 
-    const workspaceObjectId = new Types.ObjectId(workspaceId);
-    const flowObjectId = new Types.ObjectId(flowId);
-
     const flow = await Flow.findOne({
-      _id: flowObjectId,
-      workspaceId: workspaceObjectId,
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
     });
     if (!flow) {
       throw new Error("Flow not found");
@@ -547,12 +552,143 @@ export class CdcBackfillService {
 
     await assertCanStartBackfill(workspaceId, flowId);
 
-    // Scope all destructive operations to the requested entities so unchanged
-    // entities keep their destination data and CDC state.
+    // Preferred path: rewrite the partitioning/clustering in place by copying
+    // existing destination rows into a new-layout table and swapping — no
+    // source re-fetch. Entities whose table can't be repartitioned (missing,
+    // unsupported destination, or copy failure) fall back to drop + backfill.
+    const { repartitioned, fallback } = await this.repartitionEntitiesInPlace(
+      flow,
+      workspaceId,
+      flowId,
+      entities,
+    );
+
+    if (fallback.length > 0) {
+      await this.backfillEntitiesFallback(
+        flow,
+        workspaceId,
+        flowId,
+        fallback,
+        deleteDestination,
+      );
+    }
+
+    log.info("resyncEntities complete", {
+      flowId,
+      repartitioned,
+      backfilled: fallback,
+    });
+    return { repartitioned, backfilled: fallback };
+  }
+
+  /**
+   * Build the destination adapter for a flow and, for each entity, attempt an
+   * in-place repartition (copy + swap). The flow's stream is paused for the
+   * duration so the consumer holds incoming events (they materialize into the
+   * freshly-laid-out table once we resume + re-trigger). Returns which entities
+   * were repartitioned vs. which need a drop + backfill fallback.
+   */
+  private async repartitionEntitiesInPlace(
+    flow: IFlow,
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+  ): Promise<{ repartitioned: string[]; fallback: string[] }> {
+    if (!flow.tableDestination?.connectionId || !flow.tableDestination?.schema) {
+      return { repartitioned: [], fallback: entities };
+    }
+    const destination = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    ).lean();
+    if (!destination) {
+      return { repartitioned: [], fallback: entities };
+    }
+
+    const adapter = resolveCdcDestinationAdapter({
+      destinationType: destination.type,
+      destinationDatabaseId: String(flow.destinationDatabaseId),
+      destinationDatabaseName: flow.destinationDatabaseName,
+      tableDestination: {
+        connectionId: String(flow.tableDestination.connectionId),
+        schema: flow.tableDestination.schema,
+        tableName: flow.tableDestination.tableName || "",
+      },
+    });
+
+    // Destination doesn't support in-place repartition (e.g. PostgreSQL/Mongo).
+    if (!adapter.repartitionLiveTable) {
+      return { repartitioned: [], fallback: entities };
+    }
+
+    const repartitioned: string[] = [];
+    const fallback: string[] = [];
+
+    // Pause materialization so no writes land on the live table mid-swap.
+    const previousStreamState = flow.streamState;
+    flow.streamState = "paused";
+    flow.syncStateUpdatedAt = new Date();
+    await flow.save();
+    log.info("Paused flow stream for in-place repartition", {
+      flowId,
+      entities,
+      previousStreamState,
+    });
+
+    try {
+      for (const entity of entities) {
+        const layout = await this.buildEntityLayout(flow, entity);
+        try {
+          const result = await adapter.repartitionLiveTable(layout);
+          if (result.repartitioned) {
+            repartitioned.push(entity);
+          } else {
+            // No existing table — let the backfill path create it fresh.
+            fallback.push(entity);
+          }
+        } catch (error) {
+          log.warn("In-place repartition failed; falling back to backfill", {
+            flowId,
+            entity,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          fallback.push(entity);
+        }
+      }
+    } finally {
+      // Always restore the stream state, even if a repartition threw.
+      flow.streamState = previousStreamState || "idle";
+      flow.syncStateUpdatedAt = new Date();
+      await flow.save();
+      log.info("Resumed flow stream after in-place repartition", {
+        flowId,
+        restoredStreamState: flow.streamState,
+      });
+    }
+
+    // Re-trigger materialization for repartitioned entities so any events that
+    // queued during the pause are applied to the new table (idempotent merge).
+    for (const entity of repartitioned) {
+      await inngest.send({
+        name: "cdc/materialize",
+        data: { workspaceId, flowId, entity, force: true },
+      });
+    }
+
+    return { repartitioned, fallback };
+  }
+
+  /** Drop + clear + subset backfill for entities that can't be repartitioned. */
+  private async backfillEntitiesFallback(
+    flow: IFlow,
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+    deleteDestination?: boolean,
+  ): Promise<void> {
     await getCdcEventStore().deleteFlowEvents({ workspaceId, flowId, entities });
     await CdcEntityState.deleteMany({
-      workspaceId: workspaceObjectId,
-      flowId: flowObjectId,
+      workspaceId: new Types.ObjectId(workspaceId),
+      flowId: new Types.ObjectId(flowId),
       entity: { $in: entities },
     });
 
@@ -560,10 +696,54 @@ export class CdcBackfillService {
       await this.deleteDestinationTables(flow, entities);
     }
 
-    // Subset backfill — only the targeted entities are re-fetched + rebuilt.
     await this.startBackfill(workspaceId, flowId, {
       entities,
-      reason: `Layout-change resync for entities: ${entities.join(", ")}`,
+      reason: `Layout-change resync (backfill) for entities: ${entities.join(", ")}`,
+    });
+  }
+
+  /** Resolve the CDC layout (table name, key columns, new partitioning). */
+  private async buildEntityLayout(flow: IFlow, entity: string) {
+    const entityLayout = (flow.entityLayouts || []).find(
+      layout =>
+        layout.entity === entity || layout.entity === entity.split(":")[0],
+    );
+    const tableName = cdcLiveTableName(
+      flow.tableDestination?.tableName,
+      entity,
+      String(flow._id),
+    );
+
+    let keyColumns: string[] | undefined;
+    if (flow.dataSourceId) {
+      try {
+        const ds = await databaseDataSourceManager.getDataSource(
+          String(flow.dataSourceId),
+        );
+        const conn = ds ? await syncConnectorRegistry.getConnector(ds) : null;
+        const schema = conn ? await conn.resolveSchema(entity) : null;
+        keyColumns = schema?.keyColumns;
+      } catch {
+        log.warn("Schema resolution failed for repartition key columns", {
+          entity,
+          flowId: String(flow._id),
+        });
+      }
+    }
+
+    return buildCdcEntityLayout({
+      entity,
+      tableName,
+      keyColumns,
+      deleteMode: flow.deleteMode,
+      partitioning: resolveEntityPartitioning(
+        entityLayout,
+        flow.tableDestination?.partitioning,
+      ),
+      clustering: resolveEntityClustering(
+        entityLayout,
+        flow.tableDestination?.clustering,
+      ),
     });
   }
 
