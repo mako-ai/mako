@@ -319,6 +319,51 @@ export function buildMergeStatement(p: BuildMergeStatementParams): string {
     .join("\n");
 }
 
+/**
+ * BigQuery `PARTITION BY` clause for a CDC layout (empty when unpartitioned).
+ * Exported for contract testing.
+ */
+export function bigQueryPartitionClause(layout: CdcEntityLayout): string {
+  if (!layout.partitioning?.field) return "";
+  const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
+  return `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
+}
+
+export function bigQueryClusterClause(layout: CdcEntityLayout): string {
+  if (!layout.clustering?.fields?.length) return "";
+  return `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
+}
+
+export interface BigQueryRepartitionStatements {
+  createTmp: string;
+  dropLive: string;
+  rename: string;
+}
+
+/**
+ * Build the statements that rewrite a live table's partition/cluster layout in
+ * place: CTAS into a new-layout table, drop the old, rename the new. Exported
+ * for contract testing + reuse by the gated integration suite.
+ */
+export function buildBigQueryRepartitionStatements(params: {
+  fullLive: string;
+  fullTmp: string;
+  liveName: string;
+  layout: CdcEntityLayout;
+}): BigQueryRepartitionStatements {
+  const partitionClause = bigQueryPartitionClause(params.layout);
+  const clusterClause = bigQueryClusterClause(params.layout);
+  return {
+    createTmp:
+      `CREATE TABLE ${params.fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${params.fullLive}`.replace(
+        /\s+/g,
+        " ",
+      ),
+    dropLive: `DROP TABLE ${params.fullLive}`,
+    rename: `ALTER TABLE ${params.fullTmp} RENAME TO ${escId(params.liveName)}`,
+  };
+}
+
 interface BigQueryAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -397,17 +442,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
   }
 
-  private partitionClauseFor(layout: CdcEntityLayout): string {
-    if (!layout.partitioning?.field) return "";
-    const gran = layout.partitioning.granularity?.toUpperCase() || "DAY";
-    return `PARTITION BY TIMESTAMP_TRUNC(${escId(layout.partitioning.field)}, ${gran})`;
-  }
-
-  private clusterClauseFor(layout: CdcEntityLayout): string {
-    if (!layout.clustering?.fields?.length) return "";
-    return `CLUSTER BY ${layout.clustering.fields.map(escId).join(", ")}`;
-  }
-
   async repartitionLiveTable(
     layout: CdcEntityLayout,
   ): Promise<{ repartitioned: boolean }> {
@@ -421,8 +455,6 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const tmp = `${live}__repart_${Date.now().toString(36)}`;
     const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(live)}`;
     const fullTmp = `${escId(projectId)}.${escId(dataset)}.${escId(tmp)}`;
-    const partitionClause = this.partitionClauseFor(layout);
-    const clusterClause = this.clusterClauseFor(layout);
 
     const run = async (sql: string) => {
       const r = await databaseConnectionService.executeQuery(destination, sql, {
@@ -435,12 +467,16 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     // Copy current rows into a new table laid out with the desired partitioning
     // / clustering, then swap (drop old, rename new). The caller pauses the
     // stream so no writes land on the old table during this window.
+    const stmts = buildBigQueryRepartitionStatements({
+      fullLive,
+      fullTmp,
+      liveName: live,
+      layout,
+    });
     await run(`DROP TABLE IF EXISTS ${fullTmp}`);
-    await run(
-      `CREATE TABLE ${fullTmp} ${partitionClause} ${clusterClause} AS SELECT * FROM ${fullLive}`,
-    );
-    await run(`DROP TABLE ${fullLive}`);
-    await run(`ALTER TABLE ${fullTmp} RENAME TO ${escId(live)}`);
+    await run(stmts.createTmp);
+    await run(stmts.dropLive);
+    await run(stmts.rename);
 
     invalidateCachedSchema(getSchemaCacheKey(projectId, dataset, live));
     log.info("Repartitioned live table in place", {
