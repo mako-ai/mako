@@ -531,7 +531,7 @@ export class CdcBackfillService {
     flowId: string;
     entities: string[];
     deleteDestination?: boolean;
-  }): Promise<{ repartitioned: string[]; backfilled: string[] }> {
+  }): Promise<{ queued: string[] }> {
     const { workspaceId, flowId, deleteDestination } = params;
     const entities = normalizeEntities(params.entities);
     if (entities.length === 0) {
@@ -551,129 +551,284 @@ export class CdcBackfillService {
 
     await assertCanStartBackfill(workspaceId, flowId);
 
-    // Preferred path: rewrite the partitioning/clustering in place by copying
-    // existing destination rows into a new-layout table and swapping — no
-    // source re-fetch. Entities whose table can't be repartitioned (missing,
-    // unsupported destination, or copy failure) fall back to drop + backfill.
-    const { repartitioned, fallback } = await this.repartitionEntitiesInPlace(
-      flow,
-      workspaceId,
-      flowId,
-      entities,
+    // Mark the target entities pending so the UI shows progress immediately,
+    // then hand off to the background `cdc/repartition` job. The job rewrites
+    // the partitioning/clustering in place (copy + swap, no source re-fetch)
+    // per entity as durable steps — so a long copy on a large table can't time
+    // out the request or leave the others unprocessed.
+    await CdcEntityState.updateMany(
+      { flowId: flow._id, entity: { $in: entities } },
+      {
+        $set: {
+          "repartition.status": "pending",
+          "repartition.startedAt": new Date(),
+        },
+        $unset: { "repartition.completedAt": "", "repartition.error": "" },
+      },
     );
 
-    if (fallback.length > 0) {
-      await this.backfillEntitiesFallback(
-        flow,
+    await inngest.send({
+      name: "cdc/repartition",
+      data: {
         workspaceId,
         flowId,
-        fallback,
-        deleteDestination,
-      );
-    }
-
-    log.info("resyncEntities complete", {
-      flowId,
-      repartitioned,
-      backfilled: fallback,
-    });
-    return { repartitioned, backfilled: fallback };
-  }
-
-  /**
-   * Build the destination adapter for a flow and, for each entity, attempt an
-   * in-place repartition (copy + swap). The flow's stream is paused for the
-   * duration so the consumer holds incoming events (they materialize into the
-   * freshly-laid-out table once we resume + re-trigger). Returns which entities
-   * were repartitioned vs. which need a drop + backfill fallback.
-   */
-  private async repartitionEntitiesInPlace(
-    flow: IFlow,
-    workspaceId: string,
-    flowId: string,
-    entities: string[],
-  ): Promise<{ repartitioned: string[]; fallback: string[] }> {
-    if (!flow.tableDestination?.connectionId || !flow.tableDestination?.schema) {
-      return { repartitioned: [], fallback: entities };
-    }
-    const destination = await DatabaseConnection.findById(
-      flow.tableDestination.connectionId,
-    ).lean();
-    if (!destination) {
-      return { repartitioned: [], fallback: entities };
-    }
-
-    const adapter = resolveCdcDestinationAdapter({
-      destinationType: destination.type,
-      destinationDatabaseId: String(flow.destinationDatabaseId),
-      destinationDatabaseName: flow.destinationDatabaseName,
-      tableDestination: {
-        connectionId: String(flow.tableDestination.connectionId),
-        schema: flow.tableDestination.schema,
-        tableName: flow.tableDestination.tableName || "",
+        entities,
+        deleteDestination: Boolean(deleteDestination),
       },
     });
 
-    // Destination doesn't support in-place repartition (e.g. PostgreSQL/Mongo).
-    if (!adapter.repartitionLiveTable) {
-      return { repartitioned: [], fallback: entities };
-    }
+    log.info("Enqueued cdc/repartition job", { flowId, entities });
+    return { queued: entities };
+  }
 
-    const repartitioned: string[] = [];
-    const fallback: string[] = [];
+  /** Resolve the in-place-repartition-capable adapter for a flow (or null). */
+  private resolveRepartitionAdapter(flow: IFlow, destinationType: string) {
+    const adapter = resolveCdcDestinationAdapter({
+      destinationType,
+      destinationDatabaseId: String(flow.destinationDatabaseId),
+      destinationDatabaseName: flow.destinationDatabaseName,
+      tableDestination: {
+        connectionId: String(flow.tableDestination?.connectionId),
+        schema: flow.tableDestination?.schema || "public",
+        tableName: flow.tableDestination?.tableName || "",
+      },
+    });
+    return adapter.repartitionLiveTable ? adapter : null;
+  }
 
-    // Pause materialization so no writes land on the live table mid-swap.
-    const previousStreamState = flow.streamState;
+  private async setEntityRepartitionStatus(
+    workspaceId: Types.ObjectId,
+    flowId: Types.ObjectId,
+    entity: string,
+    repartition: {
+      status: "pending" | "running" | "done" | "failed";
+      startedAt?: Date;
+      completedAt?: Date;
+      error?: string;
+    },
+  ): Promise<void> {
+    await CdcEntityState.updateOne(
+      { flowId, entity },
+      { $set: { repartition }, $setOnInsert: { workspaceId, mode: "steady" } },
+      { upsert: true },
+    );
+  }
+
+  /**
+   * Pause the flow stream for an in-place repartition. Returns the prior stream
+   * state so the resume step can restore it. Tags the pause with a
+   * `REPARTITION_PAUSE` marker so a stuck pause can be auto-recovered.
+   */
+  async pauseStreamForRepartition(
+    workspaceId: string,
+    flowId: string,
+  ): Promise<{ previousStreamState: string }> {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) throw new Error("Flow not found");
+    const previous =
+      flow.streamState && flow.streamState !== "paused"
+        ? flow.streamState
+        : "idle";
     flow.streamState = "paused";
+    flow.syncStateMeta = {
+      ...(flow.syncStateMeta || {}),
+      lastEvent: "REPARTITION_PAUSE",
+      lastReason: "Paused for in-place repartition",
+    };
     flow.syncStateUpdatedAt = new Date();
     await flow.save();
-    log.info("Paused flow stream for in-place repartition", {
-      flowId,
-      entities,
-      previousStreamState,
-    });
+    log.info("Paused flow stream for repartition", { flowId, previous });
+    return { previousStreamState: previous };
+  }
 
-    try {
-      for (const entity of entities) {
-        const layout = await this.buildEntityLayout(flow, entity);
-        try {
-          const result = await adapter.repartitionLiveTable(layout);
-          if (result.repartitioned) {
-            repartitioned.push(entity);
-          } else {
-            // No existing table — let the backfill path create it fresh.
-            fallback.push(entity);
-          }
-        } catch (error) {
-          log.warn("In-place repartition failed; falling back to backfill", {
-            flowId,
-            entity,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          fallback.push(entity);
-        }
-      }
-    } finally {
-      // Always restore the stream state, even if a repartition threw.
-      flow.streamState = previousStreamState || "idle";
+  /** Resume the stream after repartition, restoring the prior state. */
+  async resumeStreamForRepartition(
+    workspaceId: string,
+    flowId: string,
+    previousStreamState: string,
+  ): Promise<void> {
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) return;
+    // Only resume our own pause — never clobber a pause set elsewhere.
+    if (
+      flow.streamState === "paused" &&
+      flow.syncStateMeta?.lastEvent === "REPARTITION_PAUSE"
+    ) {
+      flow.streamState = (previousStreamState as IFlow["streamState"]) || "idle";
+      flow.syncStateMeta = {
+        ...(flow.syncStateMeta || {}),
+        lastEvent: "REPARTITION_RESUME",
+        lastReason: "Resumed after in-place repartition",
+      };
       flow.syncStateUpdatedAt = new Date();
       await flow.save();
-      log.info("Resumed flow stream after in-place repartition", {
+      log.info("Resumed flow stream after repartition", {
         flowId,
         restoredStreamState: flow.streamState,
       });
     }
+  }
 
-    // Re-trigger materialization for repartitioned entities so any events that
-    // queued during the pause are applied to the new table (idempotent merge).
-    for (const entity of repartitioned) {
+  /**
+   * Repartition a single entity's destination table in place (copy + swap).
+   * Updates the entity's `repartition` status. Returns the outcome so the job
+   * can decide follow-up: `repartitioned` (done), `missing` (no table → create
+   * via backfill), or `failed` (left as-is, surfaced for operator retry).
+   */
+  async repartitionEntity(params: {
+    workspaceId: string;
+    flowId: string;
+    entity: string;
+  }): Promise<{ outcome: "repartitioned" | "missing" | "failed"; error?: string }> {
+    const { workspaceId, flowId, entity } = params;
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) throw new Error("Flow not found");
+
+    if (!flow.tableDestination?.connectionId) {
+      return { outcome: "missing" };
+    }
+    const destination = await DatabaseConnection.findById(
+      flow.tableDestination.connectionId,
+    ).lean();
+    const adapter = destination
+      ? this.resolveRepartitionAdapter(flow, destination.type)
+      : null;
+    if (!adapter?.repartitionLiveTable) {
+      // Unsupported destination (PostgreSQL/Mongo) — fall back to backfill.
+      return { outcome: "missing" };
+    }
+
+    await this.setEntityRepartitionStatus(flow.workspaceId, flow._id, entity, {
+      status: "running",
+      startedAt: new Date(),
+    });
+    try {
+      const layout = await this.buildEntityLayout(flow, entity);
+      const result = await adapter.repartitionLiveTable(layout);
+      if (result.repartitioned) {
+        await this.setEntityRepartitionStatus(
+          flow.workspaceId,
+          flow._id,
+          entity,
+          { status: "done", completedAt: new Date() },
+        );
+        return { outcome: "repartitioned" };
+      }
+      // No existing table — clear status; the backfill path will create it.
+      await CdcEntityState.updateOne(
+        { flowId: flow._id, entity },
+        { $unset: { repartition: "" } },
+      );
+      return { outcome: "missing" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error("In-place repartition failed for entity", {
+        flowId,
+        entity,
+        error: message,
+      });
+      await this.setEntityRepartitionStatus(flow.workspaceId, flow._id, entity, {
+        status: "failed",
+        completedAt: new Date(),
+        error: message.slice(0, 500),
+      });
+      return { outcome: "failed", error: message };
+    }
+  }
+
+  /** Fan out materialization for entities that were repartitioned in place. */
+  async triggerEntityMaterialization(
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+  ): Promise<void> {
+    for (const entity of entities) {
       await inngest.send({
         name: "cdc/materialize",
         data: { workspaceId, flowId, entity, force: true },
       });
     }
+  }
 
-    return { repartitioned, fallback };
+  /**
+   * Safety net: clear any repartition pause / running state for a flow (used by
+   * the job's onFailure handler and the stale-pause sweeper). Marks still-running
+   * entities as failed and resumes the stream.
+   */
+  async recoverRepartition(workspaceId: string, flowId: string): Promise<void> {
+    await CdcEntityState.updateMany(
+      {
+        flowId: new Types.ObjectId(flowId),
+        "repartition.status": { $in: ["pending", "running"] },
+      },
+      {
+        $set: {
+          "repartition.status": "failed",
+          "repartition.completedAt": new Date(),
+          "repartition.error": "Repartition job did not complete",
+        },
+      },
+    );
+    await this.resumeStreamForRepartition(workspaceId, flowId, "idle");
+  }
+
+  /**
+   * Resume flows stuck in a repartition pause for longer than the threshold
+   * (e.g. the job's process died before its resume step ran). Called from the
+   * CDC materialize scheduler.
+   */
+  async recoverStaleRepartitionPauses(
+    olderThanMs = 30 * 60 * 1000,
+  ): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanMs);
+    const stuck = await Flow.find({
+      streamState: "paused",
+      "syncStateMeta.lastEvent": "REPARTITION_PAUSE",
+      syncStateUpdatedAt: { $lt: cutoff },
+    })
+      .select({ _id: 1, workspaceId: 1 })
+      .lean();
+    for (const flow of stuck) {
+      await this.recoverRepartition(
+        String(flow.workspaceId),
+        String(flow._id),
+      );
+    }
+    if (stuck.length > 0) {
+      log.warn("Recovered stale repartition pauses", { count: stuck.length });
+    }
+    return stuck.length;
+  }
+
+  /** Public entry: load the flow and backfill entities lacking a live table. */
+  async backfillMissingEntities(
+    workspaceId: string,
+    flowId: string,
+    entities: string[],
+    deleteDestination?: boolean,
+  ): Promise<void> {
+    if (entities.length === 0) return;
+    const flow = await Flow.findOne({
+      _id: new Types.ObjectId(flowId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!flow) throw new Error("Flow not found");
+    await this.backfillEntitiesFallback(
+      flow,
+      workspaceId,
+      flowId,
+      entities,
+      deleteDestination,
+    );
   }
 
   /** Drop + clear + subset backfill for entities that can't be repartitioned. */

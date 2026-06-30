@@ -17,6 +17,7 @@ import {
 } from "../../sync-cdc/normalization";
 import { cdcIngestService } from "../../sync-cdc/ingest";
 import { cdcConsumerService } from "../../sync-cdc/consumer";
+import { cdcBackfillService } from "../../sync-cdc/backfill";
 import { cleanupStalePendingCdcEvents } from "../../sync-cdc/cdc-stale-pending-cleanup";
 import { reconcileOrphanedWebhookApplyStatus } from "../../sync-cdc/cdc-orphan-applystatus";
 
@@ -840,6 +841,12 @@ export const cdcMaterializeSchedulerFunction = inngest.createFunction(
       "reconcile-orphaned-applystatus",
       reconcileOrphanedWebhookApplyStatus,
     )) as Awaited<ReturnType<typeof reconcileOrphanedWebhookApplyStatus>>;
+
+    // Safety net: resume any flow stuck in a repartition pause (e.g. the
+    // repartition job's process died before its resume step ran).
+    await step.run("recover-stale-repartition-pauses", () =>
+      cdcBackfillService.recoverStaleRepartitionPauses(),
+    );
 
     const staleEntities = (await step.run(
       "find-stale-entities",
