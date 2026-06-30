@@ -1612,7 +1612,9 @@ export const createDbtServerTools = (
         "optionally delete its source branch, then switch the project back to " +
         "the repo's default branch and sync the merged state into the working " +
         "tree. Use when the user asks to promote/merge a PR — completes the " +
-        "full ship loop without manual GitHub UI steps. Returns the merge " +
+        "full ship loop without manual GitHub UI steps. Refuses before merging " +
+        "if the working tree has uncommitted changes that must be committed or " +
+        "moved first. Returns the merge " +
         "commit SHA, whether the branch was deleted, and confirmation the " +
         "working tree is clean on the default branch.",
       inputSchema: z.object({
@@ -1656,6 +1658,7 @@ export const createDbtServerTools = (
               : {}),
             branch: result.branch,
             workingTreeClean: result.workingTreeClean,
+            preservedLocal: result.preservedLocal,
           };
         } catch (error) {
           return toolError(error, "Failed to merge pull request");

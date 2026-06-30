@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Types } from "mongoose";
 import type { IDbtProject } from "../database/workspace-schema";
+import { gitBlobSha } from "../integrations/github/git-blob";
 
 vi.mock("../integrations/github/app-auth", () => ({
   resolveRepoToken: vi.fn(async () => "token"),
@@ -17,19 +18,23 @@ vi.mock("../integrations/github/github-api", () => ({
 }));
 
 vi.mock("./dbt-github-sync.service", () => ({
-  syncProjectFromRepo: vi.fn(async () => undefined),
+  syncProjectFromRepo: vi.fn(async () => ({
+    sha: "synced-sha",
+    added: 0,
+    updated: 0,
+    deleted: 0,
+    skippedLarge: [],
+    preservedLocal: [],
+  })),
 }));
 
 const mockFindById = vi.fn();
+const mockFindFiles = vi.fn();
 const mockSave = vi.fn(async () => undefined);
 
 vi.mock("../database/workspace-schema", () => ({
   DbtFile: {
-    find: vi.fn(() => ({
-      select: () => ({
-        lean: async () => [],
-      }),
-    })),
+    find: (...args: unknown[]) => mockFindFiles(...args),
     findOne: vi.fn(),
   },
   DbtProject: {
@@ -63,11 +68,27 @@ function makeProject(overrides: Partial<IDbtProject> = {}): IDbtProject {
   } as unknown as IDbtProject;
 }
 
+function mockFiles(
+  files: Array<{
+    path: string;
+    content?: string;
+    is_deleted?: boolean;
+    repoBlobSha?: string;
+  }> = [],
+) {
+  mockFindFiles.mockReturnValue({
+    select: () => ({
+      lean: async () => files,
+    }),
+  });
+}
+
 describe("mergeProjectPullRequest", () => {
   let storedProject: IDbtProject;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFiles();
     storedProject = makeProject();
     mockFindById.mockImplementation(async () => storedProject);
   });
@@ -105,7 +126,9 @@ describe("mergeProjectPullRequest", () => {
     );
     expect(project.repo?.branch).toBe("main");
     expect(mockSave).toHaveBeenCalled();
-    expect(syncProjectFromRepo).toHaveBeenCalledWith(project, "agent");
+    expect(syncProjectFromRepo).toHaveBeenCalledWith(project, "agent", {
+      preserveLocalEdits: true,
+    });
     expect(tryDeleteBranch).toHaveBeenCalledWith(
       "acme",
       "dbt",
@@ -118,7 +141,57 @@ describe("mergeProjectPullRequest", () => {
       branchDeleteWarning: undefined,
       branch: "main",
       workingTreeClean: true,
+      preservedLocal: [],
     });
+  });
+
+  it("refuses before merging when switching back would discard local work", async () => {
+    vi.mocked(getPullRequest).mockResolvedValue({
+      number: 42,
+      headRef: "feature/add-model",
+      baseRef: "main",
+      mergeable: true,
+      state: "open",
+    });
+    vi.mocked(getRepoInfo).mockResolvedValue({
+      fullName: "acme/dbt",
+      owner: "acme",
+      name: "dbt",
+      defaultBranch: "main",
+      private: false,
+    });
+    mockFiles([
+      {
+        path: "models/_crm__sources.yml",
+        content: "version: 2\n",
+        is_deleted: false,
+      },
+      {
+        path: "models/int_crm__activity_account.sql",
+        content: "select 'email' as match_key",
+        is_deleted: false,
+        repoBlobSha: gitBlobSha("select 'name' as match_key"),
+      },
+      {
+        path: "models/old_name_match.sql",
+        is_deleted: true,
+        repoBlobSha: gitBlobSha("select 'name'"),
+      },
+    ]);
+
+    await expect(
+      mergeProjectPullRequest(storedProject, {
+        prNumber: 42,
+        updatedBy: "agent",
+      }),
+    ).rejects.toThrow(
+      'Refusing to merge pull request and switch from "feature/add-model" to "main": 3 uncommitted working-tree change(s)',
+    );
+
+    expect(mergePullRequest).not.toHaveBeenCalled();
+    expect(syncProjectFromRepo).not.toHaveBeenCalled();
+    expect(tryDeleteBranch).not.toHaveBeenCalled();
+    expect(storedProject.repo?.branch).toBe("feature/add-model");
   });
 
   it("returns branch delete warning when deletion fails", async () => {

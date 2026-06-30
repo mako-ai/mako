@@ -166,6 +166,22 @@ function filterGitStatus(status: GitStatus, paths?: string[]): GitStatus {
   return summarizeChanges(status.branch, selectedChanges);
 }
 
+function dirtyBranchMoveMessage(params: {
+  action: string;
+  fromBranch: string;
+  toBranch: string;
+  status: GitStatus;
+}): string {
+  const summary = `${params.status.added} added, ${params.status.modified} modified, ${params.status.deleted} deleted`;
+  return (
+    `Refusing to ${params.action} from "${params.fromBranch}" to "${params.toBranch}": ` +
+    `${params.status.changes.length} uncommitted working-tree change(s) (${summary}) ` +
+    "would be lost. Commit them first (dbt_commit_and_push to push to the " +
+    "current branch, or dbt_commit_to_branch to move them to a new branch), " +
+    "or explicitly discard them only after the user confirms abandoning that work."
+  );
+}
+
 /** Compute the working-tree status of a repo-bound project. */
 export async function getGitStatus(
   project: IDbtProject,
@@ -504,13 +520,13 @@ export async function switchProjectBranch(
     if (!options.discardLocalChanges) {
       const status = await getGitStatus(fresh);
       if (status.hasChanges) {
-        const summary = `${status.added} added, ${status.modified} modified, ${status.deleted} deleted`;
         throw new Error(
-          `Refusing to switch from "${fresh.repo.branch}" to "${branchName}": ` +
-            `${status.changes.length} uncommitted working-tree change(s) (${summary}) ` +
-            "would be lost. Commit them first (dbt_commit_and_push to push to the " +
-            "current branch, or dbt_commit_to_branch to move them to a new branch), " +
-            "or call again with discardLocalChanges to abandon them on purpose.",
+          dirtyBranchMoveMessage({
+            action: "switch",
+            fromBranch: fresh.repo.branch,
+            toBranch: branchName,
+            status,
+          }),
         );
       }
     } else {
@@ -653,6 +669,7 @@ export interface MergePullRequestResult {
   branchDeleteWarning?: string;
   branch: string;
   workingTreeClean: boolean;
+  preservedLocal: string[];
 }
 
 /**
@@ -681,6 +698,20 @@ export async function mergeProjectPullRequest(
       );
     }
 
+    const info = await getRepoInfo(owner, repo, token);
+    const defaultBranch = info.defaultBranch;
+    const preMergeStatus = await getGitStatus(fresh);
+    if (preMergeStatus.hasChanges) {
+      throw new Error(
+        dirtyBranchMoveMessage({
+          action: "merge pull request and switch",
+          fromBranch: fresh.repo.branch,
+          toBranch: defaultBranch,
+          status: preMergeStatus,
+        }),
+      );
+    }
+
     const { sha } = await mergePullRequest(
       owner,
       repo,
@@ -689,13 +720,12 @@ export async function mergeProjectPullRequest(
       token,
     );
 
-    const info = await getRepoInfo(owner, repo, token);
-    const defaultBranch = info.defaultBranch;
-
     fresh.repo.branch = defaultBranch;
     fresh.markModified("repo");
     await fresh.save();
-    await syncProjectFromRepo(fresh, params.updatedBy);
+    const syncResult = await syncProjectFromRepo(fresh, params.updatedBy, {
+      preserveLocalEdits: true,
+    });
 
     let branchDeleted = false;
     let branchDeleteWarning: string | undefined;
@@ -717,6 +747,7 @@ export async function mergeProjectPullRequest(
       branchDeleteWarning,
       branch: defaultBranch,
       workingTreeClean: !status.hasChanges,
+      preservedLocal: syncResult.preservedLocal,
     };
   });
 }
