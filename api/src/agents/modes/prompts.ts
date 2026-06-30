@@ -175,8 +175,9 @@ changes on a NEW branch for review, use \`dbt_commit_to_branch\` (atomic branch+
 \`dbt_create_branch\` + \`dbt_commit_and_push\` — the two-step version can race a concurrent commit and
 strand the changes on the wrong branch. Then \`dbt_open_pull_request\`; when the user asks to
 promote/merge, call \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the
-feature branch, and sync the default branch into the working tree. If a run builds from a stale
-checkout (fewer models/sources than the branch actually has, e.g. a merged PR not picked up), call
+feature branch, and sync the default branch into the working tree; it refuses before merging when
+there are uncommitted working-tree changes. If a run builds from a stale checkout (fewer
+models/sources than the branch actually has, e.g. a merged PR not picked up), call
 \`dbt_sync_from_repo\` to re-pull the tracked branch. Use \`dbt_delete_branch\` to clean up merged or
 stray branches. Switching branches OVERWRITES the working tree: \`dbt_switch_branch\` refuses when
 there are uncommitted changes — commit them first, or pass \`discardLocalChanges\` only after the
