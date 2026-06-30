@@ -45,8 +45,14 @@ export async function queueDashboardArtifactRefresh(input: {
     input.dataSourceIds?.length && dashboard.dataSources.length > 0
       ? input.dataSourceIds
       : dashboard.dataSources.map(dataSource => dataSource.id);
+  // Only parquet data sources have artifacts to (re)build; live sources stream
+  // server-side on every load and are never materialized.
   const dataSourceIds = requestedIds.filter(dataSourceId =>
-    dashboard.dataSources.some(dataSource => dataSource.id === dataSourceId),
+    dashboard.dataSources.some(
+      dataSource =>
+        dataSource.id === dataSourceId &&
+        dataSource.materialization !== "live",
+    ),
   );
 
   if (dataSourceIds.length === 0) {

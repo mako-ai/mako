@@ -165,7 +165,7 @@ async function serializeDashboardDataSource(input: {
     code: input.dataSource.query.code,
     databaseId: input.dataSource.query.databaseId,
     databaseName: input.dataSource.query.databaseName,
-    materialization: "parquet",
+    materialization: input.dataSource.materialization ?? "parquet",
     materializationSchedule: schedule,
     scheduleScope: "resource",
     status: {
@@ -306,20 +306,23 @@ export async function updateResourceDataSourceSettings(input: {
   if (input.resourceType === "dashboard") {
     const dashboard = await getDashboardOrThrow(input);
     requireDashboardWrite(dashboard, input.userId, input.memberRole);
-    if (input.settings.materialization === "live") {
-      throw new Error("Dashboard data sources are always materialized");
-    }
-    if (
-      !dashboard.dataSources.some(dataSource => dataSource.id === input.dataSourceId)
-    ) {
+    const dataSource = dashboard.dataSources.find(
+      ds => ds.id === input.dataSourceId,
+    );
+    if (!dataSource) {
       throw new Error("Data source not found");
+    }
+    // Per-data-source live/parquet toggle (parity with app bindings).
+    if (input.settings.materialization) {
+      dataSource.materialization = input.settings.materialization;
+      dashboard.markModified("dataSources");
     }
     if (input.settings.schedule !== undefined) {
       dashboard.materializationSchedule = validateDashboardMaterializationSchedule(
         input.settings.schedule,
       );
-      await dashboard.save();
     }
+    await dashboard.save();
     return await getResourceDataSource(input);
   }
 
@@ -357,11 +360,16 @@ export async function refreshResourceDataSources(input: {
   if (input.resourceType === "dashboard") {
     const dashboard = await getDashboardOrThrow(input);
     requireDashboardWrite(dashboard, input.userId, input.memberRole);
-    if (
-      input.dataSourceId &&
-      !dashboard.dataSources.some(dataSource => dataSource.id === input.dataSourceId)
-    ) {
-      throw new Error("Data source not found");
+    if (input.dataSourceId) {
+      const target = dashboard.dataSources.find(
+        ds => ds.id === input.dataSourceId,
+      );
+      if (!target) {
+        throw new Error("Data source not found");
+      }
+      if (target.materialization === "live") {
+        throw new Error("Live data sources always run fresh; nothing to refresh");
+      }
     }
     const result = await queueDashboardArtifactRefresh({
       workspaceId: input.workspaceId,
