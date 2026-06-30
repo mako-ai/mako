@@ -3871,6 +3871,11 @@ export interface components {
                 id: string;
                 name: string;
                 tableRef: string;
+                /**
+                 * @default parquet
+                 * @enum {string}
+                 */
+                materialization: "live" | "parquet";
                 query: {
                     /** @example 507f1f77bcf86cd799439011 */
                     connectionId?: string;
