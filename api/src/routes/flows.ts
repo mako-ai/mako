@@ -3329,6 +3329,16 @@ flowRoutes.openapi(
           failedCount: failedByEntity.get(entity)?.count || 0,
           lastFailedAt: failedByEntity.get(entity)?.latestAt || null,
           lastFailedError: failedByEntity.get(entity)?.latestError || null,
+          repartition: (state as any)?.repartition?.status
+            ? {
+                status: (state as any).repartition.status as
+                  | "pending"
+                  | "running"
+                  | "done"
+                  | "failed",
+                error: (state as any).repartition.error ?? null,
+              }
+            : null,
         };
       });
 

@@ -1054,6 +1054,13 @@ export interface ICdcEntityState extends Document {
   consecutiveFailures: number;
   lastFailedAt?: Date;
   lastFailureError?: string;
+  // Progress of an in-place destination-table repartition (layout change).
+  repartition?: {
+    status: "pending" | "running" | "done" | "failed";
+    startedAt?: Date;
+    completedAt?: Date;
+    error?: string;
+  };
 }
 
 export type IBigQueryChangeEvent = ICdcChangeEvent;
@@ -2654,6 +2661,15 @@ const CdcEntityStateSchema = new Schema<ICdcEntityState>(
     consecutiveFailures: { type: Number, default: 0 },
     lastFailedAt: Date,
     lastFailureError: String,
+    repartition: {
+      status: {
+        type: String,
+        enum: ["pending", "running", "done", "failed"],
+      },
+      startedAt: Date,
+      completedAt: Date,
+      error: String,
+    },
   },
   {
     collection: "cdc_entity_state",

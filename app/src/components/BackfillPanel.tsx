@@ -842,6 +842,7 @@ export function BackfillPanel({
         typeof s?.lifetimeRowsApplied === "number" ? s.lifetimeRowsApplied : 0,
       backfillDone: s?.backfillDone === true,
       failedCount: (s as any)?.failedCount || 0,
+      repartition: (s as any)?.repartition ?? null,
       execRows: execStats[name] || 0,
       execStatus: execStatus[name] || null,
     };
@@ -1315,6 +1316,22 @@ export function BackfillPanel({
                   <TableBody>
                     {entities.map(e => {
                       const sc = entityStreamChip(e);
+                      // A repartition (layout change) in progress/failed takes
+                      // precedence over the normal stream chip.
+                      const repart = e.repartition as {
+                        status?: "pending" | "running" | "done" | "failed";
+                        error?: string | null;
+                      } | null;
+                      const streamChip: {
+                        label: string;
+                        color: "success" | "info" | "default" | "error";
+                      } =
+                        repart?.status === "pending" ||
+                        repart?.status === "running"
+                          ? { label: "Repartitioning…", color: "info" }
+                          : repart?.status === "failed"
+                            ? { label: "Repartition failed", color: "error" }
+                            : sc;
                       const bc = entityBackfillChip(e);
                       const backfillChip =
                         e.execStatus === "syncing"
@@ -1396,17 +1413,25 @@ export function BackfillPanel({
                               </Box>
                             </TableCell>
                             <TableCell>
-                              <Chip
-                                label={sc.label}
-                                color={sc.color}
-                                size="small"
-                                variant="outlined"
-                                sx={{
-                                  height: 22,
-                                  fontSize: "0.68rem",
-                                  fontWeight: 500,
-                                }}
-                              />
+                              <Tooltip
+                                title={
+                                  repart?.status === "failed" && repart?.error
+                                    ? `Repartition failed: ${repart.error}`
+                                    : ""
+                                }
+                              >
+                                <Chip
+                                  label={streamChip.label}
+                                  color={streamChip.color}
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{
+                                    height: 22,
+                                    fontSize: "0.68rem",
+                                    fontWeight: 500,
+                                  }}
+                                />
+                              </Tooltip>
                             </TableCell>
                             <TableCell>
                               <Box

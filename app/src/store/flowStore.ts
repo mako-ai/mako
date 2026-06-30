@@ -303,6 +303,10 @@ export interface CdcStatus {
     lifetimeEventsProcessed?: number;
     lifetimeRowsApplied?: number;
     backfillDone?: boolean;
+    repartition?: {
+      status: "pending" | "running" | "done" | "failed";
+      error: string | null;
+    } | null;
   }>;
   pipeline: {
     cdcEventsByStatus: {
