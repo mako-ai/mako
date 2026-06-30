@@ -109,7 +109,7 @@ describe("BigQuery repartition SQL", () => {
     );
   });
 
-  it("builds CTAS + drop + rename swap", () => {
+  it("builds CREATE OR REPLACE + drop + rename swap", () => {
     const stmts = buildBigQueryRepartitionStatements({
       fullLive: "`proj`.`ds`.`close_leads`",
       fullTmp: "`proj`.`ds`.`close_leads__repart_x`",
@@ -117,7 +117,7 @@ describe("BigQuery repartition SQL", () => {
       layout: layout(),
     });
     expect(stmts.createTmp).toBe(
-      "CREATE TABLE `proj`.`ds`.`close_leads__repart_x` " +
+      "CREATE OR REPLACE TABLE `proj`.`ds`.`close_leads__repart_x` " +
         "PARTITION BY TIMESTAMP_TRUNC(`_syncedAt`, DAY) " +
         "CLUSTER BY `_dataSourceId`, `id` AS SELECT * FROM `proj`.`ds`.`close_leads`",
     );
@@ -135,7 +135,7 @@ describe("BigQuery repartition SQL", () => {
       layout: layout({ partitioning: undefined, clustering: undefined }),
     });
     expect(stmts.createTmp).toBe(
-      "CREATE TABLE `p`.`d`.`t2` AS SELECT * FROM `p`.`d`.`t`",
+      "CREATE OR REPLACE TABLE `p`.`d`.`t2` AS SELECT * FROM `p`.`d`.`t`",
     );
   });
 });
