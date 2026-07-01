@@ -406,7 +406,12 @@ export function WebhookFlowForm({
         if (flow.tableDestination) {
           formData.tableDestination = {
             tablePrefix: flow.tableDestination.tableName || "",
-            schema: flow.tableDestination.schema || "",
+            // Legacy/stale BigQuery CDC flows may have stored the dataset under
+            // `database`; the CDC writer and form validation use `schema`.
+            schema:
+              flow.tableDestination.schema ||
+              flow.tableDestination.database ||
+              "",
           };
         }
 
