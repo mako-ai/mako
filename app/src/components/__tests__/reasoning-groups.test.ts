@@ -58,6 +58,87 @@ describe("computeReasoningGroups", () => {
     const groups = computeReasoningGroups(parts);
     expect(groups.get(0)?.text).toBe("from history");
   });
+
+  it("bridges a reasoning run across a step-start marker", () => {
+    // Multi-step tool loops (and resume replay) insert a step-start between
+    // thinking segments; it must not split the block.
+    const parts: Part[] = [
+      { type: "reasoning", text: "part one" },
+      { type: "step-start" },
+      { type: "reasoning", text: "part two" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect([...groups.keys()]).toEqual([0]);
+    expect(groups.get(0)).toEqual({
+      text: "part one\n\npart two",
+      lastIndex: 2,
+    });
+  });
+
+  it("still splits reasoning across a tool part even after a step-start", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "block A" },
+      { type: "step-start" },
+      { type: "tool-run_console", state: "output-available" },
+      { type: "reasoning", text: "block B" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect([...groups.keys()]).toEqual([0, 3]);
+    expect(groups.get(0)?.text).toBe("block A");
+    expect(groups.get(3)?.text).toBe("block B");
+  });
+
+  it("dedupes an exact duplicate reasoning part (replay artifact)", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "thinking hard" },
+      { type: "reasoning", text: "thinking hard" },
+    ];
+    expect(computeReasoningGroups(parts).get(0)?.text).toBe("thinking hard");
+  });
+
+  it("collapses a partial copy into its extended copy (prefix-superset)", () => {
+    // The classic symptom: a prematurely-collapsed partial block ("ABC")
+    // followed by the replayed, still-streaming extended copy ("ABC more…").
+    const parts: Part[] = [
+      { type: "reasoning", text: "ABC" },
+      { type: "step-start" },
+      { type: "reasoning", text: "ABC more thinking" },
+    ];
+    expect(computeReasoningGroups(parts).get(0)?.text).toBe(
+      "ABC more thinking",
+    );
+  });
+
+  it("dedupes by Anthropic signature, keeping the longest copy", () => {
+    const sigMeta = { anthropic: { signature: "sig-1" } };
+    const parts: Part[] = [
+      { type: "reasoning", text: "short", providerMetadata: sigMeta },
+      {
+        type: "reasoning",
+        text: "short but longer",
+        providerMetadata: sigMeta,
+      },
+    ];
+    expect(computeReasoningGroups(parts).get(0)?.text).toBe("short but longer");
+  });
+
+  it("keeps distinct signatured blocks separate even if text overlaps", () => {
+    const parts: Part[] = [
+      {
+        type: "reasoning",
+        text: "Let me look",
+        providerMetadata: { anthropic: { signature: "sig-a" } },
+      },
+      {
+        type: "reasoning",
+        text: "Let me look at the schema",
+        providerMetadata: { anthropic: { signature: "sig-b" } },
+      },
+    ];
+    expect(computeReasoningGroups(parts).get(0)?.text).toBe(
+      "Let me look\n\nLet me look at the schema",
+    );
+  });
 });
 
 describe("getStreamingReasoningGroupStart (re-expand regression)", () => {
@@ -106,5 +187,43 @@ describe("getStreamingReasoningGroupStart (re-expand regression)", () => {
       { type: "text", text: "final answer" },
     ];
     expect(getStreamingReasoningGroupStart(parts)).toBeNull();
+  });
+});
+
+describe("getStreamingReasoningGroupStart (state-driven)", () => {
+  it("flags the last block while its trailing part is streaming", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "done block", state: "done" },
+      { type: "tool-run_console", state: "output-available" },
+      { type: "reasoning", text: "live block", state: "streaming" },
+    ];
+    expect(getStreamingReasoningGroupStart(parts)).toBe(2);
+  });
+
+  it("flags no block once the last reasoning part is done", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "first", state: "done" },
+      { type: "reasoning", text: "second", state: "done" },
+    ];
+    expect(getStreamingReasoningGroupStart(parts)).toBeNull();
+  });
+
+  it("does not re-open an earlier block left streaming by a missing end", () => {
+    // An earlier block never got its reasoning-end (stuck 'streaming'), but the
+    // active block below it is done — nothing should be force-expanded.
+    const parts: Part[] = [
+      { type: "reasoning", text: "stale", state: "streaming" },
+      { type: "text", text: "answer" },
+      { type: "reasoning", text: "final", state: "done" },
+    ];
+    expect(getStreamingReasoningGroupStart(parts)).toBeNull();
+  });
+
+  it("ignores a trailing step-start when reading the streaming state", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "live", state: "streaming" },
+      { type: "step-start" },
+    ];
+    expect(getStreamingReasoningGroupStart(parts)).toBe(0);
   });
 });
