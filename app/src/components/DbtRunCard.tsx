@@ -135,7 +135,10 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
     [workspaceId, projectId, runId, cancelling, cancelRun, fetchRunDetails],
   );
 
-  const steps = run?.stepResults ?? [];
+  // Slowest nodes first — surfaces the bottlenecks at the top of the card.
+  const steps = [...(run?.stepResults ?? [])].sort(
+    (a, b) => b.executionTimeMs - a.executionTimeMs,
+  );
   const logs = run?.logs ?? [];
   const visibleLogs = logs.slice(-MAX_VISIBLE_LOGS);
   const hasBody = steps.length > 0 || logs.length > 0;
