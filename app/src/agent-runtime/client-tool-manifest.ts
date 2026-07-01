@@ -525,6 +525,18 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "trash",
   },
+  app_set_binding_materialization: {
+    domain: "app",
+    execution: "server",
+    getLabel: input => {
+      const inp = input as Record<string, unknown>;
+      const name = inp?.name;
+      const mode = inp?.materialization;
+      if (name && mode) return `Switching "${name}" to ${mode}`;
+      return "Switching materialization";
+    },
+    icon: "database",
+  },
   app_save_version: {
     domain: "app",
     execution: "server",

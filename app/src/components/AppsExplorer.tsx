@@ -254,8 +254,12 @@ export function AppsExplorer() {
         const loaded = openApps[item.id];
         let children: ResourceTreeNode[] | undefined;
         if (loaded) {
-          children = buildAppFileNodes(item.id, loaded.files);
-          children.push({
+          // buildAppFileNodes already returns folders-first, files-last. Insert
+          // the synthetic "Data sources" folder alongside the real folders so
+          // the whole app root keeps the OS-style "folders on top, files at the
+          // bottom" ordering (rather than dropping it below the files).
+          const fileNodes = buildAppFileNodes(item.id, loaded.files);
+          const dataSourcesNode: ResourceTreeNode = {
             id: `${item.id}${DIR_SEP}${DATA_SOURCES_DIR}`,
             name: "Data sources",
             path: DATA_SOURCES_DIR,
@@ -268,7 +272,17 @@ export function AppsExplorer() {
               isDirectory: false,
               entityType: "data-source",
             })),
-          });
+          };
+          const firstFileIndex = fileNodes.findIndex(n => !n.isDirectory);
+          if (firstFileIndex === -1) {
+            children = [...fileNodes, dataSourcesNode];
+          } else {
+            children = [
+              ...fileNodes.slice(0, firstFileIndex),
+              dataSourcesNode,
+              ...fileNodes.slice(firstFileIndex),
+            ];
+          }
         }
         return {
           id: item.id,

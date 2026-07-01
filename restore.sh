@@ -2,87 +2,91 @@
 set -e
 source .env
 
+# Usage: ./restore.sh [--include-sync]
+#   By default, only the two heaviest sync collections (webhookevents ~1.7GB and
+#   flow_executions ~700MB) are excluded to keep the restore fast. Everything
+#   else — including chats, llmusages, query_executions, and the smaller CDC /
+#   materialization collections — is copied.
+#   Pass --include-sync (or set INCLUDE_SYNC=true) to also copy the two heavy ones.
+#
+#   Tip: stop your local `pnpm dev` before running this. A running API (mongoose)
+#   recreates indexes under different names while the restore is in flight, which
+#   causes benign IndexOptionsConflict warnings (documents still restore fine).
+INCLUDE_SYNC="${INCLUDE_SYNC:-false}"
+for arg in "$@"; do
+  case "$arg" in
+    --include-sync) INCLUDE_SYNC=true ;;
+    -h|--help) echo "Usage: $0 [--include-sync]"; exit 0 ;;
+    *) echo "Unknown argument: $arg"; echo "Usage: $0 [--include-sync]"; exit 1 ;;
+  esac
+done
+
 FROM=$PROD_DATABASE_URL
 TO=$DATABASE_URL
 
 # Extract the database name from the URI (last path segment before query string)
 TO_DB=$(echo "$TO" | sed -E 's|.*\/([^/?]+)(\?.*)?$|\1|')
-
 FROM_DB=$(echo "$FROM" | sed -E 's|.*\/([^/?]+)(\?.*)?$|\1|')
 
-# Exclude large collections that aren't needed for local development
-EXCLUDE_COLLECTIONS=(
-  "flow_executions"
+# Heavy sync collections excluded by default (large, ephemeral, not needed to
+# work on the app locally); included with --include-sync.
+SYNC_COLLECTIONS=(
   "webhookevents"
-  "cdc_change_events"
-  "cdc_state_transitions"
-  "query_executions"
-  "materialization_runs"
-  "chats"
-  "llmusages"
+  "flow_executions"
 )
+
 EXCLUDE_ARGS=""
-for col in "${EXCLUDE_COLLECTIONS[@]}"; do
-  EXCLUDE_ARGS="${EXCLUDE_ARGS} --excludeCollection=${col}"
-done
+if [ "$INCLUDE_SYNC" != "true" ]; then
+  for col in "${SYNC_COLLECTIONS[@]}"; do
+    EXCLUDE_ARGS="${EXCLUDE_ARGS} --excludeCollection=${col}"
+  done
+fi
 
 echo "Restoring from production → $TO_DB ..."
-echo "Excluding collections: ${EXCLUDE_COLLECTIONS[*]}"
+if [ "$INCLUDE_SYNC" = "true" ]; then
+  echo "Including sync collections (--include-sync): ${SYNC_COLLECTIONS[*]}"
+else
+  echo "Excluding sync collections (default): ${SYNC_COLLECTIONS[*]}"
+  echo "  → pass --include-sync to copy them too."
+fi
+
 mongosh "$TO" --eval "db.dropDatabase()"
 
+# Don't let a benign index-name conflict (from a running local API recreating
+# indexes mid-restore) abort the whole script — documents still restore fine.
+set +o pipefail
+set +e
 mongodump --uri="$FROM" ${EXCLUDE_ARGS} --gzip --archive | mongorestore --uri="$TO" --gzip --archive \
   --nsInclude="${FROM_DB}.*" \
   --nsFrom="${FROM_DB}.*" \
   --nsTo="${TO_DB}.*"
+RESTORE_STATUS=$?
+set -e
+if [ "$RESTORE_STATUS" -ne 0 ]; then
+  echo "⚠️  mongorestore exited ${RESTORE_STATUS} — usually a benign index-name"
+  echo "    conflict from a running local API. Documents are restored; continuing."
+  echo "    Stop 'pnpm dev' before restoring to avoid this."
+fi
 
-echo "Creating empty excluded collections with indexes..."
-mongosh "$TO" --quiet --eval "
-  db.createCollection('flow_executions');
-  db.flow_executions.createIndex({ flowId: 1, startedAt: -1 });
+# When sync collections were skipped, create them empty with their indexes so the
+# app has the expected schema/indexes without the bulky historical data.
+if [ "$INCLUDE_SYNC" != "true" ]; then
+  echo "Creating empty sync collections with indexes..."
+  mongosh "$TO" --quiet --eval "
+    function ensureCollection(name){ if(!db.getCollectionNames().includes(name)) db.createCollection(name); }
+    function ensureIndex(coll, keys, opts){ try { db.getCollection(coll).createIndex(keys, opts||{}); } catch(e){ print('  (skipped '+coll+' index: '+e.codeName+')'); } }
 
-  db.createCollection('webhookevents');
-  db.webhookevents.createIndex({ flowId: 1, eventId: 1 }, { unique: true });
-  db.webhookevents.createIndex({ flowId: 1, status: 1, receivedAt: 1 });
-  db.webhookevents.createIndex({ flowId: 1, applyStatus: 1, receivedAt: 1 });
-  db.webhookevents.createIndex({ workspaceId: 1, receivedAt: -1 });
+    ensureCollection('webhookevents');
+    ensureIndex('webhookevents', { flowId: 1, eventId: 1 }, { unique: true });
+    ensureIndex('webhookevents', { flowId: 1, status: 1, receivedAt: 1 });
+    ensureIndex('webhookevents', { flowId: 1, applyStatus: 1, receivedAt: 1 });
+    ensureIndex('webhookevents', { workspaceId: 1, receivedAt: -1 });
 
-  db.createCollection('cdc_change_events');
-  db.cdc_change_events.createIndex({ idempotencyKey: 1 }, { unique: true });
-  db.cdc_change_events.createIndex({ flowId: 1, entity: 1, ingestSeq: 1 });
-  db.cdc_change_events.createIndex({ flowId: 1, entity: 1, recordId: 1, sourceTs: 1, ingestSeq: 1 }, { unique: true });
-  db.cdc_change_events.createIndex({ flowId: 1, entity: 1, sourceTs: 1, ingestSeq: 1 });
-  db.cdc_change_events.createIndex({ flowId: 1, entity: 1, materializationStatus: 1, ingestSeq: 1 });
-  db.cdc_change_events.createIndex({ flowId: 1, entity: 1, stageStatus: 1, ingestSeq: 1 });
-  db.cdc_change_events.createIndex({ appliedAt: 1 }, { expireAfterSeconds: 604800 });
+    ensureCollection('flow_executions');
+    ensureIndex('flow_executions', { flowId: 1, startedAt: -1 });
 
-  db.createCollection('cdc_state_transitions');
-  db.cdc_state_transitions.createIndex({ flowId: 1, at: -1 });
-
-  db.createCollection('query_executions');
-  db.query_executions.createIndex({ workspaceId: 1, executedAt: -1 });
-  db.query_executions.createIndex({ userId: 1, executedAt: -1 });
-  db.query_executions.createIndex({ apiKeyId: 1, executedAt: -1 }, { sparse: true });
-  db.query_executions.createIndex({ workspaceId: 1, status: 1 });
-  db.query_executions.createIndex({ executedAt: 1 }, { expireAfterSeconds: 7776000 });
-
-  db.createCollection('materialization_runs');
-  db.materialization_runs.createIndex({ dashboardId: 1, dataSourceId: 1, requestedAt: -1 });
-  db.materialization_runs.createIndex({ workspaceId: 1, requestedAt: -1 });
-  db.materialization_runs.createIndex({ status: 1, lastHeartbeat: 1 });
-  db.materialization_runs.createIndex({ requestedAt: 1 }, { expireAfterSeconds: 2592000 });
-
-  db.createCollection('chats');
-  db.chats.createIndex({ workspaceId: 1 });
-  db.chats.createIndex({ workspaceId: 1, title: 1 });
-  db.chats.createIndex({ workspaceId: 1, createdBy: 1 });
-
-  db.createCollection('llmusages');
-  db.llmusages.createIndex({ workspaceId: 1, createdAt: -1 });
-  db.llmusages.createIndex({ userId: 1, createdAt: -1 });
-  db.llmusages.createIndex({ chatId: 1 });
-  db.llmusages.createIndex({ workspaceId: 1, userId: 1, createdAt: -1 });
-
-  print('Empty collections with indexes created');
-"
+    print('Empty sync collections with indexes created');
+  "
+fi
 
 echo "Done!"

@@ -67,7 +67,9 @@ errors); `open_app` just focuses a UI tab.
 
    **Materialized bindings (DuckDB):** set `materialization: "parquet"` to materialize
    the query into a Parquet artifact (same pipeline as dashboards) that is loaded into
-   DuckDB-WASM in the browser. After creating/editing a parquet binding, call
+   DuckDB-WASM in the browser. Works for **SQL and MongoDB** bindings — a MongoDB
+   binding's `code` is a JS shell query (e.g. `db.newUsers.aggregate([...])`) and it
+   materializes through the same pipeline. After creating/editing a parquet binding, call
    `materialize_binding`. The build runs server-side in the background; the tool waits
    up to `waitSeconds` (default 120) and may return status `building` — that is not an
    error. The app loads the data automatically when ready. To block until the build
@@ -83,6 +85,15 @@ errors); `open_app` just focuses a UI tab.
 
    Prefer parquet + useDuckDB for dashboards/aggregations over larger result sets; prefer
    live useQuery for small, always-fresh lookups.
+
+   **Toggle materialization IN PLACE — never delete/recreate:** to switch an
+   existing binding between `live` and `parquet`, call
+   `app_set_binding_materialization` with the binding `name` and the target
+   `materialization`. It flips the setting on the existing binding (preserving its
+   id, code, and connection); after switching to `parquet`, call
+   `materialize_binding` to build the artifact. Do NOT delete and recreate a binding
+   just to change materialization — that mints a new id, drops the cache, and breaks
+   anything referencing it.
 
    **Scheduled refresh:** a parquet binding can auto-refresh on a cron — set
    `materializationSchedule` when creating it, or call `app_set_binding_schedule`
@@ -163,6 +174,32 @@ The one rule: **never hardcode surface/text/border colors — use the tokens.**
   `var(--destructive-foreground)`
 - Charts: `var(--chart-1)` … `var(--chart-5)` — tokens are resolved colors, so they
   work directly in inline styles, CSS-in-JS, and SVG `fill`/`stroke` (recharts, d3).
+
+**`*-foreground` tokens are ONLY for text drawn on top of the matching solid
+color.** `--destructive-foreground` is near-white (for text on a solid
+`--destructive` red button), so using it as the text color of an error message on
+a light `--card`/`--background` surface renders **white-on-white and unreadable** —
+a common failure. For an inline error/empty state on a normal surface, use
+`--destructive` (the red) as the text and/or border color, not
+`--destructive-foreground`:
+
+```tsx
+// ✅ readable error box on a card
+<div style={{
+  border: "1px solid var(--destructive)",
+  color: "var(--destructive)",
+  background: "var(--card)",
+  padding: 12, borderRadius: "var(--radius)",
+}}>
+  {error}
+</div>
+
+// ❌ white-on-white — never use *-foreground as text on a light surface
+<div style={{ color: "var(--destructive-foreground)", background: "var(--card)" }}>{error}</div>
+```
+
+Always render `useQuery`/`useDuckDB` `error` and empty states with readable
+contrast, and verify with `run_app`.
 
 When code needs the literal mode or a computed color (e.g. a canvas-based chart
 library's theme option), use the SDK hook:

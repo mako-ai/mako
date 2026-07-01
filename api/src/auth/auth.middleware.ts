@@ -1,5 +1,5 @@
 import { Context, Next } from "hono";
-import { sessionManager } from "./session";
+import { sessionManager, writeSessionCookie } from "./session";
 import { getCookie } from "hono/cookie";
 import { enrichContextWithUser } from "../logging";
 
@@ -23,6 +23,12 @@ export async function authMiddleware(c: Context, next: Next) {
   c.set("user", user);
   c.set("session", session);
 
+  // Slide the browser cookie whenever the session was refreshed so it tracks
+  // the DB expiry instead of hard-expiring at the original login time.
+  if (session.fresh) {
+    writeSessionCookie(c, session.id);
+  }
+
   // Enrich logging context with user ID
   enrichContextWithUser(user.id);
 
@@ -41,6 +47,11 @@ export async function optionalAuthMiddleware(c: Context, next: Next) {
     if (session && user) {
       c.set("user", user);
       c.set("session", session);
+
+      // Slide the browser cookie whenever the session was refreshed.
+      if (session.fresh) {
+        writeSessionCookie(c, session.id);
+      }
 
       // Enrich logging context with user ID
       enrichContextWithUser(user.id);

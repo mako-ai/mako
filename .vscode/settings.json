@@ -49,5 +49,8 @@
   "eslint.provideLinting": true,
   "eslint.run": "onType",
   "eslint.format.enable": false,
-  "eslint.packageManager": "pnpm" // use the workspace package manager
+  "eslint.packageManager": "pnpm",
+  "[xml]": {
+    "editor.defaultFormatter": "redhat.vscode-xml"
+  } // use the workspace package manager
 }

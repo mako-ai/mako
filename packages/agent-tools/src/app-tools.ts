@@ -190,6 +190,31 @@ export const setBindingScheduleSchema = z.object({
     .describe("Optional freshness window in ms used for staleness badges"),
 });
 
+export const setBindingMaterializationSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe(
+      "Name of the existing data binding to switch (from list_data_sources)",
+    ),
+  materialization: z
+    .enum(["live", "parquet"])
+    .describe(
+      "'live' runs the query server-side on every read; 'parquet' materializes " +
+        "the query to a Parquet artifact loaded into DuckDB-WASM in the browser. " +
+        "Toggles the setting on the existing binding IN PLACE — no need to " +
+        "delete and recreate. After switching to 'parquet', call " +
+        "materialize_binding to build the artifact.",
+    ),
+  materializationSchedule: bindingMaterializationScheduleSchema
+    .optional()
+    .describe(
+      "Optional cron schedule to set at the same time. Only applies when " +
+        "switching to 'parquet' (forced disabled for 'live'). Can also be set " +
+        "later with app_set_binding_schedule.",
+    ),
+});
+
 export const materializeBindingSchema = z.object({
   appId: appIdField,
   name: z.string().describe("Name of the parquet binding to (re)materialize"),
