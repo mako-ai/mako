@@ -1,12 +1,41 @@
 import { v4 as uuidv4 } from "uuid";
+import { setCookie } from "hono/cookie";
+import type { Context } from "hono";
 import { Session, User, ISession, IUser } from "../database/schema";
 
 /**
  * Session configuration
  */
 const SESSION_COOKIE_NAME = "auth_session";
-const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
-const SESSION_REFRESH_THRESHOLD_MS = 12 * 60 * 60 * 1000; // Refresh if less than 12 hours remaining
+
+/** Default session lifetime when `SESSION_DURATION` is not set: 1 year. */
+const DEFAULT_SESSION_DURATION_MS = 365 * 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve the session lifetime (ms) from the `SESSION_DURATION` env var,
+ * falling back to a 1-year default. Previously this constant was hardcoded to
+ * 24h and the env var was never read, so deployed `SESSION_DURATION` values had
+ * no effect and users were silently logged out every day.
+ */
+function resolveSessionDurationMs(): number {
+  const raw = process.env.SESSION_DURATION;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_SESSION_DURATION_MS;
+}
+
+const SESSION_DURATION_MS = resolveSessionDurationMs();
+
+/**
+ * Slide the session (DB expiry + browser cookie) once it passes its halfway
+ * point. Keeping this relative to the duration means an active user is
+ * effectively never logged out, while avoiding a DB write on every request.
+ */
+const SESSION_REFRESH_THRESHOLD_MS = Math.floor(SESSION_DURATION_MS / 2);
 
 /**
  * Session attributes that can be stored with a session
@@ -258,6 +287,29 @@ class SessionManager {
 
 // Export singleton instance
 export const sessionManager = new SessionManager();
+
+/**
+ * Write (or refresh) the session cookie on a Hono response.
+ *
+ * Centralizes the lowercase→capitalized `sameSite` conversion Hono expects and
+ * is used by the auth middlewares to slide the browser cookie whenever the
+ * session is refreshed. Without this, the DB session expiry would slide but the
+ * cookie would still hard-expire at its original `Max-Age`, logging the user
+ * out even though their session is still valid.
+ */
+export function writeSessionCookie(c: Context, sessionId: string): void {
+  const cookie = sessionManager.createSessionCookie(sessionId);
+  const { sameSite } = cookie.attributes;
+  setCookie(c, cookie.name, cookie.value, {
+    ...cookie.attributes,
+    sameSite: sameSite
+      ? ((sameSite.charAt(0).toUpperCase() + sameSite.slice(1)) as
+          | "Strict"
+          | "Lax"
+          | "None")
+      : undefined,
+  });
+}
 
 // Export types for use elsewhere
 export type { ISession, IUser };

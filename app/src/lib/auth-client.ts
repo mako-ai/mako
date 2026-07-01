@@ -158,23 +158,48 @@ class AuthClient {
   }
 
   /**
-   * Get current user
+   * Get current user.
+   *
+   * A page load during a rolling deploy can briefly hit a starting/draining
+   * instance (or a momentarily unreachable database) and fail with a network
+   * error or 5xx even though the session cookie is still valid. Treating that
+   * as "logged out" bounced users to `/login` on essentially every redeploy.
+   *
+   * So we retry transient failures with backoff to ride out the deploy window
+   * and only conclude the user is unauthenticated on a definitive `401`.
    */
   async getMe(): Promise<User | null> {
-    try {
-      const response = await fetch(this.buildUrl("/auth/me"), {
-        method: "GET",
-        credentials: "include",
-      });
+    const backoffsMs = [300, 800, 1500, 2500];
 
-      if (response.status === 401) {
-        return null;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await fetch(this.buildUrl("/auth/me"), {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+
+        // Definitive answer from the server — the session is genuinely gone.
+        if (response.status === 401) {
+          return null;
+        }
+
+        if (response.ok) {
+          const data = await this.handleResponse<{ user: User }>(response);
+          return data.user;
+        }
+        // Other statuses (502/503/504/etc.) are likely a deploy blip — retry.
+      } catch {
+        // Network error — likely a deploy blip — retry.
       }
 
-      const data = await this.handleResponse<{ user: User }>(response);
-      return data.user;
-    } catch (error) {
-      return null;
+      const backoff = backoffsMs[attempt];
+      if (backoff === undefined) {
+        // Exhausted retries without a definitive answer (extended outage);
+        // fall back to unauthenticated so the app doesn't hang.
+        return null;
+      }
+      await new Promise(resolve => setTimeout(resolve, backoff));
     }
   }
 
