@@ -178,7 +178,11 @@ See the [docs](https://docs.mako.ai) for full GCS/S3 provisioning instructions.
    Copy `.env.example` (if available) or create `.env`:
 
    ```env
-   DATABASE_URL=mongodb://localhost:27017/mako
+   # Local development connects to the shared `dev` database, an Atlas DB that is
+   # refreshed nightly from production. Grab the `dev` connection string from the
+   # team vault. (`staging` backs non-migration PR previews; never point local at
+   # `production`.)
+   DATABASE_URL=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/dev
    ENCRYPTION_KEY=your_32_character_hex_key_for_encryption
    WEB_API_PORT=8080
    BASE_URL=http://localhost:8080

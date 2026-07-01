@@ -16,6 +16,14 @@ description: Mako monorepo essentials — entry points, env, key directories, an
 
 `DATABASE_URL`, `WEB_API_PORT=8080`, `BASE_URL=http://localhost:8080`, `CLIENT_URL=http://localhost:5173`
 
+Database environments (single Atlas cluster, different DB names):
+
+- `dev` — local development target (`DATABASE_URL`). Refreshed nightly from prod.
+- `staging` — non-migration PR previews (migration PRs get an ephemeral `staging_pr_<N>` copied fresh from prod). Refreshed nightly from prod.
+- `production` — prod. Never point local at it.
+
+Refresh `dev` locally with `./restore.sh` (dumps prod → `DATABASE_URL`, excluding the heavy `webhookevents` + `flow_executions`; pass `--include-sync` to include them).
+
 ## Key Directories
 
 | Area | Path |
