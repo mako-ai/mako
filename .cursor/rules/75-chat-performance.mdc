@@ -106,6 +106,35 @@ content rendered, no auto-collapse *timer* that fires once content already sits
 below the block. Collapse exactly once, at the block's own finish, then leave it
 alone.
 
+## Reasoning-block identity & dedup (`reasoning-groups.ts`)
+
+The latch above only holds if a thinking block keeps a **stable identity** and a
+**stable streaming flag**. The AI SDK's `ReasoningUIPart` has **no `id`**, only
+`state: 'streaming' | 'done'`. Three rules keep blocks stable:
+
+1. **Drive the streaming flag off `part.state`, not an index heuristic.**
+   `getStreamingReasoningGroupStart` force-expands the **last** reasoning group
+   only while its trailing part is `state === 'streaming'`. `state` flips to
+   `'done'` exactly once (at reasoning-end), so it does not thrash per token the
+   way "the group owning the last array part" did (empty reasoning parts and
+   `step-start` markers arriving at the tail used to flip it every chunk →
+   expand/collapse blinking). Parts rebuilt from history carry no `state`, so a
+   last-part fallback is used there (and the render gates on `isStreamingNow`).
+2. **A `step-start` marker does NOT break a reasoning run.** Multi-step loops and
+   resume/continuation replay interleave `step-start` between thinking segments
+   (and between a partial reasoning part and its replayed copy). `step-start`
+   bridges the run; only a real tool/text part starts a new block.
+3. **Dedupe overlapping reasoning within a run.** Continuation-merge and
+   resumable-stream replay inject duplicate reasoning parts (a partial `"ABC"`
+   next to the replayed `"ABC more…"`). `computeReasoningGroups` collapses them
+   by Anthropic `signature`, then exact text, then prefix-superset (keep the
+   longest) — the same keys the backend's `dedupeAssistantReasoning` uses. Never
+   `join("\n\n")` raw parts: that renders the same thinking twice.
+
+Blocks are keyed **`reasoning-group-<ordinal>`** (position among reasoning
+groups), never `reasoning-<partIndex>` — a shifting array index would remount
+the block, resetting its `finished` latch and re-expanding it.
+
 ## End-of-turn settle (`stickTailUntilRef` + turn-end snapshot)
 
 The bottom-pin runs while `isLoadingRef` is true **plus a bounded settling

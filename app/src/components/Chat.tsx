@@ -1008,6 +1008,20 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
 
   const reasoningGroups = computeReasoningGroups(parts);
 
+  // Stable identity for each reasoning block: its ordinal position among the
+  // message's reasoning groups (0, 1, 2…). Keying by this instead of the raw
+  // part index means an inserted `step-start`/tool/text part shifting the array
+  // can't remount an existing block — a remount would reset its `finished`
+  // latch and make it re-expand (flicker). Reasoning groups only ever append,
+  // so ordinals are stable for the lifetime of a block.
+  const reasoningGroupOrdinals = new Map<number, number>();
+  {
+    let ordinal = 0;
+    for (const start of reasoningGroups.keys()) {
+      reasoningGroupOrdinals.set(start, ordinal++);
+    }
+  }
+
   const lastPartIndex = parts.length - 1;
   const lastPart = parts.at(-1);
   const isLastPartText =
@@ -1168,7 +1182,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             if (!group.text && !isGroupStreaming) return null;
             return (
               <ReasoningDisplay
-                key={`reasoning-${partIndex}`}
+                key={`reasoning-group-${reasoningGroupOrdinals.get(partIndex) ?? partIndex}`}
                 reasoningText={group.text}
                 isStreaming={isGroupStreaming}
                 paletteMode={paletteMode}
