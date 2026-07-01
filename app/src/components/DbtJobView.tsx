@@ -32,6 +32,7 @@ import {
 import { CronExpressionParser } from "cron-parser";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useDbtStore, type DbtJobItem } from "../store/dbtStore";
+import { useIsMobile } from "../hooks/useIsMobile";
 import DbtRunHistory from "./DbtRunHistory";
 
 // Fast cadence while a run is active; slower idle cadence so scheduled runs
@@ -78,6 +79,7 @@ export default function DbtJobView({
 }) {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
+  const isMobile = useIsMobile();
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
   const jobs = useDbtStore(s => s.jobsByProject[projectId]);
@@ -301,11 +303,14 @@ export default function DbtJobView({
         backgroundColor: "background.paper",
       }}
     >
-      {/* Line 1 — identity + actions */}
+      {/* Line 1 — identity + actions. Wraps on mobile so the action buttons
+          stay reachable instead of overflowing a narrow viewport. */}
       <Box
         sx={{
           display: "flex",
           alignItems: "center",
+          flexWrap: isMobile ? "wrap" : "nowrap",
+          rowGap: 0.5,
           gap: 1,
           px: 1.5,
           pt: 0.75,

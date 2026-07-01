@@ -29,14 +29,20 @@ import {
   Download as DownloadIcon,
   Search as SearchIcon,
   Square as StopIcon,
+  ChevronDown as ChevronDownIcon,
+  ChevronRight as ChevronRightIcon,
+  ArrowUp as ArrowUpIcon,
+  ArrowDown as ArrowDownIcon,
 } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import {
   useDbtStore,
   type DbtRunItem,
   type DbtArtifactKind,
+  type DbtStepResult,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { useIsMobile } from "../hooks/useIsMobile";
 
 const ARTIFACT_LABELS: Record<DbtArtifactKind, string> = {
   manifest: "manifest.json",
@@ -108,6 +114,44 @@ function runSourceLabel(
   return commandSummary(run);
 }
 
+/** Sortable columns of the node-results table. */
+type NodeSortKey =
+  | "name"
+  | "resourceType"
+  | "status"
+  | "executionTimeMs"
+  | "rowsAffected";
+type SortDir = "asc" | "desc";
+
+const NODE_COLUMNS: { key: NodeSortKey; label: string }[] = [
+  { key: "name", label: "Node" },
+  { key: "resourceType", label: "Type" },
+  { key: "status", label: "Status" },
+  { key: "executionTimeMs", label: "Time" },
+  { key: "rowsAffected", label: "Rows" },
+];
+
+// Numeric columns default to descending (largest first); text columns ascending.
+const NUMERIC_SORT_KEYS = new Set<NodeSortKey>([
+  "executionTimeMs",
+  "rowsAffected",
+]);
+
+function compareSteps(
+  a: DbtStepResult,
+  b: DbtStepResult,
+  key: NodeSortKey,
+): number {
+  switch (key) {
+    case "executionTimeMs":
+      return a.executionTimeMs - b.executionTimeMs;
+    case "rowsAffected":
+      return (a.rowsAffected ?? -1) - (b.rowsAffected ?? -1);
+    default:
+      return String(a[key] ?? "").localeCompare(String(b[key] ?? ""));
+  }
+}
+
 export interface DbtRunHistoryProps {
   workspaceId: string | undefined;
   projectId: string;
@@ -138,10 +182,15 @@ export default function DbtRunHistory({
   const cancelRun = useDbtStore(s => s.cancelRun);
   const downloadRunArtifact = useDbtStore(s => s.downloadRunArtifact);
 
+  const isMobile = useIsMobile();
   const logScrollRef = useRef<HTMLDivElement | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [logQuery, setLogQuery] = useState("");
   const [cancelling, setCancelling] = useState(false);
+  // Nodes table: default sort by execution time, slowest first.
+  const [sortKey, setSortKey] = useState<NodeSortKey>("executionTimeMs");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [nodesCollapsed, setNodesCollapsed] = useState(false);
 
   const selectedRun = selectedRunId ? runDetails[selectedRunId] : undefined;
   const selectedRunListItem = runs.find(run => run._id === selectedRunId);
@@ -150,12 +199,26 @@ export default function DbtRunHistory({
   const isActiveSelection =
     selectedStatus === "running" || selectedStatus === "queued";
 
-  // Reset filters + cancel state when switching runs.
+  // Reset filters, sort + cancel state when switching runs.
   useEffect(() => {
     setStatusFilter("all");
     setLogQuery("");
     setCancelling(false);
+    setSortKey("executionTimeMs");
+    setSortDir("desc");
+    setNodesCollapsed(false);
   }, [selectedRunId]);
+
+  const handleSort = useCallback((key: NodeSortKey) => {
+    setSortKey(prevKey => {
+      if (prevKey === key) {
+        setSortDir(prevDir => (prevDir === "asc" ? "desc" : "asc"));
+        return prevKey;
+      }
+      setSortDir(NUMERIC_SORT_KEYS.has(key) ? "desc" : "asc");
+      return key;
+    });
+  }, []);
 
   const stepResults = useMemo(
     () => selectedRun?.stepResults ?? [],
@@ -172,6 +235,15 @@ export default function DbtRunHistory({
         : stepResults.filter(s => s.status === statusFilter),
     [stepResults, statusFilter],
   );
+  const sortedSteps = useMemo(() => {
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...filteredSteps].sort((a, b) => {
+      const primary = compareSteps(a, b, sortKey);
+      // Stable tie-break by node name so equal values keep a deterministic order.
+      const cmp = primary !== 0 ? primary : a.name.localeCompare(b.name);
+      return cmp * dir;
+    });
+  }, [filteredSteps, sortKey, sortDir]);
   const visibleLogs = useMemo(() => {
     const logs = selectedRun?.logs ?? [];
     const query = logQuery.trim().toLowerCase();
@@ -274,14 +346,17 @@ export default function DbtRunHistory({
 
   return (
     <Box sx={{ height: "100%", minHeight: 0 }}>
-      <PanelGroup direction="horizontal">
+      {/* Desktop: side-by-side list + detail. Mobile: stacked vertically so the
+          run list and its details are both readable on a narrow screen. */}
+      <PanelGroup direction={isMobile ? "vertical" : "horizontal"}>
         {/* Run history list */}
-        <Panel defaultSize={showSource ? 32 : 25} minSize={15}>
+        <Panel defaultSize={isMobile ? 30 : showSource ? 32 : 25} minSize={15}>
           <Box
             sx={{
               height: "100%",
               overflow: "auto",
-              borderRight: "1px solid",
+              borderRight: isMobile ? "none" : "1px solid",
+              borderBottom: isMobile ? "1px solid" : "none",
               borderColor: "divider",
             }}
           >
@@ -421,10 +496,14 @@ export default function DbtRunHistory({
           </Box>
         </Panel>
         <PanelResizeHandle
-          style={{ width: 4, background: "var(--mui-palette-divider)" }}
+          style={
+            isMobile
+              ? { height: 4, background: "var(--mui-palette-divider)" }
+              : { width: 4, background: "var(--mui-palette-divider)" }
+          }
         />
         {/* Run details */}
-        <Panel defaultSize={showSource ? 68 : 75} minSize={30}>
+        <Panel defaultSize={isMobile ? 70 : showSource ? 68 : 75} minSize={30}>
           {!selectedRun && !selectedRunListItem ? (
             <Box sx={{ p: 2 }}>
               <Typography variant="caption" color="text.secondary">
@@ -616,11 +695,14 @@ export default function DbtRunHistory({
                 );
               })()}
 
-              {/* Node results table + status filter (screenshot 46). */}
+              {/* Node results table + status filter (screenshot 46). Sortable
+                  headers (default: slowest first) and a collapse toggle so the
+                  table can be tucked away to give the logs more room. */}
               {stepResults.length > 0 && (
                 <Box
                   sx={{
-                    maxHeight: "45%",
+                    maxHeight: nodesCollapsed ? "none" : "45%",
+                    flexShrink: 0,
                     display: "flex",
                     flexDirection: "column",
                     borderBottom: "1px solid",
@@ -636,6 +718,24 @@ export default function DbtRunHistory({
                       py: 0.5,
                     }}
                   >
+                    <Tooltip
+                      title={nodesCollapsed ? "Expand nodes" : "Collapse nodes"}
+                    >
+                      <IconButton
+                        size="small"
+                        onClick={() => setNodesCollapsed(prev => !prev)}
+                        aria-label={
+                          nodesCollapsed ? "Expand nodes" : "Collapse nodes"
+                        }
+                        aria-expanded={!nodesCollapsed}
+                      >
+                        {nodesCollapsed ? (
+                          <ChevronRightIcon size={14} />
+                        ) : (
+                          <ChevronDownIcon size={14} />
+                        )}
+                      </IconButton>
+                    </Tooltip>
                     <Select
                       size="small"
                       value={statusFilter}
@@ -661,82 +761,125 @@ export default function DbtRunHistory({
                       {filteredSteps.length === 1 ? "" : "s"}
                     </Typography>
                   </Box>
-                  <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-                    <Box
-                      component="table"
-                      sx={{
-                        width: "100%",
-                        fontSize: "0.75rem",
-                        borderCollapse: "collapse",
-                        "& td, & th": {
-                          borderBottom: "1px solid",
-                          borderColor: "divider",
-                          p: 0.5,
-                          textAlign: "left",
-                        },
-                      }}
-                    >
-                      <thead>
-                        <tr>
-                          <th>Node</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                          <th>Time</th>
-                          <th>Rows</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredSteps.map(step => (
-                          <Box
-                            component="tr"
-                            key={step.uniqueId}
-                            sx={{
-                              color:
-                                step.status === "error" ||
-                                step.status === "fail"
-                                  ? "error.main"
-                                  : step.status === "warn"
-                                    ? "warning.main"
-                                    : "inherit",
-                            }}
-                          >
-                            <td>{step.name}</td>
-                            <td>{step.resourceType}</td>
-                            <td>
-                              {step.status}
-                              {step.message &&
-                              (step.status === "error" ||
-                                step.status === "fail" ||
-                                step.status === "warn" ||
-                                step.resourceType === "source")
-                                ? ` — ${step.message}`
-                                : ""}
-                            </td>
-                            <td>{(step.executionTimeMs / 1000).toFixed(2)}s</td>
-                            <td>{step.rowsAffected ?? ""}</td>
-                            <td>
-                              {step.resourceType === "model" && (
-                                <Tooltip title="Open model">
-                                  <IconButton
-                                    size="small"
-                                    onClick={() =>
-                                      focusDbtFileTab(
-                                        projectId,
-                                        `models/${step.name}.sql`,
-                                      )
-                                    }
+                  {!nodesCollapsed && (
+                    <Box sx={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                      <Box
+                        component="table"
+                        sx={{
+                          width: "100%",
+                          fontSize: "0.75rem",
+                          borderCollapse: "collapse",
+                          "& td, & th": {
+                            borderBottom: "1px solid",
+                            borderColor: "divider",
+                            p: 0.5,
+                            textAlign: "left",
+                          },
+                        }}
+                      >
+                        <thead>
+                          <tr>
+                            {NODE_COLUMNS.map(col => {
+                              const active = sortKey === col.key;
+                              return (
+                                <Box
+                                  component="th"
+                                  key={col.key}
+                                  onClick={() => handleSort(col.key)}
+                                  role="button"
+                                  aria-sort={
+                                    active
+                                      ? sortDir === "asc"
+                                        ? "ascending"
+                                        : "descending"
+                                      : "none"
+                                  }
+                                  sx={{
+                                    cursor: "pointer",
+                                    userSelect: "none",
+                                    whiteSpace: "nowrap",
+                                    fontWeight: active ? 700 : 600,
+                                    color: active
+                                      ? "text.primary"
+                                      : "text.secondary",
+                                    "&:hover": { color: "text.primary" },
+                                  }}
+                                >
+                                  <Box
+                                    sx={{
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      gap: 0.25,
+                                    }}
                                   >
-                                    <ModelIcon size={12} />
-                                  </IconButton>
-                                </Tooltip>
-                              )}
-                            </td>
-                          </Box>
-                        ))}
-                      </tbody>
+                                    {col.label}
+                                    {active &&
+                                      (sortDir === "asc" ? (
+                                        <ArrowUpIcon size={11} />
+                                      ) : (
+                                        <ArrowDownIcon size={11} />
+                                      ))}
+                                  </Box>
+                                </Box>
+                              );
+                            })}
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedSteps.map(step => (
+                            <Box
+                              component="tr"
+                              key={step.uniqueId}
+                              sx={{
+                                color:
+                                  step.status === "error" ||
+                                  step.status === "fail"
+                                    ? "error.main"
+                                    : step.status === "warn"
+                                      ? "warning.main"
+                                      : "inherit",
+                              }}
+                            >
+                              <td>{step.name}</td>
+                              <td>{step.resourceType}</td>
+                              <td>
+                                {step.status}
+                                {step.message &&
+                                (step.status === "error" ||
+                                  step.status === "fail" ||
+                                  step.status === "warn" ||
+                                  step.resourceType === "source")
+                                  ? ` — ${step.message}`
+                                  : ""}
+                              </td>
+                              <td>
+                                {(step.executionTimeMs / 1000).toFixed(2)}s
+                              </td>
+                              <td>{step.rowsAffected ?? ""}</td>
+                              <td>
+                                {step.resourceType === "model" && (
+                                  <Tooltip title="Open model">
+                                    <IconButton
+                                      size="small"
+                                      onClick={() =>
+                                        focusDbtFileTab(
+                                          projectId,
+                                          `models/${step.name}.sql`,
+                                        )
+                                      }
+                                    >
+                                      <ModelIcon size={12} />
+                                    </IconButton>
+                                  </Tooltip>
+                                )}
+                              </td>
+                            </Box>
+                          ))}
+                        </tbody>
+                      </Box>
                     </Box>
-                  </Box>
+                  )}
                 </Box>
               )}
 
