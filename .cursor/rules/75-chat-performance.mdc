@@ -64,56 +64,61 @@ DOM size, memory, paint, and scroll, especially on mobile. Memoization stops
 *re-renders* but does nothing about *mount cost / DOM size*; virtualization is
 the only thing that does.
 
-**Tool cards must NOT shrink mid-turn (the load-bearing anti-bounce rule).** A
-whole assistant turn streams into a **single** Virtuoso item. If that item's
-height ever **decreases** while the bottom-pin is engaged, the view snaps
-upward to the new (higher) bottom — a visible scroll bounce. The original
-culprit was `StreamingToolCard` auto-collapsing a finished card 800ms after it
-resolved *while the rest of the turn kept streaming*: every tool call produced a
-shrink → a snap (with the default 300ms `Collapse` animation it was worse — the
-shrink spanned ~18 frames and `totalListHeightChanged` doesn't fire on every
-sub-pixel frame, so Virtuoso's resize anchoring drifted `scrollTop` up on the
-frames the pin missed → oscillating jitter).
+**Anti-bounce rule: a finished block's height must never change AFTER a later
+block starts rendering below it.** A whole assistant turn streams into a
+**single** Virtuoso item. The bounce/blink happens when an *already-finished*
+block (a resolved tool card, a completed thinking block) changes height while
+content below it is streaming — the shrink/grow shoves everything under it, and
+Virtuoso's resize anchoring fights the bottom-pin. The original culprit was
+`StreamingToolCard` auto-collapsing a finished card **800ms after** it resolved
+*while the rest of the turn kept streaming below it*: by then the collapse
+shifted content that already existed underneath → a snap per tool call (an
+*animated* 300ms `Collapse` made it worse — the shrink spanned ~18 frames and
+`totalListHeightChanged` doesn't fire on every sub-pixel frame, so the pin
+drifted → oscillating jitter).
 
-The fix has two parts, both keyed off a `turnStreaming` prop
-(`isStreaming && isLastMessage`) threaded from `ChatMessageRow`:
+The fix is **collapse-on-finish + latch**, applied per block (NOT deferred to
+turn end):
 
-1. **Defer collapse until the turn settles.** While `turnStreaming`, finished
-   tool cards stay **expanded** (`StreamingToolCard`'s collapse effect early-
-   returns). The streaming message's height is therefore **monotonic** (it only
-   grows), so the view follows the tail straight down with zero upward snaps.
-   Cards collapse ~300ms after the turn ends — inside `Chat`'s ~700ms post-turn
-   `stickTailUntilRef` pin window, so that end-of-turn shrink stays bottom-
-   pinned too. (Verified: a 4-query streaming turn went from 4–5 upward jumps,
-   worst −254px, to **0** upward jumps with the view glued, `avgLag≈7px`.)
-2. **The collapse is always instant** (`<Collapse timeout={0}>`). When the
-   deferred cards finally collapse at turn end, all of them shrink at once (the
-   message can lose ~1000px). An *animated* (300ms) collapse spans ~18 frames
-   and `totalListHeightChanged` doesn't fire on every frame, so the pin drifts
-   and strands the view above the conclusion — the same failure mode as the
-   streaming bounce, just at the end. A single-frame (instant) collapse fires
-   one height change the pin catches in one shot: the conclusion stays fixed at
-   the viewport bottom while the content above it compacts. (Verified: settle
-   `maxLag` dropped from ~1006px with the animation to ~1px instant.)
+1. **Each block collapses the instant *it* finishes** — at its own finish
+   transition, while it is still the streaming *tail* and before the next
+   reasoning/tool/text part appends below it. Collapsing at the tail is
+   absorbed by the bottom-pin (you're watching the bottom); the block is then
+   fixed for the rest of the turn. `StreamingToolCard` collapses when it reaches
+   a terminal state (`output-available`/`error`); `ReasoningDisplay` collapses
+   when its group stops being the streaming group.
+2. **The collapse is a single discrete frame.** `StreamingToolCard`'s body uses
+   `<Collapse timeout={0}>` and `ReasoningDisplay` collapses via conditional
+   render (no MUI `Collapse`). One height change → one `totalListHeightChanged`
+   → the pin catches it in one shot. Never use an *animated* collapse on a
+   streaming turn (multi-frame shrink drifts the pin between resize callbacks).
+3. **Finished blocks latch — never auto-reopen or re-collapse.** A resolved tool
+   card's `isDone`/`isError`/`isActive` are monotonic and the memo comparator
+   freezes terminal cards, so its collapse effect runs once. `ReasoningDisplay`
+   holds a `finished` latch (`isOpen = userToggled ? userOpen : isStreaming &&
+   !finished`) so a spurious `isStreaming` flip can never re-expand a completed
+   thinking block. Only a **user** toggle may change a finished block after it
+   collapses.
 
-`turnStreaming` is in the `StreamingToolCard` memo comparator (it flips at most
-once per turn, so it adds no per-chunk renders) so terminal cards still re-run
-their collapse effect when the turn ends.
-
-**Never reintroduce a mid-turn height *decrease* on the streaming message**
-(auto-collapsing cards, closing reasoning, removing rows). Append-only growth is
-what keeps the tail smooth.
+**Never touch a finished (non-tail) block's height mid-turn** — no re-opening a
+collapsed thinking block, no deferring a tool-card collapse until after later
+content rendered, no auto-collapse *timer* that fires once content already sits
+below the block. Collapse exactly once, at the block's own finish, then leave it
+alone.
 
 ## End-of-turn settle (`stickTailUntilRef` + turn-end snapshot)
 
 The bottom-pin runs while `isLoadingRef` is true **plus a bounded settling
-window** after the turn ends (deferred collapses fire ~300ms later). Two
-non-obvious details make the settle land *on the conclusion* instead of
-stranding at the message top:
+window** after the turn ends. Blocks now collapse per-block *during* the turn,
+so there is no mass collapse deferred to turn end — but the **last live block**
+(the final thinking block or a trailing tool card) still collapses as `status`
+leaves "streaming", and that final shrink needs the pin. Two non-obvious details
+make the settle land *on the conclusion* instead of stranding at the message
+top:
 
-- **Window length must outlast the deferred collapse.** It is `1200ms`
-  (collapse delay + instant collapse + margin), not the old `700ms`.
-- **The settling pin must NOT gate on the live `isAtBottom`.** The big
+- **Window length is `1200ms`** (comfortable margin around the final block's
+  single-frame collapse), not the old `700ms`.
+- **The settling pin must NOT gate on the live `isAtBottom`.** The
   end-of-turn shrink momentarily flips `isAtBottom` false, which would disengage
   the pin and let Virtuoso re-anchor to the item top. Instead, `pinToBottom`
   snapshots whether the user was at the bottom *as the turn ended*
@@ -155,10 +160,10 @@ bounces the view ("jumping/blinking"). So `followOutput={false}`.
 
 **Why not a per-`messages`-tick rAF.** The previous fix pinned the bottom in a
 one-shot `requestAnimationFrame` scheduled on each (throttled, ~50ms) `messages`
-tick. That only covers ~1 of every 3 frames. The interior blocks that change
-height asynchronously and non-monotonically — MUI `Collapse` on the thinking
-block + tool cards, and the `modify_console` diff re-render — animate over
-~300ms on frames where `messages` does **not** tick. On those frames Virtuoso's
+tick. That only covers ~1 of every 3 frames. Interior blocks that change
+height asynchronously on frames where `messages` does **not** tick — a
+single-frame collapse when a block finishes, the `modify_console` diff
+re-render, late image/table layout — race the pin. On those frames Virtuoso's
 resize anchoring nudges `scrollTop` **up** (toward the message top) to keep
 content stable, and with no pin to counter it the view paints partway up — then
 the next `messages` tick pins it back down. That alternation **is** the

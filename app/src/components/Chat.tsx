@@ -586,14 +586,21 @@ const ReasoningDisplay = React.memo(
     const [userToggled, setUserToggled] = React.useState(false);
     const [userOpen, setUserOpen] = React.useState(false);
     const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+    // Latches true once this block has streamed and then stopped. A finished
+    // thinking block must NEVER auto-reopen: reopening it would grow a block
+    // sitting ABOVE the currently-streaming one, shifting everything below and
+    // making the chat jump. Once done it stays collapsed unless the user opens
+    // it. (A given reasoning group streams exactly once, so latching is safe.)
+    const [finished, setFinished] = React.useState(false);
     // Track whether this component was live-streamed (vs loaded from history)
     const wasLiveRef = React.useRef(false);
     const startTimeRef = React.useRef<number | null>(null);
     const scrollRef = React.useRef<HTMLDivElement>(null);
 
-    // Auto-open while streaming, auto-close when done.
-    // If the user manually toggled, respect their choice.
-    const isOpen = userToggled ? userOpen : isStreaming;
+    // Auto-open only while THIS block is actively streaming and not yet
+    // finished; auto-close the moment it finishes. If the user manually
+    // toggled, respect their choice.
+    const isOpen = userToggled ? userOpen : isStreaming && !finished;
 
     const handleToggle = () => {
       setUserToggled(true);
@@ -602,7 +609,9 @@ const ReasoningDisplay = React.memo(
 
     // Timer: start counting when streaming begins, freeze when it stops
     React.useEffect(() => {
-      if (isStreaming) {
+      // Never restart a block that already finished (guards against a spurious
+      // `isStreaming` flip re-opening / re-timing a completed block).
+      if (isStreaming && !finished) {
         // Mark that this component saw a live session
         wasLiveRef.current = true;
         // Reset for new streaming session
@@ -621,9 +630,11 @@ const ReasoningDisplay = React.memo(
         return () => clearInterval(interval);
       }
       // Streaming just stopped — freeze the elapsed time
-      // (elapsedSeconds already holds the last value)
+      // (elapsedSeconds already holds the last value) and latch this block as
+      // done so it can never auto-reopen.
       startTimeRef.current = null;
-    }, [isStreaming]);
+      if (wasLiveRef.current) setFinished(true);
+    }, [isStreaming, finished]);
 
     // Auto-scroll the reasoning container to the bottom while streaming
     React.useEffect(() => {
@@ -1127,7 +1138,6 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
                       }
                     : undefined
                 }
-                turnStreaming={isStreaming && isLastMessage}
                 onTitleClick={
                   consoleToolPresentation
                     ? () =>
@@ -3100,26 +3110,28 @@ const Chat: React.FC<ChatProps> = ({
   const lastAtBottomAtRef = useRef(0);
   if (isAtBottom) lastAtBottomAtRef.current = Date.now();
 
-  // Bounded settling window after a turn ends. The end-of-turn collapse — the
-  // thinking blocks closing AND every finished tool card collapsing (deferred
-  // to here, see `StreamingToolCard`) — shrinks the single streaming message by
-  // a lot, all at once. Virtuoso reacts by re-anchoring to the (now much
-  // shorter) item's TOP, which strands the view at the top of the response
-  // unless we keep pinning the bottom through the shrink.
+  // Bounded settling window after a turn ends. Tool cards and thinking blocks
+  // now collapse per-block the instant each one finishes (see
+  // `StreamingToolCard` / `ReasoningDisplay`), so there is no longer a single
+  // mass collapse deferred to turn end. What still shrinks at turn end is the
+  // LAST live block: the final thinking block (or a trailing tool card) closes
+  // when `status` leaves "streaming". Virtuoso reacts to that shrink by
+  // re-anchoring to the (now shorter) item's TOP, which can strand the view at
+  // the top of the response unless we keep pinning the bottom through it.
   //
   // The live `isAtBottom` can't gate this pin: the very shrink we're countering
   // flips `isAtBottom` to false for a few frames, which would disengage the pin
   // and let the strand happen. Instead we snapshot whether the user was at the
   // bottom *as the turn ended* (`wasAtBottomAtTurnEndRef`) and hold the bottom
-  // for the whole window based on that — so a big collapse stays pinned, but a
-  // user who had scrolled up to read history is never yanked back down.
+  // for the whole window based on that — so the final collapse stays pinned,
+  // but a user who had scrolled up to read history is never yanked back down.
   const stickTailUntilRef = useRef(0);
   const wasAtBottomAtTurnEndRef = useRef(false);
   const wasLoadingRef = useRef(isLoading);
   useEffect(() => {
     if (wasLoadingRef.current && !isLoading) {
-      // Window must outlast the deferred tool-card collapse (~300ms delay +
-      // ~300ms animation) plus margin.
+      // Hold the bottom briefly so the final block's collapse at turn end
+      // stays pinned instead of stranding the view at the message top.
       stickTailUntilRef.current = Date.now() + 1200;
       wasAtBottomAtTurnEndRef.current =
         isAtBottomRef.current || Date.now() - lastAtBottomAtRef.current < 800;
@@ -3142,10 +3154,10 @@ const Chat: React.FC<ChatProps> = ({
       pinToBottom();
       return;
     }
-    // Post-turn settle. The deferred tool-card collapse shrinks the single
-    // streaming message all at once; a raw `scrollTop` write can lose the race
-    // to Virtuoso re-anchoring the (now much shorter) item to its TOP, which
-    // strands the view at the top of the response. Virtuoso's own
+    // Post-turn settle. The final block's collapse at turn end shrinks the
+    // streaming message; a raw `scrollTop` write can lose the race to Virtuoso
+    // re-anchoring the (now shorter) item to its TOP, which strands the view at
+    // the top of the response. Virtuoso's own
     // `scrollToIndex` is authoritative — it re-targets the last item's end and
     // survives the re-measure — so use it to hold the conclusion at the bottom
     // through the collapse. Gated on the turn-end snapshot (not the live
