@@ -10,7 +10,7 @@ import {
   Divider,
 } from "@mui/material";
 import {
-  Database as MaterializeIcon,
+  DatabaseZap as MaterializeIcon,
   CalendarClock as ScheduleIcon,
   History as HistoryIcon,
   Eye as PreviewIcon,
@@ -144,15 +144,20 @@ export default function DataSourceMaterializationControls({
 
       {showMaterializeControls && (
         <>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
-            onClick={onMaterialize}
-            disabled={materializing}
-          >
-            {materializing ? "Materializing…" : "Materialize"}
-          </Button>
+          <Tooltip title="Re-materialize this query's Parquet file">
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                startIcon={<MaterializeIcon size={16} strokeWidth={1.5} />}
+                onClick={onMaterialize}
+                disabled={materializing}
+              >
+                {materializing ? "Materializing…" : "Materialize"}
+              </Button>
+            </span>
+          </Tooltip>
           {buildStatus && (
             <Chip
               size="small"

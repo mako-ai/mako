@@ -39,6 +39,7 @@ import {
   appReadFileSchema,
   materializeBindingSchema,
   setBindingScheduleSchema,
+  setBindingMaterializationSchema,
 } from "@mako/agent-tools";
 import { normalizeAppFiles, createAppScaffold } from "@mako/schemas";
 import { validateDashboardMaterializationSchedule } from "../../services/dashboard-materialization-schedule.service";
@@ -340,7 +341,8 @@ export function createServerAppTools({
           const loaded = await loadApp(appId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const file = (loaded.doc.files ?? []).find(f => f.path === path);
-          if (!file) return { success: false, error: `File not found: ${path}` };
+          if (!file)
+            return { success: false, error: `File not found: ${path}` };
           return { success: true, path: file.path, contents: file.contents };
         }),
     }),
@@ -368,7 +370,11 @@ export function createServerAppTools({
           if (binding.materialization !== "parquet") {
             return {
               success: false,
-              error: `Binding "${name}" is 'live', not 'parquet' — nothing to materialize.`,
+              error:
+                `Binding "${name}" is 'live', not 'parquet' — nothing to ` +
+                "materialize. Switch it in place with " +
+                "app_set_binding_materialization (materialization: 'parquet'), " +
+                "then call materialize_binding again. Do not delete/recreate it.",
             };
           }
           const queued = await queueAppBindingMaterialization({
@@ -376,8 +382,7 @@ export function createServerAppTools({
             appId,
             bindingId: binding.id,
           });
-          const waitMs =
-            Math.min(Math.max(waitSeconds ?? 120, 0), 600) * 1000;
+          const waitMs = Math.min(Math.max(waitSeconds ?? 120, 0), 600) * 1000;
           const deadline = Date.now() + waitMs;
           let status: string = queued.status;
           // Poll the doc until the background build terminates or the wait
@@ -556,11 +561,12 @@ export function createServerAppTools({
           let materializationSchedule;
           if (input.materializationSchedule) {
             try {
-              materializationSchedule = validateDashboardMaterializationSchedule(
-                materialization === "parquet"
-                  ? input.materializationSchedule
-                  : { ...input.materializationSchedule, enabled: false },
-              );
+              materializationSchedule =
+                validateDashboardMaterializationSchedule(
+                  materialization === "parquet"
+                    ? input.materializationSchedule
+                    : { ...input.materializationSchedule, enabled: false },
+                );
             } catch (error) {
               return {
                 success: false,
@@ -611,7 +617,14 @@ export function createServerAppTools({
         "schedule off. The binding must be 'parquet' (live bindings always run " +
         "fresh and can't be scheduled). Confirm the name with list_data_sources.",
       inputSchema: setBindingScheduleSchema,
-      execute: async ({ appId, name, enabled, cron, timezone, dataFreshnessTtlMs }) =>
+      execute: async ({
+        appId,
+        name,
+        enabled,
+        cron,
+        timezone,
+        dataFreshnessTtlMs,
+      }) =>
         wrap("app_set_binding_schedule", async () => {
           const loaded = await loadApp(appId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
@@ -625,8 +638,9 @@ export function createServerAppTools({
             return {
               success: false,
               error:
-                `Binding "${name}" is 'live'. Switch it to 'parquet' ` +
-                "materialization before scheduling refreshes.",
+                `Binding "${name}" is 'live'. Switch it to 'parquet' in place ` +
+                "with app_set_binding_materialization before scheduling " +
+                "refreshes. Do not delete/recreate it.",
             };
           }
           let schedule;
@@ -656,6 +670,71 @@ export function createServerAppTools({
             hint: schedule.enabled
               ? `"${name}" will auto-refresh on schedule (${schedule.cron}, ${schedule.timezone}). Scheduled refresh runs in production; in local dev trigger it with materialize_binding.`
               : `Scheduled refresh for "${name}" is now off.`,
+          };
+        }),
+    }),
+
+    app_set_binding_materialization: tool({
+      description:
+        "Switch an EXISTING data binding between 'live' and 'parquet' " +
+        "materialization IN PLACE — do NOT delete and recreate a binding just " +
+        "to change this. Use this when the user asks to materialize / cache a " +
+        "binding, or to turn materialization back off. Preserves the binding's " +
+        "id, code, and connection. After switching to 'parquet', call " +
+        "materialize_binding to build the artifact. Confirm the name with " +
+        "list_data_sources.",
+      inputSchema: setBindingMaterializationSchema,
+      execute: async ({
+        appId,
+        name,
+        materialization,
+        materializationSchedule,
+      }) =>
+        wrap("app_set_binding_materialization", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(appId);
+          const binding = (doc.dataBindings ?? []).find(b => b.name === name);
+          if (!binding) {
+            return { success: false, error: `No data binding named "${name}"` };
+          }
+          const next = materialization === "parquet" ? "parquet" : "live";
+          // Validate the optional schedule the same way create/schedule do.
+          // Live bindings can't be scheduled, so force it disabled.
+          let schedule = binding.materializationSchedule;
+          if (materializationSchedule) {
+            try {
+              schedule = validateDashboardMaterializationSchedule(
+                next === "parquet"
+                  ? materializationSchedule
+                  : { ...materializationSchedule, enabled: false },
+              );
+            } catch (error) {
+              return {
+                success: false,
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : "Invalid materialization schedule",
+              };
+            }
+          } else if (next === "live" && schedule?.enabled) {
+            // Turning materialization off implicitly disables any schedule.
+            schedule = { ...schedule, enabled: false };
+          }
+          binding.materialization = next;
+          binding.materializationSchedule = schedule;
+          doc.markModified("dataBindings");
+          const version = await saveAndPublish(doc);
+          return {
+            success: true,
+            binding: { name, materialization: next },
+            version,
+            hint:
+              next === "parquet"
+                ? `"${name}" is now 'parquet'. Call materialize_binding for "${name}" to build the artifact, then read it with useQuery("${name}") or useDuckDB(sql).`
+                : `"${name}" is now 'live' — it runs fresh on every read via useQuery("${name}").`,
           };
         }),
     }),

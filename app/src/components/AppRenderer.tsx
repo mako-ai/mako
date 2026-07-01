@@ -22,6 +22,7 @@ import {
   History as HistoryIcon,
   UploadCloud as PublishIcon,
   CheckCircle2 as PublishedIcon,
+  DatabaseZap as RematerializeIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
@@ -66,6 +67,7 @@ export default function AppRenderer({
   const [publishComment, setPublishComment] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishedNotice, setPublishedNotice] = useState<string | null>(null);
+  const [rematerializing, setRematerializing] = useState(false);
 
   // The sandboxed preview inherits the host theme: the current mode seeds the
   // srcdoc, and later toggles are pushed via postMessage (rebuilding the
@@ -81,6 +83,7 @@ export default function AppRenderer({
   const bumpPreview = useAppStore(s => s.bumpPreview);
   const setPreviewErrors = useAppStore(s => s.setPreviewErrors);
   const runBinding = useAppStore(s => s.runBinding);
+  const materializeAllBindings = useAppStore(s => s.materializeAllBindings);
   const persistApp = useAppStore(s => s.persistApp);
   const saveVersion = useVersionStore(s => s.saveVersion);
 
@@ -148,6 +151,39 @@ export default function AppRenderer({
       setPublishing(false);
     }
   }, [workspaceId, appId, persistApp, saveVersion, publishComment, fetchApp]);
+
+  const hasParquetBindings = !!appEntity?.dataBindings.some(
+    b => b.materialization === "parquet",
+  );
+
+  // Rebuild every parquet binding's artifact in one shot. Recovers an app whose
+  // materialized cache was lost (e.g. a DB restore) — the query definitions and
+  // bindings are untouched; only the Parquet artifacts + cache are regenerated.
+  const handleRematerialize = useCallback(async () => {
+    if (!workspaceId || rematerializing) return;
+    setRematerializing(true);
+    setPublishedNotice("Rebuilding data for all bindings…");
+    try {
+      const result = await materializeAllBindings(workspaceId, appId);
+      if (result.total === 0) {
+        setPublishedNotice("No materialized bindings to rebuild.");
+      } else if (result.failed === 0) {
+        setPublishedNotice(
+          `Rebuilt data for ${result.ready} binding${result.ready === 1 ? "" : "s"}.`,
+        );
+      } else {
+        setPublishedNotice(
+          `Rebuilt ${result.ready}/${result.total}. Failed: ${result.errors.join("; ")}`,
+        );
+      }
+    } catch (error) {
+      setPublishedNotice(
+        error instanceof Error ? error.message : "Failed to rebuild data.",
+      );
+    } finally {
+      setRematerializing(false);
+    }
+  }, [workspaceId, appId, rematerializing, materializeAllBindings]);
 
   // True from the moment a (re)built srcdoc is handed to the iframe until the
   // bootstrap posts ready/error. Loading deps from the CDN and transpiling
@@ -419,6 +455,28 @@ export default function AppRenderer({
               </span>
             </Tooltip>
           ))}
+        {canManage && hasParquetBindings && (
+          <Tooltip title="Re-materialize every query's Parquet file">
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                disabled={rematerializing}
+                startIcon={
+                  rematerializing ? (
+                    <CircularProgress size={14} />
+                  ) : (
+                    <RematerializeIcon size={16} strokeWidth={1.5} />
+                  )
+                }
+                onClick={() => void handleRematerialize()}
+              >
+                {rematerializing ? "Materializing…" : "Materialize"}
+              </Button>
+            </span>
+          </Tooltip>
+        )}
         <Tooltip title="Version history">
           <IconButton size="small" onClick={() => setHistoryOpen(true)}>
             <HistoryIcon size={18} strokeWidth={1.5} />

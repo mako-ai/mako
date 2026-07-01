@@ -167,6 +167,24 @@ interface AppActions {
     error?: string;
   }>;
 
+  /**
+   * (Re)materialize every parquet binding in an app in one shot. Runs each
+   * binding's build concurrently through `materializeBinding` (force rebuild by
+   * default) and returns an aggregate summary. Used by the "Rebuild data"
+   * toolbar action to recover an app whose artifact cache was lost (e.g. a DB
+   * restore) without deleting/recreating bindings.
+   */
+  materializeAllBindings: (
+    workspaceId: string,
+    appId: string,
+    options?: { force?: boolean; signal?: AbortSignal; timeoutMs?: number },
+  ) => Promise<{
+    total: number;
+    ready: number;
+    failed: number;
+    errors: string[];
+  }>;
+
   reset: () => void;
 }
 
@@ -710,6 +728,45 @@ export const useAppStore = create<AppStore>()(
         setLocalStatus("error", error);
         return { success: false, status: "error", error };
       }
+    },
+
+    materializeAllBindings: async (workspaceId, appId, options) => {
+      const appEntity = get().openApps[appId];
+      const parquetBindings = (appEntity?.dataBindings ?? []).filter(
+        b => b.materialization === "parquet",
+      );
+      if (parquetBindings.length === 0) {
+        return { total: 0, ready: 0, failed: 0, errors: [] };
+      }
+
+      // Build every binding concurrently. Each call queues a background build
+      // and polls to completion; the shared per-binding claim on the server
+      // dedupes against any build already in flight. Default to a force rebuild
+      // so a lost/stale cache is always regenerated.
+      const results = await Promise.all(
+        parquetBindings.map(binding =>
+          get()
+            .materializeBinding(workspaceId, appId, binding.id, {
+              force: options?.force ?? true,
+              signal: options?.signal,
+              timeoutMs: options?.timeoutMs,
+            })
+            .then(result => ({ name: binding.name, ...result })),
+        ),
+      );
+
+      // Ensure the open app reflects the freshly hydrated cache (parquetUrl)
+      // once all builds settle, so the preview can load every table.
+      await get().fetchApp(workspaceId, appId);
+      get().bumpPreview(appId);
+
+      const failures = results.filter(r => r.status !== "ready");
+      return {
+        total: parquetBindings.length,
+        ready: results.length - failures.length,
+        failed: failures.length,
+        errors: failures.map(f => `${f.name}: ${f.error ?? f.status}`),
+      };
     },
 
     reset: () => set(() => ({ ...initialState })),

@@ -39,12 +39,23 @@ export type ExecutableQuery =
 /**
  * Read-only gate for SQL materialization queries. Materialization runs
  * user/agent-editable code against the source connection, so it must never
- * execute DDL/DML. MongoDB executables are validated by their drivers.
+ * execute DDL/DML.
+ *
+ * The gate only applies to SQL — `checkPreviewQuerySafety` is a SQL analyzer
+ * that requires the statement to start with `SELECT`/`WITH`, so it would
+ * wrongly reject non-SQL executables. MongoDB executables (both structured
+ * descriptors and JS shell strings like `db.users.aggregate([...])`) and
+ * Cloudflare KV are validated by their own drivers/execution paths and are
+ * skipped here. Pass the source `databaseType` so non-SQL sources are exempt.
  */
 export function assertReadOnlyMaterializationQuery(
   executableQuery: ExecutableQuery,
+  databaseType?: string,
 ): void {
+  // Structured executables (e.g. MongoDB find/aggregate descriptors) are not SQL.
   if (typeof executableQuery !== "string") return;
+  // Non-SQL sources use their own read-only semantics, not the SQL analyzer.
+  if (databaseType === "mongodb" || databaseType === "cloudflare-kv") return;
   const safety = checkPreviewQuerySafety(executableQuery);
   if (!safety.safe) {
     throw new Error(
@@ -96,7 +107,7 @@ export async function buildQueryParquetFile(
     onBatchInserted,
   } = input;
 
-  assertReadOnlyMaterializationQuery(executableQuery);
+  assertReadOnlyMaterializationQuery(executableQuery, connection.type);
 
   let fields: FieldMeta[] = [];
   try {
