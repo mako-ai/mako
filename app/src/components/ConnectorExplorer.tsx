@@ -154,7 +154,7 @@ function ConnectorExplorer() {
         component="img"
         src={`/api/connectors/${src.type}/icon.svg`}
         alt={`${src.type} icon`}
-        sx={{ width: 20, height: 20 }}
+        sx={{ width: 20, height: 20, display: "block", flexShrink: 0 }}
       />
     );
   };

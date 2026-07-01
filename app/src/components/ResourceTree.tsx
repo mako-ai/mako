@@ -1181,17 +1181,26 @@ function ResourceTreeInner(
                 )}
               </Box>
             </ListItemIcon>
-            {!hideFolderIcon && (
-              <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
-                {getItemIcon ? (
-                  getItemIcon(node, { isExpanded })
-                ) : isExpanded ? (
-                  <FolderOpen size={16} strokeWidth={1.5} />
-                ) : (
-                  <Folder size={16} strokeWidth={1.5} />
-                )}
-              </ListItemIcon>
-            )}
+            {(() => {
+              if (hideFolderIcon) return null;
+              const folderIcon = getItemIcon ? (
+                getItemIcon(node, { isExpanded })
+              ) : isExpanded ? (
+                <FolderOpen size={16} strokeWidth={1.5} />
+              ) : (
+                <Folder size={16} strokeWidth={1.5} />
+              );
+              // Explorers can suppress a folder's icon by returning null from
+              // getItemIcon (e.g. dashboards show an icon only on dashboards,
+              // not on their containing folders). Collapse the icon column so
+              // the label sits right after the chevron, like console folders.
+              if (!folderIcon) return null;
+              return (
+                <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
+                  {folderIcon}
+                </ListItemIcon>
+              );
+            })()}
             <MuiListItemText
               primary={
                 isRenaming ? renderInlineRenameInput(node.id) : node.name
@@ -1337,7 +1346,15 @@ function ResourceTreeInner(
               sx={{ minWidth: iconColWidth, visibility: "hidden", mr: 0 }}
             />
           )}
-          <ListItemIcon sx={{ minWidth: iconColWidth, mr: 0.75 }}>
+          <ListItemIcon
+            sx={{
+              minWidth: iconColWidth,
+              // In hideFolderIcon mode the file icon occupies the chevron
+              // column. Use the same trailing gap as normal icon rows so
+              // connector/database/dashboard explorer text starts consistently.
+              mr: 0.75,
+            }}
+          >
             {getItemIcon ? getItemIcon(node) : null}
           </ListItemIcon>
           <MuiListItemText
