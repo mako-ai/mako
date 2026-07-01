@@ -54,7 +54,10 @@ interface WebhookFlowFormProps {
   flowId?: string;
   isNew?: boolean;
   onSave?: () => void;
-  onSaved?: (flowId: string) => void;
+  onSaved?: (
+    flowId: string,
+    options?: { showBackfillPanel?: boolean; notice?: string },
+  ) => void;
   onCancel?: () => void;
 }
 
@@ -598,8 +601,6 @@ export function WebhookFlowForm({
         // Refresh the flows list
         await useFlowStore.getState().fetchFlows(currentWorkspace.id);
 
-        onSaved?.(currentFlowId);
-
         if (!syncEngineOk) {
           setError(SYNC_ENGINE_PERMISSION_ERROR);
           return;
@@ -613,6 +614,18 @@ export function WebhookFlowForm({
             deleteDestination: true,
             entities: opts.resetEntities,
           });
+        }
+
+        const queuedRepartitionEntities = opts.resetEntities ?? [];
+        if (queuedRepartitionEntities.length > 0) {
+          onSaved?.(currentFlowId, {
+            showBackfillPanel: true,
+            notice: `Repartition job queued for ${queuedRepartitionEntities.join(
+              ", ",
+            )}. Watch the Stream column for progress.`,
+          });
+        } else {
+          onSaved?.(currentFlowId);
         }
 
         // Reset form to mark it as pristine
