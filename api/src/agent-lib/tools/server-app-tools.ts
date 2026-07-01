@@ -341,8 +341,9 @@ export function createServerAppTools({
           const loaded = await loadApp(appId);
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const file = (loaded.doc.files ?? []).find(f => f.path === path);
-          if (!file)
+          if (!file) {
             return { success: false, error: `File not found: ${path}` };
+          }
           return { success: true, path: file.path, contents: file.contents };
         }),
     }),
