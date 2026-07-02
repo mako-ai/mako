@@ -269,12 +269,6 @@ export default function PlanDocumentTab({
                 )}
               </Box>
             )}
-
-            {!pending && plan.output?.feedback && (
-              <Typography variant="body2" color="warning.main" mt={2}>
-                Feedback: {plan.output.feedback}
-              </Typography>
-            )}
           </Box>
         )}
       </Box>

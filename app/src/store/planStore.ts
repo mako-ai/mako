@@ -97,12 +97,13 @@ interface PlanActions {
   removeTodo: (toolCallId: string, index: number) => void;
   registerResolver: (toolCallId: string, resolver: PlanResolver) => void;
   /** Resolve the deferred tool with the current draft as `editedPlan`
-   * (omitted on cancel, matching the original PlanCard behavior). */
+   * (omitted on cancel, matching the original PlanCard behavior). Returns
+   * false when the plan is not pending or no live resolver is registered. */
   resolvePlan: (
     toolCallId: string,
     decision: PlanDecision,
     feedback?: string,
-  ) => void;
+  ) => boolean;
   /** Hydrate an already-resolved plan from message history (reload / old
    * chats). Idempotent and safe to call from effects. */
   markResolved: (toolCallId: string, output: SubmitPlanOutput) => void;
@@ -212,9 +213,9 @@ export const usePlanStore = create<PlanStore>()(
 
       resolvePlan: (toolCallId, decision, feedback) => {
         const plan = get().plans[toolCallId];
-        if (!plan || plan.status !== "pending") return;
+        if (!plan || plan.status !== "pending") return false;
         const resolver = resolvers.get(toolCallId);
-        if (!resolver) return;
+        if (!resolver) return false;
 
         const output: SubmitPlanOutput = {
           success: true,
@@ -242,6 +243,7 @@ export const usePlanStore = create<PlanStore>()(
           entry.status = decision;
           entry.output = output;
         });
+        return true;
       },
 
       markResolved: (toolCallId, output) => {
