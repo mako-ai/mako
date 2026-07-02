@@ -471,6 +471,17 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "pencil",
     preview: { field: "contents", language: "typescript" },
   },
+  app_edit_file: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing file";
+    },
+    icon: "pencil",
+    preview: { field: "newString", language: "typescript" },
+  },
   app_delete_file: {
     domain: "app",
     execution: "server",
@@ -512,6 +523,17 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
       return name ? `Binding data "${name}"` : "Creating data binding";
+    },
+    icon: "database",
+    preview: { field: "code", language: "sql" },
+  },
+  app_update_data_binding: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Updating data binding "${name}"` : "Updating data binding";
     },
     icon: "database",
     preview: { field: "code", language: "sql" },
@@ -640,10 +662,21 @@ export const AGENT_TOOL_MANIFEST = {
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
-      return path ? `Editing ${path}` : "Editing dbt file";
+      return path ? `Rewriting ${path}` : "Rewriting dbt file";
     },
     icon: "pencil",
     preview: { field: "contents", language: "sql" },
+  },
+  edit_dbt_file: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing dbt file";
+    },
+    icon: "pencil",
+    preview: { field: "newString", language: "sql" },
   },
   delete_dbt_file: {
     domain: "dbt",
