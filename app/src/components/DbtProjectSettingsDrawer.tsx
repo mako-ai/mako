@@ -33,6 +33,7 @@ import {
   ArrowLeft as BackIcon,
   ChevronRight as ChevronIcon,
   ExternalLink as ExternalLinkIcon,
+  Lock as LockIcon,
   Pencil as EditIcon,
   Plus as PlusIcon,
   Settings as SettingsIcon,
@@ -193,6 +194,10 @@ export default function DbtProjectSettingsDrawer({
   const [editDbtVersion, setEditDbtVersion] = useState("");
   const [editDefaultEnv, setEditDefaultEnv] = useState("");
   const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
+  // Branch protection (repo-bound projects): edits apply immediately (each
+  // add/remove PATCHes the project) — independent of the drawer's Edit mode.
+  const [newProtectedBranch, setNewProtectedBranch] = useState("");
+  const [savingProtection, setSavingProtection] = useState(false);
   // Per-environment variable rows, parallel to editEnvs (same index). Kept as
   // an ordered array (not a record) so typing keys never reorders or collides.
   const [editVarRows, setEditVarRows] = useState<
@@ -406,6 +411,31 @@ export default function DbtProjectSettingsDrawer({
     resetFromProject,
     selectedEnvName,
   ]);
+
+  const setProtectedBranches = useCallback(
+    async (branches: string[]) => {
+      if (!workspaceId || !projectId) return;
+      setSavingProtection(true);
+      await updateProject(workspaceId, projectId, {
+        protectedBranches: branches,
+      });
+      setSavingProtection(false);
+    },
+    [workspaceId, projectId, updateProject],
+  );
+
+  const handleAddProtectedBranch = useCallback(() => {
+    if (!project) return;
+    const branch = newProtectedBranch.trim();
+    if (!branch) return;
+    const current = project.protectedBranches ?? [];
+    if (current.includes(branch)) {
+      setNewProtectedBranch("");
+      return;
+    }
+    setNewProtectedBranch("");
+    void setProtectedBranches([...current, branch]);
+  }, [project, newProtectedBranch, setProtectedBranches]);
 
   const devConnectionName = project
     ? connectionLabel(
@@ -916,6 +946,76 @@ export default function DbtProjectSettingsDrawer({
                   Open on GitHub
                   <ExternalLinkIcon size={14} />
                 </Link>
+
+                <Box sx={{ mt: 2 }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ fontWeight: 600 }}
+                  >
+                    Protected branches
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mb: 1 }}
+                  >
+                    Direct commits to these branches are blocked in Mako —
+                    changes go through a new branch and a pull request. Enable
+                    matching branch protection on GitHub too for full coverage.
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 0.5,
+                      mb: 1,
+                    }}
+                  >
+                    {(project.protectedBranches ?? []).length === 0 && (
+                      <Typography variant="body2" color="text.secondary">
+                        No protected branches.
+                      </Typography>
+                    )}
+                    {(project.protectedBranches ?? []).map(branch => (
+                      <Chip
+                        key={branch}
+                        size="small"
+                        icon={<LockIcon size={12} />}
+                        label={branch}
+                        disabled={savingProtection}
+                        onDelete={() =>
+                          void setProtectedBranches(
+                            (project.protectedBranches ?? []).filter(
+                              b => b !== branch,
+                            ),
+                          )
+                        }
+                      />
+                    ))}
+                  </Box>
+                  <Box sx={{ display: "flex", gap: 1 }}>
+                    <TextField
+                      size="small"
+                      placeholder={project.repo.branch}
+                      value={newProtectedBranch}
+                      onChange={e => setNewProtectedBranch(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") handleAddProtectedBranch();
+                      }}
+                      sx={{ flex: 1 }}
+                    />
+                    <Button
+                      size="small"
+                      disabled={savingProtection || !newProtectedBranch.trim()}
+                      onClick={handleAddProtectedBranch}
+                    >
+                      Protect
+                    </Button>
+                  </Box>
+                </Box>
               </SettingsSection>
             )}
           </>

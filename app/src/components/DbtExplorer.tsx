@@ -59,6 +59,7 @@ import {
   Check as CheckIcon,
   Box as ProjectBoxIcon,
   Sparkles as GenerateIcon,
+  Lock as LockIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -328,9 +329,14 @@ export function DbtExplorer() {
   const deleteProject = useDbtStore(s => s.deleteProject);
   const syncProjectFromGitHub = useDbtStore(s => s.syncProjectFromGitHub);
   const gitStatusByProject = useDbtStore(s => s.gitStatusByProject);
+  const checkoutBranchByProject = useDbtStore(s => s.checkoutBranchByProject);
+  const protectedBranchesByProject = useDbtStore(
+    s => s.protectedBranchesByProject,
+  );
   const fetchGitStatus = useDbtStore(s => s.fetchGitStatus);
   const fetchGitDiff = useDbtStore(s => s.fetchGitDiff);
   const commitAndPush = useDbtStore(s => s.commitAndPush);
+  const commitToBranch = useDbtStore(s => s.commitToBranch);
   const generateCommitMessage = useDbtStore(s => s.generateCommitMessage);
   const listBranches = useDbtStore(s => s.listBranches);
   const createBranch = useDbtStore(s => s.createBranch);
@@ -374,6 +380,8 @@ export function DbtExplorer() {
   // In-IDE git dialogs
   const [commitTarget, setCommitTarget] = useState<string | null>(null);
   const [commitMessage, setCommitMessage] = useState("");
+  /** New branch name when committing from a protected (PR-only) checkout. */
+  const [commitBranchName, setCommitBranchName] = useState("");
   const [generatingMessage, setGeneratingMessage] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitResult, setGitResult] = useState<string | null>(null);
@@ -509,6 +517,22 @@ export function DbtExplorer() {
     ? gitStatusByProject[activeProjectId]
     : undefined;
   const activeChangeCount = activeStatus?.changes.length ?? 0;
+  /** The current user's checked-out branch (per-user checkout). */
+  const activeBranch = activeProjectId
+    ? (checkoutBranchByProject[activeProjectId] ??
+      activeStatus?.branch ??
+      activeProject?.repo?.branch)
+    : undefined;
+  /** True when the user's checkout is a protected (PR-only) branch. */
+  const activeBranchProtected = Boolean(
+    activeProjectId &&
+      activeBranch &&
+      (
+        protectedBranchesByProject[activeProjectId] ??
+        activeProject?.protectedBranches ??
+        []
+      ).includes(activeBranch),
+  );
 
   const handleRefresh = useCallback(() => {
     if (!workspaceId) return;
@@ -628,12 +652,12 @@ export function DbtExplorer() {
         return;
       }
       await fetchFiles(workspaceId, projectId);
-      await fetchGitStatus(workspaceId, projectId);
+      const status = await fetchGitStatus(workspaceId, projectId);
 
       const ref = result.branch ?? "remote";
       const changed = result.added + result.updated + result.deleted;
-      const kept = result.preservedLocal.length;
-      if (changed === 0 && kept === 0) {
+      const pending = status?.changes.length ?? 0;
+      if (changed === 0) {
         setSyncSnack({
           severity: "info",
           message: `Already up to date with ${ref}.`,
@@ -641,14 +665,13 @@ export function DbtExplorer() {
       } else {
         const parts = `+${result.added} ~${result.updated} −${result.deleted}`;
         setSyncSnack({
-          severity: kept > 0 ? "warning" : "success",
+          severity: "success",
           message:
             `Pulled ${ref}: ${parts}` +
-            (kept > 0
-              ? ` · kept ${kept} file${kept === 1 ? "" : "s"} with uncommitted ` +
-                "local edits. Commit them, or overwrite with the remote."
+            (pending > 0
+              ? ` · your ${pending} uncommitted change${pending === 1 ? "" : "s"} ` +
+                "stay pending on top."
               : ""),
-          projectId: kept > 0 ? projectId : undefined,
         });
       }
     },
@@ -659,6 +682,7 @@ export function DbtExplorer() {
     (projectId: string) => {
       setCommitTarget(projectId);
       setCommitMessage("");
+      setCommitBranchName("");
       setGitResult(null);
       if (workspaceId) void fetchGitStatus(workspaceId, projectId);
     },
@@ -676,14 +700,39 @@ export function DbtExplorer() {
     [workspaceId, fetchGitDiff],
   );
 
+  const commitTargetProtected = useMemo(() => {
+    if (!commitTarget) return false;
+    const branch =
+      checkoutBranchByProject[commitTarget] ??
+      gitStatusByProject[commitTarget]?.branch;
+    if (!branch) return false;
+    const protectedBranches =
+      protectedBranchesByProject[commitTarget] ??
+      projects.find(p => p._id === commitTarget)?.protectedBranches ??
+      [];
+    return protectedBranches.includes(branch);
+  }, [
+    commitTarget,
+    checkoutBranchByProject,
+    gitStatusByProject,
+    protectedBranchesByProject,
+    projects,
+  ]);
+
   const handleCommit = useCallback(async () => {
     if (!workspaceId || !commitTarget || !commitMessage.trim()) return;
+    // Protected checkout: direct commits are refused server-side — promote the
+    // drafts onto a new branch instead (then open a PR to merge).
+    if (commitTargetProtected && !commitBranchName.trim()) return;
     setGitBusy(true);
-    const result = await commitAndPush(
-      workspaceId,
-      commitTarget,
-      commitMessage.trim(),
-    );
+    const result = commitTargetProtected
+      ? await commitToBranch(
+          workspaceId,
+          commitTarget,
+          commitBranchName.trim(),
+          commitMessage.trim(),
+        )
+      : await commitAndPush(workspaceId, commitTarget, commitMessage.trim());
     setGitBusy(false);
     if (result?.committed) {
       const { added, modified, deleted } = result.pushed;
@@ -691,6 +740,7 @@ export function DbtExplorer() {
         `Pushed to ${result.branch}: +${added} ~${modified} -${deleted}`,
       );
       setCommitMessage("");
+      setCommitBranchName("");
       // Briefly show the confirmation, then close — the working tree is now
       // clean, so leaving the dialog open just shows a dead "0 changes" state.
       window.setTimeout(() => {
@@ -699,8 +749,20 @@ export function DbtExplorer() {
       }, 1500);
     } else if (result) {
       setGitResult("No changes to commit");
+    } else {
+      setGitResult(
+        useDbtStore.getState().error.projects ?? "Commit failed — try again.",
+      );
     }
-  }, [workspaceId, commitTarget, commitMessage, commitAndPush]);
+  }, [
+    workspaceId,
+    commitTarget,
+    commitMessage,
+    commitBranchName,
+    commitTargetProtected,
+    commitAndPush,
+    commitToBranch,
+  ]);
 
   const handleGenerateMessage = useCallback(async () => {
     if (!workspaceId || !commitTarget) return;
@@ -1082,11 +1144,15 @@ export function DbtExplorer() {
       if (!project?.repo) return kebab;
       const status = gitStatusByProject[parsed.projectId];
       const changeCount = status?.changes.length ?? 0;
+      const branchLabel =
+        checkoutBranchByProject[parsed.projectId] ??
+        status?.branch ??
+        project.repo.branch;
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
           <Tooltip
             title={
-              `${project.repo.owner}/${project.repo.repo} @ ${project.repo.branch}` +
+              `${project.repo.owner}/${project.repo.repo} @ ${branchLabel}` +
               (changeCount > 0 ? ` — ${changeCount} uncommitted` : "")
             }
           >
@@ -1109,7 +1175,7 @@ export function DbtExplorer() {
                   whiteSpace: "nowrap",
                 }}
               >
-                {project.repo.branch}
+                {branchLabel}
                 {changeCount > 0 ? ` •${changeCount}` : ""}
               </Box>
             </Box>
@@ -1118,7 +1184,7 @@ export function DbtExplorer() {
         </Box>
       );
     },
-    [projects, gitStatusByProject],
+    [projects, gitStatusByProject, checkoutBranchByProject],
   );
 
   const handleNewFileConfirm = useCallback(async () => {
@@ -1446,8 +1512,13 @@ export function DbtExplorer() {
                             flex: 1,
                           }}
                         >
-                          {activeStatus?.branch ?? activeProject.repo.branch}
+                          {activeBranch ?? activeProject.repo.branch}
                         </Box>
+                        {activeBranchProtected && (
+                          <Tooltip title="Protected branch — changes merge via pull request">
+                            <LockIcon size={12} strokeWidth={1.75} />
+                          </Tooltip>
+                        )}
                         {activeChangeCount > 0 && (
                           <Chip
                             label={activeChangeCount}
@@ -2107,6 +2178,35 @@ export function DbtExplorer() {
                   value={commitMessage}
                   onChange={e => setCommitMessage(e.target.value)}
                 />
+                {commitTargetProtected && (
+                  <>
+                    <Alert severity="info" sx={{ mt: 1.5 }} icon={false}>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.75,
+                        }}
+                      >
+                        <LockIcon size={14} strokeWidth={1.75} />
+                        <span>
+                          {status?.branch ?? "This branch"} is protected —
+                          changes commit to a new branch, then merge via pull
+                          request.
+                        </span>
+                      </Box>
+                    </Alert>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="New branch name"
+                      placeholder="feature/my-change"
+                      value={commitBranchName}
+                      onChange={e => setCommitBranchName(e.target.value)}
+                      sx={{ mt: 1.5 }}
+                    />
+                  </>
+                )}
                 {gitResult && (
                   <Typography
                     variant="caption"
@@ -2135,12 +2235,17 @@ export function DbtExplorer() {
             disabled={
               gitBusy ||
               !commitMessage.trim() ||
+              (commitTargetProtected && !commitBranchName.trim()) ||
               (commitTarget
                 ? (gitStatusByProject[commitTarget]?.changes.length ?? 0) === 0
                 : true)
             }
           >
-            {gitBusy ? "Pushing…" : "Commit & push"}
+            {gitBusy
+              ? "Pushing…"
+              : commitTargetProtected
+                ? "Commit to new branch"
+                : "Commit & push"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2265,8 +2370,8 @@ export function DbtExplorer() {
             display="block"
             sx={{ mt: 1 }}
           >
-            Switching pulls the selected branch and overwrites uncommitted local
-            changes.
+            Switching pulls the selected branch for you only — teammates keep
+            their own checkout, and your uncommitted changes carry over.
           </Typography>
         </DialogContent>
         <DialogActions>

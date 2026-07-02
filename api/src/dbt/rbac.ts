@@ -2,10 +2,12 @@
  * dbt RBAC policy — pure, testable access decisions for the Transforms module.
  *
  * Reads/lists (GET) are open to any member incl. viewer; viewers are otherwise
- * read-only. Deployment-config mutations (project create/delete/settings, repo
- * connect/import, repo writes, job create/edit/delete) require admin+. All
- * other writes — files, ad-hoc compile/run, run trigger/cancel/retry, repo
- * sync — are member+.
+ * read-only. Deployment-config mutations (project create/delete/settings incl.
+ * protected branches, repo connect/import, job create/edit/delete) and PR
+ * merges require admin+. All other writes — files (per-user drafts), git
+ * commit/branch/switch/PR-open on the caller's own checkout, ad-hoc
+ * compile/run, run trigger/cancel/retry, repo sync — are member+. Protected
+ * branches (PR-only) are enforced separately in the git service.
  */
 
 export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
@@ -30,10 +32,13 @@ export const DBT_ADMIN_ONLY: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /\/dbt\/projects\/[^/]+\/jobs$/ },
   { method: "PATCH", pattern: /\/dbt\/projects\/[^/]+\/jobs\/[^/]+$/ },
   { method: "DELETE", pattern: /\/dbt\/projects\/[^/]+\/jobs\/[^/]+$/ },
+  // Merging a PR is the only write path into protected branches — admin+.
+  // Other git actions (commit/branch/switch/PR-open) operate on the caller's
+  // OWN checkout + drafts and are member+; protected branches are enforced
+  // in the git service regardless of role.
   {
     method: "POST",
-    pattern:
-      /\/dbt\/projects\/[^/]+\/git\/(commit|branch|switch-branch|pull-request)$/,
+    pattern: /\/dbt\/projects\/[^/]+\/git\/merge-pull-request$/,
   },
 ];
 
