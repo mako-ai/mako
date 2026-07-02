@@ -416,6 +416,21 @@ export default function AppRenderer({
     );
   }, [effectiveMode]);
 
+  // dbt preview env changed: re-run the booted app's data hooks against the
+  // new schema (data-refresh epoch) instead of rebuilding the srcdoc — fast,
+  // and the running app keeps its UI state.
+  const lastDbtEnvRef = useRef<string | null>(null);
+  useEffect(() => {
+    const current = effectiveDbtEnv ?? null;
+    if (lastDbtEnvRef.current !== null && lastDbtEnvRef.current !== current) {
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: PREVIEW_MESSAGE.dataRefresh },
+        "*",
+      );
+    }
+    lastDbtEnvRef.current = current;
+  }, [effectiveDbtEnv]);
+
   // Rebuild the preview document whenever files/deps change (nonce bumps).
   // The theme is read from a ref on purpose: it only seeds the boot paint and
   // must not trigger an expensive rebuild on toggle (set-theme handles that).
@@ -473,51 +488,54 @@ export default function AppRenderer({
             label="Unpublished changes"
           />
         )}
+        {/* NOTE: deliberately NOT wrapped in a Tooltip — a tooltip anchored on
+            the Select stays visible while its menu is open and covers the
+            first menu items. The chip below carries the explanation. */}
         {dbtProjectId && dbtEnvInfo && effectiveDbtEnv && (
+          <Select
+            size="small"
+            variant="outlined"
+            value={effectiveDbtEnv}
+            onChange={e =>
+              setPreviewDbtEnvironment(
+                appId,
+                e.target.value === prodEnvName ? null : e.target.value,
+              )
+            }
+            sx={{ fontSize: "0.72rem", height: 26, ml: 0.5 }}
+          >
+            {dbtEnvInfo.environments
+              .filter(
+                env =>
+                  !env.ownerUserId ||
+                  env.ownerUserId === user?.id ||
+                  env.name === effectiveDbtEnv,
+              )
+              .map(env => (
+                <MenuItem key={env.name} value={env.name}>
+                  {env.name === prodEnvName
+                    ? `${env.name} (default)`
+                    : env.ownerUserId
+                      ? `${env.name} (personal)`
+                      : env.name}
+                </MenuItem>
+              ))}
+          </Select>
+        )}
+        {dbtOverrideActive && (
           <Tooltip
             title={
               "dbt data environment for THIS preview only (your view). " +
               "Published/shared viewers always read prod."
             }
           >
-            <Select
+            <Chip
               size="small"
+              color="info"
               variant="outlined"
-              value={effectiveDbtEnv}
-              onChange={e =>
-                setPreviewDbtEnvironment(
-                  appId,
-                  e.target.value === prodEnvName ? null : e.target.value,
-                )
-              }
-              sx={{ fontSize: "0.72rem", height: 26, ml: 0.5 }}
-            >
-              {dbtEnvInfo.environments
-                .filter(
-                  env =>
-                    !env.ownerUserId ||
-                    env.ownerUserId === user?.id ||
-                    env.name === effectiveDbtEnv,
-                )
-                .map(env => (
-                  <MenuItem key={env.name} value={env.name}>
-                    {env.name === prodEnvName
-                      ? `${env.name} (default)`
-                      : env.ownerUserId
-                        ? `${env.name} (personal)`
-                        : env.name}
-                  </MenuItem>
-                ))}
-            </Select>
+              label={`Previewing dbt env: ${effectiveDbtEnv}`}
+            />
           </Tooltip>
-        )}
-        {dbtOverrideActive && (
-          <Chip
-            size="small"
-            color="info"
-            variant="outlined"
-            label={`Previewing dbt env: ${effectiveDbtEnv}`}
-          />
         )}
         <Box sx={{ flex: 1 }} />
         {canManage &&

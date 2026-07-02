@@ -666,8 +666,9 @@ export const useAppStore = create<AppStore>()(
       } catch {
         /* view state only — losing persistence is harmless */
       }
-      // Re-run the app's data hooks against the new schema.
-      get().bumpPreview(appId);
+      // No preview bump here: AppRenderer watches this state and posts a
+      // data-refresh into the booted iframe, so data hooks re-run against the
+      // new schema without a (slow) srcdoc rebuild or losing app UI state.
     },
 
     fetchDbtEnvInfo: async (workspaceId, dbtProjectId) => {
