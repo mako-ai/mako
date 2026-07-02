@@ -36,8 +36,10 @@ based on what the user is currently looking at — you can switch or add modes a
   bindings. Enable ONLY when the user explicitly mentions building an app, a React app, a
   page/screen/component, installing a library, or references something visible in the active app.
 - \`transform\` — build and run dbt transformations: edit dbt project files (models, schema.yml,
-  sources), compile, test, and run models/jobs against the warehouse. Enable when the user
-  mentions dbt, transforms, models, staging/marts, \`ref()\`/\`source()\`, or running a dbt job.
+  sources), compile, test, and run models/jobs against the warehouse. Also manage the dbt
+  project's Git repo and GitHub pull requests (commit, branch, open/list/update/merge/close PRs).
+  Enable when the user mentions dbt, transforms, models, staging/marts, \`ref()\`/\`source()\`,
+  running a dbt job, or the project's branches / pull requests.
 - \`explore\` — read-only research across connections, consoles, dashboards, and memory. Enable
   when you need to investigate before committing to an action.
 
