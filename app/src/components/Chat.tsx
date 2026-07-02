@@ -60,6 +60,7 @@ import { useChat } from "@ai-sdk/react";
 import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
   DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
   type FileUIPart,
 } from "ai";
@@ -85,6 +86,8 @@ import { StreamingToolCard, type ToolPartState } from "./StreamingToolCard";
 import { ClarifyingQuestionsCard } from "./ClarifyingQuestionsCard";
 import { DbtRunCard } from "./DbtRunCard";
 import { PlanCard } from "./PlanCard";
+import { McpApprovalCard } from "./McpApprovalCard";
+import { useMcpStore } from "../store/mcpStore";
 import {
   focusPlanTab,
   syncPlanTabTitle,
@@ -430,6 +433,16 @@ interface ToolInvocationInfo {
 type AutoSendPredicateArgs = Parameters<
   typeof lastAssistantMessageIsCompleteWithToolCalls
 >[0];
+
+/**
+ * Tool-part states that are *intentionally* awaiting a human decision (MCP
+ * approval flow). Like the HITL plan/clarify tools, these must never be
+ * poisoned as "interrupted" when the stream ends — the server deliberately
+ * ends the turn and waits for the user's allow/deny.
+ */
+function isApprovalPendingState(state: unknown): boolean {
+  return state === "approval-requested" || state === "approval-responded";
+}
 
 function hasPendingAssistantToolCalls(
   messages: AutoSendPredicateArgs["messages"],
@@ -920,6 +933,7 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
   isStreaming,
   onToolClick,
   onConsoleTitleClick,
+  onMcpApprovalResponse,
   connectionIconById,
   paletteMode,
 }: ChatMessageRowProps) {
@@ -1073,6 +1087,35 @@ const ChatMessageRow = React.memo(function ChatMessageRow({
             const key = toolCallId
               ? `tool-${toolCallId}`
               : `tool-idx-${partIndex}`;
+
+            // MCP tool approval flow (Claude-style allow once / always allow).
+            // Approval states only occur for tools with `needsApproval` —
+            // in Mako that is exclusively MCP tools.
+            if (
+              rawState === "approval-requested" ||
+              rawState === "approval-responded" ||
+              rawState === "output-denied"
+            ) {
+              const approval = part.approval as
+                | { id?: string; approved?: boolean }
+                | undefined;
+              const resolution =
+                rawState === "approval-requested"
+                  ? "pending"
+                  : rawState === "output-denied" || approval?.approved === false
+                    ? "denied"
+                    : "approved";
+              return (
+                <McpApprovalCard
+                  key={key}
+                  toolName={toolName}
+                  input={part.input}
+                  approvalId={approval?.id ?? ""}
+                  resolution={resolution}
+                  onRespond={onMcpApprovalResponse}
+                />
+              );
+            }
 
             // Interactive plan-lifecycle tools: while pending they render in
             // the docked panel above the composer (Cursor-style), NOT in the
@@ -2173,7 +2216,12 @@ const Chat: React.FC<ChatProps> = ({
     if (manualStopRequestedRef.current) {
       return false;
     }
-    return lastAssistantMessageIsCompleteWithToolCalls(options);
+    // Approval responses (MCP allow/deny) resume the turn just like settled
+    // client tool calls do.
+    return (
+      lastAssistantMessageIsCompleteWithToolCalls(options) ||
+      lastAssistantMessageIsCompleteWithApprovalResponses(options)
+    );
   }, []);
 
   // Create transport once — prepareSendMessagesRequest reads all dynamic
@@ -2266,6 +2314,7 @@ const Chat: React.FC<ChatProps> = ({
     stop,
     setMessages,
     addToolOutput,
+    addToolApprovalResponse,
     resumeStream,
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
@@ -2701,6 +2750,7 @@ const Chat: React.FC<ChatProps> = ({
                 }
                 if (isHumanInTheLoopToolPartType(pt)) return false;
                 const s = (p as Record<string, unknown>).state as string;
+                if (isApprovalPendingState(s)) return false;
                 return s !== "output-available" && s !== "error";
               })
               .map(p => toolNameFromPartType(p.type as string))
@@ -2801,6 +2851,7 @@ const Chat: React.FC<ChatProps> = ({
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
             if (isHumanInTheLoopToolPartType(pt)) return false;
             const s = (p as Record<string, unknown>).state as string;
+            if (isApprovalPendingState(s)) return false;
             return s !== "output-available" && s !== "error";
           });
           if (!hasPending) return msg;
@@ -2811,6 +2862,7 @@ const Chat: React.FC<ChatProps> = ({
               if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
               if (isHumanInTheLoopToolPartType(pt)) return p;
               const s = (p as Record<string, unknown>).state as string;
+              if (isApprovalPendingState(s)) return p;
               if (s === "output-available" || s === "error") return p;
               return {
                 ...p,
@@ -3222,6 +3274,8 @@ const Chat: React.FC<ChatProps> = ({
       if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
       if (isHumanInTheLoopToolPartType(pt)) return false;
       const s = (p as Record<string, unknown>).state as string;
+      // MCP approval flow: the turn intentionally pauses here.
+      if (isApprovalPendingState(s)) return false;
       return s !== "output-available" && s !== "output-error" && s !== "error";
     });
     if (pendingToolParts.length === 0) return;
@@ -3283,7 +3337,8 @@ const Chat: React.FC<ChatProps> = ({
             if (
               s === "output-available" ||
               s === "output-error" ||
-              s === "error"
+              s === "error" ||
+              isApprovalPendingState(s)
             ) {
               return p;
             }
@@ -3344,6 +3399,7 @@ const Chat: React.FC<ChatProps> = ({
         if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
         if (isHumanInTheLoopToolPartType(pt)) return false;
         const st = (p as Record<string, unknown>).state as string;
+        if (isApprovalPendingState(st)) return false;
         return (
           st !== "output-available" && st !== "output-error" && st !== "error"
         );
@@ -3713,6 +3769,15 @@ const Chat: React.FC<ChatProps> = ({
                           input: p.input ?? {},
                         };
                       }
+                      // A persisted, unanswered MCP approval request: keep it
+                      // pending so the approval card re-renders on reload and
+                      // the user can still allow/deny.
+                      if (isApprovalPendingState(toolState)) {
+                        return {
+                          ...p,
+                          input: p.input ?? {},
+                        };
+                      }
                       return {
                         ...p,
                         state: "output-error",
@@ -4058,6 +4123,26 @@ const Chat: React.FC<ChatProps> = ({
     setToolDialogOpen(false);
     setSelectedTool(null);
   };
+
+  // Resolve an MCP tool approval request. Stable identity: reads the live
+  // useChat function via ref so ChatMessageRow memoization holds.
+  const addToolApprovalResponseRef = useRef(addToolApprovalResponse);
+  addToolApprovalResponseRef.current = addToolApprovalResponse;
+  const handleMcpApprovalResponse = useCallback(
+    ({ approvalId, approved }: { approvalId: string; approved: boolean }) => {
+      if (!approvalId) return;
+      addToolApprovalResponseRef.current({ id: approvalId, approved });
+    },
+    [],
+  );
+
+  // Load MCP tool metadata (server names, risk tiers, grantability) so the
+  // approval cards can label tools and offer "Always allow" correctly.
+  useEffect(() => {
+    if (currentWorkspace) {
+      void useMcpStore.getState().fetchToolInfo(currentWorkspace.id);
+    }
+  }, [currentWorkspace]);
 
   // Stable submit handler — reads store state at call time via getState() and refs
   // to keep the callback identity stable during streaming.
@@ -4702,6 +4787,7 @@ const Chat: React.FC<ChatProps> = ({
                 isStreaming={status === "streaming"}
                 onToolClick={handleToolClick}
                 onConsoleTitleClick={handleConsoleTitleClick}
+                onMcpApprovalResponse={handleMcpApprovalResponse}
                 connectionIconById={connectionIconById}
                 paletteMode={paletteMode}
               />

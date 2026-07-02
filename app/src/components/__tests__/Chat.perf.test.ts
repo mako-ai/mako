@@ -32,6 +32,7 @@ function makeProps(
     isStreaming: false,
     onToolClick: stableNoop,
     onConsoleTitleClick: stableNoop,
+    onMcpApprovalResponse: stableNoop,
     connectionIconById: stableConnectionIconById,
     paletteMode: "light",
     ...overrides,
