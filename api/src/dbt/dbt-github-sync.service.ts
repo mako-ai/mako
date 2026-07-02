@@ -28,6 +28,7 @@ import {
   getCheckoutBranch,
   loadWorkingTreeContents,
 } from "./dbt-working-tree.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { loggers } from "../logging";
 
 const logger = loggers.app();
@@ -330,6 +331,11 @@ async function reanchorTrackedBranch(
   project.markModified("repo");
   await project.save();
   await syncProjectBranchFromRepo(project, info.defaultBranch, updatedBy);
+  // Let open clients refetch the project so settings show the healed branch.
+  publishRealtimeEvent(project.workspaceId.toString(), {
+    type: "dbt.project.updated",
+    projectId: project._id.toString(),
+  });
 }
 
 /**
