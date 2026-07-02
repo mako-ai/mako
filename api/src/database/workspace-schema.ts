@@ -2131,14 +2131,20 @@ const FlowSchema = new Schema<IFlow>(
       },
       cron: {
         type: String,
+        // Requiredness stays keyed to `type` for back-compat: webhook flows
+        // carry the default `schedule.enabled: true` with no cron. Under the
+        // unified trigger model, "cron present when schedule is enabled" is
+        // enforced at the route boundary independent of `type` (see
+        // routes/flows.ts) and a poll trigger only exists when a cron is set
+        // (see services/flow-triggers.service.ts).
         required: function () {
           return this.type === "scheduled" && this.schedule?.enabled;
         },
         validate: {
           validator: function (v: string) {
-            // Skip validation for webhook flows
-            if (this.type === "webhook") return true;
-            if (!this.schedule?.enabled) return true;
+            // Absence is handled by `required`; when a cron is present,
+            // validate its format regardless of flow type.
+            if (!v) return true;
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");
             return fields.length === 5 || fields.length === 6;

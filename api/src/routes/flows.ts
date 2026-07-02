@@ -30,6 +30,11 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
+import { hasCdcDestinationAdapter } from "../sync-cdc/adapters/registry";
+import {
+  isUnifiedSyncFlowsEnabled,
+  resolveDefaultSyncEngine,
+} from "../services/flow-triggers.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.inngest("flow");
@@ -571,12 +576,9 @@ flowRoutes.openapi(
       const flowType = body.type || "scheduled";
       const sourceType = body.sourceType || "connector";
 
-      // Schedule cron required only when schedule is enabled
-      if (
-        flowType === "scheduled" &&
-        body.schedule?.enabled &&
-        !body.schedule?.cron
-      ) {
+      // Schedule cron required whenever a poll schedule is enabled,
+      // independent of the flow type (unified trigger model).
+      if (body.schedule?.enabled && !body.schedule?.cron) {
         return c.json(
           { success: false, error: "schedule.cron is required when enabled" },
           400,
@@ -715,16 +717,26 @@ flowRoutes.openapi(
             : undefined,
         syncMode: body.syncMode || "full",
         // Webhook flows run exclusively on the CDC engine (the legacy real-time
-        // webhook pipeline has been decommissioned). Scheduled batch flows keep
-        // the legacy direct-write engine by default.
-        syncEngine: flowType === "webhook" ? "cdc" : "legacy",
+        // webhook pipeline has been decommissioned). With UNIFIED_SYNC_FLOWS,
+        // connector flows targeting a CDC-capable table destination default to
+        // CDC too; otherwise scheduled flows keep the legacy engine.
+        syncEngine: resolveDefaultSyncEngine({
+          flowType,
+          sourceType,
+          hasTableDestination: Boolean(body.tableDestination?.connectionId),
+          destinationSupportsCdc: hasCdcDestinationAdapter(destinationType),
+        }),
         syncStateUpdatedAt: new Date(),
         enabled: true,
         createdBy: userId,
       };
 
       // Optional periodic full-backfill cadence (CDC flows only).
-      if (flowType === "webhook" && body.backfillSchedule) {
+      if (
+        (flowType === "webhook" ||
+          (isUnifiedSyncFlowsEnabled() && flowData.syncEngine === "cdc")) &&
+        body.backfillSchedule
+      ) {
         const sched = body.backfillSchedule;
         const enabled = Boolean(sched.enabled);
         const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
@@ -804,7 +816,7 @@ flowRoutes.openapi(
         destinationType ?? "",
       );
       if (
-        flowType === "webhook" &&
+        flowData.syncEngine === "cdc" &&
         destinationDriver?.requiresSoftDeleteForCdc?.()
       ) {
         // Destination's CDC path relies on tombstones for correctness.
@@ -828,6 +840,16 @@ flowRoutes.openapi(
             : undefined,
         };
       } else if (flowType === "webhook") {
+        // Unified trigger model: a webhook flow may also carry a poll
+        // schedule (hybrid trigger set). Persist it so the scheduler's
+        // trigger-based selection picks it up.
+        if (isUnifiedSyncFlowsEnabled() && body.schedule?.enabled === true) {
+          flowData.schedule = {
+            enabled: true,
+            cron: body.schedule?.cron,
+            timezone: body.schedule?.timezone || body.timezone || "UTC",
+          };
+        }
         // Generate webhook configuration
         const requestBaseUrl = getRequestBaseUrl(c);
         const webhookEndpoint = generateWebhookEndpoint(
@@ -1015,8 +1037,12 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      // Update common fields
-      if (flow.type === "scheduled" && body.schedule) {
+      // Update common fields. Under the unified trigger model any flow may
+      // carry a poll schedule (hybrid trigger set), not only type=scheduled.
+      if (
+        body.schedule &&
+        (flow.type === "scheduled" || isUnifiedSyncFlowsEnabled())
+      ) {
         const scheduleEnabled = body.schedule.enabled === true;
         flow.schedule = {
           enabled: scheduleEnabled,

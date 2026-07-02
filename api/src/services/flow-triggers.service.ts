@@ -1,0 +1,131 @@
+/**
+ * Unified sync-flow trigger model (docs/unified-sync-flow-proposal.md).
+ *
+ * Behind the UNIFIED_SYNC_FLOWS flag, a flow's behavior is driven by an
+ * orthogonal trigger set derived from existing fields instead of the hard
+ * `type: "scheduled" | "webhook"` discriminator:
+ *
+ * - poll trigger      → `schedule.enabled` + a cron expression
+ * - webhook trigger   → `webhookConfig.enabled`
+ * - reconcile trigger → `backfillSchedule.enabled` + a cron expression
+ *
+ * This module is intentionally dependency-free (structural types only) so it
+ * can be imported from `workspace-schema.ts` without creating import cycles.
+ */
+
+export function isUnifiedSyncFlowsEnabled(): boolean {
+  return process.env.UNIFIED_SYNC_FLOWS === "true";
+}
+
+/** Structural subset of IFlow used for trigger derivation. */
+export interface FlowTriggerFields {
+  type?: "scheduled" | "webhook";
+  schedule?: {
+    enabled?: boolean;
+    cron?: string | null;
+    timezone?: string;
+  } | null;
+  webhookConfig?: {
+    enabled?: boolean;
+  } | null;
+  backfillSchedule?: {
+    enabled?: boolean;
+    cron?: string | null;
+    timezone?: string;
+  } | null;
+}
+
+export interface FlowTriggerSet {
+  /** Cron-driven poll (`schedule.enabled` with a cron expression). */
+  schedule: boolean;
+  /** Push-driven ingest (`webhookConfig.enabled`). */
+  webhook: boolean;
+  /** Periodic full reconcile (`backfillSchedule.enabled` with a cron). */
+  reconcile: boolean;
+}
+
+function hasCron(cron: string | null | undefined): boolean {
+  return typeof cron === "string" && cron.trim().length > 0;
+}
+
+export function hasScheduleTrigger(flow: FlowTriggerFields): boolean {
+  return flow.schedule?.enabled === true && hasCron(flow.schedule?.cron);
+}
+
+export function hasWebhookTrigger(flow: FlowTriggerFields): boolean {
+  return flow.webhookConfig?.enabled === true;
+}
+
+export function hasReconcileTrigger(flow: FlowTriggerFields): boolean {
+  return (
+    flow.backfillSchedule?.enabled === true &&
+    hasCron(flow.backfillSchedule?.cron)
+  );
+}
+
+export function deriveTriggerSet(flow: FlowTriggerFields): FlowTriggerSet {
+  return {
+    schedule: hasScheduleTrigger(flow),
+    webhook: hasWebhookTrigger(flow),
+    reconcile: hasReconcileTrigger(flow),
+  };
+}
+
+export function hasAnyTrigger(flow: FlowTriggerFields): boolean {
+  const triggers = deriveTriggerSet(flow);
+  return triggers.schedule || triggers.webhook || triggers.reconcile;
+}
+
+/**
+ * Back-compat `type` derivation: a flow is only "webhook" when the webhook
+ * trigger is its sole freshness source; anything with a poll schedule is
+ * "scheduled" so legacy consumers keep working.
+ */
+export function deriveFlowType(
+  flow: FlowTriggerFields,
+): "scheduled" | "webhook" {
+  const triggers = deriveTriggerSet(flow);
+  return triggers.webhook && !triggers.schedule ? "webhook" : "scheduled";
+}
+
+/**
+ * Engine default for newly created flows. Webhook flows are always CDC (the
+ * legacy real-time webhook pipeline has been decommissioned). Under the
+ * unified model, connector flows targeting a CDC-capable table destination
+ * default to CDC as well; everything else stays on the legacy engine until
+ * the Phase 5 sunset.
+ */
+export function resolveDefaultSyncEngine(params: {
+  flowType: "scheduled" | "webhook";
+  sourceType: "connector" | "database";
+  hasTableDestination: boolean;
+  destinationSupportsCdc: boolean;
+}): "cdc" | "legacy" {
+  if (params.flowType === "webhook") return "cdc";
+  if (!isUnifiedSyncFlowsEnabled()) return "legacy";
+  return params.sourceType === "connector" &&
+    params.hasTableDestination &&
+    params.destinationSupportsCdc
+    ? "cdc"
+    : "legacy";
+}
+
+/**
+ * Mongo selection for the poll-trigger scheduler (`flowSchedulerFunction`).
+ * Legacy mode partitions by `type`; unified mode selects purely on the
+ * trigger fields (a webhook flow with a poll schedule gets polled too).
+ */
+export function buildScheduledFlowSelection(
+  unified: boolean,
+): Record<string, unknown> {
+  if (!unified) {
+    return {
+      type: "scheduled",
+      "schedule.enabled": true,
+    };
+  }
+  return {
+    "schedule.enabled": true,
+    "schedule.cron": { $exists: true, $nin: [null, ""] },
+  };
+}
