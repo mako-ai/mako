@@ -83,6 +83,7 @@ import {
   DBT_JINJA_LANGUAGE_ID,
   registerDbtJinjaLanguage,
 } from "../lib/dbt-monaco";
+import { envBadgeColor } from "../lib/dbt-env";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -223,27 +224,6 @@ function buildFileNodes(
 function scheduleSummary(job: DbtJobItem): string {
   if (!job.schedule?.cron) return "manual";
   return `${job.schedule.cron} ${job.schedule.timezone ?? "UTC"}`;
-}
-
-/**
- * MUI Chip color for a job's environment badge. Prod-like envs are flagged
- * `warning` so destructive/scheduled prod runs stand out; the project default
- * and dev-like envs get `info`, everything else stays neutral.
- */
-function envBadgeColor(
-  envName: string,
-  defaultEnvironment?: string,
-): "warning" | "info" | "default" {
-  const lower = envName.trim().toLowerCase();
-  if (lower === "prod" || lower === "production") return "warning";
-  if (
-    lower === "dev" ||
-    lower === "development" ||
-    (defaultEnvironment != null && envName === defaultEnvironment)
-  ) {
-    return "info";
-  }
-  return "default";
 }
 
 /** Collapsible section header (dbt Studio "Version control" / "File explorer"). */

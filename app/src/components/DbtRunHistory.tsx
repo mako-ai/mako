@@ -42,7 +42,9 @@ import {
   type DbtArtifactKind,
   type DbtStepResult,
 } from "../store/dbtStore";
+import { useSchemaStore } from "../store/schemaStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { envBadgeColor } from "../lib/dbt-env";
 import { useIsMobile } from "../hooks/useIsMobile";
 
 const ARTIFACT_LABELS: Record<DbtArtifactKind, string> = {
@@ -182,6 +184,25 @@ export default function DbtRunHistory({
   const retryRun = useDbtStore(s => s.retryRun);
   const cancelRun = useDbtStore(s => s.cancelRun);
   const downloadRunArtifact = useDbtStore(s => s.downloadRunArtifact);
+  const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
+  const connections = useSchemaStore(s =>
+    workspaceId ? s.connections[workspaceId] : undefined,
+  );
+
+  // Tooltip resolving what an environment actually targets (connection +
+  // schema). Falls back to the bare env name for envs removed from the project
+  // config after the run happened.
+  const envTooltip = useCallback(
+    (envName: string): string => {
+      const env = project?.environments.find(e => e.name === envName);
+      if (!env) return `Environment: ${envName}`;
+      const connectionName = connections?.find(
+        c => c.id === env.connectionId,
+      )?.name;
+      return `Environment: ${envName} · ${connectionName ?? "connection"} · schema ${env.targetSchema}`;
+    },
+    [project?.environments, connections],
+  );
 
   const isMobile = useIsMobile();
   const logScrollRef = useRef<HTMLDivElement | null>(null);
@@ -426,6 +447,25 @@ export default function DbtRunHistory({
                   {run.status}
                   {isActive && <CircularProgress size={9} />}
                 </Typography>
+                {run.environment && (
+                  <Tooltip title={envTooltip(run.environment)}>
+                    <Chip
+                      label={run.environment}
+                      size="small"
+                      variant="outlined"
+                      color={envBadgeColor(
+                        run.environment,
+                        project?.defaultEnvironment,
+                      )}
+                      sx={{
+                        height: 16,
+                        fontSize: "0.62rem",
+                        flexShrink: 0,
+                        "& .MuiChip-label": { px: 0.5 },
+                      }}
+                    />
+                  </Tooltip>
+                )}
                 {run.durationMs !== undefined && (
                   <Typography variant="caption" color="text.secondary">
                     {formatDuration(run.durationMs)}
@@ -557,6 +597,20 @@ export default function DbtRunHistory({
               ),
             }}
           />
+          {selectedDetail?.environment && (
+            <Tooltip title={envTooltip(selectedDetail.environment)}>
+              <Chip
+                label={selectedDetail.environment}
+                size="small"
+                variant="outlined"
+                color={envBadgeColor(
+                  selectedDetail.environment,
+                  project?.defaultEnvironment,
+                )}
+                sx={{ height: 20 }}
+              />
+            </Tooltip>
+          )}
           <Typography
             variant="caption"
             color="text.secondary"
