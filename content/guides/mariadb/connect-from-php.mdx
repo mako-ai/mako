@@ -1,0 +1,179 @@
+---
+title: "How to Connect to MariaDB from PHP"
+description: "Connect to MariaDB from PHP with PDO and mysqli: why the MySQL drivers work, the utf8mb4 charset trap, the ed25519 authentication gotcha, RETURNING, transactions, SSL, and the errors you actually hit."
+database: "mariadb"
+category: "how-to"
+tags: ["mariadb", "php", "pdo", "mysqli", "pdo-mysql", "connection"]
+date: "2026-06-30"
+---
+
+PHP has no MariaDB-specific extension, and it does not need one. MariaDB began as a fork of MySQL and kept the wire protocol compatible, so the same two built-in extensions that talk to MySQL talk to MariaDB: the database-agnostic PDO layer with its `pdo_mysql` driver, and the MySQL-specific `mysqli` extension. For new code, PDO with `pdo_mysql` is the right default. It gives you a portable API, real prepared statements, and a clean exception model. This guide covers both supported extensions, the charset that trips everyone up, the one authentication method that genuinely does not work from PHP, prepared statements, transactions, SSL, and the errors you will meet. It is written against PHP 8.5 (8.5.7 as of June 2026) and MariaDB 11, but everything except the driver-subclass note works on PHP 8.1+.
+
+## Which extension to use
+
+Two extensions ship with PHP, and both connect to MariaDB without modification:
+
+- **PDO with `pdo_mysql`** is the portable, object-oriented choice. The same interface works across databases, errors raise exceptions, and you get named or positional placeholders. Use this unless you have a specific reason not to.
+- **`mysqli`** is the MySQL-and-MariaDB-specific extension. It exposes a few protocol-level features such as multiple-statement execution and asynchronous queries. Reach for it only when you actually need those.
+
+There is no `pdo_mariadb` and no `mariadb` extension in core PHP. The `pdo_mysql` driver name in the DSN stays `mysql` even when the server is MariaDB. The old `mysql_*` functions were removed in PHP 7.0; if you find them in a codebase, that code is overdue for a rewrite.
+
+Check that the driver is loaded:
+
+```bash
+php -m | grep mysql
+# expect: pdo_mysql  (and/or mysqli)
+```
+
+On Debian/Ubuntu, `apt install php-mysql` provides both.
+
+## Connecting with PDO
+
+The most common mistake connecting to MariaDB (and MySQL) from PHP is leaving the charset out of the DSN, or setting it to `utf8`. MariaDB's `utf8` is a three-byte encoding that cannot store emoji or many CJK characters. You almost always want `utf8mb4`. Put it in the DSN so the connection negotiates it from the first byte:
+
+```php
+<?php
+$dsn = 'mysql:host=127.0.0.1;port=3306;dbname=shop;charset=utf8mb4';
+
+$pdo = new PDO($dsn, 'appuser', 'secret', [
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+]);
+```
+
+Those three options matter:
+
+- `ERRMODE_EXCEPTION` makes failures throw `PDOException` instead of returning `false`. Without it, a broken query silently returns nothing and you debug a `null` three layers up.
+- `FETCH_ASSOC` returns rows as associative arrays instead of the default duplicated numeric-plus-named arrays.
+- `ATTR_EMULATE_PREPARES => false` turns off PDO's client-side prepare emulation, which is **on by default for MySQL and MariaDB**. With emulation off, the server does the parameter binding, integers come back typed instead of as strings, and the query plan is cached on the server.
+
+### Prepared statements
+
+Never interpolate user input into SQL. Use placeholders:
+
+```php
+$stmt = $pdo->prepare('SELECT id, name, price FROM products WHERE price > :min');
+$stmt->execute([':min' => 100]);
+
+foreach ($stmt as $row) {
+    echo "{$row['id']}: {$row['name']} ({$row['price']})\n";
+}
+```
+
+PDO supports named (`:min`) and positional (`?`) placeholders, but you cannot mix the two styles in one statement. Placeholders stand in for values only, never for table or column names.
+
+## The ed25519 authentication gotcha
+
+This is the one MariaDB-specific trap, and it is easy to lose hours to. MariaDB ships its own authentication plugins. The default for new installs is usually `mysql_native_password` (still supported and fine), but many MariaDB deployments use `ed25519`, MariaDB's own strong password plugin. **PHP's `pdo_mysql` and `mysqli` clients do not implement the ed25519 client handshake.** If a user is defined with `IDENTIFIED VIA ed25519`, a connection from PHP fails with an authentication-plugin error no matter how correct the password is.
+
+You have two honest options:
+
+1. Authenticate the PHP application's user with `mysql_native_password` (or, on MariaDB 11.6+, the newer `parsec` plugin only if your client library supports it):
+
+   ```sql
+   ALTER USER 'appuser'@'%' IDENTIFIED VIA mysql_native_password USING PASSWORD('secret');
+   ```
+
+2. Use a connector that bundles ed25519 support. PHP core does not, so this means stepping outside the built-in extensions, which most teams avoid.
+
+Note the difference from MySQL here: MySQL 8 defaults to `caching_sha2_password`, which PHP's drivers do support (over TLS or with the server public key). MariaDB does **not** use `caching_sha2_password` at all, so that particular MySQL headache does not apply. The MariaDB-specific headache is ed25519. Check what a user is using:
+
+```sql
+SELECT user, host, plugin FROM mysql.user WHERE user = 'appuser';
+```
+
+## RETURNING for generated keys
+
+MariaDB added `INSERT ... RETURNING` in 10.5, years before MySQL had anything equivalent. If you target MariaDB specifically, you can read generated columns straight back from the insert instead of a second round trip to `lastInsertId()`:
+
+```php
+$stmt = $pdo->prepare(
+    'INSERT INTO products (name, price) VALUES (:name, :price) RETURNING id'
+);
+$stmt->execute([':name' => 'Wrench', ':price' => 19.90]);
+$id = $stmt->fetchColumn();
+```
+
+`RETURNING` runs as a result-set query, so fetch from the statement rather than calling `execute()` and discarding it. If you need code that runs against both MariaDB and MySQL, stick with `lastInsertId()`, which works on both:
+
+```php
+$pdo->prepare('INSERT INTO products (name, price) VALUES (?, ?)')
+    ->execute(['Wrench', 19.90]);
+$id = $pdo->lastInsertId();
+```
+
+## Transactions
+
+Wrap multi-statement work so a failure rolls everything back. This requires InnoDB (the default storage engine on modern MariaDB); the legacy MyISAM and Aria engines ignore transactions and silently commit each statement:
+
+```php
+$pdo->beginTransaction();
+try {
+    $pdo->prepare('UPDATE accounts SET balance = balance - ? WHERE id = ?')
+        ->execute([100, 1]);
+    $pdo->prepare('UPDATE accounts SET balance = balance + ? WHERE id = ?')
+        ->execute([100, 2]);
+    $pdo->commit();
+} catch (\Throwable $e) {
+    $pdo->rollBack();
+    throw $e;
+}
+```
+
+DDL statements such as `CREATE TABLE` and `ALTER TABLE` cause an implicit commit in MariaDB; you cannot roll them back as part of a transaction. Keep schema changes out of transactional code paths.
+
+## TLS connections
+
+For connections that cross a network, require TLS and verify the server certificate. Passing the CA tells the client to encrypt; you also want to confirm the server's identity rather than accept any certificate:
+
+```php
+$pdo = new PDO($dsn, 'appuser', 'secret', [
+    PDO::ATTR_ERRMODE                  => PDO::ERRMODE_EXCEPTION,
+    PDO::MYSQL_ATTR_SSL_CA             => '/etc/ssl/certs/mariadb-ca.pem',
+    PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => true,
+]);
+```
+
+Setting `MYSQL_ATTR_SSL_VERIFY_SERVER_CERT` to `false` encrypts the traffic but accepts any certificate, which leaves you open to a man-in-the-middle. Only do that for local debugging, never in production.
+
+## Connecting with mysqli
+
+If you need a `mysqli`-only feature, the interface is there. Enable exceptions first; otherwise `mysqli` reports errors through return values:
+
+```php
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
+$mysqli = new mysqli('127.0.0.1', 'appuser', 'secret', 'shop', 3306);
+$mysqli->set_charset('utf8mb4');
+
+$stmt = $mysqli->prepare('SELECT id, name FROM products WHERE price > ?');
+$stmt->bind_param('d', $minPrice);  // 'd' = double
+$minPrice = 100;
+$stmt->execute();
+$result = $stmt->get_result();
+
+while ($row = $result->fetch_assoc()) {
+    echo "{$row['id']}: {$row['name']}\n";
+}
+```
+
+`mysqli` uses `?` positional placeholders only, and `bind_param` requires a type string (`i` integer, `d` double, `s` string, `b` blob). Set the charset with `set_charset('utf8mb4')` rather than running a `SET NAMES` query, because `set_charset` also updates the client's idea of the encoding used for escaping.
+
+## Connection pooling
+
+PHP's request-per-process model means a normal connection opens and closes within one request, so there is no application-level pool the way there is in a long-running Node or Java service. PDO offers `ATTR_PERSISTENT` to reuse connections across requests, but it has sharp edges: a connection left mid-transaction or holding a table lock can be handed to the next request in that state. For production, the reliable answer is a connection proxy such as MaxScale or ProxySQL in front of MariaDB, which pools connections independently of PHP's lifecycle.
+
+## Errors you actually hit
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `could not find driver` | `pdo_mysql` is not installed or enabled | Install `php-mysql`; confirm with `php -m \| grep mysql` |
+| `Authentication plugin 'ed25519' cannot be loaded` | The user authenticates via MariaDB's ed25519 plugin, which PHP's drivers don't implement | Switch the user to `mysql_native_password`, or use a connector that bundles ed25519 |
+| `Incorrect string value: '\xF0\x9F...'` | Column or connection is `utf8` (3-byte), not `utf8mb4` | Add `charset=utf8mb4` to the DSN and convert the column to `utf8mb4` |
+| `SQLSTATE[HY000] [2002] Connection refused` | Wrong host/port or server not listening | Use `127.0.0.1`, check port 3306 and `bind-address` |
+| `Access denied for user ... (using password: YES)` | Wrong credentials or host not granted | Verify the password and the user's host grant |
+| Numbers come back as strings | Emulated prepares are on (the MariaDB/MySQL default) | Set `ATTR_EMULATE_PREPARES => false` |
+| `RETURNING` throws a syntax error | Server is MySQL, or MariaDB older than 10.5 | Use `lastInsertId()` instead for portable code |
+
+For exploring MariaDB data and drafting queries before they go into PHP, Mako connects to MariaDB with AI-powered autocomplete. Try it free at mako.ai.
