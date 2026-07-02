@@ -44,10 +44,8 @@ describe("resolveDbtAccess", () => {
       { method: "POST", path: `${WS}/projects/abc/jobs` },
       { method: "PATCH", path: `${WS}/projects/abc/jobs/j1` },
       { method: "DELETE", path: `${WS}/projects/abc/jobs/j1` },
-      { method: "POST", path: `${WS}/projects/abc/git/commit` },
-      { method: "POST", path: `${WS}/projects/abc/git/branch` },
-      { method: "POST", path: `${WS}/projects/abc/git/switch-branch` },
-      { method: "POST", path: `${WS}/projects/abc/git/pull-request` },
+      // Merging a PR is the only write path into protected branches.
+      { method: "POST", path: `${WS}/projects/abc/git/merge-pull-request` },
     ];
 
     it.each(adminOnlyCases)(
@@ -62,7 +60,7 @@ describe("resolveDbtAccess", () => {
     );
   });
 
-  describe("member-allowed writes (files, ad-hoc, runs, sync)", () => {
+  describe("member-allowed writes (files, ad-hoc, runs, sync, own-checkout git)", () => {
     const memberCases: Array<{ method: string; path: string }> = [
       { method: "PUT", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
       { method: "DELETE", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
@@ -74,6 +72,13 @@ describe("resolveDbtAccess", () => {
       { method: "POST", path: `${WS}/projects/abc/runs/r1/cancel` },
       { method: "POST", path: `${WS}/projects/abc/runs/r1/retry` },
       { method: "POST", path: `${WS}/projects/abc/sync` },
+      // Per-user checkouts + drafts make these safe for members; protected
+      // branches are enforced separately in the git service.
+      { method: "POST", path: `${WS}/projects/abc/git/commit` },
+      { method: "POST", path: `${WS}/projects/abc/git/commit-to-branch` },
+      { method: "POST", path: `${WS}/projects/abc/git/branch` },
+      { method: "POST", path: `${WS}/projects/abc/git/switch-branch` },
+      { method: "POST", path: `${WS}/projects/abc/git/pull-request` },
     ];
 
     it.each(memberCases)(

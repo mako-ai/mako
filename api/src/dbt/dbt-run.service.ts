@@ -181,6 +181,16 @@ export async function triggerDbtRun(params: {
   commands: string[];
   trigger: "schedule" | "manual" | "agent" | "ci";
   triggeredBy: string;
+  /**
+   * Branch whose committed base tree the run builds (repo-bound projects).
+   * Defaults to the project default branch; CI runs pass the PR head.
+   */
+  gitBranch?: string;
+  /**
+   * Build this user's working tree (checkout + drafts) instead of a
+   * committed base tree — agent verification builds of uncommitted work.
+   */
+  workingTreeUserId?: string;
   /** PR context for CI runs (trigger === "ci"). */
   ci?: DbtRunCiContext;
   /**
@@ -211,6 +221,8 @@ export async function triggerDbtRun(params: {
     status: "queued",
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    gitBranch: params.gitBranch,
+    workingTreeUserId: params.workingTreeUserId,
     ci: params.ci,
   });
 

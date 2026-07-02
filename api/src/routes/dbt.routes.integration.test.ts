@@ -85,16 +85,23 @@ vi.mock("../integrations/github/github-api", () => ({
 vi.mock("../dbt/dbt-github-sync.service", () => ({
   fetchRepoDbtFiles: vi.fn(),
   repoFilesToInserts: vi.fn(),
-  syncProjectFromRepo: vi.fn(),
+  syncProjectBranchFromRepo: vi.fn(),
 }));
 vi.mock("../dbt/dbt-github-git.service", () => ({
   commitAndPush: vi.fn(),
+  commitToNewBranch: vi.fn(),
   createProjectBranch: vi.fn(),
+  deleteProjectBranch: vi.fn(),
   getGitStatus: vi.fn(),
   getProjectFileDiff: vi.fn(),
   listProjectBranches: vi.fn(),
+  mergeProjectPullRequest: vi.fn(),
   openProjectPullRequest: vi.fn(),
+  ProtectedBranchError: class ProtectedBranchError extends Error {},
   switchProjectBranch: vi.fn(),
+}));
+vi.mock("../services/realtime.service", () => ({
+  publishRealtimeEvent: vi.fn(),
 }));
 vi.mock("../services/dashboard-artifact-store.service", () => ({
   getDashboardArtifactStore: vi.fn(() => ({})),
@@ -178,6 +185,8 @@ beforeEach(async () => {
   await Promise.all([
     mongoose.connection.collection("dbt_projects").deleteMany({}),
     mongoose.connection.collection("dbt_files").deleteMany({}),
+    mongoose.connection.collection("dbt_file_drafts").deleteMany({}),
+    mongoose.connection.collection("dbt_checkouts").deleteMany({}),
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
     mongoose.connection.collection("dbt_runs").deleteMany({}),
     mongoose.connection.collection("databaseconnections").deleteMany({}),

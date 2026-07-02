@@ -2,12 +2,15 @@
  * GitHub-driven dbt automation: continuous sync on push and Slim CI on pull
  * requests. Mirrors dbt Cloud's repo caching + CI jobs.
  *
- * Mako's branch-tracking model makes CI natural: a project tracks one branch
- * (the dev's working branch in the IDE). On a PR *from that branch*, we pull
- * the head into the working tree and run `build --select state:modified+`
- * deferring to the stored prod manifest, then post a GitHub commit status.
+ * Base trees are per branch: a push refreshes the committed base tree of the
+ * pushed branch when the project tracks it (default branch, or any user's
+ * checkout). A PR syncs the PR head branch and runs
+ * `build --select state:modified+` against it (gitBranch on the run),
+ * deferring to the stored prod manifest, then posts a GitHub commit status.
+ * Syncs never touch per-user draft overlays, so they are always safe.
  */
 import {
+  DbtCheckout,
   DbtProject,
   type IDbtProject,
   type IDbtRun,
@@ -18,7 +21,7 @@ import {
   postCommitStatus,
 } from "../integrations/github/github-api";
 import { loggers } from "../logging";
-import { syncProjectFromRepo } from "./dbt-github-sync.service";
+import { syncProjectBranchFromRepo } from "./dbt-github-sync.service";
 import { triggerDbtRun } from "./dbt-run.service";
 
 const logger = loggers.api("dbt-ci");
@@ -38,21 +41,37 @@ const CI_STATUS_CONTEXT = "mako/ci";
 async function findProjectsForRepo(
   owner: string,
   repo: string,
-  branch?: string,
   installationId?: number,
 ): Promise<IDbtProject[]> {
   const query: Record<string, unknown> = {
     "repo.owner": owner,
     "repo.repo": repo,
   };
-  if (branch) query["repo.branch"] = branch;
   if (installationId) query["repo.installationId"] = installationId;
   return DbtProject.find(query);
 }
 
 /**
- * push event → pull the latest branch state into Mongo for every project that
- * tracks that branch (continuous sync, like dbt Cloud's managed repo cache).
+ * Does any project state track this branch — the project default branch, or a
+ * user's checkout? Only tracked branches keep a materialized base tree, so
+ * pushes to other branches are ignored.
+ */
+async function projectTracksBranch(
+  project: IDbtProject,
+  branch: string,
+): Promise<boolean> {
+  if (project.repo?.branch === branch) return true;
+  const checkout = await DbtCheckout.exists({
+    projectId: project._id,
+    branch,
+  });
+  return Boolean(checkout);
+}
+
+/**
+ * push event → pull the latest branch state into the committed base tree of
+ * every project that tracks that branch (continuous sync, like dbt Cloud's
+ * managed repo cache). Drafts are a separate overlay — never at risk.
  */
 export async function handlePushEvent(params: {
   owner: string;
@@ -63,17 +82,13 @@ export async function handlePushEvent(params: {
   const projects = await findProjectsForRepo(
     params.owner,
     params.repo,
-    params.branch,
     params.installationId,
   );
   let synced = 0;
   for (const project of projects) {
     try {
-      // preserveLocalEdits: a push to the tracked branch must never wipe a
-      // user's uncommitted working-tree changes (they'd be unrecoverable).
-      await syncProjectFromRepo(project, "github-webhook", {
-        preserveLocalEdits: true,
-      });
+      if (!(await projectTracksBranch(project, params.branch))) continue;
+      await syncProjectBranchFromRepo(project, params.branch, "github-webhook");
       synced++;
     } catch (error) {
       logger.warn("push auto-sync failed", {
@@ -140,7 +155,6 @@ export async function handlePullRequestEvent(
   const projects = await findProjectsForRepo(
     pr.owner,
     pr.repo,
-    pr.headRef,
     pr.installationId,
   );
   let triggered = 0;
@@ -150,12 +164,9 @@ export async function handlePullRequestEvent(
     // silently runs warehouse jobs.
     if (!project.ci?.enabled) continue;
     try {
-      // Pull the head into the working tree so the run reflects the PR.
-      // preserveLocalEdits: a background sync must never destroy a user's
-      // uncommitted working-tree changes.
-      await syncProjectFromRepo(project, "github-webhook", {
-        preserveLocalEdits: true,
-      });
+      // Materialize the PR head branch's committed base tree so the CI run
+      // builds exactly the PR's code (drafts are per-user and not involved).
+      await syncProjectBranchFromRepo(project, pr.headRef, "github-webhook");
 
       // Slim CI selection: state:modified+ when a prod manifest exists,
       // otherwise the downstream closure of the PR's changed models.
@@ -196,6 +207,7 @@ export async function handlePullRequestEvent(
         commands: [`build --select ${select.join(" ")}`],
         trigger: "ci",
         triggeredBy: "ci-webhook",
+        gitBranch: pr.headRef,
         ci: {
           prNumber: pr.number,
           headSha: pr.headSha,

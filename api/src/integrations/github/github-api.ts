@@ -5,7 +5,12 @@
  * an App installation can access.
  */
 
-const GITHUB_API = "https://api.github.com";
+/**
+ * Overridable for local development / testing against a GitHub API emulator
+ * (see api/src/dbt/test-support/fake-github-server.mjs). Real deployments
+ * leave this unset.
+ */
+const GITHUB_API = process.env.GITHUB_API_BASE_URL ?? "https://api.github.com";
 
 export interface GitHubRepoInfo {
   fullName: string;

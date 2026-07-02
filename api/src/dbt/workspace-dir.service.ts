@@ -64,6 +64,13 @@ export interface ProjectDirScope {
   projectId: string;
   environment: string;
   role: DbtDirRole;
+  /**
+   * Acting user for interactive (adhoc) commands. Working trees are per user
+   * (draft overlays), so each user gets their own warm dir — one user's
+   * materialized uncommitted edits never leak into another user's compile.
+   * Deploy runs (role "run") build committed trees and stay shared.
+   */
+  userId?: string;
 }
 
 function sanitize(value: string): string {
@@ -71,11 +78,14 @@ function sanitize(value: string): string {
 }
 
 function dirFor(scope: ProjectDirScope): string {
+  const leaf =
+    `${sanitize(scope.environment)}__${scope.role}` +
+    (scope.userId ? `__u_${sanitize(scope.userId)}` : "");
   return join(
     WARM_ROOT,
     sanitize(scope.workspaceId),
     sanitize(scope.projectId),
-    `${sanitize(scope.environment)}__${scope.role}`,
+    leaf,
   );
 }
 

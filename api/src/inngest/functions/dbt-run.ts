@@ -220,6 +220,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       return {
         environment: run.environment,
         commands: run.commands,
+        gitBranch: run.gitBranch ?? null,
+        workingTreeUserId: run.workingTreeUserId ?? null,
         jobId: run.jobId?.toString(),
         restoreArtifactKeys: run.restoreArtifactKeys
           ? {
@@ -271,6 +273,11 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             workspaceId: data.workspaceId,
             projectId: data.projectId,
             environmentName: runInfo.environment,
+            // Deploy/CI runs build a branch's COMMITTED base tree; agent
+            // verification builds set workingTreeUserId to include that
+            // user's draft overlay. Default: the project default branch.
+            branch: runInfo.gitBranch ?? undefined,
+            userId: runInfo.workingTreeUserId ?? undefined,
           });
           // Stash BigQuery credentials so a cancel can stop in-flight warehouse
           // jobs (best-effort; no-op for non-BigQuery adapters).

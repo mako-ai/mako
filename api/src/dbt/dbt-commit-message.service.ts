@@ -55,6 +55,9 @@ export interface CommitMessageOptions {
   paths?: string[];
 }
 
+/** Draft owner whose pending changes are summarized when no user is acting. */
+const AGENT_DRAFT_OWNER = "agent";
+
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}\n…(truncated)…` : value;
 }
@@ -71,25 +74,15 @@ function patchBody(patch: string): string {
  * Assemble a bounded, multi-file unified diff for the project's working tree.
  * Returns null when there is nothing meaningful to summarize.
  */
-async function buildWorkingTreeDiff(project: IDbtProject): Promise<{
-  diff: string;
-  fileCount: number;
-} | null>;
 async function buildWorkingTreeDiff(
   project: IDbtProject,
-  options: CommitMessageOptions,
-): Promise<{
-  diff: string;
-  fileCount: number;
-} | null>;
-async function buildWorkingTreeDiff(
-  project: IDbtProject,
+  userId: string,
   options: CommitMessageOptions = {},
 ): Promise<{
   diff: string;
   fileCount: number;
 } | null> {
-  const status = await getGitStatus(project, { paths: options.paths });
+  const status = await getGitStatus(project, userId, { paths: options.paths });
   if (!status.hasChanges) return null;
 
   const changes = status.changes.slice(0, MAX_FILES);
@@ -100,6 +93,7 @@ async function buildWorkingTreeDiff(
       try {
         const { base, working } = await getProjectFileDiff(
           project,
+          userId,
           change.path,
         );
         const patch = createTwoFilesPatch(
@@ -149,7 +143,11 @@ export async function generateDbtCommitMessage(
   options: CommitMessageOptions = {},
 ): Promise<string | null> {
   try {
-    const built = await buildWorkingTreeDiff(project, options);
+    const built = await buildWorkingTreeDiff(
+      project,
+      trackingCtx?.userId ?? AGENT_DRAFT_OWNER,
+      options,
+    );
     if (!built) return null;
 
     const utilityModel = await getUtilityModelId();

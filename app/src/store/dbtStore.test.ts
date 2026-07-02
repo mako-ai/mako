@@ -142,7 +142,8 @@ describe("file buffer — write / persist / read", () => {
     expect(ok).toBe(true);
     expect(api.put).toHaveBeenCalledWith(
       `/workspaces/${WS}/dbt/projects/p1/files/models/a.sql`,
-      { content: "select 1" },
+      // clientId (per-tab echo suppression) rides along with every save.
+      { content: "select 1", clientId: expect.any(String) },
     );
     expect(useDbtStore.getState().filesByProject.p1["models/a.sql"].dirty).toBe(
       false,
@@ -432,13 +433,18 @@ describe("git / github actions", () => {
     expect(useDbtStore.getState().gitStatusByProject.p1.branch).toBe("main");
   });
 
-  it("switchBranch merges the project and drops cached files", async () => {
+  it("switchBranch records the checkout branch and drops cached files", async () => {
     api.get.mockResolvedValue({ success: true, projects: [project("p1")] });
     await useDbtStore.getState().fetchProjects(WS);
     useDbtStore.getState().writeFile("p1", "models/a.sql", "stale");
-    api.post.mockResolvedValue({ success: true, project: project("p1") });
+    api.post.mockResolvedValue({
+      success: true,
+      branch: "feature",
+      project: project("p1"),
+    });
     await useDbtStore.getState().switchBranch(WS, "p1", "feature");
     expect(useDbtStore.getState().filesByProject.p1).toBeUndefined();
+    expect(useDbtStore.getState().checkoutBranchByProject.p1).toBe("feature");
   });
 
   it("openPullRequest returns the PR number + url", async () => {
