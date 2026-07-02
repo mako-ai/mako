@@ -3,6 +3,11 @@ name: Cleanup PR Preview
 on:
   pull_request:
     types: [closed]
+  # Nightly sweep: catches previews the close-event cleanup missed (workflow
+  # failures, PRs closed before the workflow existed, manual deploys, etc.)
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 env:
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -16,6 +21,7 @@ permissions:
 jobs:
   cleanup:
     name: Cleanup PR #${{ github.event.pull_request.number }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -139,3 +145,90 @@ jobs:
               issue_number: prNumber,
               body: body,
             });
+
+  # Nightly sweep of orphaned preview resources. The per-PR cleanup job above
+  # handles the happy path; this catches anything it missed.
+  sweep:
+    name: Sweep stale PR previews
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: List open PRs
+        run: |
+          gh pr list --repo "${{ github.repository }}" --state open --limit 500 \
+            --json number --jq '.[].number' | sort > /tmp/open_prs.txt
+          echo "Open PRs: $(wc -l < /tmp/open_prs.txt)"
+
+      - name: Delete Cloud Run services for closed PRs
+        run: |
+          gcloud run services list --region "${GCP_REGION}" \
+            --format='value(metadata.name)' \
+            | grep '^mako-pr-' | sed 's/^mako-pr-//' | sort > /tmp/service_prs.txt || true
+
+          comm -23 /tmp/service_prs.txt /tmp/open_prs.txt > /tmp/stale_service_prs.txt
+          echo "Stale services: $(wc -l < /tmp/stale_service_prs.txt)"
+
+          while read -r pr; do
+            [ -z "$pr" ] && continue
+            echo "Deleting Cloud Run service mako-pr-${pr}"
+            gcloud run services delete "mako-pr-${pr}" \
+              --region "${GCP_REGION}" --quiet \
+              || echo "::warning::Failed to delete service mako-pr-${pr}"
+          done < /tmp/stale_service_prs.txt
+
+      - name: Delete Artifact Registry images for closed PRs
+        run: |
+          gcloud artifacts docker images list \
+            "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${{ vars.GCP_ARTIFACT_REPOSITORY }}" \
+            --format='value(package)' 2>/dev/null \
+            | sort -u | grep '/mako-pr-' | sed 's|.*/mako-pr-||' | sort > /tmp/image_prs.txt || true
+
+          comm -23 /tmp/image_prs.txt /tmp/open_prs.txt > /tmp/stale_image_prs.txt
+          echo "Stale image packages: $(wc -l < /tmp/stale_image_prs.txt)"
+
+          while read -r pr; do
+            [ -z "$pr" ] && continue
+            echo "Deleting image package mako-pr-${pr}"
+            gcloud artifacts packages delete "mako-pr-${pr}" \
+              --repository="${{ vars.GCP_ARTIFACT_REPOSITORY }}" \
+              --location="${GCP_REGION}" --quiet \
+              || echo "::warning::Failed to delete image package mako-pr-${pr}"
+          done < /tmp/stale_image_prs.txt
+
+      - name: Delete ephemeral databases for closed PRs
+        continue-on-error: true
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          wget -qO- https://www.mongodb.org/static/pgp/server-7.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb.gpg
+          echo "deb [signed-by=/usr/share/keyrings/mongodb.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mongodb-mongosh
+
+          mongosh "$STAGING_DATABASE_URL" --quiet --eval "
+            const dbs = db.adminCommand({ listDatabases: 1 }).databases;
+            dbs.filter(d => d.name.startsWith('staging_pr_')).forEach(d => print(d.name));
+          " | sed 's/^staging_pr_//' | sort > /tmp/db_prs.txt || true
+
+          comm -23 /tmp/db_prs.txt /tmp/open_prs.txt > /tmp/stale_db_prs.txt
+          echo "Stale ephemeral DBs: $(wc -l < /tmp/stale_db_prs.txt)"
+
+          while read -r pr; do
+            [ -z "$pr" ] && continue
+            echo "Dropping database staging_pr_${pr}"
+            mongosh "$STAGING_DATABASE_URL" --quiet \
+              --eval "db.getSiblingDB('staging_pr_${pr}').dropDatabase()" \
+              || echo "::warning::Failed to drop database staging_pr_${pr}"
+          done < /tmp/stale_db_prs.txt
