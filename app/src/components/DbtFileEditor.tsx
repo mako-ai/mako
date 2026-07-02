@@ -26,6 +26,7 @@ import {
   Menu,
   MenuItem,
   Select,
+  Switch,
   Tab,
   Tabs,
   Tooltip,
@@ -63,6 +64,7 @@ import {
   type DbtSelectScope,
 } from "../lib/dbt-node-selection";
 import {
+  isMarkdownDbtPath,
   languageForDbtPath,
   logsToProblems,
   modelNameForPath,
@@ -71,6 +73,7 @@ import {
 } from "../lib/dbt-editor-logic";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
+import StreamingMarkdown from "./StreamingMarkdown";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
@@ -301,8 +304,13 @@ export default function DbtFileEditor({
     useState<DbtCommandRunResult | null>(null);
   const [problems, setProblems] = useState<Problem[] | null>(null);
   const [runMenuAnchor, setRunMenuAnchor] = useState<HTMLElement | null>(null);
+  // Markdown docs (.md/.markdown) open in a rendered preview by default; the
+  // header switch flips back to the raw Monaco editor for editing.
+  const [markdownPreview, setMarkdownPreview] = useState(true);
 
   const modelName = useMemo(() => modelNameForPath(path), [path]);
+  const isMarkdown = useMemo(() => isMarkdownDbtPath(path), [path]);
+  const showMarkdownPreview = isMarkdown && markdownPreview;
 
   // Live-compile plumbing: refs let the debounced save callback re-compile
   // without re-creating the timer on every keystroke. `manualBusyRef` is set
@@ -571,7 +579,13 @@ export default function DbtFileEditor({
     );
   }
 
-  const editorPane = (
+  const editorPane = showMarkdownPreview ? (
+    <Box sx={{ height: "100%", minHeight: 0, overflow: "auto" }}>
+      <Box sx={{ maxWidth: 820, mx: "auto", px: 3, py: 3 }}>
+        <StreamingMarkdown>{file.content}</StreamingMarkdown>
+      </Box>
+    </Box>
+  ) : (
     <Box sx={{ height: "100%", minHeight: 0 }}>
       <MonacoEditor
         height="100%"
@@ -587,10 +601,29 @@ export default function DbtFileEditor({
           fontSize: 13,
           automaticLayout: true,
           scrollBeyondLastLine: false,
+          wordWrap: isMarkdown ? "on" : "off",
         }}
       />
     </Box>
   );
+
+  const markdownPreviewToggle = isMarkdown ? (
+    <FormControlLabel
+      control={
+        <Switch
+          size="small"
+          checked={markdownPreview}
+          onChange={e => setMarkdownPreview(e.target.checked)}
+        />
+      }
+      label={
+        <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+          Preview
+        </Typography>
+      }
+      sx={{ mr: 0, ml: 0 }}
+    />
+  ) : null;
 
   const panelHeader = (
     <Box
@@ -973,7 +1006,7 @@ export default function DbtFileEditor({
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {/* Breadcrumb (workspace › Transforms › project › path). Compile is live
           and runs go through the command bar, mirroring dbt Studio. */}
-      <EntityBreadcrumbs tabId={tabId} />
+      <EntityBreadcrumbs tabId={tabId} trailing={markdownPreviewToggle} />
 
       <Box sx={{ flex: 1, minHeight: 0 }}>
         {panelOpen ? (

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type React from "react";
 import {
   afterEach,
   beforeAll,
@@ -23,6 +24,19 @@ vi.mock("../contexts/workspace-context", () => ({
   useWorkspace: () => ({ currentWorkspace: { id: "ws1" } }),
 }));
 vi.mock("../dbt-runtime/shell", () => ({ focusDbtFileTab: vi.fn() }));
+// Streamdown pulls heavy ESM (shiki) that jsdom can't load — render children raw.
+vi.mock("./StreamingMarkdown", () => ({
+  default: ({ children }: { children: string }) => (
+    <div data-testid="markdown-preview">{children}</div>
+  ),
+}));
+// EntityBreadcrumbs returns null without a matching console tab; surface its
+// `trailing` slot so the markdown Preview switch is testable in isolation.
+vi.mock("./EntityBreadcrumbs", () => ({
+  default: ({ trailing }: { trailing?: React.ReactNode }) => (
+    <div data-testid="breadcrumbs">{trailing}</div>
+  ),
+}));
 
 import DbtFileEditor from "./DbtFileEditor";
 import { useDbtStore } from "../store/dbtStore";
@@ -132,6 +146,39 @@ describe("DbtFileEditor", () => {
         "dev",
         false,
       ),
+    );
+  });
+
+  it("renders a markdown preview by default for .md files and toggles to the editor", async () => {
+    const user = userEvent.setup();
+    useDbtStore.setState({
+      filesByProject: {
+        p1: {
+          "models/README.md": {
+            content: "# Hello docs",
+            dirty: false,
+            loaded: true,
+          },
+        },
+      } as never,
+      filePathsByProject: { p1: ["models/README.md"] } as never,
+    });
+
+    render(<DbtFileEditor tabId="t1" projectId="p1" path="models/README.md" />);
+
+    // Preview is on by default → markdown content is rendered.
+    const preview = await screen.findByTestId("markdown-preview");
+    expect(preview.textContent).toBe("# Hello docs");
+
+    // Flipping the Preview switch off swaps to the (Monaco) editor pane.
+    const previewSwitch = screen.getByRole("checkbox", {
+      name: /preview/i,
+    }) as HTMLInputElement;
+    expect(previewSwitch.checked).toBe(true);
+    await user.click(previewSwitch);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("markdown-preview")).toBeNull(),
     );
   });
 });
