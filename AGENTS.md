@@ -69,6 +69,10 @@ account manually, flip `emailVerified` in the DB to log in.
 
 ### Misc caveats
 
+- dbt project files live in per-project bare git repos under `DBT_GIT_ROOT`
+ (default `api/.data/dbt-git`), not in Mongo. Inspect a project's files with
+ `git --git-dir=<root>/<workspaceId>/<projectId>.git log/ls-tree main`.
+
 - No `docker-compose.yml` is committed, so `pnpm docker:*` scripts don't work
   here — use the local Mongo/Postgres above instead.
 - The demo Postgres (`demo` DB, role `mako`/`mako`) uses lowercase, unquoted

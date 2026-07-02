@@ -481,9 +481,9 @@ async function mutateWorkingTree(
 
     if (!project.repo) {
       const head = state.headSha;
-      const { sha } = await commitTreeUpdate(state.repoDir, {
-        ref: branchRef(state.branch),
-        expectedOldSha: head ?? ZERO_SHA,
+      // Dangling commit first: a save that doesn't change the tree (re-save
+      // of identical content) must not grow history.
+      const { sha, treeSha } = await commitTreeUpdate(state.repoDir, {
         baseTree: head ?? undefined,
         parents: head ? [head] : [],
         writes: repoPathWrites,
@@ -491,14 +491,16 @@ async function mutateWorkingTree(
         message: mutation.message,
         author,
       });
+      if (head && treeSha === (await treeShaOf(state.repoDir, head))) {
+        return { sha: head };
+      }
+      await updateRef(state.repoDir, branchRef(state.branch), sha, head ?? ZERO_SHA);
       return { sha };
     }
 
     const refs = draftRefsFor(userId);
     const parent = state.workingSha as string;
     const { sha, treeSha } = await commitTreeUpdate(state.repoDir, {
-      ref: refs.tip,
-      expectedOldSha: state.draftTipSha ?? ZERO_SHA,
       baseTree: parent,
       parents: [parent],
       writes: repoPathWrites,
@@ -511,8 +513,13 @@ async function mutateWorkingTree(
       // Reverted to the committed content — no pending change to keep.
       await deleteRef(state.repoDir, refs.tip);
       await deleteRef(state.repoDir, refs.base);
-      return { sha };
+      return { sha: state.headSha as string };
     }
+    if (treeSha === (await treeShaOf(state.repoDir, parent))) {
+      // No-op save against the existing overlay — keep the current tip.
+      return { sha: parent };
+    }
+    await updateRef(state.repoDir, refs.tip, sha, state.draftTipSha ?? ZERO_SHA);
     if (!state.draftTipSha) {
       await updateRef(state.repoDir, refs.base, state.headSha as string);
     }
