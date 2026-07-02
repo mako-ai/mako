@@ -1,0 +1,201 @@
+---
+title: "How to Connect to SQLite from Ruby"
+description: "Connect to SQLite from Ruby with the sqlite3 gem, Sequel, or ActiveRecord. Working code for connections, parameterized queries, WAL mode, the busy_timeout lock fix, and the accidental-file-creation trap."
+database: "sqlite"
+category: "how-to"
+tags: ["sqlite", "ruby", "rails", "sqlite3", "sequel", "activerecord", "connection"]
+date: "2026-07-02"
+---
+
+SQLite is a library, not a server. There is no host, port, or password: you open a file (or an in-memory database) and talk to it in-process. In Ruby that file is handled by one gem, `sqlite3`, which everything else builds on. This guide shows the raw `sqlite3` interface first, then where Sequel and ActiveRecord fit, and covers the configuration that actually matters for a single-file embedded database: transactions, WAL mode, the `database is locked` problem, and a file-handling trap that silently hides bugs.
+
+## The options
+
+| Library | Layer | When to use it | Version (as of July 2026) |
+|---|---|---|---|
+| `sqlite3` | Raw driver (bindings to the SQLite C library) | Scripts, services, or when you want SQL and nothing else | 2.9.5 |
+| Sequel | Database toolkit + ORM | Non-Rails apps wanting a dataset API without full ActiveRecord | 5.105.0 |
+| ActiveRecord | Full ORM | Rails apps, or when you want migrations and models | ships with Rails |
+
+The `sqlite3` gem is the interface to the SQLite C library. Sequel and ActiveRecord both depend on it for SQLite connectivity, so the driver-level concerns below apply no matter which layer you write against.
+
+## Installing the driver
+
+```bash
+gem install sqlite3
+```
+
+Since version 2.0, the gem ships **precompiled native binaries with the SQLite library bundled** for common platforms (Linux, macOS, Windows on supported Ruby versions). For those platforms you do not need system SQLite headers, and you get a known, recent SQLite version regardless of what the OS provides.
+
+If your platform has no precompiled binary, the gem falls back to compiling against a bundled SQLite source, or you can force it to build against the system library:
+
+```bash
+gem install sqlite3 --platform=ruby -- --enable-system-libraries
+```
+
+That path needs the SQLite development headers (`libsqlite3-dev` on Debian/Ubuntu, `sqlite-devel` on RHEL/Fedora). Most people never touch this: the precompiled gem is the default and the simplest choice.
+
+## A minimal connection
+
+```ruby
+require 'sqlite3'
+
+db = SQLite3::Database.new('shop.db')
+
+db.execute('SELECT sqlite_version()') do |row|
+  puts row.first
+end
+
+db.close
+```
+
+`SQLite3::Database.new` opens `shop.db` relative to the working directory. Use an absolute path in anything long-lived so the location does not depend on where the process was started. For a throwaway database that lives only in RAM:
+
+```ruby
+db = SQLite3::Database.new(':memory:')
+```
+
+An in-memory database exists only for the life of that one connection. Open a second connection to `:memory:` and you get a *different*, empty database, not a shared one.
+
+## The accidental-file-creation trap
+
+By default, opening a database that does not exist **creates an empty one**. Mistype the path and you get a brand-new empty database instead of an error, then spend an afternoon wondering why every query returns nothing.
+
+To fail loudly when the file is missing, open read-only or read-write without create:
+
+```ruby
+db = SQLite3::Database.new('shop.db', readonly: true)
+```
+
+For read-write-but-must-exist, use a URI filename with the `mode` parameter:
+
+```ruby
+db = SQLite3::Database.new('file:shop.db?mode=rw')
+```
+
+`mode=rw` opens for read and write but does **not** create the file, so a wrong path raises `SQLite3::CantOpenException` instead of silently making a new database.
+
+## Parameterized queries -- do not interpolate
+
+Never build SQL with string interpolation. Pass parameters separately and let SQLite bind them:
+
+```ruby
+db.execute(
+  'SELECT id, name FROM customers WHERE region = ? AND active = ?',
+  ['EMEA', 1]
+)
+```
+
+SQLite uses `?` positional placeholders. It also supports named placeholders, which are clearer in longer statements:
+
+```ruby
+db.execute(
+  'SELECT id, name FROM customers WHERE region = :region',
+  region: 'EMEA'
+)
+```
+
+For a statement you run repeatedly, prepare it once and reuse the handle:
+
+```ruby
+stmt = db.prepare('SELECT id, name FROM customers WHERE region = ?')
+stmt.execute('EMEA').each { |row| p row }
+stmt.close
+```
+
+One SQLite-specific note on types: SQLite stores booleans as integers (`0`/`1`), so bind `1` and `0` rather than `true`/`false` and expect integers back.
+
+## Reading results as hashes
+
+By default `execute` yields each row as an array. To get rows keyed by column name, set `results_as_hash`:
+
+```ruby
+db.results_as_hash = true
+db.execute('SELECT id, name FROM customers').each do |row|
+  puts "#{row['id']}: #{row['name']}"
+end
+```
+
+Sequel and ActiveRecord return hash-like or model objects by default; this setting only matters for the raw gem.
+
+## Connection-scoped PRAGMAs: WAL and busy_timeout
+
+Two PRAGMAs solve the most common SQLite-from-Ruby problems, and both are set per connection right after opening:
+
+```ruby
+db = SQLite3::Database.new('shop.db')
+db.execute('PRAGMA journal_mode = WAL')
+db.busy_timeout = 5000   # milliseconds
+db.execute('PRAGMA foreign_keys = ON')
+```
+
+- **`journal_mode = WAL`** (write-ahead logging) lets one writer and multiple readers work at the same time instead of readers and writers blocking each other. This is the single biggest concurrency improvement for a web app. WAL is a persistent property of the database file, but it is worth setting on connect so a fresh file gets it too.
+- **`foreign_keys = ON`** must be set on every connection: SQLite ships with foreign-key enforcement *off* by default for backward compatibility.
+
+## The "database is locked" problem
+
+`SQLite3::BusyException: database is locked` is the error people hit most. SQLite allows only one writer at a time; when two connections try to write at once, one gets rejected immediately unless you tell it to wait.
+
+The fix is `busy_timeout`, which makes a blocked connection retry for up to N milliseconds before giving up:
+
+```ruby
+db.busy_timeout = 5000
+```
+
+Combined with WAL mode, a 5-second busy timeout eliminates the large majority of lock errors in typical web workloads. If you still see them under heavy write concurrency, the honest answer is that SQLite's single-writer model has a ceiling: at that point you either serialize writes through one connection or move to a client/server database.
+
+## Transactions are a performance feature
+
+Every `INSERT` outside an explicit transaction is its own transaction, each with a disk sync. Wrapping a bulk load in one transaction can turn thousands of tiny commits into a single one and speed up inserts by orders of magnitude:
+
+```ruby
+db.transaction do
+  1000.times do |i|
+    db.execute('INSERT INTO events (name) VALUES (?)', ["event_#{i}"])
+  end
+end
+```
+
+If the block raises, the gem rolls the transaction back automatically.
+
+## No connection pooling -- it is in-process
+
+Because SQLite is a library and not a server, there is no network pool to size. Each `SQLite3::Database` object is one handle to the file. The `sqlite3` gem's own objects are not thread-safe to share across threads, so the usual pattern is one connection per thread, and WAL mode plus `busy_timeout` to coordinate writers. In Rails, ActiveRecord's connection pool handles this for you; with the raw gem in a threaded server, open a connection per thread rather than sharing one.
+
+## Sequel and ActiveRecord
+
+Sequel connects with a `sqlite://` URL and applies sensible defaults:
+
+```ruby
+require 'sequel'
+DB = Sequel.sqlite('shop.db')
+DB[:customers].where(region: 'EMEA').all
+```
+
+ActiveRecord (Rails) uses the `sqlite3` adapter in `database.yml`:
+
+```yaml
+production:
+  adapter: sqlite3
+  database: storage/production.sqlite3
+  timeout: 5000
+```
+
+Recent Rails versions ship a production-tuned SQLite setup (WAL, a busy timeout, and other PRAGMAs) out of the box, reflecting that SQLite is now a supported choice for small-to-medium production apps, not just development.
+
+## Common errors
+
+| Error | Cause |
+|---|---|
+| `SQLite3::CantOpenException` | Wrong path, no write permission on the directory, or `mode=rw` on a missing file |
+| Queries return nothing on a "working" DB | Typo in the path created a new empty database (the file-creation trap) |
+| `SQLite3::BusyException: database is locked` | Concurrent writers without `busy_timeout`; set it and enable WAL |
+| `SQLite3::SQLException: no such table` | Connected to the wrong file, or the schema was never created |
+| `cannot load such file -- sqlite3` | Gem not installed in the active Ruby / bundle |
+| Foreign keys not enforced | `PRAGMA foreign_keys = ON` not set on this connection |
+
+## Querying without writing connection code
+
+If your goal is to explore a SQLite database rather than build a service, a GUI client skips all of the above. Mako opens SQLite files with AI-assisted SQL -- see our [SQLite GUI client guide](/guides/sqlite-gui-client) for how it compares to DB Browser for SQLite and DBeaver. Connecting from another language? See [How to Connect to SQLite from Python](/guides/sqlite/connect-from-python) and [from Node.js](/guides/sqlite/connect-from-node).
+
+Mako connects to SQLite with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
