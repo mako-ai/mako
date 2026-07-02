@@ -89,7 +89,10 @@ import {
   loadDbtDeferState,
   runAdhocDbtCommand,
 } from "../dbt/dbt-project.service";
-import { ensurePersonalDbtEnvironment } from "../dbt/dbt-environments.service";
+import {
+  DbtProtectedEnvironmentError,
+  ensurePersonalDbtEnvironment,
+} from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
@@ -184,7 +187,10 @@ function serverError(
   error: unknown,
   fallback: string,
 ) {
-  if (error instanceof ProtectedBranchError) {
+  if (
+    error instanceof ProtectedBranchError ||
+    error instanceof DbtProtectedEnvironmentError
+  ) {
     return c.json({ success: false, error: error.message }, 400);
   }
   logger.error(fallback, { error });

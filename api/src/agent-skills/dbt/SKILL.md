@@ -144,8 +144,24 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
 
 - Projects have environments (dev/prod) mapping to a workspace connection +
   target schema. Ad-hoc agent builds default to the acting user's PERSONAL
-  environment when provisioned, else dev. Never target prod unless the user
-  explicitly asks.
+  environment when provisioned, else dev.
+- **Which git tree a run builds (repo-bound projects)** — never mix these up:
+  - Ad-hoc tools (`dbt_parse`, `dbt_compile_model`, `dbt_show`,
+    `dbt_run_model`) build YOUR working tree: your checkout branch + your
+    uncommitted drafts. This is the ONLY way to verify uncommitted or
+    feature-branch work.
+  - Jobs (`dbt_run_job`, schedules) build the COMMITTED tracked branch only —
+    never your checkout or drafts. Triggering a job to test a draft silently
+    runs the OLD code; do not do it, and do not "fix" it by committing — the
+    job still builds the tracked branch, not your feature branch.
+  - **Full refresh of a draft**: pass `fullRefresh: true` to `dbt_run_model`
+    (adds `--full-refresh`). Never reach for a full-refresh job to rebuild an
+    incremental model you just edited.
+- **Prod is protected from ad-hoc runs**: on repo-connected projects the
+  prod-like environment refuses ad-hoc warehouse writes (`run`/`build`/
+  `seed`/`snapshot`). Deploys go through jobs or CI after the change is
+  merged into the tracked branch. Read-only commands (parse/compile/show)
+  still work against any environment.
 - **Personal environments**: `dbt_ensure_dev_environment` idempotently
   provisions a per-user environment (schema `dbt_<user>`, same connection as
   prod). Once it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` /
@@ -161,7 +177,8 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
 - Jobs are saved command lists (`build`, `test`, `seed`, `snapshot`,
   `source freshness`, `docs generate` + `--select/--exclude/--full-refresh`
   flags) with optional cron schedules. Trigger via `dbt_run_job` only after
-  explicit user confirmation.
+  explicit user confirmation, and only for committed work — never to verify
+  drafts.
 
 ## Iterating on models that feed apps (dev → prod loop)
 

@@ -9,11 +9,13 @@ import { Types } from "mongoose";
 import { inngest } from "../inngest/client";
 import {
   DbtJob,
+  DbtProject,
   DbtRun,
   type DbtRunStatus,
   type IDbtJob,
   type IDbtRun,
 } from "../database/workspace-schema";
+import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
 import { parseDbtCommands } from "./commands";
 import { cancelLocalRun } from "./dbt-run-registry";
 import { loggers } from "../logging";
@@ -210,7 +212,25 @@ export async function triggerDbtRun(params: {
   skipIfActive?: boolean;
 }): Promise<IDbtRun> {
   // Validate before persisting anything — bad commands never reach a run doc.
-  parseDbtCommands(params.commands);
+  const parsedCommands = parseDbtCommands(params.commands);
+
+  // Ad-hoc (non-job, non-CI) runs on repo-connected projects build a
+  // working tree — refuse warehouse writes into the protected prod-like
+  // environment so uncommitted drafts can never deploy to prod. Jobs and CI
+  // (which build committed trees) are the only paths allowed to write there.
+  const isAdhocRun =
+    !params.jobId && params.trigger !== "ci" && params.trigger !== "schedule";
+  if (isAdhocRun) {
+    const project = await DbtProject.findOne({
+      _id: new Types.ObjectId(params.projectId),
+      workspaceId: new Types.ObjectId(params.workspaceId),
+    })
+      .select("environments defaultEnvironment repo")
+      .lean();
+    if (project) {
+      assertAdhocDbtRunAllowed(project, params.environment, parsedCommands);
+    }
+  }
 
   if (params.skipIfActive && params.jobId) {
     const active = await DbtRun.findOne({

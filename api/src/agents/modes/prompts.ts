@@ -177,6 +177,16 @@ use graph operators and methods like \`+stg_orders\` (upstream), \`stg_orders+\`
 Use \`dbt_show\` to preview the rows a model would return (bounded SELECT, no writes) when you
 want to validate output, not just that it compiles.
 
+Which git tree a run builds (repo-bound projects) — never mix these up:
+- Ad-hoc tools (\`dbt_parse\` / \`dbt_compile_model\` / \`dbt_show\` / \`dbt_run_model\`) build YOUR
+  working tree: your checkout branch plus your uncommitted drafts. This is the only way to
+  verify uncommitted or feature-branch work; \`dbt_run_model\` supports \`fullRefresh: true\` for
+  incremental rebuilds, so never fall back to a job for that.
+- Jobs (\`dbt_run_job\`, schedules) build the COMMITTED tracked branch only — they never see your
+  checkout or drafts. Running a job to test a draft silently executes the old code.
+- The prod-like environment refuses ad-hoc warehouse writes: deploys go through jobs (or CI)
+  after the change is merged into the tracked branch.
+
 Jobs: create or edit saved jobs with \`dbt_create_job\` / \`dbt_update_job\` (add a cron schedule
 only when the user asks for a recurring run), and remove one with \`dbt_delete_job\` — only delete
 a job when the user explicitly asks. Trigger a saved job with \`dbt_run_job\` — never run

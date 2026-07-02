@@ -27,6 +27,10 @@ import {
   type IDbtProject,
 } from "../database/workspace-schema";
 import { getUserDisplayName } from "../services/entity-version.service";
+import {
+  isWarehouseWriteCommand,
+  type ParsedDbtCommand,
+} from "./commands";
 
 type ProjectEnvFields = Pick<
   IDbtProject,
@@ -44,6 +48,48 @@ export function resolveProdLikeEnvironmentName(
   return project.environments.some(env => env.name === "prod")
     ? "prod"
     : project.defaultEnvironment;
+}
+
+/**
+ * Thrown when an ad-hoc run would write into the protected (prod-like)
+ * environment. Mapped to HTTP 400 by the dbt routes.
+ */
+export class DbtProtectedEnvironmentError extends Error {
+  constructor(environmentName: string, trackedBranch?: string) {
+    super(
+      `Ad-hoc dbt runs build your working tree (checkout branch + ` +
+        `uncommitted drafts) and are not allowed to write to the protected ` +
+        `"${environmentName}" environment. Deploys to "${environmentName}" ` +
+        `must go through a saved job or CI, which build the committed` +
+        `${trackedBranch ? ` "${trackedBranch}"` : ""} branch — merge your ` +
+        `changes first, then trigger the job.`,
+    );
+    this.name = "DbtProtectedEnvironmentError";
+  }
+}
+
+/**
+ * Guard for ad-hoc (working-tree) runs on repo-connected projects: they build
+ * the CALLER's checkout + uncommitted drafts, so letting one write into the
+ * prod-like environment would deploy unreviewed code and bypass the
+ * protected-branch → PR → job pipeline. Jobs and CI are the only paths that
+ * build the prod-like environment (they always build a committed tree).
+ *
+ * Read-only commands (parse / compile / show / test without
+ * --store-failures) stay allowed against any environment, and projects
+ * without a repo binding are exempt (jobs and ad-hoc runs there build the
+ * same shared tree, so there is nothing to bypass).
+ */
+export function assertAdhocDbtRunAllowed(
+  project: ProjectEnvFields & { repo?: { branch?: string } | null },
+  environmentName: string,
+  commands: ParsedDbtCommand[],
+): void {
+  if (!project.repo) return;
+  if (!commands.some(isWarehouseWriteCommand)) return;
+  const prodLike = resolveProdLikeEnvironmentName(project);
+  if (environmentName !== prodLike) return;
+  throw new DbtProtectedEnvironmentError(prodLike, project.repo.branch);
 }
 
 /** The acting user's personal environment on this project, if provisioned. */

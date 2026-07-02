@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DbtCommandValidationError,
+  isWarehouseWriteCommand,
   parseDbtCommand,
   parseDbtCommands,
 } from "./commands";
@@ -93,5 +94,43 @@ describe("parseDbtCommand", () => {
   it("rejects empty commands", () => {
     expect(() => parseDbtCommand("")).toThrow(DbtCommandValidationError);
     expect(() => parseDbtCommands([])).toThrow(DbtCommandValidationError);
+  });
+});
+
+describe("isWarehouseWriteCommand", () => {
+  it("classifies run/build/seed/snapshot/retry as warehouse writes", () => {
+    for (const command of [
+      "run --select stg_orders",
+      "build --select stg_orders+ --full-refresh",
+      "seed",
+      "snapshot",
+      "retry",
+    ]) {
+      expect(isWarehouseWriteCommand(parseDbtCommand(command))).toBe(true);
+    }
+  });
+
+  it("classifies parse/compile/show/docs/deps/source freshness as read-only", () => {
+    for (const command of [
+      "parse",
+      "compile --select stg_orders",
+      "show --select stg_orders --limit 5",
+      "docs generate",
+      "deps",
+      "source freshness",
+    ]) {
+      expect(isWarehouseWriteCommand(parseDbtCommand(command))).toBe(false);
+    }
+  });
+
+  it("treats test as read-only unless --store-failures persists tables", () => {
+    expect(
+      isWarehouseWriteCommand(parseDbtCommand("test --select stg_orders")),
+    ).toBe(false);
+    expect(
+      isWarehouseWriteCommand(
+        parseDbtCommand("test --select stg_orders --store-failures"),
+      ),
+    ).toBe(true);
   });
 });

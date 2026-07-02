@@ -52,6 +52,27 @@ export interface ParsedDbtCommand {
   subcommand: string;
 }
 
+/**
+ * Subcommands that write into the warehouse target schema. `test` is
+ * read-only unless `--store-failures` persists audit tables; `retry` resumes
+ * whatever (possibly writing) command originally failed.
+ */
+const WAREHOUSE_WRITE_SUBCOMMANDS = new Set([
+  "run",
+  "build",
+  "seed",
+  "snapshot",
+  "retry",
+]);
+
+/** Whether a validated command writes to the warehouse target schema. */
+export function isWarehouseWriteCommand(parsed: ParsedDbtCommand): boolean {
+  if (WAREHOUSE_WRITE_SUBCOMMANDS.has(parsed.subcommand)) return true;
+  return (
+    parsed.subcommand === "test" && parsed.argv.includes("--store-failures")
+  );
+}
+
 export class DbtCommandValidationError extends Error {}
 
 function tokenize(command: string): string[] {
