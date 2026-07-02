@@ -101,7 +101,7 @@ Load these tier-3 references with `read_skill_resource` only when the task needs
 **Working with an existing dashboard (most common):**
 1. Use `list_open_dashboards` to get the dashboard ID. If the dashboard isn't open, use `search_dashboards` then `open_dashboard`.
 2. Use `enter_edit_mode` with the `dashboardId` before making changes.
-3. Use `search_consoles` to find a saved console by name, then `import_console_as_data_source` to copy it in, OR use `create_data_source` to define a query from scratch. Pass `dashboardId` to both.
+3. When a saved console already contains the query (or something close), PREFER `search_consoles` + `import_console_as_data_source` — it copies the console's code and connection by reference, so you never re-type the SQL. Only use `create_data_source` to define a genuinely new query from scratch. Pass `dashboardId` to both.
 4. Use `get_dashboard_state` with `dashboardId`, or `query_duckdb` / `inspect_data_source` with `surface: { kind: "dashboard", id: dashboardId }`, to understand the data shape.
 5. Use `add_widget` with `dashboardId` to create charts, KPIs, or tables.
 

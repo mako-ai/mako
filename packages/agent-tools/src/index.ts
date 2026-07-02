@@ -60,11 +60,13 @@ export {
   // Schemas for the server-executed app mutation tools (registered with execute
   // functions in api/src/agent-lib/tools/server-app-tools.ts).
   writeFileSchema,
+  editFileSchema,
   deleteFileSchema,
   renameFileSchema,
   addDependencySchema,
   removeDependencySchema,
   createDataBindingSchema,
+  updateDataBindingSchema,
   deleteDataBindingSchema,
   saveAppVersionSchema,
   restoreAppVersionSchema,
@@ -78,7 +80,12 @@ export {
   setBindingMaterializationSchema,
   bindingMaterializationScheduleSchema,
 } from "./app-tools";
-export type { AppWriteFileInput, AppCreateDataBindingInput } from "./app-tools";
+export type {
+  AppWriteFileInput,
+  AppEditFileInput,
+  AppCreateDataBindingInput,
+  AppUpdateDataBindingInput,
+} from "./app-tools";
 
 export { clientDbtTools } from "./dbt-tools";
 export {
@@ -86,11 +93,16 @@ export {
   // functions in api/src/agent-lib/tools/dbt-tools.ts).
   createDbtFileSchema,
   modifyDbtFileSchema,
+  editDbtFileSchema,
   deleteDbtFileSchema,
   readDbtTreeSchema,
   readDbtFileSchema,
 } from "./dbt-tools";
-export type { DbtCreateFileInput, DbtModifyFileInput } from "./dbt-tools";
+export type {
+  DbtCreateFileInput,
+  DbtModifyFileInput,
+  DbtEditFileInput,
+} from "./dbt-tools";
 
 export { clientDataSourceTools } from "./data-source-tools";
 
@@ -119,6 +131,14 @@ export {
   buildModificationDiff,
   type ConsoleModification,
 } from "./console-modification";
+
+export {
+  applyStrReplace,
+  buildStrReplaceDiff,
+  type StrReplaceResult,
+  type StrReplaceSuccess,
+  type StrReplaceFailure,
+} from "./str-replace";
 
 export {
   MakoChartSpecBase,

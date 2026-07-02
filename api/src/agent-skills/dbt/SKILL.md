@@ -26,8 +26,12 @@ entities:
 
 Mako runs dbt Core projects whose files live in the workspace database (one
 document per file) and execute as subprocesses against the project's warehouse
-environments. The agent edits files with `create_dbt_file` / `modify_dbt_file`
-and verifies with `dbt_parse` → `dbt_compile_model` → `dbt_run_model`.
+environments. The agent creates files with `create_dbt_file`, modifies existing
+ones with `edit_dbt_file` (anchored `oldString`/`newString` replacement — the
+match must be unique; include surrounding lines to disambiguate, `""` deletes,
+`replaceAll: true` renames), reserves `modify_dbt_file` (COMPLETE contents) for
+full rewrites, and verifies with `dbt_parse` → `dbt_compile_model` →
+`dbt_run_model`.
 
 ## Project layout
 

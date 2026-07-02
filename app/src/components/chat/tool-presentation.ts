@@ -37,16 +37,19 @@ export function toolNameFromPartType(partType: string): string {
 // converges even when the workspace SSE is dead (mobile lock / laptop sleep).
 export const APP_SERVER_MUTATION_TOOLS = new Set<string>([
   "app_write_file",
+  "app_edit_file",
   "app_delete_file",
   "app_rename_file",
   "app_add_dependency",
   "app_remove_dependency",
   "app_create_data_binding",
+  "app_update_data_binding",
   "app_delete_data_binding",
 ]);
 export const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
   "create_dbt_file",
   "modify_dbt_file",
+  "edit_dbt_file",
   "delete_dbt_file",
 ]);
 

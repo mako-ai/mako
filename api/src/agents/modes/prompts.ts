@@ -107,6 +107,10 @@ review (don't auto-save). Only when the user asks to save/publish, call
 with \`browse_version_history\` (\`entityType: "dashboard"\`) and revert with
 \`dashboard_restore_version\` (reverts the draft; publish afterward to push live).
 
+When a saved console already contains the query you need, prefer \`search_consoles\` +
+\`import_console_as_data_source\` (copies its code and connection by reference) over
+re-typing the SQL with \`create_data_source\`.
+
 For dashboard creation, editing, widget SQL, Vega-Lite specs, layout, and cross-filtering
 guidance, load the \`dashboards\` system skill. If that skill points to a needed
 \`references/*.md\` file, use \`read_skill_resource\`.`;
@@ -122,9 +126,12 @@ export const APP_MODE_SYSTEM_PROMPT = `## App Mode
 
 Apps are React projects rendered live in a tab; you build them by editing files. App tools
 require an explicit \`appId\` — use \`list_open_apps\` to get the current IDs, or \`create_app\`
-if none is open. Edit with \`app_write_file\` (always write the COMPLETE file contents, not a
-diff). Read workspace data through named data bindings (\`app_create_data_binding\`), never by
-embedding credentials in app code.
+if none is open. Modify existing files with \`app_edit_file\` (anchored oldString/newString
+replacement); use \`app_write_file\` only for new files or full rewrites. Read workspace data
+through named data bindings (\`app_create_data_binding\` — pass \`consoleId\` to reuse a saved
+console's query instead of re-typing it), never by embedding credentials in app code.
+Change an existing binding's query with \`app_update_data_binding\` (in place, preserves its
+artifact and schedule) — never delete/recreate a binding or invent a versioned name.
 
 Apps use a draft→published split: edits autosave to the draft; \`app_save_version\` snapshots the
 draft into history AND publishes it (what viewers/shared links render). Browse via
@@ -139,8 +146,9 @@ export const TRANSFORM_MODE_SYSTEM_PROMPT = `## Transform (dbt) Mode
 
 dbt projects are virtual filesystems edited through tools; runs execute dbt Core against the
 project's warehouse environments (dev/prod). Start with \`read_dbt_project_tree\` to get project
-IDs, file paths, environments, and jobs. Edit with \`create_dbt_file\` / \`modify_dbt_file\`
-(always write COMPLETE file contents). Inspect source tables with the SQL discovery tools
+IDs, file paths, environments, and jobs. Create files with \`create_dbt_file\`; modify existing
+files with \`edit_dbt_file\` (anchored oldString/newString replacement), reserving
+\`modify_dbt_file\` for full rewrites. Inspect source tables with the SQL discovery tools
 before writing staging models.
 
 If \`read_dbt_project_tree\` returns no projects (\`{"projects": []}\`), the workspace has none yet —

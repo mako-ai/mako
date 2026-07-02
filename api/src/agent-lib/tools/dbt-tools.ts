@@ -20,9 +20,12 @@ import { Types } from "mongoose";
 import {
   createDbtFileSchema,
   modifyDbtFileSchema,
+  editDbtFileSchema,
   deleteDbtFileSchema,
   readDbtTreeSchema,
   readDbtFileSchema,
+  applyStrReplace,
+  buildStrReplaceDiff,
 } from "@mako/agent-tools";
 import {
   DatabaseConnection,
@@ -341,7 +344,10 @@ export const createDbtServerTools = (
             .select("path content")
             .lean();
           if (!file) {
-            return { success: false as const, error: `File not found: ${path}` };
+            return {
+              success: false as const,
+              error: `File not found: ${path}`,
+            };
           }
           return {
             success: true as const,
@@ -410,9 +416,11 @@ export const createDbtServerTools = (
 
     modify_dbt_file: tool({
       description:
-        "Overwrite an existing dbt project file with full contents. The open " +
-        "editor tab updates live; every save snapshots a version for undo. " +
-        "After editing, verify with dbt_parse / dbt_compile_model.",
+        "Fully rewrite an existing dbt project file with complete contents. " +
+        "For modifying part of a file prefer edit_dbt_file (anchored old/new " +
+        "string) — it avoids re-sending unchanged code. The open editor tab " +
+        "updates live; every save snapshots a version for undo. After " +
+        "editing, verify with dbt_parse / dbt_compile_model.",
       inputSchema: modifyDbtFileSchema,
       execute: async ({ projectId, path, contents }) => {
         try {
@@ -449,6 +457,84 @@ export const createDbtServerTools = (
           return { success: true, path };
         } catch (error) {
           return toolError(error, "Failed to save dbt file");
+        }
+      },
+    }),
+
+    edit_dbt_file: tool({
+      description:
+        "Edit an existing dbt project file by replacing an exact text " +
+        "match. This is the PRIMARY tool for modifying dbt files: pass the " +
+        "exact current text as oldString (unique — include surrounding " +
+        'lines to disambiguate) and the replacement as newString ("" ' +
+        "deletes it). Set replaceAll: true for renames. Use modify_dbt_file " +
+        "only for full rewrites. After editing, verify with dbt_parse / " +
+        "dbt_compile_model.",
+      inputSchema: editDbtFileSchema,
+      execute: async ({
+        projectId,
+        path,
+        oldString,
+        newString,
+        replaceAll,
+      }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!isSafeDbtPath(path)) {
+            return { success: false, error: "Invalid file path" };
+          }
+          const file = await DbtFile.findOne({
+            projectId: project._id,
+            path,
+            is_deleted: { $ne: true },
+          });
+          if (!file) {
+            return {
+              success: false,
+              error: `File not found: ${path}. Use read_dbt_project_tree to list files, or create_dbt_file to create it.`,
+            };
+          }
+          const current = file.content ?? "";
+          const result = applyStrReplace(
+            current,
+            oldString,
+            newString,
+            replaceAll === true,
+          );
+          if (!result.ok) {
+            return { success: false, error: result.error };
+          }
+          if (result.contents.length > 1_000_000) {
+            return { success: false, error: "File too large (max 1MB)" };
+          }
+          const diff = buildStrReplaceDiff(
+            current,
+            oldString,
+            newString,
+            result.replacements,
+          );
+          file.content = result.contents;
+          if (userId) file.updatedBy = userId;
+          await file.save();
+          await snapshotVersion(
+            file._id,
+            project.workspaceId,
+            path,
+            result.contents,
+          );
+          await DbtProject.updateOne(
+            { _id: project._id },
+            { $currentDate: { updatedAt: true } },
+          );
+          publishFileUpdated(projectId, path);
+          return {
+            success: true,
+            path,
+            replacements: result.replacements,
+            diff,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to edit dbt file");
         }
       },
     }),
@@ -783,7 +869,9 @@ export const createDbtServerTools = (
         "asks to stop a build.",
       inputSchema: z.object({
         projectId: projectIdField,
-        runId: z.string().describe("dbt run ID (from dbt_run_model / dbt_run_job)"),
+        runId: z
+          .string()
+          .describe("dbt run ID (from dbt_run_model / dbt_run_job)"),
       }),
       execute: async ({ projectId, runId }) => {
         try {
@@ -1635,12 +1723,7 @@ export const createDbtServerTools = (
             "Delete the PR's source branch after merge; defaults to true",
           ),
       }),
-      execute: async ({
-        projectId,
-        prNumber,
-        mergeMethod,
-        deleteBranch,
-      }) => {
+      execute: async ({ projectId, prNumber, mergeMethod, deleteBranch }) => {
         try {
           const project = await assertRepoProject(projectId);
           const result = await mergeProjectPullRequest(project, {
