@@ -43,6 +43,7 @@ import {
   SavedConsole,
 } from "../database/workspace-schema";
 import { saveChat } from "../services/agent-thread.service";
+import { buildMcpToolsForChat } from "../services/mcp-client.service";
 import { trackUsage } from "../services/llm-usage.service";
 import { computeInvocationCost } from "../services/cost-calculator";
 import { generateChatTitle } from "../services/title-generator";
@@ -803,6 +804,31 @@ agentRoutes.openapi(
             activeDashboardContext: undefined,
           };
 
+    // MCP tools (Close CRM etc.): built from DB-cached tool definitions, so
+    // this never blocks on remote MCP servers. Executions connect on demand.
+    let mcpChatTools: Awaited<ReturnType<typeof buildMcpToolsForChat>> = {
+      tools: {},
+      readOnlyToolNames: [],
+      allToolNames: [],
+    };
+    if (resolvedAgentId === "unified") {
+      try {
+        mcpChatTools = await buildMcpToolsForChat({
+          workspaceId,
+          userId: actorId,
+        });
+        if (mcpChatTools.allToolNames.length > 0) {
+          logger.info("MCP tools loaded for chat", {
+            workspaceId,
+            chatId,
+            toolCount: mcpChatTools.allToolNames.length,
+          });
+        }
+      } catch (err) {
+        logger.warn("MCP tool loading skipped", { error: err });
+      }
+    }
+
     // Build agent context
     const agentContext: AgentContext = {
       workspaceId,
@@ -829,6 +855,9 @@ agentRoutes.openapi(
       activeDashboardContext: dashboardContext.activeDashboardContext,
       toolExecutionContext,
       canManageScheduledQueries,
+      mcpTools: mcpChatTools.tools,
+      mcpReadOnlyToolNames: mcpChatTools.readOnlyToolNames,
+      mcpToolNames: mcpChatTools.allToolNames,
     };
 
     // Create agent configuration.
