@@ -93,6 +93,9 @@ function AddServerDialog({
   const [presetType, setPresetType] = useState("close");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [authType, setAuthType] = useState<"none" | "api_key" | "oauth">(
+    "oauth",
+  );
   const [authPerformer, setAuthPerformer] = useState<"workspace" | "user">(
     "workspace",
   );
@@ -101,12 +104,16 @@ function AddServerDialog({
   const [error, setError] = useState<string | null>(null);
 
   const preset = presets.find(p => p.type === presetType);
+  const authOptions = preset?.authOptions ?? ["api_key"];
 
   useEffect(() => {
     if (open) {
       setError(null);
       setName(preset?.type === "custom" ? "" : (preset?.label ?? ""));
       setUrl("");
+      setAuthType(preset?.authType ?? "api_key");
+      // OAuth's sweet spot is per-user login; default accordingly.
+      setAuthPerformer(preset?.authType === "oauth" ? "user" : "workspace");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, presetType]);
@@ -120,6 +127,7 @@ function AddServerDialog({
         name: name.trim(),
         connectorType: presetType,
         url: preset?.urlEditable ? url.trim() : undefined,
+        authType,
         authPerformer,
         writeScope,
       });
@@ -189,6 +197,31 @@ function AddServerDialog({
               disabled
             />
           )}
+          {authOptions.length > 1 && (
+            <FormControl fullWidth size="small">
+              <InputLabel id="mcp-auth-label">Authentication</InputLabel>
+              <Select
+                labelId="mcp-auth-label"
+                label="Authentication"
+                value={authType}
+                onChange={e =>
+                  setAuthType(e.target.value as "none" | "api_key" | "oauth")
+                }
+              >
+                {authOptions.includes("oauth") && (
+                  <MenuItem value="oauth">
+                    Log in with your account (OAuth)
+                  </MenuItem>
+                )}
+                {authOptions.includes("api_key") && (
+                  <MenuItem value="api_key">API key / headers</MenuItem>
+                )}
+                {authOptions.includes("none") && (
+                  <MenuItem value="none">No authentication</MenuItem>
+                )}
+              </Select>
+            </FormControl>
+          )}
           <FormControl fullWidth size="small">
             <InputLabel id="mcp-performer-label">Credentials</InputLabel>
             <Select
@@ -235,6 +268,91 @@ function AddServerDialog({
         </Button>
       </DialogActions>
     </Dialog>
+  );
+}
+
+function OAuthConnectSection({
+  server,
+  onNotify,
+}: {
+  server: McpServerInfo;
+  onNotify: (message: string, severity: "success" | "error") => void;
+}) {
+  const { currentWorkspace } = useWorkspace();
+  const startOAuth = useMcpStore(s => s.startOAuth);
+  const [connecting, setConnecting] = useState(false);
+
+  const hasCredential =
+    server.authPerformer === "workspace"
+      ? server.hasWorkspaceCredential
+      : server.hasUserCredential;
+
+  const handleConnect = async () => {
+    if (!currentWorkspace) return;
+    setConnecting(true);
+    try {
+      const { authorizationUrl, alreadyAuthorized } = await startOAuth(
+        currentWorkspace.id,
+        server.id,
+      );
+      if (alreadyAuthorized) {
+        onNotify("Account already connected", "success");
+        setConnecting(false);
+        return;
+      }
+      // Hand the browser to the provider's consent screen; it redirects
+      // back to /api/mcp/oauth/callback → /settings/mcp.
+      window.location.href = authorizationUrl;
+    } catch (err) {
+      setConnecting(false);
+      onNotify(
+        err instanceof Error ? err.message : "Failed to start OAuth flow",
+        "error",
+      );
+    }
+  };
+
+  return (
+    <Stack spacing={1.5}>
+      <Typography variant="subtitle2">
+        {server.authPerformer === "workspace"
+          ? "Workspace account"
+          : "Your account"}
+        {hasCredential && (
+          <Chip
+            label="Connected"
+            size="small"
+            color="success"
+            variant="outlined"
+            sx={{ ml: 1 }}
+          />
+        )}
+      </Typography>
+      <Typography variant="caption" color="text.secondary">
+        {server.authPerformer === "user"
+          ? "Each member logs in with their own account. The agent acts as you when using these tools."
+          : "One shared login for the whole workspace (admin-managed)."}
+      </Typography>
+      <Button
+        variant={hasCredential ? "outlined" : "contained"}
+        size="small"
+        disabled={connecting}
+        startIcon={
+          connecting ? (
+            <CircularProgress size={14} color="inherit" />
+          ) : undefined
+        }
+        onClick={() => void handleConnect()}
+        sx={{ alignSelf: "flex-start" }}
+        data-testid="mcp-oauth-connect"
+      >
+        {connecting
+          ? "Redirecting…"
+          : hasCredential
+            ? "Reconnect account"
+            : `Connect ${server.connectorType === "close" ? "Close" : "your"} account`}
+      </Button>
+    </Stack>
   );
 }
 
@@ -472,11 +590,15 @@ function ServerDetail({
         <Alert severity="error">{server.lastError}</Alert>
       )}
 
-      <CredentialsForm
-        server={server}
-        preset={preset}
-        onSaved={() => onNotify("Credentials saved", "success")}
-      />
+      {server.authType === "oauth" ? (
+        <OAuthConnectSection server={server} onNotify={onNotify} />
+      ) : server.authType === "api_key" ? (
+        <CredentialsForm
+          server={server}
+          preset={preset}
+          onSaved={() => onNotify("Credentials saved", "success")}
+        />
+      ) : null}
 
       <Stack direction="row" spacing={1} alignItems="center">
         <Button
@@ -703,6 +825,29 @@ export function McpServersSection() {
   const notify = (message: string, severity: "success" | "error") =>
     setSnackbar({ open: true, message, severity });
 
+  // Surface the OAuth callback outcome (we land back here with a query flag).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthError = params.get("oauth_error");
+    const oauthConnected = params.get("oauth_connected");
+    if (!oauthError && !oauthConnected) return;
+    setSnackbar({
+      open: true,
+      message: oauthError
+        ? `OAuth connection failed: ${oauthError}`
+        : "Account connected — test the connection to load tools",
+      severity: oauthError ? "error" : "success",
+    });
+    params.delete("oauth_error");
+    params.delete("oauth_connected");
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (query ? `?${query}` : ""),
+    );
+  }, []);
+
   return (
     <Box>
       <Stack
@@ -817,6 +962,7 @@ export function McpServersSection() {
                   url: "",
                   urlEditable: true,
                   authType: "api_key",
+                  authOptions: ["api_key", "oauth", "none"],
                   headerFields: [],
                 },
               ]

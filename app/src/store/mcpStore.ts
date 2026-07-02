@@ -58,6 +58,7 @@ export interface McpPresetInfo {
   url: string;
   urlEditable: boolean;
   authType: "none" | "api_key" | "oauth";
+  authOptions: Array<"none" | "api_key" | "oauth">;
   headerFields: McpPresetHeaderField[];
 }
 
@@ -100,10 +101,16 @@ interface McpActions {
       connectorType: string;
       url?: string;
       description?: string;
+      authType?: "none" | "api_key" | "oauth";
       authPerformer?: "workspace" | "user";
       writeScope?: McpWriteScope;
     },
   ) => Promise<McpServerInfo>;
+  /** Start the OAuth flow; resolves with the URL to send the browser to. */
+  startOAuth: (
+    workspaceId: string,
+    serverId: string,
+  ) => Promise<{ authorizationUrl: string; alreadyAuthorized: boolean }>;
   updateServer: (
     workspaceId: string,
     serverId: string,
@@ -223,6 +230,16 @@ export const useMcpStore = create<McpStore>()(
       ) as { server: McpServerInfo };
       await get().fetchServers(workspaceId);
       return response.server;
+    },
+
+    startOAuth: async (workspaceId, serverId) => {
+      const response = unwrapBody(
+        await api.POST(
+          "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth/connect",
+          { params: { path: { workspaceId, id: serverId } } },
+        ),
+      ) as { authorizationUrl: string; alreadyAuthorized: boolean };
+      return response;
     },
 
     updateServer: async (workspaceId, serverId, body) => {
