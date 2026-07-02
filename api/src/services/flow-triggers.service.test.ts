@@ -58,7 +58,7 @@ function testWebhookFlowWithMongooseScheduleDefault() {
   const flow = {
     type: "webhook" as const,
     schedule: { enabled: true, timezone: "UTC" },
-    webhookConfig: { enabled: true },
+    webhookConfig: { enabled: true, endpoint: "https://x/api/webhooks/abc" },
   };
   const triggers = deriveTriggerSet(flow);
   assert.deepEqual(triggers, {
@@ -69,10 +69,39 @@ function testWebhookFlowWithMongooseScheduleDefault() {
   assert.equal(deriveFlowType(flow), "webhook");
 }
 
+function testScheduledFlowWithMongooseWebhookDefault() {
+  // Mirror case: Mongoose also materializes `webhookConfig.enabled: true`
+  // (nested default) on EVERY flow, including plain scheduled flows. Without
+  // a provisioned endpoint that must NOT count as a webhook trigger —
+  // otherwise a scheduled flow with its schedule toggled off would be
+  // misclassified as webhook-only and refuse manual runs.
+  const flow = {
+    type: "scheduled" as const,
+    schedule: { enabled: false, cron: "0 * * * *", timezone: "UTC" },
+    webhookConfig: { enabled: true, totalReceived: 0 } as {
+      enabled: boolean;
+      endpoint?: string;
+    },
+  };
+  const triggers = deriveTriggerSet(flow);
+  assert.deepEqual(triggers, {
+    schedule: false,
+    webhook: false,
+    reconcile: false,
+  });
+  assert.equal(deriveFlowType(flow), "scheduled");
+  // Whitespace-only endpoint is also not a webhook trigger.
+  assert.equal(
+    deriveTriggerSet({ webhookConfig: { enabled: true, endpoint: "  " } })
+      .webhook,
+    false,
+  );
+}
+
 function testHybridFlowIsScheduledForBackCompat() {
   const flow = {
     schedule: { enabled: true, cron: "*/15 * * * *" },
-    webhookConfig: { enabled: true },
+    webhookConfig: { enabled: true, endpoint: "https://x/api/webhooks/abc" },
     backfillSchedule: { enabled: true, cron: "0 3 * * *" },
   };
   const triggers = deriveTriggerSet(flow);
@@ -171,16 +200,21 @@ function testScheduledFlowSelection() {
     type: "scheduled",
     "schedule.enabled": true,
   });
-  assert.deepEqual(buildScheduledFlowSelection(true), {
-    "schedule.enabled": true,
-    "schedule.cron": { $exists: true, $nin: [null, ""] },
-  });
+  const unified = buildScheduledFlowSelection(true) as Record<string, any>;
+  assert.equal(unified["schedule.enabled"], true);
+  const cronCond = unified["schedule.cron"];
+  assert.equal(cronCond.$exists, true);
+  assert.equal(cronCond.$type, "string");
+  // Whitespace-only crons must be excluded.
+  assert.equal(cronCond.$not.test("   "), true);
+  assert.equal(cronCond.$not.test("*/5 * * * *"), false);
 }
 
 function main() {
   testFlagDefaultsOff();
   testScheduledFlowTriggerSet();
   testWebhookFlowWithMongooseScheduleDefault();
+  testScheduledFlowWithMongooseWebhookDefault();
   testHybridFlowIsScheduledForBackCompat();
   testNoTriggers();
   testDefaultSyncEngineLegacyMode();

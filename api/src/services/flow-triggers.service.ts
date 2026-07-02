@@ -1,5 +1,5 @@
 /**
- * Unified sync-flow trigger model (docs/unified-sync-flow-proposal.md).
+ * Unified sync-flow trigger model (see the "unified sync flow" proposal PR).
  *
  * Behind the UNIFIED_SYNC_FLOWS flag, a flow's behavior is driven by an
  * orthogonal trigger set derived from existing fields instead of the hard
@@ -27,6 +27,7 @@ export interface FlowTriggerFields {
   } | null;
   webhookConfig?: {
     enabled?: boolean;
+    endpoint?: string | null;
   } | null;
   backfillSchedule?: {
     enabled?: boolean;
@@ -53,7 +54,15 @@ export function hasScheduleTrigger(flow: FlowTriggerFields): boolean {
 }
 
 export function hasWebhookTrigger(flow: FlowTriggerFields): boolean {
-  return flow.webhookConfig?.enabled === true;
+  // Mongoose nested-path defaults materialize `webhookConfig.enabled: true`
+  // on EVERY flow (including plain scheduled flows), so `enabled` alone is
+  // meaningless. A real webhook trigger requires the provisioned endpoint,
+  // which is only generated for webhook flows at create time.
+  return (
+    flow.webhookConfig?.enabled === true &&
+    typeof flow.webhookConfig.endpoint === "string" &&
+    flow.webhookConfig.endpoint.trim().length > 0
+  );
 }
 
 export function hasReconcileTrigger(flow: FlowTriggerFields): boolean {
@@ -80,6 +89,10 @@ export function hasAnyTrigger(flow: FlowTriggerFields): boolean {
  * Back-compat `type` derivation: a flow is only "webhook" when the webhook
  * trigger is its sole freshness source; anything with a poll schedule is
  * "scheduled" so legacy consumers keep working.
+ *
+ * IMPORTANT: this value must never be persisted onto an existing webhook
+ * flow's `type` — the inbound webhook receiver hard-filters `type: "webhook"`,
+ * so rewriting a hybrid flow's type would 404 its webhook endpoint.
  */
 export function deriveFlowType(
   flow: FlowTriggerFields,
@@ -126,6 +139,7 @@ export function buildScheduledFlowSelection(
   }
   return {
     "schedule.enabled": true,
-    "schedule.cron": { $exists: true, $nin: [null, ""] },
+    // String, non-empty, not whitespace-only — mirrors hasScheduleTrigger.
+    "schedule.cron": { $exists: true, $type: "string", $not: /^\s*$/ },
   };
 }

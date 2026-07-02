@@ -38,6 +38,7 @@ import {
   resolveCdcDestinationAdapter,
   type CdcDestinationAdapter,
 } from "../sync-cdc/adapters/registry";
+import { isUnifiedSyncFlowsEnabled } from "../services/flow-triggers.service";
 
 const orchestratorLogger = loggers.sync("orchestrator");
 
@@ -637,9 +638,21 @@ async function performSyncChunkSql(
     (writer as any).stagingActive = true;
   }
 
-  // Incremental: get last sync date from destination table
+  // Incremental: get last sync date from destination table.
+  //
+  // Historically skipped for CDC because CDC runs were always full webhook
+  // backfills. Under the unified trigger model a scheduled CDC flow polls
+  // with syncMode=incremental, and without an anchor every poll would
+  // re-fetch the entire entity. The CDC live table carries the same
+  // _syncedAt column, so anchor there too. Note: incremental CDC polls are
+  // upsert-only; deletes are reconciled by the periodic full backfill
+  // (backfillSchedule), not by polls.
+  const anchorIncremental =
+    syncMode === "incremental" &&
+    !state &&
+    (!isCdcEnabled || isUnifiedSyncFlowsEnabled());
   let lastSyncDate: Date | undefined;
-  if (!isCdcEnabled && syncMode === "incremental" && !state) {
+  if (anchorIncremental) {
     try {
       const { getMaxTrackingValue } = await import(
         "../services/destination-writer.service"

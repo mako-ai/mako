@@ -576,9 +576,14 @@ flowRoutes.openapi(
       const flowType = body.type || "scheduled";
       const sourceType = body.sourceType || "connector";
 
-      // Schedule cron required whenever a poll schedule is enabled,
-      // independent of the flow type (unified trigger model).
-      if (body.schedule?.enabled && !body.schedule?.cron) {
+      // Schedule cron required whenever a poll schedule is enabled. Under the
+      // unified trigger model this applies to every flow type; in legacy mode
+      // it keeps the historical scheduled-only scope.
+      if (
+        (flowType === "scheduled" || isUnifiedSyncFlowsEnabled()) &&
+        body.schedule?.enabled &&
+        !body.schedule?.cron
+      ) {
         return c.json(
           { success: false, error: "schedule.cron is required when enabled" },
           400,
@@ -1198,7 +1203,10 @@ flowRoutes.openapi(
         }
       }
 
-      if (flow.type === "webhook") {
+      // Keyed on the engine (not `type`): any CDC flow writing to a
+      // destination whose CDC MERGE path relies on tombstones must stay on
+      // soft delete, including scheduled CDC flows.
+      if (flow.syncEngine === "cdc") {
         const effectiveDestConnectionId =
           flow.tableDestination?.connectionId || flow.destinationDatabaseId;
         const destination = await DatabaseConnection.findById(
@@ -1397,14 +1405,16 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      if (flow.type !== "scheduled") {
+      // Unified trigger model: any flow may carry a poll schedule (hybrid
+      // webhook + schedule), so only reject non-scheduled types in legacy mode.
+      if (!isUnifiedSyncFlowsEnabled() && flow.type !== "scheduled") {
         return c.json(
           { success: false, error: "Only scheduled flows can be toggled" },
           400,
         );
       }
 
-      if (!flow.schedule) {
+      if (!flow.schedule?.cron) {
         flow.schedule = {
           enabled: true,
           cron: "0 * * * *",

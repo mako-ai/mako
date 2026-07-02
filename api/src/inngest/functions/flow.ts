@@ -631,7 +631,12 @@ export const flowFunction = inngest.createFunction(
         Boolean(flow.tableDestination?.connectionId) &&
         hasCdcDestinationAdapter(destinationType);
 
-      const unifiedFlows = isUnifiedSyncFlowsEnabled();
+      // Snapshot the flag inside a step so replays of this run stay
+      // deterministic even if the env flag flips mid-run (e.g. a deploy).
+      const unifiedFlows = (await step.run(
+        `resolve-unified-sync-flag${fetchStepSuffix}`,
+        async () => isUnifiedSyncFlowsEnabled(),
+      )) as boolean;
       // Under the unified trigger model, "webhook-only" replaces the `type`
       // discriminator: a flow whose sole freshness source is its webhook has
       // no poll schedule to execute, but any flow with a poll trigger may run.
@@ -676,7 +681,7 @@ export const flowFunction = inngest.createFunction(
       }
 
       if (isCdcBackfill && (unifiedFlows || flow.type === "webhook")) {
-        (flow as any).syncMode = "full";
+        flow.syncMode = "full";
         logger.info("Backfill mode: CDC enabled, forcing full sync", {
           flowId,
         });
@@ -1923,8 +1928,16 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      // Safety: ensure webhook backfill gate is not left active after failures.
-      if (backfill && flowRef?.type === "webhook") {
+      // Safety: ensure the CDC backfill gate is not left active after
+      // failures. Mirrors the happy-path gating: any CDC backfill under the
+      // unified model, webhook flows otherwise. Without this, a failed
+      // backfill leaves backfillState.status stuck on "running", which blocks
+      // the reconcile scheduler and the auto-recovery loop forever.
+      if (
+        backfill &&
+        flowRef &&
+        (isUnifiedSyncFlowsEnabled() || flowRef.type === "webhook")
+      ) {
         const destinationType = flowRef.tableDestination?.connectionId
           ? (
               await DatabaseConnection.findById(
