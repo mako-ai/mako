@@ -181,8 +181,14 @@ export async function syncProjectBranchFromRepo(
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
+  // Read fields explicitly: `repo` is a Mongoose subdocument on hydrated
+  // docs, and spreading one drops its schema fields (they live on the
+  // prototype), which would fetch from "undefined/undefined".
   const { sha, files, skippedLarge } = await fetchRepoDbtFiles({
-    ...project.repo,
+    owner: project.repo.owner,
+    repo: project.repo.repo,
+    subdirectory: project.repo.subdirectory,
+    installationId: project.repo.installationId,
     branch,
   });
 
