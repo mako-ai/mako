@@ -55,6 +55,7 @@ export interface McpPresetInfo {
   type: string;
   label: string;
   description: string;
+  icon?: string;
   url: string;
   urlEditable: boolean;
   authType: "none" | "api_key" | "oauth";

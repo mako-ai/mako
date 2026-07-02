@@ -26,6 +26,8 @@ export interface McpPreset {
   type: string;
   label: string;
   description: string;
+  /** Icon URL for the connections gallery (custom servers use favicons). */
+  icon?: string;
   /** Pre-filled server URL; empty for the custom preset (user-supplied). */
   url: string;
   /** Whether the URL is editable in the UI. */
@@ -50,7 +52,8 @@ export const CLOSE_MCP_PRESET: McpPreset = {
   type: "close",
   label: "Close CRM",
   description:
-    "Official Close MCP server — search leads, manage opportunities, create contacts, and log activities in your Close organization.",
+    "Lets the agent search leads, manage opportunities, create contacts, and log activities in your Close organization.",
+  icon: "/api/connectors/close/icon.svg",
   url: "https://mcp.close.com/mcp",
   urlEditable: false,
   authType: "oauth",
@@ -78,7 +81,7 @@ export const CUSTOM_MCP_PRESET: McpPreset = {
   type: "custom",
   label: "Custom MCP server",
   description:
-    "Connect any MCP server over Streamable HTTP — provide the server URL and optional authentication headers.",
+    "Connect any MCP server over Streamable HTTP — provide the server URL and choose OAuth, API-key, or no authentication.",
   url: "",
   urlEditable: true,
   authType: "api_key",

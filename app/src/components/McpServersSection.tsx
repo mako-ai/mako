@@ -5,9 +5,6 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -32,10 +29,9 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  ChevronDown,
   Plug,
-  Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
   ShieldX,
   Trash2,
@@ -77,15 +73,72 @@ const RISK_TIER_LABELS = {
   destructive: "Destructive",
 } as const;
 
+/** Favicon for a custom MCP server, derived from its URL's host. */
+function faviconForUrl(url: string): string | null {
+  try {
+    const host = new URL(url).hostname;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+  } catch {
+    return null;
+  }
+}
+
+/** Square connection logo with a plug fallback when the image fails. */
+function ConnectionIcon({
+  src,
+  size = 36,
+}: {
+  src?: string | null;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return (
+      <Box
+        sx={{
+          width: size,
+          height: size,
+          borderRadius: 1.5,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          bgcolor: "action.hover",
+          color: "text.secondary",
+          flexShrink: 0,
+        }}
+      >
+        <Plug size={size * 0.55} />
+      </Box>
+    );
+  }
+  return (
+    <Box
+      component="img"
+      src={src}
+      alt=""
+      onError={() => setFailed(true)}
+      sx={{
+        width: size,
+        height: size,
+        borderRadius: 1.5,
+        objectFit: "contain",
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
 function AddServerDialog({
   open,
   onClose,
   presets,
+  initialPreset,
   onCreated,
 }: {
   open: boolean;
   onClose: () => void;
   presets: McpPresetInfo[];
+  initialPreset?: string;
   onCreated: (serverId: string) => void;
 }) {
   const { currentWorkspace } = useWorkspace();
@@ -105,6 +158,10 @@ function AddServerDialog({
 
   const preset = presets.find(p => p.type === presetType);
   const authOptions = preset?.authOptions ?? ["api_key"];
+
+  useEffect(() => {
+    if (open && initialPreset) setPresetType(initialPreset);
+  }, [open, initialPreset]);
 
   useEffect(() => {
     if (open) {
@@ -800,12 +857,117 @@ function ServerDetail({
   );
 }
 
+/** Gallery card for a configured server or an available preset. */
+function ConnectionCard({
+  icon,
+  title,
+  description,
+  connected,
+  statusChip,
+  actionLabel,
+  actionVariant = "contained",
+  onAction,
+  disabled,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  connected?: boolean;
+  statusChip?: React.ReactNode;
+  actionLabel: string;
+  actionVariant?: "contained" | "outlined";
+  onAction: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Box
+      sx={{
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 2.5,
+        p: 2,
+        display: "flex",
+        flexDirection: "column",
+        gap: 1,
+        bgcolor: "background.paper",
+        transition: "box-shadow 120ms ease, border-color 120ms ease",
+        "&:hover": {
+          borderColor: "text.disabled",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+        },
+      }}
+    >
+      <Stack direction="row" alignItems="flex-start" spacing={1}>
+        {icon}
+        <Box sx={{ flex: 1 }} />
+        {connected && (
+          <Chip
+            label="CONNECTED"
+            size="small"
+            sx={{
+              height: 20,
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: 0.4,
+              color: "success.main",
+              bgcolor: "transparent",
+              border: 1,
+              borderColor: "success.light",
+              "& .MuiChip-label": { px: 1 },
+            }}
+            icon={
+              <Box
+                sx={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  bgcolor: "success.main",
+                  ml: 0.75,
+                }}
+              />
+            }
+          />
+        )}
+        {statusChip}
+      </Stack>
+      <Typography variant="subtitle2" fontWeight={600} sx={{ mt: 0.5 }}>
+        {title}
+      </Typography>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{
+          display: "-webkit-box",
+          WebkitLineClamp: 3,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+          minHeight: 48,
+        }}
+      >
+        {description}
+      </Typography>
+      <Button
+        variant={actionVariant}
+        size="small"
+        fullWidth
+        disabled={disabled}
+        onClick={onAction}
+        sx={{ mt: "auto" }}
+      >
+        {actionLabel}
+      </Button>
+    </Box>
+  );
+}
+
 export function McpServersSection() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
   const { servers, presets, loading, error, fetchServers, fetchPresets } =
     useMcpStore();
   const [addOpen, setAddOpen] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [addPreset, setAddPreset] = useState<string | undefined>(undefined);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
@@ -848,30 +1010,71 @@ export function McpServersSection() {
     );
   }, []);
 
+  const effectivePresets: McpPresetInfo[] =
+    presets.length > 0
+      ? presets
+      : [
+          {
+            type: "custom",
+            label: "Custom MCP server",
+            description: "Connect any MCP server over Streamable HTTP.",
+            url: "",
+            urlEditable: true,
+            authType: "api_key",
+            authOptions: ["api_key", "oauth", "none"],
+            headerFields: [],
+          },
+        ];
+
+  const presetByType = (type: string) =>
+    effectivePresets.find(p => p.type === type);
+
+  /** Icon for a configured server: preset logo, else the URL's favicon. */
+  const serverIcon = (server: McpServerInfo) =>
+    presetByType(server.connectorType)?.icon ??
+    faviconForUrl(server.transport.url);
+
+  const query = search.trim().toLowerCase();
+  const matches = (...texts: Array<string | null | undefined>) =>
+    !query || texts.some(t => t?.toLowerCase().includes(query));
+
+  const visibleServers = servers.filter(s =>
+    matches(s.name, s.description, s.transport.url),
+  );
+  // Preset cards: hide single-instance presets that are already configured
+  // (custom stays — you can add any number of custom servers).
+  const availablePresets = effectivePresets.filter(
+    p =>
+      matches(p.label, p.description) &&
+      (p.type === "custom" || !servers.some(s => s.connectorType === p.type)),
+  );
+
+  const detailServer = servers.find(s => s.id === detailId) ?? null;
+
   return (
     <Box>
-      <Stack
-        direction="row"
-        justifyContent="space-between"
-        alignItems="center"
-        sx={{ mb: 2 }}
-      >
-        <Typography variant="body2" color="text.secondary">
-          {servers.length === 0
-            ? "No MCP servers connected yet."
-            : `${servers.length} server${servers.length === 1 ? "" : "s"} configured.`}
-        </Typography>
-        {isAdmin && (
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<Plus size={14} />}
-            onClick={() => setAddOpen(true)}
-          >
-            Add server
-          </Button>
-        )}
-      </Stack>
+      <TextField
+        size="small"
+        fullWidth
+        placeholder="Search connections and tools…"
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        sx={{ mb: 2.5 }}
+        InputProps={{
+          startAdornment: (
+            <Box
+              sx={{
+                mr: 1,
+                display: "flex",
+                alignItems: "center",
+                color: "text.disabled",
+              }}
+            >
+              <Search size={15} />
+            </Box>
+          ),
+        }}
+      />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -882,99 +1085,139 @@ export function McpServersSection() {
       {loading && servers.length === 0 ? (
         <CircularProgress size={22} />
       ) : (
-        servers.map(server => (
-          <Accordion
-            key={server.id}
-            expanded={expandedId === server.id}
-            onChange={(_, expanded) =>
-              setExpandedId(expanded ? server.id : null)
-            }
-            variant="outlined"
-            disableGutters
-          >
-            <AccordionSummary expandIcon={<ChevronDown size={16} />}>
-              <Stack
-                direction="row"
-                spacing={1.5}
-                alignItems="center"
-                sx={{ flex: 1, minWidth: 0 }}
-              >
-                <Plug size={16} />
-                <Typography variant="subtitle2" noWrap>
-                  {server.name}
-                </Typography>
-                <Chip
-                  label={STATUS_LABELS[server.status]}
-                  size="small"
-                  color={STATUS_COLORS[server.status]}
-                  variant="outlined"
-                  sx={{ height: 20 }}
-                />
-                <Chip
-                  label={WRITE_SCOPE_LABELS[server.writeScope]}
-                  size="small"
-                  variant="outlined"
-                  sx={{ height: 20 }}
-                />
-                <Chip
-                  label={
-                    server.authPerformer === "workspace"
-                      ? "Workspace credential"
-                      : "Per-user credential"
-                  }
-                  size="small"
-                  variant="outlined"
-                  sx={{ height: 20 }}
-                />
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  noWrap
-                  sx={{ flex: 1, minWidth: 0, textAlign: "right", pr: 1 }}
-                >
-                  {server.transport.url}
-                </Typography>
-              </Stack>
-            </AccordionSummary>
-            <AccordionDetails>
-              <ServerDetail
-                server={server}
-                preset={presets.find(p => p.type === server.connectorType)}
-                isAdmin={isAdmin}
-                onNotify={notify}
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+            gap: 1.5,
+          }}
+        >
+          {visibleServers.map(server => {
+            const needsAttention =
+              server.status === "error" || server.status === "awaiting_auth";
+            return (
+              <ConnectionCard
+                key={server.id}
+                icon={<ConnectionIcon src={serverIcon(server)} />}
+                title={server.name}
+                description={
+                  server.description ??
+                  (server.connectorType !== "custom"
+                    ? (presetByType(server.connectorType)?.description ??
+                      server.transport.url)
+                    : server.transport.url)
+                }
+                connected={server.status === "connected"}
+                statusChip={
+                  needsAttention ? (
+                    <Chip
+                      label={STATUS_LABELS[server.status]}
+                      size="small"
+                      color={STATUS_COLORS[server.status]}
+                      variant="outlined"
+                      sx={{ height: 20, fontSize: 10 }}
+                    />
+                  ) : undefined
+                }
+                actionLabel={
+                  server.status === "connected" ? "Manage" : "Finish setup"
+                }
+                actionVariant={
+                  server.status === "connected" ? "outlined" : "contained"
+                }
+                onAction={() => setDetailId(server.id)}
               />
-            </AccordionDetails>
-          </Accordion>
-        ))
+            );
+          })}
+          {availablePresets.map(preset => (
+            <ConnectionCard
+              key={`preset-${preset.type}`}
+              icon={<ConnectionIcon src={preset.icon} />}
+              title={preset.label}
+              description={preset.description}
+              actionLabel="Connect"
+              onAction={() => {
+                setAddPreset(preset.type);
+                setAddOpen(true);
+              }}
+              disabled={!isAdmin}
+            />
+          ))}
+        </Box>
+      )}
+      {!isAdmin && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", mt: 1.5 }}
+        >
+          Only workspace admins can add connections. You can connect your own
+          account on per-user connections via Manage.
+        </Typography>
       )}
 
       <AddServerDialog
         open={addOpen}
         onClose={() => setAddOpen(false)}
-        presets={
-          presets.length > 0
-            ? presets
-            : [
-                {
-                  type: "custom",
-                  label: "Custom MCP server",
-                  description: "Connect any MCP server over Streamable HTTP.",
-                  url: "",
-                  urlEditable: true,
-                  authType: "api_key",
-                  authOptions: ["api_key", "oauth", "none"],
-                  headerFields: [],
-                },
-              ]
-        }
+        presets={effectivePresets}
+        initialPreset={addPreset}
         onCreated={serverId => {
-          setExpandedId(serverId);
+          setDetailId(serverId);
           notify(
-            "Server added — save credentials and test the connection",
+            "Connection added — finish setup to load its tools",
             "success",
           );
         }}
       />
+
+      <Dialog
+        open={detailServer !== null}
+        onClose={() => setDetailId(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        {detailServer && (
+          <>
+            <DialogTitle>
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <ConnectionIcon src={serverIcon(detailServer)} size={28} />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="subtitle1" fontWeight={600} noWrap>
+                    {detailServer.name}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" noWrap>
+                    {detailServer.transport.url}
+                  </Typography>
+                </Box>
+                <Chip
+                  label={STATUS_LABELS[detailServer.status]}
+                  size="small"
+                  color={STATUS_COLORS[detailServer.status]}
+                  variant="outlined"
+                  sx={{ height: 20 }}
+                />
+                <Chip
+                  label={WRITE_SCOPE_LABELS[detailServer.writeScope]}
+                  size="small"
+                  variant="outlined"
+                  sx={{ height: 20 }}
+                />
+              </Stack>
+            </DialogTitle>
+            <DialogContent dividers>
+              <ServerDetail
+                server={detailServer}
+                preset={presetByType(detailServer.connectorType)}
+                isAdmin={isAdmin}
+                onNotify={notify}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setDetailId(null)}>Close</Button>
+            </DialogActions>
+          </>
+        )}
+      </Dialog>
 
       <Snackbar
         open={snackbar.open}
