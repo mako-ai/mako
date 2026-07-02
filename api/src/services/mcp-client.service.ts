@@ -118,15 +118,26 @@ export function mcpAllowedCachedTools(server: IMcpServer): IMcpCachedTool[] {
   return server.cachedTools;
 }
 
-function buildConnectionHeaders(
+/**
+ * Resolve the HTTP headers for one connection: decrypted credential headers
+ * plus the preset scope header, and — for OAuth servers — a fresh Bearer
+ * token from the connection's stored (auto-refreshed) tokens.
+ */
+async function buildConnectionHeaders(
   server: IMcpServer,
   encryptedHeaders: Record<string, string>,
-): Record<string, string> {
+  configUserId: string,
+): Promise<Record<string, string>> {
   const headers = decryptRecord(encryptedHeaders ?? {});
   const preset = getMcpPreset(server.connectorType);
   if (preset.scopeHeader) {
     headers[preset.scopeHeader.name] =
       preset.scopeHeader.scopeValues[server.writeScope];
+  }
+  if (server.authType === "oauth") {
+    const { getMcpOAuthAuthorization } = await import("./mcp-oauth.service");
+    const oauthHeader = await getMcpOAuthAuthorization(server, configUserId);
+    Object.assign(headers, oauthHeader);
   }
   return headers;
 }
@@ -145,9 +156,14 @@ export interface McpDiscoveredTool {
 export async function discoverMcpTools(
   server: IMcpServer,
   encryptedHeaders: Record<string, string>,
+  configUserId = "",
 ): Promise<McpDiscoveredTool[]> {
   await assertSafeMcpUrl(server.transport.url);
-  const headers = buildConnectionHeaders(server, encryptedHeaders);
+  const headers = await buildConnectionHeaders(
+    server,
+    encryptedHeaders,
+    configUserId,
+  );
 
   const client = await createMCPClient({
     transport: { type: "http", url: server.transport.url, headers },
@@ -172,12 +188,17 @@ export async function discoverMcpTools(
 async function executeMcpToolCall(params: {
   server: IMcpServer;
   encryptedHeaders: Record<string, string>;
+  configUserId: string;
   toolName: string;
   input: unknown;
 }): Promise<unknown> {
-  const { server, encryptedHeaders, toolName, input } = params;
+  const { server, encryptedHeaders, configUserId, toolName, input } = params;
   await assertSafeMcpUrl(server.transport.url);
-  const headers = buildConnectionHeaders(server, encryptedHeaders);
+  const headers = await buildConnectionHeaders(
+    server,
+    encryptedHeaders,
+    configUserId,
+  );
 
   const client = await createMCPClient({
     transport: { type: "http", url: server.transport.url, headers },
@@ -211,6 +232,8 @@ export interface McpChatTools {
 interface ResolvedMcpServer {
   server: IMcpServer;
   encryptedHeaders: Record<string, string>;
+  /** Which connection config the credential belongs to ("" = workspace). */
+  configUserId: string;
 }
 
 /**
@@ -244,9 +267,12 @@ async function resolveActiveServers(
         c.userId === wantUserId,
     );
     if (!config && server.authType !== "none") continue;
+    // OAuth connections are only usable once tokens exist.
+    if (server.authType === "oauth" && !config?.oauthTokens) continue;
     resolved.push({
       server: server as IMcpServer,
       encryptedHeaders: (config?.headers ?? {}) as Record<string, string>,
+      configUserId: wantUserId,
     });
   }
   return resolved;
@@ -317,7 +343,7 @@ export async function buildMcpToolsForChat(params: {
   const readOnlyToolNames: string[] = [];
   const allToolNames: string[] = [];
 
-  for (const { server, encryptedHeaders } of resolved) {
+  for (const { server, encryptedHeaders, configUserId } of resolved) {
     for (const cachedTool of mcpAllowedCachedTools(server)) {
       const prefixedName = mcpPrefixedToolName(server.name, cachedTool.name);
       if (tools[prefixedName]) continue; // name collision: first wins
@@ -373,6 +399,7 @@ export async function buildMcpToolsForChat(params: {
             const output = await executeMcpToolCall({
               server,
               encryptedHeaders,
+              configUserId,
               toolName: cachedTool.name,
               input,
             });

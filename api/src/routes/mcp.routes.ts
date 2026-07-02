@@ -31,11 +31,16 @@ import {
   listMcpToolUiInfo,
   mcpToolRiskTier,
 } from "../services/mcp-client.service";
+import {
+  completeMcpOAuthFlow,
+  startMcpOAuthFlow,
+} from "../services/mcp-oauth.service";
 
 const logger = loggers.api("mcp");
 
 // ---------------------------------------------------------------------------
-// Public preset catalog (no auth: static metadata, like /api/connectors/types)
+// Preset catalog (public: static metadata, like /api/connectors/types) and
+// the OAuth callback (session-authed browser redirect target).
 // ---------------------------------------------------------------------------
 
 export const mcpPresetRoutes = createRouter();
@@ -50,6 +55,63 @@ mcpPresetRoutes.openapi(
   }),
   c => {
     return c.json({ success: true, presets: Object.values(MCP_PRESETS) });
+  },
+);
+
+// OAuth callback — the browser lands here after consenting at the provider.
+// Session-authed (cookies ride the redirect); the flow is looked up by the
+// unguessable `state` and must belong to the session user.
+mcpPresetRoutes.use("/oauth/callback", unifiedAuthMiddleware);
+mcpPresetRoutes.openapi(
+  createRoute({
+    method: "get",
+    path: "/oauth/callback",
+    tags: ["MCP"],
+    summary: "MCP OAuth authorization callback",
+    request: {
+      query: z.object({
+        code: z.string().optional(),
+        state: z.string().optional(),
+        error: z.string().optional(),
+        error_description: z.string().optional(),
+      }),
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    const { code, state, error, error_description } = c.req.query();
+    const settingsUrl = "/settings/mcp";
+    if (error) {
+      logger.warn("MCP OAuth callback returned an error", {
+        error,
+        error_description,
+      });
+      return c.redirect(
+        `${settingsUrl}?oauth_error=${encodeURIComponent(error_description || error)}`,
+      );
+    }
+    if (!code || !state) {
+      return c.redirect(`${settingsUrl}?oauth_error=Missing+code+or+state`);
+    }
+    const user = (c as AuthenticatedContext).get("user");
+    if (!user) {
+      return c.json({ success: false, error: "Unauthorized" }, 401);
+    }
+    try {
+      await completeMcpOAuthFlow({
+        state,
+        code,
+        sessionUserId: user.id,
+      });
+      return c.redirect(`${settingsUrl}?oauth_connected=1`);
+    } catch (err) {
+      logger.error("MCP OAuth callback failed", { error: err });
+      const message =
+        err instanceof Error ? err.message : "OAuth connection failed";
+      return c.redirect(
+        `${settingsUrl}?oauth_error=${encodeURIComponent(message)}`,
+      );
+    }
   },
 );
 
@@ -187,8 +249,17 @@ mcpRoutes.openapi(
       const configs = await McpConnectionConfig.find({
         serverId: { $in: servers.map(s => s._id) },
       })
-        .select("serverId userId")
+        .select("serverId userId oauthTokens headers")
         .lean();
+
+      // For OAuth servers a credential only counts once tokens exist.
+      const hasUsableCredential = (
+        server: IMcpServer,
+        cfg: (typeof configs)[number],
+      ): boolean =>
+        server.authType === "oauth"
+          ? !!cfg.oauthTokens
+          : Object.keys(cfg.headers ?? {}).length > 0;
 
       return c.json({
         success: true,
@@ -197,12 +268,14 @@ mcpRoutes.openapi(
             hasWorkspaceCredential: configs.some(
               cfg =>
                 cfg.serverId.toString() === server._id.toString() &&
-                cfg.userId === "",
+                cfg.userId === "" &&
+                hasUsableCredential(server, cfg),
             ),
             hasUserCredential: configs.some(
               cfg =>
                 cfg.serverId.toString() === server._id.toString() &&
-                cfg.userId === (user?.id ?? ""),
+                cfg.userId === (user?.id ?? "") &&
+                hasUsableCredential(server, cfg),
             ),
           }),
         ),
@@ -562,6 +635,82 @@ mcpRoutes.openapi(
   },
 );
 
+// --- Start an OAuth connection (returns the authorization URL) ---
+mcpRoutes.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/oauth/connect",
+    tags: ["MCP"],
+    summary: "Start the OAuth flow for an MCP server connection",
+    security: AUTH_SECURITY,
+    request: { params: ServerIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      if (!workspaceId || !id) {
+        return c.json({ success: false, error: "Server not found" }, 404);
+      }
+      const user = (c as AuthenticatedContext).get("user");
+      if (!user) {
+        return c.json({ success: false, error: "Unauthorized" }, 401);
+      }
+      const server = await loadServer(workspaceId, id);
+      if (!server) {
+        return c.json({ success: false, error: "Server not found" }, 404);
+      }
+      if (server.authType !== "oauth") {
+        return c.json(
+          { success: false, error: "This server does not use OAuth" },
+          400,
+        );
+      }
+
+      let configUserId: string;
+      if (server.authPerformer === "workspace") {
+        const adminUserId = await requireAdmin(
+          c as AuthenticatedContext,
+          workspaceId,
+        );
+        if (!adminUserId) {
+          return c.json(
+            { success: false, error: "Workspace admin role required" },
+            403,
+          );
+        }
+        configUserId = "";
+      } else {
+        configUserId = user.id;
+      }
+
+      const { authorizationUrl } = await startMcpOAuthFlow({
+        server,
+        configUserId,
+        startedByUserId: user.id,
+      });
+      return c.json({
+        success: true,
+        authorizationUrl,
+        alreadyAuthorized: authorizationUrl === "",
+      });
+    } catch (error) {
+      logger.error("Error starting MCP OAuth flow", { error });
+      return c.json(
+        {
+          success: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to start OAuth flow",
+        },
+        500,
+      );
+    }
+  },
+);
+
 // --- Test connection + refresh tools ---
 mcpRoutes.openapi(
   createRoute({
@@ -598,14 +747,22 @@ mcpRoutes.openapi(
         serverId: server._id,
         userId: configUserId,
       }).lean();
-      if (!config && server.authType !== "none") {
+      const missingCredential =
+        server.authType === "oauth"
+          ? !config?.oauthTokens
+          : !config && server.authType !== "none";
+      if (missingCredential) {
         return c.json(
           {
             success: false,
             error:
-              server.authPerformer === "user"
-                ? "Connect your credentials first"
-                : "Save workspace credentials first",
+              server.authType === "oauth"
+                ? server.authPerformer === "user"
+                  ? "Connect your account first"
+                  : "Connect the workspace account first"
+                : server.authPerformer === "user"
+                  ? "Connect your credentials first"
+                  : "Save workspace credentials first",
           },
           400,
         );
@@ -615,6 +772,7 @@ mcpRoutes.openapi(
         const tools = await discoverMcpTools(
           server,
           (config?.headers ?? {}) as Record<string, string>,
+          configUserId,
         );
         server.cachedTools = tools;
         server.status = "connected";

@@ -31,7 +31,9 @@ export interface McpPreset {
   /** Whether the URL is editable in the UI. */
   urlEditable: boolean;
   authType: McpAuthType;
-  /** Credential header fields the user must fill in. */
+  /** Auth methods this preset supports (first entry = recommended default). */
+  authOptions: McpAuthType[];
+  /** Credential header fields the user must fill in (api_key auth). */
   headerFields: McpPresetHeaderField[];
   /**
    * Provider-enforced write-scope header, when the provider supports one
@@ -51,7 +53,8 @@ export const CLOSE_MCP_PRESET: McpPreset = {
     "Official Close MCP server — search leads, manage opportunities, create contacts, and log activities in your Close organization.",
   url: "https://mcp.close.com/mcp",
   urlEditable: false,
-  authType: "api_key",
+  authType: "oauth",
+  authOptions: ["oauth", "api_key"],
   headerFields: [
     {
       name: "Close-API-Key",
@@ -79,6 +82,7 @@ export const CUSTOM_MCP_PRESET: McpPreset = {
   url: "",
   urlEditable: true,
   authType: "api_key",
+  authOptions: ["api_key", "oauth", "none"],
   headerFields: [],
 };
 

@@ -4735,6 +4735,15 @@ export interface IMcpServer extends Document {
      */
     allowDestructiveGrants: boolean;
   };
+  /**
+   * OAuth client registration (Dynamic Client Registration) for this server.
+   * Shared across all users connecting to the server; per-user tokens live on
+   * their `mcp_connection_configs` document. `clientInformation` is the
+   * encrypted JSON of the DCR response (client_id, client_secret, ...).
+   */
+  oauth?: {
+    clientInformation?: string;
+  };
   /** Discovered tools from the last successful connect/test. */
   cachedTools: IMcpCachedTool[];
   status: McpServerStatus;
@@ -4819,6 +4828,15 @@ const McpServerSchema = new Schema<IMcpServer>(
       ],
       default: [],
     },
+    oauth: {
+      type: new Schema(
+        {
+          clientInformation: { type: String },
+        },
+        { _id: false },
+      ),
+      required: false,
+    },
     status: {
       type: String,
       enum: ["created", "awaiting_auth", "connected", "error"],
@@ -4849,6 +4867,10 @@ export interface IMcpConnectionConfig extends Document {
   userId: string;
   /** Encrypted header values (crypto.service `iv:ciphertext` format). */
   headers: Record<string, string>;
+  /** OAuth tokens for this connection (encrypted JSON of OAuthTokens). */
+  oauthTokens?: string;
+  /** Absolute epoch-ms expiry of the current access token, if known. */
+  oauthExpiresAt?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -4867,6 +4889,8 @@ const McpConnectionConfigSchema = new Schema<IMcpConnectionConfig>(
     },
     userId: { type: String, required: false, default: "" },
     headers: { type: Schema.Types.Mixed, default: {} },
+    oauthTokens: { type: String },
+    oauthExpiresAt: { type: Number },
   },
   { collection: "mcp_connection_configs", timestamps: true },
 );
@@ -4877,6 +4901,54 @@ McpConnectionConfigSchema.index({ workspaceId: 1 });
 export const McpConnectionConfig = mongoose.model<IMcpConnectionConfig>(
   "McpConnectionConfig",
   McpConnectionConfigSchema,
+);
+
+/**
+ * Pending MCP OAuth authorization flow: one document per in-flight browser
+ * redirect, keyed by the unguessable `state` parameter. Holds the PKCE code
+ * verifier until the callback exchanges the authorization code. TTL-reaped
+ * after 10 minutes.
+ */
+export interface IMcpOAuthFlow extends Document {
+  _id: Types.ObjectId;
+  state: string;
+  workspaceId: Types.ObjectId;
+  serverId: Types.ObjectId;
+  /** User who started the flow ("" for the shared workspace credential). */
+  configUserId: string;
+  /** Session user who must complete the callback. */
+  startedByUserId: string;
+  /** Encrypted PKCE code verifier. */
+  codeVerifier?: string;
+  createdAt: Date;
+}
+
+const McpOAuthFlowSchema = new Schema<IMcpOAuthFlow>(
+  {
+    state: { type: String, required: true },
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    serverId: {
+      type: Schema.Types.ObjectId,
+      ref: "McpServer",
+      required: true,
+    },
+    configUserId: { type: String, required: true, default: "" },
+    startedByUserId: { type: String, required: true },
+    codeVerifier: { type: String },
+  },
+  { collection: "mcp_oauth_flows", timestamps: { createdAt: true } },
+);
+
+McpOAuthFlowSchema.index({ state: 1 }, { unique: true });
+McpOAuthFlowSchema.index({ createdAt: 1 }, { expireAfterSeconds: 600 });
+
+export const McpOAuthFlow = mongoose.model<IMcpOAuthFlow>(
+  "McpOAuthFlow",
+  McpOAuthFlowSchema,
 );
 
 export type McpGrantDecision = "always_allow" | "always_deny";
