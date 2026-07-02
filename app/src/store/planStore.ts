@@ -327,6 +327,18 @@ export function focusPlanTab(
   return id;
 }
 
+/** Close the plan's main-view tab (no-op when it is not open or has been
+ * re-pointed to a different toolCallId). Used when the user discards a
+ * pending plan — the inline summary card in the chat history can re-open it
+ * read-only. */
+export function closePlanTab(toolCallId: string, chatId: string): void {
+  const consoleStore = useConsoleStore.getState();
+  const id = planTabId(toolCallId, chatId);
+  const tab = consoleStore.tabs[id];
+  if (!tab || tab.metadata?.toolCallId !== toolCallId) return;
+  consoleStore.closeTab(id);
+}
+
 /** Keep the plan tab's title in sync as it streams/finalizes (no-op when the
  * tab is closed or the title is unchanged — cheap to call per delta). */
 export function syncPlanTabTitle(

@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import type { PlanTodo } from "@mako/agent-tools";
 import {
+  closePlanTab,
   DECISION_COLOR,
   DECISION_LABEL,
   usePlanStore,
@@ -295,6 +296,19 @@ export default function PlanDocumentTab({
             <Typography variant="caption" color="text.secondary">
               or reply in chat to iterate on the plan
             </Typography>
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() => {
+                // Cancel decision → the agent stops without executing; the
+                // tab closes and the chat card keeps a "Cancelled" summary.
+                if (resolvePlan(toolCallId, "cancel")) {
+                  closePlanTab(toolCallId, plan.chatId);
+                }
+              }}
+            >
+              Discard
+            </Button>
             <Button
               size="small"
               variant="contained"

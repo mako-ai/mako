@@ -4,12 +4,15 @@ import {
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   Stack,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import { ClipboardList } from "lucide-react";
+import { ClipboardList, X } from "lucide-react";
 import type { SubmitPlanInput, SubmitPlanOutput } from "@mako/agent-tools";
 import {
+  closePlanTab,
   DECISION_COLOR,
   DECISION_LABEL,
   focusPlanTab,
@@ -82,6 +85,16 @@ export const PlanCard: React.FC<PlanCardProps> = ({
     focusPlanTab(toolCallId, chatId ?? plan?.chatId ?? "", title);
   };
 
+  // Discard (Cursor-style "not now"): resolves the deferred tool with a
+  // cancel decision — the agent stops without executing — and closes the
+  // plan tab. The summary card stays in the chat with a "Cancelled" chip.
+  const discardPlan = () => {
+    if (!toolCallId) return;
+    if (resolvePlan(toolCallId, "cancel")) {
+      closePlanTab(toolCallId, chatId ?? plan?.chatId ?? "");
+    }
+  };
+
   return (
     <Box
       onClick={openTab}
@@ -146,16 +159,30 @@ export const PlanCard: React.FC<PlanCardProps> = ({
           />
         )}
         {pending && (
-          <Button
-            size="small"
-            variant="contained"
-            onClick={e => {
-              e.stopPropagation();
-              resolvePlan(toolCallId, "approve");
-            }}
-          >
-            Approve &amp; run
-          </Button>
+          <>
+            <Tooltip title="Discard plan" placement="top">
+              <IconButton
+                size="small"
+                aria-label="Discard plan"
+                onClick={e => {
+                  e.stopPropagation();
+                  discardPlan();
+                }}
+              >
+                <X size={15} />
+              </IconButton>
+            </Tooltip>
+            <Button
+              size="small"
+              variant="contained"
+              onClick={e => {
+                e.stopPropagation();
+                resolvePlan(toolCallId, "approve");
+              }}
+            >
+              Approve &amp; run
+            </Button>
+          </>
         )}
       </Stack>
     </Box>
