@@ -47,6 +47,7 @@ import {
   syncProjectBranchFromRepo,
 } from "../dbt/dbt-github-sync.service";
 import {
+  closeProjectPullRequest,
   commitAndPush,
   commitToNewBranch,
   createProjectBranch,
@@ -54,10 +55,12 @@ import {
   getGitStatus,
   getProjectFileDiff,
   listProjectBranches,
+  listProjectPullRequests,
   mergeProjectPullRequest,
   openProjectPullRequest,
   ProtectedBranchError,
   switchProjectBranch,
+  updateProjectPullRequest,
 } from "../dbt/dbt-github-git.service";
 import {
   deleteWorkingFile,
@@ -880,6 +883,25 @@ const pullRequestSchema = z.object({
   body: z.string().max(10_000).optional(),
   base: z.string().min(1).max(255).optional(),
 });
+const updatePullRequestSchema = z
+  .object({
+    title: z.string().min(1).max(255).optional(),
+    body: z.string().max(10_000).optional(),
+    base: z.string().min(1).max(255).optional(),
+  })
+  .refine(
+    data =>
+      data.title !== undefined ||
+      data.body !== undefined ||
+      data.base !== undefined,
+    { message: "Provide at least one of title, body, or base" },
+  );
+const closePullRequestSchema = z.object({
+  deleteBranch: z.boolean().optional(),
+});
+const listPullRequestsQuerySchema = z
+  .enum(["open", "closed", "all"])
+  .default("open");
 
 // GET /projects/:projectId/git/status — the CALLER's working-tree diff (their
 // drafts vs the committed base of their checked-out branch).
@@ -1242,6 +1264,106 @@ dbtRoutes.post(
       return c.json({ success: true, ...result });
     } catch (error) {
       return serverError(c, error, "Failed to merge pull request");
+    }
+  },
+);
+
+function parsePrNumber(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const num = Number(raw);
+  return num > 0 ? num : null;
+}
+
+// GET /projects/:projectId/git/pull-requests?state=open|closed|all — list the
+// repo's PRs (newest first).
+dbtRoutes.get(
+  "/projects/:projectId/git/pull-requests",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = listPullRequestsQuerySchema.safeParse(
+        c.req.query("state") ?? undefined,
+      );
+      if (!parsed.success) {
+        return badRequest(c, "state must be one of open, closed, all");
+      }
+      const pullRequests = await listProjectPullRequests(project, {
+        state: parsed.data,
+      });
+      return c.json({ success: true, pullRequests });
+    } catch (error) {
+      return serverError(c, error, "Failed to list pull requests");
+    }
+  },
+);
+
+// PATCH /projects/:projectId/git/pull-request/:number — update an open PR's
+// title/body/base.
+dbtRoutes.patch(
+  "/projects/:projectId/git/pull-request/:number",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const prNumber = parsePrNumber(c.req.param("number"));
+      if (!prNumber) {
+        return badRequest(c, "Invalid pull request number");
+      }
+      const parsed = updatePullRequestSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const pr = await updateProjectPullRequest(project, {
+        prNumber,
+        ...parsed.data,
+      });
+      return c.json({ success: true, pr });
+    } catch (error) {
+      return serverError(c, error, "Failed to update pull request");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/pull-request/:number/close — close a PR
+// without merging, optionally deleting its source branch.
+dbtRoutes.post(
+  "/projects/:projectId/git/pull-request/:number/close",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const prNumber = parsePrNumber(c.req.param("number"));
+      if (!prNumber) {
+        return badRequest(c, "Invalid pull request number");
+      }
+      const body = await c.req.json().catch(() => ({}));
+      const parsed = closePullRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await closeProjectPullRequest(project, {
+        prNumber,
+        deleteBranch: parsed.data.deleteBranch,
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to close pull request");
     }
   },
 );

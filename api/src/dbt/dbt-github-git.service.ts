@@ -33,9 +33,12 @@ import {
   getRepoInfo,
   getRepoTree,
   listBranches,
+  listPullRequests,
   mergePullRequest,
   tryDeleteBranch,
+  updatePullRequest,
   type MergeMethod,
+  type PullRequestSummary,
   type TreeChange,
 } from "../integrations/github/github-api";
 import { syncProjectBranchFromRepo } from "./dbt-github-sync.service";
@@ -800,6 +803,132 @@ export async function openProjectPullRequest(
     { title: params.title, head: branch, base, body: params.body },
     token,
   );
+}
+
+/**
+ * List the repository's pull requests (newest first). Purely a GitHub read —
+ * no git lock needed. `state` defaults to "open".
+ */
+export async function listProjectPullRequests(
+  project: IDbtProject,
+  params: { state?: "open" | "closed" | "all" } = {},
+): Promise<PullRequestSummary[]> {
+  if (!project.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  const token = await resolveRepoToken(project.repo.installationId);
+  return listPullRequests(
+    project.repo.owner,
+    project.repo.repo,
+    { state: params.state ?? "open" },
+    token,
+  );
+}
+
+/**
+ * Update a pull request's title, body, and/or base branch. At least one field
+ * must be provided. Works on open PRs only — closed/merged PRs are immutable
+ * from Mako to avoid confusing GitHub history rewrites.
+ */
+export async function updateProjectPullRequest(
+  project: IDbtProject,
+  params: { prNumber: number; title?: string; body?: string; base?: string },
+): Promise<PullRequestSummary> {
+  if (!project.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  if (
+    params.title === undefined &&
+    params.body === undefined &&
+    params.base === undefined
+  ) {
+    throw new Error(
+      "Nothing to update — provide at least one of title, body, or base",
+    );
+  }
+  const token = await resolveRepoToken(project.repo.installationId);
+  const { owner, repo } = project.repo;
+  const pr = await getPullRequest(owner, repo, params.prNumber, token);
+  if (pr.state !== "open") {
+    throw new Error(
+      `Pull request #${params.prNumber} is ${pr.state} — only open PRs can be updated`,
+    );
+  }
+  return updatePullRequest(
+    owner,
+    repo,
+    params.prNumber,
+    { title: params.title, body: params.body, base: params.base },
+    token,
+  );
+}
+
+export interface ClosePullRequestResult {
+  pr: PullRequestSummary;
+  branchDeleted: boolean;
+  branchDeleteWarning?: string;
+}
+
+/**
+ * Close a pull request WITHOUT merging it. Optionally delete its head branch
+ * afterwards (default false — closing shouldn't destroy the work). Branch
+ * deletion refuses when the branch is the project default or any user has it
+ * checked out; a deleted branch's local base tree is cleaned up.
+ */
+export async function closeProjectPullRequest(
+  project: IDbtProject,
+  params: { prNumber: number; deleteBranch?: boolean },
+): Promise<ClosePullRequestResult> {
+  return withProjectGitLock(project._id.toString(), async () => {
+    const fresh = await reloadRepoProject(project);
+    const token = await resolveRepoToken(fresh.repo.installationId);
+    const { owner, repo } = fresh.repo;
+
+    const existing = await getPullRequest(owner, repo, params.prNumber, token);
+    if (existing.state !== "open") {
+      throw new Error(
+        `Pull request #${params.prNumber} is already ${existing.state}`,
+      );
+    }
+
+    const pr = await updatePullRequest(
+      owner,
+      repo,
+      params.prNumber,
+      { state: "closed" },
+      token,
+    );
+
+    let branchDeleted = false;
+    let branchDeleteWarning: string | undefined;
+    if (params.deleteBranch) {
+      const headRef = existing.headRef;
+      const checkout = await DbtCheckout.findOne({
+        projectId: fresh._id,
+        branch: headRef,
+      })
+        .select("userId")
+        .lean();
+      if (headRef === fresh.repo.branch) {
+        branchDeleteWarning =
+          `Branch "${headRef}" was not deleted — it is the project's ` +
+          "default branch.";
+      } else if (checkout) {
+        branchDeleteWarning =
+          `Branch "${headRef}" was not deleted — a user has it checked out. ` +
+          "Delete it with dbt_delete_branch after they switch away.";
+      } else {
+        const deleteResult = await tryDeleteBranch(owner, repo, headRef, token);
+        branchDeleted = deleteResult.deleted;
+        branchDeleteWarning = deleteResult.warning;
+        if (branchDeleted) {
+          await deleteBranchBaseTree(fresh, headRef);
+        }
+      }
+    }
+
+    return { pr, branchDeleted, branchDeleteWarning };
+  });
 }
 
 export interface MergePullRequestResult {

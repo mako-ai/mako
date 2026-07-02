@@ -457,6 +457,104 @@ export interface PullRequestInfo {
   state: string;
 }
 
+export interface PullRequestSummary {
+  number: number;
+  title: string;
+  /** "open" or "closed" (merged PRs are "closed" with `merged: true`). */
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  headRef: string;
+  baseRef: string;
+  htmlUrl: string;
+  author?: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RawPullRequest {
+  number: number;
+  title: string;
+  state: string;
+  merged_at: string | null;
+  draft?: boolean;
+  head: { ref: string };
+  base: { ref: string };
+  html_url: string;
+  user?: { login: string } | null;
+  body: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function toPullRequestSummary(json: RawPullRequest): PullRequestSummary {
+  return {
+    number: json.number,
+    title: json.title,
+    state: json.state,
+    merged: json.merged_at !== null,
+    draft: json.draft ?? false,
+    headRef: json.head.ref,
+    baseRef: json.base.ref,
+    htmlUrl: json.html_url,
+    author: json.user?.login,
+    body: json.body ?? "",
+    createdAt: json.created_at,
+    updatedAt: json.updated_at,
+  };
+}
+
+/** Pull requests of a repo, newest first (paginated up to ~1000). */
+export async function listPullRequests(
+  owner: string,
+  repo: string,
+  params: { state: "open" | "closed" | "all" },
+  token?: string,
+): Promise<PullRequestSummary[]> {
+  const prs: PullRequestSummary[] = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await ghFetch(
+      `/repos/${owner}/${repo}/pulls?state=${params.state}&sort=created&direction=desc&per_page=100&page=${page}`,
+      token,
+    );
+    const json = (await res.json()) as RawPullRequest[];
+    prs.push(...json.map(toPullRequestSummary));
+    if (json.length < 100) break;
+  }
+  return prs;
+}
+
+/**
+ * Update a pull request's title, body, base branch, and/or state. Passing
+ * `state: "closed"` closes the PR without merging; `state: "open"` reopens it.
+ */
+export async function updatePullRequest(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  params: {
+    title?: string;
+    body?: string;
+    base?: string;
+    state?: "open" | "closed";
+  },
+  token?: string,
+): Promise<PullRequestSummary> {
+  const body: Record<string, unknown> = {};
+  if (params.title !== undefined) body.title = params.title;
+  if (params.body !== undefined) body.body = params.body;
+  if (params.base !== undefined) body.base = params.base;
+  if (params.state !== undefined) body.state = params.state;
+  const res = await ghFetch(
+    `/repos/${owner}/${repo}/pulls/${prNumber}`,
+    token,
+    { method: "PATCH", body },
+  );
+  const json = (await res.json()) as RawPullRequest;
+  return toPullRequestSummary(json);
+}
+
 export async function getPullRequest(
   owner: string,
   repo: string,

@@ -143,6 +143,22 @@ export interface PromoteResult extends CommitResult {
   fromBranch: string;
 }
 
+export interface PullRequestItem {
+  number: number;
+  title: string;
+  /** "open" or "closed" (merged PRs are "closed" with merged: true). */
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  headRef: string;
+  baseRef: string;
+  htmlUrl: string;
+  author?: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DbtFileEntry {
   content: string;
   /** True while local edits have not been persisted yet. */
@@ -410,6 +426,23 @@ interface DbtActions {
     projectId: string,
     payload: { title: string; body?: string; base?: string },
   ) => Promise<{ number: number; htmlUrl: string } | null>;
+  listPullRequests: (
+    workspaceId: string,
+    projectId: string,
+    state?: "open" | "closed" | "all",
+  ) => Promise<PullRequestItem[] | null>;
+  updatePullRequest: (
+    workspaceId: string,
+    projectId: string,
+    prNumber: number,
+    payload: { title?: string; body?: string; base?: string },
+  ) => Promise<PullRequestItem | null>;
+  closePullRequest: (
+    workspaceId: string,
+    projectId: string,
+    prNumber: number,
+    options?: { deleteBranch?: boolean },
+  ) => Promise<PullRequestItem | null>;
 
   fetchFiles: (workspaceId: string, projectId: string) => Promise<void>;
   readFile: (
@@ -1049,6 +1082,68 @@ export const useDbtStore = create<DbtStore>()(
           state.error.projects = errMessage(
             error,
             "Failed to open pull request",
+          );
+        });
+        return null;
+      }
+    },
+
+    listPullRequests: async (workspaceId, projectId, state = "open") => {
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          pullRequests: PullRequestItem[];
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-requests?state=${state}`,
+        );
+        return response.pullRequests;
+      } catch (error) {
+        set(draft => {
+          draft.error.projects = errMessage(
+            error,
+            "Failed to list pull requests",
+          );
+        });
+        return null;
+      }
+    },
+
+    updatePullRequest: async (workspaceId, projectId, prNumber, payload) => {
+      try {
+        const response = await apiClient.patch<{
+          success: boolean;
+          pr: PullRequestItem;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-request/${prNumber}`,
+          payload,
+        );
+        return response.pr;
+      } catch (error) {
+        set(draft => {
+          draft.error.projects = errMessage(
+            error,
+            "Failed to update pull request",
+          );
+        });
+        return null;
+      }
+    },
+
+    closePullRequest: async (workspaceId, projectId, prNumber, options) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          pr: PullRequestItem;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-request/${prNumber}/close`,
+          options ?? {},
+        );
+        return response.pr;
+      } catch (error) {
+        set(draft => {
+          draft.error.projects = errMessage(
+            error,
+            "Failed to close pull request",
           );
         });
         return null;

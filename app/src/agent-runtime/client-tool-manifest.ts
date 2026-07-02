@@ -860,6 +860,35 @@ export const AGENT_TOOL_MANIFEST = {
     },
     icon: "external-link",
   },
+  dbt_list_pull_requests: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const state = (input as Record<string, unknown>)?.state;
+      return state && state !== "open"
+        ? `Listing ${state} pull requests`
+        : "Listing pull requests";
+    },
+    icon: "list",
+  },
+  dbt_update_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Updating PR #${prNumber}` : "Updating pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_close_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Closing PR #${prNumber}` : "Closing pull request";
+    },
+    icon: "external-link",
+  },
   search_consoles: {
     domain: "search",
     execution: "server",

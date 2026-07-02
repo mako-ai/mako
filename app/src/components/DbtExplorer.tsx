@@ -29,6 +29,7 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  Link,
   Snackbar,
   Alert,
   useTheme,
@@ -52,6 +53,8 @@ import {
   DownloadCloud as SyncIcon,
   GitCommitHorizontal as CommitIcon,
   GitPullRequest as PullRequestIcon,
+  GitPullRequestClosed as PullRequestClosedIcon,
+  GitMerge as MergedIcon,
   GitBranchPlus as NewBranchIcon,
   ArrowLeftRight as SwitchBranchIcon,
   ChevronDown as ChevronDownIcon,
@@ -68,6 +71,7 @@ import {
   useDbtStore,
   type DbtJobItem,
   type GitFileDiff,
+  type PullRequestItem,
 } from "../store/dbtStore";
 import {
   focusDbtConsoleTab,
@@ -313,7 +317,8 @@ const STATUS_META = {
 export function DbtExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
+  const theme = useTheme();
+  const monacoTheme = theme.palette.mode === "dark" ? "vs-dark" : "vs";
 
   const projects = useDbtStore(s => s.projects);
   const projectsLoaded = useDbtStore(s => s.projectsLoaded);
@@ -342,6 +347,9 @@ export function DbtExplorer() {
   const createBranch = useDbtStore(s => s.createBranch);
   const switchBranch = useDbtStore(s => s.switchBranch);
   const openPullRequest = useDbtStore(s => s.openPullRequest);
+  const listPullRequests = useDbtStore(s => s.listPullRequests);
+  const updatePullRequest = useDbtStore(s => s.updatePullRequest);
+  const closePullRequest = useDbtStore(s => s.closePullRequest);
   const createFile = useDbtStore(s => s.createFile);
   const deleteFile = useDbtStore(s => s.deleteFile);
   const renameFile = useDbtStore(s => s.renameFile);
@@ -401,6 +409,17 @@ export function DbtExplorer() {
   const [prTarget, setPrTarget] = useState<string | null>(null);
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
+  // Pull requests list dialog
+  const [prListTarget, setPrListTarget] = useState<string | null>(null);
+  const [prList, setPrList] = useState<PullRequestItem[] | null>(null);
+  const [prListState, setPrListState] = useState<"open" | "all">("open");
+  const [prEdit, setPrEdit] = useState<{
+    number: number;
+    title: string;
+    body: string;
+  } | null>(null);
+  const [prCloseConfirm, setPrCloseConfirm] = useState<number | null>(null);
+  const [prBusy, setPrBusy] = useState(false);
   const [newFileTarget, setNewFileTarget] = useState<{
     projectId: string;
     dir: string;
@@ -841,6 +860,86 @@ export function DbtExplorer() {
     }
   }, [workspaceId, prTarget, prTitle, prBody, openPullRequest]);
 
+  const refreshPrList = useCallback(
+    async (projectId: string, state: "open" | "all") => {
+      if (!workspaceId) return;
+      setPrList(null);
+      const result = await listPullRequests(workspaceId, projectId, state);
+      setPrList(result ?? []);
+    },
+    [workspaceId, listPullRequests],
+  );
+
+  const openPrListDialog = useCallback(
+    (projectId: string) => {
+      setPrListTarget(projectId);
+      setPrEdit(null);
+      setPrCloseConfirm(null);
+      setPrListState("open");
+      void refreshPrList(projectId, "open");
+    },
+    [refreshPrList],
+  );
+
+  const handlePrStateFilterChange = useCallback(
+    (state: "open" | "all") => {
+      setPrListState(state);
+      if (prListTarget) void refreshPrList(prListTarget, state);
+    },
+    [prListTarget, refreshPrList],
+  );
+
+  const handleUpdatePullRequest = useCallback(async () => {
+    if (!workspaceId || !prListTarget || !prEdit || !prEdit.title.trim()) {
+      return;
+    }
+    setPrBusy(true);
+    const updated = await updatePullRequest(
+      workspaceId,
+      prListTarget,
+      prEdit.number,
+      { title: prEdit.title.trim(), body: prEdit.body },
+    );
+    setPrBusy(false);
+    if (updated) {
+      setPrEdit(null);
+      setSyncSnack({
+        severity: "success",
+        message: `PR #${updated.number} updated`,
+      });
+      void refreshPrList(prListTarget, prListState);
+    }
+  }, [
+    workspaceId,
+    prListTarget,
+    prEdit,
+    prListState,
+    updatePullRequest,
+    refreshPrList,
+  ]);
+
+  const handleClosePullRequest = useCallback(
+    async (prNumber: number) => {
+      if (!workspaceId || !prListTarget) return;
+      setPrBusy(true);
+      const closed = await closePullRequest(
+        workspaceId,
+        prListTarget,
+        prNumber,
+      );
+      setPrBusy(false);
+      setPrCloseConfirm(null);
+      if (closed) {
+        setSyncSnack({
+          severity: "success",
+          message: `PR #${closed.number} closed without merging`,
+        });
+        void refreshPrList(prListTarget, prListState);
+      }
+    },
+    [workspaceId, prListTarget, prListState, closePullRequest, refreshPrList],
+  );
+
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
       const parsed = parseNodeId(node.id);
@@ -1008,6 +1107,18 @@ export function DbtExplorer() {
               </ListItemIcon>
               Open pull request
             </MenuItem>,
+            <MenuItem
+              key="git-pr-list"
+              onClick={() => {
+                openPrListDialog(parsed.projectId);
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <PullRequestIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Pull requests
+            </MenuItem>,
             <Divider key="git-divider" />,
           );
         }
@@ -1076,6 +1187,7 @@ export function DbtExplorer() {
       gitStatusByProject,
       openCommitDialog,
       openSwitchDialog,
+      openPrListDialog,
       handleNewJob,
     ],
   );
@@ -1353,8 +1465,20 @@ export function DbtExplorer() {
         </ListItemIcon>
         Open pull request
       </MenuItem>,
+      <MenuItem
+        key="pr-list"
+        onClick={() => {
+          openPrListDialog(projectId);
+          close();
+        }}
+      >
+        <ListItemIcon>
+          <PullRequestIcon size={16} strokeWidth={1.5} />
+        </ListItemIcon>
+        Pull requests
+      </MenuItem>,
     ],
-    [syncingProjectId, handleSyncProject, openSwitchDialog],
+    [syncingProjectId, handleSyncProject, openSwitchDialog, openPrListDialog],
   );
 
   const projectSelector = (
@@ -2437,6 +2561,324 @@ export function DbtExplorer() {
           >
             {gitBusy ? "Opening…" : "Open PR"}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Pull requests list dialog (view / edit / close) */}
+      <Dialog
+        open={!!prListTarget}
+        onClose={() => setPrListTarget(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+          }}
+        >
+          Pull requests
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <FormControl size="small" sx={{ minWidth: 90 }}>
+              <Select
+                value={prListState}
+                onChange={e =>
+                  handlePrStateFilterChange(e.target.value as "open" | "all")
+                }
+              >
+                <MenuItem value="open">Open</MenuItem>
+                <MenuItem value="all">All</MenuItem>
+              </Select>
+            </FormControl>
+            <Tooltip title="Refresh">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  if (prListTarget) {
+                    void refreshPrList(prListTarget, prListState);
+                  }
+                }}
+              >
+                <RefreshIcon size={16} strokeWidth={2} />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0, minHeight: 160 }}>
+          {prList === null ? (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                py: 5,
+              }}
+            >
+              <CircularProgress size={20} />
+            </Box>
+          ) : prList.length === 0 ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ px: 2.5, py: 4, textAlign: "center" }}
+            >
+              {prListState === "open"
+                ? "No open pull requests."
+                : "No pull requests."}
+            </Typography>
+          ) : (
+            prList.map(pr => {
+              const isEditing = prEdit?.number === pr.number;
+              const isConfirmingClose = prCloseConfirm === pr.number;
+              return (
+                <Box
+                  key={pr.number}
+                  sx={{
+                    px: 2,
+                    py: 1.25,
+                    borderBottom: 1,
+                    borderColor: "divider",
+                    "&:last-of-type": { borderBottom: 0 },
+                  }}
+                >
+                  <Box
+                    sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}
+                  >
+                    <Box sx={{ mt: 0.25, flexShrink: 0, display: "flex" }}>
+                      {pr.merged ? (
+                        <MergedIcon
+                          size={16}
+                          strokeWidth={2}
+                          color={theme.palette.secondary.main}
+                        />
+                      ) : pr.state === "open" ? (
+                        <PullRequestIcon
+                          size={16}
+                          strokeWidth={2}
+                          color={theme.palette.success.main}
+                        />
+                      ) : (
+                        <PullRequestClosedIcon
+                          size={16}
+                          strokeWidth={2}
+                          color={theme.palette.error.main}
+                        />
+                      )}
+                    </Box>
+                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                      <Link
+                        href={pr.htmlUrl}
+                        target="_blank"
+                        rel="noopener"
+                        underline="hover"
+                        color="text.primary"
+                        sx={{
+                          fontSize: "0.85rem",
+                          fontWeight: 500,
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        #{pr.number} {pr.title}
+                      </Link>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {pr.headRef} → {pr.baseRef}
+                        {pr.author ? ` · ${pr.author}` : ""}
+                        {" · "}
+                        {new Date(pr.updatedAt).toLocaleDateString()}
+                      </Typography>
+                    </Box>
+                    {pr.draft && (
+                      <Chip
+                        label="Draft"
+                        size="small"
+                        variant="outlined"
+                        sx={{ flexShrink: 0 }}
+                      />
+                    )}
+                    {pr.merged ? (
+                      <Chip
+                        label="Merged"
+                        size="small"
+                        color="secondary"
+                        variant="outlined"
+                        sx={{ flexShrink: 0 }}
+                      />
+                    ) : pr.state === "closed" ? (
+                      <Chip
+                        label="Closed"
+                        size="small"
+                        color="error"
+                        variant="outlined"
+                        sx={{ flexShrink: 0 }}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.25,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Tooltip title="Edit title & description">
+                          <IconButton
+                            size="small"
+                            disabled={prBusy}
+                            onClick={() => {
+                              setPrCloseConfirm(null);
+                              setPrEdit(
+                                isEditing
+                                  ? null
+                                  : {
+                                      number: pr.number,
+                                      title: pr.title,
+                                      body: pr.body,
+                                    },
+                              );
+                            }}
+                          >
+                            <RenameIcon size={14} strokeWidth={1.75} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Close without merging">
+                          <IconButton
+                            size="small"
+                            disabled={prBusy}
+                            onClick={() => {
+                              setPrEdit(null);
+                              setPrCloseConfirm(
+                                isConfirmingClose ? null : pr.number,
+                              );
+                            }}
+                          >
+                            <PullRequestClosedIcon
+                              size={14}
+                              strokeWidth={1.75}
+                            />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    )}
+                  </Box>
+                  {isEditing && (
+                    <Box sx={{ mt: 1.25, pl: 3 }}>
+                      <TextField
+                        autoFocus
+                        fullWidth
+                        size="small"
+                        label="Title"
+                        value={prEdit.title}
+                        onChange={e =>
+                          setPrEdit({ ...prEdit, title: e.target.value })
+                        }
+                        sx={{ mb: 1.5 }}
+                      />
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={2}
+                        size="small"
+                        label="Description"
+                        value={prEdit.body}
+                        onChange={e =>
+                          setPrEdit({ ...prEdit, body: e.target.value })
+                        }
+                      />
+                      <Box
+                        sx={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          gap: 1,
+                          mt: 1,
+                        }}
+                      >
+                        <Button size="small" onClick={() => setPrEdit(null)}>
+                          Cancel
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={handleUpdatePullRequest}
+                          disabled={prBusy || !prEdit.title.trim()}
+                          startIcon={
+                            prBusy ? <CircularProgress size={12} /> : undefined
+                          }
+                        >
+                          {prBusy ? "Saving…" : "Save"}
+                        </Button>
+                      </Box>
+                    </Box>
+                  )}
+                  {isConfirmingClose && (
+                    <Box
+                      sx={{
+                        mt: 1,
+                        pl: 3,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "flex-end",
+                        gap: 1,
+                      }}
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        Close #{pr.number} without merging?
+                      </Typography>
+                      <Button
+                        size="small"
+                        onClick={() => setPrCloseConfirm(null)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="small"
+                        color="error"
+                        variant="contained"
+                        onClick={() => void handleClosePullRequest(pr.number)}
+                        disabled={prBusy}
+                        startIcon={
+                          prBusy ? <CircularProgress size={12} /> : undefined
+                        }
+                      >
+                        {prBusy ? "Closing…" : "Close PR"}
+                      </Button>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            startIcon={<PullRequestIcon size={15} strokeWidth={1.75} />}
+            onClick={() => {
+              const pid = prListTarget;
+              setPrListTarget(null);
+              if (pid) {
+                setPrTarget(pid);
+                setPrTitle("");
+                setPrBody("");
+              }
+            }}
+          >
+            New PR
+          </Button>
+          <Box sx={{ flexGrow: 1 }} />
+          <Button onClick={() => setPrListTarget(null)}>Close</Button>
         </DialogActions>
       </Dialog>
 
