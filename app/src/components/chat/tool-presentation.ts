@@ -53,6 +53,27 @@ export const DBT_SERVER_MUTATION_TOOLS = new Set<string>([
   "delete_dbt_file",
 ]);
 
+// Server-executed dbt git tools that MOVE the acting user's checkout (their
+// tool output carries the new `branch`). Reconciled off the resumable chat
+// stream so the open dbt tab follows the agent onto the new branch even when
+// the workspace SSE poke (dbt.checkout.updated) was missed.
+export const DBT_CHECKOUT_MUTATION_TOOLS = new Set<string>([
+  "dbt_switch_branch",
+  "dbt_create_branch",
+  "dbt_commit_to_branch",
+  "dbt_merge_pull_request",
+]);
+
+// Server-executed dbt git tools that change the git surface (base tree /
+// pending changes) WITHOUT moving the checkout. Chat-stream counterpart of
+// the dbt.git.updated poke: refetch tree + git status.
+export const DBT_GIT_MUTATION_TOOLS = new Set<string>([
+  "dbt_sync_from_repo",
+  "dbt_commit_and_push",
+  "dbt_delete_branch",
+  "dbt_restore_file",
+]);
+
 // Diagnostics for the *live* stream-disconnect signatures so they can be
 // investigated after the fact:
 //   - "orphan-rescue": a turn settled to `ready` while non-interactive tool

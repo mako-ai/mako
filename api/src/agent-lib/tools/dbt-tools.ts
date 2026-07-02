@@ -530,11 +530,12 @@ export const createDbtServerTools = (
           if (!isSafeDbtPath(path)) {
             return { success: false, error: "Invalid file path" };
           }
-          const file = await DbtFile.findOne({
-            projectId: project._id,
-            path,
-            is_deleted: { $ne: true },
-          });
+          // Read + write through the working-tree service (same as
+          // modify_dbt_file): repo projects edit the caller's DRAFT overlay
+          // on their checkout branch — never the committed base tree — so
+          // the edit shows up in dbt_git_status / the Version Control UI and
+          // stays invisible to other users until committed.
+          const file = await readWorkingFile(project, actingUserId, path);
           if (!file) {
             return {
               success: false,
@@ -560,11 +561,14 @@ export const createDbtServerTools = (
             newString,
             result.replacements,
           );
-          file.content = result.contents;
-          if (userId) file.updatedBy = userId;
-          await file.save();
+          const { versionEntityId } = await writeWorkingFile(
+            project,
+            actingUserId,
+            path,
+            result.contents,
+          );
           await snapshotVersion(
-            file._id,
+            versionEntityId,
             project.workspaceId,
             path,
             result.contents,
@@ -573,7 +577,9 @@ export const createDbtServerTools = (
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
           );
-          publishFileUpdated(projectId, path);
+          publishFileUpdated(projectId, path, {
+            draft: Boolean(project.repo),
+          });
           return {
             success: true,
             path,
