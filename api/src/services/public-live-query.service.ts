@@ -26,6 +26,7 @@ import {
   type IMakoApp,
 } from "../database/workspace-schema";
 import { buildAppSnapshot, type AppSnapshot } from "./app-version.service";
+import { resolveDbtBoundCode } from "../dbt/dbt-environments.service";
 import { databaseConnectionService } from "./database-connection.service";
 import {
   applySqlRowLimit,
@@ -113,6 +114,8 @@ interface PublishedBinding {
   databaseId?: string;
   databaseName?: string;
   materialization?: string;
+  /** dbt link — `{{ dbt_schema }}` in code resolves to the prod schema. */
+  dbtProjectId?: string;
 }
 
 /**
@@ -164,9 +167,32 @@ export async function executePublicAppLiveBinding(input: {
     };
   }
 
-  const code = typeof binding.code === "string" ? binding.code.trim() : "";
-  if (!code) {
+  const rawCode = typeof binding.code === "string" ? binding.code.trim() : "";
+  if (!rawCode) {
     return { success: false, error: "Data source has no query", status: 400 };
+  }
+
+  // dbt-linked bindings: resolve {{ dbt_schema }} to the PROD environment's
+  // schema. Public viewers always read production data — preview overrides
+  // are an editor-only concern and never reach this path.
+  let code = rawCode;
+  try {
+    code = await resolveDbtBoundCode({
+      workspaceId: app.workspaceId,
+      dbtProjectId: binding.dbtProjectId,
+      code: rawCode,
+    });
+  } catch (error) {
+    logger.warn("Public live query dbt resolution failed", {
+      appId: app._id.toString(),
+      bindingId,
+      error,
+    });
+    return {
+      success: false,
+      error: "Data source is temporarily unavailable",
+      status: 502,
+    };
   }
 
   // Defense in depth: the preview path enforces this too, but reject unsafe

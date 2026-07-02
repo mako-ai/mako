@@ -191,6 +191,14 @@ export async function triggerDbtRun(params: {
    * committed base tree — agent verification builds of uncommitted work.
    */
   workingTreeUserId?: string;
+  /**
+   * Ad-hoc/agent runs: execute with `--defer --state <last prod manifest>`
+   * so unselected refs resolve to the production build instead of requiring
+   * the whole upstream DAG in the target schema. No-op when the project has
+   * no prod manifest yet. Job/CI runs configure defer on the job / CI config
+   * instead of here.
+   */
+  deferToProduction?: boolean;
   /** PR context for CI runs (trigger === "ci"). */
   ci?: DbtRunCiContext;
   /**
@@ -223,6 +231,7 @@ export async function triggerDbtRun(params: {
     triggeredBy: params.triggeredBy,
     gitBranch: params.gitBranch,
     workingTreeUserId: params.workingTreeUserId,
+    deferToProduction: params.deferToProduction,
     ci: params.ci,
   });
 

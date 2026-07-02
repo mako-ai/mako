@@ -1,0 +1,113 @@
+import { describe, expect, it } from "vitest";
+import { Types } from "mongoose";
+import { containsDbtSchemaToken, resolveDbtSchemaToken } from "@mako/schemas";
+import {
+  findPersonalEnvironment,
+  resolveEnvironmentNameForUser,
+  resolveProdLikeEnvironmentName,
+  sanitizePersonalSlug,
+} from "./dbt-environments.service";
+
+function env(name: string, ownerUserId?: string) {
+  return {
+    name,
+    connectionId: new Types.ObjectId(),
+    targetSchema: `dbt_${name}`,
+    threads: 4,
+    ownerUserId,
+  };
+}
+
+describe("resolveProdLikeEnvironmentName", () => {
+  it("prefers an environment literally named 'prod'", () => {
+    expect(
+      resolveProdLikeEnvironmentName({
+        environments: [env("dev"), env("prod")],
+        defaultEnvironment: "dev",
+      }),
+    ).toBe("prod");
+  });
+
+  it("falls back to the project default when no 'prod' exists", () => {
+    expect(
+      resolveProdLikeEnvironmentName({
+        environments: [env("main"), env("staging")],
+        defaultEnvironment: "main",
+      }),
+    ).toBe("main");
+  });
+});
+
+describe("findPersonalEnvironment / resolveEnvironmentNameForUser", () => {
+  const project = {
+    environments: [env("dev"), env("prod"), env("jonas", "user-1")],
+    defaultEnvironment: "dev",
+  };
+
+  it("finds the caller's personal environment", () => {
+    expect(findPersonalEnvironment(project, "user-1")?.name).toBe("jonas");
+    expect(findPersonalEnvironment(project, "user-2")).toBeUndefined();
+    expect(findPersonalEnvironment(project, undefined)).toBeUndefined();
+  });
+
+  it("explicit request always wins", () => {
+    expect(resolveEnvironmentNameForUser(project, "user-1", "prod")).toBe(
+      "prod",
+    );
+  });
+
+  it("defaults to the personal environment when provisioned", () => {
+    expect(resolveEnvironmentNameForUser(project, "user-1")).toBe("jonas");
+  });
+
+  it("defaults to the project default for users without one", () => {
+    expect(resolveEnvironmentNameForUser(project, "user-2")).toBe("dev");
+    expect(resolveEnvironmentNameForUser(project, undefined)).toBe("dev");
+  });
+});
+
+describe("sanitizePersonalSlug", () => {
+  it("uses the email local part, lowercased, [a-z0-9_] only", () => {
+    expect(sanitizePersonalSlug("Jonas.Smith+dev@example.com")).toBe(
+      "jonas_smith_dev",
+    );
+  });
+
+  it("trims leading/trailing separators and bounds the length", () => {
+    expect(sanitizePersonalSlug("--weird--")).toBe("weird");
+    expect(sanitizePersonalSlug("x".repeat(100)).length).toBeLessThanOrEqual(
+      40,
+    );
+  });
+
+  it("falls back to 'user' when nothing survives", () => {
+    expect(sanitizePersonalSlug("@@@")).toBe("user");
+  });
+});
+
+describe("dbt_schema token helpers (@mako/schemas)", () => {
+  it("detects the token with flexible whitespace", () => {
+    expect(containsDbtSchemaToken("select * from {{ dbt_schema }}.t")).toBe(
+      true,
+    );
+    expect(containsDbtSchemaToken("select * from {{dbt_schema}}.t")).toBe(
+      true,
+    );
+    expect(containsDbtSchemaToken("select * from dbt_prod.t")).toBe(false);
+  });
+
+  it("is not stateful across calls (global regex lastIndex reset)", () => {
+    const sql = "select * from {{ dbt_schema }}.t";
+    expect(containsDbtSchemaToken(sql)).toBe(true);
+    expect(containsDbtSchemaToken(sql)).toBe(true);
+  });
+
+  it("substitutes every occurrence", () => {
+    expect(
+      resolveDbtSchemaToken(
+        "select * from {{ dbt_schema }}.a join {{dbt_schema}}.b using (id)",
+        "dbt_jonas",
+      ),
+    ).toBe("select * from dbt_jonas.a join dbt_jonas.b using (id)");
+  });
+});

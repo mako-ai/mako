@@ -41,6 +41,9 @@ vi.mock("../services/workspace.service", () => ({
 
 // Heavy collaborators — stubbed so imports resolve and side-effects are inert.
 vi.mock("../dbt/dbt-project.service", () => ({
+  // No prod manifest in the fixture: routes fall back to running without
+  // --defer, which is the behavior these specs exercise.
+  loadDbtDeferState: vi.fn(async () => undefined),
   // Mirrors the real runAdhocDbtCommand result shape (routes read `.success`).
   runAdhocDbtCommand: vi.fn(async () => ({
     success: true,

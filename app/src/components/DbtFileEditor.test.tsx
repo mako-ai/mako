@@ -23,6 +23,9 @@ vi.mock("../lib/dbt-monaco", () => ({
 vi.mock("../contexts/workspace-context", () => ({
   useWorkspace: () => ({ currentWorkspace: { id: "ws1" } }),
 }));
+vi.mock("../contexts/auth-context", () => ({
+  useAuth: () => ({ user: { id: "u1" } }),
+}));
 vi.mock("../dbt-runtime/shell", () => ({ focusDbtFileTab: vi.fn() }));
 // Streamdown pulls heavy ESM (shiki) that jsdom can't load — render children raw.
 vi.mock("./StreamingMarkdown", () => ({

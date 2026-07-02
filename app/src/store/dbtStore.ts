@@ -18,6 +18,25 @@ export interface DbtEnvironment {
   targetSchema: string;
   threads: number;
   vars?: Record<string, unknown>;
+  /**
+   * Personal (per-developer) environment: set to the owning user's id when
+   * auto-provisioned as that user's private dev target (schema `dbt_<user>`).
+   * Selectors hide other users' personal environments.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * Environments the given user may target: shared environments plus their own
+ * personal environment (other users' personal targets are hidden).
+ */
+export function visibleDbtEnvironments(
+  environments: DbtEnvironment[] | undefined,
+  userId: string | undefined,
+): DbtEnvironment[] {
+  return (environments ?? []).filter(
+    env => !env.ownerUserId || env.ownerUserId === userId,
+  );
 }
 
 export interface DbtRepoBinding {
@@ -351,6 +370,15 @@ interface DbtActions {
     },
   ) => Promise<DbtProjectItem | null>;
   deleteProject: (workspaceId: string, projectId: string) => Promise<boolean>;
+  /**
+   * Idempotently provision the caller's personal (per-developer) environment
+   * on a project (schema `dbt_<user>`, same connection as prod). Returns the
+   * environment or null on failure.
+   */
+  ensurePersonalEnvironment: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<DbtEnvironment | null>;
   fetchGitHubStatus: (workspaceId: string) => Promise<GitHubStatus | null>;
   fetchGitHubRepos: (
     workspaceId: string,
@@ -719,6 +747,30 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error.projects = errMessage(error, "Failed to update project");
+        });
+        return null;
+      }
+    },
+
+    ensurePersonalEnvironment: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          created: boolean;
+          environment: DbtEnvironment;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/environments/personal`,
+          {},
+        );
+        // Refresh the project so selectors pick up the new environment.
+        if (response.created) await get().fetchProjects(workspaceId);
+        return response.environment ?? null;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to create personal environment",
+          );
         });
         return null;
       }

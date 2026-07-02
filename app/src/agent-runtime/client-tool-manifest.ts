@@ -623,6 +623,19 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  app_set_preview_environment: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const env = (input as Record<string, unknown>)?.environment;
+      return env
+        ? `Previewing dbt env "${env}"`
+        : "Resetting preview dbt env to prod";
+    },
+    icon: "database",
+  },
   // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
   // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
   // turn ("stream disconnected before tool completed") when the tab is slow or
@@ -758,6 +771,12 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "server",
     getLabel: () => "Cancelling dbt run",
     icon: "square",
+  },
+  dbt_ensure_dev_environment: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Provisioning personal dbt environment",
+    icon: "database",
   },
   dbt_create_job: {
     domain: "dbt",

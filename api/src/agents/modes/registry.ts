@@ -142,6 +142,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_restore_version",
   "materialize_binding",
   "run_app",
+  "app_set_preview_environment",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",
@@ -166,6 +167,8 @@ const APP_MODE_TOOL_NAMES: string[] = [
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   // Bootstrap: create a project when the workspace has none
   "dbt_create_project",
+  // Personal (per-developer) environment for safe fast iteration
+  "dbt_ensure_dev_environment",
   // Client dbt file tools
   "read_dbt_project_tree",
   "read_dbt_file",

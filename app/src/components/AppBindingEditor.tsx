@@ -81,12 +81,23 @@ export default function AppBindingEditor({
     if (bindingName) updateTabTitle(tabId, bindingName);
   }, [bindingName, tabId, updateTabTitle]);
 
+  const resolveDbtCodeForPreview = useAppStore(s => s.resolveDbtCodeForPreview);
+  const bindingDbtProjectId = binding?.dbtProjectId;
+
   const handleExecute = useCallback(
     async (content: string, connectionId?: string, databaseId?: string) => {
       if (!workspaceId || !connectionId) return;
       setRunning(true);
       try {
-        const res = await executeQuery(workspaceId, connectionId, content, {
+        // dbt-linked bindings: resolve {{ dbt_schema }} against the app's
+        // preview environment (override or prod default) before running.
+        const resolved = await resolveDbtCodeForPreview(
+          workspaceId,
+          appId,
+          bindingDbtProjectId,
+          content,
+        );
+        const res = await executeQuery(workspaceId, connectionId, resolved, {
           databaseId,
           databaseName: binding?.databaseName,
         });
@@ -109,7 +120,14 @@ export default function AppBindingEditor({
         setRunning(false);
       }
     },
-    [workspaceId, executeQuery, binding?.databaseName],
+    [
+      workspaceId,
+      appId,
+      executeQuery,
+      binding?.databaseName,
+      bindingDbtProjectId,
+      resolveDbtCodeForPreview,
+    ],
   );
 
   const handleSave = useCallback(

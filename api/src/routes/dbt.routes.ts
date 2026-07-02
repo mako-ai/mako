@@ -85,7 +85,11 @@ import {
   parseDbtCommands,
 } from "../dbt/commands";
 import { buildStarterScaffold } from "../dbt/scaffold";
-import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
+import {
+  loadDbtDeferState,
+  runAdhocDbtCommand,
+} from "../dbt/dbt-project.service";
+import { ensurePersonalDbtEnvironment } from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
@@ -214,6 +218,12 @@ const environmentSchema = z.object({
   targetSchema: z.string().min(1).max(128),
   threads: z.number().int().min(1).max(16).default(4),
   vars: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Personal environment owner (auto-provisioned per-developer target).
+   * Round-tripped by settings saves so admin edits never strip ownership;
+   * provisioning happens via POST .../environments/personal, not here.
+   */
+  ownerUserId: z.string().optional(),
 });
 
 const createProjectSchema = z.object({
@@ -532,6 +542,54 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
     return serverError(c, error, "Failed to update dbt project");
   }
 });
+
+// POST /projects/:projectId/environments/personal — idempotently provision
+// the caller's personal (per-developer) environment: same connection as the
+// prod-like environment, private schema `dbt_<user>`. Member+ (not admin-only:
+// unlike shared environment config, this only affects the caller's own
+// iteration target).
+dbtRoutes.post(
+  "/projects/:projectId/environments/personal",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const userId = c.get("user")?.id;
+      if (!userId) {
+        return badRequest(
+          c,
+          "Personal environments require a user session (not an API key)",
+        );
+      }
+      const result = await ensurePersonalDbtEnvironment({
+        workspaceId: project.workspaceId.toString(),
+        projectId: project._id.toString(),
+        userId,
+      });
+      if (result.created) {
+        publishDbtEvent(c, {
+          type: "dbt.project.updated",
+          projectId: project._id.toString(),
+        });
+      }
+      return c.json({
+        success: true,
+        created: result.created,
+        environment: {
+          name: result.environment.name,
+          targetSchema: result.environment.targetSchema,
+          connectionId: result.environment.connectionId?.toString(),
+          threads: result.environment.threads,
+          ownerUserId: result.environment.ownerUserId,
+        },
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to create personal environment");
+    }
+  },
+);
 
 dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
   try {
@@ -2058,29 +2116,9 @@ const commandSchema = z.object({
 
 const SELECT_PATTERN = /^[\w.+@:*\-/]+$/;
 
-/**
- * Read the project's last production manifest for `--defer --state`, or
- * `undefined` when defer is off / no prod build exists yet. Never throws —
- * a missing manifest just disables defer for this invocation.
- */
-async function loadDeferState(project: {
-  lastProdManifestKey?: string;
-}): Promise<Buffer | undefined> {
-  const key = project.lastProdManifestKey;
-  if (!key) return undefined;
-  try {
-    const stream = await getDashboardArtifactStore().openReadStream(key);
-    if (!stream) return undefined;
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return Buffer.concat(chunks);
-  } catch (error) {
-    logger.warn("Failed to load defer state manifest", { error, key });
-    return undefined;
-  }
-}
+// Shared with the agent tools: reads the last prod manifest for
+// `--defer --state` (see dbt-project.service.ts).
+const loadDeferState = loadDbtDeferState;
 
 /**
  * Prepend a warning when defer was requested but no prod manifest exists, so
