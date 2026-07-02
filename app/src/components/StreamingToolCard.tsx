@@ -168,38 +168,80 @@ function formatOutputForDisplay(output: unknown): string {
   return JSON.stringify(o, null, 2);
 }
 
-// Inline display caps. Tool results are already size-bounded server-side, but a
-// single 50k-char JSON blob still expands into thousands of DOM nodes once
-// syntax-highlighted — and many such cards in a long chat make mobile Safari
-// crawl. We never feed more than this to the highlighter; the full payload is
-// still available via the tool-details dialog.
-const MAX_INLINE_CHARS = 8_000;
-const MAX_INLINE_LINES = 200;
+// The tool body always renders the FULL content — never truncated. What we DO
+// bound is the *highlighter*: Prism expands every token into a DOM node and
+// re-parses the whole string on each streaming tick, so an unbounded payload
+// would explode into tens of thousands of nodes and make long chats (and
+// mobile Safari) crawl. Past this budget the body falls back to a plain
+// monospace <pre> — a single text node, cheap at any size — trading syntax
+// colors for completeness. The scroll container bounds what's on screen.
+const MAX_HIGHLIGHT_CHARS = 20_000;
+const MAX_HIGHLIGHT_LINES = 500;
 
-function capForDisplay(text: string): string {
-  if (!text) return text;
-  let capped = text;
-  let truncated = false;
-  if (capped.length > MAX_INLINE_CHARS) {
-    capped = capped.slice(0, MAX_INLINE_CHARS);
-    truncated = true;
+function isWithinHighlightBudget(text: string): boolean {
+  if (text.length > MAX_HIGHLIGHT_CHARS) return false;
+  let lines = 1;
+  let idx = -1;
+  while ((idx = text.indexOf("\n", idx + 1)) !== -1) {
+    if (++lines > MAX_HIGHLIGHT_LINES) return false;
   }
-  const newlineCount = (capped.match(/\n/g) ?? []).length;
-  if (newlineCount + 1 > MAX_INLINE_LINES) {
-    let idx = -1;
-    for (let i = 0; i < MAX_INLINE_LINES; i++) {
-      const next = capped.indexOf("\n", idx + 1);
-      if (next === -1) break;
-      idx = next;
-    }
-    if (idx !== -1) capped = capped.slice(0, idx);
-    truncated = true;
+  return true;
+}
+
+// Matches SyntaxHighlighter's Prism theme typography so the plain fallback is
+// visually identical apart from colorization.
+const PLAIN_CODE_FONT_FAMILY =
+  'Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace';
+
+/**
+ * Code body renderer: syntax-highlighted while the content fits the budget,
+ * plain monospace beyond it. Either way the full text is rendered.
+ */
+function ToolCardCode({
+  text,
+  language,
+  syntaxTheme,
+  fontSize,
+}: {
+  text: string;
+  language: string;
+  syntaxTheme: Record<string, React.CSSProperties>;
+  fontSize: string;
+}) {
+  if (isWithinHighlightBudget(text)) {
+    return (
+      <SyntaxHighlighter
+        style={syntaxTheme}
+        language={language}
+        PreTag="div"
+        customStyle={{
+          fontSize,
+          margin: 0,
+          padding: "0.75rem",
+          background: "transparent",
+          overflow: "visible",
+        }}
+      >
+        {text}
+      </SyntaxHighlighter>
+    );
   }
-  if (truncated) {
-    capped +=
-      "\n\n… truncated for display — open the tool details to view the full result.";
-  }
-  return capped;
+  return (
+    <Box
+      component="pre"
+      sx={{
+        fontSize,
+        m: 0,
+        p: "0.75rem",
+        fontFamily: PLAIN_CODE_FONT_FAMILY,
+        whiteSpace: "pre",
+        overflow: "visible",
+        color: "text.primary",
+      }}
+    >
+      {text}
+    </Box>
+  );
 }
 
 /**
@@ -362,14 +404,14 @@ export const StreamingToolCard = React.memo(
 
     const code = useMemo(() => {
       if (!shouldRenderBody || !hasCode) return "";
-      const raw =
+      return (
         bodyPreview?.content ??
         (typeof rawContent === "string"
           ? rawContent
           : rawContent && typeof rawContent === "object"
             ? JSON.stringify(rawContent, null, 2)
-            : "");
-      return capForDisplay(raw);
+            : "")
+      );
     }, [shouldRenderBody, hasCode, bodyPreview?.content, rawContent]);
 
     useEffect(() => {
@@ -396,7 +438,7 @@ export const StreamingToolCard = React.memo(
     const formattedOutput = useMemo(
       () =>
         shouldRenderBody && (isDone || isError)
-          ? capForDisplay(formatOutputForDisplay(output))
+          ? formatOutputForDisplay(output)
           : "",
       [shouldRenderBody, isDone, isError, output],
     );
@@ -623,20 +665,12 @@ export const StreamingToolCard = React.memo(
                 borderColor: "divider",
               }}
             >
-              <SyntaxHighlighter
-                style={syntaxTheme}
+              <ToolCardCode
+                text={code || " "}
                 language={codeLanguage}
-                PreTag="div"
-                customStyle={{
-                  fontSize: "0.78rem",
-                  margin: 0,
-                  padding: "0.75rem",
-                  background: "transparent",
-                  overflow: "visible",
-                }}
-              >
-                {code || " "}
-              </SyntaxHighlighter>
+                syntaxTheme={syntaxTheme}
+                fontSize="0.78rem"
+              />
             </Box>
           )}
 
@@ -655,20 +689,12 @@ export const StreamingToolCard = React.memo(
                 }),
               }}
             >
-              <SyntaxHighlighter
-                style={syntaxTheme}
+              <ToolCardCode
+                text={formattedOutput}
                 language={outputLang}
-                PreTag="div"
-                customStyle={{
-                  fontSize: "0.75rem",
-                  margin: 0,
-                  padding: "0.75rem",
-                  background: "transparent",
-                  overflow: "visible",
-                }}
-              >
-                {formattedOutput}
-              </SyntaxHighlighter>
+                syntaxTheme={syntaxTheme}
+                fontSize="0.75rem"
+              />
             </Box>
           )}
         </Collapse>

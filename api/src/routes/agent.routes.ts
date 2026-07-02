@@ -10,7 +10,6 @@ import {
   streamText,
   convertToModelMessages,
   stepCountIs,
-  UI_MESSAGE_STREAM_HEADERS,
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
@@ -26,7 +25,6 @@ import {
   stripReplayedReasoning,
 } from "../agent-lib/context/compaction";
 import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
-import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import { workspaceService } from "../services/workspace.service";
 import type { ConsoleDataV2 } from "../agent-lib/types";
 import {
@@ -78,12 +76,18 @@ import { scheduleChatFinalization } from "./chat-finalization-queue";
 import {
   getResumableStreamContext,
   registerActiveGeneration,
-  stopActiveGeneration,
   clearActiveGeneration,
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
+import {
+  buildScreenshotVisionModelMessage,
+  resumeChatStream,
+  stopChatGeneration,
+  withSseKeepAlive,
+  type ScreenshotVisionAttachment,
+} from "../services/agent-stream.service";
 
 const logger = loggers.agent();
 
@@ -99,154 +103,6 @@ const StreamResponses = {
     content: { "text/event-stream": { schema: z.string() } },
   },
 };
-
-interface ScreenshotVisionAttachment {
-  renderer?: string;
-  filename?: string;
-  mediaType?: string;
-  dataUrl?: string;
-  outputBytes?: number;
-  targetLabel?: string;
-}
-
-const MAX_SCREENSHOT_VISION_ATTACHMENTS = 6;
-const MAX_SCREENSHOT_VISION_BYTES = 2_000_000;
-
-// Keep the SSE connection warm during long silent gaps.
-//
-// While a server-side tool runs (e.g. a multi-minute `dbt build`) the AI SDK
-// emits the `tool-input-available` chunk and then sends nothing on the wire
-// until the tool resolves. Edge proxies (Cloudflare's origin idle timeout is
-// ~100s with no bytes) terminate a connection that goes quiet for too long —
-// which drops the live stream and strands the in-flight tool card on
-// "Running…" in the browser. Emitting an SSE comment line on a fixed interval
-// keeps bytes flowing without affecting the protocol: lines beginning with
-// `:` are comments per the SSE spec and are ignored by the AI SDK's stream
-// parser. We wrap only the live client-facing branch; the tee'd
-// resumable-stream copy is untouched, so keepalives are never buffered or
-// replayed on reconnect.
-const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
-
-function withSseKeepAlive(
-  response: Response,
-  intervalMs = SSE_KEEPALIVE_INTERVAL_MS,
-): Response {
-  if (!response.body) return response;
-
-  const encoder = new TextEncoder();
-  const reader = response.body.getReader();
-  let keepAlive: ReturnType<typeof setInterval> | null = null;
-
-  const stopKeepAlive = () => {
-    if (keepAlive) {
-      clearInterval(keepAlive);
-      keepAlive = null;
-    }
-  };
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      keepAlive = setInterval(() => {
-        try {
-          controller.enqueue(encoder.encode(": keep-alive\n\n"));
-        } catch {
-          // Controller already closed/errored — stop pinging.
-          stopKeepAlive();
-        }
-      }, intervalMs);
-    },
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          stopKeepAlive();
-          controller.close();
-          return;
-        }
-        controller.enqueue(value);
-      } catch (error) {
-        stopKeepAlive();
-        controller.error(error);
-      }
-    },
-    cancel(reason) {
-      stopKeepAlive();
-      void reader.cancel(reason);
-    },
-  });
-
-  return new Response(stream, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
-}
-
-function estimateDataUrlBytes(dataUrl: string): number {
-  const commaIndex = dataUrl.indexOf(",");
-  if (commaIndex === -1) return dataUrl.length;
-  return Math.floor(((dataUrl.length - commaIndex - 1) * 3) / 4);
-}
-
-function buildScreenshotVisionModelMessage(
-  attachments: ScreenshotVisionAttachment[] | undefined,
-) {
-  if (!Array.isArray(attachments) || attachments.length === 0) {
-    return null;
-  }
-
-  const accepted = attachments
-    .filter(attachment => {
-      if (
-        typeof attachment.dataUrl !== "string" ||
-        !attachment.dataUrl.startsWith("data:image/")
-      ) {
-        return false;
-      }
-      const byteCount =
-        typeof attachment.outputBytes === "number"
-          ? attachment.outputBytes
-          : estimateDataUrlBytes(attachment.dataUrl);
-      return byteCount <= MAX_SCREENSHOT_VISION_BYTES;
-    })
-    .slice(0, MAX_SCREENSHOT_VISION_ATTACHMENTS);
-
-  if (accepted.length === 0) {
-    return null;
-  }
-
-  const content: Array<
-    | { type: "text"; text: string }
-    | { type: "file"; mediaType: string; filename?: string; data: string }
-  > = [
-    {
-      type: "text",
-      text:
-        "The previous screenshot tool call captured these PNG images for visual inspection. " +
-        "Look at the actual images, describe what is visible, and use them as visual evidence when answering.",
-    },
-  ];
-
-  accepted.forEach((attachment, index) => {
-    const renderer = attachment.renderer || `renderer-${index + 1}`;
-    const filename = attachment.filename || `${renderer}.png`;
-    content.push({
-      type: "text",
-      text: `Screenshot ${index + 1}: ${renderer} (${filename})`,
-    });
-    content.push({
-      type: "file",
-      mediaType: attachment.mediaType || "image/png",
-      filename,
-      data: attachment.dataUrl as string,
-    });
-  });
-
-  return {
-    role: "user" as const,
-    content,
-  };
-}
 
 // Apply unified auth middleware to all routes
 agentRoutes.use("*", unifiedAuthMiddleware);
@@ -1637,51 +1493,6 @@ agentRoutes.openapi(
  * auth model of POST /chat: session users need workspace membership, API
  * keys must belong to the chat's workspace.
  */
-async function authorizeChatStreamAccess(
-  c: AuthenticatedContext,
-  chatId: string,
-): Promise<
-  | {
-      ok: true;
-      chat: { activeStreamId?: string | null; workspaceId: string };
-    }
-  | { ok: false; status: 400 | 401 | 403 | 404 }
-> {
-  const user = c.get("user");
-  const apiKeyWorkspace = c.get("workspace");
-
-  if (!ObjectId.isValid(chatId)) {
-    return { ok: false, status: 400 };
-  }
-
-  const chat = await Chat.findById(chatId).select("workspaceId activeStreamId");
-  if (!chat) {
-    return { ok: false, status: 404 };
-  }
-
-  const chatWorkspaceId = chat.workspaceId.toString();
-  if (apiKeyWorkspace) {
-    if (apiKeyWorkspace._id.toString() !== chatWorkspaceId) {
-      return { ok: false, status: 403 };
-    }
-  } else if (user) {
-    const hasAccess = await workspaceService.hasAccess(
-      chatWorkspaceId,
-      user.id,
-    );
-    if (!hasAccess) {
-      return { ok: false, status: 403 };
-    }
-  } else {
-    return { ok: false, status: 401 };
-  }
-
-  return {
-    ok: true,
-    chat: { activeStreamId: chat.activeStreamId, workspaceId: chatWorkspaceId },
-  };
-}
-
 /**
  * GET /api/agent/chat/:chatId/stream
  *
@@ -1703,67 +1514,12 @@ agentRoutes.openapi(
   }),
   async c => {
     const chatId = c.req.param("chatId");
-    const access = await authorizeChatStreamAccess(c, chatId);
-    if (!access.ok) {
-      // A not-yet-created chat (client-minted chatId, no turn sent) is a normal
-      // "nothing to resume" case, not an error.
-      if (access.status === 404) {
-        // `reason` discriminates the three distinct 204 outcomes below so a
-        // benign "nothing to resume" can be told apart from a lost stream when
-        // investigating client-side disconnect reports.
-        logger.debug("Stream resume: nothing to resume", {
-          chatId,
-          reason: "chat-not-found",
-        });
-        return c.body(null, 204);
-      }
-      return c.json({ error: "Cannot access chat stream" }, access.status);
+    const result = await resumeChatStream(c, chatId);
+    if (result.kind === "no-content") return c.body(null, 204);
+    if (result.kind === "forbidden") {
+      return c.json({ error: "Cannot access chat stream" }, result.status);
     }
-
-    const { activeStreamId } = access.chat;
-    if (!activeStreamId) {
-      logger.debug("Stream resume: nothing to resume", {
-        chatId,
-        reason: "no-active-stream",
-      });
-      return c.body(null, 204);
-    }
-
-    const stream =
-      await getResumableStreamContext().resumeExistingStream(activeStreamId);
-    if (!stream) {
-      // Stale pointer: stream expired or was lost (e.g. process restart with
-      // the in-memory backend, or a `/stop` handled by another instance). The
-      // client minted a turn but we can no longer reattach — this is the
-      // server-side counterpart of the client's silent-disconnect rescue.
-      logger.info("Stream resume: stale pointer, cannot reattach", {
-        chatId,
-        streamId: activeStreamId,
-        reason: "stale-pointer",
-      });
-      // Clear it so future mounts short-circuit.
-      void Chat.updateOne(
-        { _id: new ObjectId(chatId), activeStreamId },
-        { $set: { activeStreamId: null } },
-      ).catch(error =>
-        logger.warn("Failed to clear stale activeStreamId", { error, chatId }),
-      );
-      return c.body(null, 204);
-    }
-
-    logger.info("Client reattached to chat stream", {
-      chatId,
-      streamId: activeStreamId,
-    });
-    // Keep the reattached connection warm during long silent tool gaps, same
-    // as the live POST branch. Without this, a client that resumes mid-turn is
-    // dropped by the edge proxy's idle timeout (~100s with no bytes) whenever a
-    // server-side tool runs quietly, stranding the resumed turn.
-    return withSseKeepAlive(
-      new Response(stream.pipeThrough(new TextEncoderStream()), {
-        headers: UI_MESSAGE_STREAM_HEADERS,
-      }),
-    );
+    return result.response;
   },
 );
 
@@ -1788,28 +1544,11 @@ agentRoutes.openapi(
   }),
   async c => {
     const chatId = c.req.param("chatId");
-    const access = await authorizeChatStreamAccess(c, chatId);
-    if (!access.ok) {
-      if (access.status === 404) return c.json({ stopped: false });
-      return c.json({ error: "Cannot access chat" }, access.status);
+    const result = await stopChatGeneration(c, chatId);
+    if (result.kind === "not-found") return c.json({ stopped: false });
+    if (result.kind === "forbidden") {
+      return c.json({ error: "Cannot access chat" }, result.status);
     }
-
-    const stopped = stopActiveGeneration(chatId);
-
-    // Clear the pointer immediately so reconnecting clients don't reattach to
-    // the aborted stream. Finalization also clears it, but only on the
-    // instance that owns the generation.
-    await Chat.updateOne(
-      { _id: new ObjectId(chatId) },
-      { $set: { activeStreamId: null } },
-    );
-    publishRealtimeEvent(access.chat.workspaceId, {
-      type: "chat.activity",
-      chatId,
-      state: "idle",
-    });
-
-    logger.info("Chat generation stop requested", { chatId, stopped });
-    return c.json({ stopped });
+    return c.json({ stopped: result.stopped });
   },
 );
