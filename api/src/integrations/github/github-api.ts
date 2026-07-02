@@ -8,9 +8,12 @@
 /**
  * Overridable for local development / testing against a GitHub API emulator
  * (see api/src/dbt/test-support/fake-github-server.mjs). Real deployments
- * leave this unset.
+ * leave this unset. Read lazily so dotenv (loaded in index.ts) has run
+ * before the first request.
  */
-const GITHUB_API = process.env.GITHUB_API_BASE_URL ?? "https://api.github.com";
+function githubApiBase(): string {
+  return process.env.GITHUB_API_BASE_URL ?? "https://api.github.com";
+}
 
 export interface GitHubRepoInfo {
   fullName: string;
@@ -52,7 +55,7 @@ async function ghFetch(
 ): Promise<Response> {
   const headers = authHeaders(token);
   if (init?.body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${GITHUB_API}${path}`, {
+  const res = await fetch(`${githubApiBase()}${path}`, {
     method: init?.method ?? "GET",
     headers,
     body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
@@ -119,7 +122,7 @@ export async function fileExistsAtRef(
 ): Promise<boolean> {
   const encoded = encodeRepoPath(path);
   const res = await fetch(
-    `${GITHUB_API}/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+    `${githubApiBase()}/repos/${owner}/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
     { headers: authHeaders(token) },
   );
   return res.ok;
@@ -601,7 +604,7 @@ export async function mergePullRequest(
   const headers = authHeaders(token);
   headers["Content-Type"] = "application/json";
   const res = await fetch(
-    `${GITHUB_API}/repos/${owner}/${repo}/pulls/${prNumber}/merge`,
+    `${githubApiBase()}/repos/${owner}/${repo}/pulls/${prNumber}/merge`,
     {
       method: "PUT",
       headers,

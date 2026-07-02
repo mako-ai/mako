@@ -2685,23 +2685,37 @@ export function DbtExplorer() {
                       >
                         #{pr.number} {pr.title}
                       </Link>
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
+                      <Box
                         sx={{
-                          display: "block",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 0.5,
+                          minWidth: 0,
                         }}
                       >
-                        {pr.headRef} → {pr.baseRef}
-                        {pr.author ? ` · ${pr.author}` : ""}
-                        {" · "}
-                        {new Date(pr.updatedAt).toLocaleDateString()}
-                      </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            minWidth: 0,
+                          }}
+                        >
+                          {pr.headRef} → {pr.baseRef}
+                          {pr.author ? ` · ${pr.author}` : ""}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ flexShrink: 0 }}
+                        >
+                          · {new Date(pr.updatedAt).toLocaleDateString()}
+                        </Typography>
+                      </Box>
                     </Box>
-                    {pr.draft && (
+                    {pr.draft && pr.state === "open" && (
                       <Chip
                         label="Draft"
                         size="small"
