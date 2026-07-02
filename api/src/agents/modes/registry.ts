@@ -195,6 +195,9 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_delete_branch",
   "dbt_open_pull_request",
   "dbt_merge_pull_request",
+  "dbt_list_pull_requests",
+  "dbt_update_pull_request",
+  "dbt_close_pull_request",
   // Recovery: surface + restore work hidden by a destructive switch/sync.
   "dbt_list_recoverable_files",
   "dbt_restore_file",
@@ -286,7 +289,8 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
     id: "transform",
     name: "Transforms",
     routingPrompt:
-      "Build and run dbt transformations: edit project files, compile, test, and run models against the warehouse.",
+      "Build and run dbt transformations: edit project files, compile, test, and run models against the warehouse. " +
+      "Also manage the project's Git repo and GitHub pull requests: commit, branch, and open/list/update/merge/close PRs.",
     systemPrompt: TRANSFORM_MODE_SYSTEM_PROMPT,
     toolNames: TRANSFORM_MODE_TOOL_NAMES,
     trajectories: [

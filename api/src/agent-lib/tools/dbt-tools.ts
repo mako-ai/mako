@@ -54,17 +54,20 @@ import {
   parseDbtCommands,
 } from "../../dbt/commands";
 import {
+  closeProjectPullRequest,
   commitAndPush,
   commitToNewBranch,
   createProjectBranch,
   deleteProjectBranch,
   getGitStatus,
   listProjectBranches,
+  listProjectPullRequests,
   listRecoverableFiles,
   mergeProjectPullRequest,
   openProjectPullRequest,
   restoreDeletedFile,
   switchProjectBranch,
+  updateProjectPullRequest,
 } from "../../dbt/dbt-github-git.service";
 import { syncProjectBranchFromRepo } from "../../dbt/dbt-github-sync.service";
 import {
@@ -1855,6 +1858,154 @@ export const createDbtServerTools = (
           };
         } catch (error) {
           return toolError(error, "Failed to merge pull request");
+        }
+      },
+    }),
+
+    dbt_list_pull_requests: tool({
+      description:
+        "List the pull requests of the project's connected repository " +
+        "(defaults to open PRs; pass state to include closed/merged ones). " +
+        "Returns number, title, state, merged flag, head/base branches, and " +
+        "URL for each PR. Use to find a PR number before " +
+        "dbt_update_pull_request, dbt_close_pull_request, or " +
+        "dbt_merge_pull_request, or to report PR status to the user.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        state: z
+          .enum(["open", "closed", "all"])
+          .optional()
+          .describe('Which PRs to list; defaults to "open"'),
+      }),
+      execute: async ({ projectId, state }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const pullRequests = await listProjectPullRequests(project, {
+            state,
+          });
+          return {
+            success: true,
+            // Bodies can be huge (up to 10k chars each) — truncate so a long
+            // PR list doesn't blow up the chat context.
+            pullRequests: pullRequests.map(pr => ({
+              ...pr,
+              body:
+                pr.body.length > 500 ? `${pr.body.slice(0, 500)}…` : pr.body,
+            })),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to list pull requests");
+        }
+      },
+    }),
+
+    dbt_update_pull_request: tool({
+      description:
+        "Update an open GitHub pull request's title, description, and/or base " +
+        "branch. Provide at least one field. Use when the user wants to " +
+        "retitle a PR, rewrite its description, or retarget it at a different " +
+        "base branch. Returns the updated PR summary.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        prNumber: z
+          .number()
+          .int()
+          .positive()
+          .describe("Pull request number (see dbt_list_pull_requests)"),
+        title: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe("New pull request title"),
+        body: z
+          .string()
+          .max(10_000)
+          .optional()
+          .describe("New pull request description (Markdown)"),
+        base: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe("New base branch to retarget the PR at"),
+      }),
+      execute: async ({ projectId, prNumber, title, body, base }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          // Editing a PR is repo-level administration (like merge/close) —
+          // gate on the admin/owner role, mirroring the HTTP route RBAC.
+          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+            return {
+              success: false,
+              error:
+                "Updating a pull request requires the admin or owner " +
+                "workspace role. Ask a workspace admin to update it.",
+            };
+          }
+          const pr = await updateProjectPullRequest(project, {
+            prNumber,
+            title: title?.trim(),
+            body,
+            base,
+          });
+          return { success: true, pr };
+        } catch (error) {
+          return toolError(error, "Failed to update pull request");
+        }
+      },
+    }),
+
+    dbt_close_pull_request: tool({
+      description:
+        "Close a GitHub pull request WITHOUT merging it — use when the user " +
+        "wants to abandon or withdraw a PR. Optionally delete its source " +
+        "branch (defaults to false so the work is preserved; it refuses to " +
+        "delete the project default branch or any branch a user has checked " +
+        "out). To land a PR's changes instead, use dbt_merge_pull_request. " +
+        "ONLY call after the user confirms the PR number.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        prNumber: z
+          .number()
+          .int()
+          .positive()
+          .describe("Pull request number (see dbt_list_pull_requests)"),
+        deleteBranch: z
+          .boolean()
+          .optional()
+          .describe(
+            "Also delete the PR's source branch; defaults to false",
+          ),
+      }),
+      execute: async ({ projectId, prNumber, deleteBranch }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          // Closing a PR is repo-level administration (like merge) — gate on
+          // the admin/owner role, mirroring the HTTP route RBAC.
+          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+            return {
+              success: false,
+              error:
+                "Closing a pull request requires the admin or owner " +
+                "workspace role. Ask a workspace admin to close it.",
+            };
+          }
+          const result = await closeProjectPullRequest(project, {
+            prNumber,
+            deleteBranch,
+          });
+          if (result.branchDeleted) publishGitUpdated(projectId);
+          return {
+            success: true,
+            pr: result.pr,
+            branchDeleted: result.branchDeleted,
+            ...(result.branchDeleteWarning
+              ? { branchDeleteWarning: result.branchDeleteWarning }
+              : {}),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to close pull request");
         }
       },
     }),

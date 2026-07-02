@@ -40,6 +40,14 @@ export const DBT_ADMIN_ONLY: Array<{ method: string; pattern: RegExp }> = [
     method: "POST",
     pattern: /\/dbt\/projects\/[^/]+\/git\/merge-pull-request$/,
   },
+  {
+    method: "PATCH",
+    pattern: /\/dbt\/projects\/[^/]+\/git\/pull-request\/\d+$/,
+  },
+  {
+    method: "POST",
+    pattern: /\/dbt\/projects\/[^/]+\/git\/pull-request\/\d+\/close$/,
+  },
 ];
 
 export interface DbtAccessDecision {

@@ -35,7 +35,10 @@ runs execute against the project's warehouse environments (dev/prod).
    branch. Then \`dbt_open_pull_request\`; when the user asks to promote/merge, call
    \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the feature branch,
    and sync the default branch into the working tree; it refuses before merging when there are
-   uncommitted working-tree changes. If a build runs against a stale checkout (fewer models/sources
+   uncommitted working-tree changes. Use \`dbt_list_pull_requests\` to look up PR numbers and
+   status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
+   \`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms).
+   If a build runs against a stale checkout (fewer models/sources
    than the branch has, e.g. a merged PR not yet picked up), call
    \`dbt_sync_from_repo\` to re-pull the tracked branch. Clean up merged/stray branches with
    \`dbt_delete_branch\`.

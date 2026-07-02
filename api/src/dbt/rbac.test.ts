@@ -46,6 +46,10 @@ describe("resolveDbtAccess", () => {
       { method: "DELETE", path: `${WS}/projects/abc/jobs/j1` },
       // Merging a PR is the only write path into protected branches.
       { method: "POST", path: `${WS}/projects/abc/git/merge-pull-request` },
+      // Editing/closing PRs is repo-level administration, not own-checkout
+      // work — admin+ like merge.
+      { method: "PATCH", path: `${WS}/projects/abc/git/pull-request/12` },
+      { method: "POST", path: `${WS}/projects/abc/git/pull-request/12/close` },
     ];
 
     it.each(adminOnlyCases)(
