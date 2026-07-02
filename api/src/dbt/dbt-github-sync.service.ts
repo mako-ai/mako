@@ -21,8 +21,17 @@ import { resolveRepoToken } from "../integrations/github/app-auth";
 import {
   getBlobContent,
   getBranchHeadSha,
+  getRepoInfo,
   getRepoTree,
 } from "../integrations/github/github-api";
+import {
+  getCheckoutBranch,
+  loadWorkingTreeContents,
+} from "./dbt-working-tree.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
+import { loggers } from "../logging";
+
+const logger = loggers.app();
 
 /** Per-file cap (matches the PUT /files content limit). */
 const MAX_FILE_BYTES = 1_000_000;
@@ -279,6 +288,113 @@ export async function syncProjectBranchFromRepo(
   ).exec();
 
   return { sha, added, updated, deleted, skippedLarge };
+}
+
+/** True when a file tree contains the root dbt_project.yml dbt requires. */
+export function hasRootDbtProjectYml(files: Array<{ path: string }>): boolean {
+  return files.some(file => file.path === "dbt_project.yml");
+}
+
+/**
+ * The project's tracked branch no longer exists on the remote (a stale
+ * pointer from the pre-per-user-working-trees model, deleted after its PR
+ * merged): re-anchor `repo.branch` to the repository's default branch and
+ * pull that branch's tree. Only fires when the branch is verifiably gone —
+ * a transient sync failure must never rewrite project config.
+ */
+async function reanchorTrackedBranch(
+  project: IDbtProject,
+  branch: string,
+  syncError: unknown,
+  updatedBy: string,
+): Promise<void> {
+  if (!project.repo || branch !== project.repo.branch) throw syncError;
+  const token = await resolveRepoToken(project.repo.installationId);
+  const { owner, repo } = project.repo;
+  const info = await getRepoInfo(owner, repo, token);
+  if (info.defaultBranch === branch) throw syncError;
+  const stillExists = await getBranchHeadSha(owner, repo, branch, token).then(
+    () => true,
+    () => false,
+  );
+  if (stillExists) throw syncError;
+
+  logger.warn(
+    "dbt tracked branch is gone on the remote; re-anchoring to repo default",
+    {
+      projectId: project._id.toString(),
+      staleBranch: branch,
+      defaultBranch: info.defaultBranch,
+    },
+  );
+  project.repo.branch = info.defaultBranch;
+  project.markModified("repo");
+  await project.save();
+  await syncProjectBranchFromRepo(project, info.defaultBranch, updatedBy);
+  // Let open clients refetch the project so settings show the healed branch.
+  publishRealtimeEvent(project.workspaceId.toString(), {
+    type: "dbt.project.updated",
+    projectId: project._id.toString(),
+  });
+}
+
+/**
+ * Load a project's working-tree contents for a dbt run, self-healing the two
+ * states that would otherwise reach dbt as the confusing
+ * "No dbt_project.yml found at expected path <dir>/dbt_project.yml" (and, in
+ * a warm dir, reconcile the previously-good tree away):
+ *
+ *  1. the branch's committed base tree is missing/incomplete in Mongo (e.g.
+ *     dropped when its branch was deleted) → re-pull the branch;
+ *  2. the tracked branch itself no longer exists on the remote → re-anchor
+ *     `repo.branch` to the repo default branch and pull that.
+ *
+ * Throws an actionable error when the tree still has no dbt_project.yml.
+ */
+export async function loadRunnableWorkingTree(
+  project: IDbtProject,
+  opts: { userId?: string; branch?: string } = {},
+): Promise<Array<{ path: string; content: string }>> {
+  let files = await loadWorkingTreeContents(project, opts);
+  if (hasRootDbtProjectYml(files)) return files;
+
+  let branch: string | undefined;
+  if (project.repo) {
+    branch =
+      opts.branch ??
+      (opts.userId
+        ? await getCheckoutBranch(project, opts.userId)
+        : project.repo.branch);
+    const updatedBy = opts.userId ?? "system";
+    logger.warn("dbt working tree has no dbt_project.yml; re-syncing branch", {
+      projectId: project._id.toString(),
+      branch,
+    });
+    try {
+      await syncProjectBranchFromRepo(project, branch as string, updatedBy);
+    } catch (syncError) {
+      await reanchorTrackedBranch(
+        project,
+        branch as string,
+        syncError,
+        updatedBy,
+      );
+    }
+    files = await loadWorkingTreeContents(project, opts);
+  }
+
+  if (!hasRootDbtProjectYml(files)) {
+    const where = branch ? ` on branch "${branch}"` : "";
+    throw new Error(
+      `dbt project "${project.name}" has no dbt_project.yml in its working ` +
+        `tree${where} — the project files are missing or not synced. ` +
+        (project.repo
+          ? "Check the repository/subdirectory binding and run a sync " +
+            "(Version control → Sync, or dbt_sync_from_repo)."
+          : "Create a dbt_project.yml at the project root first."),
+    );
+  }
+  return files;
 }
 
 /** Sync the project's default branch (backwards-compatible entry point). */

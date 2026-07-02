@@ -183,6 +183,7 @@ export default function DbtProjectSettingsDrawer({
 }: DbtProjectSettingsDrawerProps) {
   const projects = useDbtStore(s => s.projects);
   const updateProject = useDbtStore(s => s.updateProject);
+  const listBranches = useDbtStore(s => s.listBranches);
 
   const project = useMemo(
     () => projects.find(p => p._id === projectId) ?? null,
@@ -202,6 +203,13 @@ export default function DbtProjectSettingsDrawer({
   // add/remove PATCHes the project) — independent of the drawer's Edit mode.
   const [newProtectedBranch, setNewProtectedBranch] = useState("");
   const [savingProtection, setSavingProtection] = useState(false);
+  // Tracked branch (what deploy/job runs build): applies immediately, like
+  // branch protection. Remote branches populate the picker.
+  const [remoteBranches, setRemoteBranches] = useState<string[]>([]);
+  const [savingTrackedBranch, setSavingTrackedBranch] = useState(false);
+  const [trackedBranchError, setTrackedBranchError] = useState<string | null>(
+    null,
+  );
   // Per-environment variable rows, parallel to editEnvs (same index). Kept as
   // an ordered array (not a record) so typing keys never reorders or collides.
   const [editVarRows, setEditVarRows] = useState<
@@ -260,6 +268,33 @@ export default function DbtProjectSettingsDrawer({
   }, [project, resetFromProject]);
 
   const isRepoBound = project?.repo != null;
+
+  useEffect(() => {
+    if (!open || !projectId || !isRepoBound) return;
+    setTrackedBranchError(null);
+    void listBranches(workspaceId, projectId).then(result => {
+      if (result) setRemoteBranches(result.branches);
+    });
+  }, [open, projectId, workspaceId, isRepoBound, listBranches]);
+
+  const handleTrackedBranchChange = useCallback(
+    async (branch: string) => {
+      if (!project || !projectId || branch === project.repo?.branch) return;
+      setSavingTrackedBranch(true);
+      setTrackedBranchError(null);
+      const updated = await updateProject(workspaceId, projectId, {
+        repoBranch: branch,
+      });
+      if (!updated) {
+        setTrackedBranchError(
+          useDbtStore.getState().error.projects ?? "Failed to update branch",
+        );
+      }
+      setSavingTrackedBranch(false);
+    },
+    [project, projectId, workspaceId, updateProject],
+  );
+
   const selectedEnv = useMemo(() => {
     if (!selectedEnvName) return null;
     if (isEditing) {
@@ -1032,7 +1067,51 @@ export default function DbtProjectSettingsDrawer({
 
             {isRepoBound && project.repo && (
               <SettingsSection title="Git">
-                <ReadOnlyField label="Branch" value={project.repo.branch} />
+                <Box sx={{ mb: 1.5 }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                  >
+                    Branch
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mb: 0.5 }}
+                  >
+                    Deploy jobs, CI, and syncs build this branch. Your editor
+                    checkout is independent (Version control panel).
+                  </Typography>
+                  <Select
+                    size="small"
+                    value={project.repo.branch}
+                    disabled={savingTrackedBranch}
+                    onChange={e =>
+                      void handleTrackedBranchChange(e.target.value)
+                    }
+                    sx={{ minWidth: 260, maxWidth: "100%" }}
+                  >
+                    {[...new Set([project.repo.branch, ...remoteBranches])].map(
+                      branch => (
+                        <MenuItem key={branch} value={branch}>
+                          {branch}
+                        </MenuItem>
+                      ),
+                    )}
+                  </Select>
+                  {trackedBranchError && (
+                    <Typography
+                      variant="caption"
+                      color="error"
+                      display="block"
+                      sx={{ mt: 0.5 }}
+                    >
+                      {trackedBranchError}
+                    </Typography>
+                  )}
+                </Box>
                 <ReadOnlyField
                   label="Last synced"
                   value={

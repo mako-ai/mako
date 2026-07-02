@@ -194,7 +194,10 @@ import {
   DbtProject,
   type IDbtProject,
 } from "../database/workspace-schema";
-import { syncProjectBranchFromRepo } from "./dbt-github-sync.service";
+import {
+  loadRunnableWorkingTree,
+  syncProjectBranchFromRepo,
+} from "./dbt-github-sync.service";
 import {
   commitAndPush,
   commitToNewBranch,
@@ -624,5 +627,148 @@ describe("pull request merge", () => {
         updatedBy: "alice",
       }),
     ).rejects.toThrow("Pull request #5 is closed");
+  });
+
+  it("never deletes the project's tracked branch (or its base tree) on merge", async () => {
+    const project = await seedProject();
+    // Stale pointer left behind by the pre-per-user-working-trees model: the
+    // project tracks the PR head branch itself.
+    remote.setBranch("feat/stale", {
+      "dbt_project.yml": "name: analytics",
+      "models/a.sql": "select 2",
+    });
+    await syncProjectBranchFromRepo(project, "feat/stale", "seed");
+    await DbtProject.updateOne(
+      { _id: project._id },
+      { $set: { "repo.branch": "feat/stale" } },
+    );
+    remote.state.pulls.set(9, {
+      headRef: "feat/stale",
+      baseRef: "main",
+      state: "open",
+    });
+
+    const result = await mergeProjectPullRequest(project, {
+      userId: "alice",
+      prNumber: 9,
+      updatedBy: "alice",
+    });
+
+    expect(result.branchDeleted).toBe(false);
+    expect(result.branchDeleteWarning).toMatch(/tracked branch/);
+    // Remote branch and its committed base tree both survive — deploy runs
+    // building the tracked branch keep their files.
+    expect(remote.state.branches.has("feat/stale")).toBe(true);
+    expect(
+      await DbtFile.countDocuments({
+        projectId: project._id,
+        branch: "feat/stale",
+        is_deleted: { $ne: true },
+      }),
+    ).toBeGreaterThan(0);
+  });
+});
+
+describe("loadRunnableWorkingTree — self-healing run snapshots", () => {
+  it("returns the working tree as-is when dbt_project.yml is present", async () => {
+    const project = await seedProject();
+    const files = await loadRunnableWorkingTree(project);
+    expect(files.map(f => f.path)).toEqual(["dbt_project.yml", "models/a.sql"]);
+  });
+
+  it("re-syncs a branch whose committed base tree is missing in Mongo", async () => {
+    const project = await seedProject();
+    // Simulate the incident: the tracked branch's base tree was dropped
+    // (e.g. deleteBranchBaseTree ran for it).
+    await DbtFile.deleteMany({ projectId: project._id, branch: "main" });
+
+    const files = await loadRunnableWorkingTree(project);
+    expect(files.map(f => f.path)).toContain("dbt_project.yml");
+    expect(
+      await DbtFile.countDocuments({
+        projectId: project._id,
+        branch: "main",
+        is_deleted: { $ne: true },
+      }),
+    ).toBe(2);
+  });
+
+  it("re-anchors a tracked branch that no longer exists on the remote", async () => {
+    const project = await seedProject();
+    // Stale tracked pointer at a branch that was merged + deleted upstream.
+    await DbtProject.updateOne(
+      { _id: project._id },
+      { $set: { "repo.branch": "feat/gone" } },
+    );
+    const stale = await DbtProject.findById(project._id);
+    if (!stale) throw new Error("project not found");
+
+    const files = await loadRunnableWorkingTree(stale);
+    expect(files.map(f => f.path)).toContain("dbt_project.yml");
+
+    const healed = await DbtProject.findById(project._id).lean();
+    expect(healed?.repo?.branch).toBe("main");
+  });
+
+  it("does not re-anchor when the tracked branch still exists on the remote", async () => {
+    const project = await seedProject();
+    remote.setBranch("feat/alive", {
+      "dbt_project.yml": "name: analytics",
+      "models/z.sql": "select 9",
+    });
+    await DbtProject.updateOne(
+      { _id: project._id },
+      { $set: { "repo.branch": "feat/alive" } },
+    );
+    const tracked = await DbtProject.findById(project._id);
+    if (!tracked) throw new Error("project not found");
+
+    // No base tree yet for feat/alive → the heal path syncs the branch
+    // itself (it exists), never touching the tracked pointer.
+    const files = await loadRunnableWorkingTree(tracked);
+    expect(files.map(f => f.path)).toContain("models/z.sql");
+
+    const after = await DbtProject.findById(project._id).lean();
+    expect(after?.repo?.branch).toBe("feat/alive");
+  });
+
+  it("rethrows when the tracked branch IS the repo default and the sync fails", async () => {
+    const project = await seedProject();
+    await DbtFile.deleteMany({ projectId: project._id, branch: "main" });
+    // Remote is unreachable/branch gone AND main is the repo default — there
+    // is nothing safe to re-anchor to, so the sync error surfaces.
+    remote.state.branches.delete("main");
+
+    await expect(loadRunnableWorkingTree(project)).rejects.toThrow(/404/);
+    const after = await DbtProject.findById(project._id).lean();
+    expect(after?.repo?.branch).toBe("main");
+  });
+
+  it("throws an actionable error for a blank project without dbt_project.yml", async () => {
+    const blank = await DbtProject.create({
+      workspaceId: WS,
+      name: `Blank-${new Types.ObjectId().toString()}`,
+      environments: [
+        {
+          name: "dev",
+          connectionId: new Types.ObjectId(),
+          targetSchema: "analytics",
+          threads: 4,
+        },
+      ],
+      defaultEnvironment: "dev",
+      createdBy: "tester",
+    });
+    await DbtFile.create({
+      workspaceId: WS,
+      projectId: blank._id,
+      path: "models/a.sql",
+      content: "select 1",
+      updatedBy: "tester",
+    });
+
+    await expect(loadRunnableWorkingTree(blank)).rejects.toThrow(
+      /has no dbt_project\.yml/,
+    );
   });
 });

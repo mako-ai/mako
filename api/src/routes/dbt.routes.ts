@@ -36,6 +36,7 @@ import {
 } from "../integrations/github/config";
 import {
   fileExistsAtRef,
+  getBranchHeadSha,
   getRepoInfo,
   listBranches,
   listDbtProjectSubdirectories,
@@ -278,6 +279,12 @@ const patchProjectSchema = z.object({
     .array(z.string().min(1).max(255))
     .max(20)
     .optional(),
+  /**
+   * Tracked branch of the repo binding — what deploy/job runs build and what
+   * syncs target by default. Must exist on the remote; its base tree is
+   * synced on change.
+   */
+  repoBranch: z.string().min(1).max(255).optional(),
 });
 
 async function validateEnvironments(
@@ -479,7 +486,43 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       project.protectedBranches = [...new Set(body.protectedBranches)];
       project.markModified("protectedBranches");
     }
+    let trackedBranchChanged = false;
+    if (body.repoBranch) {
+      if (!project.repo) {
+        return badRequest(
+          c,
+          "Changing the tracked branch requires a connected repository",
+        );
+      }
+      if (body.repoBranch !== project.repo.branch) {
+        // The tracked branch is what deploy/job runs build — verify it exists
+        // on the remote before re-pointing the project at it.
+        const token = await resolveRepoToken(project.repo.installationId);
+        try {
+          await getBranchHeadSha(
+            project.repo.owner,
+            project.repo.repo,
+            body.repoBranch,
+            token,
+          );
+        } catch {
+          return badRequest(
+            c,
+            `Branch "${body.repoBranch}" was not found on ` +
+              `${project.repo.owner}/${project.repo.repo}`,
+          );
+        }
+        project.repo.branch = body.repoBranch;
+        project.markModified("repo");
+        trackedBranchChanged = true;
+      }
+    }
     await project.save();
+    if (trackedBranchChanged && project.repo) {
+      // Materialize the new tracked branch's committed base tree so deploy
+      // runs and fresh checkouts have files to build immediately.
+      await syncProjectBranchFromRepo(project, project.repo.branch, getUserId(c));
+    }
     publishDbtEvent(c, {
       type: "dbt.project.updated",
       projectId: project._id.toString(),

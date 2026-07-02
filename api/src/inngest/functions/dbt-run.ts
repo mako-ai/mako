@@ -361,7 +361,15 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             if (warmDirsEnabled()) {
               try {
                 result = await withProjectDir(
-                  { ...cacheScope, role: "run" },
+                  {
+                    ...cacheScope,
+                    role: "run",
+                    // Working-tree (agent verification) builds materialize a
+                    // user's draft overlay — isolate them in a per-user dir so
+                    // they can never reconcile the shared committed-deploy dir
+                    // into a draft state.
+                    userId: runInfo.workingTreeUserId ?? undefined,
+                  },
                   dir => runOnce(dir),
                 );
                 // Positive signal so warm-dir engagement on the executor is
