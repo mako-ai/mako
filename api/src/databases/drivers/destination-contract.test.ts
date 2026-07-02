@@ -70,6 +70,7 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         expected:
           "SELECT table_id, row_count FROM `proj`.`ds`.__TABLES__ WHERE table_id IN ('a''b','c')",
       },
+      quoteIdentifier: { absent: true },
     },
   ],
   [
@@ -85,6 +86,12 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         schema: "public",
         tables: ["a'b", "c"],
         expected: PG_ROWCOUNT_EXPECTED,
+      },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", '"_syncedAt"'],
+          ['weird"name', '"weird""name"'],
+        ],
       },
     },
   ],
@@ -102,6 +109,12 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         tables: ["a'b", "c"],
         expected: PG_ROWCOUNT_EXPECTED,
       },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", '"_syncedAt"'],
+          ['weird"name', '"weird""name"'],
+        ],
+      },
     },
   ],
   [
@@ -115,6 +128,12 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
       formatTableRef: { absent: true },
       // Redshift has no cheap metadata row-count path → callers skip counting.
       rowCountBatchQuery: { absent: true },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", '"_syncedAt"'],
+          ['weird"name', '"weird""name"'],
+        ],
+      },
     },
   ],
 ];

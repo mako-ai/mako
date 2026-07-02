@@ -176,6 +176,15 @@ export interface DatabaseDriver {
   ): string;
 
   /**
+   * Quote a single identifier (column/table/schema) for raw SQL against this
+   * engine. Implement for engines whose bare identifiers are case-folded
+   * (Postgres family lowercases `_syncedAt` → `_syncedat`). Leave unset for
+   * engines where bare identifiers match case-insensitively (BigQuery, MySQL)
+   * — callers fall back to the bare name there.
+   */
+  quoteIdentifier?(name: string): string;
+
+  /**
    * Build a single batch query returning approximate row counts for the given
    * tables, yielding rows shaped `{ table_id, row_count }`. Returns null when
    * the engine has no cheap metadata-based row-count path (callers then skip
