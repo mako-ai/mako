@@ -501,6 +501,13 @@ interface DbtActions {
     projectId: string,
     branch: string,
   ) => Promise<void>;
+  /**
+   * Focus/reconnect backstop (same role syncRevisions plays for consoles):
+   * re-pull the working-tree git status for every repo-bound project this
+   * window has loaded, so missed SSE pokes (backgrounded tab, dropped
+   * stream) cannot leave the branch label or change list stale.
+   */
+  reconcileRemoteGitState: (workspaceId: string) => Promise<void>;
 
   fetchJobs: (workspaceId: string, projectId: string) => Promise<void>;
   saveJob: (
@@ -1335,6 +1342,37 @@ export const useDbtStore = create<DbtStore>()(
       ]);
     },
 
+    reconcileRemoteGitState: async workspaceId => {
+      const state = get();
+      // Only repo-bound projects this window already pulled state for — a
+      // window that never opened the dbt surface has nothing to reconcile
+      // (DbtExplorer fetches fresh state on mount).
+      const projectIds = state.projects
+        .filter(
+          project =>
+            project.repo &&
+            (state.gitStatusByProject[project._id] ||
+              state.filePathsByProject[project._id]),
+        )
+        .map(project => project._id);
+      await Promise.all(
+        projectIds.map(async projectId => {
+          const previousBranch = get().checkoutBranchByProject[projectId];
+          const status = await get().fetchGitStatus(workspaceId, projectId);
+          if (!status) return;
+          if (previousBranch && status.branch !== previousBranch) {
+            // The checkout moved while this window missed the poke (e.g.
+            // branch switched in another window during a dropped stream):
+            // the cached tree/contents belong to the old branch.
+            set(draft => {
+              delete draft.filesByProject[projectId];
+            });
+            await get().fetchFiles(workspaceId, projectId);
+          }
+        }),
+      );
+    },
+
     deleteFile: async (workspaceId, projectId, path) => {
       try {
         await apiClient.delete(
@@ -1364,7 +1402,8 @@ export const useDbtStore = create<DbtStore>()(
       try {
         await apiClient.post(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/rename`,
-          { from, to },
+          // clientId lets this tab suppress the echo of its own rename pokes.
+          { from, to, clientId: realtimeClientId },
         );
         set(state => {
           const files = state.filesByProject[projectId];

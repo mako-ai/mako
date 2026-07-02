@@ -123,7 +123,9 @@ import {
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
+const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
 const adhocMock = runAdhocDbtCommand as unknown as ReturnType<typeof vi.fn>;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
@@ -323,6 +325,39 @@ describe("file CRUD", () => {
       { content: "x".repeat(1_000_001) },
     );
     expect(res.status).toBe(400);
+  });
+
+  it("rename pokes both paths over the realtime channel", async () => {
+    const projectId = await createProjectAsOwner();
+    await req("PUT", `/projects/${projectId}/files/models/old.sql`, {
+      content: "select 1",
+    });
+    publishMock.mockClear();
+
+    const res = await req("POST", `/projects/${projectId}/files/rename`, {
+      from: "models/old.sql",
+      to: "models/new.sql",
+      clientId: "tab-1",
+    });
+    expect(res.status).toBe(200);
+
+    // Other windows express the rename as delete(from) + add(to).
+    const events = publishMock.mock.calls.map(call => call[1]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "dbt.file.updated",
+        path: "models/old.sql",
+        deleted: true,
+        clientId: "tab-1",
+        origin: "save",
+      }),
+      expect.objectContaining({
+        type: "dbt.file.updated",
+        path: "models/new.sql",
+        clientId: "tab-1",
+        origin: "save",
+      }),
+    ]);
   });
 });
 
