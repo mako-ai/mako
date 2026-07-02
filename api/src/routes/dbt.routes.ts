@@ -1573,7 +1573,11 @@ dbtRoutes.post(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const body = (await c.req.json()) as { from?: unknown; to?: unknown };
+      const body = (await c.req.json()) as {
+        from?: unknown;
+        to?: unknown;
+        clientId?: unknown;
+      };
       const from = typeof body.from === "string" ? body.from : "";
       const to = typeof body.to === "string" ? body.to : "";
       if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
@@ -1585,6 +1589,31 @@ dbtRoutes.post(
         return c.json({ success: false, error: renameError }, 404);
       }
       if (renameError) return badRequest(c, renameError);
+      // The working tree expresses a rename as delete(from) + add(to) — poke
+      // both paths so the acting user's other windows (and, for blank
+      // projects, the whole workspace) move the file and refresh git status.
+      const clientId =
+        typeof body.clientId === "string" ? body.clientId : undefined;
+      const forUserId = project.repo ? userId : undefined;
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path: from,
+        deleted: true,
+        updatedBy: userId,
+        clientId,
+        origin: "save",
+        forUserId,
+      });
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path: to,
+        updatedBy: userId,
+        clientId,
+        origin: "save",
+        forUserId,
+      });
       return c.json({ success: true });
     } catch (error) {
       return serverError(c, error, "Failed to rename dbt file");

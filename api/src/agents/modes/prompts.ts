@@ -218,7 +218,8 @@ You submitted a plan for this request and the user has NOT approved it yet. Writ
 (creating/modifying consoles or dashboards, running or executing queries, setting form fields,
 writing memory) are DISABLED until the user approves.
 
-- If the user **requested changes**, revise the plan using their feedback and call
+- If the user **requested changes**, their feedback arrives as their latest chat message
+  (it may also be echoed in the tool result). Revise the plan accordingly and call
   \`submit_plan\` again. Use read-only tools if you need more context for the revision.
 - If the user **cancelled**, stop and ask how they would like to proceed instead.
 - NEVER attempt a mutating tool before approval — it will be rejected.`;
