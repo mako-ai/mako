@@ -3092,6 +3092,14 @@ export interface IDashboard extends Document {
   workspaceId: Types.ObjectId;
   title: string;
   description?: string;
+  /**
+   * Client-supplied creation idempotency key (the agent toolCallId). Multiple
+   * windows attached to the same chat stream each dispatch the same
+   * create_dashboard call; the unique partial index on
+   * { workspaceId, creationIdempotencyKey } makes the second insert a
+   * duplicate, and the create route returns the existing dashboard instead.
+   */
+  creationIdempotencyKey?: string;
 
   dataSources: IDashboardDataSource[];
 
@@ -3280,6 +3288,8 @@ export interface IDashboardDataSourceOrigin {
   consoleId?: Types.ObjectId;
   consoleName?: string;
   importedAt?: Date;
+  /** Agent toolCallId that created this data source (creation idempotency). */
+  createdByToolCallId?: string;
 }
 
 export interface IDashboardDataSource {
@@ -3327,6 +3337,7 @@ const DashboardSchema = new Schema<IDashboard>(
     },
     title: { type: String, required: true },
     description: { type: String },
+    creationIdempotencyKey: { type: String },
 
     dataSources: [
       {
@@ -3375,6 +3386,7 @@ const DashboardSchema = new Schema<IDashboard>(
           },
           consoleName: { type: String },
           importedAt: { type: Date },
+          createdByToolCallId: { type: String },
         },
         timeDimension: { type: String },
         rowLimit: { type: Number },
@@ -3608,6 +3620,16 @@ DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 DashboardSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
+);
+// Creation idempotency (see IDashboard.creationIdempotencyKey). Partial (not
+// sparse): a sparse COMPOUND index still indexes docs that have workspaceId
+// but no key, which would make every keyless dashboard collide.
+DashboardSchema.index(
+  { workspaceId: 1, creationIdempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { creationIdempotencyKey: { $type: "string" } },
+  },
 );
 
 /**
