@@ -191,8 +191,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
       // Slim CI: resolve the project's last prod manifest so the executor can
       // run `--defer --state`. Applies to (a) scheduled/deploy jobs that opt in
-      // via deferToProduction and (b) PR CI runs (unless the project's CI
-      // config disables defer).
+      // via deferToProduction, (b) PR CI runs (unless the project's CI config
+      // disables defer), and (c) ad-hoc/agent runs that set the run-level
+      // deferToProduction flag (fast iteration in personal dev schemas).
       let deferStateKey: string | null = null;
       let wantsDefer = false;
       if (run.trigger === "ci") {
@@ -207,6 +208,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           (await DbtJob.findById(run.jobId).select("deferToProduction").lean())
             ?.deferToProduction,
         );
+      } else if (run.deferToProduction) {
+        wantsDefer = true;
       }
       if (wantsDefer) {
         const project = await DbtProject.findById(run.projectId)
@@ -220,6 +223,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
       return {
         environment: run.environment,
         commands: run.commands,
+        gitBranch: run.gitBranch ?? null,
+        workingTreeUserId: run.workingTreeUserId ?? null,
         jobId: run.jobId?.toString(),
         restoreArtifactKeys: run.restoreArtifactKeys
           ? {
@@ -271,6 +276,11 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             workspaceId: data.workspaceId,
             projectId: data.projectId,
             environmentName: runInfo.environment,
+            // Deploy/CI runs build a branch's COMMITTED base tree; agent
+            // verification builds set workingTreeUserId to include that
+            // user's draft overlay. Default: the project default branch.
+            branch: runInfo.gitBranch ?? undefined,
+            userId: runInfo.workingTreeUserId ?? undefined,
           });
           // Stash BigQuery credentials so a cancel can stop in-flight warehouse
           // jobs (best-effort; no-op for non-BigQuery adapters).
@@ -354,7 +364,15 @@ export const dbtRunExecutorFunction = inngest.createFunction(
             if (warmDirsEnabled()) {
               try {
                 result = await withProjectDir(
-                  { ...cacheScope, role: "run" },
+                  {
+                    ...cacheScope,
+                    role: "run",
+                    // Working-tree (agent verification) builds materialize a
+                    // user's draft overlay — isolate them in a per-user dir so
+                    // they can never reconcile the shared committed-deploy dir
+                    // into a draft state.
+                    userId: runInfo.workingTreeUserId ?? undefined,
+                  },
                   dir => runOnce(dir),
                 );
                 // Positive signal so warm-dir engagement on the executor is

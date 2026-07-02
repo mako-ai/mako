@@ -97,12 +97,13 @@ interface PlanActions {
   removeTodo: (toolCallId: string, index: number) => void;
   registerResolver: (toolCallId: string, resolver: PlanResolver) => void;
   /** Resolve the deferred tool with the current draft as `editedPlan`
-   * (omitted on cancel, matching the original PlanCard behavior). */
+   * (omitted on cancel, matching the original PlanCard behavior). Returns
+   * false when the plan is not pending or no live resolver is registered. */
   resolvePlan: (
     toolCallId: string,
     decision: PlanDecision,
     feedback?: string,
-  ) => void;
+  ) => boolean;
   /** Hydrate an already-resolved plan from message history (reload / old
    * chats). Idempotent and safe to call from effects. */
   markResolved: (toolCallId: string, output: SubmitPlanOutput) => void;
@@ -212,9 +213,9 @@ export const usePlanStore = create<PlanStore>()(
 
       resolvePlan: (toolCallId, decision, feedback) => {
         const plan = get().plans[toolCallId];
-        if (!plan || plan.status !== "pending") return;
+        if (!plan || plan.status !== "pending") return false;
         const resolver = resolvers.get(toolCallId);
-        if (!resolver) return;
+        if (!resolver) return false;
 
         const output: SubmitPlanOutput = {
           success: true,
@@ -242,6 +243,7 @@ export const usePlanStore = create<PlanStore>()(
           entry.status = decision;
           entry.output = output;
         });
+        return true;
       },
 
       markResolved: (toolCallId, output) => {
@@ -323,6 +325,18 @@ export function focusPlanTab(
     metadata: { toolCallId, chatId },
   });
   return id;
+}
+
+/** Close the plan's main-view tab (no-op when it is not open or has been
+ * re-pointed to a different toolCallId). Used when the user discards a
+ * pending plan — the inline summary card in the chat history can re-open it
+ * read-only. */
+export function closePlanTab(toolCallId: string, chatId: string): void {
+  const consoleStore = useConsoleStore.getState();
+  const id = planTabId(toolCallId, chatId);
+  const tab = consoleStore.tabs[id];
+  if (!tab || tab.metadata?.toolCallId !== toolCallId) return;
+  consoleStore.closeTab(id);
 }
 
 /** Keep the plan tab's title in sync as it streams/finalizes (no-op when the

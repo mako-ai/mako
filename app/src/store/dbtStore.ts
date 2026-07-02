@@ -10,6 +10,7 @@
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { apiClient } from "../lib/api-client";
+import { realtimeClientId } from "../lib/realtime-client-id";
 
 export interface DbtEnvironment {
   name: string;
@@ -17,6 +18,25 @@ export interface DbtEnvironment {
   targetSchema: string;
   threads: number;
   vars?: Record<string, unknown>;
+  /**
+   * Personal (per-developer) environment: set to the owning user's id when
+   * auto-provisioned as that user's private dev target (schema `dbt_<user>`).
+   * Selectors hide other users' personal environments.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * Environments the given user may target: shared environments plus their own
+ * personal environment (other users' personal targets are hidden).
+ */
+export function visibleDbtEnvironments(
+  environments: DbtEnvironment[] | undefined,
+  userId: string | undefined,
+): DbtEnvironment[] {
+  return (environments ?? []).filter(
+    env => !env.ownerUserId || env.ownerUserId === userId,
+  );
 }
 
 export interface DbtRepoBinding {
@@ -47,6 +67,8 @@ export interface DbtProjectItem {
   repo?: DbtRepoBinding;
   /** Pull-request CI config (repo-bound projects). */
   ci?: DbtCiConfig;
+  /** Branches that refuse direct commits (PR-only). */
+  protectedBranches?: string[];
   /** Artifact-store key of last prod manifest (Slim CI defer state). */
   lastProdManifestKey?: string;
 }
@@ -103,8 +125,6 @@ export interface SyncResult {
   updated: number;
   deleted: number;
   skippedLarge: string[];
-  /** Files left untouched because they had uncommitted local edits. */
-  preservedLocal: string[];
   /** The branch that was pulled (for user-facing feedback). */
   branch?: string;
 }
@@ -135,6 +155,27 @@ export interface CommitResult {
   sha?: string;
   branch: string;
   pushed: { added: number; modified: number; deleted: number };
+}
+
+export interface PromoteResult extends CommitResult {
+  /** Branch the new branch was forked from (the previous checkout). */
+  fromBranch: string;
+}
+
+export interface PullRequestItem {
+  number: number;
+  title: string;
+  /** "open" or "closed" (merged PRs are "closed" with merged: true). */
+  state: string;
+  merged: boolean;
+  draft: boolean;
+  headRef: string;
+  baseRef: string;
+  htmlUrl: string;
+  author?: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface DbtFileEntry {
@@ -287,8 +328,12 @@ interface DbtState {
   runsByJob: Record<string, DbtRunItem[]>;
   /** runId → details incl. accumulated logs. */
   runDetails: Record<string, DbtRunDetails>;
-  /** projectId → working-tree git status (repo-bound projects). */
+  /** projectId → the CURRENT USER's working-tree git status (their drafts). */
   gitStatusByProject: Record<string, GitStatus>;
+  /** projectId → the current user's checked-out branch (per-user checkout). */
+  checkoutBranchByProject: Record<string, string>;
+  /** projectId → branches that refuse direct commits (PR-only). */
+  protectedBranchesByProject: Record<string, string[]>;
   /** Project settings drawer (mounted at app root). */
   settingsProjectId: string | null;
   /** New project drawer (mounted at app root). */
@@ -319,9 +364,21 @@ interface DbtActions {
       defaultEnvironment?: string;
       dbtVersion?: string;
       ci?: DbtCiConfig;
+      protectedBranches?: string[];
+      /** Tracked branch of the repo binding (what deploy/job runs build). */
+      repoBranch?: string;
     },
   ) => Promise<DbtProjectItem | null>;
   deleteProject: (workspaceId: string, projectId: string) => Promise<boolean>;
+  /**
+   * Idempotently provision the caller's personal (per-developer) environment
+   * on a project (schema `dbt_<user>`, same connection as prod). Returns the
+   * environment or null on failure.
+   */
+  ensurePersonalEnvironment: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<DbtEnvironment | null>;
   fetchGitHubStatus: (workspaceId: string) => Promise<GitHubStatus | null>;
   fetchGitHubRepos: (
     workspaceId: string,
@@ -369,6 +426,13 @@ interface DbtActions {
     projectId: string,
     message: string,
   ) => Promise<CommitResult | null>;
+  /** Atomic promote: new branch off the checkout + commit drafts onto it. */
+  commitToBranch: (
+    workspaceId: string,
+    projectId: string,
+    name: string,
+    message: string,
+  ) => Promise<PromoteResult | null>;
   generateCommitMessage: (
     workspaceId: string,
     projectId: string,
@@ -392,6 +456,23 @@ interface DbtActions {
     projectId: string,
     payload: { title: string; body?: string; base?: string },
   ) => Promise<{ number: number; htmlUrl: string } | null>;
+  listPullRequests: (
+    workspaceId: string,
+    projectId: string,
+    state?: "open" | "closed" | "all",
+  ) => Promise<PullRequestItem[] | null>;
+  updatePullRequest: (
+    workspaceId: string,
+    projectId: string,
+    prNumber: number,
+    payload: { title?: string; body?: string; base?: string },
+  ) => Promise<PullRequestItem | null>;
+  closePullRequest: (
+    workspaceId: string,
+    projectId: string,
+    prNumber: number,
+    options?: { deleteBranch?: boolean },
+  ) => Promise<PullRequestItem | null>;
 
   fetchFiles: (workspaceId: string, projectId: string) => Promise<void>;
   readFile: (
@@ -433,6 +514,30 @@ interface DbtActions {
     path: string,
     deleted?: boolean,
   ) => Promise<void>;
+  /**
+   * The git surface changed server-side (commit/sync/merge — human or agent):
+   * refetch git status + tree and refresh loaded, non-dirty file buffers.
+   */
+  applyRemoteGitUpdate: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<void>;
+  /**
+   * The current user's checkout moved server-side (agent branch create /
+   * switch): update the branch label and reload the tree + statuses.
+   */
+  applyRemoteCheckoutUpdate: (
+    workspaceId: string,
+    projectId: string,
+    branch: string,
+  ) => Promise<void>;
+  /**
+   * Focus/reconnect backstop (same role syncRevisions plays for consoles):
+   * re-pull the working-tree git status for every repo-bound project this
+   * window has loaded, so missed SSE pokes (backgrounded tab, dropped
+   * stream) cannot leave the branch label or change list stale.
+   */
+  reconcileRemoteGitState: (workspaceId: string) => Promise<void>;
 
   fetchJobs: (workspaceId: string, projectId: string) => Promise<void>;
   saveJob: (
@@ -528,6 +633,8 @@ const initialState: DbtState = {
   runsByJob: {},
   runDetails: {},
   gitStatusByProject: {},
+  checkoutBranchByProject: {},
+  protectedBranchesByProject: {},
   settingsProjectId: null,
   createProjectOpen: false,
   createProjectMode: "blank",
@@ -640,6 +747,30 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error.projects = errMessage(error, "Failed to update project");
+        });
+        return null;
+      }
+    },
+
+    ensurePersonalEnvironment: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          created: boolean;
+          environment: DbtEnvironment;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/environments/personal`,
+          {},
+        );
+        // Refresh the project so selectors pick up the new environment.
+        if (response.created) await get().fetchProjects(workspaceId);
+        return response.environment ?? null;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to create personal environment",
+          );
         });
         return null;
       }
@@ -775,7 +906,11 @@ export const useDbtStore = create<DbtStore>()(
       try {
         const query = options?.discard ? "?discard=true" : "";
         const response = await apiClient.post<
-          { success: boolean; project: DbtProjectItem } & SyncResult
+          {
+            success: boolean;
+            project: DbtProjectItem;
+            branch?: string;
+          } & SyncResult
         >(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/sync${query}`,
           {},
@@ -783,6 +918,9 @@ export const useDbtStore = create<DbtStore>()(
         set(state => {
           const idx = state.projects.findIndex(p => p._id === projectId);
           if (idx >= 0) state.projects[idx] = response.project;
+          if (response.branch) {
+            state.checkoutBranchByProject[projectId] = response.branch;
+          }
           // Drop cached file contents so the editor re-reads synced files.
           delete state.filesByProject[projectId];
         });
@@ -792,8 +930,7 @@ export const useDbtStore = create<DbtStore>()(
           updated: response.updated,
           deleted: response.deleted,
           skippedLarge: response.skippedLarge ?? [],
-          preservedLocal: response.preservedLocal ?? [],
-          branch: response.project.repo?.branch,
+          branch: response.branch ?? response.project.repo?.branch,
         };
       } catch (error) {
         set(state => {
@@ -811,9 +948,13 @@ export const useDbtStore = create<DbtStore>()(
         const response = await apiClient.get<{
           success: boolean;
           status: GitStatus;
+          protectedBranches?: string[];
         }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/status`);
         set(state => {
           state.gitStatusByProject[projectId] = response.status;
+          state.checkoutBranchByProject[projectId] = response.status.branch;
+          state.protectedBranchesByProject[projectId] =
+            response.protectedBranches ?? [];
         });
         return response.status;
       } catch {
@@ -863,6 +1004,36 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
+    commitToBranch: async (workspaceId, projectId, name, message) => {
+      try {
+        const response = await apiClient.post<
+          { success: boolean } & PromoteResult
+        >(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/commit-to-branch`,
+          { name, message },
+        );
+        set(state => {
+          state.checkoutBranchByProject[projectId] = response.branch;
+        });
+        await get().fetchGitStatus(workspaceId, projectId);
+        return {
+          committed: response.committed,
+          sha: response.sha,
+          branch: response.branch,
+          fromBranch: response.fromBranch,
+          pushed: response.pushed,
+        };
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to commit to a new branch",
+          );
+        });
+        return null;
+      }
+    },
+
     generateCommitMessage: async (workspaceId, projectId) => {
       try {
         const response = await apiClient.post<{
@@ -890,7 +1061,13 @@ export const useDbtStore = create<DbtStore>()(
           success: boolean;
           branches: string[];
           current: string;
+          protectedBranches?: string[];
         }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/branches`);
+        set(state => {
+          state.checkoutBranchByProject[projectId] = response.current;
+          state.protectedBranchesByProject[projectId] =
+            response.protectedBranches ?? [];
+        });
         return { branches: response.branches ?? [], current: response.current };
       } catch (error) {
         set(state => {
@@ -904,14 +1081,16 @@ export const useDbtStore = create<DbtStore>()(
       try {
         const response = await apiClient.post<{
           success: boolean;
+          branch: string;
           project: DbtProjectItem;
         }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/git/branch`, {
           name,
         });
+        // Only the caller's checkout moves — the project itself is unchanged.
         set(state => {
-          const idx = state.projects.findIndex(p => p._id === projectId);
-          if (idx >= 0) state.projects[idx] = response.project;
+          state.checkoutBranchByProject[projectId] = response.branch;
         });
+        void get().fetchGitStatus(workspaceId, projectId);
         return response.project;
       } catch (error) {
         set(state => {
@@ -925,16 +1104,20 @@ export const useDbtStore = create<DbtStore>()(
       try {
         const response = await apiClient.post<{
           success: boolean;
+          branch: string;
           project: DbtProjectItem;
         }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/switch-branch`,
           { branch },
         );
         set(state => {
-          const idx = state.projects.findIndex(p => p._id === projectId);
-          if (idx >= 0) state.projects[idx] = response.project;
+          state.checkoutBranchByProject[projectId] = response.branch;
           delete state.filesByProject[projectId];
         });
+        await Promise.all([
+          get().fetchFiles(workspaceId, projectId),
+          get().fetchGitStatus(workspaceId, projectId),
+        ]);
         return response.project;
       } catch (error) {
         set(state => {
@@ -960,6 +1143,68 @@ export const useDbtStore = create<DbtStore>()(
           state.error.projects = errMessage(
             error,
             "Failed to open pull request",
+          );
+        });
+        return null;
+      }
+    },
+
+    listPullRequests: async (workspaceId, projectId, state = "open") => {
+      try {
+        const response = await apiClient.get<{
+          success: boolean;
+          pullRequests: PullRequestItem[];
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-requests?state=${state}`,
+        );
+        return response.pullRequests;
+      } catch (error) {
+        set(draft => {
+          draft.error.projects = errMessage(
+            error,
+            "Failed to list pull requests",
+          );
+        });
+        return null;
+      }
+    },
+
+    updatePullRequest: async (workspaceId, projectId, prNumber, payload) => {
+      try {
+        const response = await apiClient.patch<{
+          success: boolean;
+          pr: PullRequestItem;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-request/${prNumber}`,
+          payload,
+        );
+        return response.pr;
+      } catch (error) {
+        set(draft => {
+          draft.error.projects = errMessage(
+            error,
+            "Failed to update pull request",
+          );
+        });
+        return null;
+      }
+    },
+
+    closePullRequest: async (workspaceId, projectId, prNumber, options) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          pr: PullRequestItem;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/pull-request/${prNumber}/close`,
+          options ?? {},
+        );
+        return response.pr;
+      } catch (error) {
+        set(draft => {
+          draft.error.projects = errMessage(
+            error,
+            "Failed to close pull request",
           );
         });
         return null;
@@ -1049,7 +1294,8 @@ export const useDbtStore = create<DbtStore>()(
       try {
         await apiClient.put(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/${encodeDbtPath(path)}`,
-          { content: file.content },
+          // clientId lets this tab suppress the echo of its own save poke.
+          { content: file.content, clientId: realtimeClientId },
         );
         set(state => {
           const entry = state.filesByProject[projectId]?.[path];
@@ -1115,6 +1361,72 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
+    applyRemoteGitUpdate: async (workspaceId, projectId) => {
+      // Poke-then-pull: a commit/sync/merge landed server-side. Refresh the
+      // tree + git status, then re-pull loaded, non-dirty file buffers so open
+      // tabs show the new committed content.
+      await Promise.all([
+        get().fetchFiles(workspaceId, projectId),
+        get().fetchGitStatus(workspaceId, projectId),
+      ]);
+      const files = get().filesByProject[projectId] ?? {};
+      const paths = new Set(get().filePathsByProject[projectId] ?? []);
+      await Promise.all(
+        Object.entries(files).map(([path, entry]) => {
+          if (entry.dirty || !entry.loaded) return Promise.resolve();
+          return get().applyRemoteFileUpdate(
+            workspaceId,
+            projectId,
+            path,
+            !paths.has(path),
+          );
+        }),
+      );
+    },
+
+    applyRemoteCheckoutUpdate: async (workspaceId, projectId, branch) => {
+      set(state => {
+        state.checkoutBranchByProject[projectId] = branch;
+        // The whole base tree may have changed — drop cached contents.
+        delete state.filesByProject[projectId];
+      });
+      await Promise.all([
+        get().fetchFiles(workspaceId, projectId),
+        get().fetchGitStatus(workspaceId, projectId),
+      ]);
+    },
+
+    reconcileRemoteGitState: async workspaceId => {
+      const state = get();
+      // Only repo-bound projects this window already pulled state for — a
+      // window that never opened the dbt surface has nothing to reconcile
+      // (DbtExplorer fetches fresh state on mount).
+      const projectIds = state.projects
+        .filter(
+          project =>
+            project.repo &&
+            (state.gitStatusByProject[project._id] ||
+              state.filePathsByProject[project._id]),
+        )
+        .map(project => project._id);
+      await Promise.all(
+        projectIds.map(async projectId => {
+          const previousBranch = get().checkoutBranchByProject[projectId];
+          const status = await get().fetchGitStatus(workspaceId, projectId);
+          if (!status) return;
+          if (previousBranch && status.branch !== previousBranch) {
+            // The checkout moved while this window missed the poke (e.g.
+            // branch switched in another window during a dropped stream):
+            // the cached tree/contents belong to the old branch.
+            set(draft => {
+              delete draft.filesByProject[projectId];
+            });
+            await get().fetchFiles(workspaceId, projectId);
+          }
+        }),
+      );
+    },
+
     deleteFile: async (workspaceId, projectId, path) => {
       try {
         await apiClient.delete(
@@ -1144,7 +1456,8 @@ export const useDbtStore = create<DbtStore>()(
       try {
         await apiClient.post(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/rename`,
-          { from, to },
+          // clientId lets this tab suppress the echo of its own rename pokes.
+          { from, to, clientId: realtimeClientId },
         );
         set(state => {
           const files = state.filesByProject[projectId];

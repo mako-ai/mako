@@ -421,6 +421,94 @@ export function dedupeAssistantReasoning(
   return { messages: next, changed, removedCount };
 }
 
+/**
+ * Minimum trimmed length for a text part to participate in duplicate removal.
+ * Short affirmations ("Done.", "Yes.") can legitimately repeat inside one
+ * assistant message; the replay corruption this cleans up duplicates whole
+ * paragraphs, so a modest threshold removes the corruption without ever
+ * touching plausible legitimate repeats.
+ */
+const TEXT_DEDUPE_MIN_LENGTH = 24;
+
+/**
+ * Remove stream-replay artifacts from assistant messages: duplicated `text`
+ * parts and bursts of consecutive `step-start` parts.
+ *
+ * WHY THIS EXISTS — resumable-stream replay corruption:
+ * When a client attaches additional consumers to a turn's resumable stream
+ * (resumeStream() after a wake/refresh/error — historically without any
+ * single-flight guard), every consumer re-processes every chunk. Tool and
+ * reasoning chunks MERGE into existing parts (by toolCallId / signature), but
+ * `text-start` and `start-step` chunks unconditionally APPEND — so each extra
+ * consumer appended a byte-identical copy of every text part plus a burst of
+ * step-start parts. Later live chunks then interleave with the appended
+ * copies, so the duplicates are NOT a clean suffix; they are byte-identical
+ * repeats scattered through the tail of the message.
+ *
+ * The client-side fixes (tool dispatch gate + single-flight resume) stop new
+ * corruption; this persist-time pass repairs messages that already carry it
+ * (and acts as a backstop). Mirrors `dedupeAssistantReasoning`: first
+ * occurrence and order are preserved.
+ *
+ * Conservative by construction:
+ *  - only assistant messages;
+ *  - only text parts whose trimmed content is at least
+ *    TEXT_DEDUPE_MIN_LENGTH chars AND byte-identical (trimmed) to an earlier
+ *    text part in the same message;
+ *  - step-start parts are only dropped when DIRECTLY consecutive (possible
+ *    only via replay appends — a real step boundary always carries content).
+ */
+export function dedupeAssistantStreamArtifacts(
+  messages: UIMessage[],
+): DedupeReasoningResult {
+  let changed = false;
+  let removedCount = 0;
+
+  const next = messages.map(msg => {
+    if (msg.role !== "assistant") return msg;
+    const parts = (msg.parts ?? []) as Array<Record<string, unknown>>;
+    const seenTexts = new Set<string>();
+    let removedHere = 0;
+    let previousKeptType: string | null = null;
+
+    const filtered = parts.filter(part => {
+      const type = part.type;
+
+      if (type === "step-start") {
+        if (previousKeptType === "step-start") {
+          removedHere += 1;
+          return false;
+        }
+        previousKeptType = "step-start";
+        return true;
+      }
+
+      if (type === "text") {
+        const trimmed = String((part.text as string) ?? "").trim();
+        if (trimmed.length >= TEXT_DEDUPE_MIN_LENGTH) {
+          if (seenTexts.has(trimmed)) {
+            removedHere += 1;
+            return false;
+          }
+          seenTexts.add(trimmed);
+        }
+        previousKeptType = "text";
+        return true;
+      }
+
+      previousKeptType = typeof type === "string" ? type : null;
+      return true;
+    });
+
+    if (removedHere === 0) return msg;
+    changed = true;
+    removedCount += removedHere;
+    return { ...msg, parts: filtered as UIMessage["parts"] };
+  });
+
+  return { messages: next, changed, removedCount };
+}
+
 // ---------------------------------------------------------------------------
 // Summarization (agnostic — cheapest curated tool-use model)
 // ---------------------------------------------------------------------------

@@ -36,6 +36,13 @@ export const DashboardDataSourceOriginSchema = z.object({
   consoleId: z.string().optional(),
   consoleName: z.string().optional(),
   importedAt: z.string().optional(),
+  /**
+   * The agent toolCallId that created this data source (creation idempotency:
+   * multiple windows attached to the same chat stream dispatch the same
+   * create call; the duplicate finds this stamp and returns the existing
+   * data source instead of adding another).
+   */
+  createdByToolCallId: z.string().optional(),
 });
 
 /**

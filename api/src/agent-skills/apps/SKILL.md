@@ -43,8 +43,13 @@ errors); `open_app` just focuses a UI tab.
 2. Use `get_app_state` to see the file list, dependencies, data bindings,
    entrypoint, and version before editing. (Live preview build/runtime errors are
    only available in an attached browser via `run_app`.)
-3. Edit with `app_write_file` — always write the COMPLETE file contents, not a diff.
-   The entrypoint defaults to `src/App.tsx` (default export is rendered).
+3. Modify existing files with `app_edit_file` — an anchored replacement: pass the
+   exact current text as `oldString` (must match exactly once — include a few
+   surrounding lines to disambiguate; re-read the file with `app_read_file` if the
+   match fails) and the replacement as `newString` (`""` deletes it; set
+   `replaceAll: true` for renames). Use `app_write_file` (COMPLETE contents) only to
+   create new files or fully rewrite one. The entrypoint defaults to `src/App.tsx`
+   (default export is rendered).
 4. Add libraries with `app_add_dependency` (e.g. d3, recharts, framer-motion) before
    importing them. They resolve as ES modules at preview time.
 5. To use workspace data, create a binding with `app_create_data_binding` (validate the
@@ -57,6 +62,23 @@ errors); `open_app` just focuses a UI tab.
 
    Bindings run server-side and are workspace-scoped — never put credentials or raw
    connection strings in app code.
+
+   **Reusing a saved console:** pass `consoleId` (from `search_consoles`) to
+   `app_create_data_binding` and the console's query code, connection, language, and
+   database resolve server-side — do not re-type the SQL. Explicit fields override
+   the console's values; `name` defaults to a sanitized version of the console name.
+
+   **Updating bindings IN PLACE — never recreate under a new name:** to change an
+   existing binding's query (or connection/language/database), call
+   `app_update_data_binding` with its `name`. For small query changes pass an
+   anchored `oldString`/`newString` edit; pass `code` only for a full replacement.
+   The binding keeps its id, materialization, schedule, and artifact history, and
+   app code keeps reading the same table name. For a `parquet` binding the rebuild
+   is queued automatically, but the app keeps serving the PREVIOUS data until it
+   completes — call `materialize_binding` to wait for it before validating results
+   with `query_duckdb`. Do NOT delete/recreate a binding or mint a versioned name
+   (`my_data_v2`) to change a query — that orphans the artifact, drops the
+   schedule, and forces app-code edits.
 
    **Deleting bindings:** to remove an orphaned or superseded binding, call
    `app_delete_data_binding` with its `name`. It removes the binding from the app
@@ -103,6 +125,26 @@ errors); `open_app` just focuses a UI tab.
    refresh runs in production; in local dev trigger a build with
    `materialize_binding`. An explicit `materialize_binding` always rebuilds from
    current upstream data (it force-refreshes past the query-definition cache).
+
+   **dbt-linked bindings (environment-agnostic SQL):** when a binding reads
+   tables built by a Mako dbt project, pass `dbtProjectId` (from
+   `read_dbt_project_tree`) to `app_create_data_binding` /
+   `app_update_data_binding` and reference the schema via the
+   `{{ dbt_schema }}` token instead of hardcoding it:
+
+   ```sql
+   SELECT * FROM {{ dbt_schema }}.fct_revenue
+   ```
+
+   The token resolves to the dbt project's PROD-like environment schema for
+   published apps, parquet materialization, and public shares. In the DRAFT
+   preview it can be switched per user with `app_set_preview_environment`
+   (e.g. to a personal `dbt_<user>` schema) to verify an app against
+   freshly-built dev models WITHOUT affecting other editors or viewers —
+   pass `environment: null` to reset to prod. While an override is active,
+   dbt-linked parquet bindings run live (row-capped) in the preview so the
+   prod artifact is never rebuilt from dev data. See the `dbt` skill for the
+   full model-iteration → preview → promote loop.
 
    **Result row cap:** rows delivered to the app are capped per query/binding read
    (default 500,000 — the bridge into the sandboxed iframe). Both hooks return

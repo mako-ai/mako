@@ -20,9 +20,12 @@ import { Types } from "mongoose";
 import {
   createDbtFileSchema,
   modifyDbtFileSchema,
+  editDbtFileSchema,
   deleteDbtFileSchema,
   readDbtTreeSchema,
   readDbtFileSchema,
+  applyStrReplace,
+  buildStrReplaceDiff,
 } from "@mako/agent-tools";
 import {
   DatabaseConnection,
@@ -32,12 +35,22 @@ import {
   DbtRun,
 } from "../../database/workspace-schema";
 import { publishRealtimeEvent } from "../../services/realtime.service";
+import { workspaceService } from "../../services/workspace.service";
 import {
   createVersion,
   getLatestVersionNumber,
   getUserDisplayName,
 } from "../../services/entity-version.service";
-import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
+import {
+  loadDbtDeferState,
+  runAdhocDbtCommand,
+} from "../../dbt/dbt-project.service";
+import {
+  ensurePersonalDbtEnvironment,
+  findPersonalEnvironment,
+  resolveEnvironmentNameForUser,
+  resolveProdLikeEnvironmentName,
+} from "../../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
@@ -50,19 +63,30 @@ import {
   parseDbtCommands,
 } from "../../dbt/commands";
 import {
+  closeProjectPullRequest,
   commitAndPush,
   commitToNewBranch,
   createProjectBranch,
   deleteProjectBranch,
   getGitStatus,
   listProjectBranches,
+  listProjectPullRequests,
   listRecoverableFiles,
   mergeProjectPullRequest,
   openProjectPullRequest,
   restoreDeletedFile,
   switchProjectBranch,
+  updateProjectPullRequest,
 } from "../../dbt/dbt-github-git.service";
-import { syncProjectFromRepo } from "../../dbt/dbt-github-sync.service";
+import { syncProjectBranchFromRepo } from "../../dbt/dbt-github-sync.service";
+import {
+  deleteWorkingFile,
+  discardUserDrafts,
+  getCheckoutBranch,
+  listWorkingFiles,
+  readWorkingFile,
+  writeWorkingFile,
+} from "../../dbt/dbt-working-tree.service";
 import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -165,22 +189,81 @@ export const createDbtServerTools = (
   options?: { chatId?: string },
 ) => {
   const agentClientId = `agent:${options?.chatId ?? "unknown"}`;
+  // Drafts/checkouts belong to the user the agent acts for; without a user
+  // session (rare) the agent gets its own overlay under the "agent" owner.
+  const actingUserId = userId ?? "agent";
 
   // Poke open dbt-file tabs to pull the new content (poke-then-pull, mirrors
-  // the console #475 realtime sync).
+  // the console #475 realtime sync). Draft edits carry forUserId so only the
+  // acting user's windows react.
   const publishFileUpdated = (
     projectId: string,
     path: string,
-    deleted?: boolean,
+    opts?: { deleted?: boolean; draft?: boolean },
   ) => {
     publishRealtimeEvent(workspaceId, {
       type: "dbt.file.updated",
       projectId,
       path,
-      deleted,
-      updatedBy: userId ?? "agent",
+      deleted: opts?.deleted,
+      updatedBy: actingUserId,
       clientId: agentClientId,
       origin: "agent",
+      forUserId: opts?.draft ? actingUserId : undefined,
+    });
+  };
+
+  // Git surface changed (commit/sync/merge/restore): open windows refetch
+  // git status + tree.
+  const publishGitUpdated = (projectId: string, forUser?: boolean) => {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.git.updated",
+      projectId,
+      updatedBy: actingUserId,
+      clientId: agentClientId,
+      forUserId: forUser ? actingUserId : undefined,
+    });
+  };
+
+  // The acting user's checkout moved (branch create/switch): their windows
+  // refresh branch label, tree, and status.
+  const publishCheckoutUpdated = (projectId: string, branch: string) => {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.checkout.updated",
+      projectId,
+      branch,
+      forUserId: actingUserId,
+      updatedBy: actingUserId,
+      clientId: agentClientId,
+    });
+  };
+
+  const publishJobUpdated = (projectId: string) => {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.job.updated",
+      projectId,
+      clientId: agentClientId,
+    });
+  };
+
+  const publishRunUpdated = (
+    projectId: string,
+    ids?: { runId?: string; jobId?: string },
+  ) => {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.run.updated",
+      projectId,
+      runId: ids?.runId,
+      jobId: ids?.jobId,
+      clientId: agentClientId,
+    });
+  };
+
+  const publishProjectUpdated = (projectId?: string) => {
+    publishRealtimeEvent(workspaceId, {
+      type: "dbt.project.updated",
+      projectId,
+      clientId: agentClientId,
     });
   };
 
@@ -239,6 +322,43 @@ export const createDbtServerTools = (
     return null;
   };
 
+  type EnvProject = Parameters<typeof resolveEnvironmentNameForUser>[0] & {
+    lastProdManifestKey?: string;
+  };
+
+  /**
+   * Environment an ad-hoc action targets when the agent passed none: the
+   * acting user's personal environment when provisioned, else the project
+   * default. Explicit names always win.
+   */
+  const resolveEnvironment = (
+    project: EnvProject,
+    requested?: string,
+  ): string => resolveEnvironmentNameForUser(project, actingUserId, requested);
+
+  /**
+   * Default defer decision for ad-hoc builds/previews: defer to the last prod
+   * manifest when iterating OUTSIDE the prod-like environment and a prod
+   * build exists — so one model can be rebuilt in a personal schema without
+   * first rebuilding its whole upstream DAG there.
+   */
+  const shouldDeferByDefault = (
+    project: EnvProject,
+    environmentName: string,
+  ): boolean =>
+    Boolean(project.lastProdManifestKey) &&
+    environmentName !== resolveProdLikeEnvironmentName(project);
+
+  const deferField = z
+    .boolean()
+    .optional()
+    .describe(
+      "Run with --defer --state <last prod manifest> so unselected refs " +
+        "resolve to the production build (fast iteration: no need to " +
+        "rebuild upstream models in your schema). Defaults to true when " +
+        "targeting a non-prod environment and a prod manifest exists.",
+    );
+
   // Snapshot a dbt file version (entity-version pattern, mirrors the route).
   const snapshotVersion = async (
     fileId: Types.ObjectId,
@@ -288,19 +408,16 @@ export const createDbtServerTools = (
                   name: env.name,
                   targetSchema: env.targetSchema,
                   connectionId: env.connectionId?.toString(),
+                  ...(env.ownerUserId
+                    ? { personal: true, ownerUserId: env.ownerUserId }
+                    : {}),
                 })),
               })),
             };
           }
           const project = await assertProject(projectId);
           const [files, jobs] = await Promise.all([
-            DbtFile.find({
-              projectId: project._id,
-              is_deleted: { $ne: true },
-            })
-              .select("path")
-              .sort({ path: 1 })
-              .lean(),
+            listWorkingFiles(project, actingUserId),
             DbtJob.find({ projectId: project._id }).lean(),
           ]);
           return {
@@ -333,20 +450,17 @@ export const createDbtServerTools = (
       execute: async ({ projectId, path }) => {
         try {
           const project = await assertProject(projectId);
-          const file = await DbtFile.findOne({
-            projectId: project._id,
-            path,
-            is_deleted: { $ne: true },
-          })
-            .select("path content")
-            .lean();
+          const file = await readWorkingFile(project, actingUserId, path);
           if (!file) {
-            return { success: false as const, error: `File not found: ${path}` };
+            return {
+              success: false as const,
+              error: `File not found: ${path}`,
+            };
           }
           return {
             success: true as const,
             path: file.path,
-            contents: file.content ?? "",
+            contents: file.content,
           };
         } catch (error) {
           return toolError(error, "Failed to read dbt file");
@@ -367,31 +481,21 @@ export const createDbtServerTools = (
           if (!isSafeDbtPath(path)) {
             return { success: false, error: "Invalid file path" };
           }
-          const existing = await DbtFile.findOne({
-            projectId: project._id,
-            path,
-            is_deleted: { $ne: true },
-          });
+          const existing = await readWorkingFile(project, actingUserId, path);
           if (existing) {
             return {
               success: false,
               error: `File already exists: ${path}. Use modify_dbt_file to change it.`,
             };
           }
-          const file = await DbtFile.findOneAndUpdate(
-            { projectId: project._id, path },
-            {
-              $set: {
-                content: contents ?? "",
-                updatedBy: userId,
-                is_deleted: false,
-                workspaceId: project.workspaceId,
-              },
-            },
-            { upsert: true, new: true, setDefaultsOnInsert: true },
+          const { versionEntityId } = await writeWorkingFile(
+            project,
+            actingUserId,
+            path,
+            contents ?? "",
           );
           await snapshotVersion(
-            file._id,
+            versionEntityId,
             project.workspaceId,
             path,
             contents ?? "",
@@ -400,7 +504,9 @@ export const createDbtServerTools = (
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
           );
-          publishFileUpdated(projectId, path);
+          publishFileUpdated(projectId, path, {
+            draft: Boolean(project.repo),
+          });
           return { success: true, path };
         } catch (error) {
           return toolError(error, "Failed to create dbt file");
@@ -410,9 +516,11 @@ export const createDbtServerTools = (
 
     modify_dbt_file: tool({
       description:
-        "Overwrite an existing dbt project file with full contents. The open " +
-        "editor tab updates live; every save snapshots a version for undo. " +
-        "After editing, verify with dbt_parse / dbt_compile_model.",
+        "Fully rewrite an existing dbt project file with complete contents. " +
+        "For modifying part of a file prefer edit_dbt_file (anchored old/new " +
+        "string) — it avoids re-sending unchanged code. The open editor tab " +
+        "updates live; every save snapshots a version for undo. After " +
+        "editing, verify with dbt_parse / dbt_compile_model.",
       inputSchema: modifyDbtFileSchema,
       execute: async ({ projectId, path, contents }) => {
         try {
@@ -423,20 +531,14 @@ export const createDbtServerTools = (
           if ((contents ?? "").length > 1_000_000) {
             return { success: false, error: "File too large (max 1MB)" };
           }
-          const file = await DbtFile.findOneAndUpdate(
-            { projectId: project._id, path },
-            {
-              $set: {
-                content: contents ?? "",
-                updatedBy: userId,
-                is_deleted: false,
-                workspaceId: project.workspaceId,
-              },
-            },
-            { upsert: true, new: true, setDefaultsOnInsert: true },
+          const { versionEntityId } = await writeWorkingFile(
+            project,
+            actingUserId,
+            path,
+            contents ?? "",
           );
           await snapshotVersion(
-            file._id,
+            versionEntityId,
             project.workspaceId,
             path,
             contents ?? "",
@@ -445,10 +547,96 @@ export const createDbtServerTools = (
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
           );
-          publishFileUpdated(projectId, path);
+          publishFileUpdated(projectId, path, {
+            draft: Boolean(project.repo),
+          });
           return { success: true, path };
         } catch (error) {
           return toolError(error, "Failed to save dbt file");
+        }
+      },
+    }),
+
+    edit_dbt_file: tool({
+      description:
+        "Edit an existing dbt project file by replacing an exact text " +
+        "match. This is the PRIMARY tool for modifying dbt files: pass the " +
+        "exact current text as oldString (unique — include surrounding " +
+        'lines to disambiguate) and the replacement as newString ("" ' +
+        "deletes it). Set replaceAll: true for renames. Use modify_dbt_file " +
+        "only for full rewrites. After editing, verify with dbt_parse / " +
+        "dbt_compile_model.",
+      inputSchema: editDbtFileSchema,
+      execute: async ({
+        projectId,
+        path,
+        oldString,
+        newString,
+        replaceAll,
+      }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!isSafeDbtPath(path)) {
+            return { success: false, error: "Invalid file path" };
+          }
+          // Read + write through the working-tree service (same as
+          // modify_dbt_file): repo projects edit the caller's DRAFT overlay
+          // on their checkout branch — never the committed base tree — so
+          // the edit shows up in dbt_git_status / the Version Control UI and
+          // stays invisible to other users until committed.
+          const file = await readWorkingFile(project, actingUserId, path);
+          if (!file) {
+            return {
+              success: false,
+              error: `File not found: ${path}. Use read_dbt_project_tree to list files, or create_dbt_file to create it.`,
+            };
+          }
+          const current = file.content ?? "";
+          const result = applyStrReplace(
+            current,
+            oldString,
+            newString,
+            replaceAll === true,
+          );
+          if (!result.ok) {
+            return { success: false, error: result.error };
+          }
+          if (result.contents.length > 1_000_000) {
+            return { success: false, error: "File too large (max 1MB)" };
+          }
+          const diff = buildStrReplaceDiff(
+            current,
+            oldString,
+            newString,
+            result.replacements,
+          );
+          const { versionEntityId } = await writeWorkingFile(
+            project,
+            actingUserId,
+            path,
+            result.contents,
+          );
+          await snapshotVersion(
+            versionEntityId,
+            project.workspaceId,
+            path,
+            result.contents,
+          );
+          await DbtProject.updateOne(
+            { _id: project._id },
+            { $currentDate: { updatedAt: true } },
+          );
+          publishFileUpdated(projectId, path, {
+            draft: Boolean(project.repo),
+          });
+          return {
+            success: true,
+            path,
+            replacements: result.replacements,
+            diff,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to edit dbt file");
         }
       },
     }),
@@ -459,14 +647,14 @@ export const createDbtServerTools = (
       execute: async ({ projectId, path }) => {
         try {
           const project = await assertProject(projectId);
-          const result = await DbtFile.updateOne(
-            { projectId: project._id, path },
-            { $set: { is_deleted: true, updatedBy: userId } },
-          );
-          if (result.matchedCount === 0) {
+          const deleted = await deleteWorkingFile(project, actingUserId, path);
+          if (!deleted) {
             return { success: false, error: `File not found: ${path}` };
           }
-          publishFileUpdated(projectId, path, true);
+          publishFileUpdated(projectId, path, {
+            deleted: true,
+            draft: Boolean(project.repo),
+          });
           return { success: true, path };
         } catch (error) {
           return toolError(error, "Failed to delete dbt file");
@@ -567,6 +755,7 @@ export const createDbtServerTools = (
             })),
           );
 
+          publishProjectUpdated(project._id.toString());
           return {
             success: true,
             projectId: project._id.toString(),
@@ -590,6 +779,55 @@ export const createDbtServerTools = (
       },
     }),
 
+    dbt_ensure_dev_environment: tool({
+      description:
+        "Idempotently provision the acting user's PERSONAL dbt environment " +
+        "on a project (dbt Cloud-style development credentials): same " +
+        "warehouse connection as prod, private schema `dbt_<user>`. Once it " +
+        "exists, dbt_parse / dbt_compile_model / dbt_run_model / dbt_show " +
+        "default to it automatically, so iteration never writes to shared " +
+        "dev/prod schemas. Call this before building models when the user " +
+        "wants to iterate safely (or when read_dbt_project_tree shows no " +
+        "personal environment). Safe to call repeatedly.",
+      inputSchema: z.object({ projectId: projectIdField }),
+      execute: async ({ projectId }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!userId) {
+            return {
+              success: false,
+              error:
+                "Personal environments require a user session; pick an " +
+                "explicit environment instead.",
+            };
+          }
+          const existing = findPersonalEnvironment(project, userId);
+          const result = existing
+            ? { environment: existing, created: false }
+            : await ensurePersonalDbtEnvironment({
+                workspaceId,
+                projectId,
+                userId,
+              });
+          if (result.created) publishProjectUpdated(projectId);
+          return {
+            success: true,
+            created: result.created,
+            environment: result.environment.name,
+            targetSchema: result.environment.targetSchema,
+            message: result.created
+              ? `Personal environment "${result.environment.name}" created ` +
+                `(schema ${result.environment.targetSchema}). Ad-hoc dbt ` +
+                "tools now default to it."
+              : `Personal environment "${result.environment.name}" already ` +
+                `exists (schema ${result.environment.targetSchema}).`,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to ensure personal environment");
+        }
+      },
+    }),
+
     dbt_parse: tool({
       description:
         "Validate the entire dbt project (dbt parse): catches Jinja errors, " +
@@ -600,15 +838,19 @@ export const createDbtServerTools = (
         environment: z
           .string()
           .optional()
-          .describe("Environment name; defaults to the project default (dev)"),
+          .describe(
+            "Environment name; defaults to your personal environment when " +
+              "provisioned, else the project default",
+          ),
       }),
       execute: async ({ projectId, environment }) => {
         try {
-          await assertProject(projectId);
+          const project = await assertProject(projectId);
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: environment,
+            environmentName: resolveEnvironment(project, environment),
+            userId: actingUserId,
             command: "parse",
             timeoutMs: 2 * 60 * 1000,
           });
@@ -640,23 +882,32 @@ export const createDbtServerTools = (
             "Node name (stg_orders) or dbt selector (+stg_orders, tag:nightly)",
           ),
         environment: z.string().optional(),
+        defer: deferField,
       }),
-      execute: async ({ projectId, model, environment }) => {
+      execute: async ({ projectId, model, environment, defer }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
-          await assertProject(projectId);
+          const project = await assertProject(projectId);
+          const environmentName = resolveEnvironment(project, environment);
+          const wantsDefer =
+            defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: environment,
+            environmentName,
+            userId: actingUserId,
             command: `compile --select ${model}`,
             select: model,
+            deferState: wantsDefer
+              ? await loadDbtDeferState(project)
+              : undefined,
             timeoutMs: 3 * 60 * 1000,
           });
           return {
             success: result.success,
+            environment: environmentName,
             compiledSql: result.compiledSql,
             logs: summarizeLogs(result.logs),
           };
@@ -689,16 +940,21 @@ export const createDbtServerTools = (
           .string()
           .optional()
           .describe(
-            "Environment name; defaults to the project default (dev). Only " +
-              "use prod when the user explicitly asks.",
+            "Environment name; defaults to your personal environment when " +
+              "provisioned, else the project default (dev). Only use prod " +
+              "when the user explicitly asks.",
           ),
+        defer: deferField,
       }),
-      execute: async ({ projectId, model, environment }) => {
+      execute: async ({ projectId, model, environment, defer }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
+          const environmentName = resolveEnvironment(project, environment);
+          const wantsDefer =
+            defer ?? shouldDeferByDefault(project, environmentName);
           // Dispatch to the async runner instead of blocking the chat turn for
           // the full build. The build executes in the Inngest worker
           // (decoupled from this SSE connection), so it survives proxy idle
@@ -707,21 +963,31 @@ export const createDbtServerTools = (
           const run = await triggerDbtRun({
             workspaceId,
             projectId,
-            environment: environment ?? project.defaultEnvironment,
+            environment: environmentName,
             commands: [`build --select ${model}`],
             trigger: "agent",
             triggeredBy: "agent",
+            // Build the acting user's working tree (checkout + drafts) so
+            // the run verifies exactly the uncommitted edits just made.
+            workingTreeUserId: project.repo ? actingUserId : undefined,
+            deferToProduction: wantsDefer,
           });
+          publishRunUpdated(projectId, { runId: run._id.toString() });
           return {
             success: true,
             runId: run._id.toString(),
             status: run.status,
             environment: run.environment,
+            defer: wantsDefer,
             commands: run.commands,
             message:
               "Build started in the runner. Poll dbt_get_run with this runId " +
               "(pass waitMs) until status is success/error. The user sees " +
-              "live progress in the run card.",
+              "live progress in the run card." +
+              (wantsDefer
+                ? " Running with --defer: unselected refs resolve to the " +
+                  "last prod build."
+                : ""),
           };
         } catch (error) {
           return toolError(error, "Failed to run model");
@@ -756,6 +1022,10 @@ export const createDbtServerTools = (
             trigger: "agent",
             triggeredBy: "agent",
           });
+          publishRunUpdated(projectId, {
+            runId: run._id.toString(),
+            jobId: job._id.toString(),
+          });
           return {
             success: true,
             runId: run._id.toString(),
@@ -783,7 +1053,9 @@ export const createDbtServerTools = (
         "asks to stop a build.",
       inputSchema: z.object({
         projectId: projectIdField,
-        runId: z.string().describe("dbt run ID (from dbt_run_model / dbt_run_job)"),
+        runId: z
+          .string()
+          .describe("dbt run ID (from dbt_run_model / dbt_run_job)"),
       }),
       execute: async ({ projectId, runId }) => {
         try {
@@ -797,6 +1069,7 @@ export const createDbtServerTools = (
             cancelledBy: userId ?? "agent",
           });
           if (!result) return { success: false, error: "Run not found" };
+          publishRunUpdated(projectId, { runId });
           return {
             success: true,
             runId,
@@ -948,18 +1221,26 @@ export const createDbtServerTools = (
           .default(5)
           .describe("Max rows to preview (default 5)"),
         environment: z.string().optional(),
+        defer: deferField,
       }),
-      execute: async ({ projectId, model, limit, environment }) => {
+      execute: async ({ projectId, model, limit, environment, defer }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
-          await assertProject(projectId);
+          const project = await assertProject(projectId);
+          const environmentName = resolveEnvironment(project, environment);
+          const wantsDefer =
+            defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: environment,
+            environmentName,
+            userId: actingUserId,
             command: `show --select ${model} --limit ${limit}`,
+            deferState: wantsDefer
+              ? await loadDbtDeferState(project)
+              : undefined,
             timeoutMs: 3 * 60 * 1000,
           });
           // The preview table arrives as info-level log line(s) (ShowNode);
@@ -1054,6 +1335,7 @@ export const createDbtServerTools = (
             createdBy: "agent",
           });
           await applyJobScheduleChange(job);
+          publishJobUpdated(projectId);
           return {
             success: true,
             jobId: job._id.toString(),
@@ -1123,6 +1405,7 @@ export const createDbtServerTools = (
           }
           await job.save();
           await applyJobScheduleChange(job);
+          publishJobUpdated(projectId);
           return {
             success: true,
             jobId: job._id.toString(),
@@ -1161,6 +1444,7 @@ export const createDbtServerTools = (
           if (!job) return { success: false, error: "Job not found" };
           const name = job.name;
           await DbtJob.deleteOne({ _id: job._id, projectId: project._id });
+          publishJobUpdated(projectId);
           return { success: true, jobId: job._id.toString(), name };
         } catch (error) {
           return toolError(error, "Failed to delete dbt job");
@@ -1170,42 +1454,49 @@ export const createDbtServerTools = (
 
     dbt_sync_from_repo: tool({
       description:
-        "Re-pull the latest commits from the project's tracked branch into the " +
-        "working tree (Mongo), the same as the IDE 'Sync/Pull' action. Use this " +
+        "Re-pull the latest commits of the user's checked-out branch into its " +
+        "committed base tree, the same as the IDE 'Sync/Pull' action. Use this " +
         "when the project is building from a stale checkout — e.g. files were " +
         "merged on the remote (a PR landed on main) but the project hasn't " +
-        "picked them up, so a run finds fewer models/sources than the branch " +
-        "actually has. SAFE BY DEFAULT: files you've edited locally but not yet " +
-        "committed are preserved (reported in `preservedLocal`), never " +
-        "overwritten — only non-conflicting files fast-forward to the remote. " +
-        "Pass discardLocalChanges:true to make the remote win and overwrite " +
-        "local edits (only after the user confirms). To pull a DIFFERENT " +
-        "branch, use dbt_switch_branch instead.",
+        "picked them up. ALWAYS SAFE: uncommitted edits live in a per-user " +
+        "draft overlay that a sync never touches. Pass discardLocalChanges:" +
+        "true to ALSO drop the user's uncommitted drafts before pulling (a " +
+        "`git checkout -- .`; only after the user confirms). To pull a " +
+        "DIFFERENT branch, use dbt_switch_branch instead.",
       inputSchema: z.object({
         projectId: projectIdField,
         discardLocalChanges: z
           .boolean()
           .optional()
           .describe(
-            "Set true to let the remote overwrite uncommitted local edits. " +
-              "Default false keeps local edits and only fast-forwards the rest.",
+            "Set true to also discard the user's uncommitted draft edits. " +
+              "Default false keeps drafts (they overlay the pulled tree).",
           ),
       }),
       execute: async ({ projectId, discardLocalChanges }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const result = await syncProjectFromRepo(project, userId ?? "agent", {
-            preserveLocalEdits: !(discardLocalChanges ?? false),
-          });
+          if (discardLocalChanges) {
+            await discardUserDrafts(project, actingUserId);
+          }
+          const branch = (await getCheckoutBranch(
+            project,
+            actingUserId,
+          )) as string;
+          const result = await syncProjectBranchFromRepo(
+            project,
+            branch,
+            actingUserId,
+          );
+          publishGitUpdated(projectId);
           return {
             success: true,
-            branch: project.repo?.branch,
+            branch,
             sha: result.sha,
             added: result.added,
             updated: result.updated,
             deleted: result.deleted,
             skippedLarge: result.skippedLarge,
-            preservedLocal: result.preservedLocal,
           };
         } catch (error) {
           return toolError(error, "Failed to sync from repo");
@@ -1261,9 +1552,10 @@ export const createDbtServerTools = (
           const project = await assertRepoProject(projectId);
           const result = await restoreDeletedFile(
             project,
+            actingUserId,
             path.trim(),
-            userId ?? "agent",
           );
+          publishFileUpdated(projectId, result.path, { draft: true });
           return { success: true, path: result.path };
         } catch (error) {
           return toolError(error, "Failed to restore file");
@@ -1281,10 +1573,13 @@ export const createDbtServerTools = (
       execute: async ({ projectId }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const status = await getGitStatus(project);
+          const status = await getGitStatus(project, actingUserId);
           return {
             success: true,
             branch: status.branch,
+            branchProtected: (project.protectedBranches ?? []).includes(
+              status.branch,
+            ),
             hasChanges: status.hasChanges,
             added: status.added,
             modified: status.modified,
@@ -1323,7 +1618,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, message, paths }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const status = await getGitStatus(project);
+          const status = await getGitStatus(project, actingUserId);
           if (!status.hasChanges) {
             return {
               success: false,
@@ -1339,7 +1634,7 @@ export const createDbtServerTools = (
               project,
               {
                 workspaceId,
-                userId: userId ?? "agent",
+                userId: actingUserId,
               },
               { paths },
             );
@@ -1358,10 +1653,12 @@ export const createDbtServerTools = (
           }
 
           const result = await commitAndPush(project, {
+            userId: actingUserId,
             message: commitMessage,
-            updatedBy: userId ?? "agent",
+            updatedBy: actingUserId,
             paths,
           });
+          if (result.committed) publishGitUpdated(projectId);
           return {
             success: result.committed,
             sha: result.sha,
@@ -1415,7 +1712,7 @@ export const createDbtServerTools = (
               project,
               {
                 workspaceId,
-                userId: userId ?? "agent",
+                userId: actingUserId,
               },
               { paths },
             );
@@ -1433,11 +1730,16 @@ export const createDbtServerTools = (
             };
           }
           const result = await commitToNewBranch(project, {
+            userId: actingUserId,
             branchName: name.trim(),
             message: commitMessage,
-            updatedBy: userId ?? "agent",
+            updatedBy: actingUserId,
             paths,
           });
+          if (result.committed) {
+            publishGitUpdated(projectId);
+            publishCheckoutUpdated(projectId, result.branch);
+          }
           return {
             success: result.committed,
             sha: result.sha,
@@ -1472,8 +1774,17 @@ export const createDbtServerTools = (
       execute: async ({ projectId, name }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const result = await createProjectBranch(project, name.trim());
-          return { success: true, branch: result.branch };
+          const result = await createProjectBranch(
+            project,
+            actingUserId,
+            name.trim(),
+          );
+          publishCheckoutUpdated(projectId, result.branch);
+          return {
+            success: true,
+            branch: result.branch,
+            fromBranch: result.fromBranch,
+          };
         } catch (error) {
           return toolError(error, "Failed to create branch");
         }
@@ -1482,13 +1793,12 @@ export const createDbtServerTools = (
 
     dbt_switch_branch: tool({
       description:
-        "Switch the project's tracked branch and pull its contents into the " +
-        "working tree. This OVERWRITES the working tree with the target branch. " +
-        "For safety it REFUSES if there are uncommitted changes (so a branch " +
-        "move can't silently destroy un-pushed work) — commit them first " +
-        "(dbt_commit_and_push or dbt_commit_to_branch), or pass " +
-        "discardLocalChanges:true to abandon them on purpose. Always run " +
-        "dbt_git_status before switching.",
+        "Switch the USER's checked-out branch and pull its committed contents " +
+        "into the base tree. Only the acting user's checkout moves — other " +
+        "collaborators keep their own branches. Uncommitted draft edits carry " +
+        "over as an overlay (like `git checkout` with a dirty tree), so " +
+        "nothing is lost; pass discardLocalChanges:true to drop the user's " +
+        "drafts instead (only after the user explicitly confirms).",
       inputSchema: z.object({
         projectId: projectIdField,
         branch: z.string().min(1).max(255).describe("Existing branch to track"),
@@ -1496,8 +1806,8 @@ export const createDbtServerTools = (
           .boolean()
           .optional()
           .describe(
-            "Set true to throw away uncommitted working-tree changes and force " +
-              "the switch. Only after the user explicitly confirms discarding.",
+            "Set true to throw away the user's uncommitted draft changes " +
+              "before switching. Only after the user explicitly confirms.",
           ),
       }),
       execute: async ({ projectId, branch, discardLocalChanges }) => {
@@ -1505,13 +1815,16 @@ export const createDbtServerTools = (
           const project = await assertRepoProject(projectId);
           const result = await switchProjectBranch(
             project,
+            actingUserId,
             branch.trim(),
-            userId ?? "agent",
+            actingUserId,
             { discardLocalChanges: discardLocalChanges ?? false },
           );
+          publishCheckoutUpdated(projectId, result.branch);
           return {
             success: true,
             branch: result.branch,
+            carriedChanges: result.carriedChanges,
             discardedChanges: result.discarded?.changes,
           };
         } catch (error) {
@@ -1529,11 +1842,15 @@ export const createDbtServerTools = (
       execute: async ({ projectId }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const branches = await listProjectBranches(project);
+          const [branches, current] = await Promise.all([
+            listProjectBranches(project),
+            getCheckoutBranch(project, actingUserId),
+          ]);
           return {
             success: true,
             branches,
-            current: project.repo?.branch,
+            current,
+            protectedBranches: project.protectedBranches ?? [],
           };
         } catch (error) {
           return toolError(error, "Failed to list branches");
@@ -1556,7 +1873,12 @@ export const createDbtServerTools = (
       execute: async ({ projectId, name }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const result = await deleteProjectBranch(project, name.trim());
+          const result = await deleteProjectBranch(
+            project,
+            actingUserId,
+            name.trim(),
+          );
+          publishGitUpdated(projectId);
           return { success: true, deleted: result.deleted };
         } catch (error) {
           return toolError(error, "Failed to delete branch");
@@ -1590,7 +1912,7 @@ export const createDbtServerTools = (
       execute: async ({ projectId, title, body, base }) => {
         try {
           const project = await assertRepoProject(projectId);
-          const result = await openProjectPullRequest(project, {
+          const result = await openProjectPullRequest(project, actingUserId, {
             title: title.trim(),
             body,
             base,
@@ -1635,20 +1957,31 @@ export const createDbtServerTools = (
             "Delete the PR's source branch after merge; defaults to true",
           ),
       }),
-      execute: async ({
-        projectId,
-        prNumber,
-        mergeMethod,
-        deleteBranch,
-      }) => {
+      execute: async ({ projectId, prNumber, mergeMethod, deleteBranch }) => {
         try {
           const project = await assertRepoProject(projectId);
+          // Merging is the only write path into protected branches — gate it
+          // on the admin/owner workspace role, mirroring the HTTP route RBAC.
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
+            return {
+              success: false,
+              error:
+                "Merging a pull request requires the admin or owner " +
+                "workspace role. Ask a workspace admin to merge it.",
+            };
+          }
           const result = await mergeProjectPullRequest(project, {
+            userId: actingUserId,
             prNumber,
             mergeMethod,
             deleteBranch,
-            updatedBy: userId ?? "agent",
+            updatedBy: actingUserId,
           });
+          publishGitUpdated(projectId);
+          publishCheckoutUpdated(projectId, result.branch);
           return {
             success: true,
             sha: result.sha,
@@ -1658,10 +1991,161 @@ export const createDbtServerTools = (
               : {}),
             branch: result.branch,
             workingTreeClean: result.workingTreeClean,
-            preservedLocal: result.preservedLocal,
           };
         } catch (error) {
           return toolError(error, "Failed to merge pull request");
+        }
+      },
+    }),
+
+    dbt_list_pull_requests: tool({
+      description:
+        "List the pull requests of the project's connected repository " +
+        "(defaults to open PRs; pass state to include closed/merged ones). " +
+        "Returns number, title, state, merged flag, head/base branches, and " +
+        "URL for each PR. Use to find a PR number before " +
+        "dbt_update_pull_request, dbt_close_pull_request, or " +
+        "dbt_merge_pull_request, or to report PR status to the user.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        state: z
+          .enum(["open", "closed", "all"])
+          .optional()
+          .describe('Which PRs to list; defaults to "open"'),
+      }),
+      execute: async ({ projectId, state }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          const pullRequests = await listProjectPullRequests(project, {
+            state,
+          });
+          return {
+            success: true,
+            // Bodies can be huge (up to 10k chars each) — truncate so a long
+            // PR list doesn't blow up the chat context.
+            pullRequests: pullRequests.map(pr => ({
+              ...pr,
+              body:
+                pr.body.length > 500 ? `${pr.body.slice(0, 500)}…` : pr.body,
+            })),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to list pull requests");
+        }
+      },
+    }),
+
+    dbt_update_pull_request: tool({
+      description:
+        "Update an open GitHub pull request's title, description, and/or base " +
+        "branch. Provide at least one field. Use when the user wants to " +
+        "retitle a PR, rewrite its description, or retarget it at a different " +
+        "base branch. Returns the updated PR summary.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        prNumber: z
+          .number()
+          .int()
+          .positive()
+          .describe("Pull request number (see dbt_list_pull_requests)"),
+        title: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe("New pull request title"),
+        body: z
+          .string()
+          .max(10_000)
+          .optional()
+          .describe("New pull request description (Markdown)"),
+        base: z
+          .string()
+          .min(1)
+          .max(255)
+          .optional()
+          .describe("New base branch to retarget the PR at"),
+      }),
+      execute: async ({ projectId, prNumber, title, body, base }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          // Editing a PR is repo-level administration (like merge/close) —
+          // gate on the admin/owner role, mirroring the HTTP route RBAC.
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
+            return {
+              success: false,
+              error:
+                "Updating a pull request requires the admin or owner " +
+                "workspace role. Ask a workspace admin to update it.",
+            };
+          }
+          const pr = await updateProjectPullRequest(project, {
+            prNumber,
+            title: title?.trim(),
+            body,
+            base,
+          });
+          return { success: true, pr };
+        } catch (error) {
+          return toolError(error, "Failed to update pull request");
+        }
+      },
+    }),
+
+    dbt_close_pull_request: tool({
+      description:
+        "Close a GitHub pull request WITHOUT merging it — use when the user " +
+        "wants to abandon or withdraw a PR. Optionally delete its source " +
+        "branch (defaults to false so the work is preserved; it refuses to " +
+        "delete the project default branch or any branch a user has checked " +
+        "out). To land a PR's changes instead, use dbt_merge_pull_request. " +
+        "ONLY call after the user confirms the PR number.",
+      inputSchema: z.object({
+        projectId: projectIdField,
+        prNumber: z
+          .number()
+          .int()
+          .positive()
+          .describe("Pull request number (see dbt_list_pull_requests)"),
+        deleteBranch: z
+          .boolean()
+          .optional()
+          .describe("Also delete the PR's source branch; defaults to false"),
+      }),
+      execute: async ({ projectId, prNumber, deleteBranch }) => {
+        try {
+          const project = await assertRepoProject(projectId);
+          // Closing a PR is repo-level administration (like merge) — gate on
+          // the admin/owner role, mirroring the HTTP route RBAC.
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
+            return {
+              success: false,
+              error:
+                "Closing a pull request requires the admin or owner " +
+                "workspace role. Ask a workspace admin to close it.",
+            };
+          }
+          const result = await closeProjectPullRequest(project, {
+            prNumber,
+            deleteBranch,
+          });
+          if (result.branchDeleted) publishGitUpdated(projectId);
+          return {
+            success: true,
+            pr: result.pr,
+            branchDeleted: result.branchDeleted,
+            ...(result.branchDeleteWarning
+              ? { branchDeleteWarning: result.branchDeleteWarning }
+              : {}),
+          };
+        } catch (error) {
+          return toolError(error, "Failed to close pull request");
         }
       },
     }),

@@ -14,6 +14,10 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Drawer,
   FormControl,
   IconButton,
@@ -33,12 +37,14 @@ import {
   ArrowLeft as BackIcon,
   ChevronRight as ChevronIcon,
   ExternalLink as ExternalLinkIcon,
+  Lock as LockIcon,
   Pencil as EditIcon,
   Plus as PlusIcon,
   Settings as SettingsIcon,
   Trash2 as TrashIcon,
   X as CloseIcon,
 } from "lucide-react";
+import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
   type DbtEnvironment,
@@ -176,8 +182,14 @@ export default function DbtProjectSettingsDrawer({
   connections,
   onClose,
 }: DbtProjectSettingsDrawerProps) {
+  const { user } = useAuth();
   const projects = useDbtStore(s => s.projects);
   const updateProject = useDbtStore(s => s.updateProject);
+  const listBranches = useDbtStore(s => s.listBranches);
+  const ensurePersonalEnvironment = useDbtStore(
+    s => s.ensurePersonalEnvironment,
+  );
+  const [creatingPersonalEnv, setCreatingPersonalEnv] = useState(false);
 
   const project = useMemo(
     () => projects.find(p => p._id === projectId) ?? null,
@@ -193,11 +205,32 @@ export default function DbtProjectSettingsDrawer({
   const [editDbtVersion, setEditDbtVersion] = useState("");
   const [editDefaultEnv, setEditDefaultEnv] = useState("");
   const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
+  // Branch protection (repo-bound projects): edits apply immediately (each
+  // add/remove PATCHes the project) — independent of the drawer's Edit mode.
+  const [newProtectedBranch, setNewProtectedBranch] = useState("");
+  const [savingProtection, setSavingProtection] = useState(false);
+  // Tracked branch (what deploy/job runs build): applies immediately, like
+  // branch protection. Remote branches populate the picker.
+  const [remoteBranches, setRemoteBranches] = useState<string[]>([]);
+  const [savingTrackedBranch, setSavingTrackedBranch] = useState(false);
+  const [trackedBranchError, setTrackedBranchError] = useState<string | null>(
+    null,
+  );
   // Per-environment variable rows, parallel to editEnvs (same index). Kept as
   // an ordered array (not a record) so typing keys never reorders or collides.
   const [editVarRows, setEditVarRows] = useState<
     Array<Array<{ key: string; value: string }>>
   >([]);
+
+  const [envModalOpen, setEnvModalOpen] = useState(false);
+  const [envModalDraft, setEnvModalDraft] = useState<DbtEnvironment | null>(
+    null,
+  );
+  const [envModalVarRows, setEnvModalVarRows] = useState<
+    Array<{ key: string; value: string }>
+  >([]);
+  const [envModalSaving, setEnvModalSaving] = useState(false);
+  const [envModalError, setEnvModalError] = useState<string | null>(null);
 
   const resetFromProject = useCallback((p: DbtProjectItem) => {
     setEditName(p.name);
@@ -241,13 +274,41 @@ export default function DbtProjectSettingsDrawer({
   }, [project, resetFromProject]);
 
   const isRepoBound = project?.repo != null;
-  const selectedEnv = useMemo(
-    () =>
-      selectedEnvName
-        ? (project?.environments.find(e => e.name === selectedEnvName) ?? null)
-        : null,
-    [project, selectedEnvName],
+
+  useEffect(() => {
+    if (!open || !projectId || !isRepoBound) return;
+    setTrackedBranchError(null);
+    void listBranches(workspaceId, projectId).then(result => {
+      if (result) setRemoteBranches(result.branches);
+    });
+  }, [open, projectId, workspaceId, isRepoBound, listBranches]);
+
+  const handleTrackedBranchChange = useCallback(
+    async (branch: string) => {
+      if (!project || !projectId || branch === project.repo?.branch) return;
+      setSavingTrackedBranch(true);
+      setTrackedBranchError(null);
+      const updated = await updateProject(workspaceId, projectId, {
+        repoBranch: branch,
+      });
+      if (!updated) {
+        setTrackedBranchError(
+          useDbtStore.getState().error.projects ?? "Failed to update branch",
+        );
+      }
+      setSavingTrackedBranch(false);
+    },
+    [project, projectId, workspaceId, updateProject],
   );
+
+  const selectedEnv = useMemo(() => {
+    if (!selectedEnvName) return null;
+    if (isEditing) {
+      const fromEdit = editEnvs.find(e => e.name === selectedEnvName);
+      if (fromEdit) return fromEdit;
+    }
+    return project?.environments.find(e => e.name === selectedEnvName) ?? null;
+  }, [project, selectedEnvName, isEditing, editEnvs]);
   const selectedEnvIndex = useMemo(
     () =>
       selectedEnvName
@@ -265,16 +326,119 @@ export default function DbtProjectSettingsDrawer({
     [],
   );
 
-  const handleAddEnvironment = useCallback(() => {
-    const draft = defaultNewEnvironment(editEnvs, connections);
-    setEditEnvs(prev => [...prev, draft]);
-    setEditVarRows(prev => [...prev, []]);
-    setSelectedEnvName(draft.name);
-    setIsEditing(true);
-    if (!editDefaultEnv && editEnvs.length === 0) {
-      setEditDefaultEnv(draft.name);
+  const closeEnvModal = useCallback(() => {
+    if (envModalSaving) return;
+    setEnvModalOpen(false);
+    setEnvModalDraft(null);
+    setEnvModalVarRows([]);
+    setEnvModalError(null);
+  }, [envModalSaving]);
+
+  const openCreateEnvModal = useCallback(() => {
+    const existing = isEditing ? editEnvs : (project?.environments ?? []);
+    const draft = defaultNewEnvironment(existing, connections);
+    setEnvModalDraft(draft);
+    setEnvModalVarRows([]);
+    setEnvModalError(null);
+    setEnvModalOpen(true);
+  }, [isEditing, editEnvs, project?.environments, connections]);
+
+  const validateEnvironmentDraft = useCallback(
+    (
+      draft: DbtEnvironment,
+      varRows: Array<{ key: string; value: string }>,
+      existingNames: string[],
+    ): { env: DbtEnvironment; error: string | null } => {
+      const name = draft.name.trim();
+      if (!name) return { env: draft, error: "Environment name is required." };
+      if (existingNames.some(n => n.trim() === name)) {
+        return { env: draft, error: "Environment names must be unique." };
+      }
+      if (!draft.connectionId) {
+        return { env: draft, error: "Connection is required." };
+      }
+      if (!draft.targetSchema.trim()) {
+        return { env: draft, error: "Target schema is required." };
+      }
+      if (connections.length === 0) {
+        return {
+          env: draft,
+          error: "Add a database connection before saving environments.",
+        };
+      }
+      const vars: Record<string, string> = {};
+      for (const row of varRows) {
+        const key = row.key.trim();
+        if (key) vars[key] = row.value;
+      }
+      return {
+        env: {
+          ...draft,
+          name,
+          targetSchema: draft.targetSchema.trim(),
+          threads: Number(draft.threads) || 1,
+          vars,
+        },
+        error: null,
+      };
+    },
+    [connections.length],
+  );
+
+  const handleEnvModalSave = useCallback(async () => {
+    if (!envModalDraft || !workspaceId || !projectId) return;
+    const existingNames = isEditing
+      ? editEnvs.map(e => e.name)
+      : (project?.environments.map(e => e.name) ?? []);
+    const { env: normalized, error } = validateEnvironmentDraft(
+      envModalDraft,
+      envModalVarRows,
+      existingNames,
+    );
+    if (error) {
+      setEnvModalError(error);
+      return;
     }
-  }, [editEnvs, connections, editDefaultEnv]);
+
+    if (isEditing) {
+      setEditEnvs(prev => [...prev, normalized]);
+      setEditVarRows(prev => [...prev, envModalVarRows]);
+      if (!editDefaultEnv && editEnvs.length === 0) {
+        setEditDefaultEnv(normalized.name);
+      }
+      closeEnvModal();
+      return;
+    }
+
+    if (!project) return;
+    setEnvModalSaving(true);
+    setEnvModalError(null);
+    const updated = await updateProject(workspaceId, projectId, {
+      environments: [...project.environments, normalized],
+    });
+    setEnvModalSaving(false);
+    if (updated) {
+      resetFromProject(updated);
+      closeEnvModal();
+    } else {
+      setEnvModalError(
+        "Failed to save environment. Check your connection settings.",
+      );
+    }
+  }, [
+    envModalDraft,
+    envModalVarRows,
+    workspaceId,
+    projectId,
+    isEditing,
+    editEnvs,
+    editDefaultEnv,
+    validateEnvironmentDraft,
+    closeEnvModal,
+    project,
+    updateProject,
+    resetFromProject,
+  ]);
 
   const handleRemoveEnvironment = useCallback(
     (index: number) => {
@@ -407,6 +571,31 @@ export default function DbtProjectSettingsDrawer({
     selectedEnvName,
   ]);
 
+  const setProtectedBranches = useCallback(
+    async (branches: string[]) => {
+      if (!workspaceId || !projectId) return;
+      setSavingProtection(true);
+      await updateProject(workspaceId, projectId, {
+        protectedBranches: branches,
+      });
+      setSavingProtection(false);
+    },
+    [workspaceId, projectId, updateProject],
+  );
+
+  const handleAddProtectedBranch = useCallback(() => {
+    if (!project) return;
+    const branch = newProtectedBranch.trim();
+    if (!branch) return;
+    const current = project.protectedBranches ?? [];
+    if (current.includes(branch)) {
+      setNewProtectedBranch("");
+      return;
+    }
+    setNewProtectedBranch("");
+    void setProtectedBranches([...current, branch]);
+  }, [project, newProtectedBranch, setProtectedBranches]);
+
   const devConnectionName = project
     ? connectionLabel(
         project.environments.find(e => e.name === project.defaultEnvironment)
@@ -431,7 +620,7 @@ export default function DbtProjectSettingsDrawer({
     if (!env) return null;
     return (
       <Box
-        key={`${index}-${env.name}`}
+        key={index}
         sx={{
           mb: compact ? 0 : 2,
           p: compact ? 0 : 1.5,
@@ -761,7 +950,7 @@ export default function DbtProjectSettingsDrawer({
                 <Button
                   size="small"
                   startIcon={<PlusIcon size={14} />}
-                  onClick={handleAddEnvironment}
+                  onClick={openCreateEnvModal}
                 >
                   Add
                 </Button>
@@ -810,16 +999,33 @@ export default function DbtProjectSettingsDrawer({
             <SettingsSection
               title="Environments"
               action={
-                <Button
-                  size="small"
-                  startIcon={<PlusIcon size={14} />}
-                  onClick={() => {
-                    setIsEditing(true);
-                    handleAddEnvironment();
-                  }}
-                >
-                  Add environment
-                </Button>
+                <Box sx={{ display: "flex", gap: 0.5 }}>
+                  {!project.environments.some(
+                    env => env.ownerUserId && env.ownerUserId === user?.id,
+                  ) && (
+                    <Button
+                      size="small"
+                      disabled={creatingPersonalEnv}
+                      onClick={() => {
+                        if (!projectId) return;
+                        setCreatingPersonalEnv(true);
+                        void ensurePersonalEnvironment(
+                          workspaceId,
+                          projectId,
+                        ).finally(() => setCreatingPersonalEnv(false));
+                      }}
+                    >
+                      {creatingPersonalEnv ? "Creating…" : "My dev environment"}
+                    </Button>
+                  )}
+                  <Button
+                    size="small"
+                    startIcon={<PlusIcon size={14} />}
+                    onClick={openCreateEnvModal}
+                  >
+                    Add environment
+                  </Button>
+                </Box>
               }
             >
               <Table size="small">
@@ -855,11 +1061,25 @@ export default function DbtProjectSettingsDrawer({
                               sx={{ height: 18, fontSize: "0.6rem" }}
                             />
                           )}
-                          <Chip
-                            size="small"
-                            label={envBadge(env.name, project)}
-                            sx={{ height: 18, fontSize: "0.6rem" }}
-                          />
+                          {env.ownerUserId ? (
+                            <Chip
+                              size="small"
+                              color="info"
+                              variant="outlined"
+                              label={
+                                env.ownerUserId === user?.id
+                                  ? "personal"
+                                  : "personal · other user"
+                              }
+                              sx={{ height: 18, fontSize: "0.6rem" }}
+                            />
+                          ) : (
+                            <Chip
+                              size="small"
+                              label={envBadge(env.name, project)}
+                              sx={{ height: 18, fontSize: "0.6rem" }}
+                            />
+                          )}
                         </Box>
                       </TableCell>
                       <TableCell sx={{ fontSize: "0.8rem" }}>
@@ -887,7 +1107,51 @@ export default function DbtProjectSettingsDrawer({
 
             {isRepoBound && project.repo && (
               <SettingsSection title="Git">
-                <ReadOnlyField label="Branch" value={project.repo.branch} />
+                <Box sx={{ mb: 1.5 }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                  >
+                    Branch
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mb: 0.5 }}
+                  >
+                    Deploy jobs, CI, and syncs build this branch. Your editor
+                    checkout is independent (Version control panel).
+                  </Typography>
+                  <Select
+                    size="small"
+                    value={project.repo.branch}
+                    disabled={savingTrackedBranch}
+                    onChange={e =>
+                      void handleTrackedBranchChange(e.target.value)
+                    }
+                    sx={{ minWidth: 260, maxWidth: "100%" }}
+                  >
+                    {[...new Set([project.repo.branch, ...remoteBranches])].map(
+                      branch => (
+                        <MenuItem key={branch} value={branch}>
+                          {branch}
+                        </MenuItem>
+                      ),
+                    )}
+                  </Select>
+                  {trackedBranchError && (
+                    <Typography
+                      variant="caption"
+                      color="error"
+                      display="block"
+                      sx={{ mt: 0.5 }}
+                    >
+                      {trackedBranchError}
+                    </Typography>
+                  )}
+                </Box>
                 <ReadOnlyField
                   label="Last synced"
                   value={
@@ -916,6 +1180,76 @@ export default function DbtProjectSettingsDrawer({
                   Open on GitHub
                   <ExternalLinkIcon size={14} />
                 </Link>
+
+                <Box sx={{ mt: 2 }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ fontWeight: 600 }}
+                  >
+                    Protected branches
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mb: 1 }}
+                  >
+                    Direct commits to these branches are blocked in Mako —
+                    changes go through a new branch and a pull request. Enable
+                    matching branch protection on GitHub too for full coverage.
+                  </Typography>
+                  <Box
+                    sx={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 0.5,
+                      mb: 1,
+                    }}
+                  >
+                    {(project.protectedBranches ?? []).length === 0 && (
+                      <Typography variant="body2" color="text.secondary">
+                        No protected branches.
+                      </Typography>
+                    )}
+                    {(project.protectedBranches ?? []).map(branch => (
+                      <Chip
+                        key={branch}
+                        size="small"
+                        icon={<LockIcon size={12} />}
+                        label={branch}
+                        disabled={savingProtection}
+                        onDelete={() =>
+                          void setProtectedBranches(
+                            (project.protectedBranches ?? []).filter(
+                              b => b !== branch,
+                            ),
+                          )
+                        }
+                      />
+                    ))}
+                  </Box>
+                  <Box sx={{ display: "flex", gap: 1 }}>
+                    <TextField
+                      size="small"
+                      placeholder={project.repo.branch}
+                      value={newProtectedBranch}
+                      onChange={e => setNewProtectedBranch(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") handleAddProtectedBranch();
+                      }}
+                      sx={{ flex: 1 }}
+                    />
+                    <Button
+                      size="small"
+                      disabled={savingProtection || !newProtectedBranch.trim()}
+                      onClick={handleAddProtectedBranch}
+                    >
+                      Protect
+                    </Button>
+                  </Box>
+                </Box>
               </SettingsSection>
             )}
           </>
@@ -927,6 +1261,167 @@ export default function DbtProjectSettingsDrawer({
           </Typography>
         )}
       </Box>
+
+      <Dialog
+        open={envModalOpen}
+        onClose={closeEnvModal}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Add environment</DialogTitle>
+        <DialogContent>
+          {envModalDraft && (
+            <Box sx={{ pt: 0.5 }}>
+              <TextField
+                autoFocus
+                fullWidth
+                size="small"
+                label="Environment name"
+                value={envModalDraft.name}
+                onChange={e =>
+                  setEnvModalDraft(prev =>
+                    prev ? { ...prev, name: e.target.value } : prev,
+                  )
+                }
+                sx={{ mb: 1.5, mt: 0.5 }}
+              />
+              <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                <InputLabel id="dbt-env-modal-conn">Connection</InputLabel>
+                <Select
+                  labelId="dbt-env-modal-conn"
+                  label="Connection"
+                  value={envModalDraft.connectionId}
+                  onChange={e =>
+                    setEnvModalDraft(prev =>
+                      prev ? { ...prev, connectionId: e.target.value } : prev,
+                    )
+                  }
+                >
+                  {connections.map(conn => (
+                    <MenuItem key={conn.id} value={conn.id}>
+                      {conn.name} ({conn.type})
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <TextField
+                fullWidth
+                size="small"
+                label="Target schema"
+                value={envModalDraft.targetSchema}
+                onChange={e =>
+                  setEnvModalDraft(prev =>
+                    prev ? { ...prev, targetSchema: e.target.value } : prev,
+                  )
+                }
+                sx={{ mb: 1.5 }}
+              />
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                label="Threads"
+                value={envModalDraft.threads}
+                onChange={e =>
+                  setEnvModalDraft(prev =>
+                    prev ? { ...prev, threads: Number(e.target.value) } : prev,
+                  )
+                }
+                inputProps={{ min: 1, max: 32 }}
+                sx={{ mb: 1.5 }}
+              />
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mb: 0.5, fontWeight: 600 }}
+              >
+                Variables
+              </Typography>
+              {envModalVarRows.map((row, rowIndex) => (
+                <Box
+                  key={rowIndex}
+                  sx={{ display: "flex", gap: 1, mb: 1, alignItems: "center" }}
+                >
+                  <TextField
+                    size="small"
+                    label="Key"
+                    value={row.key}
+                    onChange={e =>
+                      setEnvModalVarRows(prev =>
+                        prev.map((r, i) =>
+                          i === rowIndex ? { ...r, key: e.target.value } : r,
+                        ),
+                      )
+                    }
+                    sx={{ flex: 1 }}
+                  />
+                  <TextField
+                    size="small"
+                    label="Value"
+                    value={row.value}
+                    onChange={e =>
+                      setEnvModalVarRows(prev =>
+                        prev.map((r, i) =>
+                          i === rowIndex ? { ...r, value: e.target.value } : r,
+                        ),
+                      )
+                    }
+                    sx={{ flex: 1 }}
+                  />
+                  <IconButton
+                    size="small"
+                    aria-label="Remove variable"
+                    onClick={() =>
+                      setEnvModalVarRows(prev =>
+                        prev.filter((_, i) => i !== rowIndex),
+                      )
+                    }
+                  >
+                    <TrashIcon size={14} />
+                  </IconButton>
+                </Box>
+              ))}
+              <Button
+                size="small"
+                startIcon={<PlusIcon size={14} />}
+                onClick={() =>
+                  setEnvModalVarRows(prev => [...prev, { key: "", value: "" }])
+                }
+              >
+                Add variable
+              </Button>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.5 }}
+              >
+                Passed to every dbt command as <code>--vars</code>; read in
+                models via <code>{"{{ var('key') }}"}</code>.
+              </Typography>
+            </Box>
+          )}
+          {envModalError && (
+            <Typography
+              variant="caption"
+              color="error"
+              sx={{ mt: 1, display: "block" }}
+            >
+              {envModalError}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeEnvModal} disabled={envModalSaving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void handleEnvModalSave()}
+            disabled={envModalSaving || !envModalDraft?.name.trim()}
+          >
+            {envModalSaving ? "Saving…" : "Add environment"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Box
         sx={{

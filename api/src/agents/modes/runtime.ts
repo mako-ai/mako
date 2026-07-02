@@ -67,13 +67,24 @@ export function deriveModeState(
   const enabledModes = new Set<ExpertiseModeId>([defaultMode]);
   let planSubmitted = false;
   let planApproved = false;
+  let lastPlanDecision: unknown;
 
   for (const message of messages) {
-    // A new user turn starts a fresh plan cycle: any previous submission or
-    // approval is stale for the new request. Enabled expertise modes are
-    // intentionally NOT reset (they accumulate across the conversation).
+    // A new user turn normally starts a fresh plan cycle: any previous
+    // submission or approval is stale for the new request. Exception
+    // (conversational plan iteration, Cursor-style): when the latest plan was
+    // resolved with request_changes, the following user message IS the
+    // feedback — the gate stays engaged so the model revises and re-submits
+    // instead of mutating. Enabled expertise modes are intentionally NOT
+    // reset (they accumulate across the conversation).
     if (message.role === "user") {
-      planSubmitted = false;
+      const isPlanIterationFeedback =
+        planSubmitted &&
+        !planApproved &&
+        lastPlanDecision === "request_changes";
+      if (!isPlanIterationFeedback) {
+        planSubmitted = false;
+      }
       planApproved = false;
     }
 
@@ -90,6 +101,7 @@ export function deriveModeState(
         planSubmitted = true;
         const decision = (part.output as { decision?: unknown } | undefined)
           ?.decision;
+        lastPlanDecision = decision;
         // The latest decision in this turn wins; only an explicit approval
         // unlocks writes. A pending submission (no output yet) stays gated.
         planApproved = decision === "approve";

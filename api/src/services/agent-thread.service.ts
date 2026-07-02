@@ -5,7 +5,10 @@ import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
 import { isModelReadyFilePart } from "../utils/message-sanitizer";
-import { dedupeAssistantReasoning } from "../agent-lib/context/compaction";
+import {
+  dedupeAssistantReasoning,
+  dedupeAssistantStreamArtifacts,
+} from "../agent-lib/context/compaction";
 import { externalizeChatAttachments } from "./chat-attachment.service";
 
 const logger = loggers.agent();
@@ -721,7 +724,21 @@ export const saveChat = async (
     });
   }
 
-  const storedMessages = reasoningDedupe.messages.map(
+  // Same lifecycle, different part kinds: resumable-stream replays append
+  // duplicate text/step-start parts (they have no id to merge on, unlike tool
+  // and reasoning parts). Strip byte-identical repeats before persisting so a
+  // corrupted in-flight turn doesn't poison the chat for every later load.
+  const artifactDedupe = dedupeAssistantStreamArtifacts(
+    reasoningDedupe.messages,
+  );
+  if (artifactDedupe.changed) {
+    logger.warn("Removed replayed text/step-start parts before persistence", {
+      chatId,
+      removedCount: artifactDedupe.removedCount,
+    });
+  }
+
+  const storedMessages = artifactDedupe.messages.map(
     convertUIMessageToStoredFormat,
   );
 

@@ -142,7 +142,8 @@ describe("file buffer — write / persist / read", () => {
     expect(ok).toBe(true);
     expect(api.put).toHaveBeenCalledWith(
       `/workspaces/${WS}/dbt/projects/p1/files/models/a.sql`,
-      { content: "select 1" },
+      // clientId (per-tab echo suppression) rides along with every save.
+      { content: "select 1", clientId: expect.any(String) },
     );
     expect(useDbtStore.getState().filesByProject.p1["models/a.sql"].dirty).toBe(
       false,
@@ -299,7 +300,12 @@ describe("project update + file list/delete/rename", () => {
     );
     expect(api.post).toHaveBeenCalledWith(
       `/workspaces/${WS}/dbt/projects/p1/files/rename`,
-      { from: "models/a.sql", to: "models/b.sql" },
+      // clientId (per-tab echo suppression) rides along with every rename.
+      {
+        from: "models/a.sql",
+        to: "models/b.sql",
+        clientId: expect.any(String),
+      },
     );
   });
 });
@@ -364,7 +370,10 @@ describe("runs lifecycle", () => {
       runs: [{ _id: "r1", status: "success" }],
     });
     await useDbtStore.getState().fetchRuns(WS, "p1", "j1");
-    expect(useDbtStore.getState().runsByProject.p1).toHaveLength(1);
+    // Job-scoped fetches land in runsByJob (runsByProject is the unfiltered
+    // project-wide list — the two views never clobber each other).
+    expect(useDbtStore.getState().runsByJob.j1).toHaveLength(1);
+    expect(useDbtStore.getState().runsByProject.p1).toBeUndefined();
     expect(api.get).toHaveBeenCalledWith(
       `/workspaces/${WS}/dbt/projects/p1/runs`,
       { jobId: "j1", limit: "100" },
@@ -432,13 +441,88 @@ describe("git / github actions", () => {
     expect(useDbtStore.getState().gitStatusByProject.p1.branch).toBe("main");
   });
 
-  it("switchBranch merges the project and drops cached files", async () => {
+  it("switchBranch records the checkout branch and drops cached files", async () => {
     api.get.mockResolvedValue({ success: true, projects: [project("p1")] });
     await useDbtStore.getState().fetchProjects(WS);
     useDbtStore.getState().writeFile("p1", "models/a.sql", "stale");
-    api.post.mockResolvedValue({ success: true, project: project("p1") });
+    api.post.mockResolvedValue({
+      success: true,
+      branch: "feature",
+      project: project("p1"),
+    });
     await useDbtStore.getState().switchBranch(WS, "p1", "feature");
     expect(useDbtStore.getState().filesByProject.p1).toBeUndefined();
+    expect(useDbtStore.getState().checkoutBranchByProject.p1).toBe("feature");
+  });
+
+  it("reconcileRemoteGitState refetches status only for loaded repo projects", async () => {
+    api.get.mockResolvedValueOnce({
+      success: true,
+      projects: [
+        { ...project("p1"), repo: { owner: "o", repo: "r", branch: "main" } },
+        { ...project("p2"), repo: { owner: "o", repo: "r2", branch: "main" } },
+        project("p3"), // blank project — no git surface
+      ],
+    });
+    await useDbtStore.getState().fetchProjects(WS);
+    // Only p1 has pulled git state in this window.
+    api.get.mockResolvedValueOnce({
+      success: true,
+      status: { branch: "main", changes: [], hasChanges: false },
+    });
+    await useDbtStore.getState().fetchGitStatus(WS, "p1");
+    api.get.mockClear();
+
+    api.get.mockResolvedValue({
+      success: true,
+      status: {
+        branch: "main",
+        changes: [{ path: "models/a.sql", status: "modified" }],
+        hasChanges: true,
+      },
+    });
+    await useDbtStore.getState().reconcileRemoteGitState(WS);
+    expect(api.get).toHaveBeenCalledTimes(1);
+    expect(api.get).toHaveBeenCalledWith(
+      `/workspaces/${WS}/dbt/projects/p1/git/status`,
+    );
+    expect(useDbtStore.getState().gitStatusByProject.p1.changes).toHaveLength(
+      1,
+    );
+  });
+
+  it("reconcileRemoteGitState reloads the tree when the branch moved", async () => {
+    api.get.mockResolvedValueOnce({
+      success: true,
+      projects: [
+        { ...project("p1"), repo: { owner: "o", repo: "r", branch: "main" } },
+      ],
+    });
+    await useDbtStore.getState().fetchProjects(WS);
+    api.get.mockResolvedValueOnce({
+      success: true,
+      status: { branch: "main", changes: [], hasChanges: false },
+    });
+    await useDbtStore.getState().fetchGitStatus(WS, "p1");
+    useDbtStore.getState().writeFile("p1", "models/a.sql", "old branch");
+    api.get.mockClear();
+
+    // The server says the checkout now points at "feature" (missed poke).
+    api.get.mockImplementation(async (url: string) => {
+      if (url.endsWith("/git/status")) {
+        return {
+          success: true,
+          status: { branch: "feature", changes: [], hasChanges: false },
+        };
+      }
+      return { success: true, files: [{ path: "models/b.sql" }] };
+    });
+    await useDbtStore.getState().reconcileRemoteGitState(WS);
+    const s = useDbtStore.getState();
+    expect(s.checkoutBranchByProject.p1).toBe("feature");
+    // Stale old-branch buffers were dropped and the tree reloaded.
+    expect(s.filesByProject.p1).toBeUndefined();
+    expect(s.filePathsByProject.p1).toEqual(["models/b.sql"]);
   });
 
   it("openPullRequest returns the PR number + url", async () => {

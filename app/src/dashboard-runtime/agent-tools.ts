@@ -103,7 +103,17 @@ const EDIT_MODE_EXEMPT_TOOLS = new Set([
 export async function executeDashboardAgentTool(
   toolName: string,
   input: Record<string, unknown>,
-  options?: { executionId?: string; signal?: AbortSignal },
+  options?: {
+    executionId?: string;
+    signal?: AbortSignal;
+    /**
+     * The agent toolCallId driving this execution. Forwarded to creation
+     * commands as an idempotency key: multiple windows attached to the same
+     * chat stream each dispatch the same call, and the server (or the
+     * dashboard doc) dedupes by this id so the side effect lands once.
+     */
+    toolCallId?: string;
+  },
 ): Promise<Record<string, unknown> | null> {
   if (!DASHBOARD_EXECUTOR_TOOL_NAMES.has(toolName as AgentToolName)) {
     return null;
@@ -269,6 +279,12 @@ export async function executeDashboardAgentTool(
             typeof input.description === "string"
               ? input.description
               : undefined,
+          // Server-side create idempotency: another window attached to the
+          // same chat stream dispatching this exact tool call gets the same
+          // dashboard back instead of creating a duplicate.
+          ...(options?.toolCallId
+            ? { idempotencyKey: options.toolCallId }
+            : {}),
         } as any,
         { signal },
       );
@@ -425,6 +441,7 @@ export async function executeDashboardAgentTool(
               : undefined,
           dashboardId: ctx.dashboardId,
           signal,
+          toolCallId: options?.toolCallId,
         });
         throwIfAborted(signal);
         const snapshot = getDashboardStateSnapshot(ctx.dashboardId);
@@ -499,6 +516,7 @@ export async function executeDashboardAgentTool(
               : undefined,
         },
         signal,
+        toolCallId: options?.toolCallId,
       });
       throwIfAborted(signal);
       const snapshot = getDashboardStateSnapshot(ctx.dashboardId);

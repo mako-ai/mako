@@ -41,6 +41,9 @@ vi.mock("../services/workspace.service", () => ({
 
 // Heavy collaborators — stubbed so imports resolve and side-effects are inert.
 vi.mock("../dbt/dbt-project.service", () => ({
+  // No prod manifest in the fixture: routes fall back to running without
+  // --defer, which is the behavior these specs exercise.
+  loadDbtDeferState: vi.fn(async () => undefined),
   // Mirrors the real runAdhocDbtCommand result shape (routes read `.success`).
   runAdhocDbtCommand: vi.fn(async () => ({
     success: true,
@@ -77,6 +80,7 @@ vi.mock("../integrations/github/config", () => ({
 }));
 vi.mock("../integrations/github/github-api", () => ({
   fileExistsAtRef: vi.fn(),
+  getBranchHeadSha: vi.fn(),
   getRepoInfo: vi.fn(),
   listBranches: vi.fn(),
   listDbtProjectSubdirectories: vi.fn(),
@@ -85,16 +89,23 @@ vi.mock("../integrations/github/github-api", () => ({
 vi.mock("../dbt/dbt-github-sync.service", () => ({
   fetchRepoDbtFiles: vi.fn(),
   repoFilesToInserts: vi.fn(),
-  syncProjectFromRepo: vi.fn(),
+  syncProjectBranchFromRepo: vi.fn(),
 }));
 vi.mock("../dbt/dbt-github-git.service", () => ({
   commitAndPush: vi.fn(),
+  commitToNewBranch: vi.fn(),
   createProjectBranch: vi.fn(),
+  deleteProjectBranch: vi.fn(),
   getGitStatus: vi.fn(),
   getProjectFileDiff: vi.fn(),
   listProjectBranches: vi.fn(),
+  mergeProjectPullRequest: vi.fn(),
   openProjectPullRequest: vi.fn(),
+  ProtectedBranchError: class ProtectedBranchError extends Error {},
   switchProjectBranch: vi.fn(),
+}));
+vi.mock("../services/realtime.service", () => ({
+  publishRealtimeEvent: vi.fn(),
 }));
 vi.mock("../services/dashboard-artifact-store.service", () => ({
   getDashboardArtifactStore: vi.fn(() => ({})),
@@ -116,10 +127,18 @@ import {
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
+import { getBranchHeadSha } from "../integrations/github/github-api";
+import { syncProjectBranchFromRepo } from "../dbt/dbt-github-sync.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 
+const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
 const adhocMock = runAdhocDbtCommand as unknown as ReturnType<typeof vi.fn>;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
+const branchHeadMock = getBranchHeadSha as unknown as ReturnType<typeof vi.fn>;
+const syncBranchMock = syncProjectBranchFromRepo as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -178,6 +197,8 @@ beforeEach(async () => {
   await Promise.all([
     mongoose.connection.collection("dbt_projects").deleteMany({}),
     mongoose.connection.collection("dbt_files").deleteMany({}),
+    mongoose.connection.collection("dbt_file_drafts").deleteMany({}),
+    mongoose.connection.collection("dbt_checkouts").deleteMany({}),
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
     mongoose.connection.collection("dbt_runs").deleteMany({}),
     mongoose.connection.collection("databaseconnections").deleteMany({}),
@@ -258,6 +279,76 @@ describe("project CRUD", () => {
     ).toHaveLength(0);
   });
 
+  it("changes the tracked branch after verifying it exists on the remote", async () => {
+    const projectId = await createProjectAsOwner();
+    await mongoose.connection.collection("dbt_projects").updateOne(
+      { _id: new Types.ObjectId(projectId) },
+      {
+        $set: {
+          repo: {
+            provider: "github",
+            owner: "acme",
+            repo: "analytics",
+            branch: "fix/stale-feature",
+            installationId: 1,
+          },
+        },
+      },
+    );
+    branchHeadMock.mockResolvedValueOnce("sha-main");
+
+    const res = await req("PATCH", `/projects/${projectId}`, {
+      repoBranch: "main",
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).project.repo.branch).toBe("main");
+    // The new tracked branch's base tree is materialized right away.
+    expect(syncBranchMock).toHaveBeenCalledTimes(1);
+    const [projArg, branchArg, userArg] = syncBranchMock.mock.calls[0] as [
+      { _id: Types.ObjectId },
+      string,
+      string,
+    ];
+    expect(projArg._id.toString()).toBe(projectId);
+    expect(branchArg).toBe("main");
+    expect(userArg).toBe("u1");
+  });
+
+  it("rejects a tracked branch that does not exist on the remote", async () => {
+    const projectId = await createProjectAsOwner();
+    await mongoose.connection.collection("dbt_projects").updateOne(
+      { _id: new Types.ObjectId(projectId) },
+      {
+        $set: {
+          repo: {
+            provider: "github",
+            owner: "acme",
+            repo: "analytics",
+            branch: "main",
+            installationId: 1,
+          },
+        },
+      },
+    );
+    branchHeadMock.mockRejectedValueOnce(new Error("GitHub 404"));
+
+    const res = await req("PATCH", `/projects/${projectId}`, {
+      repoBranch: "typo/branch",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not found/);
+    expect(syncBranchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects repoBranch on a project without a repo binding", async () => {
+    const projectId = await createProjectAsOwner();
+    const res = await req("PATCH", `/projects/${projectId}`, {
+      repoBranch: "main",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/connected repository/);
+  });
+
   it("rejects an environment bound to a non-dbt-compatible connection", async () => {
     await mongoose.connection
       .collection("databaseconnections")
@@ -314,6 +405,39 @@ describe("file CRUD", () => {
       { content: "x".repeat(1_000_001) },
     );
     expect(res.status).toBe(400);
+  });
+
+  it("rename pokes both paths over the realtime channel", async () => {
+    const projectId = await createProjectAsOwner();
+    await req("PUT", `/projects/${projectId}/files/models/old.sql`, {
+      content: "select 1",
+    });
+    publishMock.mockClear();
+
+    const res = await req("POST", `/projects/${projectId}/files/rename`, {
+      from: "models/old.sql",
+      to: "models/new.sql",
+      clientId: "tab-1",
+    });
+    expect(res.status).toBe(200);
+
+    // Other windows express the rename as delete(from) + add(to).
+    const events = publishMock.mock.calls.map(call => call[1]);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "dbt.file.updated",
+        path: "models/old.sql",
+        deleted: true,
+        clientId: "tab-1",
+        origin: "save",
+      }),
+      expect.objectContaining({
+        type: "dbt.file.updated",
+        path: "models/new.sql",
+        clientId: "tab-1",
+        origin: "save",
+      }),
+    ]);
   });
 });
 

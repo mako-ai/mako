@@ -25,11 +25,13 @@ import { Types } from "mongoose";
 import { nanoid } from "nanoid";
 import {
   writeFileSchema,
+  editFileSchema,
   deleteFileSchema,
   renameFileSchema,
   addDependencySchema,
   removeDependencySchema,
   createDataBindingSchema,
+  updateDataBindingSchema,
   deleteDataBindingSchema,
   saveAppVersionSchema,
   restoreAppVersionSchema,
@@ -40,12 +42,16 @@ import {
   materializeBindingSchema,
   setBindingScheduleSchema,
   setBindingMaterializationSchema,
+  applyStrReplace,
+  buildStrReplaceDiff,
 } from "@mako/agent-tools";
 import { normalizeAppFiles, createAppScaffold } from "@mako/schemas";
 import { validateDashboardMaterializationSchedule } from "../../services/dashboard-materialization-schedule.service";
 import {
   MakoApp,
   DatabaseConnection,
+  DbtProject,
+  SavedConsole,
   type IMakoApp,
 } from "../../database/workspace-schema";
 import {
@@ -174,6 +180,27 @@ export function createServerAppTools({
       : { ok: false, error: "Data binding connection is invalid" };
   };
 
+  // Validate that a binding's dbt project link belongs to this workspace.
+  const validateDbtProject = async (
+    dbtProjectId: string | undefined | null,
+  ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    if (!dbtProjectId) return { ok: true };
+    if (!Types.ObjectId.isValid(dbtProjectId)) {
+      return { ok: false, error: `Invalid dbtProjectId: ${dbtProjectId}` };
+    }
+    const found = await DbtProject.countDocuments({
+      _id: new Types.ObjectId(dbtProjectId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    return found > 0
+      ? { ok: true }
+      : {
+          ok: false,
+          error:
+            "dbt project not found in this workspace. Use read_dbt_project_tree to list project IDs.",
+        };
+  };
+
   const denied = (appId: string) => ({
     success: false as const,
     error: `You do not have write access to app ${appId}.`,
@@ -195,6 +222,54 @@ export function createServerAppTools({
   };
 
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  // Resolve a saved console into binding query fields (code, connection,
+  // language, database) so bindings can be imported by reference instead of
+  // the agent re-typing the SQL. Read access mirrors read_console: any
+  // console visible to the acting user.
+  const resolveConsoleForBinding = async (
+    consoleId: string,
+  ): Promise<
+    | {
+        ok: true;
+        name: string;
+        code: string;
+        connectionId?: string;
+        language: string;
+        databaseId?: string;
+        databaseName?: string;
+      }
+    | { ok: false; error: string }
+  > => {
+    if (!Types.ObjectId.isValid(consoleId)) {
+      return { ok: false, error: `Invalid console ID: ${consoleId}` };
+    }
+    const doc = await SavedConsole.findOne({
+      _id: new Types.ObjectId(consoleId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (!doc) {
+      return {
+        ok: false,
+        error: `Console ${consoleId} not found. Use search_consoles to find console IDs.`,
+      };
+    }
+    if (userId && !canReadResource(doc, userId, await memberRole())) {
+      return {
+        ok: false,
+        error: `Console ${consoleId} not found. Use search_consoles to find console IDs.`,
+      };
+    }
+    return {
+      ok: true,
+      name: doc.name || "imported_binding",
+      code: doc.code || "",
+      connectionId: doc.connectionId?.toString(),
+      language: doc.language || "sql",
+      databaseId: doc.databaseId,
+      databaseName: doc.databaseName,
+    };
+  };
 
   return {
     list_open_apps: tool({
@@ -325,6 +400,7 @@ export function createServerAppTools({
             dataBindings: (doc.dataBindings ?? []).map(b => ({
               name: b.name,
               connectionId: b.connectionId,
+              dbtProjectId: b.dbtProjectId,
               language: b.language,
               code: b.code,
               materialization: b.materialization ?? "live",
@@ -443,9 +519,11 @@ export function createServerAppTools({
 
     app_write_file: tool({
       description:
-        "Create or overwrite a file with full contents. This is the primary " +
-        "editing tool — write the complete file, not a diff. Writing the " +
-        "entrypoint or any imported file refreshes the live preview.",
+        "Create a NEW file, or fully rewrite one, with complete contents. " +
+        "For modifying an existing file prefer app_edit_file (anchored " +
+        "old/new string) — it is faster and avoids re-sending unchanged " +
+        "code. Writing the entrypoint or any imported file refreshes the " +
+        "live preview.",
       inputSchema: writeFileSchema,
       execute: async ({ appId, path, contents }) =>
         wrap("app_write_file", async () => {
@@ -459,6 +537,58 @@ export function createServerAppTools({
           ]) as IMakoApp["files"];
           const version = await saveAndPublish(doc);
           return { success: true, path, version };
+        }),
+    }),
+
+    app_edit_file: tool({
+      description:
+        "Edit an existing file by replacing an exact text match. This is " +
+        "the PRIMARY tool for modifying app files: pass the exact current " +
+        "text as oldString (unique — include surrounding lines to " +
+        'disambiguate) and the replacement as newString ("" deletes it). ' +
+        "Set replaceAll: true for renames. Use app_write_file only for new " +
+        "files or full rewrites. Edits refresh the live preview.",
+      inputSchema: editFileSchema,
+      execute: async ({ appId, path, oldString, newString, replaceAll }) =>
+        wrap("app_edit_file", async () => {
+          const loaded = await loadApp(appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(appId);
+          const file = (doc.files ?? []).find(f => f.path === path);
+          if (!file) {
+            return {
+              success: false,
+              error: `File not found: ${path}. Use get_app_state to list files, or app_write_file to create it.`,
+            };
+          }
+          const result = applyStrReplace(
+            file.contents ?? "",
+            oldString,
+            newString,
+            replaceAll === true,
+          );
+          if (!result.ok) {
+            return { success: false, error: result.error };
+          }
+          const diff = buildStrReplaceDiff(
+            file.contents ?? "",
+            oldString,
+            newString,
+            result.replacements,
+          );
+          doc.files = normalizeAppFiles([
+            ...(doc.files ?? []).filter(f => f.path !== path),
+            { path, contents: result.contents },
+          ]) as IMakoApp["files"];
+          const version = await saveAndPublish(doc);
+          return {
+            success: true,
+            path,
+            version,
+            replacements: result.replacements,
+            diff,
+          };
         }),
     }),
 
@@ -541,11 +671,14 @@ export function createServerAppTools({
 
     app_create_data_binding: tool({
       description:
-        "Create a named data binding that the app can read via useQuery(name) " +
-        "from '@mako/app-sdk'. The query runs server-side, scoped to the " +
-        "workspace — the app never sees credentials. Set materialization to " +
-        "'parquet' for DuckDB-WASM-backed analytics (then call materialize_binding). " +
-        "Use the SQL connections/tools to inspect schema and validate the query first.",
+        "Create a NEW named data binding that the app can read via " +
+        "useQuery(name) from '@mako/app-sdk'. The query runs server-side, " +
+        "scoped to the workspace — the app never sees credentials. To reuse " +
+        "a saved console's query, pass consoleId (from search_consoles) " +
+        "instead of re-typing code/connectionId. To change an EXISTING " +
+        "binding's query, use app_update_data_binding — do NOT recreate it " +
+        "under a new name. Set materialization to 'parquet' for " +
+        "DuckDB-WASM-backed analytics (then call materialize_binding).",
       inputSchema: createDataBindingSchema,
       execute: async input =>
         wrap("app_create_data_binding", async () => {
@@ -553,8 +686,71 @@ export function createServerAppTools({
           if (isLoadError(loaded)) return { success: false, ...loaded };
           const { doc } = loaded;
           if (!(await canWrite(doc))) return denied(input.appId);
-          const connCheck = await validateConnection(input.connectionId);
+
+          // Resolve query fields from a saved console when provided;
+          // explicit input fields always win.
+          let fromConsole: {
+            name: string;
+            code: string;
+            connectionId?: string;
+            language: string;
+            databaseId?: string;
+            databaseName?: string;
+          } | null = null;
+          if (input.consoleId) {
+            const resolved = await resolveConsoleForBinding(input.consoleId);
+            if (!resolved.ok) {
+              return { success: false, error: resolved.error };
+            }
+            fromConsole = resolved;
+          }
+
+          const name =
+            input.name ??
+            (fromConsole
+              ? fromConsole.name
+                  .toLowerCase()
+                  .replace(/[^a-z0-9_]+/g, "_")
+                  .replace(/^_+|_+$/g, "") || "imported_binding"
+              : undefined);
+          const connectionId = input.connectionId ?? fromConsole?.connectionId;
+          const code = input.code ?? fromConsole?.code;
+          const rawLanguage = input.language ?? fromConsole?.language ?? "sql";
+          const language =
+            rawLanguage === "javascript" || rawLanguage === "mongodb"
+              ? rawLanguage
+              : "sql";
+          if (!name) {
+            return { success: false, error: "name is required" };
+          }
+          if (!connectionId || code === undefined) {
+            return {
+              success: false,
+              error:
+                "Either consoleId, or both connectionId and code, are required.",
+            };
+          }
+
+          // Same-name "replace" used to silently recreate the binding with a
+          // new id — orphaning its artifact and dropping its schedule (the
+          // root of the recreate-under-a-new-name workaround). Reject instead
+          // and point at the in-place update tool.
+          const existing = (doc.dataBindings ?? []).find(b => b.name === name);
+          if (existing) {
+            return {
+              success: false,
+              error:
+                `A data binding named "${name}" already exists. Use ` +
+                "app_update_data_binding to change its query in place " +
+                "(preserves its id, schedule, and materialized artifact), " +
+                "or pass a different name.",
+            };
+          }
+
+          const connCheck = await validateConnection(connectionId);
           if (!connCheck.ok) return { success: false, error: connCheck.error };
+          const dbtCheck = await validateDbtProject(input.dbtProjectId);
+          if (!dbtCheck.ok) return { success: false, error: dbtCheck.error };
           const materialization =
             input.materialization === "parquet" ? "parquet" : "live";
           // Validate the optional schedule (cron) the same way the HTTP routes
@@ -580,31 +776,181 @@ export function createServerAppTools({
           }
           const created = {
             id: nanoid(10),
-            name: input.name,
-            connectionId: input.connectionId,
-            language: input.language || "sql",
-            code: input.code,
-            databaseId: input.databaseId,
-            databaseName: input.databaseName,
+            name,
+            dbtProjectId: input.dbtProjectId,
+            connectionId,
+            language,
+            code,
+            databaseId: input.databaseId ?? fromConsole?.databaseId,
+            databaseName: input.databaseName ?? fromConsole?.databaseName,
             materialization,
             materializationSchedule,
             cache: undefined,
           };
-          // Replace any existing binding with the same name (mirrors the client
-          // addDataBinding semantics).
           doc.dataBindings = [
-            ...(doc.dataBindings ?? []).filter(b => b.name !== created.name),
+            ...(doc.dataBindings ?? []),
             created,
           ] as IMakoApp["dataBindings"];
           const version = await saveAndPublish(doc);
           return {
             success: true,
             binding: { name: created.name, materialization },
+            ...(input.consoleId
+              ? { importedFromConsoleId: input.consoleId }
+              : {}),
             version,
             hint:
               materialization === "parquet"
                 ? `Call materialize_binding for "${created.name}", then read it with useQuery("${created.name}") or run analytics with useDuckDB(sql) from '@mako/app-sdk'.`
                 : `Read it in app code with useQuery("${created.name}") from '@mako/app-sdk'.`,
+          };
+        }),
+    }),
+
+    app_update_data_binding: tool({
+      description:
+        "Update an EXISTING data binding's query IN PLACE by name — change " +
+        "its code (full replacement via code, or an anchored edit via " +
+        "oldString/newString), connection, language, or database. Preserves " +
+        "the binding's id, materialization, schedule, and artifact history — " +
+        "NEVER delete/recreate a binding (or invent a versioned name like " +
+        "my_data_v2) just to change its query. For 'parquet' bindings a " +
+        "rebuild is queued automatically; open tabs keep serving the " +
+        "PREVIOUS data until you call materialize_binding and it completes.",
+      inputSchema: updateDataBindingSchema,
+      execute: async input =>
+        wrap("app_update_data_binding", async () => {
+          const loaded = await loadApp(input.appId);
+          if (isLoadError(loaded)) return { success: false, ...loaded };
+          const { doc } = loaded;
+          if (!(await canWrite(doc))) return denied(input.appId);
+          const binding = (doc.dataBindings ?? []).find(
+            b => b.name === input.name,
+          );
+          if (!binding) {
+            return {
+              success: false,
+              error: `No data binding named "${input.name}". Confirm the name with list_data_sources, or create it with app_create_data_binding.`,
+            };
+          }
+
+          if (input.code !== undefined && input.oldString !== undefined) {
+            return {
+              success: false,
+              error:
+                "Pass either code (full replacement) or oldString/newString (anchored edit), not both.",
+            };
+          }
+
+          let nextCode = binding.code ?? "";
+          let diff: string | undefined;
+          let replacements: number | undefined;
+          if (input.oldString !== undefined) {
+            if (input.newString === undefined) {
+              return {
+                success: false,
+                error: "newString is required when oldString is provided.",
+              };
+            }
+            const result = applyStrReplace(
+              binding.code ?? "",
+              input.oldString,
+              input.newString,
+            );
+            if (!result.ok) {
+              return { success: false, error: result.error };
+            }
+            diff = buildStrReplaceDiff(
+              binding.code ?? "",
+              input.oldString,
+              input.newString,
+              result.replacements,
+            );
+            nextCode = result.contents;
+            replacements = result.replacements;
+          } else if (input.code !== undefined) {
+            nextCode = input.code;
+          }
+
+          if (input.connectionId !== undefined) {
+            const connCheck = await validateConnection(input.connectionId);
+            if (!connCheck.ok) {
+              return { success: false, error: connCheck.error };
+            }
+          }
+          if (input.dbtProjectId != null) {
+            const dbtCheck = await validateDbtProject(input.dbtProjectId);
+            if (!dbtCheck.ok) {
+              return { success: false, error: dbtCheck.error };
+            }
+          }
+
+          const nextDbtProjectId =
+            input.dbtProjectId === undefined
+              ? binding.dbtProjectId
+              : (input.dbtProjectId ?? undefined);
+          const changed =
+            nextCode !== (binding.code ?? "") ||
+            nextDbtProjectId !== binding.dbtProjectId ||
+            (input.connectionId !== undefined &&
+              input.connectionId !== binding.connectionId) ||
+            (input.language !== undefined &&
+              input.language !== binding.language) ||
+            (input.databaseId !== undefined &&
+              input.databaseId !== binding.databaseId) ||
+            (input.databaseName !== undefined &&
+              input.databaseName !== binding.databaseName);
+          if (!changed) {
+            return {
+              success: false,
+              error:
+                "Nothing to update — provide code, oldString/newString, or a changed connection/language/database/dbtProjectId field.",
+            };
+          }
+
+          // Mutate IN PLACE: id, materialization, schedule, and the
+          // server-owned cache all survive. The definition-hash change is
+          // what invalidates the artifact, not a new identity.
+          binding.code = nextCode;
+          if (input.dbtProjectId !== undefined) {
+            binding.dbtProjectId = nextDbtProjectId;
+          }
+          if (input.connectionId !== undefined) {
+            binding.connectionId = input.connectionId;
+          }
+          if (input.language !== undefined) binding.language = input.language;
+          if (input.databaseId !== undefined) {
+            binding.databaseId = input.databaseId;
+          }
+          if (input.databaseName !== undefined) {
+            binding.databaseName = input.databaseName;
+          }
+          doc.markModified("dataBindings");
+          const version = await saveAndPublish(doc);
+
+          const isParquet = binding.materialization === "parquet";
+          if (isParquet) {
+            // Queue the rebuild now (the hash change makes it a cache miss);
+            // the agent can wait on it with materialize_binding.
+            await queueAppBindingMaterialization({
+              workspaceId,
+              appId: input.appId,
+              bindingId: binding.id,
+            }).catch(() => undefined);
+          }
+
+          return {
+            success: true,
+            binding: {
+              name: binding.name,
+              materialization: binding.materialization ?? "live",
+            },
+            version,
+            ...(replacements !== undefined ? { replacements } : {}),
+            ...(diff ? { diff } : {}),
+            hint: isParquet
+              ? `Definition updated in place and a rebuild was queued. The app keeps serving the PREVIOUS data until the artifact is rebuilt — call materialize_binding for "${binding.name}" to wait for it.`
+              : `Definition updated in place. useQuery("${binding.name}") runs the new query on the next read.`,
           };
         }),
     }),

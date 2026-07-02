@@ -74,7 +74,33 @@ export type RealtimeEvent =
       updatedBy: string;
       clientId?: string;
       origin: "agent" | "save";
+      /** Draft (uncommitted) edit: only this user's windows should react. */
+      forUserId?: string;
     }
+  | {
+      type: "dbt.git.updated";
+      projectId: string;
+      updatedBy: string;
+      clientId?: string;
+      forUserId?: string;
+    }
+  | {
+      type: "dbt.checkout.updated";
+      projectId: string;
+      branch: string;
+      forUserId: string;
+      updatedBy: string;
+      clientId?: string;
+    }
+  | { type: "dbt.job.updated"; projectId: string; clientId?: string }
+  | {
+      type: "dbt.run.updated";
+      projectId: string;
+      runId?: string;
+      jobId?: string;
+      clientId?: string;
+    }
+  | { type: "dbt.project.updated"; projectId?: string; clientId?: string }
   | {
       type: "dashboard.updated";
       dashboardId: string;
@@ -89,6 +115,8 @@ export type RealtimeStatus = "idle" | "connecting" | "open" | "reconnecting";
 interface RealtimeState {
   status: RealtimeStatus;
   workspaceId: string | null;
+  /** Logged-in user id — filters user-scoped (forUserId) dbt draft events. */
+  currentUserId: string | null;
   /** Chat currently open in the chat panel (for chat.ui-intent routing). */
   activeChatId: string | null;
   /** Live agent activity per chat (chat.activity events). */
@@ -99,6 +127,7 @@ interface RealtimeActions {
   connect: (workspaceId: string) => void;
   disconnect: () => void;
   setActiveChatId: (chatId: string | null) => void;
+  setCurrentUserId: (userId: string | null) => void;
   /** Pull authoritative copies of open consoles whose revisions changed. */
   syncRevisions: () => Promise<void>;
 }
@@ -198,6 +227,18 @@ export const useRealtimeStore = create<RealtimeStore>()(
         syncDebounceTimer = null;
         void get().syncRevisions();
       }, SYNC_DEBOUNCE_MS);
+    };
+
+    /**
+     * Reconnect/focus reconciliation for the dbt surface (the counterpart of
+     * syncRevisions for consoles): pokes missed while a window was
+     * backgrounded or its stream was dead would otherwise leave the branch
+     * label / change list stale until a manual refresh.
+     */
+    const syncDbtGitState = () => {
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      void useDbtStore.getState().reconcileRemoteGitState(workspaceId);
     };
 
     /**
@@ -375,24 +416,120 @@ export const useRealtimeStore = create<RealtimeStore>()(
       })();
     };
 
+    // User-scoped dbt events (drafts, checkouts) carry forUserId: they only
+    // concern the acting user's windows — a draft is invisible to everyone
+    // else, so other users must not react (or even refetch).
+    const isForAnotherUser = (forUserId?: string): boolean =>
+      Boolean(forUserId && forUserId !== get().currentUserId);
+
     // Server-executed dbt file mutation tools: pull the fresh file content (or
-    // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId.
+    // drop a deleted file) for OPEN dbt projects. Echo-suppressed by clientId;
+    // draft edits (forUserId) only apply to the author's windows.
     const handleDbtFileUpdated = (
       event: Extract<RealtimeEvent, { type: "dbt.file.updated" }>,
     ) => {
       if (event.clientId && event.clientId === realtimeClientId) return;
+      if (isForAnotherUser(event.forUserId)) return;
       const workspaceId = get().workspaceId;
       if (!workspaceId) return;
-      // Only touch projects this window has loaded.
-      if (!useDbtStore.getState().filePathsByProject[event.projectId]) return;
-      void useDbtStore
-        .getState()
-        .applyRemoteFileUpdate(
+      const dbt = useDbtStore.getState();
+      // Only touch projects this window has loaded (file tree OR the
+      // version-control panel's git status — they load independently).
+      const hasFiles = Boolean(dbt.filePathsByProject[event.projectId]);
+      const hasStatus = Boolean(dbt.gitStatusByProject[event.projectId]);
+      if (!hasFiles && !hasStatus) return;
+      if (hasFiles) {
+        void dbt.applyRemoteFileUpdate(
           workspaceId,
           event.projectId,
           event.path,
           event.deleted,
         );
+      }
+      // A draft save/delete/rename changes the working-tree status too —
+      // refresh so the branch panel's change list and A/M/D badges stay in
+      // sync across the user's windows (not just the one that edited).
+      const project = dbt.projects.find(p => p._id === event.projectId);
+      if (project?.repo) {
+        void dbt.fetchGitStatus(workspaceId, event.projectId);
+      }
+    };
+
+    // Git surface changed (commit/sync/merge/branch delete — human or agent):
+    // refetch git status + file tree so the version-control panel and
+    // explorer reflect it without a manual refresh.
+    const handleDbtGitUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.git.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      if (isForAnotherUser(event.forUserId)) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      // React when this window holds ANY state for the project: the
+      // version-control panel loads git status for every repo project, even
+      // ones whose file tree was never expanded.
+      if (
+        !dbt.filePathsByProject[event.projectId] &&
+        !dbt.gitStatusByProject[event.projectId]
+      ) {
+        return;
+      }
+      void dbt.applyRemoteGitUpdate(workspaceId, event.projectId);
+    };
+
+    // The current user's checkout moved (branch create/switch — e.g. by the
+    // agent): refresh branch label, tree, and status in their other windows.
+    const handleDbtCheckoutUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.checkout.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      if (isForAnotherUser(event.forUserId)) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      if (!dbt.projects.some(p => p._id === event.projectId)) return;
+      void dbt.applyRemoteCheckoutUpdate(
+        workspaceId,
+        event.projectId,
+        event.branch,
+      );
+    };
+
+    const handleDbtJobUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.job.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      if (!dbt.projects.some(p => p._id === event.projectId)) return;
+      void dbt.fetchJobs(workspaceId, event.projectId);
+    };
+
+    const handleDbtRunUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.run.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      const dbt = useDbtStore.getState();
+      if (!dbt.projects.some(p => p._id === event.projectId)) return;
+      void dbt.fetchRuns(workspaceId, event.projectId);
+      if (event.jobId) {
+        void dbt.fetchRuns(workspaceId, event.projectId, event.jobId);
+      }
+    };
+
+    const handleDbtProjectUpdated = (
+      event: Extract<RealtimeEvent, { type: "dbt.project.updated" }>,
+    ) => {
+      if (event.clientId && event.clientId === realtimeClientId) return;
+      const workspaceId = get().workspaceId;
+      if (!workspaceId) return;
+      // Refresh the project list lazily — only when the dbt surface was used.
+      if (!useDbtStore.getState().projectsLoaded) return;
+      void useDbtStore.getState().fetchProjects(workspaceId);
     };
 
     // Server-persisted dashboard saves/restores (draft/published model): pull
@@ -434,6 +571,21 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "dbt.file.updated":
           handleDbtFileUpdated(event);
+          break;
+        case "dbt.git.updated":
+          handleDbtGitUpdated(event);
+          break;
+        case "dbt.checkout.updated":
+          handleDbtCheckoutUpdated(event);
+          break;
+        case "dbt.job.updated":
+          handleDbtJobUpdated(event);
+          break;
+        case "dbt.run.updated":
+          handleDbtRunUpdated(event);
+          break;
+        case "dbt.project.updated":
+          handleDbtProjectUpdated(event);
           break;
         case "console.deleted":
           handleConsoleDeleted(event);
@@ -529,6 +681,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         // Reconnect is a refetch, not a replay: reconcile everything the
         // window has open against current server revisions.
         void get().syncRevisions();
+        syncDbtGitState();
       };
 
       source.addEventListener("message", (e: MessageEvent) => {
@@ -581,6 +734,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
         // Connection looks healthy; revisions may still have moved while we
         // were backgrounded (throttled timers) — reconcile.
         void get().syncRevisions();
+        syncDbtGitState();
       } else {
         // Stream missing, mid-backoff, or silent past ~1.5 heartbeats.
         // `status === "open"` is NOT trustworthy here: Chrome freezes
@@ -607,6 +761,7 @@ export const useRealtimeStore = create<RealtimeStore>()(
     return {
       status: "idle",
       workspaceId: null,
+      currentUserId: null,
       activeChatId: null,
       chatActivity: {},
 
@@ -641,6 +796,12 @@ export const useRealtimeStore = create<RealtimeStore>()(
       setActiveChatId: chatId => {
         set(state => {
           state.activeChatId = chatId;
+        });
+      },
+
+      setCurrentUserId: userId => {
+        set(state => {
+          state.currentUserId = userId;
         });
       },
 

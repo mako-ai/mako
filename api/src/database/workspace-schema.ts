@@ -3092,6 +3092,14 @@ export interface IDashboard extends Document {
   workspaceId: Types.ObjectId;
   title: string;
   description?: string;
+  /**
+   * Client-supplied creation idempotency key (the agent toolCallId). Multiple
+   * windows attached to the same chat stream each dispatch the same
+   * create_dashboard call; the unique partial index on
+   * { workspaceId, creationIdempotencyKey } makes the second insert a
+   * duplicate, and the create route returns the existing dashboard instead.
+   */
+  creationIdempotencyKey?: string;
 
   dataSources: IDashboardDataSource[];
 
@@ -3280,6 +3288,8 @@ export interface IDashboardDataSourceOrigin {
   consoleId?: Types.ObjectId;
   consoleName?: string;
   importedAt?: Date;
+  /** Agent toolCallId that created this data source (creation idempotency). */
+  createdByToolCallId?: string;
 }
 
 export interface IDashboardDataSource {
@@ -3327,6 +3337,7 @@ const DashboardSchema = new Schema<IDashboard>(
     },
     title: { type: String, required: true },
     description: { type: String },
+    creationIdempotencyKey: { type: String },
 
     dataSources: [
       {
@@ -3375,6 +3386,7 @@ const DashboardSchema = new Schema<IDashboard>(
           },
           consoleName: { type: String },
           importedAt: { type: Date },
+          createdByToolCallId: { type: String },
         },
         timeDimension: { type: String },
         rowLimit: { type: Number },
@@ -3608,6 +3620,16 @@ DashboardSchema.index({ workspaceId: 1, "sharedWith.userId": 1 });
 DashboardSchema.index(
   { "publicShare.token": 1 },
   { unique: true, sparse: true },
+);
+// Creation idempotency (see IDashboard.creationIdempotencyKey). Partial (not
+// sparse): a sparse COMPOUND index still indexes docs that have workspaceId
+// but no key, which would make every keyless dashboard collide.
+DashboardSchema.index(
+  { workspaceId: 1, creationIdempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { creationIdempotencyKey: { $type: "string" } },
+  },
 );
 
 /**
@@ -3868,6 +3890,13 @@ export interface IMakoAppBindingCache {
 export interface IMakoAppDataBinding {
   id: string;
   name: string;
+  /**
+   * Optional link to a dbt project. When set, the `{{ dbt_schema }}` token in
+   * `code` resolves to a dbt environment's target schema at execution time —
+   * the prod-like environment by default (published apps, materialization,
+   * public shares), or a per-user preview override in the draft preview.
+   */
+  dbtProjectId?: string;
   connectionId: string;
   language: "sql" | "javascript" | "mongodb";
   code: string;
@@ -3968,6 +3997,7 @@ const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
   {
     id: { type: String, required: true },
     name: { type: String, required: true },
+    dbtProjectId: { type: String },
     connectionId: { type: String, required: true },
     language: {
       type: String,
@@ -4188,6 +4218,14 @@ export interface IDbtEnvironment {
   threads: number;
   /** dbt vars passed as --vars for every command in this environment. */
   vars?: Record<string, unknown>;
+  /**
+   * Personal (per-developer) environment: set to the owning user's id when
+   * this environment was auto-provisioned as that user's private dev target
+   * (dbt Cloud-style development credentials, e.g. schema `dbt_jonas`).
+   * Unset for shared environments (dev/prod). Agent/user actions without an
+   * explicit environment default to the caller's personal environment.
+   */
+  ownerUserId?: string;
 }
 
 /**
@@ -4232,6 +4270,13 @@ export interface IDbtProject extends Document {
   /** Git repository this project is imported/synced from (optional). */
   repo?: IDbtRepoBinding;
   /**
+   * Branches that refuse direct commits from Mako (dbt Cloud "read-only"
+   * main). Changes reach these branches only through a pull request
+   * (commit-to-branch → open PR → merge). New GitHub imports default this to
+   * the repo's default branch; existing projects migrated to [] (opt-in).
+   */
+  protectedBranches?: string[];
+  /**
    * Pull-request CI config. When enabled, an opened/updated PR from the
    * tracked branch triggers `dbt build --select state:modified+` (deferring to
    * the prod manifest) and posts a GitHub commit status — like a dbt Cloud CI
@@ -4260,6 +4305,7 @@ const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
     targetSchema: { type: String, required: true, trim: true },
     threads: { type: Number, default: 4, min: 1, max: 16 },
     vars: { type: Schema.Types.Mixed },
+    ownerUserId: { type: String },
   },
   { _id: false },
 );
@@ -4291,6 +4337,7 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     defaultEnvironment: { type: String, default: "dev" },
     lastProdManifestKey: { type: String },
     repo: { type: DbtRepoBindingSchema },
+    protectedBranches: { type: [String], default: undefined },
     ci: {
       type: new Schema(
         {
@@ -4319,15 +4366,22 @@ export interface IDbtFile extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
   projectId: Types.ObjectId;
+  /**
+   * Branch this row belongs to (repo-bound projects). A repo project keeps
+   * one COMMITTED base tree per checked-out branch: content always mirrors
+   * the branch head, uncommitted work lives in per-user DbtFileDraft
+   * overlays. Blank (non-repo) projects leave this unset — their DbtFile
+   * rows remain the single shared working tree.
+   */
+  branch?: string;
   /** POSIX path relative to project root, e.g. "models/staging/stg_x.sql". */
   path: string;
   content: string;
   updatedBy: string;
   is_deleted: boolean;
   /**
-   * Git blob SHA of this file at the last import/sync/push. Lets us compute
-   * the working-tree status (added/modified/deleted) against the repo without
-   * re-fetching: compare this to the blob SHA of the current content.
+   * Git blob SHA of this file at the last import/sync/push. Per-user git
+   * status diffs a draft's blob SHA against this without re-fetching GitHub.
    */
   repoBlobSha?: string;
   createdAt: Date;
@@ -4346,6 +4400,7 @@ const DbtFileSchema = new Schema<IDbtFile>(
       ref: "DbtProject",
       required: true,
     },
+    branch: { type: String, trim: true },
     path: { type: String, required: true, trim: true },
     content: { type: String, default: "" },
     updatedBy: { type: String, required: true },
@@ -4355,10 +4410,114 @@ const DbtFileSchema = new Schema<IDbtFile>(
   { collection: "dbt_files", timestamps: true },
 );
 
-DbtFileSchema.index({ projectId: 1, path: 1 }, { unique: true });
+// One row per (project, branch, path). Blank projects store branch: null,
+// which the unique index treats as a value, so their single tree stays unique.
+DbtFileSchema.index({ projectId: 1, branch: 1, path: 1 }, { unique: true });
 DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
 
 export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
+
+/**
+ * Per-user uncommitted edit to a dbt file (the draft overlay). Reads for a
+ * user merge draft-over-base: other workspace members never see a draft, so
+ * collaborators only observe committed changes — like separate git working
+ * trees. Drafts follow the user across branch switches (a dirty git tree
+ * carried through `git checkout`) and are cleared when committed.
+ */
+export interface IDbtFileDraft extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  /** Owning user id (or "agent" for agent edits outside a user session). */
+  userId: string;
+  path: string;
+  content: string;
+  /** Pending deletion of the base file (a staged `git rm`). */
+  is_deleted: boolean;
+  /** Blob SHA of the base content the draft started from (informational). */
+  baseBlobSha?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtFileDraftSchema = new Schema<IDbtFileDraft>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    path: { type: String, required: true, trim: true },
+    content: { type: String, default: "" },
+    is_deleted: { type: Boolean, default: false },
+    baseBlobSha: { type: String },
+  },
+  { collection: "dbt_file_drafts", timestamps: true },
+);
+
+DbtFileDraftSchema.index(
+  { projectId: 1, userId: 1, path: 1 },
+  { unique: true },
+);
+DbtFileDraftSchema.index({ workspaceId: 1, projectId: 1, userId: 1 });
+
+export const DbtFileDraft = mongoose.model<IDbtFileDraft>(
+  "DbtFileDraft",
+  DbtFileDraftSchema,
+);
+
+/**
+ * Per-user branch pointer for a repo-bound dbt project (dbt Cloud-style
+ * per-developer checkout). Absence of a row means the user implicitly tracks
+ * the project default branch (`project.repo.branch`). Two users on the same
+ * project can work on different branches simultaneously.
+ */
+export interface IDbtCheckout extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  userId: string;
+  branch: string;
+  /** Commit SHA this user's branch base tree was last synced/pushed at. */
+  lastSyncedSha?: string;
+  lastSyncedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtCheckoutSchema = new Schema<IDbtCheckout>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    branch: { type: String, required: true, trim: true },
+    lastSyncedSha: { type: String },
+    lastSyncedAt: { type: Date },
+  },
+  { collection: "dbt_checkouts", timestamps: true },
+);
+
+DbtCheckoutSchema.index({ projectId: 1, userId: 1 }, { unique: true });
+DbtCheckoutSchema.index({ projectId: 1, branch: 1 });
+
+export const DbtCheckout = mongoose.model<IDbtCheckout>(
+  "DbtCheckout",
+  DbtCheckoutSchema,
+);
 
 /**
  * GitHub App installation linked to a workspace. We never persist installation
@@ -4521,6 +4680,27 @@ export interface IDbtRun extends Document {
   /** User id for manual triggers, "scheduler" / "agent" / "ci-webhook". */
   triggeredBy: string;
   /**
+   * Branch whose committed base tree the run executes against (repo-bound
+   * projects). Unset means the project default branch. CI runs set the PR
+   * head branch so Slim CI builds the PR's code.
+   */
+  gitBranch?: string;
+  /**
+   * When set, the run builds this user's WORKING tree (their checkout branch
+   * plus draft overlay) instead of a committed base tree — used by
+   * agent-triggered verification builds of uncommitted work. Scheduled /
+   * CI / deploy runs leave this unset.
+   */
+  workingTreeUserId?: string;
+  /**
+   * Ad-hoc/agent runs only: run with `--defer --state <prod manifest>` so
+   * unselected refs resolve to the last production build instead of
+   * rebuilding the whole upstream DAG in the target schema. Job runs read
+   * the flag from the job (`job.deferToProduction`) and CI runs from the
+   * project CI config, so those leave this unset.
+   */
+  deferToProduction?: boolean;
+  /**
    * Pull-request CI context (trigger === "ci"). Drives the GitHub commit
    * status posted back to the PR head on completion.
    */
@@ -4593,6 +4773,9 @@ const DbtRunSchema = new Schema<IDbtRun>(
       required: true,
     },
     triggeredBy: { type: String, required: true },
+    gitBranch: { type: String },
+    workingTreeUserId: { type: String },
+    deferToProduction: { type: Boolean },
     ci: {
       type: new Schema(
         {

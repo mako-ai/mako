@@ -471,6 +471,17 @@ export const AGENT_TOOL_MANIFEST = {
     icon: "pencil",
     preview: { field: "contents", language: "typescript" },
   },
+  app_edit_file: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing file";
+    },
+    icon: "pencil",
+    preview: { field: "newString", language: "typescript" },
+  },
   app_delete_file: {
     domain: "app",
     execution: "server",
@@ -512,6 +523,17 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: input => {
       const name = (input as Record<string, unknown>)?.name;
       return name ? `Binding data "${name}"` : "Creating data binding";
+    },
+    icon: "database",
+    preview: { field: "code", language: "sql" },
+  },
+  app_update_data_binding: {
+    domain: "app",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const name = (input as Record<string, unknown>)?.name;
+      return name ? `Updating data binding "${name}"` : "Updating data binding";
     },
     icon: "database",
     preview: { field: "code", language: "sql" },
@@ -601,6 +623,19 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: () => "Rebuilding app preview",
     icon: "play",
   },
+  app_set_preview_environment: {
+    domain: "app",
+    execution: "client",
+    clientExecutor: "app",
+    longRunning: true,
+    getLabel: input => {
+      const env = (input as Record<string, unknown>)?.environment;
+      return env
+        ? `Previewing dbt env "${env}"`
+        : "Resetting preview dbt env to prod";
+    },
+    icon: "database",
+  },
   // dbt reads execute SERVER-SIDE (issue #475) — reading the authoritative
   // DbtProject/DbtFile docs avoids a pending client tool tearing down the SSE
   // turn ("stream disconnected before tool completed") when the tab is slow or
@@ -640,10 +675,21 @@ export const AGENT_TOOL_MANIFEST = {
     longRunning: true,
     getLabel: input => {
       const path = (input as Record<string, unknown>)?.path;
-      return path ? `Editing ${path}` : "Editing dbt file";
+      return path ? `Rewriting ${path}` : "Rewriting dbt file";
     },
     icon: "pencil",
     preview: { field: "contents", language: "sql" },
+  },
+  edit_dbt_file: {
+    domain: "dbt",
+    execution: "server",
+    longRunning: true,
+    getLabel: input => {
+      const path = (input as Record<string, unknown>)?.path;
+      return path ? `Editing ${path}` : "Editing dbt file";
+    },
+    icon: "pencil",
+    preview: { field: "newString", language: "sql" },
   },
   delete_dbt_file: {
     domain: "dbt",
@@ -725,6 +771,12 @@ export const AGENT_TOOL_MANIFEST = {
     execution: "server",
     getLabel: () => "Cancelling dbt run",
     icon: "square",
+  },
+  dbt_ensure_dev_environment: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: () => "Provisioning personal dbt environment",
+    icon: "database",
   },
   dbt_create_job: {
     domain: "dbt",
@@ -857,6 +909,35 @@ export const AGENT_TOOL_MANIFEST = {
     getLabel: input => {
       const prNumber = (input as Record<string, unknown>)?.prNumber;
       return prNumber ? `Merging PR #${prNumber}` : "Merging pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_list_pull_requests: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const state = (input as Record<string, unknown>)?.state;
+      return state && state !== "open"
+        ? `Listing ${state} pull requests`
+        : "Listing pull requests";
+    },
+    icon: "list",
+  },
+  dbt_update_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Updating PR #${prNumber}` : "Updating pull request";
+    },
+    icon: "external-link",
+  },
+  dbt_close_pull_request: {
+    domain: "dbt",
+    execution: "server",
+    getLabel: input => {
+      const prNumber = (input as Record<string, unknown>)?.prNumber;
+      return prNumber ? `Closing PR #${prNumber}` : "Closing pull request";
     },
     icon: "external-link",
   },

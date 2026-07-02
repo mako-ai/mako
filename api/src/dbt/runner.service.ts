@@ -480,6 +480,18 @@ export async function materializeDbtProject(
     reconcile?: boolean;
   },
 ): Promise<{ keyfileEnv: Record<string, string>; changed: boolean }> {
+  // Refuse to materialize a tree that cannot be a dbt project. Without this
+  // guard an empty/broken snapshot (e.g. a branch whose committed base tree
+  // is missing) would reconcile-delete dbt_project.yml and every model out of
+  // a shared warm dir, and dbt would fail with the far more confusing
+  // "No dbt_project.yml found at expected path <dir>/dbt_project.yml".
+  if (!params.files.some(file => file.path === "dbt_project.yml")) {
+    throw new Error(
+      "dbt project snapshot has no dbt_project.yml — refusing to materialize " +
+        "(the project's file tree is empty or not synced)",
+    );
+  }
+
   // Preserve list for reconciliation (profiles.yml + every snapshot file +
   // keyfiles get added below).
   const keep = new Set<string>(["profiles.yml"]);
@@ -523,6 +535,21 @@ export async function materializeDbtProject(
     changed = true;
   }
   return { keyfileEnv, changed };
+}
+
+/**
+ * Remove per-run result artifacts from a (warm) project dir's target/.
+ * Warm dirs keep target/ across runs so partial parsing stays warm, but a
+ * command that fails before writing its own run_results.json would otherwise
+ * have the PREVIOUS run's file collected and misattributed to it (an errored
+ * run "showing" passing node results). The parse cache and manifest stay.
+ */
+export async function pruneStaleRunArtifacts(
+  projectDir: string,
+): Promise<void> {
+  for (const name of ["run_results.json", "sources.json", "catalog.json"]) {
+    await rm(join(projectDir, "target", name), { force: true }).catch(() => {});
+  }
 }
 
 /**
@@ -576,6 +603,17 @@ export async function runDbt(request: DbtRunRequest): Promise<DbtRunResult> {
         reconcile: !ownsDir,
       },
     );
+
+    // Warm dirs: drop the previous run's result artifacts so a command that
+    // fails early can never have stale run_results/sources/catalog collected
+    // and misattributed to it. `retry` is the exception — it resumes FROM the
+    // prior run_results (re-seeded via restoreTarget below).
+    const isRetryRun = request.commands.some(
+      command => command.subcommand === "retry",
+    );
+    if (!ownsDir && !isRetryRun) {
+      await pruneStaleRunArtifacts(projectDir);
+    }
 
     // Seed prior artifacts into target/ for `dbt retry` (run_results.json is
     // what dbt reads to resume at the failed/skipped nodes).

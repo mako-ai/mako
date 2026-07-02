@@ -10,12 +10,12 @@
 import { Types } from "mongoose";
 import {
   DatabaseConnection,
-  DbtFile,
   DbtProject,
   type IDatabaseConnection,
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
+import { loadRunnableWorkingTree } from "./dbt-github-sync.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
 import { parseDbtCommand, type ParsedDbtCommand } from "./commands";
 import {
@@ -53,6 +53,14 @@ export async function loadDbtProjectSnapshot(params: {
   workspaceId: string;
   projectId: string;
   environmentName?: string;
+  /**
+   * Acting user for repo-bound projects: the snapshot becomes that user's
+   * working tree (their checkout branch base overlaid with their drafts).
+   * Omitted → the committed base tree only (deploy/CI runs).
+   */
+  userId?: string;
+  /** Explicit branch (CI runs building a PR head). */
+  branch?: string;
 }): Promise<DbtProjectSnapshot> {
   const project = await DbtProject.findOne({
     _id: new Types.ObjectId(params.projectId),
@@ -85,22 +93,45 @@ export async function loadDbtProjectSnapshot(params: {
 
   const profile = renderDbtProfile(connection, environment);
 
-  const fileDocs = await DbtFile.find({
-    projectId: project._id,
-    is_deleted: { $ne: true },
-  })
-    .select("path content")
-    .lean();
-
-  const files = fileDocs.map(file => ({
-    path: file.path,
-    content: file.content ?? "",
-  }));
+  // Self-healing load: re-syncs a missing branch base tree (and re-anchors a
+  // tracked branch that no longer exists on the remote) rather than handing
+  // dbt a tree without dbt_project.yml.
+  const files = await loadRunnableWorkingTree(project, {
+    userId: params.userId,
+    branch: params.branch,
+  });
 
   // Environment vars (environment.vars) are injected as `--vars` by runDbt for
   // every command, so callers just forward snapshot.environment.vars.
 
   return { project, environment, files, profile };
+}
+
+/**
+ * Read the project's last production manifest for `--defer --state`, or
+ * `undefined` when no prod build exists yet. Never throws — a missing
+ * manifest just disables defer for this invocation.
+ */
+export async function loadDbtDeferState(project: {
+  lastProdManifestKey?: string;
+}): Promise<Buffer | undefined> {
+  const key = project.lastProdManifestKey;
+  if (!key) return undefined;
+  try {
+    const { getDashboardArtifactStore } = await import(
+      "../services/dashboard-artifact-store.service"
+    );
+    const stream = await getDashboardArtifactStore().openReadStream(key);
+    if (!stream) return undefined;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } catch (error) {
+    logger.warn("Failed to load dbt defer state manifest", { error, key });
+    return undefined;
+  }
 }
 
 export interface AdhocDbtResult {
@@ -143,6 +174,12 @@ export async function runAdhocDbtCommand(params: {
   workspaceId: string;
   projectId: string;
   environmentName?: string;
+  /**
+   * Acting user: repo-bound projects compile/run that user's working tree
+   * (checkout branch + draft overlay) in a per-user warm dir, so one user's
+   * preview never sees another user's uncommitted work.
+   */
+  userId?: string;
   command: string;
   /** Used to extract compiled SQL from the manifest after compile. */
   select?: string;
@@ -159,14 +196,22 @@ export async function runAdhocDbtCommand(params: {
     workspaceId: params.workspaceId,
     projectId: params.projectId,
     environmentName: params.environmentName,
+    userId: params.userId,
   });
 
   // Warm caches so parse/compile/show/build don't re-parse the whole project
-  // (and skip `dbt deps` when packages are unchanged). Best-effort.
+  // (and skip `dbt deps` when packages are unchanged). Best-effort. The
+  // artifact cache stays per (project, environment) — a shared seed the run
+  // reconciles — while the on-disk warm dir below is per user.
   const cacheScope = {
     workspaceId: params.workspaceId,
     projectId: params.projectId,
     environment: snapshot.environment.name,
+  };
+  const adhocDirScope = {
+    ...cacheScope,
+    role: "adhoc" as const,
+    userId: params.userId,
   };
   const packagesHash = computePackagesHash(snapshot.files);
   const caches = await loadDbtCaches(cacheScope, packagesHash);
@@ -189,33 +234,32 @@ export async function runAdhocDbtCommand(params: {
   ) {
     const select = params.select;
     try {
-      const engineResult = await withProjectDir(
-        { ...cacheScope, role: "adhoc" },
-        async dir => {
-          const { keyfileEnv } = await materializeDbtProject(dir, {
-            files: snapshot.files,
-            profile: snapshot.profile,
-            reconcile: true,
-          });
-          await seedDbtCaches(dir, {
-            partialParse: caches.partialParse,
-            packagesArchive: caches.packages,
-          });
-          const ctx = {
-            adapterPackage: snapshot.profile.adapterPackage,
-            dbtVersion: snapshot.project.dbtVersion,
-            connectionEnv: { ...snapshot.profile.secretEnv, ...keyfileEnv },
-          };
-          const session = {
-            key: `${params.workspaceId}:${params.projectId}:${snapshot.environment.name}`,
-            projectDir: dir,
-          };
-          // Re-parse to pick up edits (cheap via partial parse), then reuse the
-          // warm manifest to compile.
-          await enginePrepare(ctx, session);
-          return engineCompile(ctx, session, select);
-        },
-      );
+      const engineResult = await withProjectDir(adhocDirScope, async dir => {
+        const { keyfileEnv } = await materializeDbtProject(dir, {
+          files: snapshot.files,
+          profile: snapshot.profile,
+          reconcile: true,
+        });
+        await seedDbtCaches(dir, {
+          partialParse: caches.partialParse,
+          packagesArchive: caches.packages,
+        });
+        const ctx = {
+          adapterPackage: snapshot.profile.adapterPackage,
+          dbtVersion: snapshot.project.dbtVersion,
+          connectionEnv: { ...snapshot.profile.secretEnv, ...keyfileEnv },
+        };
+        // Session key includes the acting user so one user's warm manifest is
+        // never compiled against another user's overlay.
+        const session = {
+          key: `${params.workspaceId}:${params.projectId}:${snapshot.environment.name}:${params.userId ?? "shared"}`,
+          projectDir: dir,
+        };
+        // Re-parse to pick up edits (cheap via partial parse), then reuse the
+        // warm manifest to compile.
+        await enginePrepare(ctx, session);
+        return engineCompile(ctx, session, select);
+      });
       if (engineResult.ok) {
         // info (not debug) so the hit rate is visible in prod once the engine
         // flag is on — pairs with the fallback warns below for a hit/miss rate.
@@ -283,9 +327,7 @@ export async function runAdhocDbtCommand(params: {
   let raw: Awaited<ReturnType<typeof runDbt>> | undefined;
   if (warmDirsEnabled()) {
     try {
-      raw = await withProjectDir({ ...cacheScope, role: "adhoc" }, dir =>
-        runOnce(dir),
-      );
+      raw = await withProjectDir(adhocDirScope, dir => runOnce(dir));
       // Positive signal so warm-dir engagement is observable, not faith-based:
       // (hit count) vs the fallback warn below gives the warm-dir success rate.
       logger.info("dbt warm dir used", {

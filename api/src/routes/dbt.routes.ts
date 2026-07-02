@@ -15,7 +15,9 @@ import { unifiedAuthMiddleware } from "../auth/unified-auth.middleware";
 import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
+  DbtCheckout,
   DbtFile,
+  DbtFileDraft,
   DbtJob,
   DbtProject,
   DbtRun,
@@ -34,6 +36,7 @@ import {
 } from "../integrations/github/config";
 import {
   fileExistsAtRef,
+  getBranchHeadSha,
   getRepoInfo,
   listBranches,
   listDbtProjectSubdirectories,
@@ -42,9 +45,10 @@ import {
 import {
   fetchRepoDbtFiles,
   repoFilesToInserts,
-  syncProjectFromRepo,
+  syncProjectBranchFromRepo,
 } from "../dbt/dbt-github-sync.service";
 import {
+  closeProjectPullRequest,
   commitAndPush,
   commitToNewBranch,
   createProjectBranch,
@@ -52,9 +56,23 @@ import {
   getGitStatus,
   getProjectFileDiff,
   listProjectBranches,
+  listProjectPullRequests,
+  mergeProjectPullRequest,
   openProjectPullRequest,
+  ProtectedBranchError,
   switchProjectBranch,
+  updateProjectPullRequest,
 } from "../dbt/dbt-github-git.service";
+import {
+  deleteWorkingFile,
+  discardUserDrafts,
+  getCheckoutBranch,
+  listWorkingFiles,
+  readWorkingFile,
+  renameWorkingFile,
+  writeWorkingFile,
+} from "../dbt/dbt-working-tree.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
 import { generateDbtCommitMessage } from "../dbt/dbt-commit-message.service";
 import {
   DBT_COMPATIBLE_CONNECTION_TYPES,
@@ -67,7 +85,11 @@ import {
   parseDbtCommands,
 } from "../dbt/commands";
 import { buildStarterScaffold } from "../dbt/scaffold";
-import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
+import {
+  loadDbtDeferState,
+  runAdhocDbtCommand,
+} from "../dbt/dbt-project.service";
+import { ensurePersonalDbtEnvironment } from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
@@ -162,6 +184,9 @@ function serverError(
   error: unknown,
   fallback: string,
 ) {
+  if (error instanceof ProtectedBranchError) {
+    return c.json({ success: false, error: error.message }, 400);
+  }
   logger.error(fallback, { error });
   return c.json(
     {
@@ -172,6 +197,19 @@ function serverError(
   );
 }
 
+/**
+ * Realtime pokes so every open window (this user's and, for committed/base
+ * changes, other users') refreshes without a manual reload — the same
+ * poke-then-pull channel the agent's server tools use.
+ */
+function publishDbtEvent(
+  c: AuthenticatedContext,
+  event: Parameters<typeof publishRealtimeEvent>[1],
+): void {
+  const workspaceId = c.req.param("workspaceId");
+  if (workspaceId) publishRealtimeEvent(workspaceId, event);
+}
+
 const environmentSchema = z.object({
   name: z.string().min(1).max(64),
   connectionId: z
@@ -180,6 +218,12 @@ const environmentSchema = z.object({
   targetSchema: z.string().min(1).max(128),
   threads: z.number().int().min(1).max(16).default(4),
   vars: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Personal environment owner (auto-provisioned per-developer target).
+   * Round-tripped by settings saves so admin edits never strip ownership;
+   * provisioning happens via POST .../environments/personal, not here.
+   */
+  ownerUserId: z.string().optional(),
 });
 
 const createProjectSchema = z.object({
@@ -240,6 +284,14 @@ const patchProjectSchema = z.object({
       deferToProduction: z.boolean().optional(),
     })
     .optional(),
+  /** Branches that refuse direct commits (PR-only). Admin-gated via RBAC. */
+  protectedBranches: z.array(z.string().min(1).max(255)).max(20).optional(),
+  /**
+   * Tracked branch of the repo binding — what deploy/job runs build and what
+   * syncs target by default. Must exist on the remote; its base tree is
+   * synced on change.
+   */
+  repoBranch: z.string().min(1).max(255).optional(),
 });
 
 async function validateEnvironments(
@@ -336,6 +388,10 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
       })),
     );
 
+    publishDbtEvent(c, {
+      type: "dbt.project.updated",
+      projectId: project._id.toString(),
+    });
     return c.json({ success: true, project });
   } catch (error) {
     if ((error as { code?: number }).code === 11000) {
@@ -427,12 +483,114 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       };
       project.markModified("ci");
     }
+    if (body.protectedBranches) {
+      if (!project.repo) {
+        return badRequest(
+          c,
+          "Branch protection requires a connected repository",
+        );
+      }
+      project.protectedBranches = [...new Set(body.protectedBranches)];
+      project.markModified("protectedBranches");
+    }
+    let trackedBranchChanged = false;
+    if (body.repoBranch) {
+      if (!project.repo) {
+        return badRequest(
+          c,
+          "Changing the tracked branch requires a connected repository",
+        );
+      }
+      if (body.repoBranch !== project.repo.branch) {
+        // The tracked branch is what deploy/job runs build — verify it exists
+        // on the remote before re-pointing the project at it.
+        const token = await resolveRepoToken(project.repo.installationId);
+        try {
+          await getBranchHeadSha(
+            project.repo.owner,
+            project.repo.repo,
+            body.repoBranch,
+            token,
+          );
+        } catch {
+          return badRequest(
+            c,
+            `Branch "${body.repoBranch}" was not found on ` +
+              `${project.repo.owner}/${project.repo.repo}`,
+          );
+        }
+        project.repo.branch = body.repoBranch;
+        project.markModified("repo");
+        trackedBranchChanged = true;
+      }
+    }
     await project.save();
+    if (trackedBranchChanged && project.repo) {
+      // Materialize the new tracked branch's committed base tree so deploy
+      // runs and fresh checkouts have files to build immediately.
+      await syncProjectBranchFromRepo(
+        project,
+        project.repo.branch,
+        getUserId(c),
+      );
+    }
+    publishDbtEvent(c, {
+      type: "dbt.project.updated",
+      projectId: project._id.toString(),
+    });
     return c.json({ success: true, project });
   } catch (error) {
     return serverError(c, error, "Failed to update dbt project");
   }
 });
+
+// POST /projects/:projectId/environments/personal — idempotently provision
+// the caller's personal (per-developer) environment: same connection as the
+// prod-like environment, private schema `dbt_<user>`. Member+ (not admin-only:
+// unlike shared environment config, this only affects the caller's own
+// iteration target).
+dbtRoutes.post(
+  "/projects/:projectId/environments/personal",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const userId = c.get("user")?.id;
+      if (!userId) {
+        return badRequest(
+          c,
+          "Personal environments require a user session (not an API key)",
+        );
+      }
+      const result = await ensurePersonalDbtEnvironment({
+        workspaceId: project.workspaceId.toString(),
+        projectId: project._id.toString(),
+        userId,
+      });
+      if (result.created) {
+        publishDbtEvent(c, {
+          type: "dbt.project.updated",
+          projectId: project._id.toString(),
+        });
+      }
+      return c.json({
+        success: true,
+        created: result.created,
+        environment: {
+          name: result.environment.name,
+          targetSchema: result.environment.targetSchema,
+          connectionId: result.environment.connectionId?.toString(),
+          threads: result.environment.threads,
+          ownerUserId: result.environment.ownerUserId,
+        },
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to create personal environment");
+    }
+  },
+);
 
 dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
   try {
@@ -442,10 +600,16 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
     }
     await Promise.all([
       DbtFile.deleteMany({ projectId: project._id }),
+      DbtFileDraft.deleteMany({ projectId: project._id }),
+      DbtCheckout.deleteMany({ projectId: project._id }),
       DbtJob.deleteMany({ projectId: project._id }),
       DbtRun.deleteMany({ projectId: project._id }),
     ]);
     await project.deleteOne();
+    publishDbtEvent(c, {
+      type: "dbt.project.updated",
+      projectId: project._id.toString(),
+    });
     return c.json({ success: true });
   } catch (error) {
     return serverError(c, error, "Failed to delete dbt project");
@@ -685,13 +849,11 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
       }
     }
 
-    // Resolve the default branch when the caller didn't pin one.
-    let branch = body.repo.branch;
-    if (!branch) {
-      const token = await resolveRepoToken(body.repo.installationId);
-      const info = await getRepoInfo(body.repo.owner, body.repo.repo, token);
-      branch = info.defaultBranch;
-    }
+    // Resolve the default branch when the caller didn't pin one, and the
+    // repo default branch to seed branch protection.
+    const token = await resolveRepoToken(body.repo.installationId);
+    const info = await getRepoInfo(body.repo.owner, body.repo.repo, token);
+    const branch = body.repo.branch || info.defaultBranch;
 
     const binding = {
       owner: body.repo.owner,
@@ -736,6 +898,9 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
         lastSyncedSha: sha,
         lastSyncedAt: new Date(),
       },
+      // New imports protect the repo's default branch out of the box: prod
+      // changes go through a PR (commit-to-branch → open PR → merge).
+      protectedBranches: [info.defaultBranch],
       createdBy: userId,
     });
 
@@ -743,10 +908,15 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
       repoFilesToInserts(files, {
         workspaceId: project.workspaceId,
         projectId: project._id,
+        branch: binding.branch,
         updatedBy: userId,
       }),
     );
 
+    publishDbtEvent(c, {
+      type: "dbt.project.updated",
+      projectId: project._id.toString(),
+    });
     return c.json({
       success: true,
       project,
@@ -761,7 +931,10 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
   }
 });
 
-// POST /projects/:projectId/sync — pull the latest repo state into Mongo.
+// POST /projects/:projectId/sync — pull the caller's checkout branch into its
+// committed base tree. Always safe: drafts (uncommitted per-user work) live in
+// a separate overlay. `?discard=true` additionally drops the CALLER's drafts
+// (a `git checkout -- .` before the pull).
 dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
   try {
     const project = await findProject(c);
@@ -771,13 +944,18 @@ dbtRoutes.post("/projects/:projectId/sync", async (c: AuthenticatedContext) => {
     if (!project.repo) {
       return badRequest(c, "Project is not connected to a repository");
     }
-    // Safe by default: preserve uncommitted local edits unless the caller
-    // explicitly opts into letting the remote overwrite them (?discard=true).
-    const discard = c.req.query("discard") === "true";
-    const result = await syncProjectFromRepo(project, getUserId(c), {
-      preserveLocalEdits: !discard,
+    const userId = getUserId(c);
+    if (c.req.query("discard") === "true") {
+      await discardUserDrafts(project, userId);
+    }
+    const branch = (await getCheckoutBranch(project, userId)) as string;
+    const result = await syncProjectBranchFromRepo(project, branch, userId);
+    publishDbtEvent(c, {
+      type: "dbt.git.updated",
+      projectId: project._id.toString(),
+      updatedBy: userId,
     });
-    return c.json({ success: true, ...result, project });
+    return c.json({ success: true, ...result, branch, project });
   } catch (error) {
     return serverError(c, error, "Failed to sync dbt project from GitHub");
   }
@@ -807,8 +985,28 @@ const pullRequestSchema = z.object({
   body: z.string().max(10_000).optional(),
   base: z.string().min(1).max(255).optional(),
 });
+const updatePullRequestSchema = z
+  .object({
+    title: z.string().min(1).max(255).optional(),
+    body: z.string().max(10_000).optional(),
+    base: z.string().min(1).max(255).optional(),
+  })
+  .refine(
+    data =>
+      data.title !== undefined ||
+      data.body !== undefined ||
+      data.base !== undefined,
+    { message: "Provide at least one of title, body, or base" },
+  );
+const closePullRequestSchema = z.object({
+  deleteBranch: z.boolean().optional(),
+});
+const listPullRequestsQuerySchema = z
+  .enum(["open", "closed", "all"])
+  .default("open");
 
-// GET /projects/:projectId/git/status — working-tree diff vs the branch.
+// GET /projects/:projectId/git/status — the CALLER's working-tree diff (their
+// drafts vs the committed base of their checked-out branch).
 dbtRoutes.get(
   "/projects/:projectId/git/status",
   async (c: AuthenticatedContext) => {
@@ -820,15 +1018,20 @@ dbtRoutes.get(
       if (!project.repo) {
         return badRequest(c, "Project is not connected to a repository");
       }
-      const status = await getGitStatus(project);
-      return c.json({ success: true, status });
+      const status = await getGitStatus(project, getUserId(c));
+      return c.json({
+        success: true,
+        status,
+        protectedBranches: project.protectedBranches ?? [],
+      });
     } catch (error) {
       return serverError(c, error, "Failed to compute git status");
     }
   },
 );
 
-// GET /projects/:projectId/git/diff?path= — base (HEAD) vs working content.
+// GET /projects/:projectId/git/diff?path= — committed base vs the caller's
+// draft content.
 dbtRoutes.get(
   "/projects/:projectId/git/diff",
   async (c: AuthenticatedContext) => {
@@ -844,7 +1047,7 @@ dbtRoutes.get(
       if (!path) {
         return badRequest(c, "path query parameter is required");
       }
-      const diff = await getProjectFileDiff(project, path);
+      const diff = await getProjectFileDiff(project, getUserId(c), path);
       return c.json({ success: true, diff });
     } catch (error) {
       return serverError(c, error, "Failed to compute git diff");
@@ -852,7 +1055,8 @@ dbtRoutes.get(
   },
 );
 
-// POST /projects/:projectId/git/commit — commit & push working-tree changes.
+// POST /projects/:projectId/git/commit — commit & push the caller's drafts to
+// their checked-out branch. Refuses protected branches (400).
 dbtRoutes.post(
   "/projects/:projectId/git/commit",
   async (c: AuthenticatedContext) => {
@@ -868,10 +1072,19 @@ dbtRoutes.post(
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
       }
+      const userId = getUserId(c);
       const result = await commitAndPush(project, {
+        userId,
         message: parsed.data.message,
-        updatedBy: getUserId(c),
+        updatedBy: userId,
       });
+      if (result.committed) {
+        publishDbtEvent(c, {
+          type: "dbt.git.updated",
+          projectId: project._id.toString(),
+          updatedBy: userId,
+        });
+      }
       return c.json({ success: true, ...result });
     } catch (error) {
       return serverError(c, error, "Failed to commit and push");
@@ -906,7 +1119,8 @@ dbtRoutes.post(
   },
 );
 
-// GET /projects/:projectId/git/branches — list remote branches.
+// GET /projects/:projectId/git/branches — list remote branches; `current` is
+// the CALLER's checkout, not a shared project pointer.
 dbtRoutes.get(
   "/projects/:projectId/git/branches",
   async (c: AuthenticatedContext) => {
@@ -918,15 +1132,24 @@ dbtRoutes.get(
       if (!project.repo) {
         return badRequest(c, "Project is not connected to a repository");
       }
-      const branches = await listProjectBranches(project);
-      return c.json({ success: true, branches, current: project.repo.branch });
+      const [branches, current] = await Promise.all([
+        listProjectBranches(project),
+        getCheckoutBranch(project, getUserId(c)),
+      ]);
+      return c.json({
+        success: true,
+        branches,
+        current,
+        protectedBranches: project.protectedBranches ?? [],
+      });
     } catch (error) {
       return serverError(c, error, "Failed to list branches");
     }
   },
 );
 
-// POST /projects/:projectId/git/branch — create + check out a new branch.
+// POST /projects/:projectId/git/branch — create a branch off the caller's
+// checkout HEAD and check it out for them (only their checkout moves).
 dbtRoutes.post(
   "/projects/:projectId/git/branch",
   async (c: AuthenticatedContext) => {
@@ -942,7 +1165,19 @@ dbtRoutes.post(
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
       }
-      const result = await createProjectBranch(project, parsed.data.name);
+      const userId = getUserId(c);
+      const result = await createProjectBranch(
+        project,
+        userId,
+        parsed.data.name,
+      );
+      publishDbtEvent(c, {
+        type: "dbt.checkout.updated",
+        projectId: project._id.toString(),
+        branch: result.branch,
+        forUserId: userId,
+        updatedBy: userId,
+      });
       return c.json({ success: true, ...result, project });
     } catch (error) {
       return serverError(c, error, "Failed to create branch");
@@ -951,7 +1186,8 @@ dbtRoutes.post(
 );
 
 // POST /projects/:projectId/git/commit-to-branch — atomic create-branch +
-// commit the working tree onto it (race-free promote).
+// commit the caller's drafts onto it (race-free promote; the protected-branch
+// escape hatch).
 dbtRoutes.post(
   "/projects/:projectId/git/commit-to-branch",
   async (c: AuthenticatedContext) => {
@@ -967,10 +1203,19 @@ dbtRoutes.post(
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
       }
+      const userId = getUserId(c);
       const result = await commitToNewBranch(project, {
+        userId,
         branchName: parsed.data.name,
         message: parsed.data.message,
-        updatedBy: getUserId(c),
+        updatedBy: userId,
+      });
+      publishDbtEvent(c, {
+        type: "dbt.checkout.updated",
+        projectId: project._id.toString(),
+        branch: result.branch,
+        forUserId: userId,
+        updatedBy: userId,
       });
       return c.json({ success: true, ...result });
     } catch (error) {
@@ -995,10 +1240,17 @@ dbtRoutes.delete(
       if (!name) {
         return badRequest(c, "Branch name is required");
       }
+      const userId = getUserId(c);
       const result = await deleteProjectBranch(
         project,
+        userId,
         decodeURIComponent(name),
       );
+      publishDbtEvent(c, {
+        type: "dbt.git.updated",
+        projectId: project._id.toString(),
+        updatedBy: userId,
+      });
       return c.json({ success: true, ...result });
     } catch (error) {
       return serverError(c, error, "Failed to delete branch");
@@ -1006,7 +1258,9 @@ dbtRoutes.delete(
   },
 );
 
-// POST /projects/:projectId/git/switch-branch — track + pull another branch.
+// POST /projects/:projectId/git/switch-branch — move the CALLER's checkout to
+// another branch. Their drafts carry over as an overlay (nothing is lost);
+// discardLocalChanges drops the caller's drafts instead.
 dbtRoutes.post(
   "/projects/:projectId/git/switch-branch",
   async (c: AuthenticatedContext) => {
@@ -1022,12 +1276,21 @@ dbtRoutes.post(
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
       }
+      const userId = getUserId(c);
       const result = await switchProjectBranch(
         project,
+        userId,
         parsed.data.branch,
-        getUserId(c),
+        userId,
         { discardLocalChanges: parsed.data.discardLocalChanges ?? false },
       );
+      publishDbtEvent(c, {
+        type: "dbt.checkout.updated",
+        projectId: project._id.toString(),
+        branch: result.branch,
+        forUserId: userId,
+        updatedBy: userId,
+      });
       return c.json({ success: true, ...result, project });
     } catch (error) {
       return serverError(c, error, "Failed to switch branch");
@@ -1035,7 +1298,8 @@ dbtRoutes.post(
   },
 );
 
-// POST /projects/:projectId/git/pull-request — open a PR from the branch.
+// POST /projects/:projectId/git/pull-request — open a PR from the caller's
+// checked-out branch.
 dbtRoutes.post(
   "/projects/:projectId/git/pull-request",
   async (c: AuthenticatedContext) => {
@@ -1051,10 +1315,157 @@ dbtRoutes.post(
       if (!parsed.success) {
         return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
       }
-      const result = await openProjectPullRequest(project, parsed.data);
+      const result = await openProjectPullRequest(
+        project,
+        getUserId(c),
+        parsed.data,
+      );
       return c.json({ success: true, ...result });
     } catch (error) {
       return serverError(c, error, "Failed to open pull request");
+    }
+  },
+);
+
+const mergePullRequestSchema = z.object({
+  prNumber: z.number().int().positive(),
+  mergeMethod: z.enum(["merge", "squash", "rebase"]).optional(),
+  deleteBranch: z.boolean().optional(),
+});
+
+// POST /projects/:projectId/git/merge-pull-request — merge a PR (the only
+// write path into protected branches). Admin+ via the RBAC policy.
+dbtRoutes.post(
+  "/projects/:projectId/git/merge-pull-request",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = mergePullRequestSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const userId = getUserId(c);
+      const result = await mergeProjectPullRequest(project, {
+        userId,
+        prNumber: parsed.data.prNumber,
+        mergeMethod: parsed.data.mergeMethod,
+        deleteBranch: parsed.data.deleteBranch,
+        updatedBy: userId,
+      });
+      publishDbtEvent(c, {
+        type: "dbt.git.updated",
+        projectId: project._id.toString(),
+        updatedBy: userId,
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to merge pull request");
+    }
+  },
+);
+
+function parsePrNumber(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null;
+  const num = Number(raw);
+  return num > 0 ? num : null;
+}
+
+// GET /projects/:projectId/git/pull-requests?state=open|closed|all — list the
+// repo's PRs (newest first).
+dbtRoutes.get(
+  "/projects/:projectId/git/pull-requests",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const parsed = listPullRequestsQuerySchema.safeParse(
+        c.req.query("state") ?? undefined,
+      );
+      if (!parsed.success) {
+        return badRequest(c, "state must be one of open, closed, all");
+      }
+      const pullRequests = await listProjectPullRequests(project, {
+        state: parsed.data,
+      });
+      return c.json({ success: true, pullRequests });
+    } catch (error) {
+      return serverError(c, error, "Failed to list pull requests");
+    }
+  },
+);
+
+// PATCH /projects/:projectId/git/pull-request/:number — update an open PR's
+// title/body/base.
+dbtRoutes.patch(
+  "/projects/:projectId/git/pull-request/:number",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const prNumber = parsePrNumber(c.req.param("number"));
+      if (!prNumber) {
+        return badRequest(c, "Invalid pull request number");
+      }
+      const parsed = updatePullRequestSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const pr = await updateProjectPullRequest(project, {
+        prNumber,
+        ...parsed.data,
+      });
+      return c.json({ success: true, pr });
+    } catch (error) {
+      return serverError(c, error, "Failed to update pull request");
+    }
+  },
+);
+
+// POST /projects/:projectId/git/pull-request/:number/close — close a PR
+// without merging, optionally deleting its source branch.
+dbtRoutes.post(
+  "/projects/:projectId/git/pull-request/:number/close",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      if (!project.repo) {
+        return badRequest(c, "Project is not connected to a repository");
+      }
+      const prNumber = parsePrNumber(c.req.param("number"));
+      if (!prNumber) {
+        return badRequest(c, "Invalid pull request number");
+      }
+      const body = await c.req.json().catch(() => ({}));
+      const parsed = closePullRequestSchema.safeParse(body);
+      if (!parsed.success) {
+        return badRequest(c, parsed.error.issues[0]?.message ?? "Invalid body");
+      }
+      const result = await closeProjectPullRequest(project, {
+        prNumber,
+        deleteBranch: parsed.data.deleteBranch,
+      });
+      return c.json({ success: true, ...result });
+    } catch (error) {
+      return serverError(c, error, "Failed to close pull request");
     }
   },
 );
@@ -1073,19 +1484,17 @@ function isSafeDbtPath(path: string): boolean {
   );
 }
 
+// File reads/writes go through the per-user working tree: repo projects
+// merge the caller's draft overlay over the committed base of their checkout
+// branch, so uncommitted edits are only visible to their author.
+
 dbtRoutes.get("/projects/:projectId/files", async (c: AuthenticatedContext) => {
   try {
     const project = await findProject(c);
     if (!project) {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
-    const files = await DbtFile.find({
-      projectId: project._id,
-      is_deleted: { $ne: true },
-    })
-      .select("path updatedAt updatedBy")
-      .sort({ path: 1 })
-      .lean();
+    const files = await listWorkingFiles(project, getUserId(c));
     return c.json({ success: true, files });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt files");
@@ -1101,11 +1510,7 @@ dbtRoutes.get(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const path = c.req.param("path");
-      const file = await DbtFile.findOne({
-        projectId: project._id,
-        path,
-        is_deleted: { $ne: true },
-      }).lean();
+      const file = await readWorkingFile(project, getUserId(c), path);
       if (!file) {
         return c.json({ success: false, error: "File not found" }, 404);
       }
@@ -1127,7 +1532,10 @@ dbtRoutes.put(
       const path = c.req.param("path");
       if (!isSafeDbtPath(path)) return badRequest(c, "Invalid file path");
 
-      const body = (await c.req.json()) as { content?: unknown };
+      const body = (await c.req.json()) as {
+        content?: unknown;
+        clientId?: unknown;
+      };
       if (typeof body.content !== "string") {
         return badRequest(c, "content (string) is required");
       }
@@ -1136,30 +1544,27 @@ dbtRoutes.put(
       }
 
       const userId = getUserId(c);
-      const file = await DbtFile.findOneAndUpdate(
-        { projectId: project._id, path },
-        {
-          $set: {
-            content: body.content,
-            updatedBy: userId,
-            is_deleted: false,
-            workspaceId: project.workspaceId,
-          },
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
+      const { versionEntityId } = await writeWorkingFile(
+        project,
+        userId,
+        path,
+        body.content,
       );
 
       // Version snapshot (entity-version pattern) — undo/version history.
       try {
-        const latest = await getLatestVersionNumber(file._id, "dbt-file");
+        const latest = await getLatestVersionNumber(
+          versionEntityId,
+          "dbt-file",
+        );
         await createVersion({
           entityType: "dbt-file",
-          entityId: file._id,
+          entityId: versionEntityId,
           workspaceId: project.workspaceId,
-          snapshot: { path: file.path, content: body.content },
+          snapshot: { path, content: body.content },
           savedBy: userId,
           savedByName: await getUserDisplayName(userId),
-          comment: `Save ${file.path} (v${latest + 1})`,
+          comment: `Save ${path} (v${latest + 1})`,
         });
       } catch (versionError) {
         logger.warn("dbt file version snapshot failed", {
@@ -1171,7 +1576,21 @@ dbtRoutes.put(
         { _id: project._id },
         { $currentDate: { updatedAt: true } },
       );
-      return c.json({ success: true, file });
+      // Draft edits poke only the author's other windows (forUserId); blank
+      // projects stay workspace-wide (shared tree).
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path,
+        updatedBy: userId,
+        clientId: typeof body.clientId === "string" ? body.clientId : undefined,
+        origin: "save",
+        forUserId: project.repo ? userId : undefined,
+      });
+      return c.json({
+        success: true,
+        file: { path, content: body.content, updatedBy: userId },
+      });
     } catch (error) {
       return serverError(c, error, "Failed to save dbt file");
     }
@@ -1187,13 +1606,20 @@ dbtRoutes.delete(
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
       const path = c.req.param("path");
-      const result = await DbtFile.updateOne(
-        { projectId: project._id, path },
-        { $set: { is_deleted: true, updatedBy: getUserId(c) } },
-      );
-      if (result.matchedCount === 0) {
+      const userId = getUserId(c);
+      const deleted = await deleteWorkingFile(project, userId, path);
+      if (!deleted) {
         return c.json({ success: false, error: "File not found" }, 404);
       }
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path,
+        deleted: true,
+        updatedBy: userId,
+        origin: "save",
+        forUserId: project.repo ? userId : undefined,
+      });
       return c.json({ success: true });
     } catch (error) {
       return serverError(c, error, "Failed to delete dbt file");
@@ -1209,28 +1635,47 @@ dbtRoutes.post(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const body = (await c.req.json()) as { from?: unknown; to?: unknown };
+      const body = (await c.req.json()) as {
+        from?: unknown;
+        to?: unknown;
+        clientId?: unknown;
+      };
       const from = typeof body.from === "string" ? body.from : "";
       const to = typeof body.to === "string" ? body.to : "";
       if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
         return badRequest(c, "Invalid from/to path");
       }
-      const existing = await DbtFile.findOne({
-        projectId: project._id,
-        path: to,
-        is_deleted: { $ne: true },
-      });
-      if (existing) return badRequest(c, `"${to}" already exists`);
-
-      // Replace any soft-deleted doc occupying the target path.
-      await DbtFile.deleteOne({ projectId: project._id, path: to });
-      const result = await DbtFile.updateOne(
-        { projectId: project._id, path: from, is_deleted: { $ne: true } },
-        { $set: { path: to, updatedBy: getUserId(c) } },
-      );
-      if (result.matchedCount === 0) {
-        return c.json({ success: false, error: "File not found" }, 404);
+      const userId = getUserId(c);
+      const renameError = await renameWorkingFile(project, userId, from, to);
+      if (renameError === "File not found") {
+        return c.json({ success: false, error: renameError }, 404);
       }
+      if (renameError) return badRequest(c, renameError);
+      // The working tree expresses a rename as delete(from) + add(to) — poke
+      // both paths so the acting user's other windows (and, for blank
+      // projects, the whole workspace) move the file and refresh git status.
+      const clientId =
+        typeof body.clientId === "string" ? body.clientId : undefined;
+      const forUserId = project.repo ? userId : undefined;
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path: from,
+        deleted: true,
+        updatedBy: userId,
+        clientId,
+        origin: "save",
+        forUserId,
+      });
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path: to,
+        updatedBy: userId,
+        clientId,
+        origin: "save",
+        forUserId,
+      });
       return c.json({ success: true });
     } catch (error) {
       return serverError(c, error, "Failed to rename dbt file");
@@ -1321,6 +1766,10 @@ dbtRoutes.post("/projects/:projectId/jobs", async (c: AuthenticatedContext) => {
     });
     await applyJobScheduleChange(job);
     const fresh = await DbtJob.findById(job._id).lean();
+    publishDbtEvent(c, {
+      type: "dbt.job.updated",
+      projectId: project._id.toString(),
+    });
     return c.json({ success: true, job: fresh });
   } catch (error) {
     return serverError(c, error, "Failed to create dbt job");
@@ -1374,6 +1823,10 @@ dbtRoutes.patch(
       await job.save();
       await applyJobScheduleChange(job);
       const fresh = await DbtJob.findById(job._id).lean();
+      publishDbtEvent(c, {
+        type: "dbt.job.updated",
+        projectId: project._id.toString(),
+      });
       return c.json({ success: true, job: fresh });
     } catch (error) {
       return serverError(c, error, "Failed to update dbt job");
@@ -1400,6 +1853,10 @@ dbtRoutes.delete(
       if (result.deletedCount === 0) {
         return c.json({ success: false, error: "Job not found" }, 404);
       }
+      publishDbtEvent(c, {
+        type: "dbt.job.updated",
+        projectId: project._id.toString(),
+      });
       return c.json({ success: true });
     } catch (error) {
       return serverError(c, error, "Failed to delete dbt job");
@@ -1431,6 +1888,12 @@ dbtRoutes.post(
         job,
         trigger: "manual",
         triggeredBy: getUserId(c),
+      });
+      publishDbtEvent(c, {
+        type: "dbt.run.updated",
+        projectId: project._id.toString(),
+        runId: run._id.toString(),
+        jobId: job._id.toString(),
       });
       return c.json({ success: true, runId: run._id.toString() });
     } catch (error) {
@@ -1533,6 +1996,11 @@ dbtRoutes.post(
       // Idempotent: an already-terminal run echoes its current status (no
       // error), and the queued→running / finished-during-cancel races return
       // the real status rather than failing.
+      publishDbtEvent(c, {
+        type: "dbt.run.updated",
+        projectId: project._id.toString(),
+        runId,
+      });
       return c.json({
         success: true,
         status: result.status,
@@ -1568,6 +2036,12 @@ dbtRoutes.post(
           "Run cannot be retried (must be a failed run with results)",
         );
       }
+      publishDbtEvent(c, {
+        type: "dbt.run.updated",
+        projectId: project._id.toString(),
+        runId: run._id.toString(),
+        jobId: run.jobId?.toString(),
+      });
       return c.json({ success: true, runId: run._id.toString() });
     } catch (error) {
       return serverError(c, error, "Failed to retry dbt run");
@@ -1646,29 +2120,9 @@ const commandSchema = z.object({
 
 const SELECT_PATTERN = /^[\w.+@:*\-/]+$/;
 
-/**
- * Read the project's last production manifest for `--defer --state`, or
- * `undefined` when defer is off / no prod build exists yet. Never throws —
- * a missing manifest just disables defer for this invocation.
- */
-async function loadDeferState(project: {
-  lastProdManifestKey?: string;
-}): Promise<Buffer | undefined> {
-  const key = project.lastProdManifestKey;
-  if (!key) return undefined;
-  try {
-    const stream = await getDashboardArtifactStore().openReadStream(key);
-    if (!stream) return undefined;
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return Buffer.concat(chunks);
-  } catch (error) {
-    logger.warn("Failed to load defer state manifest", { error, key });
-    return undefined;
-  }
-}
+// Shared with the agent tools: reads the last prod manifest for
+// `--defer --state` (see dbt-project.service.ts).
+const loadDeferState = loadDbtDeferState;
 
 /**
  * Prepend a warning when defer was requested but no prod manifest exists, so
@@ -1711,6 +2165,7 @@ dbtRoutes.post(
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
+        userId: getUserId(c),
         command,
         select,
         deferState,
@@ -1752,6 +2207,7 @@ dbtRoutes.post(
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
+        userId: getUserId(c),
         command: `build --select ${select}`,
         select,
         deferState,
@@ -1806,6 +2262,7 @@ dbtRoutes.post(
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
+        userId: getUserId(c),
         command: normalized,
         deferState,
         timeoutMs: 9 * 60 * 1000,

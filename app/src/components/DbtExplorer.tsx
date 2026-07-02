@@ -29,6 +29,7 @@ import {
   Chip,
   CircularProgress,
   Divider,
+  Link,
   Snackbar,
   Alert,
   useTheme,
@@ -52,6 +53,8 @@ import {
   DownloadCloud as SyncIcon,
   GitCommitHorizontal as CommitIcon,
   GitPullRequest as PullRequestIcon,
+  GitPullRequestClosed as PullRequestClosedIcon,
+  GitMerge as MergedIcon,
   GitBranchPlus as NewBranchIcon,
   ArrowLeftRight as SwitchBranchIcon,
   ChevronDown as ChevronDownIcon,
@@ -59,6 +62,7 @@ import {
   Check as CheckIcon,
   Box as ProjectBoxIcon,
   Sparkles as GenerateIcon,
+  Lock as LockIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -67,6 +71,7 @@ import {
   useDbtStore,
   type DbtJobItem,
   type GitFileDiff,
+  type PullRequestItem,
 } from "../store/dbtStore";
 import {
   focusDbtConsoleTab,
@@ -78,6 +83,7 @@ import {
   DBT_JINJA_LANGUAGE_ID,
   registerDbtJinjaLanguage,
 } from "../lib/dbt-monaco";
+import { envBadgeColor } from "../lib/dbt-env";
 import {
   useExplorerRevealStore,
   selectRevealFor,
@@ -220,27 +226,6 @@ function scheduleSummary(job: DbtJobItem): string {
   return `${job.schedule.cron} ${job.schedule.timezone ?? "UTC"}`;
 }
 
-/**
- * MUI Chip color for a job's environment badge. Prod-like envs are flagged
- * `warning` so destructive/scheduled prod runs stand out; the project default
- * and dev-like envs get `info`, everything else stays neutral.
- */
-function envBadgeColor(
-  envName: string,
-  defaultEnvironment?: string,
-): "warning" | "info" | "default" {
-  const lower = envName.trim().toLowerCase();
-  if (lower === "prod" || lower === "production") return "warning";
-  if (
-    lower === "dev" ||
-    lower === "development" ||
-    (defaultEnvironment != null && envName === defaultEnvironment)
-  ) {
-    return "info";
-  }
-  return "default";
-}
-
 /** Collapsible section header (dbt Studio "Version control" / "File explorer"). */
 function SectionHeader({
   label,
@@ -312,7 +297,8 @@ const STATUS_META = {
 export function DbtExplorer() {
   const { currentWorkspace } = useWorkspace();
   const workspaceId = currentWorkspace?.id;
-  const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
+  const theme = useTheme();
+  const monacoTheme = theme.palette.mode === "dark" ? "vs-dark" : "vs";
 
   const projects = useDbtStore(s => s.projects);
   const projectsLoaded = useDbtStore(s => s.projectsLoaded);
@@ -328,14 +314,22 @@ export function DbtExplorer() {
   const deleteProject = useDbtStore(s => s.deleteProject);
   const syncProjectFromGitHub = useDbtStore(s => s.syncProjectFromGitHub);
   const gitStatusByProject = useDbtStore(s => s.gitStatusByProject);
+  const checkoutBranchByProject = useDbtStore(s => s.checkoutBranchByProject);
+  const protectedBranchesByProject = useDbtStore(
+    s => s.protectedBranchesByProject,
+  );
   const fetchGitStatus = useDbtStore(s => s.fetchGitStatus);
   const fetchGitDiff = useDbtStore(s => s.fetchGitDiff);
   const commitAndPush = useDbtStore(s => s.commitAndPush);
+  const commitToBranch = useDbtStore(s => s.commitToBranch);
   const generateCommitMessage = useDbtStore(s => s.generateCommitMessage);
   const listBranches = useDbtStore(s => s.listBranches);
   const createBranch = useDbtStore(s => s.createBranch);
   const switchBranch = useDbtStore(s => s.switchBranch);
   const openPullRequest = useDbtStore(s => s.openPullRequest);
+  const listPullRequests = useDbtStore(s => s.listPullRequests);
+  const updatePullRequest = useDbtStore(s => s.updatePullRequest);
+  const closePullRequest = useDbtStore(s => s.closePullRequest);
   const createFile = useDbtStore(s => s.createFile);
   const deleteFile = useDbtStore(s => s.deleteFile);
   const renameFile = useDbtStore(s => s.renameFile);
@@ -374,6 +368,8 @@ export function DbtExplorer() {
   // In-IDE git dialogs
   const [commitTarget, setCommitTarget] = useState<string | null>(null);
   const [commitMessage, setCommitMessage] = useState("");
+  /** New branch name when committing from a protected (PR-only) checkout. */
+  const [commitBranchName, setCommitBranchName] = useState("");
   const [generatingMessage, setGeneratingMessage] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitResult, setGitResult] = useState<string | null>(null);
@@ -393,6 +389,17 @@ export function DbtExplorer() {
   const [prTarget, setPrTarget] = useState<string | null>(null);
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
+  // Pull requests list dialog
+  const [prListTarget, setPrListTarget] = useState<string | null>(null);
+  const [prList, setPrList] = useState<PullRequestItem[] | null>(null);
+  const [prListState, setPrListState] = useState<"open" | "all">("open");
+  const [prEdit, setPrEdit] = useState<{
+    number: number;
+    title: string;
+    body: string;
+  } | null>(null);
+  const [prCloseConfirm, setPrCloseConfirm] = useState<number | null>(null);
+  const [prBusy, setPrBusy] = useState(false);
   const [newFileTarget, setNewFileTarget] = useState<{
     projectId: string;
     dir: string;
@@ -509,6 +516,22 @@ export function DbtExplorer() {
     ? gitStatusByProject[activeProjectId]
     : undefined;
   const activeChangeCount = activeStatus?.changes.length ?? 0;
+  /** The current user's checked-out branch (per-user checkout). */
+  const activeBranch = activeProjectId
+    ? (checkoutBranchByProject[activeProjectId] ??
+      activeStatus?.branch ??
+      activeProject?.repo?.branch)
+    : undefined;
+  /** True when the user's checkout is a protected (PR-only) branch. */
+  const activeBranchProtected = Boolean(
+    activeProjectId &&
+      activeBranch &&
+      (
+        protectedBranchesByProject[activeProjectId] ??
+        activeProject?.protectedBranches ??
+        []
+      ).includes(activeBranch),
+  );
 
   const handleRefresh = useCallback(() => {
     if (!workspaceId) return;
@@ -628,12 +651,12 @@ export function DbtExplorer() {
         return;
       }
       await fetchFiles(workspaceId, projectId);
-      await fetchGitStatus(workspaceId, projectId);
+      const status = await fetchGitStatus(workspaceId, projectId);
 
       const ref = result.branch ?? "remote";
       const changed = result.added + result.updated + result.deleted;
-      const kept = result.preservedLocal.length;
-      if (changed === 0 && kept === 0) {
+      const pending = status?.changes.length ?? 0;
+      if (changed === 0) {
         setSyncSnack({
           severity: "info",
           message: `Already up to date with ${ref}.`,
@@ -641,14 +664,13 @@ export function DbtExplorer() {
       } else {
         const parts = `+${result.added} ~${result.updated} −${result.deleted}`;
         setSyncSnack({
-          severity: kept > 0 ? "warning" : "success",
+          severity: "success",
           message:
             `Pulled ${ref}: ${parts}` +
-            (kept > 0
-              ? ` · kept ${kept} file${kept === 1 ? "" : "s"} with uncommitted ` +
-                "local edits. Commit them, or overwrite with the remote."
+            (pending > 0
+              ? ` · your ${pending} uncommitted change${pending === 1 ? "" : "s"} ` +
+                "stay pending on top."
               : ""),
-          projectId: kept > 0 ? projectId : undefined,
         });
       }
     },
@@ -659,6 +681,7 @@ export function DbtExplorer() {
     (projectId: string) => {
       setCommitTarget(projectId);
       setCommitMessage("");
+      setCommitBranchName("");
       setGitResult(null);
       if (workspaceId) void fetchGitStatus(workspaceId, projectId);
     },
@@ -676,14 +699,39 @@ export function DbtExplorer() {
     [workspaceId, fetchGitDiff],
   );
 
+  const commitTargetProtected = useMemo(() => {
+    if (!commitTarget) return false;
+    const branch =
+      checkoutBranchByProject[commitTarget] ??
+      gitStatusByProject[commitTarget]?.branch;
+    if (!branch) return false;
+    const protectedBranches =
+      protectedBranchesByProject[commitTarget] ??
+      projects.find(p => p._id === commitTarget)?.protectedBranches ??
+      [];
+    return protectedBranches.includes(branch);
+  }, [
+    commitTarget,
+    checkoutBranchByProject,
+    gitStatusByProject,
+    protectedBranchesByProject,
+    projects,
+  ]);
+
   const handleCommit = useCallback(async () => {
     if (!workspaceId || !commitTarget || !commitMessage.trim()) return;
+    // Protected checkout: direct commits are refused server-side — promote the
+    // drafts onto a new branch instead (then open a PR to merge).
+    if (commitTargetProtected && !commitBranchName.trim()) return;
     setGitBusy(true);
-    const result = await commitAndPush(
-      workspaceId,
-      commitTarget,
-      commitMessage.trim(),
-    );
+    const result = commitTargetProtected
+      ? await commitToBranch(
+          workspaceId,
+          commitTarget,
+          commitBranchName.trim(),
+          commitMessage.trim(),
+        )
+      : await commitAndPush(workspaceId, commitTarget, commitMessage.trim());
     setGitBusy(false);
     if (result?.committed) {
       const { added, modified, deleted } = result.pushed;
@@ -691,6 +739,7 @@ export function DbtExplorer() {
         `Pushed to ${result.branch}: +${added} ~${modified} -${deleted}`,
       );
       setCommitMessage("");
+      setCommitBranchName("");
       // Briefly show the confirmation, then close — the working tree is now
       // clean, so leaving the dialog open just shows a dead "0 changes" state.
       window.setTimeout(() => {
@@ -699,8 +748,20 @@ export function DbtExplorer() {
       }, 1500);
     } else if (result) {
       setGitResult("No changes to commit");
+    } else {
+      setGitResult(
+        useDbtStore.getState().error.projects ?? "Commit failed — try again.",
+      );
     }
-  }, [workspaceId, commitTarget, commitMessage, commitAndPush]);
+  }, [
+    workspaceId,
+    commitTarget,
+    commitMessage,
+    commitBranchName,
+    commitTargetProtected,
+    commitAndPush,
+    commitToBranch,
+  ]);
 
   const handleGenerateMessage = useCallback(async () => {
     if (!workspaceId || !commitTarget) return;
@@ -778,6 +839,86 @@ export function DbtExplorer() {
       setPrBody("");
     }
   }, [workspaceId, prTarget, prTitle, prBody, openPullRequest]);
+
+  const refreshPrList = useCallback(
+    async (projectId: string, state: "open" | "all") => {
+      if (!workspaceId) return;
+      setPrList(null);
+      const result = await listPullRequests(workspaceId, projectId, state);
+      setPrList(result ?? []);
+    },
+    [workspaceId, listPullRequests],
+  );
+
+  const openPrListDialog = useCallback(
+    (projectId: string) => {
+      setPrListTarget(projectId);
+      setPrEdit(null);
+      setPrCloseConfirm(null);
+      setPrListState("open");
+      void refreshPrList(projectId, "open");
+    },
+    [refreshPrList],
+  );
+
+  const handlePrStateFilterChange = useCallback(
+    (state: "open" | "all") => {
+      setPrListState(state);
+      if (prListTarget) void refreshPrList(prListTarget, state);
+    },
+    [prListTarget, refreshPrList],
+  );
+
+  const handleUpdatePullRequest = useCallback(async () => {
+    if (!workspaceId || !prListTarget || !prEdit || !prEdit.title.trim()) {
+      return;
+    }
+    setPrBusy(true);
+    const updated = await updatePullRequest(
+      workspaceId,
+      prListTarget,
+      prEdit.number,
+      { title: prEdit.title.trim(), body: prEdit.body },
+    );
+    setPrBusy(false);
+    if (updated) {
+      setPrEdit(null);
+      setSyncSnack({
+        severity: "success",
+        message: `PR #${updated.number} updated`,
+      });
+      void refreshPrList(prListTarget, prListState);
+    }
+  }, [
+    workspaceId,
+    prListTarget,
+    prEdit,
+    prListState,
+    updatePullRequest,
+    refreshPrList,
+  ]);
+
+  const handleClosePullRequest = useCallback(
+    async (prNumber: number) => {
+      if (!workspaceId || !prListTarget) return;
+      setPrBusy(true);
+      const closed = await closePullRequest(
+        workspaceId,
+        prListTarget,
+        prNumber,
+      );
+      setPrBusy(false);
+      setPrCloseConfirm(null);
+      if (closed) {
+        setSyncSnack({
+          severity: "success",
+          message: `PR #${closed.number} closed without merging`,
+        });
+        void refreshPrList(prListTarget, prListState);
+      }
+    },
+    [workspaceId, prListTarget, prListState, closePullRequest, refreshPrList],
+  );
 
   const getContextMenuItems = useCallback(
     (node: ResourceTreeNode, helpers: { closeMenu: () => void }) => {
@@ -946,6 +1087,18 @@ export function DbtExplorer() {
               </ListItemIcon>
               Open pull request
             </MenuItem>,
+            <MenuItem
+              key="git-pr-list"
+              onClick={() => {
+                openPrListDialog(parsed.projectId);
+                helpers.closeMenu();
+              }}
+            >
+              <ListItemIcon>
+                <PullRequestIcon size={16} strokeWidth={1.5} />
+              </ListItemIcon>
+              Pull requests
+            </MenuItem>,
             <Divider key="git-divider" />,
           );
         }
@@ -1014,6 +1167,7 @@ export function DbtExplorer() {
       gitStatusByProject,
       openCommitDialog,
       openSwitchDialog,
+      openPrListDialog,
       handleNewJob,
     ],
   );
@@ -1082,11 +1236,15 @@ export function DbtExplorer() {
       if (!project?.repo) return kebab;
       const status = gitStatusByProject[parsed.projectId];
       const changeCount = status?.changes.length ?? 0;
+      const branchLabel =
+        checkoutBranchByProject[parsed.projectId] ??
+        status?.branch ??
+        project.repo.branch;
       return (
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
           <Tooltip
             title={
-              `${project.repo.owner}/${project.repo.repo} @ ${project.repo.branch}` +
+              `${project.repo.owner}/${project.repo.repo} @ ${branchLabel}` +
               (changeCount > 0 ? ` — ${changeCount} uncommitted` : "")
             }
           >
@@ -1109,7 +1267,7 @@ export function DbtExplorer() {
                   whiteSpace: "nowrap",
                 }}
               >
-                {project.repo.branch}
+                {branchLabel}
                 {changeCount > 0 ? ` •${changeCount}` : ""}
               </Box>
             </Box>
@@ -1118,7 +1276,7 @@ export function DbtExplorer() {
         </Box>
       );
     },
-    [projects, gitStatusByProject],
+    [projects, gitStatusByProject, checkoutBranchByProject],
   );
 
   const handleNewFileConfirm = useCallback(async () => {
@@ -1287,8 +1445,20 @@ export function DbtExplorer() {
         </ListItemIcon>
         Open pull request
       </MenuItem>,
+      <MenuItem
+        key="pr-list"
+        onClick={() => {
+          openPrListDialog(projectId);
+          close();
+        }}
+      >
+        <ListItemIcon>
+          <PullRequestIcon size={16} strokeWidth={1.5} />
+        </ListItemIcon>
+        Pull requests
+      </MenuItem>,
     ],
-    [syncingProjectId, handleSyncProject, openSwitchDialog],
+    [syncingProjectId, handleSyncProject, openSwitchDialog, openPrListDialog],
   );
 
   const projectSelector = (
@@ -1446,8 +1616,13 @@ export function DbtExplorer() {
                             flex: 1,
                           }}
                         >
-                          {activeStatus?.branch ?? activeProject.repo.branch}
+                          {activeBranch ?? activeProject.repo.branch}
                         </Box>
+                        {activeBranchProtected && (
+                          <Tooltip title="Protected branch — changes merge via pull request">
+                            <LockIcon size={12} strokeWidth={1.75} />
+                          </Tooltip>
+                        )}
                         {activeChangeCount > 0 && (
                           <Chip
                             label={activeChangeCount}
@@ -2107,6 +2282,35 @@ export function DbtExplorer() {
                   value={commitMessage}
                   onChange={e => setCommitMessage(e.target.value)}
                 />
+                {commitTargetProtected && (
+                  <>
+                    <Alert severity="info" sx={{ mt: 1.5 }} icon={false}>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.75,
+                        }}
+                      >
+                        <LockIcon size={14} strokeWidth={1.75} />
+                        <span>
+                          {status?.branch ?? "This branch"} is protected —
+                          changes commit to a new branch, then merge via pull
+                          request.
+                        </span>
+                      </Box>
+                    </Alert>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="New branch name"
+                      placeholder="feature/my-change"
+                      value={commitBranchName}
+                      onChange={e => setCommitBranchName(e.target.value)}
+                      sx={{ mt: 1.5 }}
+                    />
+                  </>
+                )}
                 {gitResult && (
                   <Typography
                     variant="caption"
@@ -2135,12 +2339,17 @@ export function DbtExplorer() {
             disabled={
               gitBusy ||
               !commitMessage.trim() ||
+              (commitTargetProtected && !commitBranchName.trim()) ||
               (commitTarget
                 ? (gitStatusByProject[commitTarget]?.changes.length ?? 0) === 0
                 : true)
             }
           >
-            {gitBusy ? "Pushing…" : "Commit & push"}
+            {gitBusy
+              ? "Pushing…"
+              : commitTargetProtected
+                ? "Commit to new branch"
+                : "Commit & push"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2265,8 +2474,8 @@ export function DbtExplorer() {
             display="block"
             sx={{ mt: 1 }}
           >
-            Switching pulls the selected branch and overwrites uncommitted local
-            changes.
+            Switching pulls the selected branch for you only — teammates keep
+            their own checkout, and your uncommitted changes carry over.
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -2332,6 +2541,338 @@ export function DbtExplorer() {
           >
             {gitBusy ? "Opening…" : "Open PR"}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Pull requests list dialog (view / edit / close) */}
+      <Dialog
+        open={!!prListTarget}
+        onClose={() => setPrListTarget(null)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+          }}
+        >
+          Pull requests
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <FormControl size="small" sx={{ minWidth: 90 }}>
+              <Select
+                value={prListState}
+                onChange={e =>
+                  handlePrStateFilterChange(e.target.value as "open" | "all")
+                }
+              >
+                <MenuItem value="open">Open</MenuItem>
+                <MenuItem value="all">All</MenuItem>
+              </Select>
+            </FormControl>
+            <Tooltip title="Refresh">
+              <IconButton
+                size="small"
+                onClick={() => {
+                  if (prListTarget) {
+                    void refreshPrList(prListTarget, prListState);
+                  }
+                }}
+              >
+                <RefreshIcon size={16} strokeWidth={2} />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers sx={{ p: 0, minHeight: 160 }}>
+          {prList === null ? (
+            <Box
+              sx={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                py: 5,
+              }}
+            >
+              <CircularProgress size={20} />
+            </Box>
+          ) : prList.length === 0 ? (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ px: 2.5, py: 4, textAlign: "center" }}
+            >
+              {prListState === "open"
+                ? "No open pull requests."
+                : "No pull requests."}
+            </Typography>
+          ) : (
+            prList.map(pr => {
+              const isEditing = prEdit?.number === pr.number;
+              const isConfirmingClose = prCloseConfirm === pr.number;
+              return (
+                <Box
+                  key={pr.number}
+                  sx={{
+                    px: 2,
+                    py: 1.25,
+                    borderBottom: 1,
+                    borderColor: "divider",
+                    "&:last-of-type": { borderBottom: 0 },
+                  }}
+                >
+                  <Box
+                    sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}
+                  >
+                    <Box sx={{ mt: 0.25, flexShrink: 0, display: "flex" }}>
+                      {pr.merged ? (
+                        <MergedIcon
+                          size={16}
+                          strokeWidth={2}
+                          color={theme.palette.secondary.main}
+                        />
+                      ) : pr.state === "open" ? (
+                        <PullRequestIcon
+                          size={16}
+                          strokeWidth={2}
+                          color={theme.palette.success.main}
+                        />
+                      ) : (
+                        <PullRequestClosedIcon
+                          size={16}
+                          strokeWidth={2}
+                          color={theme.palette.error.main}
+                        />
+                      )}
+                    </Box>
+                    <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+                      <Link
+                        href={pr.htmlUrl}
+                        target="_blank"
+                        rel="noopener"
+                        underline="hover"
+                        color="text.primary"
+                        sx={{
+                          fontSize: "0.85rem",
+                          fontWeight: 500,
+                          display: "block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        #{pr.number} {pr.title}
+                      </Link>
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 0.5,
+                          minWidth: 0,
+                        }}
+                      >
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                            minWidth: 0,
+                          }}
+                        >
+                          {pr.headRef} → {pr.baseRef}
+                          {pr.author ? ` · ${pr.author}` : ""}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ flexShrink: 0 }}
+                        >
+                          · {new Date(pr.updatedAt).toLocaleDateString()}
+                        </Typography>
+                      </Box>
+                    </Box>
+                    {pr.draft && pr.state === "open" && (
+                      <Chip
+                        label="Draft"
+                        size="small"
+                        variant="outlined"
+                        sx={{ flexShrink: 0 }}
+                      />
+                    )}
+                    {pr.merged ? (
+                      <Chip
+                        label="Merged"
+                        size="small"
+                        color="secondary"
+                        variant="outlined"
+                        sx={{ flexShrink: 0 }}
+                      />
+                    ) : pr.state === "closed" ? (
+                      <Chip
+                        label="Closed"
+                        size="small"
+                        color="error"
+                        variant="outlined"
+                        sx={{ flexShrink: 0 }}
+                      />
+                    ) : (
+                      <Box
+                        sx={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 0.25,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Tooltip title="Edit title & description">
+                          <IconButton
+                            size="small"
+                            disabled={prBusy}
+                            onClick={() => {
+                              setPrCloseConfirm(null);
+                              setPrEdit(
+                                isEditing
+                                  ? null
+                                  : {
+                                      number: pr.number,
+                                      title: pr.title,
+                                      body: pr.body,
+                                    },
+                              );
+                            }}
+                          >
+                            <RenameIcon size={14} strokeWidth={1.75} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Close without merging">
+                          <IconButton
+                            size="small"
+                            disabled={prBusy}
+                            onClick={() => {
+                              setPrEdit(null);
+                              setPrCloseConfirm(
+                                isConfirmingClose ? null : pr.number,
+                              );
+                            }}
+                          >
+                            <PullRequestClosedIcon
+                              size={14}
+                              strokeWidth={1.75}
+                            />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    )}
+                  </Box>
+                  {isEditing && (
+                    <Box sx={{ mt: 1.25, pl: 3 }}>
+                      <TextField
+                        autoFocus
+                        fullWidth
+                        size="small"
+                        label="Title"
+                        value={prEdit.title}
+                        onChange={e =>
+                          setPrEdit({ ...prEdit, title: e.target.value })
+                        }
+                        sx={{ mb: 1.5 }}
+                      />
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={2}
+                        size="small"
+                        label="Description"
+                        value={prEdit.body}
+                        onChange={e =>
+                          setPrEdit({ ...prEdit, body: e.target.value })
+                        }
+                      />
+                      <Box
+                        sx={{
+                          display: "flex",
+                          justifyContent: "flex-end",
+                          gap: 1,
+                          mt: 1,
+                        }}
+                      >
+                        <Button size="small" onClick={() => setPrEdit(null)}>
+                          Cancel
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          onClick={handleUpdatePullRequest}
+                          disabled={prBusy || !prEdit.title.trim()}
+                          startIcon={
+                            prBusy ? <CircularProgress size={12} /> : undefined
+                          }
+                        >
+                          {prBusy ? "Saving…" : "Save"}
+                        </Button>
+                      </Box>
+                    </Box>
+                  )}
+                  {isConfirmingClose && (
+                    <Box
+                      sx={{
+                        mt: 1,
+                        pl: 3,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "flex-end",
+                        gap: 1,
+                      }}
+                    >
+                      <Typography variant="caption" color="text.secondary">
+                        Close #{pr.number} without merging?
+                      </Typography>
+                      <Button
+                        size="small"
+                        onClick={() => setPrCloseConfirm(null)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="small"
+                        color="error"
+                        variant="contained"
+                        onClick={() => void handleClosePullRequest(pr.number)}
+                        disabled={prBusy}
+                        startIcon={
+                          prBusy ? <CircularProgress size={12} /> : undefined
+                        }
+                      >
+                        {prBusy ? "Closing…" : "Close PR"}
+                      </Button>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            startIcon={<PullRequestIcon size={15} strokeWidth={1.75} />}
+            onClick={() => {
+              const pid = prListTarget;
+              setPrListTarget(null);
+              if (pid) {
+                setPrTarget(pid);
+                setPrTitle("");
+                setPrBody("");
+              }
+            }}
+          >
+            New PR
+          </Button>
+          <Box sx={{ flexGrow: 1 }} />
+          <Button onClick={() => setPrListTarget(null)}>Close</Button>
         </DialogActions>
       </Dialog>
 

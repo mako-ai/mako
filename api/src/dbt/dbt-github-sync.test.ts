@@ -60,11 +60,17 @@ describe("repoFilesToInserts", () => {
       { path: "dbt_project.yml", content: "name: x", blobSha: "sha2" },
     ];
     expect(
-      repoFilesToInserts(files, { workspaceId, projectId, updatedBy: "u1" }),
+      repoFilesToInserts(files, {
+        workspaceId,
+        projectId,
+        branch: "main",
+        updatedBy: "u1",
+      }),
     ).toEqual([
       {
         workspaceId,
         projectId,
+        branch: "main",
         path: "models/a.sql",
         content: "select 1",
         updatedBy: "u1",
@@ -73,6 +79,7 @@ describe("repoFilesToInserts", () => {
       {
         workspaceId,
         projectId,
+        branch: "main",
         path: "dbt_project.yml",
         content: "name: x",
         updatedBy: "u1",
@@ -86,6 +93,7 @@ describe("repoFilesToInserts", () => {
       repoFilesToInserts([], {
         workspaceId: new Types.ObjectId(),
         projectId: new Types.ObjectId(),
+        branch: "main",
         updatedBy: "u1",
       }),
     ).toEqual([]);

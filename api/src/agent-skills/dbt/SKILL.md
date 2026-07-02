@@ -26,8 +26,12 @@ entities:
 
 Mako runs dbt Core projects whose files live in the workspace database (one
 document per file) and execute as subprocesses against the project's warehouse
-environments. The agent edits files with `create_dbt_file` / `modify_dbt_file`
-and verifies with `dbt_parse` → `dbt_compile_model` → `dbt_run_model`.
+environments. The agent creates files with `create_dbt_file`, modifies existing
+ones with `edit_dbt_file` (anchored `oldString`/`newString` replacement — the
+match must be unique; include surrounding lines to disambiguate, `""` deletes,
+`replaceAll: true` renames), reserves `modify_dbt_file` (COMPLETE contents) for
+full rewrites, and verifies with `dbt_parse` → `dbt_compile_model` →
+`dbt_run_model`.
 
 ## Project layout
 
@@ -139,11 +143,49 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
 ## Environments and jobs
 
 - Projects have environments (dev/prod) mapping to a workspace connection +
-  target schema. Ad-hoc agent builds ALWAYS default to dev.
+  target schema. Ad-hoc agent builds default to the acting user's PERSONAL
+  environment when provisioned, else dev. Never target prod unless the user
+  explicitly asks.
+- **Personal environments**: `dbt_ensure_dev_environment` idempotently
+  provisions a per-user environment (schema `dbt_<user>`, same connection as
+  prod). Once it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` /
+  `dbt_show` default to it — iteration never touches shared dev/prod schemas.
+  Provision it before building models when the user wants safe iteration.
+- **Defer (fast iteration)**: ad-hoc builds default to
+  `--defer --state <last prod manifest>` when targeting a non-prod environment
+  and a prod build exists — unselected `ref()`s resolve to prod relations, so
+  ONE model can be rebuilt in a personal schema without first rebuilding its
+  whole upstream DAG there. Pass `defer: false` to disable (e.g. when you
+  intentionally rebuilt an upstream model in the same schema and want refs to
+  use it).
 - Jobs are saved command lists (`build`, `test`, `seed`, `snapshot`,
   `source freshness`, `docs generate` + `--select/--exclude/--full-refresh`
   flags) with optional cron schedules. Trigger via `dbt_run_job` only after
   explicit user confirmation.
+
+## Iterating on models that feed apps (dev → prod loop)
+
+App data bindings can link to a dbt project (`dbtProjectId` on the binding)
+and reference the build schema via the `{{ dbt_schema }}` token instead of a
+hardcoded `dbt_prod.` prefix. Published apps, parquet materialization, and
+public shares ALWAYS resolve the token to the prod-like environment; only the
+draft preview can be switched.
+
+The full safe-iteration loop:
+
+1. `dbt_ensure_dev_environment` — get a personal schema (e.g. `dbt_jonas`).
+2. Edit models; verify with `dbt_parse` → `dbt_compile_model` →
+   `dbt_run_model` (defaults: personal env + defer to prod manifest).
+3. `app_set_preview_environment` with the personal environment — the app's
+   DRAFT preview now reads the freshly built schema. This is per-user view
+   state: other editors, the published app, and shared links keep reading
+   prod. Verify visually (screenshot) if useful.
+4. Promote the dbt change: `dbt_commit_to_branch` → `dbt_open_pull_request` →
+   (after review) `dbt_merge_pull_request`; then run the prod job via
+   `dbt_run_job` — ONLY with explicit user confirmation.
+5. After the prod build succeeds, reset the preview
+   (`app_set_preview_environment` with `environment: null`) and, if app code
+   changed, publish with `app_save_version`.
 
 ## Tier-3 references
 

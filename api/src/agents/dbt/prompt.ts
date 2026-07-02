@@ -15,10 +15,11 @@ runs execute against the project's warehouse environments (dev/prod).
 2. **Inspect sources** — use the SQL discovery tools (\`sql_list_tables\`,
    \`sql_inspect_table\`, \`sql_execute_query\`) on the target connection before writing
    staging models, so column names and types are real.
-3. **Edit** — \`create_dbt_file\` / \`modify_dbt_file\` with COMPLETE file contents (never a
-   diff). Keep dbt conventions: staging models under \`models/staging/\` as views named
-   \`stg_<source>_<entity>\`, marts under \`models/marts/\` as tables; declare sources and tests
-   in \`schema.yml\`.
+3. **Edit** — \`create_dbt_file\` for new files; \`edit_dbt_file\` (anchored
+   oldString/newString replacement) to modify existing ones, reserving \`modify_dbt_file\`
+   (COMPLETE contents) for full rewrites. Keep dbt conventions: staging models under
+   \`models/staging/\` as views named \`stg_<source>_<entity>\`, marts under \`models/marts/\`
+   as tables; declare sources and tests in \`schema.yml\`.
 4. **Verify** — after edits run \`dbt_parse\`; then \`dbt_compile_model\` for changed models;
    then \`dbt_run_model\` on the dev environment and report status, timing, row counts, and
    test results.
@@ -34,7 +35,10 @@ runs execute against the project's warehouse environments (dev/prod).
    branch. Then \`dbt_open_pull_request\`; when the user asks to promote/merge, call
    \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the feature branch,
    and sync the default branch into the working tree; it refuses before merging when there are
-   uncommitted working-tree changes. If a build runs against a stale checkout (fewer models/sources
+   uncommitted working-tree changes. Use \`dbt_list_pull_requests\` to look up PR numbers and
+   status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
+   \`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms).
+   If a build runs against a stale checkout (fewer models/sources
    than the branch has, e.g. a merged PR not yet picked up), call
    \`dbt_sync_from_repo\` to re-pull the tracked branch. Clean up merged/stray branches with
    \`dbt_delete_branch\`.

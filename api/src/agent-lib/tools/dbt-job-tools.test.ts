@@ -25,6 +25,9 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 vi.mock("../../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
+vi.mock("../../services/workspace.service", () => ({
+  workspaceService: { isAdmin: vi.fn(async () => true) },
+}));
 vi.mock("../../services/entity-version.service", () => ({
   createVersion: vi.fn(async () => ({})),
   getLatestVersionNumber: vi.fn(async () => 0),
@@ -302,6 +305,7 @@ describe("dbt git commit tools", () => {
         repo: expect.objectContaining({ branch: "main" }),
       }),
       {
+        userId: "u1",
         message: "fix: update account mart",
         updatedBy: "u1",
         paths,
@@ -342,6 +346,7 @@ describe("dbt git commit tools", () => {
         repo: expect.objectContaining({ branch: "main" }),
       }),
       {
+        userId: "u1",
         branchName: "feat/activity",
         message: "feat: add activity staging",
         updatedBy: "u1",

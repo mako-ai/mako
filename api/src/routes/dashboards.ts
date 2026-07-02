@@ -688,6 +688,7 @@ app.openapi(
       const {
         cache: _ignoredCache,
         snapshots: _ignoredSnapshots,
+        idempotencyKey: rawIdempotencyKey,
         ...dashboardInput
       } = body as Record<string, unknown>;
 
@@ -697,6 +698,33 @@ app.openapi(
         !dashboardInput.title.trim()
       ) {
         return c.json({ success: false, error: "title is required" }, 400);
+      }
+
+      // Creation idempotency: agent-driven creates send the toolCallId as the
+      // key. Multiple windows attached to the same chat stream dispatch the
+      // same create_dashboard call; the first insert wins and every other
+      // request gets the SAME dashboard back instead of creating a duplicate.
+      const idempotencyKey =
+        typeof rawIdempotencyKey === "string" && rawIdempotencyKey.trim()
+          ? rawIdempotencyKey.trim()
+          : undefined;
+      const findExistingByIdempotencyKey = () =>
+        idempotencyKey
+          ? Dashboard.findOne({
+              workspaceId: new Types.ObjectId(workspaceId),
+              creationIdempotencyKey: idempotencyKey,
+            })
+          : null;
+
+      const preExisting = await findExistingByIdempotencyKey();
+      if (preExisting) {
+        return c.json({
+          success: true,
+          idempotentReplay: true,
+          data: sanitizeDashboardResponse(
+            await hydrateDashboardArtifactUrls(preExisting.toObject() as any),
+          ),
+        });
       }
 
       if (
@@ -748,9 +776,30 @@ app.openapi(
         createdBy: userId,
         owner_id: userId,
         materializationSchedule,
+        ...(idempotencyKey ? { creationIdempotencyKey: idempotencyKey } : {}),
       });
 
-      await dashboard.save();
+      try {
+        await dashboard.save();
+      } catch (saveError) {
+        // E11000 on the { workspaceId, creationIdempotencyKey } unique index:
+        // a concurrent duplicate request won the race — return its dashboard.
+        const isDuplicateKey =
+          (saveError as { code?: number } | null)?.code === 11000;
+        if (isDuplicateKey && idempotencyKey) {
+          const winner = await findExistingByIdempotencyKey();
+          if (winner) {
+            return c.json({
+              success: true,
+              idempotentReplay: true,
+              data: sanitizeDashboardResponse(
+                await hydrateDashboardArtifactUrls(winner.toObject() as any),
+              ),
+            });
+          }
+        }
+        throw saveError;
+      }
 
       // Create version 1 for the new dashboard and publish it.
       const displayName = await getUserDisplayName(userId);
@@ -1084,8 +1133,7 @@ app.openapi(
         dashboardId: updated._id.toString(),
         version: updated.version,
         updatedBy: userId,
-        clientId:
-          typeof body.clientId === "string" ? body.clientId : undefined,
+        clientId: typeof body.clientId === "string" ? body.clientId : undefined,
         origin: "save",
       });
 
@@ -1331,8 +1379,7 @@ app.openapi(
         dashboardId: dashboard._id.toString(),
         version: dashboard.version,
         updatedBy: userId,
-        clientId:
-          typeof body.clientId === "string" ? body.clientId : undefined,
+        clientId: typeof body.clientId === "string" ? body.clientId : undefined,
         origin: "save",
       });
 

@@ -3,25 +3,35 @@
  * (DbtFile). Mongo stays the canonical source the runner materializes from;
  * this service is the bridge that pulls a repo's contents in.
  *
- * On sync the repo is treated as the source of truth: files present in the
- * tracked branch are upserted, and previously-imported files that no longer
- * exist on the branch are soft-deleted (a branch pull, like dbt Cloud).
- * Committing local edits back to the repo is a later slice.
+ * DbtFile rows are the COMMITTED base tree of a branch — uncommitted work
+ * lives in per-user DbtFileDraft overlays — so a sync is always safe: the
+ * remote is authoritative for the base tree and can never clobber anyone's
+ * drafts. Files present on the branch are upserted, files no longer on the
+ * branch are soft-deleted (a branch pull, like dbt Cloud).
  */
 import { Types } from "mongoose";
 
 import {
+  DbtCheckout,
   DbtFile,
   type IDbtProject,
   type IDbtRepoBinding,
 } from "../database/workspace-schema";
 import { resolveRepoToken } from "../integrations/github/app-auth";
-import { gitBlobSha } from "../integrations/github/git-blob";
 import {
   getBlobContent,
   getBranchHeadSha,
+  getRepoInfo,
   getRepoTree,
 } from "../integrations/github/github-api";
+import {
+  getCheckoutBranch,
+  loadWorkingTreeContents,
+} from "./dbt-working-tree.service";
+import { publishRealtimeEvent } from "../services/realtime.service";
+import { loggers } from "../logging";
+
+const logger = loggers.app();
 
 /** Per-file cap (matches the PUT /files content limit). */
 const MAX_FILE_BYTES = 1_000_000;
@@ -161,61 +171,37 @@ export interface SyncResult {
   updated: number;
   deleted: number;
   skippedLarge: string[];
-  /**
-   * Paths skipped because they had uncommitted local edits and
-   * `preserveLocalEdits` was set — left untouched so the work isn't lost.
-   */
-  preservedLocal: string[];
-}
-
-export interface SyncOptions {
-  /**
-   * When true, never overwrite or soft-delete a file that has uncommitted local
-   * changes (locally added, or content diverged from its last-synced blob).
-   * Non-conflicting files still fast-forward to the remote. This makes a sync
-   * safe like `git pull` (which refuses to clobber a dirty working tree) and is
-   * used for background/automatic syncs (push webhooks, branch switches that
-   * the caller hasn't explicitly told to discard). Defaults to false, where the
-   * remote is the source of truth (an explicit, user-confirmed overwrite).
-   */
-  preserveLocalEdits?: boolean;
-}
-
-/** A file is locally modified if its current content no longer matches the
- * blob recorded at the last sync/push — or it was added locally and never
- * synced (no recorded blob). Soft-deleted rows are handled separately. */
-function isLocallyModified(prev: {
-  content?: string;
-  is_deleted?: boolean;
-  repoBlobSha?: string;
-}): boolean {
-  if (prev.is_deleted) return false;
-  if (!prev.repoBlobSha) return true; // locally added, never pushed
-  return gitBlobSha(prev.content ?? "") !== prev.repoBlobSha;
 }
 
 /**
- * Pull the latest repo state into an existing repo-bound project: upsert
- * changed files, soft-delete files no longer on the branch, and stamp the
- * project's lastSyncedSha/At.
+ * Pull the latest state of `branch` into the project's committed base tree
+ * for that branch: upsert changed files, soft-delete files no longer on the
+ * branch, and stamp sync SHAs (the project binding when it is the default
+ * branch, plus every checkout pointing at the branch).
  *
- * By default the remote wins (use only for explicit, user-confirmed pulls). For
- * background syncs pass `{ preserveLocalEdits: true }` so a remote push or a
- * branch switch can never silently destroy a user's uncommitted working-tree
- * changes — those files are left exactly as-is and reported in `preservedLocal`.
+ * Always safe: drafts (uncommitted per-user work) live in a separate overlay
+ * and are never touched by a sync.
  */
-export async function syncProjectFromRepo(
+export async function syncProjectBranchFromRepo(
   project: IDbtProject,
+  branch: string,
   updatedBy: string,
-  options: SyncOptions = {},
 ): Promise<SyncResult> {
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
-  const preserveLocalEdits = options.preserveLocalEdits ?? false;
-  const { sha, files, skippedLarge } = await fetchRepoDbtFiles(project.repo);
+  // Read fields explicitly: `repo` is a Mongoose subdocument on hydrated
+  // docs, and spreading one drops its schema fields (they live on the
+  // prototype), which would fetch from "undefined/undefined".
+  const { sha, files, skippedLarge } = await fetchRepoDbtFiles({
+    owner: project.repo.owner,
+    repo: project.repo.repo,
+    subdirectory: project.repo.subdirectory,
+    installationId: project.repo.installationId,
+    branch,
+  });
 
-  const existing = await DbtFile.find({ projectId: project._id })
+  const existing = await DbtFile.find({ projectId: project._id, branch })
     .select("path content is_deleted repoBlobSha")
     .lean();
   const existingByPath = new Map(existing.map(f => [f.path, f]));
@@ -224,19 +210,10 @@ export async function syncProjectFromRepo(
   let added = 0;
   let updated = 0;
   let deleted = 0;
-  const preservedLocal: string[] = [];
 
   const ops: Array<Promise<unknown>> = [];
   for (const file of files) {
     const prev = existingByPath.get(file.path);
-
-    // Don't clobber a file the user is actively editing locally. Leave it
-    // untouched (and keep its old base blob) so it still shows as a pending
-    // change the user can review/commit, rather than vanishing.
-    if (preserveLocalEdits && prev && isLocallyModified(prev)) {
-      preservedLocal.push(file.path);
-      continue;
-    }
 
     if (!prev || prev.is_deleted) {
       added++;
@@ -246,7 +223,7 @@ export async function syncProjectFromRepo(
       // Content unchanged, but still record the blob SHA so diffing works.
       ops.push(
         DbtFile.updateOne(
-          { projectId: project._id, path: file.path },
+          { projectId: project._id, branch, path: file.path },
           { $set: { repoBlobSha: file.blobSha } },
         ).exec(),
       );
@@ -254,7 +231,7 @@ export async function syncProjectFromRepo(
     }
     ops.push(
       DbtFile.updateOne(
-        { projectId: project._id, path: file.path },
+        { projectId: project._id, branch, path: file.path },
         {
           $set: {
             content: file.content,
@@ -269,28 +246,18 @@ export async function syncProjectFromRepo(
     );
   }
 
-  // Reconcile files that are no longer on the branch. Pulling makes the remote
-  // the source of truth, so a file absent upstream is "in sync when deleted" —
-  // it must NOT keep a repoBlobSha, or getGitStatus() would surface it as a
-  // permanent phantom "deleted" change that can never be committed (committing
-  // a sha:null delete for a path missing from base_tree → 422 GitRPC::BadObject)
-  // nor discarded (the next pull would re-create it).
+  // Reconcile files that are no longer on the branch. The remote is the source
+  // of truth for the base tree, so a file absent upstream is soft-deleted and
+  // must NOT keep a repoBlobSha (a stale one would surface phantom pending
+  // deletions in per-user status).
   for (const prev of existing) {
     if (remotePaths.has(prev.path)) continue;
-
-    // A locally-added file (never on this branch) is unsaved work, not a
-    // deletion. Under preserveLocalEdits, keep it instead of soft-deleting it —
-    // this is the exact case that used to wipe new models on a branch switch.
-    if (preserveLocalEdits && !prev.is_deleted && !prev.repoBlobSha) {
-      preservedLocal.push(prev.path);
-      continue;
-    }
 
     if (!prev.is_deleted) {
       deleted++;
       ops.push(
         DbtFile.updateOne(
-          { projectId: project._id, path: prev.path },
+          { projectId: project._id, branch, path: prev.path },
           {
             $set: { is_deleted: true, updatedBy },
             $unset: { repoBlobSha: "" },
@@ -298,11 +265,9 @@ export async function syncProjectFromRepo(
         ).exec(),
       );
     } else if (prev.repoBlobSha) {
-      // Already soft-deleted locally and gone upstream: drop the stale blob SHA
-      // so it stops counting as a pending deletion (heals previously-stuck rows).
       ops.push(
         DbtFile.updateOne(
-          { projectId: project._id, path: prev.path },
+          { projectId: project._id, branch, path: prev.path },
           { $unset: { repoBlobSha: "" } },
         ).exec(),
       );
@@ -311,12 +276,136 @@ export async function syncProjectFromRepo(
 
   await Promise.all(ops);
 
-  project.repo.lastSyncedSha = sha;
-  project.repo.lastSyncedAt = new Date();
+  if (branch === project.repo.branch) {
+    project.repo.lastSyncedSha = sha;
+    project.repo.lastSyncedAt = new Date();
+    project.markModified("repo");
+    await project.save();
+  }
+  await DbtCheckout.updateMany(
+    { projectId: project._id, branch },
+    { $set: { lastSyncedSha: sha, lastSyncedAt: new Date() } },
+  ).exec();
+
+  return { sha, added, updated, deleted, skippedLarge };
+}
+
+/** True when a file tree contains the root dbt_project.yml dbt requires. */
+export function hasRootDbtProjectYml(files: Array<{ path: string }>): boolean {
+  return files.some(file => file.path === "dbt_project.yml");
+}
+
+/**
+ * The project's tracked branch no longer exists on the remote (a stale
+ * pointer from the pre-per-user-working-trees model, deleted after its PR
+ * merged): re-anchor `repo.branch` to the repository's default branch and
+ * pull that branch's tree. Only fires when the branch is verifiably gone —
+ * a transient sync failure must never rewrite project config.
+ */
+async function reanchorTrackedBranch(
+  project: IDbtProject,
+  branch: string,
+  syncError: unknown,
+  updatedBy: string,
+): Promise<void> {
+  if (!project.repo || branch !== project.repo.branch) throw syncError;
+  const token = await resolveRepoToken(project.repo.installationId);
+  const { owner, repo } = project.repo;
+  const info = await getRepoInfo(owner, repo, token);
+  if (info.defaultBranch === branch) throw syncError;
+  const stillExists = await getBranchHeadSha(owner, repo, branch, token).then(
+    () => true,
+    () => false,
+  );
+  if (stillExists) throw syncError;
+
+  logger.warn(
+    "dbt tracked branch is gone on the remote; re-anchoring to repo default",
+    {
+      projectId: project._id.toString(),
+      staleBranch: branch,
+      defaultBranch: info.defaultBranch,
+    },
+  );
+  project.repo.branch = info.defaultBranch;
   project.markModified("repo");
   await project.save();
+  await syncProjectBranchFromRepo(project, info.defaultBranch, updatedBy);
+  // Let open clients refetch the project so settings show the healed branch.
+  publishRealtimeEvent(project.workspaceId.toString(), {
+    type: "dbt.project.updated",
+    projectId: project._id.toString(),
+  });
+}
 
-  return { sha, added, updated, deleted, skippedLarge, preservedLocal };
+/**
+ * Load a project's working-tree contents for a dbt run, self-healing the two
+ * states that would otherwise reach dbt as the confusing
+ * "No dbt_project.yml found at expected path <dir>/dbt_project.yml" (and, in
+ * a warm dir, reconcile the previously-good tree away):
+ *
+ *  1. the branch's committed base tree is missing/incomplete in Mongo (e.g.
+ *     dropped when its branch was deleted) → re-pull the branch;
+ *  2. the tracked branch itself no longer exists on the remote → re-anchor
+ *     `repo.branch` to the repo default branch and pull that.
+ *
+ * Throws an actionable error when the tree still has no dbt_project.yml.
+ */
+export async function loadRunnableWorkingTree(
+  project: IDbtProject,
+  opts: { userId?: string; branch?: string } = {},
+): Promise<Array<{ path: string; content: string }>> {
+  let files = await loadWorkingTreeContents(project, opts);
+  if (hasRootDbtProjectYml(files)) return files;
+
+  let branch: string | undefined;
+  if (project.repo) {
+    branch =
+      opts.branch ??
+      (opts.userId
+        ? await getCheckoutBranch(project, opts.userId)
+        : project.repo.branch);
+    const updatedBy = opts.userId ?? "system";
+    logger.warn("dbt working tree has no dbt_project.yml; re-syncing branch", {
+      projectId: project._id.toString(),
+      branch,
+    });
+    try {
+      await syncProjectBranchFromRepo(project, branch as string, updatedBy);
+    } catch (syncError) {
+      await reanchorTrackedBranch(
+        project,
+        branch as string,
+        syncError,
+        updatedBy,
+      );
+    }
+    files = await loadWorkingTreeContents(project, opts);
+  }
+
+  if (!hasRootDbtProjectYml(files)) {
+    const where = branch ? ` on branch "${branch}"` : "";
+    throw new Error(
+      `dbt project "${project.name}" has no dbt_project.yml in its working ` +
+        `tree${where} — the project files are missing or not synced. ` +
+        (project.repo
+          ? "Check the repository/subdirectory binding and run a sync " +
+            "(Version control → Sync, or dbt_sync_from_repo)."
+          : "Create a dbt_project.yml at the project root first."),
+    );
+  }
+  return files;
+}
+
+/** Sync the project's default branch (backwards-compatible entry point). */
+export async function syncProjectFromRepo(
+  project: IDbtProject,
+  updatedBy: string,
+): Promise<SyncResult> {
+  if (!project.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  return syncProjectBranchFromRepo(project, project.repo.branch, updatedBy);
 }
 
 /** Build a DbtFile insert payload from fetched repo files (first import). */
@@ -325,12 +414,14 @@ export function repoFilesToInserts(
   params: {
     workspaceId: Types.ObjectId;
     projectId: Types.ObjectId;
+    branch: string;
     updatedBy: string;
   },
 ) {
   return files.map(file => ({
     workspaceId: params.workspaceId,
     projectId: params.projectId,
+    branch: params.branch,
     path: file.path,
     content: file.content,
     updatedBy: params.updatedBy,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { UIMessage } from "ai";
 import {
   dedupeAssistantReasoning,
+  dedupeAssistantStreamArtifacts,
   elideOldToolOutputs,
   stripReplayedReasoning,
 } from "./compaction";
@@ -264,9 +265,7 @@ function reasoningPart(
   return {
     type: "reasoning",
     text,
-    ...(signature
-      ? { providerMetadata: { anthropic: { signature } } }
-      : {}),
+    ...(signature ? { providerMetadata: { anthropic: { signature } } } : {}),
   };
 }
 
@@ -381,6 +380,114 @@ t("dedupe: ignores user messages and empty/whitespace reasoning", () => {
   const res = dedupeAssistantReasoning(msgs);
   assert.equal(res.changed, false);
   assert.equal(res.removedCount, 0);
+});
+
+// --- dedupeAssistantStreamArtifacts -----------------------------------------
+
+const LONG_A =
+  "I'll reconcile submit_valuation_form across your CRM database, GA4, and the ad platforms.";
+const LONG_B =
+  "The full reconciliation works. Let me put it in a console and run it there.";
+
+t(
+  "artifacts: removes replay-duplicated text parts and step-start bursts",
+  () => {
+    // Mirrors the triplicate-consumer incident: each extra stream consumer
+    // appended a byte-identical copy of every text part plus step-start bursts.
+    const msgs: UIMessage[] = [
+      userMsg("u0", "reconcile my funnel"),
+      assistantParts([
+        { type: "step-start" },
+        { type: "text", text: LONG_A },
+        {
+          type: "tool-create_dashboard",
+          toolCallId: "c1",
+          toolName: "create_dashboard",
+          input: { title: "Recon" },
+          output: { success: true },
+          state: "output-available",
+        },
+        { type: "text", text: LONG_B },
+        // consumer #2 replay append
+        { type: "step-start" },
+        { type: "step-start" },
+        { type: "text", text: LONG_A },
+        { type: "step-start" },
+        { type: "text", text: LONG_B },
+        // consumer #3 replay append
+        { type: "step-start" },
+        { type: "text", text: LONG_A },
+        { type: "step-start" },
+        { type: "step-start" },
+        { type: "text", text: LONG_B },
+      ]),
+    ];
+    const res = dedupeAssistantStreamArtifacts(msgs);
+    assert.equal(res.changed, true);
+    const a = res.messages.find(m => m.id === "a");
+    assert.ok(a);
+    const parts = a.parts as Array<Record<string, unknown>>;
+    const texts = parts.filter(p => p.type === "text");
+    // Each long text survives exactly once, in original order.
+    assert.equal(texts.length, 2);
+    assert.equal(texts[0].text, LONG_A);
+    assert.equal(texts[1].text, LONG_B);
+    // No two step-start parts remain adjacent.
+    for (let i = 1; i < parts.length; i++) {
+      assert.ok(
+        !(parts[i].type === "step-start" && parts[i - 1].type === "step-start"),
+        "consecutive step-start survived",
+      );
+    }
+    // The tool part is untouched.
+    assert.equal(
+      parts.filter(p => p.type === "tool-create_dashboard").length,
+      1,
+    );
+  },
+);
+
+t("artifacts: keeps short repeated texts and non-adjacent step-starts", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q"),
+    assistantParts([
+      { type: "step-start" },
+      { type: "text", text: "Done." }, // short — legitimate repeat possible
+      { type: "step-start" },
+      { type: "text", text: "Done." },
+    ]),
+  ];
+  const res = dedupeAssistantStreamArtifacts(msgs);
+  assert.equal(res.changed, false);
+  assert.equal(res.removedCount, 0);
+});
+
+t("artifacts: no-op on clean messages and ignores user messages", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", LONG_A),
+    assistantParts([
+      { type: "step-start" },
+      { type: "text", text: LONG_A },
+      { type: "step-start" },
+      { type: "text", text: LONG_B },
+    ]),
+  ];
+  const res = dedupeAssistantStreamArtifacts(msgs);
+  assert.equal(res.changed, false);
+  assert.equal(res.removedCount, 0);
+  assert.equal(res.messages[1], msgs[1]); // untouched reference
+});
+
+t("artifacts: whitespace-only texts are never collapsed together", () => {
+  const msgs: UIMessage[] = [
+    userMsg("u0", "q"),
+    assistantParts([
+      { type: "text", text: "   " },
+      { type: "text", text: "   " },
+    ]),
+  ];
+  const res = dedupeAssistantStreamArtifacts(msgs);
+  assert.equal(res.changed, false);
 });
 
 process.stdout.write("\nAll compaction tests passed.\n");

@@ -29,6 +29,33 @@ export const writeFileSchema = z.object({
   contents: z.string().describe("Full UTF-8 file contents to write"),
 });
 
+export const editFileSchema = z.object({
+  appId: appIdField,
+  path: z
+    .string()
+    .describe("POSIX file path relative to project root, e.g. src/App.tsx"),
+  oldString: z
+    .string()
+    .describe(
+      "Exact text to replace. Must match the current file contents exactly " +
+        "(including whitespace/indentation) and exactly once — include a few " +
+        "surrounding lines to make the match unique. Must not be empty.",
+    ),
+  newString: z
+    .string()
+    .describe(
+      "Replacement text. Use \"\" to delete the matched text. To insert, " +
+        "anchor on adjacent content and include it in both strings.",
+    ),
+  replaceAll: z
+    .boolean()
+    .optional()
+    .describe(
+      "Replace every occurrence of oldString (for renames). Defaults to " +
+        "false, which requires the match to be unique.",
+    ),
+});
+
 export const deleteFileSchema = z.object({
   appId: appIdField,
   path: z.string().describe("File path to delete"),
@@ -88,14 +115,48 @@ export const createDataBindingSchema = z.object({
   appId: appIdField,
   name: z
     .string()
-    .describe("Binding name referenced from app code via useQuery(name)"),
+    .optional()
+    .describe(
+      "Binding name referenced from app code via useQuery(name). Required " +
+        "unless consoleId is given (then defaults to the console's name).",
+    ),
+  consoleId: z
+    .string()
+    .optional()
+    .describe(
+      "Import a saved console by ID (from search_consoles): its query code, " +
+        "connection, language, and database resolve server-side, so you do " +
+        "not need to re-type the SQL. Explicit fields below override the " +
+        "console's values.",
+    ),
   connectionId: z
     .string()
-    .describe("Workspace connection ID to run the query against"),
-  language: z.enum(["sql", "javascript", "mongodb"]).default("sql"),
-  code: z.string().describe("Query text/code to execute server-side"),
+    .optional()
+    .describe(
+      "Workspace connection ID to run the query against (required unless " +
+        "consoleId is given)",
+    ),
+  language: z.enum(["sql", "javascript", "mongodb"]).optional(),
+  code: z
+    .string()
+    .optional()
+    .describe(
+      "Query text/code to execute server-side (required unless consoleId " +
+        "is given)",
+    ),
   databaseId: z.string().optional(),
   databaseName: z.string().optional(),
+  dbtProjectId: z
+    .string()
+    .optional()
+    .describe(
+      "Link the binding to a dbt project (from read_dbt_project_tree). When " +
+        "set, write the query against the {{ dbt_schema }} token instead of " +
+        "hardcoding a schema (e.g. SELECT * FROM {{ dbt_schema }}.fct_orders); " +
+        "it resolves to the project's PROD environment schema for published " +
+        "apps/materialization, and to the editor's preview environment " +
+        "override in the draft preview.",
+    ),
   materialization: z
     .enum(["live", "parquet"])
     .default("live")
@@ -113,6 +174,48 @@ export const createDataBindingSchema = z.object({
         "applies when materialization is 'parquet' (ignored/disabled for " +
         "'live'). You can also set or change this later with " +
         "app_set_binding_schedule.",
+    ),
+});
+
+export const updateDataBindingSchema = z.object({
+  appId: appIdField,
+  name: z
+    .string()
+    .describe(
+      "Name of the EXISTING data binding to update (from list_data_sources)",
+    ),
+  code: z
+    .string()
+    .optional()
+    .describe(
+      "Full replacement query text/code. For small changes prefer " +
+        "oldString/newString instead of re-sending the whole query.",
+    ),
+  oldString: z
+    .string()
+    .optional()
+    .describe(
+      "Anchored edit of the current query: exact text to replace (must " +
+        "match exactly once). Mutually exclusive with code.",
+    ),
+  newString: z
+    .string()
+    .optional()
+    .describe("Replacement text for oldString (\"\" deletes the match)."),
+  connectionId: z
+    .string()
+    .optional()
+    .describe("Move the binding to a different workspace connection"),
+  language: z.enum(["sql", "javascript", "mongodb"]).optional(),
+  databaseId: z.string().optional(),
+  databaseName: z.string().optional(),
+  dbtProjectId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Link the binding to a dbt project (enables the {{ dbt_schema }} " +
+        "token in code) or pass null to unlink it.",
     ),
 });
 
@@ -250,7 +353,29 @@ export const clientAppTools = {
       "attached browser tab; it is not needed to author or persist an app.",
     inputSchema: z.object({ appId: appIdField }),
   }),
+  app_set_preview_environment: tool({
+    description:
+      "Switch which dbt ENVIRONMENT the app's DRAFT PREVIEW reads data from " +
+      "(for dbt-linked bindings using the {{ dbt_schema }} token). This is " +
+      "per-user VIEW state — it never changes the app definition, other " +
+      "editors' previews, or what published/shared viewers see (those always " +
+      "read the prod environment). Pass environment: null to go back to the " +
+      "default (prod). Use it to verify an app against models you just built " +
+      "in a dev/personal schema before promoting them to prod.",
+    inputSchema: z.object({
+      appId: appIdField,
+      environment: z
+        .string()
+        .nullable()
+        .describe(
+          "dbt environment name from the linked project (e.g. 'dev' or a " +
+            "personal environment), or null to reset to the prod default",
+        ),
+    }),
+  }),
 };
 
 export type AppWriteFileInput = z.infer<typeof writeFileSchema>;
+export type AppEditFileInput = z.infer<typeof editFileSchema>;
 export type AppCreateDataBindingInput = z.infer<typeof createDataBindingSchema>;
+export type AppUpdateDataBindingInput = z.infer<typeof updateDataBindingSchema>;

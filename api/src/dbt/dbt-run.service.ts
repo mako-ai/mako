@@ -181,6 +181,24 @@ export async function triggerDbtRun(params: {
   commands: string[];
   trigger: "schedule" | "manual" | "agent" | "ci";
   triggeredBy: string;
+  /**
+   * Branch whose committed base tree the run builds (repo-bound projects).
+   * Defaults to the project default branch; CI runs pass the PR head.
+   */
+  gitBranch?: string;
+  /**
+   * Build this user's working tree (checkout + drafts) instead of a
+   * committed base tree — agent verification builds of uncommitted work.
+   */
+  workingTreeUserId?: string;
+  /**
+   * Ad-hoc/agent runs: execute with `--defer --state <last prod manifest>`
+   * so unselected refs resolve to the production build instead of requiring
+   * the whole upstream DAG in the target schema. No-op when the project has
+   * no prod manifest yet. Job/CI runs configure defer on the job / CI config
+   * instead of here.
+   */
+  deferToProduction?: boolean;
   /** PR context for CI runs (trigger === "ci"). */
   ci?: DbtRunCiContext;
   /**
@@ -211,6 +229,9 @@ export async function triggerDbtRun(params: {
     status: "queued",
     trigger: params.trigger,
     triggeredBy: params.triggeredBy,
+    gitBranch: params.gitBranch,
+    workingTreeUserId: params.workingTreeUserId,
+    deferToProduction: params.deferToProduction,
     ci: params.ci,
   });
 

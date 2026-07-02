@@ -29,8 +29,50 @@
 import { EventEmitter } from "node:events";
 import { Redis } from "ioredis";
 import type { Publisher, Subscriber } from "resumable-stream/generic";
+import { loggers } from "../logging";
 
 export type { Publisher, Subscriber } from "resumable-stream/generic";
+
+const logger = loggers.api("pubsub");
+
+// ── Failure reporting ─────────────────────────────────────────────
+//
+// A broken Redis backend silently downgrades two headline features at once:
+// resumable chat streams (reload/second-device reattach) and the workspace
+// realtime channel. That must surface as an ERROR (Cloud Error Reporting
+// alerts on it), not a per-event warn buried in the noise — the July 2026
+// Upstash max_requests quota exhaustion ran for hours as swallowed warns.
+//
+// Throttled: an outage emits failures per chunk/event/turn, so unthrottled
+// error logs would flood Error Reporting without adding signal.
+const FAILURE_LOG_INTERVAL_MS = 60_000;
+let lastFailureLogAt = 0;
+
+/**
+ * Report a Redis pub/sub failure. Logs at ERROR level at most once per
+ * minute (per process); other calls in the window log at debug so the full
+ * failure rate stays reconstructable from debug logs.
+ */
+export function reportPubSubFailure(context: string, error: unknown): void {
+  const now = Date.now();
+  if (now - lastFailureLogAt >= FAILURE_LOG_INTERVAL_MS) {
+    lastFailureLogAt = now;
+    logger.error(
+      "Redis pub/sub backend failing — resumable chat streams and workspace realtime events are degraded until it recovers",
+      { context, error },
+    );
+  } else {
+    logger.debug("Redis pub/sub failure (throttled)", { context, error });
+  }
+}
+
+/** Attach a structured error listener to an ioredis connection. */
+function attachRedisErrorListener(redis: Redis, context: string): Redis {
+  redis.on("error", (error: unknown) => {
+    reportPubSubFailure(context, error);
+  });
+  return redis;
+}
 
 // Mirrors the 24h TTL resumable-stream applies to its own keys; only used
 // for keys the library creates via INCR (no explicit expiry).
@@ -146,7 +188,10 @@ export function getPubSubBackendKind(): "redis" | "memory" {
 export function createPubSubPublisher(): Publisher {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
-    return new Redis(redisUrl) as unknown as Publisher;
+    return attachRedisErrorListener(
+      new Redis(redisUrl),
+      "publisher",
+    ) as unknown as Publisher;
   }
   return getInMemoryPubSub().createPublisher();
 }
@@ -159,7 +204,54 @@ export function createPubSubPublisher(): Publisher {
 export function createPubSubSubscriber(): Subscriber {
   const redisUrl = process.env.REDIS_URL;
   if (redisUrl) {
-    return new Redis(redisUrl) as unknown as Subscriber;
+    return attachRedisErrorListener(
+      new Redis(redisUrl),
+      "subscriber",
+    ) as unknown as Subscriber;
   }
   return getInMemoryPubSub().createSubscriber();
+}
+
+/**
+ * Startup health check: when Redis is configured, verify it actually answers
+ * (connectivity, auth, AND quota — Upstash returns errors on commands once
+ * `max_requests` is exhausted, so a bare TCP connect is not enough). Logs an
+ * ERROR when the backend is configured but unusable; the server still starts
+ * (streaming to the originating client works without Redis, and Redis may
+ * recover), but the degradation is loud from minute zero.
+ */
+export async function checkPubSubBackendHealth(): Promise<void> {
+  const redisUrl = process.env.REDIS_URL;
+  if (!redisUrl) {
+    logger.info(
+      "Pub/sub backend: in-process (single instance only — set REDIS_URL when scaling out)",
+    );
+    return;
+  }
+
+  const probe = new Redis(redisUrl, {
+    connectTimeout: 5_000,
+    maxRetriesPerRequest: 1,
+    // The probe owns its own error reporting below; a listener stops ioredis
+    // from spamming "[ioredis] Unhandled error event" during the check.
+    lazyConnect: true,
+  });
+  probe.on("error", () => {
+    /* surfaced via the ping result below */
+  });
+  try {
+    await probe.connect();
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("PING timed out after 5s")), 5_000),
+    );
+    await Promise.race([probe.ping(), timeout]);
+    logger.info("Pub/sub backend: Redis healthy");
+  } catch (error) {
+    logger.error(
+      "REDIS_URL is set but Redis is unusable (connectivity/auth/quota) — resumable chat streams and workspace realtime events will be degraded",
+      { error },
+    );
+  } finally {
+    probe.disconnect();
+  }
 }

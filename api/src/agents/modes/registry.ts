@@ -128,11 +128,13 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "get_app_state",
   "app_read_file",
   "app_write_file",
+  "app_edit_file",
   "app_delete_file",
   "app_rename_file",
   "app_add_dependency",
   "app_remove_dependency",
   "app_create_data_binding",
+  "app_update_data_binding",
   "app_delete_data_binding",
   "app_set_binding_materialization",
   "app_set_binding_schedule",
@@ -140,6 +142,7 @@ const APP_MODE_TOOL_NAMES: string[] = [
   "app_restore_version",
   "materialize_binding",
   "run_app",
+  "app_set_preview_environment",
   // Shared surface-scoped data-source primitives (apps + dashboards)
   "list_data_sources",
   "inspect_data_source",
@@ -164,11 +167,14 @@ const APP_MODE_TOOL_NAMES: string[] = [
 const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   // Bootstrap: create a project when the workspace has none
   "dbt_create_project",
+  // Personal (per-developer) environment for safe fast iteration
+  "dbt_ensure_dev_environment",
   // Client dbt file tools
   "read_dbt_project_tree",
   "read_dbt_file",
   "create_dbt_file",
   "modify_dbt_file",
+  "edit_dbt_file",
   "delete_dbt_file",
   // Server dbt verification + execution tools
   "dbt_parse",
@@ -192,6 +198,9 @@ const TRANSFORM_MODE_TOOL_NAMES: string[] = [
   "dbt_delete_branch",
   "dbt_open_pull_request",
   "dbt_merge_pull_request",
+  "dbt_list_pull_requests",
+  "dbt_update_pull_request",
+  "dbt_close_pull_request",
   // Recovery: surface + restore work hidden by a destructive switch/sync.
   "dbt_list_recoverable_files",
   "dbt_restore_file",
@@ -283,7 +292,8 @@ export const modeRegistry: Record<ExpertiseModeId, AgentMode> = {
     id: "transform",
     name: "Transforms",
     routingPrompt:
-      "Build and run dbt transformations: edit project files, compile, test, and run models against the warehouse.",
+      "Build and run dbt transformations: edit project files, compile, test, and run models against the warehouse. " +
+      "Also manage the project's Git repo and GitHub pull requests: commit, branch, and open/list/update/merge/close PRs.",
     systemPrompt: TRANSFORM_MODE_SYSTEM_PROMPT,
     toolNames: TRANSFORM_MODE_TOOL_NAMES,
     trajectories: [

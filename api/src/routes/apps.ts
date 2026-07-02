@@ -16,6 +16,7 @@ import { nanoid } from "nanoid";
 import {
   MakoApp,
   DatabaseConnection,
+  DbtProject,
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -137,6 +138,7 @@ function serializeApp(doc: IMakoApp) {
     dataBindings: (doc.dataBindings ?? []).map(b => ({
       id: b.id,
       name: b.name,
+      dbtProjectId: b.dbtProjectId,
       connectionId: b.connectionId,
       language: b.language,
       code: b.code,
@@ -250,12 +252,38 @@ function canRead(
   return canReadResource(doc, userId, memberRole);
 }
 
-// Validate that every data binding references a connection in this workspace.
+// Validate that every data binding references a connection (and, when linked,
+// a dbt project) in this workspace.
 async function validateDataBindings(
   workspaceId: string,
-  dataBindings: Array<{ connectionId?: string }> | undefined,
+  dataBindings:
+    | Array<{ connectionId?: string; dbtProjectId?: string }>
+    | undefined,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!dataBindings || dataBindings.length === 0) return { ok: true };
+  const dbtProjectIds = [
+    ...new Set(dataBindings.map(b => b.dbtProjectId).filter(Boolean)),
+  ] as string[];
+  for (const id of dbtProjectIds) {
+    if (!Types.ObjectId.isValid(id)) {
+      return {
+        ok: false,
+        error: `Invalid dbtProjectId in data binding: ${id}`,
+      };
+    }
+  }
+  if (dbtProjectIds.length > 0) {
+    const validProjects = await DbtProject.countDocuments({
+      _id: { $in: dbtProjectIds.map(id => new Types.ObjectId(id)) },
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (validProjects !== dbtProjectIds.length) {
+      return {
+        ok: false,
+        error: "One or more data binding dbt projects are invalid",
+      };
+    }
+  }
   const connectionIds = [
     ...new Set(dataBindings.map(b => b.connectionId).filter(Boolean)),
   ] as string[];
@@ -516,8 +544,10 @@ app.openapi(
       // Snapshot of bindings before the update, keyed by id — used after save
       // to detect which scheduled parquet bindings changed definition so we
       // can proactively rebuild them (parity with dashboard auto-refresh).
-      let priorBindingsById: Map<string, IMakoApp["dataBindings"][number]> | null =
-        null;
+      let priorBindingsById: Map<
+        string,
+        IMakoApp["dataBindings"][number]
+      > | null = null;
 
       if (typeof body.title === "string" && body.title.trim()) {
         doc.title = body.title.trim();
@@ -574,6 +604,7 @@ app.openapi(
             return {
               id,
               name: b.name,
+              dbtProjectId: b.dbtProjectId,
               connectionId: b.connectionId,
               language: b.language || "sql",
               code: b.code ?? "",
@@ -631,7 +662,9 @@ app.openapi(
       if (priorBindingsById) {
         for (const binding of doc.dataBindings) {
           if (binding.materialization !== "parquet") continue;
-          if (!isDashboardMaterializationEnabled(binding.materializationSchedule)) {
+          if (
+            !isDashboardMaterializationEnabled(binding.materializationSchedule)
+          ) {
             continue;
           }
           const prior = priorBindingsById.get(binding.id);
@@ -929,7 +962,10 @@ app.openapi(
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
-      const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
+      const limit = Math.min(
+        parseInt(c.req.query("limit") ?? "50", 10) || 50,
+        100,
+      );
       const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
       const result = await listVersions(new Types.ObjectId(id), "app", {
         limit,
@@ -1117,8 +1153,10 @@ app.openapi(
         snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
         savedBy: userId ?? "system",
         savedByName: displayName,
-        comment:
-          (body.comment ?? `Restored from version ${versionNum}`).slice(0, 500),
+        comment: (body.comment ?? `Restored from version ${versionNum}`).slice(
+          0,
+          500,
+        ),
         restoredFrom: versionNum,
       });
 
