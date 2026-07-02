@@ -42,51 +42,77 @@ function isStepStart(p: Part): boolean {
   return p.type === "step-start";
 }
 
-// Collapses a run's reasoning parts into a single de-duplicated text.
+interface RunItem {
+  text: string;
+  sig: string | null;
+}
+
+interface KeptItem extends RunItem {
+  // Start index of the group this item's text is displayed in. An upgraded
+  // duplicate keeps the EARLIER group's start: the later copy folds into the
+  // block that already rendered, never the other way around.
+  runStart: number;
+}
+
+// De-duplicates reasoning items ACROSS the whole message, not just within one
+// contiguous run.
 //
 // WHY: continuation mode (streamed parts merged with `originalMessages`) and
-// resumable-stream replay can inject DUPLICATE reasoning parts into a single
-// assistant message — most visibly a partial copy ("ABC") sitting right next to
-// the replayed, extended copy ("ABC more…"). Naively joining every part then
-// renders the same thinking twice ("ABC\n\nABC more"). We dedupe the same way
-// the backend does before it hits the model: by Anthropic signature, then exact
-// text, then prefix-superset (the streaming-grow / replay shape). We only ever
-// DROP redundant copies and keep the longest surviving text — never alter the
-// underlying thinking.
-function dedupeRunText(items: Array<{ text: string; sig: string | null }>) {
-  const kept: Array<{ text: string; sig: string | null }> = [];
+// resumable-stream replay inject DUPLICATE reasoning parts into a single
+// assistant message. Production data shows most duplicate pairs are separated
+// by REAL parts (text, tool calls) — the same thinking block, same Anthropic
+// signature, persisted twice with a tool call between the copies. Run-scoped
+// dedup never sees those, so they render as two thinking blocks with the same
+// text. Dedup keys mirror the backend's `dedupeAssistantReasoning`: Anthropic
+// signature first, then exact text, then prefix-superset (the streaming-grow /
+// replay shape).
+//
+// LAYOUT RULE: later duplicates always fold into the EARLIER occurrence. The
+// earlier block is collapsed by then (only its label is visible), so upgrading
+// its hidden text is layout-neutral; dropping or reflowing the earlier block
+// would shift everything below it mid-stream.
+function dedupeMessageItems(
+  runs: Array<{ start: number; items: RunItem[] }>,
+): KeptItem[] {
+  const kept: KeptItem[] = [];
 
-  for (const item of items) {
-    const t = item.text;
+  for (const run of runs) {
+    for (const item of run.items) {
+      const t = item.text;
 
-    // Same signature → same block: keep whichever copy is longer.
-    if (item.sig) {
-      const existing = kept.find(k => k.sig === item.sig);
-      if (existing) {
-        if (t.length > existing.text.length) existing.text = t;
-        continue;
+      // Same signature → unambiguously the same block: keep whichever copy is
+      // longer, displayed at the earlier position.
+      if (item.sig) {
+        const existing = kept.find(k => k.sig === item.sig);
+        if (existing) {
+          if (t.length > existing.text.length) existing.text = t;
+          continue;
+        }
       }
-    }
 
-    // Exact duplicate anywhere in the run.
-    if (kept.some(k => k.text === t)) continue;
+      // Exact duplicate anywhere earlier in the message.
+      if (kept.some(k => k.text === t)) continue;
 
-    // Streaming-grow / replay: the trailing kept copy is a prefix of this one
-    // (or vice versa). Only applied to signature-less parts — signatured blocks
-    // are authoritative and distinct even if their prose overlaps.
-    const last = kept[kept.length - 1];
-    if (last && !last.sig && !item.sig) {
-      if (t.startsWith(last.text)) {
-        last.text = t;
-        continue;
+      // Streaming-grow / replay: the most recent kept copy is a prefix of this
+      // one (or vice versa). Skipped when BOTH carry signatures — distinct
+      // signatured blocks are authoritative even if their prose overlaps. A
+      // signature-less partial (stream cut before reasoning-end) merging with
+      // its signatured replayed copy is exactly the shape we want to absorb.
+      const last = kept[kept.length - 1];
+      if (last && (!last.sig || !item.sig)) {
+        if (t.startsWith(last.text)) {
+          last.text = t;
+          if (item.sig && !last.sig) last.sig = item.sig;
+          continue;
+        }
+        if (last.text.startsWith(t)) continue;
       }
-      if (last.text.startsWith(t)) continue;
-    }
 
-    kept.push({ text: t, sig: item.sig });
+      kept.push({ text: t, sig: item.sig, runStart: run.start });
+    }
   }
 
-  return kept.map(k => k.text).join("\n\n");
+  return kept;
 }
 
 // Groups consecutive `reasoning` parts into a single display block. A run of
@@ -109,7 +135,9 @@ function dedupeRunText(items: Array<{ text: string; sig: string | null }>) {
 export function computeReasoningGroups(
   parts: Array<Part>,
 ): Map<number, ReasoningGroup> {
-  const groups = new Map<number, ReasoningGroup>();
+  // Pass 1: collect contiguous runs (bridging step-start markers).
+  const runs: Array<{ start: number; lastIndex: number; items: RunItem[] }> =
+    [];
 
   let i = 0;
   while (i < parts.length) {
@@ -119,7 +147,7 @@ export function computeReasoningGroups(
     }
 
     const start = i;
-    const items: Array<{ text: string; sig: string | null }> = [];
+    const items: RunItem[] = [];
     let lastIndex = i;
 
     let j = i;
@@ -139,8 +167,24 @@ export function computeReasoningGroups(
       }
     }
 
-    groups.set(start, { text: dedupeRunText(items), lastIndex });
+    runs.push({ start, lastIndex, items });
     i = j;
+  }
+
+  // Pass 2: dedupe across the WHOLE message, then rebuild each run's display
+  // text from the items that survived in it. A run whose entire content folded
+  // into an earlier block gets an empty group — the render skips empty groups
+  // unless they're the live streaming block (where an empty "Thinking…" shell
+  // is correct while the replayed prefix upgrades the earlier collapsed block).
+  const kept = dedupeMessageItems(runs);
+
+  const groups = new Map<number, ReasoningGroup>();
+  for (const run of runs) {
+    const text = kept
+      .filter(k => k.runStart === run.start)
+      .map(k => k.text)
+      .join("\n\n");
+    groups.set(run.start, { text, lastIndex: run.lastIndex });
   }
 
   return groups;

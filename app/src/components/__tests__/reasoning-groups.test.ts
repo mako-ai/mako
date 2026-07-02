@@ -122,6 +122,64 @@ describe("computeReasoningGroups", () => {
     expect(computeReasoningGroups(parts).get(0)?.text).toBe("short but longer");
   });
 
+  it("dedupes a signature-equal duplicate separated by tool/text parts", () => {
+    // The dominant shape in production data: the SAME thinking block (same
+    // Anthropic signature) persisted twice with real parts between the copies.
+    const sigMeta = { anthropic: { signature: "sig-dup" } };
+    const parts: Part[] = [
+      { type: "reasoning", text: "same thinking", providerMetadata: sigMeta },
+      { type: "text", text: "answer so far" },
+      { type: "tool-read_console", state: "output-available" },
+      { type: "step-start" },
+      { type: "reasoning", text: "same thinking", providerMetadata: sigMeta },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect([...groups.keys()]).toEqual([0, 4]);
+    expect(groups.get(0)?.text).toBe("same thinking");
+    // Later copy folded into the earlier block — its group renders nothing.
+    expect(groups.get(4)?.text).toBe("");
+  });
+
+  it("dedupes an exact text duplicate separated by tool parts (no signatures)", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "repeated thought" },
+      { type: "tool-dbt_get_run", state: "output-available" },
+      { type: "reasoning", text: "repeated thought" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect(groups.get(0)?.text).toBe("repeated thought");
+    expect(groups.get(2)?.text).toBe("");
+  });
+
+  it("folds a cross-run prefix-superset into the earlier block", () => {
+    // Resume replay: partial copy cut mid-stream (no signature), then the
+    // replayed full copy (signatured) lands after a tool call. The full text
+    // must display ONCE, in the earlier block's position.
+    const parts: Part[] = [
+      { type: "reasoning", text: "ABC" },
+      { type: "tool-run_console", state: "output-available" },
+      {
+        type: "reasoning",
+        text: "ABC more thinking",
+        providerMetadata: { anthropic: { signature: "sig-full" } },
+      },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect(groups.get(0)?.text).toBe("ABC more thinking");
+    expect(groups.get(2)?.text).toBe("");
+  });
+
+  it("keeps genuinely different reasoning blocks across tool parts", () => {
+    const parts: Part[] = [
+      { type: "reasoning", text: "planning the query" },
+      { type: "tool-run_console", state: "output-available" },
+      { type: "reasoning", text: "interpreting the results" },
+    ];
+    const groups = computeReasoningGroups(parts);
+    expect(groups.get(0)?.text).toBe("planning the query");
+    expect(groups.get(2)?.text).toBe("interpreting the results");
+  });
+
   it("keeps distinct signatured blocks separate even if text overlaps", () => {
     const parts: Part[] = [
       {

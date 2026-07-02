@@ -5,6 +5,7 @@ import { Chat, SavedConsole } from "../database/workspace-schema";
 import type { AgentKind } from "../agent-lib";
 import { loggers } from "../logging";
 import { isModelReadyFilePart } from "../utils/message-sanitizer";
+import { dedupeAssistantReasoning } from "../agent-lib/context/compaction";
 import { externalizeChatAttachments } from "./chat-attachment.service";
 
 const logger = loggers.agent();
@@ -705,7 +706,22 @@ export const saveChat = async (
     });
   }
 
-  const storedMessages = persistableMessages.map(
+  // Strip duplicate reasoning parts BEFORE persisting. The stream lifecycle
+  // (`originalMessages` continuation merge, resumable-stream replay) can hand
+  // `onFinish` an assistant message containing the same thinking block twice —
+  // often separated by tool/text parts. Persisting them corrupts the chat for
+  // every subsequent load (duplicate thinking blocks in the UI) and forces the
+  // model-input path to re-dedupe on every turn. Same signature/text keys as
+  // the model-input dedupe; first occurrence and order are preserved.
+  const reasoningDedupe = dedupeAssistantReasoning(persistableMessages);
+  if (reasoningDedupe.changed) {
+    logger.warn("Removed duplicate reasoning parts before persistence", {
+      chatId,
+      removedCount: reasoningDedupe.removedCount,
+    });
+  }
+
+  const storedMessages = reasoningDedupe.messages.map(
     convertUIMessageToStoredFormat,
   );
 

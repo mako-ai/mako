@@ -124,12 +124,18 @@ The latch above only holds if a thinking block keeps a **stable identity** and a
    resume/continuation replay interleave `step-start` between thinking segments
    (and between a partial reasoning part and its replayed copy). `step-start`
    bridges the run; only a real tool/text part starts a new block.
-3. **Dedupe overlapping reasoning within a run.** Continuation-merge and
-   resumable-stream replay inject duplicate reasoning parts (a partial `"ABC"`
-   next to the replayed `"ABC more…"`). `computeReasoningGroups` collapses them
-   by Anthropic `signature`, then exact text, then prefix-superset (keep the
-   longest) — the same keys the backend's `dedupeAssistantReasoning` uses. Never
-   `join("\n\n")` raw parts: that renders the same thinking twice.
+3. **Dedupe overlapping reasoning across the WHOLE message.** Continuation-merge
+   and resumable-stream replay inject duplicate reasoning parts (a partial
+   `"ABC"` next to the replayed `"ABC more…"`) — and production data shows most
+   duplicate pairs are separated by real tool/text parts, not adjacent. So the
+   dedup in `computeReasoningGroups` is message-wide, not run-scoped: a later
+   copy folds into the EARLIER block (layout-neutral — that block is collapsed
+   by then), keyed by Anthropic `signature`, then exact text, then
+   prefix-superset (keep the longest) — the same keys the backend's
+   `dedupeAssistantReasoning` uses. Never `join("\n\n")` raw parts: that renders
+   the same thinking twice. Persistence applies `dedupeAssistantReasoning` in
+   `saveChat` too, so corrupted turns stop being written; the client dedup
+   still covers live streams and pre-existing history.
 
 Blocks are keyed **`reasoning-group-<ordinal>`** (position among reasoning
 groups), never `reasoning-<partIndex>` — a shifting array index would remount
