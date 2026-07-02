@@ -4664,3 +4664,267 @@ DbtRunSchema.index({ workspaceId: 1, projectId: 1, createdAt: -1 });
 DbtRunSchema.index({ jobId: 1, createdAt: -1 }, { sparse: true });
 
 export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);
+
+/**
+ * MCP (Model Context Protocol) integration.
+ *
+ * Three collections, modeled after Onyx's split between server definitions
+ * and credentials:
+ *  - `mcp_servers`            — workspace-level server definition (URL,
+ *                               transport, tool policy, cached tool list).
+ *  - `mcp_connection_configs` — encrypted credentials; one per workspace
+ *                               (shared) or one per user, depending on the
+ *                               server's `authPerformer`.
+ *  - `mcp_tool_grants`        — per-user "always allow" / "always deny"
+ *                               decisions that back the chat approval flow.
+ */
+
+export type McpTransportType = "http";
+export type McpAuthType = "none" | "api_key" | "oauth";
+/** Who supplies credentials: one shared workspace credential, or each user. */
+export type McpAuthPerformer = "workspace" | "user";
+export type McpWriteScope = "read" | "write_safe" | "write_destructive";
+export type McpServerStatus =
+  | "created"
+  | "awaiting_auth"
+  | "connected"
+  | "error";
+
+export interface IMcpCachedTool {
+  name: string;
+  description?: string;
+  /** JSON Schema for the tool's input, captured at discovery time. */
+  inputSchema?: Record<string, unknown>;
+  /** MCP tool annotations (readOnlyHint, destructiveHint, ...) if provided. */
+  annotations?: {
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    [key: string]: unknown;
+  };
+}
+
+export interface IMcpServer extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  name: string;
+  description?: string;
+  /** Preset key ("close", "custom", ...) — drives the config form + defaults. */
+  connectorType: string;
+  transport: {
+    type: McpTransportType;
+    url: string;
+  };
+  authType: McpAuthType;
+  authPerformer: McpAuthPerformer;
+  /**
+   * Write capability requested from the server. For servers with a scope
+   * header preset (e.g. Close's `Close-Scope`), this is sent on connect and
+   * enforced server-side by the provider. Also used as the fallback risk
+   * tier for tools without MCP annotations.
+   */
+  writeScope: McpWriteScope;
+  toolPolicy: {
+    /** "all" exposes every discovered tool; "allowlist" only `allowedTools`. */
+    mode: "all" | "allowlist";
+    allowedTools: string[];
+    /**
+     * Admin unlock: when true, destructive-tier tools can be granted
+     * "always allow" like any other write tool. Default false — destructive
+     * tools then always require a fresh per-call approval.
+     */
+    allowDestructiveGrants: boolean;
+  };
+  /** Discovered tools from the last successful connect/test. */
+  cachedTools: IMcpCachedTool[];
+  status: McpServerStatus;
+  lastError?: string;
+  lastConnectedAt?: Date;
+  createdBy: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const McpServerSchema = new Schema<IMcpServer>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true, maxlength: 100 },
+    description: { type: String, trim: true, maxlength: 500 },
+    connectorType: { type: String, required: true, default: "custom" },
+    transport: {
+      type: new Schema(
+        {
+          type: { type: String, enum: ["http"], required: true },
+          url: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      required: true,
+    },
+    authType: {
+      type: String,
+      enum: ["none", "api_key", "oauth"],
+      required: true,
+      default: "api_key",
+    },
+    authPerformer: {
+      type: String,
+      enum: ["workspace", "user"],
+      required: true,
+      default: "workspace",
+    },
+    writeScope: {
+      type: String,
+      enum: ["read", "write_safe", "write_destructive"],
+      required: true,
+      default: "read",
+    },
+    toolPolicy: {
+      type: new Schema(
+        {
+          mode: {
+            type: String,
+            enum: ["all", "allowlist"],
+            required: true,
+            default: "all",
+          },
+          allowedTools: { type: [String], default: [] },
+          allowDestructiveGrants: { type: Boolean, default: false },
+        },
+        { _id: false },
+      ),
+      required: true,
+      default: () => ({
+        mode: "all",
+        allowedTools: [],
+        allowDestructiveGrants: false,
+      }),
+    },
+    cachedTools: {
+      type: [
+        new Schema<IMcpCachedTool>(
+          {
+            name: { type: String, required: true },
+            description: { type: String },
+            inputSchema: { type: Schema.Types.Mixed },
+            annotations: { type: Schema.Types.Mixed },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    status: {
+      type: String,
+      enum: ["created", "awaiting_auth", "connected", "error"],
+      required: true,
+      default: "created",
+    },
+    lastError: { type: String },
+    lastConnectedAt: { type: Date },
+    createdBy: { type: String, required: true },
+    isActive: { type: Boolean, default: true },
+  },
+  { collection: "mcp_servers", timestamps: true },
+);
+
+McpServerSchema.index({ workspaceId: 1, name: 1 }, { unique: true });
+McpServerSchema.index({ workspaceId: 1, isActive: 1 });
+
+export const McpServer = mongoose.model<IMcpServer>(
+  "McpServer",
+  McpServerSchema,
+);
+
+export interface IMcpConnectionConfig extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  serverId: Types.ObjectId;
+  /** Empty string for the shared workspace credential; else the user id. */
+  userId: string;
+  /** Encrypted header values (crypto.service `iv:ciphertext` format). */
+  headers: Record<string, string>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const McpConnectionConfigSchema = new Schema<IMcpConnectionConfig>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    serverId: {
+      type: Schema.Types.ObjectId,
+      ref: "McpServer",
+      required: true,
+    },
+    userId: { type: String, required: false, default: "" },
+    headers: { type: Schema.Types.Mixed, default: {} },
+  },
+  { collection: "mcp_connection_configs", timestamps: true },
+);
+
+McpConnectionConfigSchema.index({ serverId: 1, userId: 1 }, { unique: true });
+McpConnectionConfigSchema.index({ workspaceId: 1 });
+
+export const McpConnectionConfig = mongoose.model<IMcpConnectionConfig>(
+  "McpConnectionConfig",
+  McpConnectionConfigSchema,
+);
+
+export type McpGrantDecision = "always_allow" | "always_deny";
+
+export interface IMcpToolGrant extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  serverId: Types.ObjectId;
+  /** Grants are always per-user, even on shared workspace credentials. */
+  userId: string;
+  toolName: string;
+  decision: McpGrantDecision;
+  lastUsedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const McpToolGrantSchema = new Schema<IMcpToolGrant>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    serverId: {
+      type: Schema.Types.ObjectId,
+      ref: "McpServer",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    toolName: { type: String, required: true },
+    decision: {
+      type: String,
+      enum: ["always_allow", "always_deny"],
+      required: true,
+    },
+    lastUsedAt: { type: Date },
+  },
+  { collection: "mcp_tool_grants", timestamps: true },
+);
+
+McpToolGrantSchema.index(
+  { serverId: 1, userId: 1, toolName: 1 },
+  { unique: true },
+);
+McpToolGrantSchema.index({ workspaceId: 1, userId: 1 });
+
+export const McpToolGrant = mongoose.model<IMcpToolGrant>(
+  "McpToolGrant",
+  McpToolGrantSchema,
+);
