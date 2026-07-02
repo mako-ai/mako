@@ -39,8 +39,14 @@ export function logsToProblems(logs: DbtRunLogLine[]): Problem[] {
 export function languageForDbtPath(path: string): string {
   if (path.endsWith(".sql")) return DBT_JINJA_LANGUAGE_ID;
   if (path.endsWith(".yml") || path.endsWith(".yaml")) return "yaml";
-  if (path.endsWith(".md")) return "markdown";
+  if (isMarkdownDbtPath(path)) return "markdown";
   return "plaintext";
+}
+
+/** True for dbt docs files that can be rendered as markdown (.md / .markdown). */
+export function isMarkdownDbtPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith(".md") || lower.endsWith(".markdown");
 }
 
 /** Model names (basename without .sql) under models/ for ref() completions. */
