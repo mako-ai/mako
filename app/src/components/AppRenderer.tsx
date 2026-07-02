@@ -4,6 +4,8 @@ import {
   Button,
   CircularProgress,
   IconButton,
+  MenuItem,
+  Select,
   Tooltip,
   Typography,
   Chip,
@@ -24,6 +26,7 @@ import {
   CheckCircle2 as PublishedIcon,
   DatabaseZap as RematerializeIcon,
 } from "lucide-react";
+import { containsDbtSchemaToken } from "@mako/schemas";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useTheme } from "../contexts/ThemeContext";
@@ -86,6 +89,38 @@ export default function AppRenderer({
   const materializeAllBindings = useAppStore(s => s.materializeAllBindings);
   const persistApp = useAppStore(s => s.persistApp);
   const saveVersion = useVersionStore(s => s.saveVersion);
+
+  // dbt preview environment override (per-user view state): only surfaced
+  // when a binding is linked to a dbt project and uses {{ dbt_schema }}.
+  const dbtProjectId = appEntity?.dataBindings.find(
+    b => b.dbtProjectId && containsDbtSchemaToken(b.code),
+  )?.dbtProjectId;
+  const previewDbtEnv = useAppStore(s => s.previewDbtEnv[appId] ?? null);
+  const dbtEnvInfo = useAppStore(s =>
+    dbtProjectId ? s.dbtEnvInfo[dbtProjectId] : undefined,
+  );
+  const fetchDbtEnvInfo = useAppStore(s => s.fetchDbtEnvInfo);
+  const setPreviewDbtEnvironment = useAppStore(s => s.setPreviewDbtEnvironment);
+
+  useEffect(() => {
+    if (workspaceId && dbtProjectId && !dbtEnvInfo) {
+      void fetchDbtEnvInfo(workspaceId, dbtProjectId);
+    }
+  }, [workspaceId, dbtProjectId, dbtEnvInfo, fetchDbtEnvInfo]);
+
+  const prodEnvName = dbtEnvInfo
+    ? dbtEnvInfo.environments.some(env => env.name === "prod")
+      ? "prod"
+      : dbtEnvInfo.defaultEnvironment
+    : null;
+  const effectiveDbtEnv =
+    previewDbtEnv &&
+    dbtEnvInfo?.environments.some(env => env.name === previewDbtEnv)
+      ? previewDbtEnv
+      : prodEnvName;
+  const dbtOverrideActive = Boolean(
+    effectiveDbtEnv && prodEnvName && effectiveDbtEnv !== prodEnvName,
+  );
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -231,8 +266,16 @@ export default function AppRenderer({
         const binding = appEntity?.dataBindings.find(
           b => b.name === data.binding,
         );
+        // Preview env override: materialized artifacts always hold PROD data,
+        // so a dbt-linked parquet binding falls back to a live (row-capped)
+        // execution against the override schema — the prod artifact is never
+        // touched or poisoned.
+        const dbtLiveOverride =
+          dbtOverrideActive &&
+          Boolean(binding?.dbtProjectId) &&
+          containsDbtSchemaToken(binding?.code ?? "");
         // Materialized binding -> read its table from DuckDB-WASM.
-        if (binding?.materialization === "parquet") {
+        if (binding?.materialization === "parquet" && !dbtLiveOverride) {
           const rowLimit = resolveSandboxRowLimit(data.rowLimit);
           void ensureBindingLoaded(appId, binding)
             .then(() =>
@@ -347,6 +390,7 @@ export default function AppRenderer({
     runBinding,
     setPreviewErrors,
     applyAppLocation,
+    dbtOverrideActive,
   ]);
 
   // Browser back/forward changes the host URL without a reload; mirror the new
@@ -427,6 +471,52 @@ export default function AppRenderer({
             color="warning"
             variant="outlined"
             label="Unpublished changes"
+          />
+        )}
+        {dbtProjectId && dbtEnvInfo && effectiveDbtEnv && (
+          <Tooltip
+            title={
+              "dbt data environment for THIS preview only (your view). " +
+              "Published/shared viewers always read prod."
+            }
+          >
+            <Select
+              size="small"
+              variant="outlined"
+              value={effectiveDbtEnv}
+              onChange={e =>
+                setPreviewDbtEnvironment(
+                  appId,
+                  e.target.value === prodEnvName ? null : e.target.value,
+                )
+              }
+              sx={{ fontSize: "0.72rem", height: 26, ml: 0.5 }}
+            >
+              {dbtEnvInfo.environments
+                .filter(
+                  env =>
+                    !env.ownerUserId ||
+                    env.ownerUserId === user?.id ||
+                    env.name === effectiveDbtEnv,
+                )
+                .map(env => (
+                  <MenuItem key={env.name} value={env.name}>
+                    {env.name === prodEnvName
+                      ? `${env.name} (default)`
+                      : env.ownerUserId
+                        ? `${env.name} (personal)`
+                        : env.name}
+                  </MenuItem>
+                ))}
+            </Select>
+          </Tooltip>
+        )}
+        {dbtOverrideActive && (
+          <Chip
+            size="small"
+            color="info"
+            variant="outlined"
+            label={`Previewing dbt env: ${effectiveDbtEnv}`}
           />
         )}
         <Box sx={{ flex: 1 }} />

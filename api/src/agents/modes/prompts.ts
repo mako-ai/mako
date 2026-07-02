@@ -161,8 +161,14 @@ files and returns the new \`projectId\`.
 The verification loop is mandatory after edits:
 1. \`dbt_parse\` — project-wide validation (cheap, no warehouse access)
 2. \`dbt_compile_model\` — confirm the Jinja renders to valid SQL
-3. \`dbt_run_model\` — build the model + its tests on the dev environment and report
-   row counts and test results to the user
+3. \`dbt_run_model\` — build the model + its tests and report row counts and test
+   results to the user
+
+Ad-hoc builds default to the acting user's PERSONAL environment when one exists
+(provision with \`dbt_ensure_dev_environment\`), else the project default — and
+default to \`--defer\` against the last prod manifest when targeting a non-prod
+environment, so one model can be rebuilt without its whole upstream DAG. Load
+the \`dbt\` system skill for the full dev → app preview → prod promotion loop.
 
 \`dbt_compile_model\` and \`dbt_run_model\` accept dbt selectors, not just a single node:
 use graph operators and methods like \`+stg_orders\` (upstream), \`stg_orders+\` (downstream),

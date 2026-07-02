@@ -16,6 +16,7 @@ import { nanoid } from "nanoid";
 import {
   MakoApp,
   DatabaseConnection,
+  DbtProject,
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -137,6 +138,7 @@ function serializeApp(doc: IMakoApp) {
     dataBindings: (doc.dataBindings ?? []).map(b => ({
       id: b.id,
       name: b.name,
+      dbtProjectId: b.dbtProjectId,
       connectionId: b.connectionId,
       language: b.language,
       code: b.code,
@@ -250,12 +252,38 @@ function canRead(
   return canReadResource(doc, userId, memberRole);
 }
 
-// Validate that every data binding references a connection in this workspace.
+// Validate that every data binding references a connection (and, when linked,
+// a dbt project) in this workspace.
 async function validateDataBindings(
   workspaceId: string,
-  dataBindings: Array<{ connectionId?: string }> | undefined,
+  dataBindings:
+    | Array<{ connectionId?: string; dbtProjectId?: string }>
+    | undefined,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   if (!dataBindings || dataBindings.length === 0) return { ok: true };
+  const dbtProjectIds = [
+    ...new Set(dataBindings.map(b => b.dbtProjectId).filter(Boolean)),
+  ] as string[];
+  for (const id of dbtProjectIds) {
+    if (!Types.ObjectId.isValid(id)) {
+      return {
+        ok: false,
+        error: `Invalid dbtProjectId in data binding: ${id}`,
+      };
+    }
+  }
+  if (dbtProjectIds.length > 0) {
+    const validProjects = await DbtProject.countDocuments({
+      _id: { $in: dbtProjectIds.map(id => new Types.ObjectId(id)) },
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    if (validProjects !== dbtProjectIds.length) {
+      return {
+        ok: false,
+        error: "One or more data binding dbt projects are invalid",
+      };
+    }
+  }
   const connectionIds = [
     ...new Set(dataBindings.map(b => b.connectionId).filter(Boolean)),
   ] as string[];
@@ -574,6 +602,7 @@ app.openapi(
             return {
               id,
               name: b.name,
+              dbtProjectId: b.dbtProjectId,
               connectionId: b.connectionId,
               language: b.language || "sql",
               code: b.code ?? "",

@@ -46,8 +46,10 @@ import {
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import MonacoEditor, { type Monaco } from "@monaco-editor/react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
+  visibleDbtEnvironments,
   type DbtCompileResult,
   type DbtCommandRunResult,
   type DbtRunModelResult,
@@ -275,6 +277,7 @@ export default function DbtFileEditor({
   path: string;
 }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
   const monacoTheme = useTheme().palette.mode === "dark" ? "vs-dark" : "vs";
 
@@ -343,9 +346,16 @@ export default function DbtFileEditor({
     }
   }, [workspaceId, projectId, path, file?.loaded, readFile]);
 
+  // Default to the user's PERSONAL environment when provisioned (safe fast
+  // iteration in their own schema), else the project default.
   useEffect(() => {
-    if (project && !environment) setEnvironment(project.defaultEnvironment);
-  }, [project, environment]);
+    if (project && !environment) {
+      const personal = project.environments?.find(
+        env => env.ownerUserId && env.ownerUserId === user?.id,
+      );
+      setEnvironment(personal?.name ?? project.defaultEnvironment);
+    }
+  }, [project, environment, user?.id]);
 
   const handleChange = useCallback(
     (value: string | undefined) => {
@@ -880,9 +890,9 @@ export default function DbtFileEditor({
         onChange={e => setEnvironment(e.target.value)}
         sx={{ fontSize: "0.72rem", textTransform: "uppercase" }}
       >
-        {(project?.environments ?? []).map(env => (
+        {visibleDbtEnvironments(project?.environments, user?.id).map(env => (
           <MenuItem key={env.name} value={env.name}>
-            {env.name}
+            {env.ownerUserId ? `${env.name} (personal)` : env.name}
           </MenuItem>
         ))}
       </Select>

@@ -44,6 +44,7 @@ import {
   Trash2 as TrashIcon,
   X as CloseIcon,
 } from "lucide-react";
+import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
   type DbtEnvironment,
@@ -181,9 +182,14 @@ export default function DbtProjectSettingsDrawer({
   connections,
   onClose,
 }: DbtProjectSettingsDrawerProps) {
+  const { user } = useAuth();
   const projects = useDbtStore(s => s.projects);
   const updateProject = useDbtStore(s => s.updateProject);
   const listBranches = useDbtStore(s => s.listBranches);
+  const ensurePersonalEnvironment = useDbtStore(
+    s => s.ensurePersonalEnvironment,
+  );
+  const [creatingPersonalEnv, setCreatingPersonalEnv] = useState(false);
 
   const project = useMemo(
     () => projects.find(p => p._id === projectId) ?? null,
@@ -993,13 +999,33 @@ export default function DbtProjectSettingsDrawer({
             <SettingsSection
               title="Environments"
               action={
-                <Button
-                  size="small"
-                  startIcon={<PlusIcon size={14} />}
-                  onClick={openCreateEnvModal}
-                >
-                  Add environment
-                </Button>
+                <Box sx={{ display: "flex", gap: 0.5 }}>
+                  {!project.environments.some(
+                    env => env.ownerUserId && env.ownerUserId === user?.id,
+                  ) && (
+                    <Button
+                      size="small"
+                      disabled={creatingPersonalEnv}
+                      onClick={() => {
+                        if (!projectId) return;
+                        setCreatingPersonalEnv(true);
+                        void ensurePersonalEnvironment(
+                          workspaceId,
+                          projectId,
+                        ).finally(() => setCreatingPersonalEnv(false));
+                      }}
+                    >
+                      {creatingPersonalEnv ? "Creating…" : "My dev environment"}
+                    </Button>
+                  )}
+                  <Button
+                    size="small"
+                    startIcon={<PlusIcon size={14} />}
+                    onClick={openCreateEnvModal}
+                  >
+                    Add environment
+                  </Button>
+                </Box>
               }
             >
               <Table size="small">
@@ -1035,11 +1061,25 @@ export default function DbtProjectSettingsDrawer({
                               sx={{ height: 18, fontSize: "0.6rem" }}
                             />
                           )}
-                          <Chip
-                            size="small"
-                            label={envBadge(env.name, project)}
-                            sx={{ height: 18, fontSize: "0.6rem" }}
-                          />
+                          {env.ownerUserId ? (
+                            <Chip
+                              size="small"
+                              color="info"
+                              variant="outlined"
+                              label={
+                                env.ownerUserId === user?.id
+                                  ? "personal"
+                                  : "personal · other user"
+                              }
+                              sx={{ height: 18, fontSize: "0.6rem" }}
+                            />
+                          ) : (
+                            <Chip
+                              size="small"
+                              label={envBadge(env.name, project)}
+                              sx={{ height: 18, fontSize: "0.6rem" }}
+                            />
+                          )}
                         </Box>
                       </TableCell>
                       <TableCell sx={{ fontSize: "0.8rem" }}>

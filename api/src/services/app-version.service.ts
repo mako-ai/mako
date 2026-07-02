@@ -53,6 +53,7 @@ export function buildAppSnapshot(doc: IMakoApp): AppSnapshot {
     dataBindings: (doc.dataBindings ?? []).map(b => ({
       id: b.id,
       name: b.name,
+      dbtProjectId: b.dbtProjectId,
       connectionId: b.connectionId,
       language: b.language,
       code: b.code,
@@ -88,6 +89,7 @@ export function applyAppSnapshot(doc: IMakoApp, snapshot: AppSnapshot): void {
   doc.dataBindings = (snapshot.dataBindings ?? []).map(b => ({
     id: b.id as string,
     name: b.name as string,
+    dbtProjectId: b.dbtProjectId as string | undefined,
     connectionId: b.connectionId as string,
     language: (b.language as "sql" | "javascript" | "mongodb") || "sql",
     code: (b.code as string) ?? "",

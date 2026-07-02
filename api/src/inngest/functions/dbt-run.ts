@@ -191,8 +191,9 @@ export const dbtRunExecutorFunction = inngest.createFunction(
 
       // Slim CI: resolve the project's last prod manifest so the executor can
       // run `--defer --state`. Applies to (a) scheduled/deploy jobs that opt in
-      // via deferToProduction and (b) PR CI runs (unless the project's CI
-      // config disables defer).
+      // via deferToProduction, (b) PR CI runs (unless the project's CI config
+      // disables defer), and (c) ad-hoc/agent runs that set the run-level
+      // deferToProduction flag (fast iteration in personal dev schemas).
       let deferStateKey: string | null = null;
       let wantsDefer = false;
       if (run.trigger === "ci") {
@@ -207,6 +208,8 @@ export const dbtRunExecutorFunction = inngest.createFunction(
           (await DbtJob.findById(run.jobId).select("deferToProduction").lean())
             ?.deferToProduction,
         );
+      } else if (run.deferToProduction) {
+        wantsDefer = true;
       }
       if (wantsDefer) {
         const project = await DbtProject.findById(run.projectId)

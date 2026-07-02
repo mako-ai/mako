@@ -36,8 +36,10 @@ import {
   Play as RunIcon,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
+import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
+  visibleDbtEnvironments,
   type DbtCommandRunResult,
   type DbtRunLogLine,
 } from "../store/dbtStore";
@@ -117,6 +119,7 @@ function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
 
 export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const { currentWorkspace } = useWorkspace();
+  const { user } = useAuth();
   const workspaceId = currentWorkspace?.id;
 
   const project = useDbtStore(s => s.projects.find(p => p._id === projectId));
@@ -137,9 +140,16 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
     if (!project && workspaceId) void fetchProjects(workspaceId);
   }, [project, workspaceId, fetchProjects]);
 
+  // Default to the user's PERSONAL environment when provisioned (safe fast
+  // iteration in their own schema), else the project default.
   useEffect(() => {
-    if (project && !environment) setEnvironment(project.defaultEnvironment);
-  }, [project, environment]);
+    if (project && !environment) {
+      const personal = project.environments?.find(
+        env => env.ownerUserId && env.ownerUserId === user?.id,
+      );
+      setEnvironment(personal?.name ?? project.defaultEnvironment);
+    }
+  }, [project, environment, user?.id]);
 
   const runParse = useCallback(async () => {
     if (!workspaceId) return;
@@ -254,11 +264,13 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
               onChange={e => setEnvironment(e.target.value)}
               sx={{ fontSize: "0.8rem", minWidth: 90 }}
             >
-              {project.environments.map(env => (
-                <MenuItem key={env.name} value={env.name}>
-                  {env.name}
-                </MenuItem>
-              ))}
+              {visibleDbtEnvironments(project.environments, user?.id).map(
+                env => (
+                  <MenuItem key={env.name} value={env.name}>
+                    {env.ownerUserId ? `${env.name} (personal)` : env.name}
+                  </MenuItem>
+                ),
+              )}
             </Select>
             <TextField
               size="small"

@@ -146,6 +146,17 @@ export const createDataBindingSchema = z.object({
     ),
   databaseId: z.string().optional(),
   databaseName: z.string().optional(),
+  dbtProjectId: z
+    .string()
+    .optional()
+    .describe(
+      "Link the binding to a dbt project (from read_dbt_project_tree). When " +
+        "set, write the query against the {{ dbt_schema }} token instead of " +
+        "hardcoding a schema (e.g. SELECT * FROM {{ dbt_schema }}.fct_orders); " +
+        "it resolves to the project's PROD environment schema for published " +
+        "apps/materialization, and to the editor's preview environment " +
+        "override in the draft preview.",
+    ),
   materialization: z
     .enum(["live", "parquet"])
     .default("live")
@@ -198,6 +209,14 @@ export const updateDataBindingSchema = z.object({
   language: z.enum(["sql", "javascript", "mongodb"]).optional(),
   databaseId: z.string().optional(),
   databaseName: z.string().optional(),
+  dbtProjectId: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Link the binding to a dbt project (enables the {{ dbt_schema }} " +
+        "token in code) or pass null to unlink it.",
+    ),
 });
 
 export const deleteDataBindingSchema = z.object({
@@ -333,6 +352,26 @@ export const clientAppTools = {
       "validate that edits render and to read preview errors. Requires an " +
       "attached browser tab; it is not needed to author or persist an app.",
     inputSchema: z.object({ appId: appIdField }),
+  }),
+  app_set_preview_environment: tool({
+    description:
+      "Switch which dbt ENVIRONMENT the app's DRAFT PREVIEW reads data from " +
+      "(for dbt-linked bindings using the {{ dbt_schema }} token). This is " +
+      "per-user VIEW state — it never changes the app definition, other " +
+      "editors' previews, or what published/shared viewers see (those always " +
+      "read the prod environment). Pass environment: null to go back to the " +
+      "default (prod). Use it to verify an app against models you just built " +
+      "in a dev/personal schema before promoting them to prod.",
+    inputSchema: z.object({
+      appId: appIdField,
+      environment: z
+        .string()
+        .nullable()
+        .describe(
+          "dbt environment name from the linked project (e.g. 'dev' or a " +
+            "personal environment), or null to reset to the prod default",
+        ),
+    }),
   }),
 };
 
