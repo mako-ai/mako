@@ -77,6 +77,7 @@ vi.mock("../integrations/github/config", () => ({
 }));
 vi.mock("../integrations/github/github-api", () => ({
   fileExistsAtRef: vi.fn(),
+  getBranchHeadSha: vi.fn(),
   getRepoInfo: vi.fn(),
   listBranches: vi.fn(),
   listDbtProjectSubdirectories: vi.fn(),
@@ -123,10 +124,16 @@ import {
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
+import { getBranchHeadSha } from "../integrations/github/github-api";
+import { syncProjectBranchFromRepo } from "../dbt/dbt-github-sync.service";
 
 const adhocMock = runAdhocDbtCommand as unknown as ReturnType<typeof vi.fn>;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
+const branchHeadMock = getBranchHeadSha as unknown as ReturnType<typeof vi.fn>;
+const syncBranchMock = syncProjectBranchFromRepo as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -265,6 +272,76 @@ describe("project CRUD", () => {
     expect(
       (await (await req("GET", "/projects")).json()).projects,
     ).toHaveLength(0);
+  });
+
+  it("changes the tracked branch after verifying it exists on the remote", async () => {
+    const projectId = await createProjectAsOwner();
+    await mongoose.connection.collection("dbt_projects").updateOne(
+      { _id: new Types.ObjectId(projectId) },
+      {
+        $set: {
+          repo: {
+            provider: "github",
+            owner: "acme",
+            repo: "analytics",
+            branch: "fix/stale-feature",
+            installationId: 1,
+          },
+        },
+      },
+    );
+    branchHeadMock.mockResolvedValueOnce("sha-main");
+
+    const res = await req("PATCH", `/projects/${projectId}`, {
+      repoBranch: "main",
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).project.repo.branch).toBe("main");
+    // The new tracked branch's base tree is materialized right away.
+    expect(syncBranchMock).toHaveBeenCalledTimes(1);
+    const [projArg, branchArg, userArg] = syncBranchMock.mock.calls[0] as [
+      { _id: Types.ObjectId },
+      string,
+      string,
+    ];
+    expect(projArg._id.toString()).toBe(projectId);
+    expect(branchArg).toBe("main");
+    expect(userArg).toBe("u1");
+  });
+
+  it("rejects a tracked branch that does not exist on the remote", async () => {
+    const projectId = await createProjectAsOwner();
+    await mongoose.connection.collection("dbt_projects").updateOne(
+      { _id: new Types.ObjectId(projectId) },
+      {
+        $set: {
+          repo: {
+            provider: "github",
+            owner: "acme",
+            repo: "analytics",
+            branch: "main",
+            installationId: 1,
+          },
+        },
+      },
+    );
+    branchHeadMock.mockRejectedValueOnce(new Error("GitHub 404"));
+
+    const res = await req("PATCH", `/projects/${projectId}`, {
+      repoBranch: "typo/branch",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not found/);
+    expect(syncBranchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects repoBranch on a project without a repo binding", async () => {
+    const projectId = await createProjectAsOwner();
+    const res = await req("PATCH", `/projects/${projectId}`, {
+      repoBranch: "main",
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/connected repository/);
   });
 
   it("rejects an environment bound to a non-dbt-compatible connection", async () => {

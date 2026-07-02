@@ -346,6 +346,8 @@ interface DbtActions {
       dbtVersion?: string;
       ci?: DbtCiConfig;
       protectedBranches?: string[];
+      /** Tracked branch of the repo binding (what deploy/job runs build). */
+      repoBranch?: string;
     },
   ) => Promise<DbtProjectItem | null>;
   deleteProject: (workspaceId: string, projectId: string) => Promise<boolean>;

@@ -15,7 +15,7 @@ import {
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
-import { loadWorkingTreeContents } from "./dbt-working-tree.service";
+import { loadRunnableWorkingTree } from "./dbt-github-sync.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
 import { parseDbtCommand, type ParsedDbtCommand } from "./commands";
 import {
@@ -93,7 +93,10 @@ export async function loadDbtProjectSnapshot(params: {
 
   const profile = renderDbtProfile(connection, environment);
 
-  const files = await loadWorkingTreeContents(project, {
+  // Self-healing load: re-syncs a missing branch base tree (and re-anchors a
+  // tracked branch that no longer exists on the remote) rather than handing
+  // dbt a tree without dbt_project.yml.
+  const files = await loadRunnableWorkingTree(project, {
     userId: params.userId,
     branch: params.branch,
   });
