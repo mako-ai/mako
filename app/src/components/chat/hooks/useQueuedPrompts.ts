@@ -35,6 +35,11 @@ export interface UseQueuedPromptsArgs {
   capturedDashboardIdRef: MutableRefObject<string | null>;
   activeConsoleIdRef: MutableRefObject<string | null>;
   pendingPlanToolCallIdRef: MutableRefObject<string | null>;
+  /** One-shot latch consumed by the SDK's `sendAutomaticallyWhen` predicate.
+   * Set right before resolving a plan with feedback so `addToolOutput` does
+   * not auto-send — the feedback `sendMessage` below carries the resolved
+   * tool output AND the user message in a single request. */
+  suppressNextAutoSendRef: MutableRefObject<boolean>;
   autoSendWhenComplete: (options: AutoSendPredicateArgs) => boolean;
   interruptActiveTurn: () => void;
   /**
@@ -63,6 +68,7 @@ export function useQueuedPrompts({
   capturedDashboardIdRef,
   activeConsoleIdRef,
   pendingPlanToolCallIdRef,
+  suppressNextAutoSendRef,
   autoSendWhenComplete,
   interruptActiveTurn,
   drainQueuedPromptAfterTurnRef,
@@ -216,23 +222,41 @@ export function useQueuedPrompts({
         return;
       }
 
-      // Conversational plan iteration (Cursor-style): while a submitted plan is
-      // awaiting review, the typed message becomes request_changes feedback on
-      // the plan — including the current draft, so manual edits made in the
-      // plan tab flow back — instead of a normal user message.
+      // Conversational plan iteration (Cursor-style): while a submitted plan
+      // is awaiting review, the typed message resolves the plan as
+      // request_changes (carrying the current draft, so manual edits made in
+      // the plan tab flow back) AND is sent as a real user message so the
+      // feedback stays visible in the chat transcript. The suppress latch
+      // stops `addToolOutput`'s auto-send; the `sendMessage` below ships the
+      // resolved tool output and the feedback in one request.
       const pendingPlanToolCallId = pendingPlanToolCallIdRef.current;
       if (pendingPlanToolCallId) {
         const planStore = usePlanStore.getState();
         const planEntry = planStore.plans[pendingPlanToolCallId];
         const feedback = text.trim();
         if (planEntry?.status === "pending" && feedback) {
-          trackEvent("ai_plan_feedback_sent", { model: modelIdRef.current });
-          planStore.resolvePlan(
+          suppressNextAutoSendRef.current = true;
+          // The latch is consumed (one-shot) inside the SDK's
+          // sendAutomaticallyWhen predicate, normally synchronously via the
+          // resolver → addToolOutput → predicate chain.
+          const resolved = planStore.resolvePlan(
             pendingPlanToolCallId,
             "request_changes",
             feedback,
           );
-          return;
+          if (resolved) {
+            trackEvent("ai_plan_feedback_sent", { model: modelIdRef.current });
+            capturedConsoleIdRef.current = activeConsoleIdRef.current;
+            isLoadingRef.current = true;
+            manualStopRequestedRef.current = false;
+            sendMessageRef.current?.({ text: feedback, files });
+            return;
+          }
+          // No live resolver (should not happen while the plan is pending in
+          // the live messages) — release the unconsumed latch and fall
+          // through to the normal send path so the user's message is never
+          // silently swallowed.
+          suppressNextAutoSendRef.current = false;
         }
       }
 
@@ -284,6 +308,7 @@ export function useQueuedPrompts({
       modelIdRef,
       pendingPlanToolCallIdRef,
       sendMessageRef,
+      suppressNextAutoSendRef,
     ],
   );
 
