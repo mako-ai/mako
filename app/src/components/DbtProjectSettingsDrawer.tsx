@@ -14,6 +14,10 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Drawer,
   FormControl,
   IconButton,
@@ -204,6 +208,16 @@ export default function DbtProjectSettingsDrawer({
     Array<Array<{ key: string; value: string }>>
   >([]);
 
+  const [envModalOpen, setEnvModalOpen] = useState(false);
+  const [envModalDraft, setEnvModalDraft] = useState<DbtEnvironment | null>(
+    null,
+  );
+  const [envModalVarRows, setEnvModalVarRows] = useState<
+    Array<{ key: string; value: string }>
+  >([]);
+  const [envModalSaving, setEnvModalSaving] = useState(false);
+  const [envModalError, setEnvModalError] = useState<string | null>(null);
+
   const resetFromProject = useCallback((p: DbtProjectItem) => {
     setEditName(p.name);
     setEditDbtVersion(normalizeDbtVersion(p.dbtVersion));
@@ -246,13 +260,14 @@ export default function DbtProjectSettingsDrawer({
   }, [project, resetFromProject]);
 
   const isRepoBound = project?.repo != null;
-  const selectedEnv = useMemo(
-    () =>
-      selectedEnvName
-        ? (project?.environments.find(e => e.name === selectedEnvName) ?? null)
-        : null,
-    [project, selectedEnvName],
-  );
+  const selectedEnv = useMemo(() => {
+    if (!selectedEnvName) return null;
+    if (isEditing) {
+      const fromEdit = editEnvs.find(e => e.name === selectedEnvName);
+      if (fromEdit) return fromEdit;
+    }
+    return project?.environments.find(e => e.name === selectedEnvName) ?? null;
+  }, [project, selectedEnvName, isEditing, editEnvs]);
   const selectedEnvIndex = useMemo(
     () =>
       selectedEnvName
@@ -270,16 +285,119 @@ export default function DbtProjectSettingsDrawer({
     [],
   );
 
-  const handleAddEnvironment = useCallback(() => {
-    const draft = defaultNewEnvironment(editEnvs, connections);
-    setEditEnvs(prev => [...prev, draft]);
-    setEditVarRows(prev => [...prev, []]);
-    setSelectedEnvName(draft.name);
-    setIsEditing(true);
-    if (!editDefaultEnv && editEnvs.length === 0) {
-      setEditDefaultEnv(draft.name);
+  const closeEnvModal = useCallback(() => {
+    if (envModalSaving) return;
+    setEnvModalOpen(false);
+    setEnvModalDraft(null);
+    setEnvModalVarRows([]);
+    setEnvModalError(null);
+  }, [envModalSaving]);
+
+  const openCreateEnvModal = useCallback(() => {
+    const existing = isEditing ? editEnvs : (project?.environments ?? []);
+    const draft = defaultNewEnvironment(existing, connections);
+    setEnvModalDraft(draft);
+    setEnvModalVarRows([]);
+    setEnvModalError(null);
+    setEnvModalOpen(true);
+  }, [isEditing, editEnvs, project?.environments, connections]);
+
+  const validateEnvironmentDraft = useCallback(
+    (
+      draft: DbtEnvironment,
+      varRows: Array<{ key: string; value: string }>,
+      existingNames: string[],
+    ): { env: DbtEnvironment; error: string | null } => {
+      const name = draft.name.trim();
+      if (!name) return { env: draft, error: "Environment name is required." };
+      if (existingNames.some(n => n.trim() === name)) {
+        return { env: draft, error: "Environment names must be unique." };
+      }
+      if (!draft.connectionId) {
+        return { env: draft, error: "Connection is required." };
+      }
+      if (!draft.targetSchema.trim()) {
+        return { env: draft, error: "Target schema is required." };
+      }
+      if (connections.length === 0) {
+        return {
+          env: draft,
+          error: "Add a database connection before saving environments.",
+        };
+      }
+      const vars: Record<string, string> = {};
+      for (const row of varRows) {
+        const key = row.key.trim();
+        if (key) vars[key] = row.value;
+      }
+      return {
+        env: {
+          ...draft,
+          name,
+          targetSchema: draft.targetSchema.trim(),
+          threads: Number(draft.threads) || 1,
+          vars,
+        },
+        error: null,
+      };
+    },
+    [connections.length],
+  );
+
+  const handleEnvModalSave = useCallback(async () => {
+    if (!envModalDraft || !workspaceId || !projectId) return;
+    const existingNames = isEditing
+      ? editEnvs.map(e => e.name)
+      : (project?.environments.map(e => e.name) ?? []);
+    const { env: normalized, error } = validateEnvironmentDraft(
+      envModalDraft,
+      envModalVarRows,
+      existingNames,
+    );
+    if (error) {
+      setEnvModalError(error);
+      return;
     }
-  }, [editEnvs, connections, editDefaultEnv]);
+
+    if (isEditing) {
+      setEditEnvs(prev => [...prev, normalized]);
+      setEditVarRows(prev => [...prev, envModalVarRows]);
+      if (!editDefaultEnv && editEnvs.length === 0) {
+        setEditDefaultEnv(normalized.name);
+      }
+      closeEnvModal();
+      return;
+    }
+
+    if (!project) return;
+    setEnvModalSaving(true);
+    setEnvModalError(null);
+    const updated = await updateProject(workspaceId, projectId, {
+      environments: [...project.environments, normalized],
+    });
+    setEnvModalSaving(false);
+    if (updated) {
+      resetFromProject(updated);
+      closeEnvModal();
+    } else {
+      setEnvModalError(
+        "Failed to save environment. Check your connection settings.",
+      );
+    }
+  }, [
+    envModalDraft,
+    envModalVarRows,
+    workspaceId,
+    projectId,
+    isEditing,
+    editEnvs,
+    editDefaultEnv,
+    validateEnvironmentDraft,
+    closeEnvModal,
+    project,
+    updateProject,
+    resetFromProject,
+  ]);
 
   const handleRemoveEnvironment = useCallback(
     (index: number) => {
@@ -461,7 +579,7 @@ export default function DbtProjectSettingsDrawer({
     if (!env) return null;
     return (
       <Box
-        key={`${index}-${env.name}`}
+        key={index}
         sx={{
           mb: compact ? 0 : 2,
           p: compact ? 0 : 1.5,
@@ -791,7 +909,7 @@ export default function DbtProjectSettingsDrawer({
                 <Button
                   size="small"
                   startIcon={<PlusIcon size={14} />}
-                  onClick={handleAddEnvironment}
+                  onClick={openCreateEnvModal}
                 >
                   Add
                 </Button>
@@ -843,10 +961,7 @@ export default function DbtProjectSettingsDrawer({
                 <Button
                   size="small"
                   startIcon={<PlusIcon size={14} />}
-                  onClick={() => {
-                    setIsEditing(true);
-                    handleAddEnvironment();
-                  }}
+                  onClick={openCreateEnvModal}
                 >
                   Add environment
                 </Button>
@@ -1027,6 +1142,167 @@ export default function DbtProjectSettingsDrawer({
           </Typography>
         )}
       </Box>
+
+      <Dialog
+        open={envModalOpen}
+        onClose={closeEnvModal}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Add environment</DialogTitle>
+        <DialogContent>
+          {envModalDraft && (
+            <Box sx={{ pt: 0.5 }}>
+              <TextField
+                autoFocus
+                fullWidth
+                size="small"
+                label="Environment name"
+                value={envModalDraft.name}
+                onChange={e =>
+                  setEnvModalDraft(prev =>
+                    prev ? { ...prev, name: e.target.value } : prev,
+                  )
+                }
+                sx={{ mb: 1.5, mt: 0.5 }}
+              />
+              <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
+                <InputLabel id="dbt-env-modal-conn">Connection</InputLabel>
+                <Select
+                  labelId="dbt-env-modal-conn"
+                  label="Connection"
+                  value={envModalDraft.connectionId}
+                  onChange={e =>
+                    setEnvModalDraft(prev =>
+                      prev ? { ...prev, connectionId: e.target.value } : prev,
+                    )
+                  }
+                >
+                  {connections.map(conn => (
+                    <MenuItem key={conn.id} value={conn.id}>
+                      {conn.name} ({conn.type})
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <TextField
+                fullWidth
+                size="small"
+                label="Target schema"
+                value={envModalDraft.targetSchema}
+                onChange={e =>
+                  setEnvModalDraft(prev =>
+                    prev ? { ...prev, targetSchema: e.target.value } : prev,
+                  )
+                }
+                sx={{ mb: 1.5 }}
+              />
+              <TextField
+                fullWidth
+                size="small"
+                type="number"
+                label="Threads"
+                value={envModalDraft.threads}
+                onChange={e =>
+                  setEnvModalDraft(prev =>
+                    prev ? { ...prev, threads: Number(e.target.value) } : prev,
+                  )
+                }
+                inputProps={{ min: 1, max: 32 }}
+                sx={{ mb: 1.5 }}
+              />
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mb: 0.5, fontWeight: 600 }}
+              >
+                Variables
+              </Typography>
+              {envModalVarRows.map((row, rowIndex) => (
+                <Box
+                  key={rowIndex}
+                  sx={{ display: "flex", gap: 1, mb: 1, alignItems: "center" }}
+                >
+                  <TextField
+                    size="small"
+                    label="Key"
+                    value={row.key}
+                    onChange={e =>
+                      setEnvModalVarRows(prev =>
+                        prev.map((r, i) =>
+                          i === rowIndex ? { ...r, key: e.target.value } : r,
+                        ),
+                      )
+                    }
+                    sx={{ flex: 1 }}
+                  />
+                  <TextField
+                    size="small"
+                    label="Value"
+                    value={row.value}
+                    onChange={e =>
+                      setEnvModalVarRows(prev =>
+                        prev.map((r, i) =>
+                          i === rowIndex ? { ...r, value: e.target.value } : r,
+                        ),
+                      )
+                    }
+                    sx={{ flex: 1 }}
+                  />
+                  <IconButton
+                    size="small"
+                    aria-label="Remove variable"
+                    onClick={() =>
+                      setEnvModalVarRows(prev =>
+                        prev.filter((_, i) => i !== rowIndex),
+                      )
+                    }
+                  >
+                    <TrashIcon size={14} />
+                  </IconButton>
+                </Box>
+              ))}
+              <Button
+                size="small"
+                startIcon={<PlusIcon size={14} />}
+                onClick={() =>
+                  setEnvModalVarRows(prev => [...prev, { key: "", value: "" }])
+                }
+              >
+                Add variable
+              </Button>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.5 }}
+              >
+                Passed to every dbt command as <code>--vars</code>; read in
+                models via <code>{"{{ var('key') }}"}</code>.
+              </Typography>
+            </Box>
+          )}
+          {envModalError && (
+            <Typography
+              variant="caption"
+              color="error"
+              sx={{ mt: 1, display: "block" }}
+            >
+              {envModalError}
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeEnvModal} disabled={envModalSaving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void handleEnvModalSave()}
+            disabled={envModalSaving || !envModalDraft?.name.trim()}
+          >
+            {envModalSaving ? "Saving…" : "Add environment"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Box
         sx={{
