@@ -4192,8 +4192,11 @@ export const RealtimePresence = mongoose.model<IRealtimePresence>(
 /**
  * dbt — workspace-scoped dbt Core projects ("dbt Cloud replica").
  *
- * A project is a virtual filesystem in Mongo (one DbtFile doc per file)
- * materialized to a temp dir at run time by api/src/dbt/runner.service.ts.
+ * File CONTENT lives in a per-project bare git repository on disk
+ * (api/src/dbt/dbt-git-store.service.ts) — nothing in Mongo. Mongo keeps
+ * only metadata: projects, jobs, runs, and per-user checkout pointers.
+ * DbtFile/DbtFileDraft are LEGACY collections read exactly once per project
+ * to materialize its git repo (lazy migration) and never written again.
  * Jobs hold command lists + cron schedules (claim pattern mirrors
  * SavedConsole.scheduledRun); runs are the per-execution records with
  * capped logs and parsed run_results.json step results.
@@ -4214,9 +4217,9 @@ export interface IDbtEnvironment {
 
 /**
  * Optional binding of a dbt project to a Git repository. When present, the
- * project's files are imported/synced from this repo. Mongo (DbtFile) stays
- * the canonical source the runner materializes from; this binding records
- * where those files came from and lets us sync/commit against the remote.
+ * project's local git store mirrors this remote (fetch on sync, push on
+ * commit); this binding records where the files come from and which
+ * installation authenticates the transport.
  */
 export interface IDbtRepoBinding {
   provider: "github";
@@ -4345,6 +4348,11 @@ export const DbtProject = mongoose.model<IDbtProject>(
   DbtProjectSchema,
 );
 
+/**
+ * LEGACY — dbt file contents now live in the project's git store. Rows are
+ * read once per project by the lazy migration in dbt-working-tree.service.ts
+ * (ensureProjectRepo) and never written again.
+ */
 export interface IDbtFile extends Document {
   _id: Types.ObjectId;
   workspaceId: Types.ObjectId;
@@ -4401,11 +4409,9 @@ DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
 export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
 
 /**
- * Per-user uncommitted edit to a dbt file (the draft overlay). Reads for a
- * user merge draft-over-base: other workspace members never see a draft, so
- * collaborators only observe committed changes — like separate git working
- * trees. Drafts follow the user across branch switches (a dirty git tree
- * carried through `git checkout`) and are cleared when committed.
+ * LEGACY — per-user uncommitted edits now live as draft overlay refs in the
+ * project's git store. Rows are read once per project by the lazy migration
+ * (ensureProjectRepo) and never written again.
  */
 export interface IDbtFileDraft extends Document {
   _id: Types.ObjectId;

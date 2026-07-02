@@ -29,18 +29,12 @@ import {
 } from "@mako/agent-tools";
 import {
   DatabaseConnection,
-  DbtFile,
   DbtJob,
   DbtProject,
   DbtRun,
 } from "../../database/workspace-schema";
 import { publishRealtimeEvent } from "../../services/realtime.service";
 import { workspaceService } from "../../services/workspace.service";
-import {
-  createVersion,
-  getLatestVersionNumber,
-  getUserDisplayName,
-} from "../../services/entity-version.service";
 import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
 import {
   applyJobScheduleChange,
@@ -76,6 +70,7 @@ import {
   getCheckoutBranch,
   listWorkingFiles,
   readWorkingFile,
+  seedProjectFiles,
   writeWorkingFile,
 } from "../../dbt/dbt-working-tree.service";
 import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
@@ -313,30 +308,6 @@ export const createDbtServerTools = (
     return null;
   };
 
-  // Snapshot a dbt file version (entity-version pattern, mirrors the route).
-  const snapshotVersion = async (
-    fileId: Types.ObjectId,
-    wsId: Types.ObjectId,
-    path: string,
-    content: string,
-  ) => {
-    try {
-      const latest = await getLatestVersionNumber(fileId, "dbt-file");
-      const savedBy = userId ?? "agent";
-      await createVersion({
-        entityType: "dbt-file",
-        entityId: fileId,
-        workspaceId: wsId,
-        snapshot: { path, content },
-        savedBy,
-        savedByName: userId ? await getUserDisplayName(userId) : "Agent",
-        comment: `Save ${path} (v${latest + 1})`,
-      });
-    } catch {
-      /* version history is best-effort */
-    }
-  };
-
   return {
     read_dbt_project_tree: tool({
       description:
@@ -439,18 +410,7 @@ export const createDbtServerTools = (
               error: `File already exists: ${path}. Use modify_dbt_file to change it.`,
             };
           }
-          const { versionEntityId } = await writeWorkingFile(
-            project,
-            actingUserId,
-            path,
-            contents ?? "",
-          );
-          await snapshotVersion(
-            versionEntityId,
-            project.workspaceId,
-            path,
-            contents ?? "",
-          );
+          await writeWorkingFile(project, actingUserId, path, contents ?? "");
           await DbtProject.updateOne(
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
@@ -482,18 +442,7 @@ export const createDbtServerTools = (
           if ((contents ?? "").length > 1_000_000) {
             return { success: false, error: "File too large (max 1MB)" };
           }
-          const { versionEntityId } = await writeWorkingFile(
-            project,
-            actingUserId,
-            path,
-            contents ?? "",
-          );
-          await snapshotVersion(
-            versionEntityId,
-            project.workspaceId,
-            path,
-            contents ?? "",
-          );
+          await writeWorkingFile(project, actingUserId, path, contents ?? "");
           await DbtProject.updateOne(
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
@@ -530,11 +479,7 @@ export const createDbtServerTools = (
           if (!isSafeDbtPath(path)) {
             return { success: false, error: "Invalid file path" };
           }
-          const file = await DbtFile.findOne({
-            projectId: project._id,
-            path,
-            is_deleted: { $ne: true },
-          });
+          const file = await readWorkingFile(project, actingUserId, path);
           if (!file) {
             return {
               success: false,
@@ -560,20 +505,14 @@ export const createDbtServerTools = (
             newString,
             result.replacements,
           );
-          file.content = result.contents;
-          if (userId) file.updatedBy = userId;
-          await file.save();
-          await snapshotVersion(
-            file._id,
-            project.workspaceId,
-            path,
-            result.contents,
-          );
+          await writeWorkingFile(project, actingUserId, path, result.contents);
           await DbtProject.updateOne(
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
           );
-          publishFileUpdated(projectId, path);
+          publishFileUpdated(projectId, path, {
+            draft: Boolean(project.repo),
+          });
           return {
             success: true,
             path,
@@ -690,15 +629,7 @@ export const createDbtServerTools = (
           });
 
           const scaffold = buildStarterScaffold(name);
-          await DbtFile.insertMany(
-            scaffold.map(file => ({
-              workspaceId: project.workspaceId,
-              projectId: project._id,
-              path: file.path,
-              content: file.content,
-              updatedBy: "agent",
-            })),
-          );
+          await seedProjectFiles(project, actingUserId, scaffold);
 
           publishProjectUpdated(project._id.toString());
           return {

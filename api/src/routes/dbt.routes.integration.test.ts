@@ -19,6 +19,9 @@ import {
 import { Hono } from "hono";
 import mongoose, { Types } from "mongoose";
 import { MongoMemoryServer } from "mongodb-memory-server";
+import { mkdtemp, rm } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
 
 // Mutable caller role for the RBAC matrix (hoisted so the mock factory sees it).
 const ctx = vi.hoisted(() => ({ role: "owner" as string | null }));
@@ -83,11 +86,11 @@ vi.mock("../integrations/github/github-api", () => ({
   listInstallationRepos: vi.fn(),
 }));
 vi.mock("../dbt/dbt-github-sync.service", () => ({
-  fetchRepoDbtFiles: vi.fn(),
-  repoFilesToInserts: vi.fn(),
+  importProjectFromRepo: vi.fn(),
   syncProjectBranchFromRepo: vi.fn(),
 }));
 vi.mock("../dbt/dbt-github-git.service", () => ({
+  closeProjectPullRequest: vi.fn(),
   commitAndPush: vi.fn(),
   commitToNewBranch: vi.fn(),
   createProjectBranch: vi.fn(),
@@ -95,10 +98,12 @@ vi.mock("../dbt/dbt-github-git.service", () => ({
   getGitStatus: vi.fn(),
   getProjectFileDiff: vi.fn(),
   listProjectBranches: vi.fn(),
+  listProjectPullRequests: vi.fn(),
   mergeProjectPullRequest: vi.fn(),
   openProjectPullRequest: vi.fn(),
   ProtectedBranchError: class ProtectedBranchError extends Error {},
   switchProjectBranch: vi.fn(),
+  updateProjectPullRequest: vi.fn(),
 }));
 vi.mock("../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
@@ -168,14 +173,21 @@ async function createProjectAsOwner(): Promise<string> {
   return json.project._id;
 }
 
+let gitRoot: string;
+
 beforeAll(async () => {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
+  // File contents live in per-project bare git repos under DBT_GIT_ROOT.
+  gitRoot = await mkdtemp(path.join(tmpdir(), "mako-dbt-routes-test-"));
+  process.env.DBT_GIT_ROOT = gitRoot;
 });
 
 afterAll(async () => {
   await mongoose.disconnect();
   await mongo.stop();
+  await rm(gitRoot, { recursive: true, force: true });
+  delete process.env.DBT_GIT_ROOT;
 });
 
 beforeEach(async () => {
@@ -242,11 +254,13 @@ describe("project CRUD", () => {
   it("creates, lists, gets, patches, and deletes a project", async () => {
     const projectId = await createProjectAsOwner();
 
-    // The starter scaffold is materialized on create.
-    const fileCount = await mongoose.connection
-      .collection("dbt_files")
-      .countDocuments({ projectId: new Types.ObjectId(projectId) });
-    expect(fileCount).toBeGreaterThan(0);
+    // The starter scaffold is committed into the project's git store.
+    const filesRes = await req("GET", `/projects/${projectId}/files`);
+    expect(filesRes.status).toBe(200);
+    const files = (await filesRes.json()) as {
+      files: Array<{ path: string }>;
+    };
+    expect(files.files.map(f => f.path)).toContain("dbt_project.yml");
 
     const list = await (await req("GET", "/projects")).json();
     expect(list.projects).toHaveLength(1);

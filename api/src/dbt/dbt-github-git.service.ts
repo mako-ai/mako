@@ -3,12 +3,12 @@
  * status, commit & push, branch create/switch, and pull requests — the in-IDE
  * git surface that mirrors dbt Cloud.
  *
- * The working tree is per user: DbtFile rows are the COMMITTED base tree of a
- * branch, DbtFileDraft rows are the caller's uncommitted overlay, and
- * DbtCheckout points each user at their own branch. Status/commit therefore
- * only ever see the acting user's drafts. Pushing builds a single commit via
- * the Git Data API, updates the branch's base tree, and clears the committed
- * drafts.
+ * File content lives exclusively in the project's local bare git repository
+ * (dbt-git-store.service.ts): local branches mirror the GitHub remote, and a
+ * user's uncommitted work is a draft overlay ref rebased onto their checkout
+ * branch head. Commits are real git commits pushed with
+ * `--force-with-lease`; branch create/delete are `git push` operations.
+ * Pull-request metadata (open/list/merge/close) stays on the GitHub API.
  *
  * Branch protection: branches listed in `project.protectedBranches` refuse
  * direct commits — changes reach them only through a PR (commit-to-branch →
@@ -16,39 +16,48 @@
  */
 import {
   DbtCheckout,
-  DbtFile,
-  DbtFileDraft,
   DbtProject,
   type IDbtProject,
 } from "../database/workspace-schema";
 import { resolveRepoToken } from "../integrations/github/app-auth";
-import { gitBlobSha } from "../integrations/github/git-blob";
 import {
-  commitChanges,
-  createBranch,
   createPullRequest,
-  deleteBranch,
   getPullRequest,
-  getRefCommit,
-  getRepoInfo,
-  getRepoTree,
-  listBranches,
   listPullRequests,
   mergePullRequest,
-  tryDeleteBranch,
   updatePullRequest,
   type MergeMethod,
   type PullRequestSummary,
-  type TreeChange,
 } from "../integrations/github/github-api";
+import { resolveProjectRemote } from "./dbt-git-remote";
+import {
+  ZERO_SHA,
+  authorFor,
+  branchRef,
+  commitTreeUpdate,
+  deleteRef,
+  draftRefsFor,
+  fetchBranch,
+  listDeletedFiles,
+  listRemoteBranchNames,
+  pushBranch,
+  pushDeleteBranch,
+  readBlobAt,
+  remoteDefaultBranch,
+  resolveCommit,
+  treeShaOf,
+  updateRef,
+} from "./dbt-git-store.service";
+import { toProjectPath, toRepoPath } from "./dbt-paths";
 import { syncProjectBranchFromRepo } from "./dbt-github-sync.service";
 import {
-  baseTreeFilter,
-  cloneBranchBaseTree,
-  deleteBranchBaseTree,
   discardUserDrafts,
+  ensureProjectRepo,
   getCheckoutBranch,
+  resolveWorkingState,
   setCheckoutBranch,
+  workingTreeChanges,
+  writeWorkingFile,
 } from "./dbt-working-tree.service";
 
 /**
@@ -143,11 +152,6 @@ export interface GitStatusOptions {
   paths?: string[];
 }
 
-function repoPath(project: IDbtProject, path: string): string {
-  const subdir = project.repo?.subdirectory?.replace(/^\/+|\/+$/g, "");
-  return subdir ? `${subdir}/${path}` : path;
-}
-
 function normalizeCommitPaths(paths?: string[]): string[] | undefined {
   if (!paths) return undefined;
   const normalized = [
@@ -205,90 +209,22 @@ function filterGitStatus(status: GitStatus, paths?: string[]): GitStatus {
   return summarizeChanges(status.branch, selectedChanges);
 }
 
-interface DraftForStatus {
-  path: string;
-  content?: string;
-  is_deleted?: boolean;
-}
-
-interface BaseForStatus {
-  path: string;
-  content?: string;
-  repoBlobSha?: string;
-}
-
-/** Pure status computation: the caller's drafts vs a branch's base tree. */
-export function computeDraftStatus(
-  branch: string,
-  drafts: DraftForStatus[],
-  baseByPath: Map<string, BaseForStatus>,
-): GitStatus {
-  const changes: GitFileStatus[] = [];
-  for (const draft of drafts) {
-    const base = baseByPath.get(draft.path);
-    if (draft.is_deleted) {
-      // Only counts as a deletion if the file exists on the branch.
-      if (base) changes.push({ path: draft.path, status: "deleted" });
-      continue;
-    }
-    if (!base) {
-      changes.push({ path: draft.path, status: "added" });
-      continue;
-    }
-    const baseSha = base.repoBlobSha ?? gitBlobSha(base.content ?? "");
-    if (gitBlobSha(draft.content ?? "") !== baseSha) {
-      changes.push({ path: draft.path, status: "modified" });
-    }
-  }
-  changes.sort((a, b) => a.path.localeCompare(b.path));
-  return summarizeChanges(branch, changes);
-}
-
-async function loadStatusInputs(
-  project: IDbtProject,
-  userId: string,
-): Promise<{
-  branch: string;
-  drafts: DraftForStatus[];
-  baseByPath: Map<string, BaseForStatus>;
-}> {
-  if (!project.repo) {
-    throw new Error("Project is not connected to a repository");
-  }
-  const branch = (await getCheckoutBranch(project, userId)) as string;
-  const [drafts, baseRows] = await Promise.all([
-    DbtFileDraft.find({ projectId: project._id, userId })
-      .select("path content is_deleted")
-      .lean(),
-    DbtFile.find({
-      ...baseTreeFilter(project, branch),
-      is_deleted: { $ne: true },
-    })
-      .select("path content repoBlobSha")
-      .lean(),
-  ]);
-  return {
-    branch,
-    drafts,
-    baseByPath: new Map(baseRows.map(row => [row.path, row])),
-  };
-}
-
 /**
- * Compute the caller's working-tree status: their drafts vs the committed
- * base tree of their checked-out branch. Other users' drafts never appear.
+ * Compute the caller's working-tree status: their draft overlay vs the head
+ * of their checked-out branch. Other users' drafts never appear.
  */
 export async function getGitStatus(
   project: IDbtProject,
   userId: string,
   options: GitStatusOptions = {},
 ): Promise<GitStatus> {
-  const { branch, drafts, baseByPath } = await loadStatusInputs(
-    project,
-    userId,
-  );
+  if (!project.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  const state = await resolveWorkingState(project, userId);
+  const changes = await workingTreeChanges(project, state);
   return filterGitStatus(
-    computeDraftStatus(branch, drafts, baseByPath),
+    summarizeChanges(state.branch, changes),
     options.paths,
   );
 }
@@ -303,9 +239,8 @@ export interface GitFileDiff {
 }
 
 /**
- * Side-by-side diff for one changed file: the committed base content (from
- * the branch's base tree in Mongo — no GitHub round-trip) vs the caller's
- * draft content.
+ * Side-by-side diff for one changed file: the committed content at the
+ * branch head vs the caller's working-tree content.
  */
 export async function getProjectFileDiff(
   project: IDbtProject,
@@ -315,30 +250,21 @@ export async function getProjectFileDiff(
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
-  const branch = await getCheckoutBranch(project, userId);
-  const [draft, baseRow] = await Promise.all([
-    DbtFileDraft.findOne({ projectId: project._id, userId, path })
-      .select("content is_deleted")
-      .lean(),
-    DbtFile.findOne({
-      ...baseTreeFilter(project, branch),
-      path,
-      is_deleted: { $ne: true },
-    })
-      .select("content")
-      .lean(),
-  ]);
-  if (!draft) throw new Error(`No pending change for file: ${path}`);
+  const state = await resolveWorkingState(project, userId);
+  const changes = await workingTreeChanges(project, state);
+  const change = changes.find(c => c.path === path);
+  if (!change) throw new Error(`No pending change for file: ${path}`);
 
-  const base = baseRow?.content ?? "";
-  const working = draft.is_deleted ? "" : (draft.content ?? "");
-  const status: GitFileStatus["status"] = draft.is_deleted
-    ? "deleted"
-    : baseRow
-      ? "modified"
-      : "added";
+  const repoPath = toRepoPath(project, path);
+  const base = state.headSha
+    ? ((await readBlobAt(state.repoDir, state.headSha, repoPath)) ?? "")
+    : "";
+  const working =
+    change.status === "deleted" || !state.workingSha
+      ? ""
+      : ((await readBlobAt(state.repoDir, state.workingSha, repoPath)) ?? "");
 
-  return { path, status, base, working };
+  return { path, status: change.status, base, working };
 }
 
 export interface CommitResult {
@@ -349,9 +275,9 @@ export interface CommitResult {
 }
 
 /**
- * Commit the caller's draft changes and push them to their checked-out branch
- * in a single commit. Updates the branch's base tree (so every user on that
- * branch sees the committed state) and clears the committed drafts.
+ * Commit the caller's pending changes and push them to their checked-out
+ * branch in a single commit. Advances the local branch mirror (so every user
+ * on that branch sees the committed state) and clears the committed overlay.
  *
  * Refuses when the checkout branch is protected (PR-only).
  */
@@ -366,118 +292,89 @@ export async function commitAndPush(
 ): Promise<CommitResult> {
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
-    const branch = (await getCheckoutBranch(fresh, params.userId)) as string;
+    const branch = await getCheckoutBranch(fresh, params.userId);
     assertNotProtected(fresh, branch);
-    const status = await getGitStatus(fresh, params.userId, {
+    return pushWorkingTree(fresh, params.userId, branch, {
+      message: params.message,
       paths: params.paths,
+      allowEmpty: true,
     });
-    if (!status.hasChanges) {
+  });
+}
+
+/**
+ * Build a single commit from the caller's overlay and push it to `branch`.
+ * The caller MUST hold the project git lock.
+ */
+async function pushWorkingTree(
+  project: RepoBoundProject,
+  userId: string,
+  branch: string,
+  params: { message: string; paths?: string[]; allowEmpty?: boolean },
+): Promise<CommitResult> {
+  const repoDir = await ensureProjectRepo(project);
+  const remote = await resolveProjectRemote(project.repo);
+
+  // Refresh the branch from the remote first so the commit applies on the
+  // true head (concurrent pushes from outside Mako).
+  const headSha = await fetchBranch(repoDir, remote, branch);
+
+  const state = await resolveWorkingState(project, userId);
+  const allChanges = await workingTreeChanges(project, state);
+  const status = filterGitStatus(
+    summarizeChanges(branch, allChanges),
+    params.paths,
+  );
+  if (!status.hasChanges) {
+    if (params.allowEmpty) {
       return {
         committed: false,
         branch,
         pushed: { added: 0, modified: 0, deleted: 0 },
       };
     }
-    return pushWorkingTree(fresh, params.userId, branch, status, {
-      message: params.message,
-      updatedBy: params.updatedBy,
-    });
-  });
-}
-
-/**
- * Build a single commit from the caller's drafts and push it to `branch`.
- * Updates base rows, clears the committed drafts, and stamps sync SHAs. The
- * caller MUST hold the project git lock.
- */
-async function pushWorkingTree(
-  project: RepoBoundProject,
-  userId: string,
-  branch: string,
-  status: GitStatus,
-  params: { message: string; updatedBy: string },
-): Promise<CommitResult> {
-  const token = await resolveRepoToken(project.repo.installationId);
-  const { owner, repo } = project.repo;
-
-  const drafts = await DbtFileDraft.find({ projectId: project._id, userId })
-    .select("path content is_deleted")
-    .lean();
-  const draftByPath = new Map(drafts.map(d => [d.path, d]));
-
-  const { commitSha, treeSha } = await getRefCommit(owner, repo, branch, token);
-
-  // GitHub returns 422 GitRPC::BadObject if a tree entry deletes (sha:null) a
-  // path that isn't in base_tree. Phantom deletions (files removed upstream
-  // but still draft-deleted locally) would trip this, so drop any deletion
-  // whose path no longer exists on the branch and just reconcile it locally.
-  const baseTree = await getRepoTree(owner, repo, treeSha, token);
-  const baseTreePaths = new Set(
-    baseTree.entries.filter(e => e.type === "blob").map(e => e.path),
-  );
-
-  const treeChanges: TreeChange[] = [];
-  const phantomDeletions: string[] = [];
-  for (const change of status.changes) {
-    const path = repoPath(project, change.path);
-    if (change.status === "deleted") {
-      if (!baseTreePaths.has(path)) {
-        phantomDeletions.push(change.path);
-        continue;
-      }
-      treeChanges.push({ path, content: null });
-    } else {
-      treeChanges.push({
-        path,
-        content: draftByPath.get(change.path)?.content ?? "",
-      });
-    }
-  }
-
-  // Reconcile local state: base rows advance to the committed content and the
-  // committed drafts disappear. Phantom deletions never reach GitHub but must
-  // still be cleaned up so they stop showing as pending changes.
-  const ops: Array<Promise<unknown>> = [];
-  for (const change of status.changes) {
-    ops.push(
-      DbtFileDraft.deleteOne({
-        projectId: project._id,
-        userId,
-        path: change.path,
-      }).exec(),
+    throw new Error(
+      "No working-tree changes to promote — nothing to put on a new branch. " +
+        "The changes may already be committed (check dbt_git_status).",
     );
+  }
+
+  // Selected changes come out of the draft tip's tree.
+  const writes: Array<{ path: string; content: string }> = [];
+  const deletes: string[] = [];
+  for (const change of status.changes) {
+    const repoPath = toRepoPath(project, change.path);
     if (change.status === "deleted") {
-      ops.push(
-        DbtFile.deleteOne({
-          projectId: project._id,
-          branch,
-          path: change.path,
-        }).exec(),
-      );
+      deletes.push(repoPath);
     } else {
-      const content = draftByPath.get(change.path)?.content ?? "";
-      ops.push(
-        DbtFile.updateOne(
-          { projectId: project._id, branch, path: change.path },
-          {
-            $set: {
-              content,
-              updatedBy: params.updatedBy,
-              is_deleted: false,
-              workspaceId: project.workspaceId,
-              repoBlobSha: gitBlobSha(content),
-            },
-          },
-          { upsert: true, setDefaultsOnInsert: true },
-        ).exec(),
+      const content = await readBlobAt(
+        repoDir,
+        state.workingSha as string,
+        repoPath,
       );
+      writes.push({ path: repoPath, content: content ?? "" });
     }
   }
 
-  // Nothing real to push (every change was a phantom deletion): heal local
-  // state without creating an empty commit.
-  if (treeChanges.length === 0) {
-    await Promise.all(ops);
+  // Dangling commit first; the local branch mirror only advances after the
+  // remote accepted the push, so it always mirrors the remote.
+  const { sha, treeSha } = await commitTreeUpdate(repoDir, {
+    baseTree: headSha,
+    parents: [headSha],
+    writes,
+    deletes,
+    message: params.message,
+    author: authorFor(userId),
+  });
+
+  // Every selected change was a no-op against the fresh head (e.g. deletions
+  // of files already removed upstream) — heal the overlay without pushing an
+  // empty commit.
+  if (treeSha === (await treeShaOf(repoDir, headSha))) {
+    await clearCommittedOverlay(project, userId, repoDir, status, {
+      newHead: headSha,
+      allChanges,
+    });
     return {
       committed: false,
       branch,
@@ -485,24 +382,21 @@ async function pushWorkingTree(
     };
   }
 
-  const newSha = await commitChanges(
-    owner,
-    repo,
-    {
-      branch,
-      parentSha: commitSha,
-      baseTreeSha: treeSha,
-      message: params.message,
-      changes: treeChanges,
-    },
-    token,
-  );
+  await pushBranch(repoDir, remote, {
+    localSha: sha,
+    branch,
+    expectedRemoteSha: headSha,
+  });
+  await updateRef(repoDir, branchRef(branch), sha, headSha);
 
-  await Promise.all(ops);
+  await clearCommittedOverlay(project, userId, repoDir, status, {
+    newHead: sha,
+    allChanges,
+  });
 
-  await setCheckoutBranch(project, userId, branch, { lastSyncedSha: newSha });
+  await setCheckoutBranch(project, userId, branch, { lastSyncedSha: sha });
   if (branch === project.repo.branch) {
-    project.repo.lastSyncedSha = newSha;
+    project.repo.lastSyncedSha = sha;
     project.repo.lastSyncedAt = new Date();
     project.markModified("repo");
     await project.save();
@@ -510,14 +404,62 @@ async function pushWorkingTree(
 
   return {
     committed: true,
-    sha: newSha,
+    sha,
     branch,
     pushed: {
       added: status.added,
       modified: status.modified,
-      deleted: status.deleted - phantomDeletions.length,
+      deleted: status.deleted,
     },
   };
+}
+
+/**
+ * After a commit lands, drop the committed paths from the user's overlay.
+ * A partial commit (`paths`) keeps the remaining changes as a fresh overlay
+ * forked from the new head; a full commit deletes the overlay.
+ */
+async function clearCommittedOverlay(
+  project: RepoBoundProject,
+  userId: string,
+  repoDir: string,
+  status: GitStatus,
+  opts: { newHead: string; allChanges: GitFileStatus[] },
+): Promise<void> {
+  const refs = draftRefsFor(userId);
+  const committedPaths = new Set(status.changes.map(change => change.path));
+  const remaining = opts.allChanges.filter(
+    change => !committedPaths.has(change.path),
+  );
+
+  if (remaining.length === 0) {
+    await deleteRef(repoDir, refs.tip);
+    await deleteRef(repoDir, refs.base);
+    return;
+  }
+
+  const tip = await resolveCommit(repoDir, refs.tip);
+  const writes: Array<{ path: string; content: string }> = [];
+  const deletes: string[] = [];
+  for (const change of remaining) {
+    const repoPath = toRepoPath(project, change.path);
+    if (change.status === "deleted") {
+      deletes.push(repoPath);
+    } else {
+      const content = tip ? await readBlobAt(repoDir, tip, repoPath) : null;
+      writes.push({ path: repoPath, content: content ?? "" });
+    }
+  }
+  await commitTreeUpdate(repoDir, {
+    ref: refs.tip,
+    baseTree: opts.newHead,
+    parents: [opts.newHead],
+    writes,
+    deletes,
+    message: "Carry uncommitted changes",
+    author: authorFor(userId),
+  });
+  await updateRef(repoDir, refs.base, opts.newHead);
 }
 
 export interface PromoteResult extends CommitResult {
@@ -527,9 +469,9 @@ export interface PromoteResult extends CommitResult {
 
 /**
  * Atomic "promote": create a feature branch off the caller's checked-out
- * branch HEAD and commit their drafts onto it — in one locked critical
- * section. This is the path around protected branches: work done on a
- * protected checkout moves to a feature branch for review.
+ * branch HEAD and commit their pending changes onto it — in one locked
+ * critical section. This is the path around protected branches: work done on
+ * a protected checkout moves to a feature branch for review.
  *
  * Afterwards the caller's checkout tracks the new branch with a clean
  * overlay; open a PR with `openProjectPullRequest`.
@@ -547,39 +489,33 @@ export async function commitToNewBranch(
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
     assertNotProtected(fresh, params.branchName);
-    const fromBranch = (await getCheckoutBranch(
-      fresh,
-      params.userId,
-    )) as string;
-    const status = await getGitStatus(fresh, params.userId, {
-      paths: params.paths,
-    });
-    if (!status.hasChanges) {
-      throw new Error(
-        "No working-tree changes to promote — nothing to put on a new branch. " +
-          "The changes may already be committed (check dbt_git_status).",
-      );
-    }
+    const fromBranch = await getCheckoutBranch(fresh, params.userId);
 
-    const token = await resolveRepoToken(fresh.repo.installationId);
-    const { owner, repo } = fresh.repo;
-
-    // Fork the new branch from the branch the user currently tracks, clone
-    // its committed base tree, and point the user's checkout at it BEFORE
-    // committing so pushWorkingTree targets the new branch.
-    const { commitSha } = await getRefCommit(owner, repo, fromBranch, token);
-    await createBranch(owner, repo, params.branchName, commitSha, token);
-    await cloneBranchBaseTree(fresh, fromBranch, params.branchName);
-    await setCheckoutBranch(fresh, params.userId, params.branchName);
-
-    const result = await pushWorkingTree(
+    // Fork the new branch from the branch the user currently tracks and
+    // point their checkout at it BEFORE committing so pushWorkingTree
+    // targets the new branch. Their overlay follows the checkout.
+    const created = await createBranchFromCheckout(
       fresh,
       params.userId,
       params.branchName,
-      status,
-      { message: params.message, updatedBy: params.updatedBy },
     );
-    return { ...result, fromBranch };
+
+    try {
+      const result = await pushWorkingTree(
+        fresh,
+        params.userId,
+        params.branchName,
+        { message: params.message, paths: params.paths },
+      );
+      return { ...result, fromBranch };
+    } catch (error) {
+      // Restore the previous checkout so a failed promote leaves the user
+      // where they started (the new remote branch may remain — harmless).
+      await setCheckoutBranch(fresh, params.userId, fromBranch, {
+        lastSyncedSha: created.fromSha,
+      });
+      throw error;
+    }
   });
 }
 
@@ -589,14 +525,41 @@ export async function listProjectBranches(
   if (!project.repo) {
     throw new Error("Project is not connected to a repository");
   }
-  const token = await resolveRepoToken(project.repo.installationId);
-  return listBranches(project.repo.owner, project.repo.repo, token);
+  const repoDir = await ensureProjectRepo(project);
+  const remote = await resolveProjectRemote(project.repo);
+  return listRemoteBranchNames(repoDir, remote);
+}
+
+/** Fork a new branch off the user's checkout head and check it out. */
+async function createBranchFromCheckout(
+  project: RepoBoundProject,
+  userId: string,
+  branchName: string,
+): Promise<{ fromBranch: string; fromSha: string }> {
+  const fromBranch = await getCheckoutBranch(project, userId);
+  const repoDir = await ensureProjectRepo(project);
+  const remote = await resolveProjectRemote(project.repo);
+  const fromSha = await fetchBranch(repoDir, remote, fromBranch);
+
+  const existing = await resolveCommit(repoDir, branchRef(branchName));
+  if (existing) {
+    throw new Error(`Branch "${branchName}" already exists`);
+  }
+  await pushBranch(repoDir, remote, {
+    localSha: fromSha,
+    branch: branchName,
+    expectedRemoteSha: ZERO_SHA,
+  });
+  await updateRef(repoDir, branchRef(branchName), fromSha);
+  await setCheckoutBranch(project, userId, branchName, {
+    lastSyncedSha: fromSha,
+  });
+  return { fromBranch, fromSha };
 }
 
 /**
  * Create a new branch off the caller's checkout HEAD and check it out for
- * them (only their checkout moves — other users are unaffected). Content is
- * identical to the source branch, so the base tree is cloned locally.
+ * them (only their checkout moves — other users are unaffected).
  */
 export async function createProjectBranch(
   project: IDbtProject,
@@ -605,25 +568,20 @@ export async function createProjectBranch(
 ): Promise<{ branch: string; fromBranch: string }> {
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
-    const fromBranch = (await getCheckoutBranch(fresh, userId)) as string;
-    const token = await resolveRepoToken(fresh.repo.installationId);
-    const { owner, repo } = fresh.repo;
-    const { commitSha } = await getRefCommit(owner, repo, fromBranch, token);
-    await createBranch(owner, repo, branchName, commitSha, token);
-    await cloneBranchBaseTree(fresh, fromBranch, branchName);
-    await setCheckoutBranch(fresh, userId, branchName, {
-      lastSyncedSha: commitSha,
-    });
+    const { fromBranch } = await createBranchFromCheckout(
+      fresh,
+      userId,
+      branchName,
+    );
     return { branch: branchName, fromBranch };
   });
 }
 
 /**
  * Switch the caller's checkout to another branch. Only their branch pointer
- * moves; their drafts carry over as an overlay (like `git checkout` with a
- * dirty tree), so nothing is lost. Pass `discardLocalChanges` to drop the
- * caller's drafts instead. The target branch's committed base tree is synced
- * from GitHub.
+ * moves; their pending changes carry over as an overlay (like `git checkout`
+ * with a dirty tree), so nothing is lost. Pass `discardLocalChanges` to drop
+ * the caller's changes instead. The target branch is synced from the remote.
  */
 export async function switchProjectBranch(
   project: IDbtProject,
@@ -642,7 +600,7 @@ export async function switchProjectBranch(
       await discardUserDrafts(fresh, userId);
     }
 
-    // Materialize/refresh the target branch's committed base tree.
+    // Materialize/refresh the target branch from the remote.
     const sync = await syncProjectBranchFromRepo(fresh, branchName, updatedBy);
     await setCheckoutBranch(fresh, userId, branchName, {
       lastSyncedSha: sync.sha,
@@ -660,7 +618,7 @@ export async function switchProjectBranch(
 /**
  * Delete a remote branch. Refuses to delete the caller's checked-out branch,
  * any branch another user has checked out, the project default branch, and
- * the repo default branch. Cleans up the branch's local base tree.
+ * the repo default branch. Cleans up the local mirror ref.
  */
 export async function deleteProjectBranch(
   project: IDbtProject,
@@ -669,8 +627,8 @@ export async function deleteProjectBranch(
 ): Promise<{ deleted: string }> {
   return withProjectGitLock(project._id.toString(), async () => {
     const fresh = await reloadRepoProject(project);
-    const token = await resolveRepoToken(fresh.repo.installationId);
-    const { owner, repo } = fresh.repo;
+    const repoDir = await ensureProjectRepo(fresh);
+    const remote = await resolveProjectRemote(fresh.repo);
     const userBranch = await getCheckoutBranch(fresh, userId);
     if (branchName === userBranch) {
       throw new Error(
@@ -695,14 +653,14 @@ export async function deleteProjectBranch(
         `Cannot delete "${branchName}" — another user has it checked out.`,
       );
     }
-    const info = await getRepoInfo(owner, repo, token);
-    if (branchName === info.defaultBranch) {
+    const defaultBranch = await remoteDefaultBranch(repoDir, remote);
+    if (branchName === defaultBranch) {
       throw new Error(
         `Refusing to delete the repository's default branch "${branchName}".`,
       );
     }
-    await deleteBranch(owner, repo, branchName, token);
-    await deleteBranchBaseTree(fresh, branchName);
+    await pushDeleteBranch(repoDir, remote, branchName);
+    await deleteRef(repoDir, branchRef(branchName));
     return { deleted: branchName };
   });
 }
@@ -715,34 +673,45 @@ export interface RecoverableFile {
 }
 
 /**
- * Soft-deleted files whose content is still retained in Mongo and can be
- * restored — e.g. work hidden by a destructive branch switch/sync before the
- * non-destructive guards landed. These don't appear in the normal file tree.
+ * Files deleted in recent commits of the project's tracked branch whose
+ * content is still recoverable from git history. These don't appear in the
+ * normal file tree.
  */
 export async function listRecoverableFiles(
   project: IDbtProject,
 ): Promise<RecoverableFile[]> {
-  const files = await DbtFile.find({
-    projectId: project._id,
-    is_deleted: true,
-  })
-    .select("path content updatedAt updatedBy")
-    .sort({ updatedAt: -1 })
-    .lean();
-  return files
-    .filter(f => (f.content ?? "").length > 0)
-    .map(f => ({
-      path: f.path,
-      content: f.content ?? "",
-      updatedAt: f.updatedAt,
-      updatedBy: f.updatedBy,
-    }));
+  if (!project.repo) {
+    throw new Error("Project is not connected to a repository");
+  }
+  const repoDir = await ensureProjectRepo(project);
+  const records = await listDeletedFiles(
+    repoDir,
+    branchRef(project.repo.branch),
+  );
+  const files: RecoverableFile[] = [];
+  for (const record of records) {
+    const rel = toProjectPath(project, record.path);
+    if (!rel) continue;
+    const content = await readBlobAt(
+      repoDir,
+      `${record.commitSha}^`,
+      record.path,
+    );
+    if (!content) continue;
+    files.push({
+      path: rel,
+      content,
+      updatedAt: record.deletedAt,
+      updatedBy: record.deletedBy,
+    });
+  }
+  return files;
 }
 
 /**
- * Restore a soft-deleted file into the caller's working tree as a pending
- * "added" draft, so they can review and commit it. Returns the restored
- * content for confirmation.
+ * Restore a deleted file (from git history) into the caller's working tree
+ * as a pending "added" change, so they can review and commit it. Returns the
+ * restored content for confirmation.
  */
 export async function restoreDeletedFile(
   project: IDbtProject,
@@ -750,29 +719,13 @@ export async function restoreDeletedFile(
   path: string,
 ): Promise<{ path: string; content: string }> {
   return withProjectGitLock(project._id.toString(), async () => {
-    const file = await DbtFile.findOne({
-      projectId: project._id,
-      path,
-      is_deleted: true,
-    })
-      .select("content")
-      .sort({ updatedAt: -1 })
-      .lean();
+    const files = await listRecoverableFiles(project);
+    const file = files.find(f => f.path === path);
     if (!file) {
       throw new Error(`No recoverable file at "${path}".`);
     }
-    await DbtFileDraft.updateOne(
-      { projectId: project._id, userId, path },
-      {
-        $set: {
-          content: file.content ?? "",
-          is_deleted: false,
-          workspaceId: project.workspaceId,
-        },
-      },
-      { upsert: true },
-    ).exec();
-    return { path, content: file.content ?? "" };
+    await writeWorkingFile(project, userId, path, file.content);
+    return { path, content: file.content };
   });
 }
 
@@ -786,11 +739,12 @@ export async function openProjectPullRequest(
   }
   const token = await resolveRepoToken(project.repo.installationId);
   const { owner, repo } = project.repo;
-  const branch = (await getCheckoutBranch(project, userId)) as string;
+  const branch = await getCheckoutBranch(project, userId);
   let base = params.base;
   if (!base) {
-    const info = await getRepoInfo(owner, repo, token);
-    base = info.defaultBranch;
+    const repoDir = await ensureProjectRepo(project);
+    const remote = await resolveProjectRemote(project.repo);
+    base = (await remoteDefaultBranch(repoDir, remote)) ?? project.repo.branch;
   }
   if (base === branch) {
     throw new Error(
@@ -869,11 +823,32 @@ export interface ClosePullRequestResult {
   branchDeleteWarning?: string;
 }
 
+/** Best-effort remote branch deletion with a user-facing warning on failure. */
+async function tryDeleteRemoteBranch(
+  project: RepoBoundProject,
+  branch: string,
+): Promise<{ deleted: boolean; warning?: string }> {
+  try {
+    const repoDir = await ensureProjectRepo(project);
+    const remote = await resolveProjectRemote(project.repo);
+    await pushDeleteBranch(repoDir, remote, branch);
+    await deleteRef(repoDir, branchRef(branch));
+    return { deleted: true };
+  } catch (error) {
+    return {
+      deleted: false,
+      warning: `Branch "${branch}" could not be deleted: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+}
+
 /**
  * Close a pull request WITHOUT merging it. Optionally delete its head branch
  * afterwards (default false — closing shouldn't destroy the work). Branch
  * deletion refuses when the branch is the project default or any user has it
- * checked out; a deleted branch's local base tree is cleaned up.
+ * checked out.
  */
 export async function closeProjectPullRequest(
   project: IDbtProject,
@@ -918,12 +893,9 @@ export async function closeProjectPullRequest(
           `Branch "${headRef}" was not deleted — a user has it checked out. ` +
           "Delete it with dbt_delete_branch after they switch away.";
       } else {
-        const deleteResult = await tryDeleteBranch(owner, repo, headRef, token);
+        const deleteResult = await tryDeleteRemoteBranch(fresh, headRef);
         branchDeleted = deleteResult.deleted;
         branchDeleteWarning = deleteResult.warning;
-        if (branchDeleted) {
-          await deleteBranchBaseTree(fresh, headRef);
-        }
       }
     }
 
@@ -942,9 +914,9 @@ export interface MergePullRequestResult {
 /**
  * Merge a GitHub pull request, optionally delete its head branch, then switch
  * the caller's checkout back to the repo default branch and sync the merged
- * state into that branch's base tree. The caller's drafts (if any) carry over
- * as an overlay. Users checked out on the deleted head branch are moved back
- * to the default branch.
+ * state. The caller's pending changes (if any) carry over as an overlay.
+ * Users checked out on the deleted head branch are moved back to the default
+ * branch.
  */
 export async function mergeProjectPullRequest(
   project: IDbtProject,
@@ -968,8 +940,10 @@ export async function mergeProjectPullRequest(
       );
     }
 
-    const info = await getRepoInfo(owner, repo, token);
-    const defaultBranch = info.defaultBranch;
+    const repoDir = await ensureProjectRepo(fresh);
+    const remote = await resolveProjectRemote(fresh.repo);
+    const defaultBranch =
+      (await remoteDefaultBranch(repoDir, remote)) ?? fresh.repo.branch;
 
     const { sha } = await mergePullRequest(
       owner,
@@ -979,8 +953,8 @@ export async function mergeProjectPullRequest(
       token,
     );
 
-    // Pull the merged state into the default branch's base tree and move the
-    // caller (plus anyone stranded on the head branch) onto it.
+    // Pull the merged state into the local default branch mirror and move
+    // the caller (plus anyone stranded on the head branch) onto it.
     const syncResult = await syncProjectBranchFromRepo(
       fresh,
       defaultBranch,
@@ -993,16 +967,10 @@ export async function mergeProjectPullRequest(
     let branchDeleted = false;
     let branchDeleteWarning: string | undefined;
     if (params.deleteBranch !== false) {
-      const deleteResult = await tryDeleteBranch(
-        owner,
-        repo,
-        pr.headRef,
-        token,
-      );
+      const deleteResult = await tryDeleteRemoteBranch(fresh, pr.headRef);
       branchDeleted = deleteResult.deleted;
       branchDeleteWarning = deleteResult.warning;
       if (branchDeleted) {
-        await deleteBranchBaseTree(fresh, pr.headRef);
         await DbtCheckout.updateMany(
           { projectId: fresh._id, branch: pr.headRef },
           {

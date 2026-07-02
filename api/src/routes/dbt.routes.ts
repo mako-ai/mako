@@ -16,8 +16,6 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   DbtCheckout,
-  DbtFile,
-  DbtFileDraft,
   DbtJob,
   DbtProject,
   DbtRun,
@@ -42,8 +40,7 @@ import {
   listInstallationRepos,
 } from "../integrations/github/github-api";
 import {
-  fetchRepoDbtFiles,
-  repoFilesToInserts,
+  importProjectFromRepo,
   syncProjectBranchFromRepo,
 } from "../dbt/dbt-github-sync.service";
 import {
@@ -63,12 +60,14 @@ import {
   updateProjectPullRequest,
 } from "../dbt/dbt-github-git.service";
 import {
+  deleteProjectStore,
   deleteWorkingFile,
   discardUserDrafts,
   getCheckoutBranch,
   listWorkingFiles,
   readWorkingFile,
   renameWorkingFile,
+  seedProjectFiles,
   writeWorkingFile,
 } from "../dbt/dbt-working-tree.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
@@ -95,11 +94,6 @@ import {
 } from "../dbt/dbt-run.service";
 import { validateScheduledConsoleSchedule } from "../services/scheduled-query-schedule.service";
 import { getDashboardArtifactStore } from "../services/dashboard-artifact-store.service";
-import {
-  createVersion,
-  getLatestVersionNumber,
-  getUserDisplayName,
-} from "../services/entity-version.service";
 
 const logger = loggers.api("dbt");
 
@@ -364,15 +358,7 @@ dbtRoutes.post("/projects", async (c: AuthenticatedContext) => {
     });
 
     const scaffold = buildStarterScaffold(body.name);
-    await DbtFile.insertMany(
-      scaffold.map(file => ({
-        workspaceId: project.workspaceId,
-        projectId: project._id,
-        path: file.path,
-        content: file.content,
-        updatedBy: userId,
-      })),
-    );
+    await seedProjectFiles(project, userId, scaffold);
 
     publishDbtEvent(c, {
       type: "dbt.project.updated",
@@ -497,11 +483,10 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
       return c.json({ success: false, error: "dbt project not found" }, 404);
     }
     await Promise.all([
-      DbtFile.deleteMany({ projectId: project._id }),
-      DbtFileDraft.deleteMany({ projectId: project._id }),
       DbtCheckout.deleteMany({ projectId: project._id }),
       DbtJob.deleteMany({ projectId: project._id }),
       DbtRun.deleteMany({ projectId: project._id }),
+      deleteProjectStore(project),
     ]);
     await project.deleteOne();
     publishDbtEvent(c, {
@@ -753,29 +738,6 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
     const info = await getRepoInfo(body.repo.owner, body.repo.repo, token);
     const branch = body.repo.branch || info.defaultBranch;
 
-    const binding = {
-      owner: body.repo.owner,
-      repo: body.repo.repo,
-      branch,
-      subdirectory: body.repo.subdirectory,
-      installationId: body.repo.installationId,
-    };
-    const { sha, files, skippedLarge } = await fetchRepoDbtFiles(binding);
-
-    if (files.length === 0) {
-      return badRequest(
-        c,
-        "No dbt files found in that repo/branch/subdirectory",
-      );
-    }
-    const hasProjectYml = files.some(f => f.path === "dbt_project.yml");
-    if (!hasProjectYml) {
-      return badRequest(
-        c,
-        "dbt_project.yml not found at the project root — set the correct subdirectory",
-      );
-    }
-
     const userId = getUserId(c);
     const project = await DbtProject.create({
       workspaceId: new Types.ObjectId(workspaceId),
@@ -789,12 +751,10 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
       repo: {
         provider: "github" as const,
         installationId: body.repo.installationId,
-        owner: binding.owner,
-        repo: binding.repo,
-        branch: binding.branch,
+        owner: body.repo.owner,
+        repo: body.repo.repo,
+        branch,
         subdirectory: body.repo.subdirectory,
-        lastSyncedSha: sha,
-        lastSyncedAt: new Date(),
       },
       // New imports protect the repo's default branch out of the box: prod
       // changes go through a PR (commit-to-branch → open PR → merge).
@@ -802,14 +762,24 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
       createdBy: userId,
     });
 
-    await DbtFile.insertMany(
-      repoFilesToInserts(files, {
-        workspaceId: project.workspaceId,
-        projectId: project._id,
-        branch: binding.branch,
-        updatedBy: userId,
-      }),
-    );
+    // Clone the tracked branch into the project's git store; a repo that
+    // fails validation (no dbt files / no dbt_project.yml) is rolled back.
+    let imported: number;
+    try {
+      const result = await importProjectFromRepo(project);
+      imported = result.imported;
+    } catch (importError) {
+      await Promise.all([
+        deleteProjectStore(project),
+        project.deleteOne(),
+      ]).catch(() => {});
+      return badRequest(
+        c,
+        importError instanceof Error
+          ? importError.message
+          : "Failed to import repository",
+      );
+    }
 
     publishDbtEvent(c, {
       type: "dbt.project.updated",
@@ -818,8 +788,8 @@ dbtRoutes.post("/projects/import-github", async (c: AuthenticatedContext) => {
     return c.json({
       success: true,
       project,
-      imported: files.length,
-      skippedLarge,
+      imported,
+      skippedLarge: [],
     });
   } catch (error) {
     if ((error as { code?: number }).code === 11000) {
@@ -1442,30 +1412,9 @@ dbtRoutes.put(
       }
 
       const userId = getUserId(c);
-      const { versionEntityId } = await writeWorkingFile(
-        project,
-        userId,
-        path,
-        body.content,
-      );
-
-      // Version snapshot (entity-version pattern) — undo/version history.
-      try {
-        const latest = await getLatestVersionNumber(versionEntityId, "dbt-file");
-        await createVersion({
-          entityType: "dbt-file",
-          entityId: versionEntityId,
-          workspaceId: project.workspaceId,
-          snapshot: { path, content: body.content },
-          savedBy: userId,
-          savedByName: await getUserDisplayName(userId),
-          comment: `Save ${path} (v${latest + 1})`,
-        });
-      } catch (versionError) {
-        logger.warn("dbt file version snapshot failed", {
-          error: versionError,
-        });
-      }
+      // Every save is a git commit (draft overlay for repo projects, the
+      // shared branch for blank projects) — history lives in git.
+      await writeWorkingFile(project, userId, path, body.content);
 
       await DbtProject.updateOne(
         { _id: project._id },

@@ -102,8 +102,11 @@ async function main(): Promise<void> {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 15000 });
 
   const { User } = await import("../database/schema");
-  const { DatabaseConnection, DbtProject, DbtFile } = await import(
+  const { DatabaseConnection, DbtProject } = await import(
     "../database/workspace-schema"
+  );
+  const { writeWorkingFile } = await import(
+    "../dbt/dbt-working-tree.service"
   );
   const { workspaceService } = await import("../services/workspace.service");
 
@@ -196,19 +199,11 @@ async function main(): Promise<void> {
   }
 
   for (const file of PROJECT_FILES) {
-    await DbtFile.findOneAndUpdate(
-      { projectId: project._id, path: file.path },
-      {
-        $set: {
-          workspaceId: workspace._id,
-          projectId: project._id,
-          path: file.path,
-          content: file.content,
-          updatedBy: user._id.toString(),
-          is_deleted: false,
-        },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+    await writeWorkingFile(
+      project,
+      user._id.toString(),
+      file.path,
+      file.content,
     );
   }
   console.log(`[seed-dbt-demo] Seeded ${PROJECT_FILES.length} dbt files.`);
