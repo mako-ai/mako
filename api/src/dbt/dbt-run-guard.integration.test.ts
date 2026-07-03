@@ -245,7 +245,11 @@ describe("recordCompletedAdhocDbtRun", () => {
       result: {
         success: true,
         exitCode: 0,
-        logs: [{ ts: new Date(), level: "info", line: "Done. PASS=1" }],
+        logs: [
+          { ts: new Date(), level: "info", line: "Done. PASS=1" },
+          // dbt emits blank spacer lines — must not fail `create` validation.
+          { ts: new Date(), level: "info", line: "" },
+        ],
         stepResults: [
           {
             uniqueId: "model.p.stg_orders",
@@ -266,7 +270,7 @@ describe("recordCompletedAdhocDbtRun", () => {
     expect(doc?.sourceBranch).toBe("main");
     expect(doc?.workingTreeUserId).toBe("u1");
     expect(doc?.durationMs).toBeGreaterThanOrEqual(1500);
-    expect(doc?.logs).toHaveLength(1);
+    expect(doc?.logs).toHaveLength(2);
     expect(doc?.stepResults?.[0]?.name).toBe("stg_orders");
     expect(doc?.completedAt).toBeDefined();
   });

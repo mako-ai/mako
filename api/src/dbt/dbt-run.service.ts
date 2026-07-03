@@ -336,7 +336,9 @@ export async function recordCompletedAdhocDbtRun(params: {
       logs: params.result.logs.slice(-ADHOC_RECORD_MAX_LOG_LINES).map(line => ({
         ts: line.ts,
         level: line.level,
-        line: line.line.slice(0, 2000),
+        // dbt emits blank spacer lines; `create` runs full validation (unlike
+        // the executor's $push), and a required String path rejects "".
+        line: line.line.slice(0, 2000) || " ",
       })),
       stepResults: params.result.stepResults,
     });
