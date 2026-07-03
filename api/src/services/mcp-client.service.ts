@@ -16,6 +16,7 @@
 
 import { createMCPClient } from "@ai-sdk/mcp";
 import { dynamicTool, jsonSchema, type ToolSet } from "ai";
+import crypto from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { Types } from "mongoose";
 import {
@@ -79,11 +80,29 @@ export function mcpServerSlug(serverName: string): string {
   return slug || "server";
 }
 
+/**
+ * Providers enforce `^[a-zA-Z0-9_-]{1,64}$` for tool names (Anthropic and
+ * OpenAI both cap at 64). MCP tool names are freeform, so the prefixed name
+ * is sanitized and, when it must be truncated, disambiguated with a short
+ * deterministic hash so two long names can't silently collide.
+ */
+const PROVIDER_TOOL_NAME_MAX = 64;
+
 export function mcpPrefixedToolName(
   serverName: string,
   toolName: string,
 ): string {
-  return `${MCP_TOOL_PREFIX}_${mcpServerSlug(serverName)}_${toolName}`;
+  const sanitizedTool = toolName
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const full = `${MCP_TOOL_PREFIX}_${mcpServerSlug(serverName)}_${sanitizedTool}`;
+  if (full.length <= PROVIDER_TOOL_NAME_MAX) return full;
+  const hash = crypto
+    .createHash("sha256")
+    .update(`${serverName}:${toolName}`)
+    .digest("hex")
+    .slice(0, 6);
+  return `${full.slice(0, PROVIDER_TOOL_NAME_MAX - 7)}_${hash}`;
 }
 
 /**
@@ -232,6 +251,56 @@ async function executeMcpToolCall(params: {
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+/**
+ * Cap on the serialized size of one MCP tool result. MCP servers can return
+ * arbitrarily large payloads (full record lists, documents); an uncapped
+ * result would blow the model context in a single step. Mirrors what other
+ * MCP hosts do (Claude Code / Cursor truncate large tool outputs).
+ */
+const MCP_OUTPUT_MAX_CHARS = 16_000;
+
+/**
+ * Normalize an MCP CallToolResult for the model: extract text blocks into a
+ * plain string (instead of JSON-encoding the whole content-block envelope),
+ * summarize non-text blocks, and truncate oversized output with an explicit
+ * marker so the model knows data was elided.
+ */
+export function normalizeMcpToolOutput(raw: unknown): unknown {
+  let output: unknown = raw;
+  const asRecord = raw as
+    | { content?: Array<Record<string, unknown>>; isError?: boolean }
+    | null
+    | undefined;
+
+  if (asRecord && Array.isArray(asRecord.content)) {
+    const rendered = asRecord.content
+      .map(block => {
+        if (block.type === "text" && typeof block.text === "string") {
+          return block.text;
+        }
+        if (block.type === "image") {
+          return `[image content (${(block.mimeType as string) ?? "unknown type"}) omitted]`;
+        }
+        if (block.type === "resource" || block.type === "resource_link") {
+          return `[resource: ${JSON.stringify(block.resource ?? block.uri ?? "")}]`;
+        }
+        return JSON.stringify(block);
+      })
+      .join("\n");
+    output = asRecord.isError ? { success: false, error: rendered } : rendered;
+  }
+
+  const serialized =
+    typeof output === "string" ? output : JSON.stringify(output);
+  if (serialized.length > MCP_OUTPUT_MAX_CHARS) {
+    return (
+      serialized.slice(0, MCP_OUTPUT_MAX_CHARS) +
+      `\n… [truncated ${serialized.length - MCP_OUTPUT_MAX_CHARS} characters — ask for a narrower query if you need the rest]`
+    );
+  }
+  return output;
 }
 
 export interface McpChatTools {
@@ -449,7 +518,7 @@ export async function buildMcpToolsForChat(params: {
                 { $set: { lastUsedAt: new Date() } },
               ).catch(() => undefined);
             }
-            return output;
+            return normalizeMcpToolOutput(output);
           } catch (error) {
             logger.warn("MCP tool call failed", {
               error,

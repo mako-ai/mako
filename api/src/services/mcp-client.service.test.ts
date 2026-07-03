@@ -24,6 +24,7 @@ import {
   mcpServerSlug,
   mcpToolRestriction,
   mcpToolRiskTier,
+  normalizeMcpToolOutput,
 } from "./mcp-client.service";
 import {
   decryptRecord,
@@ -46,6 +47,68 @@ function testServerSlugAndPrefix() {
     mcpPrefixedToolName("Close CRM", "lead_search"),
     "mcp_close_crm_lead_search",
   );
+
+  // Provider constraint: ^[a-zA-Z0-9_-]{1,64}$ — freeform MCP names are
+  // sanitized, long names truncated with a deterministic disambiguator.
+  const dotted = mcpPrefixedToolName("Close CRM", "leads.search.v2");
+  assert.match(dotted, /^[a-zA-Z0-9_-]{1,64}$/);
+  const longA = mcpPrefixedToolName(
+    "Some Very Long Server Name Here",
+    "extremely_long_tool_name_that_goes_on_and_on_forever_variant_alpha",
+  );
+  const longB = mcpPrefixedToolName(
+    "Some Very Long Server Name Here",
+    "extremely_long_tool_name_that_goes_on_and_on_forever_variant_beta",
+  );
+  assert.ok(longA.length <= 64);
+  assert.ok(longB.length <= 64);
+  assert.match(longA, /^[a-zA-Z0-9_-]{1,64}$/);
+  assert.notEqual(longA, longB);
+  // Deterministic across calls (continuation requests must rebuild the
+  // exact same names or approved calls could not resume).
+  assert.equal(
+    longA,
+    mcpPrefixedToolName(
+      "Some Very Long Server Name Here",
+      "extremely_long_tool_name_that_goes_on_and_on_forever_variant_alpha",
+    ),
+  );
+}
+
+function testOutputNormalization() {
+  // Text blocks are flattened to a plain string.
+  assert.equal(
+    normalizeMcpToolOutput({
+      content: [
+        { type: "text", text: "line one" },
+        { type: "text", text: "line two" },
+      ],
+      isError: false,
+    }),
+    "line one\nline two",
+  );
+  // Error results keep an explicit error envelope.
+  assert.deepEqual(
+    normalizeMcpToolOutput({
+      content: [{ type: "text", text: "boom" }],
+      isError: true,
+    }),
+    { success: false, error: "boom" },
+  );
+  // Image blocks are summarized instead of dumping base64 into context.
+  const withImage = normalizeMcpToolOutput({
+    content: [{ type: "image", mimeType: "image/png", data: "aGk=" }],
+  }) as string;
+  assert.match(withImage, /image content .*omitted/);
+  assert.ok(!withImage.includes("aGk="));
+  // Oversized output is truncated with an explicit marker.
+  const huge = normalizeMcpToolOutput({
+    content: [{ type: "text", text: "x".repeat(50_000) }],
+  }) as string;
+  assert.ok(huge.length < 20_000);
+  assert.match(huge, /truncated \d+ characters/);
+  // Non-content-shaped outputs pass through untouched.
+  assert.deepEqual(normalizeMcpToolOutput({ plain: true }), { plain: true });
 }
 
 function testRiskTiers() {
@@ -381,6 +444,7 @@ async function testGrantsAndNeedsApproval() {
 
 async function main() {
   testServerSlugAndPrefix();
+  testOutputNormalization();
   testRiskTiers();
   testAllowlistFiltering();
   testCryptoRoundTrip();
