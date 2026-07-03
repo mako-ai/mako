@@ -1,5 +1,5 @@
 /**
- * Unified sync-flow trigger model (see the "unified sync flow" proposal PR).
+ * Unified sync-flow trigger model (docs/unified-sync-flow-proposal.md).
  *
  * Behind the UNIFIED_SYNC_FLOWS flag, a flow's behavior is driven by an
  * orthogonal trigger set derived from existing fields instead of the hard
