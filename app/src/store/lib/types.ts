@@ -33,6 +33,7 @@ export type TabKind =
 export type SettingsSection =
   | "prompt"
   | "skills"
+  | "mcp"
   | "models"
   | "billing"
   | "members"

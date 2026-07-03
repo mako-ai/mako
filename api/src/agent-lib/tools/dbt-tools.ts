@@ -1962,7 +1962,10 @@ export const createDbtServerTools = (
           const project = await assertRepoProject(projectId);
           // Merging is the only write path into protected branches — gate it
           // on the admin/owner workspace role, mirroring the HTTP route RBAC.
-          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
             return {
               success: false,
               error:
@@ -2068,7 +2071,10 @@ export const createDbtServerTools = (
           const project = await assertRepoProject(projectId);
           // Editing a PR is repo-level administration (like merge/close) —
           // gate on the admin/owner role, mirroring the HTTP route RBAC.
-          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
             return {
               success: false,
               error:
@@ -2107,16 +2113,17 @@ export const createDbtServerTools = (
         deleteBranch: z
           .boolean()
           .optional()
-          .describe(
-            "Also delete the PR's source branch; defaults to false",
-          ),
+          .describe("Also delete the PR's source branch; defaults to false"),
       }),
       execute: async ({ projectId, prNumber, deleteBranch }) => {
         try {
           const project = await assertRepoProject(projectId);
           // Closing a PR is repo-level administration (like merge) — gate on
           // the admin/owner role, mirroring the HTTP route RBAC.
-          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
             return {
               success: false,
               error:

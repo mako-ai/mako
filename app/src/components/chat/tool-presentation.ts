@@ -25,6 +25,16 @@ export function isHumanInTheLoopToolPartType(partType: string): boolean {
   return HUMAN_IN_THE_LOOP_TOOL_PART_TYPES.has(partType);
 }
 
+/**
+ * Tool-part states that are *intentionally* awaiting a human decision (MCP
+ * approval flow). Like the HITL plan/clarify tools, these must never be
+ * poisoned as "interrupted" when the stream ends — the server deliberately
+ * ends the turn and waits for the user's allow/deny.
+ */
+export function isApprovalPendingState(state: unknown): boolean {
+  return state === "approval-requested" || state === "approval-responded";
+}
+
 export function toolNameFromPartType(partType: string): string {
   return partType.startsWith("tool-")
     ? partType.slice("tool-".length)

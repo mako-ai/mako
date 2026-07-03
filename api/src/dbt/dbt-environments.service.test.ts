@@ -90,9 +90,7 @@ describe("dbt_schema token helpers (@mako/schemas)", () => {
     expect(containsDbtSchemaToken("select * from {{ dbt_schema }}.t")).toBe(
       true,
     );
-    expect(containsDbtSchemaToken("select * from {{dbt_schema}}.t")).toBe(
-      true,
-    );
+    expect(containsDbtSchemaToken("select * from {{dbt_schema}}.t")).toBe(true);
     expect(containsDbtSchemaToken("select * from dbt_prod.t")).toBe(false);
   });
 

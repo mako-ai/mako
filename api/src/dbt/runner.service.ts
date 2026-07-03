@@ -544,11 +544,11 @@ export async function materializeDbtProject(
  * have the PREVIOUS run's file collected and misattributed to it (an errored
  * run "showing" passing node results). The parse cache and manifest stay.
  */
-export async function pruneStaleRunArtifacts(projectDir: string): Promise<void> {
+export async function pruneStaleRunArtifacts(
+  projectDir: string,
+): Promise<void> {
   for (const name of ["run_results.json", "sources.json", "catalog.json"]) {
-    await rm(join(projectDir, "target", name), { force: true }).catch(
-      () => {},
-    );
+    await rm(join(projectDir, "target", name), { force: true }).catch(() => {});
   }
 }
 

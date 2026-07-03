@@ -148,11 +148,7 @@ vi.mock("../integrations/github/github-api", () => ({
     private: false,
   })),
   createPullRequest: vi.fn(
-    async (
-      _o: string,
-      _r: string,
-      params: { head: string; base: string },
-    ) => {
+    async (_o: string, _r: string, params: { head: string; base: string }) => {
       const number = remote.state.pulls.size + 1;
       remote.state.pulls.set(number, {
         headRef: params.head,
@@ -320,9 +316,9 @@ describe("per-user draft isolation", () => {
     await writeWorkingFile(project, "alice", "models/a.sql", "select 1");
     const status = await getGitStatus(project, "alice");
     expect(status.hasChanges).toBe(false);
-    expect(
-      await DbtFileDraft.countDocuments({ projectId: project._id }),
-    ).toBe(0);
+    expect(await DbtFileDraft.countDocuments({ projectId: project._id })).toBe(
+      0,
+    );
   });
 
   it("diffs compare the caller's draft against the committed base", async () => {
@@ -385,9 +381,9 @@ describe("commit & push (per-user)", () => {
     ).toBe("select 2");
     // Drafts cleared → author's tree is clean.
     expect((await getGitStatus(project, "alice")).hasChanges).toBe(false);
-    expect(
-      await DbtFileDraft.countDocuments({ projectId: project._id }),
-    ).toBe(0);
+    expect(await DbtFileDraft.countDocuments({ projectId: project._id })).toBe(
+      0,
+    );
   });
 
   it("commits only selected paths, leaving other drafts pending", async () => {
@@ -541,10 +537,7 @@ describe("per-user checkouts", () => {
     ).toBe(2);
     // Working tree contents come from the cloned branch.
     const files = await loadWorkingTreeContents(project, { userId: "alice" });
-    expect(files.map(f => f.path)).toEqual([
-      "dbt_project.yml",
-      "models/a.sql",
-    ]);
+    expect(files.map(f => f.path)).toEqual(["dbt_project.yml", "models/a.sql"]);
   });
 
   it("refuses to delete a branch that any user has checked out", async () => {

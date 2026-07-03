@@ -3,6 +3,7 @@ import {
   Sparkles as ModelsIcon,
   MessageSquareText as PromptIcon,
   BookOpen as SkillsIcon,
+  Plug as McpIcon,
   Wallet as BillingIcon,
   Users as MembersIcon,
   KeySquare as ApiKeyIcon,
@@ -24,6 +25,7 @@ const SECTION_ICONS: Record<
 > = {
   prompt: props => <PromptIcon {...props} />,
   skills: props => <SkillsIcon {...props} />,
+  mcp: props => <McpIcon {...props} />,
   models: props => <ModelsIcon {...props} />,
   billing: props => <BillingIcon {...props} />,
   members: props => <MembersIcon {...props} />,

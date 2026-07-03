@@ -67,8 +67,7 @@ export function resolveEnvironmentNameForUser(
 ): string {
   if (requested) return requested;
   return (
-    findPersonalEnvironment(project, userId)?.name ??
-    project.defaultEnvironment
+    findPersonalEnvironment(project, userId)?.name ?? project.defaultEnvironment
   );
 }
 
@@ -112,9 +111,7 @@ export async function ensurePersonalDbtEnvironment(params: {
   const existing = findPersonalEnvironment(project, params.userId);
   if (existing) return { environment: existing, created: false };
 
-  const slug = sanitizePersonalSlug(
-    await getUserDisplayName(params.userId),
-  );
+  const slug = sanitizePersonalSlug(await getUserDisplayName(params.userId));
 
   const taken = new Set(project.environments.map(env => env.name));
   let name = slug;

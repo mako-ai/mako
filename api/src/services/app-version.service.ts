@@ -83,9 +83,7 @@ export function applyAppSnapshot(doc: IMakoApp, snapshot: AppSnapshot): void {
   })) as IMakoApp["files"];
   doc.dependencies = { ...(snapshot.dependencies ?? {}) };
 
-  const cacheById = new Map(
-    (doc.dataBindings ?? []).map(b => [b.id, b.cache]),
-  );
+  const cacheById = new Map((doc.dataBindings ?? []).map(b => [b.id, b.cache]));
   doc.dataBindings = (snapshot.dataBindings ?? []).map(b => ({
     id: b.id as string,
     name: b.name as string,

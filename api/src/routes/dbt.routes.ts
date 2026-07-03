@@ -285,10 +285,7 @@ const patchProjectSchema = z.object({
     })
     .optional(),
   /** Branches that refuse direct commits (PR-only). Admin-gated via RBAC. */
-  protectedBranches: z
-    .array(z.string().min(1).max(255))
-    .max(20)
-    .optional(),
+  protectedBranches: z.array(z.string().min(1).max(255)).max(20).optional(),
   /**
    * Tracked branch of the repo binding — what deploy/job runs build and what
    * syncs target by default. Must exist on the remote; its base tree is
@@ -531,7 +528,11 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
     if (trackedBranchChanged && project.repo) {
       // Materialize the new tracked branch's committed base tree so deploy
       // runs and fresh checkouts have files to build immediately.
-      await syncProjectBranchFromRepo(project, project.repo.branch, getUserId(c));
+      await syncProjectBranchFromRepo(
+        project,
+        project.repo.branch,
+        getUserId(c),
+      );
     }
     publishDbtEvent(c, {
       type: "dbt.project.updated",
@@ -1552,7 +1553,10 @@ dbtRoutes.put(
 
       // Version snapshot (entity-version pattern) — undo/version history.
       try {
-        const latest = await getLatestVersionNumber(versionEntityId, "dbt-file");
+        const latest = await getLatestVersionNumber(
+          versionEntityId,
+          "dbt-file",
+        );
         await createVersion({
           entityType: "dbt-file",
           entityId: versionEntityId,

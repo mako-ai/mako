@@ -145,7 +145,12 @@ async function seedRepoProject(): Promise<string> {
     workspaceId: new Types.ObjectId(WS),
     name: "Analytics",
     environments: [
-      { name: "dev", connectionId: CONN, targetSchema: "analytics", threads: 4 },
+      {
+        name: "dev",
+        connectionId: CONN,
+        targetSchema: "analytics",
+        threads: 4,
+      },
     ],
     defaultEnvironment: "dev",
     createdBy: "tester",
@@ -181,7 +186,12 @@ async function seedBlankProject(): Promise<string> {
     workspaceId: new Types.ObjectId(WS),
     name: "Blank",
     environments: [
-      { name: "dev", connectionId: CONN, targetSchema: "analytics", threads: 4 },
+      {
+        name: "dev",
+        connectionId: CONN,
+        targetSchema: "analytics",
+        threads: 4,
+      },
     ],
     defaultEnvironment: "dev",
     createdBy: "tester",

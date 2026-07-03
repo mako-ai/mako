@@ -15,6 +15,11 @@ export interface ChatMessageRowProps {
   isStreaming: boolean;
   onToolClick: (tool: any) => void;
   onConsoleTitleClick: (consoleId: string) => void;
+  /** Resolve an MCP tool approval request (allow once / always / deny). */
+  onMcpApprovalResponse: (args: {
+    approvalId: string;
+    approved: boolean;
+  }) => void;
   connectionIconById: ReadonlyMap<string, string>;
   /** Bust memo when MUI palette mode changes so row styles stay in sync */
   paletteMode: "light" | "dark";
@@ -54,6 +59,7 @@ export function chatMessageRowArePropsEqual(
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.onToolClick !== next.onToolClick) return false;
   if (prev.onConsoleTitleClick !== next.onConsoleTitleClick) return false;
+  if (prev.onMcpApprovalResponse !== next.onMcpApprovalResponse) return false;
   if (prev.connectionIconById !== next.connectionIconById) return false;
   return prev.message === next.message;
 }

@@ -5,6 +5,7 @@ import { StreamingToolCard, type ToolPartState } from "../StreamingToolCard";
 import { ClarifyingQuestionsCard } from "../ClarifyingQuestionsCard";
 import { DbtRunCard } from "../DbtRunCard";
 import { PlanCard } from "../PlanCard";
+import { McpApprovalCard } from "../McpApprovalCard";
 import type {
   AskClarifyingQuestionsInput,
   AskClarifyingQuestionsOutput,
@@ -54,6 +55,7 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
   isStreaming,
   onToolClick,
   onConsoleTitleClick,
+  onMcpApprovalResponse,
   connectionIconById,
   paletteMode,
 }: ChatMessageRowProps) {
@@ -207,6 +209,35 @@ export const ChatMessageRow = React.memo(function ChatMessageRow({
             const key = toolCallId
               ? `tool-${toolCallId}`
               : `tool-idx-${partIndex}`;
+
+            // MCP tool approval flow (Claude-style allow once / always allow).
+            // Approval states only occur for tools with `needsApproval` —
+            // in Mako that is exclusively MCP tools.
+            if (
+              rawState === "approval-requested" ||
+              rawState === "approval-responded" ||
+              rawState === "output-denied"
+            ) {
+              const approval = part.approval as
+                | { id?: string; approved?: boolean }
+                | undefined;
+              const resolution =
+                rawState === "approval-requested"
+                  ? "pending"
+                  : rawState === "output-denied" || approval?.approved === false
+                    ? "denied"
+                    : "approved";
+              return (
+                <McpApprovalCard
+                  key={key}
+                  toolName={toolName}
+                  input={part.input}
+                  approvalId={approval?.id ?? ""}
+                  resolution={resolution}
+                  onRespond={onMcpApprovalResponse}
+                />
+              );
+            }
 
             // Interactive plan-lifecycle tools: while pending they render in
             // the docked panel above the composer (Cursor-style), NOT in the
