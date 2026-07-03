@@ -19,8 +19,10 @@ import {
   Globe as GlobeIcon,
   User as UserIcon,
   Database as DataSourceIcon,
-  ChartPie as DashboardIcon,
 } from "lucide-react";
+import { TAB_KIND_ICONS } from "../lib/entity-icons";
+
+const DashboardIcon = TAB_KIND_ICONS.dashboard;
 import { useWorkspace } from "../contexts/workspace-context";
 import { useAuth } from "../contexts/auth-context";
 import { useConsoleStore } from "../store/consoleStore";

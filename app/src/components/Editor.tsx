@@ -42,23 +42,22 @@ import {
 } from "@mui/material";
 import { Close as CloseIcon } from "@mui/icons-material";
 import {
-  SquareTerminal as ConsoleIcon,
-  Settings as SettingsIcon,
-  CloudUpload as DataSourceIcon,
   Clock as ScheduleIcon,
   Webhook as WebhookIcon,
   CirclePause as PauseIcon,
-  ChartPie as DashboardIcon,
-  AppWindow as AppIcon,
-  FileCode as AppFileIcon,
-  Database as DatabaseIcon,
-  Table as TableDataIcon,
-  ClipboardList as PlanIcon,
   Menu as MenuIcon,
   ChevronDown as ChevronDownIcon,
   Plus as PlusIcon,
   X as CloseTabIcon,
 } from "lucide-react";
+import { tabKindIcon } from "../lib/entity-icons";
+import type { TabKind } from "../store/lib/types";
+
+/** Renders the canonical icon for a tab kind (see lib/entity-icons.ts). */
+function TabKindGlyph({ kind }: { kind: TabKind | undefined }) {
+  const Icon = tabKindIcon(kind);
+  return <Icon size={18} strokeWidth={1.5} />;
+}
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { loader } from "@monaco-editor/react";
 import Console, { ConsoleRef } from "./Console";
@@ -2183,6 +2182,10 @@ function Editor({
                       const connectionIconUrl = tab.connectionId
                         ? connectionIconById.get(tab.connectionId)
                         : undefined;
+                      // Canonical per-kind icon (see lib/entity-icons.ts);
+                      // overridden below by connector favicons, connection
+                      // icons, and flow-editor subtype icons.
+                      const KindIcon = tabKindIcon(tab.kind);
                       const nextTab = consoleTabs[index + 1];
                       const isLastTab = index === consoleTabs.length - 1;
                       // Cursor-style separator: thin vertical rule on the trailing
@@ -2238,10 +2241,6 @@ function Editor({
                                   alt="tab icon"
                                   sx={{ width: 18, height: 18 }}
                                 />
-                              ) : tab.kind === "settings" ? (
-                                <SettingsIcon size={18} strokeWidth={1.5} />
-                              ) : tab.kind === "connectors" ? (
-                                <DataSourceIcon size={18} strokeWidth={1.5} />
                               ) : tab.kind === "flow-editor" ? (
                                 tab.metadata?.flowType === "webhook" ? (
                                   <WebhookIcon size={18} strokeWidth={1.5} />
@@ -2250,20 +2249,8 @@ function Editor({
                                 ) : (
                                   <ScheduleIcon size={18} strokeWidth={1.5} />
                                 )
-                              ) : tab.kind === "dashboard" ? (
-                                <DashboardIcon size={18} strokeWidth={1.5} />
-                              ) : tab.kind === "app" ? (
-                                <AppIcon size={18} strokeWidth={1.5} />
-                              ) : tab.kind === "app-file" ? (
-                                <AppFileIcon size={18} strokeWidth={1.5} />
-                              ) : tab.kind === "app-binding" ||
-                                tab.kind === "dashboard-data-source" ? (
-                                <DatabaseIcon size={18} strokeWidth={1.5} />
-                              ) : tab.kind === "table-data" ? (
-                                <TableDataIcon size={18} strokeWidth={1.5} />
-                              ) : tab.kind === "plan" ? (
-                                <PlanIcon size={18} strokeWidth={1.5} />
-                              ) : connectionIconUrl ? (
+                              ) : (tab.kind ?? "console") === "console" &&
+                                connectionIconUrl ? (
                                 <Box
                                   component="img"
                                   src={connectionIconUrl}
@@ -2275,7 +2262,7 @@ function Editor({
                                   }}
                                 />
                               ) : (
-                                <ConsoleIcon size={18} strokeWidth={1.5} />
+                                <KindIcon size={18} strokeWidth={1.5} />
                               )}
                               <span
                                 style={{
@@ -2350,7 +2337,7 @@ function Editor({
                       sx={{ width: 18, height: 18 }}
                     />
                   ) : (
-                    <ConsoleIcon size={18} strokeWidth={1.5} />
+                    <TabKindGlyph kind={tab.kind} />
                   )}
                 </ListItemIcon>
                 <ListItemText
