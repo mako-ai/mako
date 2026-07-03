@@ -247,10 +247,21 @@ async function testGrantsAndNeedsApproval() {
       return fn === true;
     };
 
-    // Read tool: auto-run. Write + destructive: prompt.
-    assert.equal(await needsApproval("mcp_close_crm_lead_search"), false);
+    // Claude model: EVERY tool prompts on first use — reads included —
+    // until the user chooses a permission.
+    assert.equal(await needsApproval("mcp_close_crm_lead_search"), true);
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), true);
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
+
+    // "Always allow" grant on the read tool: no more prompts.
+    await McpToolGrant.create({
+      workspaceId,
+      serverId: server._id,
+      userId,
+      toolName: "lead_search",
+      decision: "always_allow",
+    });
+    assert.equal(await needsApproval("mcp_close_crm_lead_search"), false);
 
     // "Always allow" grant on the write tool: no more prompts.
     await McpToolGrant.create({

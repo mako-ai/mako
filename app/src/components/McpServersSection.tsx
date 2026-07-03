@@ -33,8 +33,6 @@ import {
   Plug,
   RefreshCw,
   Search,
-  ShieldCheck,
-  ShieldX,
   Trash2,
 } from "lucide-react";
 import { useWorkspace } from "../contexts/workspace-context";
@@ -630,6 +628,7 @@ function ServerDetail({
     deleteServer,
     fetchGrants,
     revokeGrant,
+    saveGrant,
     grants,
   } = useMcpStore();
   const [testing, setTesting] = useState(false);
@@ -682,6 +681,31 @@ function ServerDetail({
     await updateServer(currentWorkspace.id, server.id, {
       toolPolicy: { defaultRestriction: value },
     });
+  };
+
+  /**
+   * The user's own per-tool permission (Claude-style): Always allow / Ask /
+   * Block, stored as a grant ("Ask" simply clears it — the tool prompts on
+   * next use). Capped by the admin ceiling via disabled options.
+   */
+  const handleSetUserPermission = async (
+    toolName: string,
+    value: "always_allow" | "ask" | "block",
+    grantId?: string,
+  ) => {
+    if (!currentWorkspace) return;
+    if (value === "ask") {
+      if (grantId) {
+        await revokeGrant(currentWorkspace.id, server.id, grantId);
+      }
+      return;
+    }
+    await saveGrant(
+      currentWorkspace.id,
+      server.id,
+      toolName,
+      value === "always_allow" ? "always_allow" : "always_deny",
+    );
   };
 
   const handleDelete = async () => {
@@ -881,68 +905,87 @@ function ServerDetail({
         </>
       )}
 
-      {myGrants.length > 0 && (
+      {server.cachedTools.length > 0 && (
         <>
           <Divider />
           <Box>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Your approvals
+            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+              Your tool permissions
             </Typography>
-            <Stack spacing={0.5}>
-              {myGrants.map(grant => (
-                <Stack
-                  key={grant.id}
-                  direction="row"
-                  alignItems="center"
-                  spacing={1}
-                >
-                  {grant.decision === "always_allow" ? (
-                    <ShieldCheck
-                      size={14}
-                      color="var(--mui-palette-success-main, #2e7d32)"
-                    />
-                  ) : (
-                    <ShieldX
-                      size={14}
-                      color="var(--mui-palette-error-main, #d32f2f)"
-                    />
-                  )}
-                  <Typography
-                    variant="body2"
-                    sx={{ fontFamily: "monospace", flex: 1 }}
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mb: 1 }}
+            >
+              These choices apply only to you. Tools ask on first use until you
+              decide — pick a permission here or from the approval prompt in
+              chat.
+            </Typography>
+            <Stack spacing={0.25}>
+              {server.cachedTools.map(tool => {
+                const grant = myGrants.find(g => g.toolName === tool.name);
+                const value =
+                  grant?.decision === "always_allow"
+                    ? "always_allow"
+                    : grant?.decision === "always_deny"
+                      ? "block"
+                      : "ask";
+                const blockedByAdmin = tool.restriction === "block";
+                return (
+                  <Stack
+                    key={tool.name}
+                    direction="row"
+                    alignItems="center"
+                    spacing={1}
+                    sx={{
+                      py: 0.5,
+                      px: 1,
+                      borderRadius: 1,
+                      "&:hover": { bgcolor: "action.hover" },
+                    }}
                   >
-                    {grant.toolName}
-                  </Typography>
-                  <Chip
-                    label={
-                      grant.decision === "always_allow"
-                        ? "Always allowed"
-                        : "Always denied"
-                    }
-                    size="small"
-                    variant="outlined"
-                    color={
-                      grant.decision === "always_allow" ? "success" : "error"
-                    }
-                    sx={{ height: 18, fontSize: 11 }}
-                  />
-                  <Tooltip title="Revoke — the agent will ask again next time">
-                    <IconButton
-                      size="small"
-                      onClick={() =>
-                        currentWorkspace &&
-                        void revokeGrant(
-                          currentWorkspace.id,
-                          server.id,
-                          grant.id,
-                        )
-                      }
+                    <Typography
+                      variant="body2"
+                      sx={{ fontFamily: "monospace", flex: 1, minWidth: 0 }}
+                      noWrap
                     >
-                      <Trash2 size={14} />
-                    </IconButton>
-                  </Tooltip>
-                </Stack>
-              ))}
+                      {tool.name}
+                    </Typography>
+                    {blockedByAdmin ? (
+                      <Typography variant="caption" color="text.disabled">
+                        Blocked by admin
+                      </Typography>
+                    ) : (
+                      <FormControl size="small" sx={{ minWidth: 140 }}>
+                        <Select
+                          value={value}
+                          disabled={!currentWorkspace}
+                          onChange={e =>
+                            void handleSetUserPermission(
+                              tool.name,
+                              e.target.value as
+                                | "always_allow"
+                                | "ask"
+                                | "block",
+                              grant?.id,
+                            )
+                          }
+                          sx={{ fontSize: 13 }}
+                        >
+                          <MenuItem
+                            value="always_allow"
+                            disabled={tool.restriction !== "always"}
+                          >
+                            Always allow
+                          </MenuItem>
+                          <MenuItem value="ask">Ask</MenuItem>
+                          <MenuItem value="block">Block</MenuItem>
+                        </Select>
+                      </FormControl>
+                    )}
+                  </Stack>
+                );
+              })}
             </Stack>
           </Box>
         </>

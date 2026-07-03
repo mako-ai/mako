@@ -36,11 +36,7 @@ const logger = loggers.agent();
 export type McpRiskTier = "read" | "write" | "destructive";
 
 /** How a tool execution was authorized (for audit logs + UI). */
-export type McpApprovalSource =
-  | "auto-read"
-  | "grant"
-  | "manual"
-  | "denied-by-grant";
+export type McpApprovalSource = "grant" | "manual" | "denied-by-grant";
 
 const MCP_TOOL_PREFIX = "mcp";
 
@@ -297,32 +293,32 @@ async function resolveActiveServers(
 
 /**
  * Approval decision for one tool call, following the Claude-connectors
- * model: the admin restriction is a *ceiling*, the user's per-tool choice
- * (grant) picks a setting up to that ceiling, and the risk tier provides
- * the default when the user hasn't chosen yet.
+ * model: the admin restriction is a *ceiling*, and the user's per-tool
+ * choice (grant) picks a setting up to that ceiling.
+ *
+ * Every tool — reads included — prompts on first use until the user decides
+ * (Claude behavior: access is granted by the individual, never implicitly).
  *
  * Resolution:
  *  - blocked tools never get here (filtered at build time)
  *  - user chose Block (always_deny) → no prompt; execute() refuses
  *  - ceiling "ask" → always prompt (user's Always allow can't apply)
  *  - user chose Always allow → auto-run
- *  - no choice yet: read-tier auto-runs, write/destructive prompt
+ *  - no choice yet → prompt
  */
 async function mcpNeedsApproval(params: {
   server: IMcpServer;
-  riskTier: McpRiskTier;
   tool: IMcpCachedTool;
   userId: string | undefined;
 }): Promise<boolean> {
-  const { server, riskTier, tool, userId } = params;
-  const toolName = tool.name;
+  const { server, tool, userId } = params;
   const ceiling = mcpToolRestriction(server, tool);
 
   const grant = userId
     ? await McpToolGrant.findOne({
         serverId: server._id,
         userId,
-        toolName,
+        toolName: tool.name,
       }).lean()
     : null;
 
@@ -331,8 +327,7 @@ async function mcpNeedsApproval(params: {
     return false;
   }
   if (ceiling === "ask") return true;
-  if (grant?.decision === "always_allow") return false;
-  return riskTier !== "read";
+  return grant?.decision !== "always_allow";
 }
 
 /**
@@ -383,7 +378,6 @@ export async function buildMcpToolsForChat(params: {
         needsApproval: async () =>
           mcpNeedsApproval({
             server,
-            riskTier,
             tool: cachedTool,
             userId,
           }),
@@ -428,11 +422,7 @@ export async function buildMcpToolsForChat(params: {
           }
 
           const approvalSource: McpApprovalSource =
-            riskTier === "read"
-              ? "auto-read"
-              : grant?.decision === "always_allow"
-                ? "grant"
-                : "manual";
+            grant?.decision === "always_allow" ? "grant" : "manual";
 
           const startedAt = Date.now();
           try {
