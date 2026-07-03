@@ -356,6 +356,31 @@ describe("project CRUD", () => {
     expect((await res.json()).error).toMatch(/connected repository/);
   });
 
+  it("sets, validates, and clears the production (defer) environment", async () => {
+    const projectId = await createProjectAsOwner();
+
+    // Unknown env name → 400.
+    const bad = await req("PATCH", `/projects/${projectId}`, {
+      prodEnvironment: "release",
+    });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/not in environments/);
+
+    // Valid env → persisted.
+    const set = await req("PATCH", `/projects/${projectId}`, {
+      prodEnvironment: "dev",
+    });
+    expect(set.status).toBe(200);
+    expect((await set.json()).project.prodEnvironment).toBe("dev");
+
+    // Empty string clears the override back to Auto.
+    const cleared = await req("PATCH", `/projects/${projectId}`, {
+      prodEnvironment: "",
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).project.prodEnvironment).toBeUndefined();
+  });
+
   it("rejects an environment bound to a non-dbt-compatible connection", async () => {
     await mongoose.connection
       .collection("databaseconnections")

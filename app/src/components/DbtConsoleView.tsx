@@ -28,6 +28,7 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -44,6 +45,7 @@ import {
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { resolveProdLikeEnvName } from "../lib/dbt-env";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
@@ -285,21 +287,29 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
                 sx: { fontFamily: "monospace", fontSize: "0.8rem" },
               }}
             />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={defer}
-                  onChange={e => setDefer(e.target.checked)}
-                />
+            <Tooltip
+              title={
+                `Resolve unselected refs against the last ` +
+                `"${resolveProdLikeEnvName(project) ?? "prod"}" build ` +
+                "(dbt --defer). Change the defer target in Project settings."
               }
-              label={
-                <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
-                  Defer to prod
-                </Typography>
-              }
-              sx={{ mr: 0 }}
-            />
+            >
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={defer}
+                    onChange={e => setDefer(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+                    Defer to {resolveProdLikeEnvName(project) ?? "prod"}
+                  </Typography>
+                }
+                sx={{ mr: 0 }}
+              />
+            </Tooltip>
             <Button
               size="small"
               variant="contained"

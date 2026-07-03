@@ -62,6 +62,11 @@ export interface DbtProjectItem {
   dbtVersion: string;
   environments: DbtEnvironment[];
   defaultEnvironment: string;
+  /**
+   * Explicit production (defer target) environment. Unset → convention:
+   * the env named "prod" when one exists, else the project default.
+   */
+  prodEnvironment?: string;
   updatedAt?: string;
   /** Set when the project is imported/synced from a Git repository. */
   repo?: DbtRepoBinding;
@@ -363,6 +368,8 @@ interface DbtActions {
       name?: string;
       environments?: DbtEnvironment[];
       defaultEnvironment?: string;
+      /** Production/defer env override; "" clears back to the convention. */
+      prodEnvironment?: string;
       dbtVersion?: string;
       ci?: DbtCiConfig;
       protectedBranches?: string[];

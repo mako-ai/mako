@@ -4263,6 +4263,15 @@ export interface IDbtProject extends Document {
   environments: IDbtEnvironment[];
   defaultEnvironment: string;
   /**
+   * Explicit PRODUCTION environment (the defer target). Drives which
+   * environment's successful runs update `lastProdManifestKey` (what ad-hoc
+   * `--defer` resolves against), what `{{ dbt_schema }}` resolves to for
+   * published apps, and which environment refuses ad-hoc warehouse writes.
+   * Unset → convention: the environment literally named "prod" when one
+   * exists, else the project default.
+   */
+  prodEnvironment?: string;
+  /**
    * Artifact-store key of the last successful prod manifest.json. This is
    * the state artifact for --defer / state:modified+ (Slim CI, later phase).
    */
@@ -4335,6 +4344,7 @@ const DbtProjectSchema = new Schema<IDbtProject>(
     dbtVersion: { type: String, default: "1.9" },
     environments: { type: [DbtEnvironmentSchema], default: [] },
     defaultEnvironment: { type: String, default: "dev" },
+    prodEnvironment: { type: String },
     lastProdManifestKey: { type: String },
     repo: { type: DbtRepoBindingSchema },
     protectedBranches: { type: [String], default: undefined },

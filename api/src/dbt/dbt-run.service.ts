@@ -220,7 +220,7 @@ export async function triggerDbtRun(params: {
     _id: new Types.ObjectId(params.projectId),
     workspaceId: new Types.ObjectId(params.workspaceId),
   })
-    .select("environments defaultEnvironment repo")
+    .select("environments defaultEnvironment prodEnvironment repo")
     .lean();
 
   // Ad-hoc (non-job, non-CI) runs on repo-connected projects build a

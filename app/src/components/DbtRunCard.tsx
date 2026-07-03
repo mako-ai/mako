@@ -170,13 +170,14 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
     <Box
       sx={{
         my: 0.75,
+        maxWidth: 560,
         borderRadius: 1.5,
         border: 1,
-        borderColor: isActive
-          ? "primary.main"
-          : status === "error"
-            ? "error.main"
-            : "divider",
+        borderColor: isActive ? "primary.main" : "divider",
+        // Status accent: a slim colored edge reads at a glance without a
+        // heavy full border.
+        borderLeft: 3,
+        borderLeftColor: statusColor(status),
         overflow: "hidden",
         transition: "border-color 0.3s",
         backgroundColor: theme =>
@@ -185,107 +186,133 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
             : "rgba(0,0,0,0.015)",
       }}
     >
-      {/* Header */}
+      {/* Header: title + status, then a meta row (env / branch / duration /
+          actions) — two lines so the command stays readable in a narrow
+          chat panel instead of being squeezed out by the chips. */}
       <Box
         onClick={() => hasBody && setExpanded(prev => !prev)}
         sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
           px: 1.25,
           py: 0.75,
           cursor: hasBody ? "pointer" : "default",
           "&:hover": hasBody ? { backgroundColor: "action.hover" } : undefined,
         }}
       >
-        {hasBody ? (
-          expanded ? (
-            <ChevronDownIcon size={14} />
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+          {hasBody ? (
+            expanded ? (
+              <ChevronDownIcon size={14} style={{ flexShrink: 0 }} />
+            ) : (
+              <ChevronRightIcon size={14} style={{ flexShrink: 0 }} />
+            )
           ) : (
-            <ChevronRightIcon size={14} />
-          )
-        ) : (
-          <Box sx={{ width: 14 }} />
-        )}
-        <Box
-          component="span"
-          sx={{
-            fontFamily: "monospace",
-            fontSize: "0.8rem",
-            fontWeight: 600,
-            flex: 1,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-          title={title}
-        >
-          {title}
-        </Box>
-        {run?.environment && (
+            <Box sx={{ width: 14, flexShrink: 0 }} />
+          )}
+          <Box
+            component="span"
+            sx={{
+              fontFamily: "monospace",
+              fontSize: "0.8rem",
+              fontWeight: 600,
+              flex: 1,
+              minWidth: 0,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            title={title}
+          >
+            {title}
+          </Box>
           <Chip
             size="small"
             variant="outlined"
-            label={run.environment}
-            sx={{ height: 18, fontSize: "0.66rem" }}
+            icon={isActive ? <CircularProgress size={10} /> : undefined}
+            label={statusLabel}
+            sx={{
+              height: 20,
+              flexShrink: 0,
+              textTransform: "capitalize",
+              fontWeight: 600,
+              color: statusColor(status),
+              borderColor: statusColor(status),
+            }}
           />
-        )}
-        {treeChip && (
-          <Tooltip title={treeChip.tooltip}>
+        </Box>
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            gap: 0.75,
+            mt: 0.5,
+            ml: "22px",
+            flexWrap: "wrap",
+          }}
+        >
+          {run?.environment && (
             <Chip
               size="small"
               variant="outlined"
-              color={run?.workingTreeUserId ? "info" : "default"}
-              label={treeChip.label}
-              sx={{ height: 18, fontSize: "0.66rem", fontFamily: "monospace" }}
+              label={run.environment}
+              sx={{
+                height: 18,
+                fontSize: "0.64rem",
+                "& .MuiChip-label": { px: 0.75 },
+              }}
             />
-          </Tooltip>
-        )}
-        {run?.durationMs !== undefined && (
-          <Box
-            component="span"
-            sx={{ fontSize: "0.72rem", color: "text.secondary" }}
-          >
-            {formatDuration(run.durationMs)}
-          </Box>
-        )}
-        <Tooltip title="Open in Transforms → Runs">
-          <IconButton
-            size="small"
-            onClick={event => {
-              event.stopPropagation();
-              focusDbtRunsTab(projectId, "Runs", runId);
-            }}
-          >
-            <OpenIcon size={13} />
-          </IconButton>
-        </Tooltip>
-        <Chip
-          size="small"
-          variant="outlined"
-          icon={isActive ? <CircularProgress size={10} /> : undefined}
-          label={statusLabel}
-          sx={{
-            height: 20,
-            textTransform: "capitalize",
-            fontWeight: 600,
-            color: statusColor(status),
-            borderColor: statusColor(status),
-          }}
-        />
-        {isActive && (
-          <Tooltip title="Cancel build">
-            <span>
-              <IconButton
+          )}
+          {treeChip && (
+            <Tooltip title={treeChip.tooltip}>
+              <Chip
                 size="small"
-                onClick={handleCancel}
-                disabled={cancelling}
-              >
-                <StopIcon size={13} />
-              </IconButton>
-            </span>
+                variant="outlined"
+                color={run?.workingTreeUserId ? "info" : "default"}
+                label={treeChip.label}
+                sx={{
+                  height: 18,
+                  fontSize: "0.64rem",
+                  fontFamily: "monospace",
+                  "& .MuiChip-label": { px: 0.75 },
+                }}
+              />
+            </Tooltip>
+          )}
+          {run?.durationMs !== undefined && (
+            <Box
+              component="span"
+              sx={{ fontSize: "0.7rem", color: "text.secondary" }}
+            >
+              {formatDuration(run.durationMs)}
+            </Box>
+          )}
+          <Box sx={{ flex: 1 }} />
+          {isActive && (
+            <Tooltip title="Cancel build">
+              <span>
+                <IconButton
+                  size="small"
+                  sx={{ p: 0.25 }}
+                  onClick={handleCancel}
+                  disabled={cancelling}
+                >
+                  <StopIcon size={13} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          )}
+          <Tooltip title="Open in Transforms → Runs">
+            <IconButton
+              size="small"
+              sx={{ p: 0.25 }}
+              onClick={event => {
+                event.stopPropagation();
+                focusDbtRunsTab(projectId, "Runs", runId);
+              }}
+            >
+              <OpenIcon size={13} />
+            </IconButton>
           </Tooltip>
-        )}
+        </Box>
       </Box>
 
       {/* Error summary (always visible when failed) */}

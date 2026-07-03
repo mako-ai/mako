@@ -285,6 +285,11 @@ const patchProjectSchema = z.object({
   dbtVersion: z.string().max(16).optional(),
   environments: z.array(environmentSchema).min(1).optional(),
   defaultEnvironment: z.string().min(1).optional(),
+  /**
+   * Explicit production (defer target) environment; empty string clears the
+   * override back to the convention (env named "prod", else the default).
+   */
+  prodEnvironment: z.string().max(64).optional(),
   ci: z
     .object({
       enabled: z.boolean(),
@@ -476,6 +481,21 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
         c,
         `Default environment "${project.defaultEnvironment}" is not in environments`,
       );
+    }
+    if (body.prodEnvironment !== undefined) {
+      if (body.prodEnvironment === "") {
+        project.prodEnvironment = undefined;
+      } else {
+        if (
+          !project.environments.some(env => env.name === body.prodEnvironment)
+        ) {
+          return badRequest(
+            c,
+            `Production environment "${body.prodEnvironment}" is not in environments`,
+          );
+        }
+        project.prodEnvironment = body.prodEnvironment;
+      }
     }
     if (body.ci) {
       if (

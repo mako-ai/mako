@@ -35,16 +35,27 @@ import {
 type ProjectEnvFields = Pick<
   IDbtProject,
   "environments" | "defaultEnvironment"
->;
+> & { prodEnvironment?: string };
 
 /**
- * The environment treated as "production" for defer state and app-binding
- * schema resolution: `prod` when it exists, else the project default. Mirrors
- * the executor's `lastProdManifestKey` promotion rule (dbt-run.ts).
+ * The environment treated as "production": the defer-state source
+ * (`lastProdManifestKey` promotion), the `{{ dbt_schema }}` target for
+ * app bindings, and the environment protected from ad-hoc warehouse writes.
+ *
+ * An explicit `project.prodEnvironment` wins (set in project settings, shown
+ * in the UI); a stale value pointing at a removed environment is ignored.
+ * Convention fallback: the environment literally named "prod" when one
+ * exists, else the project default.
  */
 export function resolveProdLikeEnvironmentName(
   project: ProjectEnvFields,
 ): string {
+  if (
+    project.prodEnvironment &&
+    project.environments.some(env => env.name === project.prodEnvironment)
+  ) {
+    return project.prodEnvironment;
+  }
   return project.environments.some(env => env.name === "prod")
     ? "prod"
     : project.defaultEnvironment;
@@ -218,7 +229,7 @@ export async function resolveDbtSchemaForBinding(params: {
     _id: new Types.ObjectId(params.dbtProjectId),
     workspaceId: new Types.ObjectId(params.workspaceId.toString()),
   })
-    .select("environments defaultEnvironment")
+    .select("environments defaultEnvironment prodEnvironment")
     .lean();
   if (!project) return null;
 

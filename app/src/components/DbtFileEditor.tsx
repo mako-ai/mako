@@ -72,6 +72,7 @@ import {
   modelNamesFromPaths,
   type Problem,
 } from "../lib/dbt-editor-logic";
+import { resolveProdLikeEnvName } from "../lib/dbt-env";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import StreamingMarkdown from "./StreamingMarkdown";
@@ -314,6 +315,11 @@ export default function DbtFileEditor({
   const [markdownPreview, setMarkdownPreview] = useState(true);
 
   const modelName = useMemo(() => modelNameForPath(path), [path]);
+  // Defer target for display: the project's production-like environment.
+  const prodEnvName = useMemo(
+    () => (project ? (resolveProdLikeEnvName(project) ?? "prod") : "prod"),
+    [project],
+  );
   const isMarkdown = useMemo(() => isMarkdownDbtPath(path), [path]);
   const showMarkdownPreview = isMarkdown && markdownPreview;
 
@@ -885,7 +891,12 @@ export default function DbtFileEditor({
           sx={{ mr: 0, ml: 0.5 }}
         />
       </Tooltip>
-      <Tooltip title="Resolve unselected refs against the last prod build (dbt --defer)">
+      <Tooltip
+        title={
+          `Resolve unselected refs against the last "${prodEnvName}" build ` +
+          "(dbt --defer). Change the defer target in Project settings."
+        }
+      >
         <FormControlLabel
           control={
             <Checkbox
@@ -897,7 +908,7 @@ export default function DbtFileEditor({
           }
           label={
             <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
-              Defer to
+              Defer to {prodEnvName}
             </Typography>
           }
           sx={{ mr: 0, ml: 0.5 }}

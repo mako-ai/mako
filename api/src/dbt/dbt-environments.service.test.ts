@@ -39,6 +39,26 @@ describe("resolveProdLikeEnvironmentName", () => {
       }),
     ).toBe("main");
   });
+
+  it("an explicit prodEnvironment setting beats the convention", () => {
+    expect(
+      resolveProdLikeEnvironmentName({
+        environments: [env("dev"), env("prod"), env("release")],
+        defaultEnvironment: "dev",
+        prodEnvironment: "release",
+      }),
+    ).toBe("release");
+  });
+
+  it("ignores a stale prodEnvironment pointing at a removed env", () => {
+    expect(
+      resolveProdLikeEnvironmentName({
+        environments: [env("dev"), env("prod")],
+        defaultEnvironment: "dev",
+        prodEnvironment: "release",
+      }),
+    ).toBe("prod");
+  });
 });
 
 describe("findPersonalEnvironment / resolveEnvironmentNameForUser", () => {
@@ -161,6 +181,22 @@ describe("assertAdhocDbtRunAllowed", () => {
     };
     expect(() =>
       assertAdhocDbtRunAllowed(blankProject, "prod", commands("build")),
+    ).not.toThrow();
+  });
+
+  it("follows an explicit prodEnvironment setting", () => {
+    const project = {
+      environments: [env("dev"), env("prod"), env("release")],
+      defaultEnvironment: "dev",
+      prodEnvironment: "release",
+      repo: { branch: "main" },
+    };
+    expect(() =>
+      assertAdhocDbtRunAllowed(project, "release", commands("build")),
+    ).toThrow(DbtProtectedEnvironmentError);
+    // The env named "prod" is no longer the protected target.
+    expect(() =>
+      assertAdhocDbtRunAllowed(project, "prod", commands("build")),
     ).not.toThrow();
   });
 });
