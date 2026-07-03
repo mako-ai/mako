@@ -137,6 +137,7 @@ function InvitePage() {
 }
 
 import { UrlSync } from "./components/UrlSync";
+import CommandPalette from "./components/CommandPalette";
 
 // Main application component (extracted from original App)
 
@@ -640,6 +641,7 @@ function MainApp() {
     return (
       <AuthWrapper>
         <UrlSync />
+        <CommandPalette />
         <Box
           data-mako-app-shell="true"
           data-mako-mobile="true"
@@ -778,6 +780,7 @@ function MainApp() {
   return (
     <AuthWrapper>
       <UrlSync />
+      <CommandPalette />
       <Box
         data-mako-app-shell="true"
         sx={{

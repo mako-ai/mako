@@ -7,7 +7,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { SquareTerminal as ConsoleIcon } from "lucide-react";
+import { TAB_KIND_ICONS } from "../lib/entity-icons";
+
+const ConsoleIcon = TAB_KIND_ICONS.console;
 import { Box } from "@mui/material";
 import { useExplorerStore } from "../store/explorerStore";
 import {

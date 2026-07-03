@@ -9,18 +9,8 @@ import {
   Divider,
 } from "@mui/material";
 import { Logout as LogoutIcon } from "@mui/icons-material";
-import {
-  Settings as SettingsIcon,
-  SquareChevronRight as ConsoleIcon,
-  Database as DatabaseIcon,
-  Plug as DataSourceIcon,
-  ArrowLeftRight as FlowsIcon,
-  ChartPie as DashboardIcon,
-  AppWindow as AppsIcon,
-  GitBranch as TransformsIcon,
-  CircleUserRound as UserIcon,
-  MessageCircleMore as ChatIcon,
-} from "lucide-react";
+import { CircleUserRound as UserIcon } from "lucide-react";
+import { CHAT_ICON as ChatIcon, EXPLORER_ICONS } from "../lib/entity-icons";
 import { selectActiveExplorer, useUIStore } from "../store/uiStore";
 import { useConsoleStore } from "../store/consoleStore";
 import { useAuth } from "../contexts/auth-context";
@@ -71,20 +61,20 @@ const topNavigationItems: {
   icon: any;
   label: string;
 }[] = [
-  { view: "databases", icon: DatabaseIcon, label: "Databases" },
-  { view: "consoles", icon: ConsoleIcon, label: "Consoles" },
-  { view: "flows", icon: FlowsIcon, label: "Flows" },
-  { view: "dbt", icon: TransformsIcon, label: "Transforms" },
-  { view: "connectors", icon: DataSourceIcon, label: "Connectors" },
-  { view: "dashboards", icon: DashboardIcon, label: "Dashboards" },
-  { view: "apps", icon: AppsIcon, label: "Apps" },
+  { view: "databases", icon: EXPLORER_ICONS.databases, label: "Databases" },
+  { view: "consoles", icon: EXPLORER_ICONS.consoles, label: "Consoles" },
+  { view: "flows", icon: EXPLORER_ICONS.flows, label: "Flows" },
+  { view: "dbt", icon: EXPLORER_ICONS.dbt, label: "Transforms" },
+  { view: "connectors", icon: EXPLORER_ICONS.connectors, label: "Connectors" },
+  { view: "dashboards", icon: EXPLORER_ICONS.dashboards, label: "Dashboards" },
+  { view: "apps", icon: EXPLORER_ICONS.apps, label: "Apps" },
 ];
 
 const bottomNavigationItems: {
   view: NavigationView;
   icon: any;
   label: string;
-}[] = [{ view: "settings", icon: SettingsIcon, label: "Settings" }];
+}[] = [{ view: "settings", icon: EXPLORER_ICONS.settings, label: "Settings" }];
 
 const preloadDashboardsExplorer = () => {
   void import("./DashboardsExplorer");
