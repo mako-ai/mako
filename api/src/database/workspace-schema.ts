@@ -4690,6 +4690,14 @@ export interface IDbtRun extends Document {
    */
   workingTreeUserId?: string;
   /**
+   * DISPLAY-ONLY: the git branch this run's source tree came from, stamped
+   * at trigger time so the Runs UI can say what was built without re-deriving
+   * it. Working-tree runs record the caller's checkout branch; job/deploy
+   * runs record the tracked branch; CI runs record the PR head. The executor
+   * never reads this — `gitBranch` / `workingTreeUserId` stay authoritative.
+   */
+  sourceBranch?: string;
+  /**
    * Ad-hoc/agent runs only: run with `--defer --state <prod manifest>` so
    * unselected refs resolve to the last production build instead of
    * rebuilding the whole upstream DAG in the target schema. Job runs read
@@ -4772,6 +4780,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
     triggeredBy: { type: String, required: true },
     gitBranch: { type: String },
     workingTreeUserId: { type: String },
+    sourceBranch: { type: String },
     deferToProduction: { type: Boolean },
     ci: {
       type: new Schema(

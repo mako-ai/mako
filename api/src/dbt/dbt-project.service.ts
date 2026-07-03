@@ -1,7 +1,7 @@
 /**
  * dbt project snapshot loading + ad-hoc execution helpers.
  *
- * Shared by the routes (compile / run-select endpoints), the Inngest
+ * Shared by the routes (compile / command endpoints), the Inngest
  * executor, and the agent's server-side verification tools so they all go
  * through identical validation: workspace scoping, environment resolution,
  * connection decryption, and command allowlisting.

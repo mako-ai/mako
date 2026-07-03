@@ -786,9 +786,10 @@ export const createDbtServerTools = (
         "warehouse connection as prod, private schema `dbt_<user>`. Once it " +
         "exists, dbt_parse / dbt_compile_model / dbt_run_model / dbt_show " +
         "default to it automatically, so iteration never writes to shared " +
-        "dev/prod schemas. Call this before building models when the user " +
-        "wants to iterate safely (or when read_dbt_project_tree shows no " +
-        "personal environment). Safe to call repeatedly.",
+        "dev/prod schemas. NOTE: dbt_run_model auto-provisions this on the " +
+        "first build, so you rarely need to call it explicitly — use it only " +
+        "to provision ahead of time (e.g. before dbt_show against a fresh " +
+        "schema). Safe to call repeatedly.",
       inputSchema: z.object({ projectId: projectIdField }),
       execute: async ({ projectId }) => {
         try {
@@ -945,9 +946,11 @@ export const createDbtServerTools = (
           .string()
           .optional()
           .describe(
-            "Environment name; defaults to your personal environment when " +
-              "provisioned, else the project default (dev). The prod-like " +
-              "environment refuses ad-hoc builds — deploys go through jobs.",
+            "Environment name. Omit it: builds default to your PERSONAL " +
+              "environment (auto-provisioned on first build — schema " +
+              "dbt_<user>), so iteration never touches shared schemas. The " +
+              "prod-like environment refuses ad-hoc builds — deploys go " +
+              "through jobs.",
           ),
         fullRefresh: z
           .boolean()
@@ -973,7 +976,34 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = resolveEnvironment(project, environment);
+          let environmentName = resolveEnvironment(project, environment);
+          // Smart default: builds land in the caller's PERSONAL environment.
+          // When none exists yet (and no explicit environment was requested),
+          // provision it idempotently so iteration never writes to the shared
+          // dev schema. Explicit `environment` always wins; best-effort — a
+          // provisioning failure falls back to the project default.
+          let autoProvisionedEnv: string | undefined;
+          if (
+            !environment &&
+            userId &&
+            project.environments.length > 0 &&
+            !findPersonalEnvironment(project, userId)
+          ) {
+            try {
+              const ensured = await ensurePersonalDbtEnvironment({
+                workspaceId,
+                projectId,
+                userId,
+              });
+              environmentName = ensured.environment.name;
+              if (ensured.created) {
+                autoProvisionedEnv = ensured.environment.targetSchema;
+                publishProjectUpdated(projectId);
+              }
+            } catch {
+              /* fall back to the project default environment */
+            }
+          }
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           // The source tree this run builds: the acting user's checkout
@@ -1014,6 +1044,11 @@ export const createDbtServerTools = (
               "Build started in the runner. Poll dbt_get_run with this runId " +
               "(pass waitMs) until status is success/error. The user sees " +
               "live progress in the run card." +
+              (autoProvisionedEnv
+                ? ` Provisioned your personal environment "${run.environment}" ` +
+                  `(schema ${autoProvisionedEnv}) — ad-hoc builds now default ` +
+                  "to it."
+                : "") +
               (sourceBranch
                 ? ` Building your working tree on "${sourceBranch}" ` +
                   "(committed base + your uncommitted drafts)."

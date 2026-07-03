@@ -16,8 +16,10 @@ import {
   type IDbtRun,
 } from "../database/workspace-schema";
 import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
+import { getCheckoutBranch } from "./dbt-working-tree.service";
 import { parseDbtCommands } from "./commands";
 import { cancelLocalRun } from "./dbt-run-registry";
+import type { AdhocDbtResult } from "./dbt-project.service";
 import { loggers } from "../logging";
 
 const TERMINAL_DBT_RUN_STATUSES: ReadonlySet<DbtRunStatus> = new Set([
@@ -214,23 +216,33 @@ export async function triggerDbtRun(params: {
   // Validate before persisting anything — bad commands never reach a run doc.
   const parsedCommands = parseDbtCommands(params.commands);
 
+  const project = await DbtProject.findOne({
+    _id: new Types.ObjectId(params.projectId),
+    workspaceId: new Types.ObjectId(params.workspaceId),
+  })
+    .select("environments defaultEnvironment repo")
+    .lean();
+
   // Ad-hoc (non-job, non-CI) runs on repo-connected projects build a
   // working tree — refuse warehouse writes into the protected prod-like
   // environment so uncommitted drafts can never deploy to prod. Jobs and CI
   // (which build committed trees) are the only paths allowed to write there.
   const isAdhocRun =
     !params.jobId && params.trigger !== "ci" && params.trigger !== "schedule";
-  if (isAdhocRun) {
-    const project = await DbtProject.findOne({
-      _id: new Types.ObjectId(params.projectId),
-      workspaceId: new Types.ObjectId(params.workspaceId),
-    })
-      .select("environments defaultEnvironment repo")
-      .lean();
-    if (project) {
-      assertAdhocDbtRunAllowed(project, params.environment, parsedCommands);
-    }
+  if (isAdhocRun && project) {
+    assertAdhocDbtRunAllowed(project, params.environment, parsedCommands);
   }
+
+  // Display-only provenance: which git branch this run's source tree comes
+  // from. Working-tree runs (workingTreeUserId) record that user's checkout;
+  // explicit-branch runs (CI) record it directly; everything else (jobs,
+  // deploys) builds the committed tracked branch.
+  const sourceBranch = !project?.repo
+    ? undefined
+    : (params.gitBranch ??
+      (params.workingTreeUserId
+        ? await getCheckoutBranch(project, params.workingTreeUserId)
+        : project.repo.branch));
 
   if (params.skipIfActive && params.jobId) {
     const active = await DbtRun.findOne({
@@ -251,6 +263,7 @@ export async function triggerDbtRun(params: {
     triggeredBy: params.triggeredBy,
     gitBranch: params.gitBranch,
     workingTreeUserId: params.workingTreeUserId,
+    sourceBranch,
     deferToProduction: params.deferToProduction,
     ci: params.ci,
   });
@@ -271,6 +284,69 @@ export async function triggerDbtRun(params: {
   }
 
   return run;
+}
+
+/** Log lines kept when persisting a completed sync ad-hoc run (mirrors the
+ * executor's MAX_LOG_LINES cap in inngest/functions/dbt-run.ts). */
+const ADHOC_RECORD_MAX_LOG_LINES = 5000;
+
+/**
+ * Persist a COMPLETED synchronous ad-hoc command (IDE Run button / command
+ * bar) into dbt_runs so editor runs share the same history, run detail, and
+ * provenance UI as agent/job runs. Written post-hoc with a terminal status —
+ * it never goes through the executor, so there is no queued/running state,
+ * no cancel plumbing, and no sweeper interaction. Best-effort: a write
+ * failure must never fail the run the user already got results for.
+ */
+export async function recordCompletedAdhocDbtRun(params: {
+  workspaceId: string;
+  projectId: string;
+  environment: string;
+  command: string;
+  triggeredBy: string;
+  /** Caller whose working tree the command built (repo-bound projects). */
+  workingTreeUserId?: string;
+  /** Caller's checkout branch at run time (display-only provenance). */
+  sourceBranch?: string;
+  deferToProduction?: boolean;
+  startedAt: Date;
+  result: Pick<AdhocDbtResult, "success" | "exitCode" | "logs" | "stepResults">;
+}): Promise<IDbtRun | null> {
+  try {
+    const completedAt = new Date();
+    return await DbtRun.create({
+      workspaceId: new Types.ObjectId(params.workspaceId),
+      projectId: new Types.ObjectId(params.projectId),
+      environment: params.environment,
+      commands: [params.command],
+      status: params.result.success ? "success" : "error",
+      trigger: "manual",
+      triggeredBy: params.triggeredBy,
+      workingTreeUserId: params.workingTreeUserId,
+      sourceBranch: params.sourceBranch,
+      deferToProduction: params.deferToProduction,
+      startedAt: params.startedAt,
+      completedAt,
+      durationMs: completedAt.getTime() - params.startedAt.getTime(),
+      ...(params.result.success
+        ? {}
+        : {
+            error: `dbt command "${params.command}" exited with code ${params.result.exitCode}`,
+          }),
+      logs: params.result.logs.slice(-ADHOC_RECORD_MAX_LOG_LINES).map(line => ({
+        ts: line.ts,
+        level: line.level,
+        line: line.line.slice(0, 2000),
+      })),
+      stepResults: params.result.stepResults,
+    });
+  } catch (error) {
+    logger.warn("Failed to record completed ad-hoc dbt run", {
+      error,
+      projectId: params.projectId,
+    });
+    return null;
+  }
 }
 
 export async function triggerDbtJobRun(params: {
@@ -320,6 +396,11 @@ export async function triggerDbtRunRetry(params: {
     status: "queued",
     trigger: "manual",
     triggeredBy: params.triggeredBy,
+    // Resume the same source tree the failed run built.
+    gitBranch: source.gitBranch,
+    workingTreeUserId: source.workingTreeUserId,
+    sourceBranch: source.sourceBranch,
+    deferToProduction: source.deferToProduction,
     retryOfRunId: source._id,
     restoreArtifactKeys: {
       runResults: source.artifactKeys.runResults,

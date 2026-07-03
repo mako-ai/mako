@@ -66,6 +66,9 @@ vi.mock("../dbt/dbt-run.service", () => ({
   triggerDbtRunRetry: vi.fn(async () => ({ _id: new Types.ObjectId() })),
   requestDbtRunCancel: vi.fn(async () => ({ status: "cancelled" })),
   applyJobScheduleChange: vi.fn(async () => undefined),
+  recordCompletedAdhocDbtRun: vi.fn(async () => ({
+    _id: new Types.ObjectId(),
+  })),
   reconcileStaleQueuedRun: vi.fn(async (r: unknown) => r),
   reconcileStaleQueuedRuns: vi.fn(async (r: unknown) => r),
 }));
@@ -124,6 +127,7 @@ import { dbtRoutes } from "./dbt.routes";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
+  recordCompletedAdhocDbtRun,
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
@@ -133,6 +137,9 @@ import { publishRealtimeEvent } from "../services/realtime.service";
 
 const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
 const adhocMock = runAdhocDbtCommand as unknown as ReturnType<typeof vi.fn>;
+const recordAdhocMock = recordCompletedAdhocDbtRun as unknown as ReturnType<
+  typeof vi.fn
+>;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
 const branchHeadMock = getBranchHeadSha as unknown as ReturnType<typeof vi.fn>;
@@ -603,19 +610,6 @@ describe("ad-hoc runner routes", () => {
     expect(res.status).toBe(400);
   });
 
-  it("run-select requires a select and returns step results", async () => {
-    const projectId = await createProjectAsOwner();
-    expect(
-      (await req("POST", `/projects/${projectId}/run-select`, {})).status,
-    ).toBe(400);
-
-    const res = await req("POST", `/projects/${projectId}/run-select`, {
-      select: "customers+",
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()).run.stepResults).toHaveLength(1);
-  });
-
   it("command validates against the allowlist (strips leading `dbt`)", async () => {
     const projectId = await createProjectAsOwner();
     const ok = await req("POST", `/projects/${projectId}/command`, {
@@ -631,6 +625,28 @@ describe("ad-hoc runner routes", () => {
       command: "clean",
     });
     expect(bad.status).toBe(400);
+  });
+
+  it("records warehouse-writing commands into run history, not read-only ones", async () => {
+    const projectId = await createProjectAsOwner();
+
+    await req("POST", `/projects/${projectId}/command`, {
+      command: "build --select customers --full-refresh",
+    });
+    expect(recordAdhocMock).toHaveBeenCalledTimes(1);
+    expect(recordAdhocMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "build --select customers --full-refresh",
+        environment: "dev",
+        triggeredBy: "u1",
+      }),
+    );
+
+    recordAdhocMock.mockClear();
+    await req("POST", `/projects/${projectId}/command`, {
+      command: "compile --select customers",
+    });
+    expect(recordAdhocMock).not.toHaveBeenCalled();
   });
 
   it("lineage returns an empty DAG when no manifest exists yet", async () => {

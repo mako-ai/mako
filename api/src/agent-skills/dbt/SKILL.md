@@ -144,7 +144,8 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
 
 - Projects have environments (dev/prod) mapping to a workspace connection +
   target schema. Ad-hoc agent builds default to the acting user's PERSONAL
-  environment when provisioned, else dev.
+  environment; `dbt_run_model` auto-provisions it on the first build (schema
+  `dbt_<user>`), so omit `environment` unless the user explicitly picks one.
 - **Which git tree a run builds (repo-bound projects)** — never mix these up:
   - Ad-hoc tools (`dbt_parse`, `dbt_compile_model`, `dbt_show`,
     `dbt_run_model`) build YOUR working tree: your checkout branch + your
@@ -162,11 +163,13 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   `seed`/`snapshot`). Deploys go through jobs or CI after the change is
   merged into the tracked branch. Read-only commands (parse/compile/show)
   still work against any environment.
-- **Personal environments**: `dbt_ensure_dev_environment` idempotently
-  provisions a per-user environment (schema `dbt_<user>`, same connection as
-  prod). Once it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` /
+- **Personal environments**: per-user environments (schema `dbt_<user>`, same
+  connection as prod). `dbt_run_model` auto-provisions the caller's on its
+  first build; `dbt_ensure_dev_environment` provisions it explicitly ahead of
+  time. Once it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` /
   `dbt_show` default to it — iteration never touches shared dev/prod schemas.
-  Provision it before building models when the user wants safe iteration.
+  When verifying feature-branch work, build it into the personal environment
+  (the default) rather than shared dev; prod stays a jobs-only deploy target.
 - **Defer (fast iteration)**: ad-hoc builds default to
   `--defer --state <last prod manifest>` when targeting a non-prod environment
   and a prod build exists — unselected `ref()`s resolve to prod relations, so
@@ -190,17 +193,17 @@ draft preview can be switched.
 
 The full safe-iteration loop:
 
-1. `dbt_ensure_dev_environment` — get a personal schema (e.g. `dbt_jonas`).
-2. Edit models; verify with `dbt_parse` → `dbt_compile_model` →
-   `dbt_run_model` (defaults: personal env + defer to prod manifest).
-3. `app_set_preview_environment` with the personal environment — the app's
+1. Edit models; verify with `dbt_parse` → `dbt_compile_model` →
+   `dbt_run_model` (defaults: personal env — auto-provisioned on first
+   build, e.g. `dbt_jonas` — + defer to prod manifest).
+2. `app_set_preview_environment` with the personal environment — the app's
    DRAFT preview now reads the freshly built schema. This is per-user view
    state: other editors, the published app, and shared links keep reading
    prod. Verify visually (screenshot) if useful.
-4. Promote the dbt change: `dbt_commit_to_branch` → `dbt_open_pull_request` →
+3. Promote the dbt change: `dbt_commit_to_branch` → `dbt_open_pull_request` →
    (after review) `dbt_merge_pull_request`; then run the prod job via
    `dbt_run_job` — ONLY with explicit user confirmation.
-5. After the prod build succeeds, reset the preview
+4. After the prod build succeeds, reset the preview
    (`app_set_preview_environment` with `environment: null`) and, if app code
    changed, publish with `app_save_version`.
 

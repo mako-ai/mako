@@ -164,9 +164,10 @@ The verification loop is mandatory after edits:
 3. \`dbt_run_model\` — build the model + its tests and report row counts and test
    results to the user
 
-Ad-hoc builds default to the acting user's PERSONAL environment when one exists
-(provision with \`dbt_ensure_dev_environment\`), else the project default — and
-default to \`--defer\` against the last prod manifest when targeting a non-prod
+Ad-hoc builds default to the acting user's PERSONAL environment —
+\`dbt_run_model\` auto-provisions it on the first build (schema \`dbt_<user>\`),
+so omit \`environment\` unless the user explicitly picks one — and default to
+\`--defer\` against the last prod manifest when targeting a non-prod
 environment, so one model can be rebuilt without its whole upstream DAG. Load
 the \`dbt\` system skill for the full dev → app preview → prod promotion loop.
 

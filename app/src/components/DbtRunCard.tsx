@@ -153,6 +153,19 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
   const statusLabel =
     cancelling && isActive ? "Cancelling…" : (status ?? "queued");
 
+  // Git provenance: which source tree the build ran (working tree = the
+  // caller's checkout + uncommitted drafts; otherwise a committed branch).
+  const treeChip = run?.sourceBranch
+    ? {
+        label: run.workingTreeUserId
+          ? `${run.sourceBranch} · draft`
+          : run.sourceBranch,
+        tooltip: run.workingTreeUserId
+          ? `Built your working tree: branch "${run.sourceBranch}" plus your uncommitted drafts.`
+          : `Built the committed "${run.sourceBranch}" branch.`,
+      }
+    : null;
+
   return (
     <Box
       sx={{
@@ -209,6 +222,25 @@ export function DbtRunCard({ runId, projectId, label }: DbtRunCardProps) {
         >
           {title}
         </Box>
+        {run?.environment && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={run.environment}
+            sx={{ height: 18, fontSize: "0.66rem" }}
+          />
+        )}
+        {treeChip && (
+          <Tooltip title={treeChip.tooltip}>
+            <Chip
+              size="small"
+              variant="outlined"
+              color={run?.workingTreeUserId ? "info" : "default"}
+              label={treeChip.label}
+              sx={{ height: 18, fontSize: "0.66rem", fontFamily: "monospace" }}
+            />
+          </Tooltip>
+        )}
         {run?.durationMs !== undefined && (
           <Box
             component="span"

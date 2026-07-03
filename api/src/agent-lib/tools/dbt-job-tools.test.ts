@@ -68,6 +68,7 @@ import {
   getGitStatus,
 } from "../../dbt/dbt-github-git.service";
 import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
+import { triggerDbtRun } from "../../dbt/dbt-run.service";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -262,6 +263,63 @@ describe("dbt_delete_job", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not found|access denied/i);
     expect(await DbtJob.countDocuments({ _id: job._id })).toBe(1);
+  });
+});
+
+describe("dbt_run_model — personal environment auto-provisioning", () => {
+  function runModel(input: {
+    projectId: string;
+    model: string;
+    environment?: string;
+  }): Promise<ToolResult & { environment?: string }> {
+    return (
+      tools.dbt_run_model.execute as (
+        i: typeof input,
+      ) => Promise<ToolResult & { environment?: string }>
+    )(input);
+  }
+
+  it("provisions the caller's personal environment on the first build", async () => {
+    const projectId = await seedProject();
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(true);
+
+    // Personal env exists now (slug from the mocked display name "Tester").
+    const project = await DbtProject.findById(projectId).lean();
+    const personal = project?.environments.find(e => e.ownerUserId === "u1");
+    expect(personal?.name).toBe("tester");
+    expect(personal?.targetSchema).toBe("dbt_tester");
+
+    // The queued run targets it, not the shared default.
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "tester" }),
+    );
+
+    // Idempotent: a second build reuses it without adding another env.
+    await runModel({ projectId, model: "stg_orders" });
+    const after = await DbtProject.findById(projectId).lean();
+    expect(
+      after?.environments.filter(e => e.ownerUserId === "u1"),
+    ).toHaveLength(1);
+  });
+
+  it("an explicit environment always wins (no auto-provisioning)", async () => {
+    const projectId = await seedProject();
+
+    const result = await runModel({
+      projectId,
+      model: "stg_orders",
+      environment: "dev",
+    });
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev" }),
+    );
+    const project = await DbtProject.findById(projectId).lean();
+    expect(
+      project?.environments.some(e => e.ownerUserId === "u1"),
+    ).toBe(false);
   });
 });
 

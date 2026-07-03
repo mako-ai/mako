@@ -240,6 +240,14 @@ export interface DbtRunItem {
   stepResults?: DbtStepResult[];
   error?: string;
   createdAt: string;
+  /**
+   * Git branch the run's source tree came from (repo-bound projects).
+   * Combined with `workingTreeUserId` it tells WHAT was built: a user's
+   * working tree (checkout + uncommitted drafts) vs the committed branch.
+   */
+  sourceBranch?: string;
+  /** Set when the run built this user's working tree (drafts included). */
+  workingTreeUserId?: string;
   /** PR context for CI runs (trigger === "ci"). */
   ci?: {
     prNumber: number;
@@ -271,13 +279,6 @@ export interface DbtCompileResult {
   ok: boolean;
   exitCode: number;
   compiledSql?: string;
-  logs: DbtRunLogLine[];
-}
-
-export interface DbtRunModelResult {
-  ok: boolean;
-  exitCode: number;
-  stepResults: DbtStepResult[];
   logs: DbtRunLogLine[];
 }
 
@@ -593,13 +594,6 @@ interface DbtActions {
     environment?: string,
     defer?: boolean,
   ) => Promise<DbtCompileResult | null>;
-  runModel: (
-    workspaceId: string,
-    projectId: string,
-    select: string,
-    environment?: string,
-    defer?: boolean,
-  ) => Promise<DbtRunModelResult | null>;
   runCommand: (
     workspaceId: string,
     projectId: string,
@@ -1756,33 +1750,6 @@ export const useDbtStore = create<DbtStore>()(
               ts: new Date().toISOString(),
               level: "error",
               line: errMessage(error, "Compile failed"),
-            },
-          ],
-        };
-      }
-    },
-
-    runModel: async (workspaceId, projectId, select, environment, defer) => {
-      try {
-        const response = await apiClient.post<{
-          success: boolean;
-          run: DbtRunModelResult;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/run-select`, {
-          select,
-          ...(environment ? { environment } : {}),
-          ...(defer ? { defer } : {}),
-        });
-        return response.run ?? null;
-      } catch (error) {
-        return {
-          ok: false,
-          exitCode: 1,
-          stepResults: [],
-          logs: [
-            {
-              ts: new Date().toISOString(),
-              level: "error",
-              line: errMessage(error, "Run failed"),
             },
           ],
         };

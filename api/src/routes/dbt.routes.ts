@@ -81,6 +81,7 @@ import {
 import { resolveDbtAccess } from "../dbt/rbac";
 import {
   DbtCommandValidationError,
+  isWarehouseWriteCommand,
   parseDbtCommand,
   parseDbtCommands,
 } from "../dbt/commands";
@@ -95,6 +96,7 @@ import {
 } from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
+  recordCompletedAdhocDbtRun,
   reconcileStaleQueuedRun,
   reconcileStaleQueuedRuns,
   requestDbtRunCancel,
@@ -2104,7 +2106,7 @@ dbtRoutes.get(
 );
 
 // ---------------------------------------------------------------------------
-// Ad-hoc compile / run-select (synchronous runner invocations)
+// Ad-hoc compile / command (synchronous runner invocations)
 // ---------------------------------------------------------------------------
 
 const adhocSchema = z.object({
@@ -2188,51 +2190,12 @@ dbtRoutes.post(
   },
 );
 
-dbtRoutes.post(
-  "/projects/:projectId/run-select",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      const parsed = adhocSchema.safeParse(await c.req.json());
-      if (!parsed.success || !parsed.data.select) {
-        return badRequest(c, "select is required");
-      }
-      const { select, environment, defer } = parsed.data;
-      if (!SELECT_PATTERN.test(select)) {
-        return badRequest(c, "Invalid --select value");
-      }
-      const deferState = defer ? await loadDeferState(project) : undefined;
-      const result = await runAdhocDbtCommand({
-        workspaceId: project.workspaceId.toString(),
-        projectId: project._id.toString(),
-        environmentName: environment,
-        userId: getUserId(c),
-        command: `build --select ${select}`,
-        select,
-        deferState,
-        timeoutMs: 5 * 60 * 1000,
-      });
-      return c.json({
-        success: true,
-        run: {
-          ok: result.success,
-          exitCode: result.exitCode,
-          stepResults: result.stepResults,
-          logs: noteDeferUnavailable(result.logs, !!defer, deferState),
-        },
-      });
-    } catch (error) {
-      return serverError(c, error, "Failed to run dbt model");
-    }
-  },
-);
-
-// Free-form command bar (dbt Cloud parity). The command is tokenized and
-// validated against the same allowlist as stored jobs before it reaches the
-// runner, so no extra CLI surface (--profiles-dir, shell metachars) leaks in.
+// Free-form command bar + editor Run menu (dbt Cloud parity). The command is
+// tokenized and validated against the same allowlist as stored jobs before it
+// reaches the runner, so no extra CLI surface (--profiles-dir, shell
+// metachars) leaks in. Runs synchronously against the CALLER's working tree
+// (checkout + drafts); warehouse-writing commands are recorded post-hoc into
+// dbt_runs so editor runs appear in the Runs history with provenance.
 dbtRoutes.post(
   "/projects/:projectId/command",
   async (c: AuthenticatedContext) => {
@@ -2259,16 +2222,44 @@ dbtRoutes.post(
         }
         throw error;
       }
+      const userId = getUserId(c);
+      const startedAt = new Date();
       const deferState = defer ? await loadDeferState(project) : undefined;
       const result = await runAdhocDbtCommand({
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
-        userId: getUserId(c),
+        userId,
         command: normalized,
         deferState,
         timeoutMs: 9 * 60 * 1000,
       });
+
+      // Editor/console runs that WROTE to the warehouse join the same run
+      // history as agent/job runs. Read-only commands (parse/compile/show)
+      // stay ephemeral — recording every live compile would flood the list.
+      if (isWarehouseWriteCommand(validated)) {
+        const recorded = await recordCompletedAdhocDbtRun({
+          workspaceId: project.workspaceId.toString(),
+          projectId: project._id.toString(),
+          environment: environment ?? project.defaultEnvironment,
+          command: normalized,
+          triggeredBy: userId,
+          workingTreeUserId: project.repo ? userId : undefined,
+          sourceBranch: await getCheckoutBranch(project, userId),
+          deferToProduction: Boolean(defer && deferState),
+          startedAt,
+          result,
+        });
+        if (recorded) {
+          publishDbtEvent(c, {
+            type: "dbt.run.updated",
+            projectId: project._id.toString(),
+            runId: recorded._id.toString(),
+          });
+        }
+      }
+
       return c.json({
         success: true,
         result: {

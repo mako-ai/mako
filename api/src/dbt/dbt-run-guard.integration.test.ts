@@ -27,9 +27,19 @@ vi.mock("../inngest/client", () => ({
 }));
 
 import { inngest } from "../inngest/client";
-import { triggerDbtRun, triggerDbtJobRun } from "./dbt-run.service";
+import {
+  recordCompletedAdhocDbtRun,
+  triggerDbtRun,
+  triggerDbtJobRun,
+} from "./dbt-run.service";
 import { DbtProtectedEnvironmentError } from "./dbt-environments.service";
-import { DbtJob, DbtProject, DbtRun } from "../database/workspace-schema";
+import { setCheckoutBranch } from "./dbt-working-tree.service";
+import {
+  DbtCheckout,
+  DbtJob,
+  DbtProject,
+  DbtRun,
+} from "../database/workspace-schema";
 
 const sendMock = inngest.send as unknown as ReturnType<typeof vi.fn>;
 
@@ -52,6 +62,7 @@ beforeEach(async () => {
     DbtProject.deleteMany({}),
     DbtRun.deleteMany({}),
     DbtJob.deleteMany({}),
+    DbtCheckout.deleteMany({}),
   ]);
 });
 
@@ -154,5 +165,124 @@ describe("triggerDbtRun protected-environment guard", () => {
       workingTreeUserId: undefined,
     });
     expect(run.status).toBe("queued");
+  });
+});
+
+describe("sourceBranch provenance stamping", () => {
+  it("working-tree runs record the caller's checkout branch", async () => {
+    const project = await seedProject();
+    // Implicit checkout (no row) → tracked branch.
+    const tracked = await triggerDbtRun(
+      adhocParams(project._id.toString(), "dev"),
+    );
+    expect(tracked.sourceBranch).toBe("main");
+    expect(tracked.workingTreeUserId).toBe("u1");
+
+    // Explicit checkout → that branch.
+    await setCheckoutBranch(project, "u1", "feat/leads-rollup");
+    const feature = await triggerDbtRun(
+      adhocParams(project._id.toString(), "dev"),
+    );
+    expect(feature.sourceBranch).toBe("feat/leads-rollup");
+  });
+
+  it("job runs record the committed tracked branch (no working tree)", async () => {
+    const project = await seedProject();
+    const job = await DbtJob.create({
+      workspaceId: WS,
+      projectId: project._id,
+      name: "Nightly",
+      environment: "prod",
+      commands: ["build"],
+      enabled: true,
+      createdBy: "u1",
+    });
+    const run = await triggerDbtJobRun({
+      workspaceId: WS.toString(),
+      job,
+      trigger: "manual",
+      triggeredBy: "u1",
+    });
+    expect(run.sourceBranch).toBe("main");
+    expect(run.workingTreeUserId).toBeUndefined();
+  });
+
+  it("explicit gitBranch (CI) wins and repo-less projects stay unstamped", async () => {
+    const repoProject = await seedProject();
+    const ci = await triggerDbtRun({
+      workspaceId: WS.toString(),
+      projectId: repoProject._id.toString(),
+      environment: "dev",
+      commands: ["build"],
+      trigger: "ci",
+      triggeredBy: "ci-webhook",
+      gitBranch: "pr-head-branch",
+    });
+    expect(ci.sourceBranch).toBe("pr-head-branch");
+
+    const blank = await seedProject({ repo: false });
+    const run = await triggerDbtRun({
+      ...adhocParams(blank._id.toString(), "dev"),
+      workingTreeUserId: undefined,
+    });
+    expect(run.sourceBranch).toBeUndefined();
+  });
+});
+
+describe("recordCompletedAdhocDbtRun", () => {
+  it("persists a terminal run doc with logs, steps, and provenance", async () => {
+    const project = await seedProject();
+    const startedAt = new Date(Date.now() - 1500);
+    const recorded = await recordCompletedAdhocDbtRun({
+      workspaceId: WS.toString(),
+      projectId: project._id.toString(),
+      environment: "dev",
+      command: "build --select stg_orders --full-refresh",
+      triggeredBy: "u1",
+      workingTreeUserId: "u1",
+      sourceBranch: "main",
+      startedAt,
+      result: {
+        success: true,
+        exitCode: 0,
+        logs: [{ ts: new Date(), level: "info", line: "Done. PASS=1" }],
+        stepResults: [
+          {
+            uniqueId: "model.p.stg_orders",
+            name: "stg_orders",
+            resourceType: "model",
+            status: "success",
+            executionTimeMs: 42,
+          },
+        ],
+      },
+    });
+
+    expect(recorded).not.toBeNull();
+    const doc = await DbtRun.findById(recorded?._id).lean();
+    expect(doc?.status).toBe("success");
+    expect(doc?.trigger).toBe("manual");
+    expect(doc?.commands).toEqual(["build --select stg_orders --full-refresh"]);
+    expect(doc?.sourceBranch).toBe("main");
+    expect(doc?.workingTreeUserId).toBe("u1");
+    expect(doc?.durationMs).toBeGreaterThanOrEqual(1500);
+    expect(doc?.logs).toHaveLength(1);
+    expect(doc?.stepResults?.[0]?.name).toBe("stg_orders");
+    expect(doc?.completedAt).toBeDefined();
+  });
+
+  it("marks failed commands as error with the exit code", async () => {
+    const project = await seedProject();
+    const recorded = await recordCompletedAdhocDbtRun({
+      workspaceId: WS.toString(),
+      projectId: project._id.toString(),
+      environment: "dev",
+      command: "build",
+      triggeredBy: "u1",
+      startedAt: new Date(),
+      result: { success: false, exitCode: 2, logs: [], stepResults: [] },
+    });
+    expect(recorded?.status).toBe("error");
+    expect(recorded?.error).toMatch(/exited with code 2/);
   });
 });

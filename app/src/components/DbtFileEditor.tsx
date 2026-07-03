@@ -52,7 +52,6 @@ import {
   visibleDbtEnvironments,
   type DbtCompileResult,
   type DbtCommandRunResult,
-  type DbtRunModelResult,
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import {
@@ -128,7 +127,7 @@ function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
 function StepResultsTable({
   steps,
 }: {
-  steps: DbtRunModelResult["stepResults"];
+  steps: DbtCommandRunResult["stepResults"];
 }) {
   return (
     <Box
@@ -294,6 +293,9 @@ export default function DbtFileEditor({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [environment, setEnvironment] = useState<string>("");
   const [defer, setDefer] = useState(false);
+  // Run menu builds/runs with --full-refresh (rebuild incremental models
+  // from scratch). Sticky per editor instance, like the Defer checkbox.
+  const [fullRefresh, setFullRefresh] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelTab, setPanelTab] = useState<PanelTab>("compiled");
   const [busy, setBusy] = useState<
@@ -476,7 +478,7 @@ export default function DbtFileEditor({
   const runNodeSelection = useCallback(
     async (verb: DbtRunVerb, scope: DbtSelectScope) => {
       if (!workspaceId || !modelName) return;
-      const cmd = buildDbtNodeCommand(verb, modelName, scope);
+      const cmd = buildDbtNodeCommand(verb, modelName, scope, { fullRefresh });
       if (
         environment === "prod" &&
         !window.confirm(`Run "dbt ${cmd}" against the prod environment?`)
@@ -506,6 +508,7 @@ export default function DbtFileEditor({
       modelName,
       environment,
       defer,
+      fullRefresh,
       runCommand,
       saveNow,
     ],
@@ -863,7 +866,25 @@ export default function DbtFileEditor({
         </Tooltip>
       )}
 
-      {/* Defer / environment */}
+      {/* Full refresh / defer / environment */}
+      <Tooltip title="Rebuild incremental models from scratch (dbt --full-refresh) — applies to the Build/Run menu">
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={fullRefresh}
+              onChange={e => setFullRefresh(e.target.checked)}
+              sx={{ p: 0.25 }}
+            />
+          }
+          label={
+            <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+              Full refresh
+            </Typography>
+          }
+          sx={{ mr: 0, ml: 0.5 }}
+        />
+      </Tooltip>
       <Tooltip title="Resolve unselected refs against the last prod build (dbt --defer)">
         <FormControlLabel
           control={
