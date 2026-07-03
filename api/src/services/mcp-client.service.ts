@@ -560,6 +560,7 @@ export interface McpToolUiInfo {
 }
 
 function mcpServerIconUrl(server: IMcpServer): string | null {
+  if (server.icon) return server.icon;
   const preset = getMcpPreset(server.connectorType);
   if (preset.icon) return preset.icon;
   try {

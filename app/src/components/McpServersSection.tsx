@@ -32,6 +32,7 @@ import {
   Ban,
   CircleCheck,
   Hand,
+  ImagePlus,
   Plug,
   RefreshCw,
   Search,
@@ -124,6 +125,40 @@ function ConnectionIcon({
   );
 }
 
+/**
+ * Read a picked image file and downscale it to a 64px PNG data URL (SVGs are
+ * kept verbatim when small) so custom-server logos stay a few KB on the doc.
+ */
+async function fileToIconDataUrl(file: File): Promise<string> {
+  if (file.type === "image/svg+xml" && file.size <= 50_000) {
+    const text = await file.text();
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(text)))}`;
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("Could not read the image"));
+      el.src = url;
+    });
+    const SIZE = 64;
+    const canvas = document.createElement("canvas");
+    canvas.width = SIZE;
+    canvas.height = SIZE;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas unavailable");
+    // Fit within the square preserving aspect ratio, centered.
+    const scale = Math.min(SIZE / img.width, SIZE / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    ctx.drawImage(img, (SIZE - w) / 2, (SIZE - h) / 2, w, h);
+    return canvas.toDataURL("image/png");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function AddServerDialog({
   open,
   onClose,
@@ -148,6 +183,7 @@ function AddServerDialog({
     "oauth",
   );
   const [writeScope, setWriteScope] = useState<McpWriteScope>("read");
+  const [icon, setIcon] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -163,6 +199,7 @@ function AddServerDialog({
       setError(null);
       setName(preset?.type === "custom" ? "" : (preset?.label ?? ""));
       setUrl("");
+      setIcon(null);
       setAuthType(preset?.authType ?? "api_key");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -177,6 +214,7 @@ function AddServerDialog({
         name: name.trim(),
         connectorType: presetType,
         url: preset?.urlEditable ? url.trim() : undefined,
+        icon: icon ?? undefined,
         authType,
         writeScope,
       });
@@ -225,14 +263,64 @@ function AddServerDialog({
               {preset.description}
             </Typography>
           )}
-          <TextField
-            label="Name"
-            size="small"
-            fullWidth
-            value={name}
-            onChange={e => setName(e.target.value)}
-            helperText="Shown in tool names, e.g. mcp_close_crm_lead_search"
-          />
+          <Stack direction="row" spacing={1.5} alignItems="flex-start">
+            {preset?.urlEditable && (
+              <Tooltip title="Upload a logo (PNG, JPEG, WebP, or SVG)">
+                <Box
+                  component="label"
+                  sx={{
+                    width: 40,
+                    height: 40,
+                    mt: 0.25,
+                    borderRadius: 1.5,
+                    border: 1,
+                    borderColor: "divider",
+                    borderStyle: icon ? "solid" : "dashed",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    overflow: "hidden",
+                    flexShrink: 0,
+                    "&:hover": { borderColor: "text.secondary" },
+                  }}
+                  data-testid="mcp-icon-upload"
+                >
+                  {icon ? (
+                    <Box
+                      component="img"
+                      src={icon}
+                      alt="Server logo"
+                      sx={{ width: 28, height: 28, objectFit: "contain" }}
+                    />
+                  ) : (
+                    <ImagePlus size={16} />
+                  )}
+                  <input
+                    type="file"
+                    hidden
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    onChange={e => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (!file) return;
+                      void fileToIconDataUrl(file)
+                        .then(setIcon)
+                        .catch(() => setError("Could not read that image"));
+                    }}
+                  />
+                </Box>
+              </Tooltip>
+            )}
+            <TextField
+              label="Name"
+              size="small"
+              fullWidth
+              value={name}
+              onChange={e => setName(e.target.value)}
+              helperText="Shown in tool names, e.g. mcp_close_crm_lead_search"
+            />
+          </Stack>
           {preset?.urlEditable ? (
             <TextField
               label="Server URL"
@@ -516,6 +604,7 @@ function OAuthAppSetup({
           size="small"
           disabled={!clientId.trim() || saving}
           onClick={() => void handleSave()}
+          sx={{ alignSelf: "center", flex: "0 0 auto", px: 1.5 }}
         >
           {saving ? "Saving…" : "Save app"}
         </Button>
@@ -1337,8 +1426,9 @@ export function McpServersSection() {
   const presetByType = (type: string) =>
     effectivePresets.find(p => p.type === type);
 
-  /** Icon for a configured server: preset logo, else the URL's favicon. */
+  /** Icon: uploaded logo, else preset logo, else the URL's favicon. */
   const serverIcon = (server: McpServerInfo) =>
+    server.icon ??
     presetByType(server.connectorType)?.icon ??
     faviconForUrl(server.transport.url);
 

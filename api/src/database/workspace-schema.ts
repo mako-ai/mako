@@ -4906,6 +4906,12 @@ export interface IMcpServer extends Document {
   workspaceId: Types.ObjectId;
   name: string;
   description?: string;
+  /**
+   * Custom logo as a small data URL (uploaded when registering a custom
+   * server; downscaled client-side). Falls back to the preset icon or the
+   * server URL's favicon when absent.
+   */
+  icon?: string;
   /** Preset key ("close", "custom", ...) — drives the config form + defaults. */
   connectorType: string;
   transport: {
@@ -4963,6 +4969,7 @@ const McpServerSchema = new Schema<IMcpServer>(
     },
     name: { type: String, required: true, trim: true, maxlength: 100 },
     description: { type: String, trim: true, maxlength: 500 },
+    icon: { type: String, maxlength: 200_000 },
     connectorType: { type: String, required: true, default: "custom" },
     transport: {
       type: new Schema(

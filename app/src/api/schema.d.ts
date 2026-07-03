@@ -11909,6 +11909,7 @@ export interface operations {
                 "application/json": {
                     name: string;
                     description?: string;
+                    icon?: string;
                     connectorType: string;
                     /** Format: uri */
                     url?: string;
@@ -12005,6 +12006,7 @@ export interface operations {
                 "application/json": {
                     name?: string;
                     description?: string;
+                    icon?: string | null;
                     /** Format: uri */
                     url?: string;
                     /** @enum {string} */

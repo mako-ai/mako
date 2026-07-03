@@ -28,6 +28,7 @@ export interface McpServerInfo {
   id: string;
   name: string;
   description: string | null;
+  icon: string | null;
   connectorType: string;
   transport: { type: string; url: string };
   authType: "none" | "api_key" | "oauth";
@@ -111,6 +112,7 @@ interface McpActions {
       connectorType: string;
       url?: string;
       description?: string;
+      icon?: string;
       authType?: "none" | "api_key" | "oauth";
       writeScope?: McpWriteScope;
     },

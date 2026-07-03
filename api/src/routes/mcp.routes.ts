@@ -189,6 +189,7 @@ function serializeServer(
     id: server._id.toString(),
     name: server.name,
     description: server.description ?? null,
+    icon: server.icon ?? null,
     connectorType: server.connectorType,
     transport: server.transport,
     authType: server.authType,
@@ -302,9 +303,16 @@ mcpRoutes.openapi(
   },
 );
 
+/** Small uploaded logo: data URL, raster or SVG, capped at ~150KB. */
+const IconSchema = z
+  .string()
+  .max(200_000)
+  .regex(/^data:image\/(png|jpeg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/);
+
 const CreateServerSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
+  icon: IconSchema.optional(),
   connectorType: z.string().min(1).max(50),
   url: z.string().url().optional(),
   authType: z.enum(["none", "api_key", "oauth"]).optional(),
@@ -375,6 +383,7 @@ mcpRoutes.openapi(
         workspaceId: new Types.ObjectId(workspaceId),
         name: body.name,
         description: body.description,
+        icon: body.icon,
         connectorType: preset.type,
         transport: { type: "http", url },
         authType: body.authType ?? preset.authType,
@@ -403,6 +412,7 @@ mcpRoutes.openapi(
 const UpdateServerSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
+  icon: IconSchema.nullable().optional(),
   url: z.string().url().optional(),
   writeScope: z.enum(["read", "write_safe", "write_destructive"]).optional(),
   isActive: z.boolean().optional(),
@@ -467,6 +477,7 @@ mcpRoutes.openapi(
 
       if (body.name !== undefined) server.name = body.name;
       if (body.description !== undefined) server.description = body.description;
+      if (body.icon !== undefined) server.icon = body.icon ?? undefined;
       if (body.url !== undefined && preset.urlEditable) {
         try {
           await assertSafeMcpUrl(body.url);
