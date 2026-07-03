@@ -103,6 +103,7 @@ import { useSqlAutocomplete } from "../hooks/useSqlAutocomplete";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { trackEvent } from "../lib/analytics";
 import { getApiBasePath } from "../lib/api-base-path";
+import { setIframeDragGuard } from "../lib/iframe-drag-guard";
 import { consoleLeafName } from "../lib/console-name";
 import { generateObjectId } from "../utils/objectId";
 import {
@@ -153,9 +154,10 @@ interface TabPaginationState {
 const StyledVerticalResizeHandle = styled(PanelResizeHandle)(({ theme }) => ({
   height: "4px",
   background: theme.palette.divider,
-  cursor: "row-resize",
   transition: "background-color 0.2s ease",
-  "&:hover": {
+  // The library flags hover/drag via a data attribute (its hit area extends
+  // beyond the 4px strip), so key the highlight off that instead of :hover.
+  "&[data-resize-handle-state='hover'], &[data-resize-handle-state='drag']": {
     backgroundColor: theme.palette.primary.main,
   },
 }));
@@ -2807,7 +2809,9 @@ function Editor({
                             {consolePane}
                           </Panel>
 
-                          <StyledVerticalResizeHandle />
+                          <StyledVerticalResizeHandle
+                            onDragging={setIframeDragGuard}
+                          />
 
                           <Panel defaultSize={40} minSize={1}>
                             {resultsPane}
