@@ -47,11 +47,13 @@ import {
 import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
+  visibleDbtEnvironments,
   type DbtEnvironment,
   type DbtProjectItem,
 } from "../store/dbtStore";
 import type { Connection } from "../store/schemaStore";
 import { dbtVersionLabel, normalizeDbtVersion } from "../lib/dbt-versions";
+import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 import DbtVersionSelect from "./DbtVersionSelect";
 
 const DRAWER_WIDTH = 540;
@@ -73,7 +75,13 @@ function envBadge(envName: string, project: DbtProjectItem): string {
   ) {
     return "DEV";
   }
-  if (envName === "prod" || envName === "production") return "PROD";
+  if (
+    envName === resolveProdLikeEnvName(project) ||
+    envName === "prod" ||
+    envName === "production"
+  ) {
+    return "PROD";
+  }
   return "General";
 }
 
@@ -189,6 +197,7 @@ export default function DbtProjectSettingsDrawer({
   const ensurePersonalEnvironment = useDbtStore(
     s => s.ensurePersonalEnvironment,
   );
+  const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
   const [creatingPersonalEnv, setCreatingPersonalEnv] = useState(false);
 
   const project = useMemo(
@@ -204,6 +213,9 @@ export default function DbtProjectSettingsDrawer({
   const [editName, setEditName] = useState("");
   const [editDbtVersion, setEditDbtVersion] = useState("");
   const [editDefaultEnv, setEditDefaultEnv] = useState("");
+  // Production/defer environment override; "" = Auto (env named "prod",
+  // else the project default).
+  const [editProdEnv, setEditProdEnv] = useState("");
   const [editEnvs, setEditEnvs] = useState<DbtEnvironment[]>([]);
   // Branch protection (repo-bound projects): edits apply immediately (each
   // add/remove PATCHes the project) — independent of the drawer's Edit mode.
@@ -236,6 +248,7 @@ export default function DbtProjectSettingsDrawer({
     setEditName(p.name);
     setEditDbtVersion(normalizeDbtVersion(p.dbtVersion));
     setEditDefaultEnv(p.defaultEnvironment);
+    setEditProdEnv(p.prodEnvironment ?? "");
     setEditEnvs(p.environments.map(env => ({ ...env })));
     setEditVarRows(
       p.environments.map(env =>
@@ -503,6 +516,9 @@ export default function DbtProjectSettingsDrawer({
     if (!editEnvs.some(e => e.name.trim() === editDefaultEnv)) {
       return "Default environment must match one of the environment names.";
     }
+    if (editProdEnv && !editEnvs.some(e => e.name.trim() === editProdEnv)) {
+      return "Production environment must match one of the environment names.";
+    }
     for (const env of editEnvs) {
       if (!env.connectionId) return `Connection is required for "${env.name}".`;
       if (!env.targetSchema.trim()) {
@@ -513,7 +529,7 @@ export default function DbtProjectSettingsDrawer({
       return "Add a database connection before saving environments.";
     }
     return null;
-  }, [editName, editEnvs, editDefaultEnv, connections.length]);
+  }, [editName, editEnvs, editDefaultEnv, editProdEnv, connections.length]);
 
   const handleSave = useCallback(async () => {
     if (!workspaceId || !projectId) return;
@@ -542,6 +558,8 @@ export default function DbtProjectSettingsDrawer({
       name: editName.trim(),
       environments: normalizedEnvs,
       defaultEnvironment: editDefaultEnv,
+      // "" clears the override back to Auto (prod by name, else default).
+      prodEnvironment: editProdEnv,
       dbtVersion: editDbtVersion,
     });
     setSaving(false);
@@ -565,6 +583,7 @@ export default function DbtProjectSettingsDrawer({
     editVarRows,
     editName,
     editDefaultEnv,
+    editProdEnv,
     editDbtVersion,
     updateProject,
     resetFromProject,
@@ -925,7 +944,7 @@ export default function DbtProjectSettingsDrawer({
                   labelId="dbt-settings-version"
                 />
               </Box>
-              <FormControl fullWidth size="small">
+              <FormControl fullWidth size="small" sx={{ mb: 1.5 }}>
                 <InputLabel id="dbt-settings-default-env">
                   Default environment
                 </InputLabel>
@@ -941,6 +960,37 @@ export default function DbtProjectSettingsDrawer({
                     </MenuItem>
                   ))}
                 </Select>
+              </FormControl>
+              <FormControl fullWidth size="small">
+                <InputLabel id="dbt-settings-prod-env">
+                  Production environment (defer target)
+                </InputLabel>
+                <Select
+                  labelId="dbt-settings-prod-env"
+                  label="Production environment (defer target)"
+                  value={editProdEnv}
+                  onChange={e => setEditProdEnv(e.target.value)}
+                >
+                  <MenuItem value="">
+                    Auto — “prod” when it exists, else the default
+                  </MenuItem>
+                  {editEnvs
+                    .filter(env => !env.ownerUserId)
+                    .map(env => (
+                      <MenuItem key={env.name} value={env.name}>
+                        {env.name}
+                      </MenuItem>
+                    ))}
+                </Select>
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ mt: 0.5, display: "block" }}
+                >
+                  Ad-hoc builds defer to this environment’s last manifest, apps
+                  resolve {"{{ dbt_schema }}"} against it, and it refuses ad-hoc
+                  writes (deploys go through jobs).
+                </Typography>
               </FormControl>
             </SettingsSection>
 
@@ -991,9 +1041,67 @@ export default function DbtProjectSettingsDrawer({
                 value={project.defaultEnvironment}
               />
               <ReadOnlyField
+                label="Production environment (defer target)"
+                value={
+                  project.prodEnvironment
+                    ? project.prodEnvironment
+                    : `${resolveProdLikeEnvName(project) ?? "—"} (auto)`
+                }
+              />
+              <ReadOnlyField
                 label="dbt version"
                 value={dbtVersionLabel(project.dbtVersion)}
               />
+              {/* Per-USER setting (not project config): which environment
+                  this user's drafts/builds target. Solo: the shared dev
+                  default; teams: your personal environment. */}
+              <Box sx={{ mt: 1.5 }}>
+                <FormControl fullWidth size="small">
+                  <InputLabel id="dbt-settings-my-env">
+                    My development environment (per-user)
+                  </InputLabel>
+                  <Select
+                    labelId="dbt-settings-my-env"
+                    label="My development environment (per-user)"
+                    value={project.myDevEnvironment ?? ""}
+                    onChange={e => {
+                      if (!projectId) return;
+                      void setMyEnvironment(
+                        workspaceId,
+                        projectId,
+                        e.target.value,
+                      );
+                    }}
+                  >
+                    <MenuItem value="">
+                      Auto —{" "}
+                      {resolveDevEnvName(
+                        { ...project, myDevEnvironment: undefined },
+                        user?.id,
+                      ) ?? "default"}
+                      {" (your personal env, else the default)"}
+                    </MenuItem>
+                    {visibleDbtEnvironments(project.environments, user?.id).map(
+                      env => (
+                        <MenuItem key={env.name} value={env.name}>
+                          {env.ownerUserId
+                            ? `${env.name} (personal)`
+                            : env.name}
+                        </MenuItem>
+                      ),
+                    )}
+                  </Select>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ mt: 0.5, display: "block" }}
+                  >
+                    Where YOUR drafts and agent builds run. Solo workspaces: dev
+                    is your personal target. Teams: pick (or provision) your
+                    personal environment so builds never collide.
+                  </Typography>
+                </FormControl>
+              </Box>
             </SettingsSection>
 
             <SettingsSection

@@ -16,6 +16,7 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   DbtCheckout,
+  DbtEnvPreference,
   DbtFile,
   DbtFileDraft,
   DbtJob,
@@ -81,6 +82,7 @@ import {
 import { resolveDbtAccess } from "../dbt/rbac";
 import {
   DbtCommandValidationError,
+  isWarehouseWriteCommand,
   parseDbtCommand,
   parseDbtCommands,
 } from "../dbt/commands";
@@ -89,9 +91,14 @@ import {
   loadDbtDeferState,
   runAdhocDbtCommand,
 } from "../dbt/dbt-project.service";
-import { ensurePersonalDbtEnvironment } from "../dbt/dbt-environments.service";
+import {
+  DbtProtectedEnvironmentError,
+  ensurePersonalDbtEnvironment,
+  setUserDevEnvPreference,
+} from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
+  recordCompletedAdhocDbtRun,
   reconcileStaleQueuedRun,
   reconcileStaleQueuedRuns,
   requestDbtRunCancel,
@@ -184,7 +191,10 @@ function serverError(
   error: unknown,
   fallback: string,
 ) {
-  if (error instanceof ProtectedBranchError) {
+  if (
+    error instanceof ProtectedBranchError ||
+    error instanceof DbtProtectedEnvironmentError
+  ) {
     return c.json({ success: false, error: error.message }, 400);
   }
   logger.error(fallback, { error });
@@ -277,6 +287,11 @@ const patchProjectSchema = z.object({
   dbtVersion: z.string().max(16).optional(),
   environments: z.array(environmentSchema).min(1).optional(),
   defaultEnvironment: z.string().min(1).optional(),
+  /**
+   * Explicit production (defer target) environment; empty string clears the
+   * override back to the convention (env named "prod", else the default).
+   */
+  prodEnvironment: z.string().max(64).optional(),
   ci: z
     .object({
       enabled: z.boolean(),
@@ -323,7 +338,9 @@ async function validateEnvironments(
 // Projects
 // ---------------------------------------------------------------------------
 
-// GET / — list projects with job/run rollups for the explorer
+// GET / — list projects with job/run rollups for the explorer. Each project
+// carries `myDevEnvironment`: the CALLER's saved per-user dev environment
+// (single player: unset → the shared default; teams: each user's own).
 dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
@@ -335,7 +352,27 @@ dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
     })
       .sort({ updatedAt: -1 })
       .lean();
-    return c.json({ success: true, projects });
+    const userId = getUserId(c);
+    const prefs = await DbtEnvPreference.find({
+      projectId: { $in: projects.map(p => p._id) },
+      userId,
+    })
+      .select("projectId environment")
+      .lean();
+    const prefByProject = new Map(
+      prefs.map(pref => [pref.projectId.toString(), pref.environment]),
+    );
+    const enriched = projects.map(project => {
+      const preferred = prefByProject.get(project._id.toString());
+      // Stale choices (env renamed/removed) are dropped, not surfaced.
+      const valid =
+        preferred &&
+        project.environments.some(env => env.name === preferred)
+          ? preferred
+          : undefined;
+      return { ...project, myDevEnvironment: valid };
+    });
+    return c.json({ success: true, projects: enriched });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt projects");
   }
@@ -466,6 +503,21 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
         `Default environment "${project.defaultEnvironment}" is not in environments`,
       );
     }
+    if (body.prodEnvironment !== undefined) {
+      if (body.prodEnvironment === "") {
+        project.prodEnvironment = undefined;
+      } else {
+        if (
+          !project.environments.some(env => env.name === body.prodEnvironment)
+        ) {
+          return badRequest(
+            c,
+            `Production environment "${body.prodEnvironment}" is not in environments`,
+          );
+        }
+        project.prodEnvironment = body.prodEnvironment;
+      }
+    }
     if (body.ci) {
       if (
         body.ci.environment &&
@@ -592,6 +644,52 @@ dbtRoutes.post(
   },
 );
 
+// PUT /projects/:projectId/my-environment — the CALLER's default DEVELOPMENT
+// environment for this project (a per-user setting: the editor/console env
+// pickers persist here, and agent builds default to it). Body:
+// { environment } — "" clears back to Auto (personal env when provisioned,
+// else the project default). Member+ (only affects the caller's own target).
+dbtRoutes.put(
+  "/projects/:projectId/my-environment",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const parsed = z
+        .object({ environment: z.string().max(64) })
+        .safeParse(await c.req.json().catch(() => ({})));
+      if (!parsed.success) {
+        return badRequest(c, "environment (string) is required");
+      }
+      const environment = parsed.data.environment;
+      if (
+        environment !== "" &&
+        !project.environments.some(env => env.name === environment)
+      ) {
+        return badRequest(
+          c,
+          `Environment "${environment}" is not in the project`,
+        );
+      }
+      const userId = getUserId(c);
+      await setUserDevEnvPreference({
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        userId,
+        environment: environment === "" ? null : environment,
+      });
+      return c.json({
+        success: true,
+        myDevEnvironment: environment === "" ? undefined : environment,
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to save your dev environment");
+    }
+  },
+);
+
 dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
   try {
     const project = await findProject(c);
@@ -602,6 +700,7 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
       DbtFile.deleteMany({ projectId: project._id }),
       DbtFileDraft.deleteMany({ projectId: project._id }),
       DbtCheckout.deleteMany({ projectId: project._id }),
+      DbtEnvPreference.deleteMany({ projectId: project._id }),
       DbtJob.deleteMany({ projectId: project._id }),
       DbtRun.deleteMany({ projectId: project._id }),
     ]);
@@ -2102,7 +2201,7 @@ dbtRoutes.get(
 );
 
 // ---------------------------------------------------------------------------
-// Ad-hoc compile / run-select (synchronous runner invocations)
+// Ad-hoc compile / command (synchronous runner invocations)
 // ---------------------------------------------------------------------------
 
 const adhocSchema = z.object({
@@ -2186,51 +2285,12 @@ dbtRoutes.post(
   },
 );
 
-dbtRoutes.post(
-  "/projects/:projectId/run-select",
-  async (c: AuthenticatedContext) => {
-    try {
-      const project = await findProject(c);
-      if (!project) {
-        return c.json({ success: false, error: "dbt project not found" }, 404);
-      }
-      const parsed = adhocSchema.safeParse(await c.req.json());
-      if (!parsed.success || !parsed.data.select) {
-        return badRequest(c, "select is required");
-      }
-      const { select, environment, defer } = parsed.data;
-      if (!SELECT_PATTERN.test(select)) {
-        return badRequest(c, "Invalid --select value");
-      }
-      const deferState = defer ? await loadDeferState(project) : undefined;
-      const result = await runAdhocDbtCommand({
-        workspaceId: project.workspaceId.toString(),
-        projectId: project._id.toString(),
-        environmentName: environment,
-        userId: getUserId(c),
-        command: `build --select ${select}`,
-        select,
-        deferState,
-        timeoutMs: 5 * 60 * 1000,
-      });
-      return c.json({
-        success: true,
-        run: {
-          ok: result.success,
-          exitCode: result.exitCode,
-          stepResults: result.stepResults,
-          logs: noteDeferUnavailable(result.logs, !!defer, deferState),
-        },
-      });
-    } catch (error) {
-      return serverError(c, error, "Failed to run dbt model");
-    }
-  },
-);
-
-// Free-form command bar (dbt Cloud parity). The command is tokenized and
-// validated against the same allowlist as stored jobs before it reaches the
-// runner, so no extra CLI surface (--profiles-dir, shell metachars) leaks in.
+// Free-form command bar + editor Run menu (dbt Cloud parity). The command is
+// tokenized and validated against the same allowlist as stored jobs before it
+// reaches the runner, so no extra CLI surface (--profiles-dir, shell
+// metachars) leaks in. Runs synchronously against the CALLER's working tree
+// (checkout + drafts); warehouse-writing commands are recorded post-hoc into
+// dbt_runs so editor runs appear in the Runs history with provenance.
 dbtRoutes.post(
   "/projects/:projectId/command",
   async (c: AuthenticatedContext) => {
@@ -2257,16 +2317,44 @@ dbtRoutes.post(
         }
         throw error;
       }
+      const userId = getUserId(c);
+      const startedAt = new Date();
       const deferState = defer ? await loadDeferState(project) : undefined;
       const result = await runAdhocDbtCommand({
         workspaceId: project.workspaceId.toString(),
         projectId: project._id.toString(),
         environmentName: environment,
-        userId: getUserId(c),
+        userId,
         command: normalized,
         deferState,
         timeoutMs: 9 * 60 * 1000,
       });
+
+      // Editor/console runs that WROTE to the warehouse join the same run
+      // history as agent/job runs. Read-only commands (parse/compile/show)
+      // stay ephemeral — recording every live compile would flood the list.
+      if (isWarehouseWriteCommand(validated)) {
+        const recorded = await recordCompletedAdhocDbtRun({
+          workspaceId: project.workspaceId.toString(),
+          projectId: project._id.toString(),
+          environment: environment ?? project.defaultEnvironment,
+          command: normalized,
+          triggeredBy: userId,
+          workingTreeUserId: project.repo ? userId : undefined,
+          sourceBranch: await getCheckoutBranch(project, userId),
+          deferToProduction: Boolean(defer && deferState),
+          startedAt,
+          result,
+        });
+        if (recorded) {
+          publishDbtEvent(c, {
+            type: "dbt.run.updated",
+            projectId: project._id.toString(),
+            runId: recorded._id.toString(),
+          });
+        }
+      }
+
       return c.json({
         success: true,
         result: {

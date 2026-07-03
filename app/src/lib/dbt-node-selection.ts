@@ -28,6 +28,11 @@ export function buildDbtNodeCommand(
   verb: DbtRunVerb,
   modelName: string,
   scope: DbtSelectScope,
+  options?: { fullRefresh?: boolean },
 ): string {
-  return `${verb} --select ${buildDbtSelectArg(modelName, scope)}`;
+  // --full-refresh only applies to commands that (re)build tables; `test`
+  // rejects the flag.
+  const fullRefresh =
+    options?.fullRefresh && verb !== "test" ? " --full-refresh" : "";
+  return `${verb} --select ${buildDbtSelectArg(modelName, scope)}${fullRefresh}`;
 }

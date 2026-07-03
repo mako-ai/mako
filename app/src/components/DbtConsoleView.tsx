@@ -28,6 +28,7 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -44,6 +45,7 @@ import {
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
+import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 
 const DbtLineageView = lazy(() => import("./DbtLineageView"));
 
@@ -126,6 +128,7 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
   const fetchProjects = useDbtStore(s => s.fetchProjects);
   const compileModel = useDbtStore(s => s.compileModel);
   const runCommand = useDbtStore(s => s.runCommand);
+  const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
 
   const [view, setView] = useState<"console" | "lineage">("console");
   const [environment, setEnvironment] = useState("");
@@ -140,16 +143,25 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
     if (!project && workspaceId) void fetchProjects(workspaceId);
   }, [project, workspaceId, fetchProjects]);
 
-  // Default to the user's PERSONAL environment when provisioned (safe fast
-  // iteration in their own schema), else the project default.
+  // Default to the user's saved dev environment (per-user setting), else
+  // their personal environment, else the project default.
   useEffect(() => {
     if (project && !environment) {
-      const personal = project.environments?.find(
-        env => env.ownerUserId && env.ownerUserId === user?.id,
+      setEnvironment(
+        resolveDevEnvName(project, user?.id) ?? project.defaultEnvironment,
       );
-      setEnvironment(personal?.name ?? project.defaultEnvironment);
     }
   }, [project, environment, user?.id]);
+
+  // Picking an environment is a per-user setting shared with the editor and
+  // agent builds — persist it.
+  const handleEnvironmentChange = useCallback(
+    (name: string) => {
+      setEnvironment(name);
+      if (workspaceId) void setMyEnvironment(workspaceId, projectId, name);
+    },
+    [workspaceId, projectId, setMyEnvironment],
+  );
 
   const runParse = useCallback(async () => {
     if (!workspaceId) return;
@@ -261,7 +273,7 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
             <Select
               size="small"
               value={environment}
-              onChange={e => setEnvironment(e.target.value)}
+              onChange={e => handleEnvironmentChange(e.target.value)}
               sx={{ fontSize: "0.8rem", minWidth: 90 }}
             >
               {visibleDbtEnvironments(project.environments, user?.id).map(
@@ -285,21 +297,29 @@ export default function DbtConsoleView({ projectId }: { projectId: string }) {
                 sx: { fontFamily: "monospace", fontSize: "0.8rem" },
               }}
             />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={defer}
-                  onChange={e => setDefer(e.target.checked)}
-                />
+            <Tooltip
+              title={
+                `Resolve unselected refs against the last ` +
+                `"${resolveProdLikeEnvName(project) ?? "prod"}" build ` +
+                "(dbt --defer). Change the defer target in Project settings."
               }
-              label={
-                <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
-                  Defer to prod
-                </Typography>
-              }
-              sx={{ mr: 0 }}
-            />
+            >
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={defer}
+                    onChange={e => setDefer(e.target.checked)}
+                  />
+                }
+                label={
+                  <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+                    Defer to {resolveProdLikeEnvName(project) ?? "prod"}
+                  </Typography>
+                }
+                sx={{ mr: 0 }}
+              />
+            </Tooltip>
             <Button
               size="small"
               variant="contained"

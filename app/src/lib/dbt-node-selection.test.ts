@@ -29,4 +29,19 @@ describe("buildDbtNodeCommand", () => {
       "test --select dim_users",
     );
   });
+
+  it("appends --full-refresh for build/run but never for test", () => {
+    expect(
+      buildDbtNodeCommand("build", "fct_orders", "", { fullRefresh: true }),
+    ).toBe("build --select fct_orders --full-refresh");
+    expect(
+      buildDbtNodeCommand("run", "fct_orders", "down", { fullRefresh: true }),
+    ).toBe("run --select fct_orders+ --full-refresh");
+    expect(
+      buildDbtNodeCommand("test", "fct_orders", "", { fullRefresh: true }),
+    ).toBe("test --select fct_orders");
+    expect(
+      buildDbtNodeCommand("build", "fct_orders", "", { fullRefresh: false }),
+    ).toBe("build --select fct_orders");
+  });
 });
