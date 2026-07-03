@@ -23,6 +23,7 @@ export const CDC_CAPABLE_DESTINATION_TYPES = [
   "bigquery",
   "clickhouse",
   "postgresql",
+  "mysql",
   "mongodb",
 ] as const;
 

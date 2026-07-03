@@ -136,7 +136,13 @@ const SYNC_ENGINE_PERMISSION_ERROR =
 
 const SYSTEM_ENTITY_FIELDS = ["_syncedAt", "_dataSourceId", "id"];
 
-const CDC_CAPABLE_TYPES = ["bigquery", "postgresql", "clickhouse", "mongodb"];
+const CDC_CAPABLE_TYPES = [
+  "bigquery",
+  "postgresql",
+  "clickhouse",
+  "mongodb",
+  "mysql",
+];
 
 const SCHEDULE_PRESETS = [
   { label: "Every 5 minutes", cron: "*/5 * * * *" },
@@ -330,7 +336,9 @@ export function SyncFlowForm({
   // secondary indexes on the same fields.
   const layoutMode: "partition" | "index" | "none" = hasStagingDest
     ? "partition"
-    : destType === "postgresql" || destType === "mongodb"
+    : destType === "postgresql" ||
+        destType === "mongodb" ||
+        destType === "mysql"
       ? "index"
       : "none";
   const requiresQueries = !!transferQueriesSchema;
@@ -608,7 +616,7 @@ export function SyncFlowForm({
     }
     if (data.webhookEnabled && !isCdcCapableDest) {
       setError(
-        "Webhook-triggered syncs require a CDC-capable destination (BigQuery, PostgreSQL, ClickHouse, or MongoDB).",
+        "Webhook-triggered syncs require a CDC-capable destination (BigQuery, PostgreSQL, ClickHouse, MongoDB, or MySQL).",
       );
       setOpenSteps(prev => new Set([...prev, 1]));
       return;

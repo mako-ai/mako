@@ -178,8 +178,16 @@ describe("planLegacyFlowMigration — per-destination cases", () => {
     expect(d.action).toBe("blocked");
   });
 
+  it("mysql migrates like postgres (indexes handle layout)", () => {
+    const d = migrate(
+      planLegacyFlowMigration(baseFlow(), { type: "mysql" }, null),
+    );
+    expect(d.updates.syncEngine).toBe("cdc");
+    expect(d.updates.backfillSchedule?.enabled).toBe(true);
+  });
+
   it("non-CDC destination types are blocked with an explicit reason", () => {
-    for (const type of ["mysql", "redshift", "cloudflare-d1", "cloudflare-kv"]) {
+    for (const type of ["redshift", "cloudflare-d1", "cloudflare-kv"]) {
       const d = planLegacyFlowMigration(baseFlow(), { type }, null);
       expect(d.action).toBe("blocked");
       expect((d as any).reason).toContain(`no CDC adapter`);

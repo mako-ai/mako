@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { BigQueryDatabaseDriver } from "./bigquery/driver";
 import { PostgreSQLDatabaseDriver } from "./postgresql/driver";
 import { CloudSQLPostgresDatabaseDriver } from "./cloudsql-postgres/driver";
+import { MySQLDatabaseDriver } from "./mysql/driver";
 import { RedshiftDatabaseDriver } from "./redshift/driver";
 import { BIGQUERY_WORKING_DATASET } from "../../utils/bigquery-working-dataset";
 import {
@@ -113,6 +114,31 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         cases: [
           ["_syncedAt", '"_syncedAt"'],
           ['weird"name', '"weird""name"'],
+        ],
+      },
+    },
+  ],
+  [
+    new MySQLDatabaseDriver(),
+    {
+      type: "mysql",
+      stagingSchema: { absent: true },
+      softDeleteForCdc: { absent: true },
+      typedColumns: { absent: true },
+      mapColumnType: { absent: true },
+      formatTableRef: {
+        cases: [
+          { schema: "app", table: "tbl", expected: "`app`.`tbl`" },
+          { schema: undefined, table: "tbl", expected: "`tbl`" },
+        ],
+      },
+      // No cheap metadata row-count path wired up (information_schema
+      // estimates are unreliable for InnoDB) — callers skip counting.
+      rowCountBatchQuery: { absent: true },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", "`_syncedAt`"],
+          ["weird`name", "`weird``name`"],
         ],
       },
     },

@@ -9,6 +9,7 @@ import { BigQueryDestinationAdapter } from "./bigquery";
 import { ClickHouseDestinationAdapter } from "./clickhouse";
 import { MongoDbDestinationAdapter } from "./mongodb";
 import { PostgreSqlDestinationAdapter } from "./postgresql";
+import { MySqlDestinationAdapter } from "./mysql";
 
 export interface CdcEntityLayout {
   entity: string;
@@ -120,6 +121,14 @@ export function resolveCdcDestinationAdapter(params: {
     });
   }
 
+  if (normalizedType === "mysql") {
+    return new MySqlDestinationAdapter({
+      destinationDatabaseId: params.destinationDatabaseId,
+      destinationDatabaseName: params.destinationDatabaseName,
+      tableDestination: params.tableDestination,
+    });
+  }
+
   if (normalizedType === "mongodb") {
     return new MongoDbDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
@@ -140,6 +149,7 @@ export function hasCdcDestinationAdapter(destinationType?: string): boolean {
     normalizedType === "bigquery" ||
     normalizedType === "clickhouse" ||
     normalizedType === "postgresql" ||
+    normalizedType === "mysql" ||
     normalizedType === "mongodb"
   );
 }
