@@ -72,7 +72,7 @@ import {
   modelNamesFromPaths,
   type Problem,
 } from "../lib/dbt-editor-logic";
-import { resolveProdLikeEnvName } from "../lib/dbt-env";
+import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import StreamingMarkdown from "./StreamingMarkdown";
@@ -290,6 +290,7 @@ export default function DbtFileEditor({
   const persistFile = useDbtStore(s => s.persistFile);
   const compileModel = useDbtStore(s => s.compileModel);
   const runCommand = useDbtStore(s => s.runCommand);
+  const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [environment, setEnvironment] = useState<string>("");
@@ -354,16 +355,26 @@ export default function DbtFileEditor({
     }
   }, [workspaceId, projectId, path, file?.loaded, readFile]);
 
-  // Default to the user's PERSONAL environment when provisioned (safe fast
-  // iteration in their own schema), else the project default.
+  // Default to the user's saved dev environment (per-user setting), else
+  // their personal environment, else the project default. Single player:
+  // the shared dev default IS the personal target.
   useEffect(() => {
     if (project && !environment) {
-      const personal = project.environments?.find(
-        env => env.ownerUserId && env.ownerUserId === user?.id,
+      setEnvironment(
+        resolveDevEnvName(project, user?.id) ?? project.defaultEnvironment,
       );
-      setEnvironment(personal?.name ?? project.defaultEnvironment);
     }
   }, [project, environment, user?.id]);
+
+  // Picking an environment is a per-user setting: persist it so the console,
+  // the agent's builds, and other windows follow the same choice.
+  const handleEnvironmentChange = useCallback(
+    (name: string) => {
+      setEnvironment(name);
+      if (workspaceId) void setMyEnvironment(workspaceId, projectId, name);
+    },
+    [workspaceId, projectId, setMyEnvironment],
+  );
 
   const handleChange = useCallback(
     (value: string | undefined) => {
@@ -919,7 +930,7 @@ export default function DbtFileEditor({
         variant="standard"
         disableUnderline
         value={environment}
-        onChange={e => setEnvironment(e.target.value)}
+        onChange={e => handleEnvironmentChange(e.target.value)}
         sx={{ fontSize: "0.72rem", textTransform: "uppercase" }}
       >
         {visibleDbtEnvironments(project?.environments, user?.id).map(env => (

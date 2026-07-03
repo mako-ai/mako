@@ -143,9 +143,17 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
 ## Environments and jobs
 
 - Projects have environments (dev/prod) mapping to a workspace connection +
-  target schema. Ad-hoc agent builds default to the acting user's PERSONAL
-  environment; `dbt_run_model` auto-provisions it on the first build (schema
-  `dbt_<user>`), so omit `environment` unless the user explicitly picks one.
+  target schema. Ad-hoc agent builds resolve their environment PER USER:
+  saved per-user dev environment (the UI env pickers persist this setting) >
+  personal environment > project default. Omit `environment` unless the user
+  explicitly picks one.
+- **Single vs multi player — keep this clear:**
+  - SINGLE-USER workspace: the shared dev environment IS the user's personal
+    target. Drafts and branch verification build against dev; do NOT
+    provision `dbt_<user>` schemas unless the user asks for isolation.
+  - MULTI-USER workspace: each user tests against their OWN environment.
+    `dbt_run_model` auto-provisions a personal one (schema `dbt_<user>`) on
+    the first build so teammates never build over each other's schemas.
 - **Which git tree a run builds (repo-bound projects)** — never mix these up:
   - Ad-hoc tools (`dbt_parse`, `dbt_compile_model`, `dbt_show`,
     `dbt_run_model`) build YOUR working tree: your checkout branch + your
@@ -164,12 +172,13 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   merged into the tracked branch. Read-only commands (parse/compile/show)
   still work against any environment.
 - **Personal environments**: per-user environments (schema `dbt_<user>`, same
-  connection as prod). `dbt_run_model` auto-provisions the caller's on its
-  first build; `dbt_ensure_dev_environment` provisions it explicitly ahead of
-  time. Once it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` /
-  `dbt_show` default to it — iteration never touches shared dev/prod schemas.
-  When verifying feature-branch work, build it into the personal environment
-  (the default) rather than shared dev; prod stays a jobs-only deploy target.
+  connection as prod). In MULTI-USER workspaces `dbt_run_model`
+  auto-provisions the caller's on its first build;
+  `dbt_ensure_dev_environment` provisions it explicitly ahead of time. Once
+  it exists, `dbt_parse` / `dbt_compile_model` / `dbt_run_model` / `dbt_show`
+  default to it. Feature-branch verification builds into the user's dev
+  environment (dev itself when solo, personal when in a team); prod stays a
+  jobs-only deploy target.
 - **Defer (fast iteration)**: ad-hoc builds default to
   `--defer --state <last prod manifest>` when targeting a non-prod environment
   and a prod build exists — unselected `ref()`s resolve to prod relations, so
@@ -194,8 +203,9 @@ draft preview can be switched.
 The full safe-iteration loop:
 
 1. Edit models; verify with `dbt_parse` → `dbt_compile_model` →
-   `dbt_run_model` (defaults: personal env — auto-provisioned on first
-   build, e.g. `dbt_jonas` — + defer to prod manifest).
+   `dbt_run_model` (defaults: the user's dev environment — dev itself when
+   solo, personal `dbt_<user>` in teams (auto-provisioned on first build) —
+   + defer to prod manifest).
 2. `app_set_preview_environment` with the personal environment — the app's
    DRAFT preview now reads the freshly built schema. This is per-user view
    state: other editors, the published app, and shared links keep reading

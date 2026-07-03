@@ -48,7 +48,8 @@ import {
 import {
   ensurePersonalDbtEnvironment,
   findPersonalEnvironment,
-  resolveEnvironmentNameForUser,
+  getUserDevEnvPreference,
+  resolveDevEnvironmentForUser,
   resolveProdLikeEnvironmentName,
 } from "../../dbt/dbt-environments.service";
 import {
@@ -322,19 +323,22 @@ export const createDbtServerTools = (
     return null;
   };
 
-  type EnvProject = Parameters<typeof resolveEnvironmentNameForUser>[0] & {
+  type EnvProject = Parameters<typeof resolveDevEnvironmentForUser>[0] & {
     lastProdManifestKey?: string;
   };
 
   /**
-   * Environment an ad-hoc action targets when the agent passed none: the
-   * acting user's personal environment when provisioned, else the project
-   * default. Explicit names always win.
+   * Environment an ad-hoc action targets when the agent passed none:
+   * explicit > the acting user's saved per-user dev environment > their
+   * personal environment when provisioned > the project default. Single
+   * player: dev IS the personal target; teams: per-user envs/choices keep
+   * builds out of teammates' schemas.
    */
   const resolveEnvironment = (
     project: EnvProject,
     requested?: string,
-  ): string => resolveEnvironmentNameForUser(project, actingUserId, requested);
+  ): Promise<string> =>
+    resolveDevEnvironmentForUser(project, actingUserId, requested);
 
   /**
    * Default defer decision for ad-hoc builds/previews: defer to the last prod
@@ -785,11 +789,11 @@ export const createDbtServerTools = (
         "on a project (dbt Cloud-style development credentials): same " +
         "warehouse connection as prod, private schema `dbt_<user>`. Once it " +
         "exists, dbt_parse / dbt_compile_model / dbt_run_model / dbt_show " +
-        "default to it automatically, so iteration never writes to shared " +
-        "dev/prod schemas. NOTE: dbt_run_model auto-provisions this on the " +
-        "first build, so you rarely need to call it explicitly — use it only " +
-        "to provision ahead of time (e.g. before dbt_show against a fresh " +
-        "schema). Safe to call repeatedly.",
+        "default to it automatically. Intended for MULTI-USER workspaces " +
+        "(dbt_run_model auto-provisions it there on the first build); solo " +
+        "workspaces normally keep building the shared dev environment — only " +
+        "provision explicitly when the user asks for an isolated schema. " +
+        "Safe to call repeatedly.",
       inputSchema: z.object({ projectId: projectIdField }),
       execute: async ({ projectId }) => {
         try {
@@ -850,7 +854,7 @@ export const createDbtServerTools = (
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: resolveEnvironment(project, environment),
+            environmentName: await resolveEnvironment(project, environment),
             userId: actingUserId,
             command: "parse",
             timeoutMs: 2 * 60 * 1000,
@@ -891,7 +895,7 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = resolveEnvironment(project, environment);
+          const environmentName = await resolveEnvironment(project, environment);
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
@@ -946,11 +950,13 @@ export const createDbtServerTools = (
           .string()
           .optional()
           .describe(
-            "Environment name. Omit it: builds default to your PERSONAL " +
-              "environment (auto-provisioned on first build — schema " +
-              "dbt_<user>), so iteration never touches shared schemas. The " +
-              "prod-like environment refuses ad-hoc builds — deploys go " +
-              "through jobs.",
+            "Environment name. Omit it: builds default to the user's saved " +
+              "dev environment, else their personal environment. Solo " +
+              "workspaces default to the shared dev environment (dev IS the " +
+              "personal target); multi-user workspaces auto-provision a " +
+              "personal environment (schema dbt_<user>) on first build so " +
+              "teammates never build over each other. The prod-like " +
+              "environment refuses ad-hoc builds — deploys go through jobs.",
           ),
         fullRefresh: z
           .boolean()
@@ -976,32 +982,39 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          let environmentName = resolveEnvironment(project, environment);
-          // Smart default: builds land in the caller's PERSONAL environment.
-          // When none exists yet (and no explicit environment was requested),
-          // provision it idempotently so iteration never writes to the shared
-          // dev schema. Explicit `environment` always wins; best-effort — a
-          // provisioning failure falls back to the project default.
+          let environmentName = await resolveEnvironment(project, environment);
+          // Smart default, following the single/multi-player model:
+          //  - SINGLE player (sole workspace member): the shared dev default
+          //    IS their personal target — never invent a `dbt_<user>` schema.
+          //  - MULTIPLE players: auto-provision the caller's PERSONAL
+          //    environment on first build so teammates never build over each
+          //    other's schemas.
+          // An explicit `environment` or a saved per-user choice always wins;
+          // best-effort — a provisioning failure falls back to the default.
           let autoProvisionedEnv: string | undefined;
           if (
             !environment &&
             userId &&
             project.environments.length > 0 &&
-            !findPersonalEnvironment(project, userId)
+            !findPersonalEnvironment(project, userId) &&
+            !(await getUserDevEnvPreference(project, userId))
           ) {
             try {
-              const ensured = await ensurePersonalDbtEnvironment({
-                workspaceId,
-                projectId,
-                userId,
-              });
-              environmentName = ensured.environment.name;
-              if (ensured.created) {
-                autoProvisionedEnv = ensured.environment.targetSchema;
-                publishProjectUpdated(projectId);
+              const members = await workspaceService.getMembers(workspaceId);
+              if (members.length > 1) {
+                const ensured = await ensurePersonalDbtEnvironment({
+                  workspaceId,
+                  projectId,
+                  userId,
+                });
+                environmentName = ensured.environment.name;
+                if (ensured.created) {
+                  autoProvisionedEnv = ensured.environment.targetSchema;
+                  publishProjectUpdated(projectId);
+                }
               }
             } catch {
-              /* fall back to the project default environment */
+              /* fall back to the resolved default environment */
             }
           }
           const wantsDefer =
@@ -1310,7 +1323,7 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = resolveEnvironment(project, environment);
+          const environmentName = await resolveEnvironment(project, environment);
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({

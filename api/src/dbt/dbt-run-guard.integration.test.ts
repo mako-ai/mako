@@ -32,10 +32,15 @@ import {
   triggerDbtRun,
   triggerDbtJobRun,
 } from "./dbt-run.service";
-import { DbtProtectedEnvironmentError } from "./dbt-environments.service";
+import {
+  DbtProtectedEnvironmentError,
+  resolveDevEnvironmentForUser,
+  setUserDevEnvPreference,
+} from "./dbt-environments.service";
 import { setCheckoutBranch } from "./dbt-working-tree.service";
 import {
   DbtCheckout,
+  DbtEnvPreference,
   DbtJob,
   DbtProject,
   DbtRun,
@@ -63,6 +68,7 @@ beforeEach(async () => {
     DbtRun.deleteMany({}),
     DbtJob.deleteMany({}),
     DbtCheckout.deleteMany({}),
+    DbtEnvPreference.deleteMany({}),
   ]);
 });
 
@@ -226,6 +232,73 @@ describe("sourceBranch provenance stamping", () => {
       workingTreeUserId: undefined,
     });
     expect(run.sourceBranch).toBeUndefined();
+  });
+});
+
+describe("resolveDevEnvironmentForUser — per-user dev environment", () => {
+  it("resolves explicit > saved choice > personal env > project default", async () => {
+    const project = await seedProject();
+
+    // No choice, no personal env → the project default (single-player: dev
+    // IS the personal target).
+    expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("dev");
+
+    // Personal env provisioned → it wins over the default.
+    project.environments.push({
+      name: "alice",
+      connectionId: new Types.ObjectId(),
+      targetSchema: "dbt_alice",
+      threads: 4,
+      ownerUserId: "u1",
+    });
+    await project.save();
+    expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("alice");
+
+    // A saved per-user choice beats the personal env.
+    await setUserDevEnvPreference({
+      workspaceId: WS,
+      projectId: project._id,
+      userId: "u1",
+      environment: "dev",
+    });
+    expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("dev");
+
+    // Explicit request always wins.
+    expect(await resolveDevEnvironmentForUser(project, "u1", "prod")).toBe(
+      "prod",
+    );
+
+    // Clearing the choice falls back to the personal env.
+    await setUserDevEnvPreference({
+      workspaceId: WS,
+      projectId: project._id,
+      userId: "u1",
+      environment: null,
+    });
+    expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("alice");
+  });
+
+  it("ignores a stale saved choice pointing at a removed environment", async () => {
+    const project = await seedProject();
+    await DbtEnvPreference.create({
+      workspaceId: WS,
+      projectId: project._id,
+      userId: "u1",
+      environment: "gone",
+    });
+    expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("dev");
+  });
+
+  it("is scoped per user", async () => {
+    const project = await seedProject();
+    await setUserDevEnvPreference({
+      workspaceId: WS,
+      projectId: project._id,
+      userId: "u1",
+      environment: "prod",
+    });
+    expect(await resolveDevEnvironmentForUser(project, "u1")).toBe("prod");
+    expect(await resolveDevEnvironmentForUser(project, "u2")).toBe("dev");
   });
 });
 

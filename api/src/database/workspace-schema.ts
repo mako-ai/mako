@@ -4521,6 +4521,56 @@ const DbtCheckoutSchema = new Schema<IDbtCheckout>(
 DbtCheckoutSchema.index({ projectId: 1, userId: 1 }, { unique: true });
 DbtCheckoutSchema.index({ projectId: 1, branch: 1 });
 
+/**
+ * Per-user DEVELOPMENT environment choice for a dbt project — which
+ * environment this user's ad-hoc work (editor runs, agent builds, previews)
+ * targets by default.
+ *
+ * The working model this encodes:
+ *  - Single player: the shared dev environment IS your personal target —
+ *    drafts and branch verification build against dev. No row needed.
+ *  - Multiple players: each user points at their own personal environment
+ *    (schema `dbt_<user>`), so nobody stomps a teammate's schema.
+ *
+ * Absent row → resolution falls back to the user's personal environment when
+ * one exists, else the project default. Explicit requests always win.
+ */
+export interface IDbtEnvPreference extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  projectId: Types.ObjectId;
+  userId: string;
+  /** Environment name from the project's environments list. */
+  environment: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DbtEnvPreferenceSchema = new Schema<IDbtEnvPreference>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: "DbtProject",
+      required: true,
+    },
+    userId: { type: String, required: true },
+    environment: { type: String, required: true, trim: true },
+  },
+  { collection: "dbt_env_preferences", timestamps: true },
+);
+
+DbtEnvPreferenceSchema.index({ projectId: 1, userId: 1 }, { unique: true });
+
+export const DbtEnvPreference = mongoose.model<IDbtEnvPreference>(
+  "DbtEnvPreference",
+  DbtEnvPreferenceSchema,
+);
+
 export const DbtCheckout = mongoose.model<IDbtCheckout>(
   "DbtCheckout",
   DbtCheckoutSchema,

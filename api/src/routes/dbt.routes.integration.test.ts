@@ -356,6 +356,44 @@ describe("project CRUD", () => {
     expect((await res.json()).error).toMatch(/connected repository/);
   });
 
+  it("saves, validates, clears, and surfaces the caller's dev environment", async () => {
+    const projectId = await createProjectAsOwner();
+
+    // Unknown env → 400.
+    const bad = await req("PUT", `/projects/${projectId}/my-environment`, {
+      environment: "nope",
+    });
+    expect(bad.status).toBe(400);
+
+    // Save a valid choice → surfaced on the project list for this caller.
+    const set = await req("PUT", `/projects/${projectId}/my-environment`, {
+      environment: "dev",
+    });
+    expect(set.status).toBe(200);
+    expect((await set.json()).myDevEnvironment).toBe("dev");
+
+    const list = await req("GET", "/projects");
+    const listed = ((await list.json()).projects as Array<{
+      _id: string;
+      myDevEnvironment?: string;
+    }>).find(p => p._id === projectId);
+    expect(listed?.myDevEnvironment).toBe("dev");
+
+    // "" clears back to Auto.
+    const cleared = await req("PUT", `/projects/${projectId}/my-environment`, {
+      environment: "",
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).myDevEnvironment).toBeUndefined();
+
+    const list2 = await req("GET", "/projects");
+    const listed2 = ((await list2.json()).projects as Array<{
+      _id: string;
+      myDevEnvironment?: string;
+    }>).find(p => p._id === projectId);
+    expect(listed2?.myDevEnvironment).toBeUndefined();
+  });
+
   it("sets, validates, and clears the production (defer) environment", async () => {
     const projectId = await createProjectAsOwner();
 

@@ -26,7 +26,11 @@ vi.mock("../../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
 vi.mock("../../services/workspace.service", () => ({
-  workspaceService: { isAdmin: vi.fn(async () => true) },
+  workspaceService: {
+    isAdmin: vi.fn(async () => true),
+    // Default: multi-user workspace; solo tests override per-call.
+    getMembers: vi.fn(async () => [{ userId: "u1" }, { userId: "u2" }]),
+  },
 }));
 vi.mock("../../services/entity-version.service", () => ({
   createVersion: vi.fn(async () => ({})),
@@ -61,7 +65,12 @@ vi.mock("../../services/scheduled-query-schedule.service", () => ({
 
 // Imported after the mocks are registered.
 import { createDbtServerTools } from "./dbt-tools";
-import { DbtJob, DbtProject } from "../../database/workspace-schema";
+import {
+  DbtEnvPreference,
+  DbtJob,
+  DbtProject,
+} from "../../database/workspace-schema";
+import { workspaceService } from "../../services/workspace.service";
 import {
   commitAndPush,
   commitToNewBranch,
@@ -191,9 +200,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // vi.clearAllMocks wipes mock implementations' return queues but keeps the
+  // factory defaults; re-assert the multi-user default explicitly.
+  vi.mocked(workspaceService.getMembers).mockResolvedValue([
+    { userId: "u1" },
+    { userId: "u2" },
+  ] as never);
   await Promise.all([
     mongoose.connection.collection("dbt_projects").deleteMany({}),
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
+    mongoose.connection.collection("dbt_env_preferences").deleteMany({}),
   ]);
 });
 
@@ -266,7 +282,7 @@ describe("dbt_delete_job", () => {
   });
 });
 
-describe("dbt_run_model — personal environment auto-provisioning", () => {
+describe("dbt_run_model — per-user environment resolution", () => {
   function runModel(input: {
     projectId: string;
     model: string;
@@ -279,7 +295,7 @@ describe("dbt_run_model — personal environment auto-provisioning", () => {
     )(input);
   }
 
-  it("provisions the caller's personal environment on the first build", async () => {
+  it("multi-user workspace: provisions the caller's personal environment on the first build", async () => {
     const projectId = await seedProject();
 
     const result = await runModel({ projectId, model: "stg_orders" });
@@ -302,6 +318,44 @@ describe("dbt_run_model — personal environment auto-provisioning", () => {
     expect(
       after?.environments.filter(e => e.ownerUserId === "u1"),
     ).toHaveLength(1);
+  });
+
+  it("single-user workspace: dev IS the personal target — no auto-provisioning", async () => {
+    vi.mocked(workspaceService.getMembers).mockResolvedValue([
+      { userId: "u1" },
+    ] as never);
+    const projectId = await seedProject();
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev" }),
+    );
+    const project = await DbtProject.findById(projectId).lean();
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(
+      false,
+    );
+  });
+
+  it("a saved per-user dev environment wins and suppresses auto-provisioning", async () => {
+    const projectId = await seedProject();
+    await DbtEnvPreference.create({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: new Types.ObjectId(projectId),
+      userId: "u1",
+      environment: "dev",
+    });
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev" }),
+    );
+    // Even in a multi-user workspace the explicit choice stops provisioning.
+    const project = await DbtProject.findById(projectId).lean();
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(
+      false,
+    );
   });
 
   it("an explicit environment always wins (no auto-provisioning)", async () => {

@@ -164,9 +164,16 @@ The verification loop is mandatory after edits:
 3. \`dbt_run_model\` — build the model + its tests and report row counts and test
    results to the user
 
-Ad-hoc builds default to the acting user's PERSONAL environment —
-\`dbt_run_model\` auto-provisions it on the first build (schema \`dbt_<user>\`),
-so omit \`environment\` unless the user explicitly picks one — and default to
+Ad-hoc builds resolve their environment per USER: the user's saved dev
+environment (a per-user setting the UI env pickers persist) > their personal
+environment > the project default. The working model — keep it clear:
+- SINGLE-USER workspace: the shared dev environment IS the user's personal
+  target; drafts and branch verification build against dev. Do NOT provision
+  \`dbt_<user>\` schemas unless asked.
+- MULTI-USER workspace: each user tests against their OWN environment;
+  \`dbt_run_model\` auto-provisions a personal one (schema \`dbt_<user>\`) on the
+  first build so teammates never build over each other.
+Omit \`environment\` unless the user explicitly picks one. Builds default to
 \`--defer\` against the last prod manifest when targeting a non-prod
 environment, so one model can be rebuilt without its whole upstream DAG. Load
 the \`dbt\` system skill for the full dev → app preview → prod promotion loop.

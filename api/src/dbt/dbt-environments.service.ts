@@ -22,6 +22,7 @@
 import { Types } from "mongoose";
 import { containsDbtSchemaToken, resolveDbtSchemaToken } from "@mako/schemas";
 import {
+  DbtEnvPreference,
   DbtProject,
   type IDbtEnvironment,
   type IDbtProject,
@@ -116,6 +117,10 @@ export function findPersonalEnvironment(
  * Environment an agent/user action targets when none is given explicitly:
  * the caller's personal environment when provisioned, else the project
  * default. Explicit names always win (validated downstream).
+ *
+ * Pure fallback used when the per-user preference is unavailable — most
+ * callers should use {@link resolveDevEnvironmentForUser}, which also
+ * consults the persisted per-user choice.
  */
 export function resolveEnvironmentNameForUser(
   project: ProjectEnvFields,
@@ -127,6 +132,76 @@ export function resolveEnvironmentNameForUser(
     findPersonalEnvironment(project, userId)?.name ??
     project.defaultEnvironment
   );
+}
+
+type ProjectIdEnvFields = ProjectEnvFields & Pick<IDbtProject, "_id">;
+
+/**
+ * The user's saved DEVELOPMENT environment for a project, or undefined when
+ * unset / stale (env no longer exists).
+ */
+export async function getUserDevEnvPreference(
+  project: ProjectIdEnvFields,
+  userId: string | undefined,
+): Promise<string | undefined> {
+  if (!userId) return undefined;
+  const pref = await DbtEnvPreference.findOne({
+    projectId: project._id,
+    userId,
+  })
+    .select("environment")
+    .lean();
+  if (!pref) return undefined;
+  return project.environments.some(env => env.name === pref.environment)
+    ? pref.environment
+    : undefined;
+}
+
+/** Persist (or clear, with null) the user's dev environment for a project. */
+export async function setUserDevEnvPreference(params: {
+  workspaceId: Types.ObjectId | string;
+  projectId: Types.ObjectId | string;
+  userId: string;
+  environment: string | null;
+}): Promise<void> {
+  const projectId = new Types.ObjectId(params.projectId.toString());
+  if (params.environment === null) {
+    await DbtEnvPreference.deleteOne({ projectId, userId: params.userId });
+    return;
+  }
+  await DbtEnvPreference.updateOne(
+    { projectId, userId: params.userId },
+    {
+      $set: {
+        workspaceId: new Types.ObjectId(params.workspaceId.toString()),
+        environment: params.environment,
+      },
+    },
+    { upsert: true },
+  );
+}
+
+/**
+ * THE per-user development-environment resolution — the environment a user's
+ * ad-hoc work (editor runs, agent builds, previews) targets when none is
+ * requested explicitly:
+ *
+ *   explicit request > the user's saved per-user choice > their personal
+ *   environment (when provisioned) > the project default.
+ *
+ * Single player: no choice + no personal env → the shared dev default (dev IS
+ * their personal target). Multiple players: each user's choice / personal
+ * env keeps their work out of teammates' schemas.
+ */
+export async function resolveDevEnvironmentForUser(
+  project: ProjectIdEnvFields,
+  userId: string | undefined,
+  requested?: string,
+): Promise<string> {
+  if (requested) return requested;
+  const preferred = await getUserDevEnvPreference(project, userId);
+  if (preferred) return preferred;
+  return resolveEnvironmentNameForUser(project, userId);
 }
 
 /**

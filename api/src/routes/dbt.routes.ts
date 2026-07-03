@@ -16,6 +16,7 @@ import { workspaceService } from "../services/workspace.service";
 import { AuthenticatedContext } from "../middleware/workspace.middleware";
 import {
   DbtCheckout,
+  DbtEnvPreference,
   DbtFile,
   DbtFileDraft,
   DbtJob,
@@ -93,6 +94,7 @@ import {
 import {
   DbtProtectedEnvironmentError,
   ensurePersonalDbtEnvironment,
+  setUserDevEnvPreference,
 } from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
@@ -339,7 +341,9 @@ async function validateEnvironments(
 // Projects
 // ---------------------------------------------------------------------------
 
-// GET / — list projects with job/run rollups for the explorer
+// GET / — list projects with job/run rollups for the explorer. Each project
+// carries `myDevEnvironment`: the CALLER's saved per-user dev environment
+// (single player: unset → the shared default; teams: each user's own).
 dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
   try {
     const workspaceId = c.req.param("workspaceId");
@@ -351,7 +355,27 @@ dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
     })
       .sort({ updatedAt: -1 })
       .lean();
-    return c.json({ success: true, projects });
+    const userId = getUserId(c);
+    const prefs = await DbtEnvPreference.find({
+      projectId: { $in: projects.map(p => p._id) },
+      userId,
+    })
+      .select("projectId environment")
+      .lean();
+    const prefByProject = new Map(
+      prefs.map(pref => [pref.projectId.toString(), pref.environment]),
+    );
+    const enriched = projects.map(project => {
+      const preferred = prefByProject.get(project._id.toString());
+      // Stale choices (env renamed/removed) are dropped, not surfaced.
+      const valid =
+        preferred &&
+        project.environments.some(env => env.name === preferred)
+          ? preferred
+          : undefined;
+      return { ...project, myDevEnvironment: valid };
+    });
+    return c.json({ success: true, projects: enriched });
   } catch (error) {
     return serverError(c, error, "Failed to list dbt projects");
   }
@@ -619,6 +643,52 @@ dbtRoutes.post(
   },
 );
 
+// PUT /projects/:projectId/my-environment — the CALLER's default DEVELOPMENT
+// environment for this project (a per-user setting: the editor/console env
+// pickers persist here, and agent builds default to it). Body:
+// { environment } — "" clears back to Auto (personal env when provisioned,
+// else the project default). Member+ (only affects the caller's own target).
+dbtRoutes.put(
+  "/projects/:projectId/my-environment",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const parsed = z
+        .object({ environment: z.string().max(64) })
+        .safeParse(await c.req.json().catch(() => ({})));
+      if (!parsed.success) {
+        return badRequest(c, "environment (string) is required");
+      }
+      const environment = parsed.data.environment;
+      if (
+        environment !== "" &&
+        !project.environments.some(env => env.name === environment)
+      ) {
+        return badRequest(
+          c,
+          `Environment "${environment}" is not in the project`,
+        );
+      }
+      const userId = getUserId(c);
+      await setUserDevEnvPreference({
+        workspaceId: project.workspaceId,
+        projectId: project._id,
+        userId,
+        environment: environment === "" ? null : environment,
+      });
+      return c.json({
+        success: true,
+        myDevEnvironment: environment === "" ? undefined : environment,
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to save your dev environment");
+    }
+  },
+);
+
 dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
   try {
     const project = await findProject(c);
@@ -629,6 +699,7 @@ dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
       DbtFile.deleteMany({ projectId: project._id }),
       DbtFileDraft.deleteMany({ projectId: project._id }),
       DbtCheckout.deleteMany({ projectId: project._id }),
+      DbtEnvPreference.deleteMany({ projectId: project._id }),
       DbtJob.deleteMany({ projectId: project._id }),
       DbtRun.deleteMany({ projectId: project._id }),
     ]);

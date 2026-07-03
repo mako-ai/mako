@@ -47,12 +47,13 @@ import {
 import { useAuth } from "../contexts/auth-context";
 import {
   useDbtStore,
+  visibleDbtEnvironments,
   type DbtEnvironment,
   type DbtProjectItem,
 } from "../store/dbtStore";
 import type { Connection } from "../store/schemaStore";
 import { dbtVersionLabel, normalizeDbtVersion } from "../lib/dbt-versions";
-import { resolveProdLikeEnvName } from "../lib/dbt-env";
+import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 import DbtVersionSelect from "./DbtVersionSelect";
 
 const DRAWER_WIDTH = 540;
@@ -196,6 +197,7 @@ export default function DbtProjectSettingsDrawer({
   const ensurePersonalEnvironment = useDbtStore(
     s => s.ensurePersonalEnvironment,
   );
+  const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
   const [creatingPersonalEnv, setCreatingPersonalEnv] = useState(false);
 
   const project = useMemo(
@@ -1050,6 +1052,56 @@ export default function DbtProjectSettingsDrawer({
                 label="dbt version"
                 value={dbtVersionLabel(project.dbtVersion)}
               />
+              {/* Per-USER setting (not project config): which environment
+                  this user's drafts/builds target. Solo: the shared dev
+                  default; teams: your personal environment. */}
+              <Box sx={{ mt: 1.5 }}>
+                <FormControl fullWidth size="small">
+                  <InputLabel id="dbt-settings-my-env">
+                    My development environment (per-user)
+                  </InputLabel>
+                  <Select
+                    labelId="dbt-settings-my-env"
+                    label="My development environment (per-user)"
+                    value={project.myDevEnvironment ?? ""}
+                    onChange={e => {
+                      if (!projectId) return;
+                      void setMyEnvironment(
+                        workspaceId,
+                        projectId,
+                        e.target.value,
+                      );
+                    }}
+                  >
+                    <MenuItem value="">
+                      Auto —{" "}
+                      {resolveDevEnvName(
+                        { ...project, myDevEnvironment: undefined },
+                        user?.id,
+                      ) ?? "default"}
+                      {" (your personal env, else the default)"}
+                    </MenuItem>
+                    {visibleDbtEnvironments(project.environments, user?.id).map(
+                      env => (
+                        <MenuItem key={env.name} value={env.name}>
+                          {env.ownerUserId
+                            ? `${env.name} (personal)`
+                            : env.name}
+                        </MenuItem>
+                      ),
+                    )}
+                  </Select>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ mt: 0.5, display: "block" }}
+                  >
+                    Where YOUR drafts and agent builds run. Solo workspaces: dev
+                    is your personal target. Teams: pick (or provision) your
+                    personal environment so builds never collide.
+                  </Typography>
+                </FormControl>
+              </Box>
             </SettingsSection>
 
             <SettingsSection

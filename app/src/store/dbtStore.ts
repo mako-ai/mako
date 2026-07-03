@@ -67,6 +67,13 @@ export interface DbtProjectItem {
    * the env named "prod" when one exists, else the project default.
    */
   prodEnvironment?: string;
+  /**
+   * The CALLER's saved development environment for this project (per-user
+   * setting, persisted by the env pickers). Unset → auto: their personal
+   * environment when provisioned, else the project default. Single player:
+   * the shared dev default IS the personal target; teams: each user's own.
+   */
+  myDevEnvironment?: string;
   updatedAt?: string;
   /** Set when the project is imported/synced from a Git repository. */
   repo?: DbtRepoBinding;
@@ -387,6 +394,15 @@ interface DbtActions {
     workspaceId: string,
     projectId: string,
   ) => Promise<DbtEnvironment | null>;
+  /**
+   * Persist the caller's per-user dev environment for a project ("" clears
+   * back to Auto). Updates `myDevEnvironment` on the cached project.
+   */
+  setMyEnvironment: (
+    workspaceId: string,
+    projectId: string,
+    environment: string,
+  ) => Promise<boolean>;
   fetchGitHubStatus: (workspaceId: string) => Promise<GitHubStatus | null>;
   fetchGitHubRepos: (
     workspaceId: string,
@@ -742,7 +758,14 @@ export const useDbtStore = create<DbtStore>()(
         const project = response.project;
         set(state => {
           const idx = state.projects.findIndex(p => p._id === projectId);
-          if (idx >= 0) state.projects[idx] = project;
+          if (idx >= 0) {
+            // PATCH responses don't carry the caller's per-user dev env
+            // (list enrichment does) — keep the cached value.
+            state.projects[idx] = {
+              ...project,
+              myDevEnvironment: state.projects[idx].myDevEnvironment,
+            };
+          }
         });
         return project;
       } catch (error) {
@@ -774,6 +797,33 @@ export const useDbtStore = create<DbtStore>()(
           );
         });
         return null;
+      }
+    },
+
+    setMyEnvironment: async (workspaceId, projectId, environment) => {
+      try {
+        const response = await apiClient.put<{
+          success: boolean;
+          myDevEnvironment?: string;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/my-environment`,
+          { environment },
+        );
+        set(state => {
+          const idx = state.projects.findIndex(p => p._id === projectId);
+          if (idx >= 0) {
+            state.projects[idx].myDevEnvironment = response.myDevEnvironment;
+          }
+        });
+        return true;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to save your dev environment",
+          );
+        });
+        return false;
       }
     },
 
