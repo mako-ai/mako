@@ -13,6 +13,7 @@ featureRoutes.openapi(
     tags: ["Features"],
     summary: "GET / (server feature flags)",
     responses: {
+      ...OPEN_RESPONSES,
       200: {
         description: "Server feature flags",
         content: {
@@ -23,7 +24,6 @@ featureRoutes.openapi(
           },
         },
       },
-      ...OPEN_RESPONSES,
     },
   }),
   c => {

@@ -416,6 +416,9 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }
           }
 
+          const chunkEntityLayout = (entityLayouts || []).find(
+            (l: any) => l.entity === entity || l.entity === entity.split(":")[0],
+          );
           const result = await performSyncChunk({
             dataSourceId,
             destinationId,
@@ -435,6 +438,16 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             queries,
             tableDestination: resolvedTableDest,
             deleteMode,
+            // Layout hints flow to the CDC adapter so every destination can
+            // apply its native physical layout (indexes / partitioning).
+            entityPartitioning: resolveEntityPartitioning(
+              chunkEntityLayout as any,
+              (tableDestination as any)?.partitioning,
+            ),
+            entityClustering: resolveEntityClustering(
+              chunkEntityLayout as any,
+              (tableDestination as any)?.clustering,
+            ),
           } as any);
 
           const written = Number.isFinite(result.totalWritten)

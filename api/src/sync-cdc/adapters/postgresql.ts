@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
-import type { IFlow } from "../../database/workspace-schema";
+import { DatabaseConnection, type IFlow } from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
+import { databaseRegistry } from "../../databases/registry";
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
@@ -12,6 +13,41 @@ import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 
 const log = loggers.sync("cdc.adapter.postgresql");
+
+function pgIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Postgres has no BigQuery-style partition/cluster DDL on plain tables, so the
+ * engine-agnostic layout hints map to secondary btree indexes: one on the
+ * partition field (time-range scans) and one per cluster field (filter scans).
+ * Exported for the destination layout contract tests.
+ */
+export function buildPgLayoutIndexStatements(
+  layout: Pick<
+    CdcEntityLayout,
+    "tableName" | "partitioning" | "clustering" | "keyColumns"
+  >,
+  schema: string,
+): string[] {
+  const fields = new Set<string>();
+  if (layout.partitioning?.field) fields.add(layout.partitioning.field);
+  for (const field of layout.clustering?.fields || []) fields.add(field);
+  for (const key of layout.keyColumns || []) fields.delete(key);
+
+  const statements: string[] = [];
+  for (const field of fields) {
+    const indexName = `mako_layout_${layout.tableName}_${field}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "_")
+      .slice(0, 63);
+    statements.push(
+      `CREATE INDEX IF NOT EXISTS ${pgIdent(indexName)} ON ${pgIdent(schema)}.${pgIdent(layout.tableName)} (${pgIdent(field)})`,
+    );
+  }
+  return statements;
+}
 
 interface PostgreSqlAdapterConfig {
   destinationDatabaseId: string;
@@ -29,11 +65,55 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
     string,
     Awaited<ReturnType<typeof createDestinationWriter>>
   >();
+  private readonly layoutIndexesEnsured = new Set<string>();
 
   constructor(private readonly config: PostgreSqlAdapterConfig) {}
 
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     // DestinationWriter creates tables lazily on first write.
+  }
+
+  /**
+   * Map the engine-agnostic layout hints (partition field + cluster fields)
+   * to Postgres secondary indexes. Idempotent and best-effort: the table may
+   * not exist until the first write, so callers invoke this after writing.
+   */
+  private async ensureLayoutIndexes(layout: CdcEntityLayout): Promise<void> {
+    const statements = buildPgLayoutIndexStatements(
+      layout,
+      this.config.tableDestination.schema || "public",
+    );
+    if (statements.length === 0) return;
+    const cacheKey = `${layout.tableName}:${statements.join(";")}`;
+    if (this.layoutIndexesEnsured.has(cacheKey)) return;
+
+    try {
+      const destination = await DatabaseConnection.findById(
+        this.config.tableDestination.connectionId,
+      );
+      if (!destination) return;
+      const driver = databaseRegistry.getDriver(destination.type);
+      if (!driver) return;
+      for (const statement of statements) {
+        const result = await driver.executeQuery(destination, statement, {
+          databaseName: this.config.destinationDatabaseName,
+        });
+        if (!result.success) {
+          log.warn("Failed to ensure layout index", {
+            table: layout.tableName,
+            statement,
+            error: result.error,
+          });
+          return; // Don't cache failures — retry on the next apply.
+        }
+      }
+      this.layoutIndexesEnsured.add(cacheKey);
+    } catch (err) {
+      log.warn("Layout index creation failed", {
+        table: layout.tableName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   async applyEvents(params: {
@@ -83,6 +163,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           write.error || "Failed to apply PostgreSQL CDC upserts",
         );
       }
+      await this.ensureLayoutIndexes(params.layout);
     }
 
     if (deletes.length > 0) {
@@ -182,6 +263,8 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
         write.error || "Failed to apply PostgreSQL backfill batch",
       );
     }
+
+    await this.ensureLayoutIndexes(params.layout);
 
     return {
       written: write.rowsWritten,

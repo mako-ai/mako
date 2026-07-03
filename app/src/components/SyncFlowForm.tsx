@@ -325,6 +325,14 @@ export function SyncFlowForm({
   const isBigQueryDest = destType === "bigquery";
   const isCdcCapableDest = CDC_CAPABLE_TYPES.includes(destType || "");
   const hasStagingDest = destType === "bigquery" || destType === "clickhouse";
+  // Engine-agnostic layout hints map to each destination's native physical
+  // layout: BigQuery/ClickHouse partition+cluster DDL; Postgres/Mongo
+  // secondary indexes on the same fields.
+  const layoutMode: "partition" | "index" | "none" = hasStagingDest
+    ? "partition"
+    : destType === "postgresql" || destType === "mongodb"
+      ? "index"
+      : "none";
   const requiresQueries = !!transferQueriesSchema;
   const requiresDestinationDatabaseName =
     !isCdcCapableDest && availableDatabases.length > 0;
@@ -707,7 +715,9 @@ export function SyncFlowForm({
           enabledEntities.length > 0 &&
           enabledEntities.length === (data.entityLayouts || []).length;
         payload.entityFilter = allEnabled ? [] : enabledEntities;
-        if (hasStagingDest) {
+        // Layout hints are meaningful for every CDC destination: BQ/CH map
+        // them to partition/cluster DDL, PG/Mongo to secondary indexes.
+        if (layoutMode !== "none") {
           payload.entityLayouts = data.entityLayouts;
         }
       }
@@ -1794,7 +1804,11 @@ export function SyncFlowForm({
                     <Box>
                       <Typography variant="subtitle2" sx={{ mb: 1 }}>
                         Entities
-                        {hasStagingDest ? " & Table Configuration" : ""}
+                        {layoutMode === "partition"
+                          ? " & Table Configuration"
+                          : layoutMode === "index"
+                            ? " & Index Configuration"
+                            : ""}
                       </Typography>
                       <Box
                         sx={{
@@ -1804,13 +1818,16 @@ export function SyncFlowForm({
                           overflowX: "auto",
                         }}
                       >
-                        <Box sx={{ minWidth: hasStagingDest ? 640 : 0 }}>
+                        <Box sx={{ minWidth: layoutMode === "none" ? 0 : 560 }}>
                           <Box
                             sx={{
                               display: "grid",
-                              gridTemplateColumns: hasStagingDest
-                                ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
-                                : "36px 1fr",
+                              gridTemplateColumns:
+                                layoutMode === "partition"
+                                  ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
+                                  : layoutMode === "index"
+                                    ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) minmax(100px, 1fr)"
+                                    : "36px 1fr",
                               gap: 1,
                               px: 1,
                               py: 0.5,
@@ -1845,9 +1862,9 @@ export function SyncFlowForm({
                               }}
                             />
                             <Typography variant="caption" fontWeight="bold">
-                              Entity{hasStagingDest ? " Table" : ""}
+                              Entity{layoutMode !== "none" ? " Table" : ""}
                             </Typography>
-                            {hasStagingDest && (
+                            {layoutMode === "partition" && (
                               <>
                                 <Typography variant="caption" fontWeight="bold">
                                   Partition Field
@@ -1857,6 +1874,16 @@ export function SyncFlowForm({
                                 </Typography>
                                 <Typography variant="caption" fontWeight="bold">
                                   Cluster Fields
+                                </Typography>
+                              </>
+                            )}
+                            {layoutMode === "index" && (
+                              <>
+                                <Typography variant="caption" fontWeight="bold">
+                                  Time Field (indexed)
+                                </Typography>
+                                <Typography variant="caption" fontWeight="bold">
+                                  Indexed Fields
                                 </Typography>
                               </>
                             )}
@@ -1884,9 +1911,12 @@ export function SyncFlowForm({
                                 key={layout.entity}
                                 sx={{
                                   display: "grid",
-                                  gridTemplateColumns: hasStagingDest
-                                    ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
-                                    : "36px 1fr",
+                                  gridTemplateColumns:
+                                    layoutMode === "partition"
+                                      ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) 80px minmax(100px, 1fr)"
+                                      : layoutMode === "index"
+                                        ? "36px minmax(120px, 1.5fr) minmax(100px, 1fr) minmax(100px, 1fr)"
+                                        : "36px 1fr",
                                   gap: 1,
                                   px: 1,
                                   py: 0.5,
@@ -1916,7 +1946,7 @@ export function SyncFlowForm({
                                 <Typography variant="body2">
                                   {layout.label || layout.entity}
                                 </Typography>
-                                {hasStagingDest && (
+                                {layoutMode !== "none" && (
                                   <>
                                     <Controller
                                       name={`entityLayouts.${idx}.partitionField`}
@@ -1936,25 +1966,31 @@ export function SyncFlowForm({
                                         </Select>
                                       )}
                                     />
-                                    <Controller
-                                      name={`entityLayouts.${idx}.partitionGranularity`}
-                                      control={control}
-                                      render={({ field }) => (
-                                        <Select
-                                          {...field}
-                                          size="small"
-                                          value={field.value || "day"}
-                                          disabled={!isEnabled}
-                                        >
-                                          <MenuItem value="hour">hour</MenuItem>
-                                          <MenuItem value="day">day</MenuItem>
-                                          <MenuItem value="month">
-                                            month
-                                          </MenuItem>
-                                          <MenuItem value="year">year</MenuItem>
-                                        </Select>
-                                      )}
-                                    />
+                                    {layoutMode === "partition" && (
+                                      <Controller
+                                        name={`entityLayouts.${idx}.partitionGranularity`}
+                                        control={control}
+                                        render={({ field }) => (
+                                          <Select
+                                            {...field}
+                                            size="small"
+                                            value={field.value || "day"}
+                                            disabled={!isEnabled}
+                                          >
+                                            <MenuItem value="hour">
+                                              hour
+                                            </MenuItem>
+                                            <MenuItem value="day">day</MenuItem>
+                                            <MenuItem value="month">
+                                              month
+                                            </MenuItem>
+                                            <MenuItem value="year">
+                                              year
+                                            </MenuItem>
+                                          </Select>
+                                        )}
+                                      />
+                                    )}
                                     <Controller
                                       name={`entityLayouts.${idx}.clusterFields`}
                                       control={control}

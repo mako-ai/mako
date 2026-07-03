@@ -714,6 +714,9 @@ async function performSyncChunkSql(
         entity,
         tableName: entityTableName,
         keyColumns: entitySchema?.keyColumns,
+        deleteMode: options.deleteMode,
+        partitioning: options.entityPartitioning,
+        clustering: options.entityClustering,
       })
     : undefined;
 
