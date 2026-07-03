@@ -773,6 +773,7 @@ function MainApp() {
             </BottomNavigation>
           </Paper>
         </Box>
+        <DbtProjectDrawersHost />
       </AuthWrapper>
     );
   }
