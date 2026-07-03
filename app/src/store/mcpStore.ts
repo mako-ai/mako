@@ -14,10 +14,14 @@ export type McpServerStatus =
   | "connected"
   | "error";
 
+export type McpToolRestriction = "always" | "ask" | "block";
+
 export interface McpCachedTool {
   name: string;
   description: string | null;
   riskTier: McpRiskTier;
+  /** Effective admin ceiling for this tool (explicit or default). */
+  restriction: McpToolRestriction;
 }
 
 export interface McpServerInfo {
@@ -30,9 +34,8 @@ export interface McpServerInfo {
   authPerformer: "workspace" | "user";
   writeScope: McpWriteScope;
   toolPolicy: {
-    mode: "all" | "allowlist";
-    allowedTools: string[];
-    allowDestructiveGrants: boolean;
+    defaultRestriction: McpToolRestriction;
+    restrictions: Record<string, McpToolRestriction>;
   };
   cachedTools: McpCachedTool[];
   status: McpServerStatus;
@@ -67,6 +70,7 @@ export interface McpToolUiInfo {
   prefixedName: string;
   serverId: string;
   serverName: string;
+  serverIcon: string | null;
   toolName: string;
   riskTier: McpRiskTier;
   canAlwaysAllow: boolean;
@@ -103,7 +107,6 @@ interface McpActions {
       url?: string;
       description?: string;
       authType?: "none" | "api_key" | "oauth";
-      authPerformer?: "workspace" | "user";
       writeScope?: McpWriteScope;
     },
   ) => Promise<McpServerInfo>;

@@ -16,19 +16,20 @@ import {
   DialogTitle,
   Divider,
   FormControl,
-  FormControlLabel,
   IconButton,
   InputLabel,
   MenuItem,
   Select,
   Snackbar,
   Stack,
-  Switch,
   TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
 import {
+  Ban,
+  CircleCheck,
+  Hand,
   Plug,
   RefreshCw,
   Search,
@@ -40,6 +41,7 @@ import { useWorkspace } from "../contexts/workspace-context";
 import {
   type McpPresetInfo,
   type McpServerInfo,
+  type McpToolRestriction,
   type McpWriteScope,
   useMcpStore,
 } from "../store/mcpStore";
@@ -66,12 +68,6 @@ const STATUS_LABELS: Record<McpServerInfo["status"], string> = {
   connected: "Connected",
   error: "Error",
 };
-
-const RISK_TIER_LABELS = {
-  read: "Read",
-  write: "Write",
-  destructive: "Destructive",
-} as const;
 
 /** Favicon for a custom MCP server, derived from its URL's host. */
 function faviconForUrl(url: string): string | null {
@@ -149,9 +145,6 @@ function AddServerDialog({
   const [authType, setAuthType] = useState<"none" | "api_key" | "oauth">(
     "oauth",
   );
-  const [authPerformer, setAuthPerformer] = useState<"workspace" | "user">(
-    "workspace",
-  );
   const [writeScope, setWriteScope] = useState<McpWriteScope>("read");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -169,8 +162,6 @@ function AddServerDialog({
       setName(preset?.type === "custom" ? "" : (preset?.label ?? ""));
       setUrl("");
       setAuthType(preset?.authType ?? "api_key");
-      // OAuth's sweet spot is per-user login; default accordingly.
-      setAuthPerformer(preset?.authType === "oauth" ? "user" : "workspace");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, presetType]);
@@ -185,7 +176,6 @@ function AddServerDialog({
         connectorType: presetType,
         url: preset?.urlEditable ? url.trim() : undefined,
         authType,
-        authPerformer,
         writeScope,
       });
       onCreated(server.id);
@@ -279,22 +269,11 @@ function AddServerDialog({
               </Select>
             </FormControl>
           )}
-          <FormControl fullWidth size="small">
-            <InputLabel id="mcp-performer-label">Credentials</InputLabel>
-            <Select
-              labelId="mcp-performer-label"
-              label="Credentials"
-              value={authPerformer}
-              onChange={e =>
-                setAuthPerformer(e.target.value as "workspace" | "user")
-              }
-            >
-              <MenuItem value="workspace">
-                Shared workspace credential (admin-managed)
-              </MenuItem>
-              <MenuItem value="user">Each user connects their own</MenuItem>
-            </Select>
-          </FormControl>
+          <Typography variant="caption" color="text.secondary">
+            Every member authenticates individually — enabling a connector never
+            grants shared data access. The agent only sees what the signed-in
+            user can see.
+          </Typography>
           <FormControl fullWidth size="small">
             <InputLabel id="mcp-scope-label">Write access</InputLabel>
             <Select
@@ -325,6 +304,75 @@ function AddServerDialog({
         </Button>
       </DialogActions>
     </Dialog>
+  );
+}
+
+/**
+ * Claude-style three-state restriction control: Always-allowable (check),
+ * Ask (hand), Block (ban). The admin picks a ceiling; members can always
+ * choose a stricter setting for themselves.
+ */
+function RestrictionControl({
+  value,
+  usesDefault,
+  disabled,
+  onChange,
+}: {
+  value: McpToolRestriction;
+  usesDefault: boolean;
+  disabled?: boolean;
+  onChange: (value: McpToolRestriction) => void;
+}) {
+  const options: Array<{
+    key: McpToolRestriction;
+    label: string;
+    icon: React.ReactNode;
+  }> = [
+    {
+      key: "always",
+      label: "Users can choose Always allow, Ask, or Block",
+      icon: <CircleCheck size={14} />,
+    },
+    {
+      key: "ask",
+      label: "Users can choose Ask or Block — never Always allow",
+      icon: <Hand size={14} />,
+    },
+    {
+      key: "block",
+      label: "Block this tool for everyone",
+      icon: <Ban size={14} />,
+    },
+  ];
+  return (
+    <Stack direction="row" spacing={0.5}>
+      {options.map(opt => {
+        const selected = value === opt.key;
+        return (
+          <Tooltip key={opt.key} title={opt.label}>
+            <span>
+              <IconButton
+                size="small"
+                disabled={disabled}
+                onClick={() => onChange(opt.key)}
+                sx={{
+                  border: 1,
+                  borderColor: selected ? "text.primary" : "divider",
+                  borderRadius: "50%",
+                  width: 26,
+                  height: 26,
+                  color: selected ? "text.primary" : "text.disabled",
+                  opacity: selected && usesDefault ? 0.75 : 1,
+                  bgcolor: selected ? "action.selected" : "transparent",
+                }}
+              >
+                {opt.icon}
+              </IconButton>
+            </span>
+          </Tooltip>
+        );
+      })}
+    </Stack>
   );
 }
 
@@ -586,20 +634,20 @@ function ServerDetail({
   } = useMcpStore();
   const [testing, setTesting] = useState(false);
   const myGrants = grants[server.id] ?? [];
+  const readTools = useMemo(
+    () => server.cachedTools.filter(t => t.riskTier === "read"),
+    [server.cachedTools],
+  );
+  const writeTools = useMemo(
+    () => server.cachedTools.filter(t => t.riskTier !== "read"),
+    [server.cachedTools],
+  );
 
   useEffect(() => {
     if (currentWorkspace) {
       void fetchGrants(currentWorkspace.id, server.id);
     }
   }, [currentWorkspace, server.id, fetchGrants]);
-
-  const allowedSet = useMemo(
-    () =>
-      server.toolPolicy.mode === "all"
-        ? new Set(server.cachedTools.map(t => t.name))
-        : new Set(server.toolPolicy.allowedTools),
-    [server],
-  );
 
   const handleTest = async () => {
     if (!currentWorkspace) return;
@@ -614,17 +662,25 @@ function ServerDetail({
     );
   };
 
-  const handleToggleTool = async (toolName: string, enabled: boolean) => {
+  const handleSetRestriction = async (
+    toolName: string,
+    value: McpToolRestriction,
+  ) => {
     if (!currentWorkspace) return;
-    const next = new Set(allowedSet);
-    if (enabled) next.add(toolName);
-    else next.delete(toolName);
-    const allNames = server.cachedTools.map(t => t.name);
-    const coversAll = allNames.every(n => next.has(n));
     await updateServer(currentWorkspace.id, server.id, {
-      toolPolicy: coversAll
-        ? { mode: "all", allowedTools: [] }
-        : { mode: "allowlist", allowedTools: Array.from(next) },
+      toolPolicy: {
+        restrictions: {
+          ...server.toolPolicy.restrictions,
+          [toolName]: value,
+        },
+      },
+    });
+  };
+
+  const handleSetDefaultRestriction = async (value: McpToolRestriction) => {
+    if (!currentWorkspace) return;
+    await updateServer(currentWorkspace.id, server.id, {
+      toolPolicy: { defaultRestriction: value },
     });
   };
 
@@ -690,100 +746,138 @@ function ServerDetail({
           <Divider />
           <Box>
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-              Tools ({server.cachedTools.length})
+              Tool permission restrictions ({server.cachedTools.length})
             </Typography>
             <Typography
               variant="caption"
               color="text.secondary"
-              sx={{ display: "block", mb: 1 }}
+              sx={{ display: "block", mb: 1.5 }}
             >
-              Disabled tools are never shown to the agent. Write tools ask for
-              approval in chat; read tools run automatically.
+              Restrict which permission levels members can choose for each tool.
+              Restrictions set a ceiling — users can always choose a stricter
+              setting.
             </Typography>
-            <Stack spacing={0.25}>
-              {server.cachedTools.map(tool => (
-                <Stack
-                  key={tool.name}
-                  direction="row"
-                  alignItems="center"
-                  spacing={1}
-                  sx={{
-                    py: 0.25,
-                    px: 1,
-                    borderRadius: 1,
-                    "&:hover": { bgcolor: "action.hover" },
-                  }}
-                >
-                  <Switch
-                    size="small"
-                    checked={allowedSet.has(tool.name)}
-                    disabled={!isAdmin}
-                    onChange={e =>
-                      void handleToggleTool(tool.name, e.target.checked)
-                    }
-                  />
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      fontFamily: "monospace",
-                      minWidth: 0,
-                      flex: "0 1 auto",
-                    }}
-                    noWrap
-                  >
-                    {tool.name}
-                  </Typography>
-                  <Chip
-                    label={RISK_TIER_LABELS[tool.riskTier]}
-                    size="small"
-                    variant="outlined"
-                    color={
-                      tool.riskTier === "read"
-                        ? "success"
-                        : tool.riskTier === "destructive"
-                          ? "error"
-                          : "warning"
-                    }
-                    sx={{ height: 18, fontSize: 11 }}
-                  />
-                  {tool.description && (
-                    <Typography
-                      variant="caption"
-                      color="text.secondary"
-                      noWrap
-                      sx={{ flex: 1, minWidth: 0 }}
-                    >
-                      {tool.description}
-                    </Typography>
-                  )}
-                </Stack>
-              ))}
-            </Stack>
-          </Box>
-          {isAdmin &&
-            server.cachedTools.some(t => t.riskTier === "destructive") && (
-              <FormControlLabel
-                control={
-                  <Switch
-                    size="small"
-                    checked={server.toolPolicy.allowDestructiveGrants}
-                    onChange={e =>
-                      currentWorkspace &&
-                      void updateServer(currentWorkspace.id, server.id, {
-                        toolPolicy: {
-                          allowDestructiveGrants: e.target.checked,
-                        },
-                      })
-                    }
-                  />
-                }
-                label={
+
+            {isAdmin && (
+              <Stack
+                direction="row"
+                alignItems="center"
+                spacing={1}
+                sx={{ mb: 1.5, px: 1 }}
+              >
+                <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="body2">
-                    Allow members to “Always allow” destructive tools
+                    Default restriction for unconfigured tools
                   </Typography>
-                }
-              />
+                  <Typography variant="caption" color="text.secondary">
+                    Applies to tools without a specific restriction below,
+                    including tools this server adds later.
+                  </Typography>
+                </Box>
+                <RestrictionControl
+                  value={server.toolPolicy.defaultRestriction}
+                  usesDefault={false}
+                  disabled={!isAdmin}
+                  onChange={value => void handleSetDefaultRestriction(value)}
+                />
+              </Stack>
             )}
+
+            {(
+              [
+                ["Read-only tools", readTools],
+                ["Write/delete tools", writeTools],
+              ] as const
+            ).map(([groupLabel, tools]) =>
+              tools.length === 0 ? null : (
+                <Box key={groupLabel} sx={{ mb: 1.5 }}>
+                  <Typography
+                    variant="caption"
+                    fontWeight={600}
+                    color="text.secondary"
+                    sx={{ display: "block", mb: 0.5, px: 1 }}
+                  >
+                    {groupLabel} ({tools.length})
+                  </Typography>
+                  <Stack spacing={0.25}>
+                    {tools.map(tool => {
+                      const explicit =
+                        server.toolPolicy.restrictions[tool.name];
+                      return (
+                        <Stack
+                          key={tool.name}
+                          direction="row"
+                          alignItems="center"
+                          spacing={1}
+                          sx={{
+                            py: 0.5,
+                            px: 1,
+                            borderRadius: 1,
+                            "&:hover": { bgcolor: "action.hover" },
+                          }}
+                        >
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Stack
+                              direction="row"
+                              spacing={1}
+                              alignItems="center"
+                            >
+                              <Typography
+                                variant="body2"
+                                sx={{ fontFamily: "monospace" }}
+                                noWrap
+                              >
+                                {tool.name}
+                              </Typography>
+                              {tool.riskTier === "destructive" && (
+                                <Chip
+                                  label="Destructive"
+                                  size="small"
+                                  variant="outlined"
+                                  color="error"
+                                  sx={{ height: 16, fontSize: 10 }}
+                                />
+                              )}
+                            </Stack>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              noWrap
+                              sx={{ display: "block" }}
+                            >
+                              {tool.description ?? ""} Users can choose:{" "}
+                              {tool.restriction === "always"
+                                ? "Always allow, Ask, or Block"
+                                : tool.restriction === "ask"
+                                  ? "Ask or Block"
+                                  : "Blocked"}
+                            </Typography>
+                          </Box>
+                          {!explicit && (
+                            <Typography
+                              variant="caption"
+                              color="text.disabled"
+                              sx={{ whiteSpace: "nowrap" }}
+                            >
+                              Uses default
+                            </Typography>
+                          )}
+                          <RestrictionControl
+                            value={tool.restriction}
+                            usesDefault={!explicit}
+                            disabled={!isAdmin}
+                            onChange={value =>
+                              void handleSetRestriction(tool.name, value)
+                            }
+                          />
+                        </Stack>
+                      );
+                    })}
+                  </Stack>
+                </Box>
+              ),
+            )}
+          </Box>
         </>
       )}
 
