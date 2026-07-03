@@ -384,11 +384,153 @@ function RestrictionControl({
   );
 }
 
-function OAuthConnectSection({
+/**
+ * Admin setup for providers that require a pre-registered OAuth application
+ * (e.g. Close: Settings → Developer → OAuth Apps) instead of Dynamic Client
+ * Registration: shows the callback URL to register and stores the app's
+ * client ID/secret (encrypted server-side).
+ */
+function OAuthAppSetup({
   server,
   onNotify,
 }: {
   server: McpServerInfo;
+  onNotify: (message: string, severity: "success" | "error") => void;
+}) {
+  const { currentWorkspace } = useWorkspace();
+  const saveOAuthClient = useMcpStore(s => s.saveOAuthClient);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const oauth = server.oauth;
+  if (!oauth) return null;
+
+  const handleSave = async () => {
+    if (!currentWorkspace || !clientId.trim()) return;
+    setSaving(true);
+    try {
+      await saveOAuthClient(
+        currentWorkspace.id,
+        server.id,
+        clientId.trim(),
+        clientSecret.trim() || undefined,
+      );
+      setClientId("");
+      setClientSecret("");
+      onNotify("OAuth application saved", "success");
+    } catch (err) {
+      onNotify(
+        err instanceof Error ? err.message : "Failed to save OAuth app",
+        "error",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Stack spacing={1}>
+      <Typography variant="subtitle2">
+        OAuth application
+        {oauth.hasClient && (
+          <Chip
+            label={
+              oauth.clientSource === "manual"
+                ? "Configured"
+                : "Auto-registered (DCR)"
+            }
+            size="small"
+            color="success"
+            variant="outlined"
+            sx={{ ml: 1 }}
+          />
+        )}
+      </Typography>
+      <Typography variant="caption" color="text.secondary">
+        {server.connectorType === "close"
+          ? "Create an OAuth app in Close under Settings → Developer → OAuth Apps, "
+          : "If this provider requires a registered OAuth app, create one and "}
+        set its redirect / callback URL to the address below, then paste the
+        {" app\u2019s client ID and secret here. "}
+        Servers that support Dynamic Client Registration register automatically
+        on first connect — no app needed.
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        useFlexGap
+        sx={{ flexWrap: "wrap" }}
+      >
+        <Typography
+          variant="caption"
+          sx={{
+            fontFamily: "monospace",
+            px: 1,
+            py: 0.5,
+            bgcolor: "action.hover",
+            borderRadius: 1,
+            wordBreak: "break-all",
+          }}
+        >
+          {oauth.callbackUrl}
+        </Typography>
+        <Button
+          size="small"
+          onClick={() => {
+            void navigator.clipboard.writeText(oauth.callbackUrl);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </Stack>
+      <Stack
+        direction="row"
+        spacing={1}
+        useFlexGap
+        sx={{ flexWrap: "wrap", rowGap: 1 }}
+      >
+        <TextField
+          label="Client ID"
+          size="small"
+          value={clientId}
+          onChange={e => setClientId(e.target.value)}
+          placeholder={oauth.hasClient ? "•••••••• (saved)" : undefined}
+          sx={{ flex: 1, minWidth: 180 }}
+        />
+        <TextField
+          label="Client secret"
+          size="small"
+          type="password"
+          value={clientSecret}
+          onChange={e => setClientSecret(e.target.value)}
+          placeholder={oauth.hasClient ? "•••••••• (saved)" : undefined}
+          sx={{ flex: 1, minWidth: 180 }}
+        />
+        <Button
+          variant="outlined"
+          size="small"
+          disabled={!clientId.trim() || saving}
+          onClick={() => void handleSave()}
+        >
+          {saving ? "Saving…" : "Save app"}
+        </Button>
+      </Stack>
+    </Stack>
+  );
+}
+
+function OAuthConnectSection({
+  server,
+  isAdmin,
+  onNotify,
+}: {
+  server: McpServerInfo;
+  isAdmin: boolean;
   onNotify: (message: string, severity: "success" | "error") => void;
 }) {
   const { currentWorkspace } = useWorkspace();
@@ -427,6 +569,12 @@ function OAuthConnectSection({
 
   return (
     <Stack spacing={1.5}>
+      {isAdmin && (
+        <>
+          <OAuthAppSetup server={server} onNotify={onNotify} />
+          <Divider />
+        </>
+      )}
       <Typography variant="subtitle2">
         {server.authPerformer === "workspace"
           ? "Workspace account"
@@ -738,7 +886,11 @@ function ServerDetail({
       )}
 
       {server.authType === "oauth" ? (
-        <OAuthConnectSection server={server} onNotify={onNotify} />
+        <OAuthConnectSection
+          server={server}
+          isAdmin={isAdmin}
+          onNotify={onNotify}
+        />
       ) : server.authType === "api_key" ? (
         <CredentialsForm
           server={server}

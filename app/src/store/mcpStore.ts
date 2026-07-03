@@ -38,6 +38,11 @@ export interface McpServerInfo {
     restrictions: Record<string, McpToolRestriction>;
   };
   cachedTools: McpCachedTool[];
+  oauth: {
+    hasClient: boolean;
+    clientSource: "dcr" | "manual" | null;
+    callbackUrl: string;
+  } | null;
   status: McpServerStatus;
   lastError: string | null;
   lastConnectedAt: string | null;
@@ -110,6 +115,13 @@ interface McpActions {
       writeScope?: McpWriteScope;
     },
   ) => Promise<McpServerInfo>;
+  /** Save the admin-created OAuth application (client ID/secret). */
+  saveOAuthClient: (
+    workspaceId: string,
+    serverId: string,
+    clientId: string,
+    clientSecret?: string,
+  ) => Promise<void>;
   /** Start the OAuth flow; resolves with the URL to send the browser to. */
   startOAuth: (
     workspaceId: string,
@@ -234,6 +246,19 @@ export const useMcpStore = create<McpStore>()(
       ) as { server: McpServerInfo };
       await get().fetchServers(workspaceId);
       return response.server;
+    },
+
+    saveOAuthClient: async (workspaceId, serverId, clientId, clientSecret) => {
+      unwrapBody(
+        await api.PUT(
+          "/api/workspaces/{workspaceId}/mcp-servers/{id}/oauth-client",
+          {
+            params: { path: { workspaceId, id: serverId } },
+            body: { clientId, clientSecret },
+          },
+        ),
+      );
+      await get().fetchServers(workspaceId);
     },
 
     startOAuth: async (workspaceId, serverId) => {

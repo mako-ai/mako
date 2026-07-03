@@ -105,6 +105,9 @@ class MongoOAuthClientProvider implements OAuthClientProvider {
   async saveClientInformation(
     clientInformation: OAuthClientInformationMixed,
   ): Promise<void> {
+    // Only called for Dynamic Client Registration (the SDK registers only
+    // when clientInformation() returned undefined, so an admin-provided
+    // manual client is never overwritten here).
     await McpServer.updateOne(
       { _id: this.server._id },
       {
@@ -112,6 +115,7 @@ class MongoOAuthClientProvider implements OAuthClientProvider {
           "oauth.clientInformation": encryptString(
             JSON.stringify(clientInformation),
           ),
+          "oauth.clientSource": "dcr",
         },
       },
     );
@@ -191,9 +195,39 @@ class MongoOAuthClientProvider implements OAuthClientProvider {
 }
 
 /**
- * Begin the OAuth flow for a server/connection: discover metadata, register
- * the client (DCR) if needed, mint PKCE + state, persist the pending flow,
- * and return the authorization URL for the browser to visit.
+ * Store an admin-provided OAuth application (client ID + optional secret)
+ * for a server. Providers like Close require creating an OAuth app with our
+ * callback URL instead of supporting Dynamic Client Registration for custom
+ * clients; when a manual client is configured, the SDK skips DCR entirely.
+ */
+export async function setMcpOAuthClient(
+  serverId: Types.ObjectId,
+  clientId: string,
+  clientSecret?: string,
+): Promise<void> {
+  const clientInformation = {
+    client_id: clientId,
+    ...(clientSecret ? { client_secret: clientSecret } : {}),
+    redirect_uris: [mcpOAuthCallbackUrl()],
+  };
+  await McpServer.updateOne(
+    { _id: serverId },
+    {
+      $set: {
+        "oauth.clientInformation": encryptString(
+          JSON.stringify(clientInformation),
+        ),
+        "oauth.clientSource": "manual",
+      },
+    },
+  );
+}
+
+/**
+ * Begin the OAuth flow for a server/connection: discover metadata, use the
+ * admin-provided OAuth app when configured (register via DCR otherwise),
+ * mint PKCE + state, persist the pending flow, and return the authorization
+ * URL for the browser to visit.
  */
 export async function startMcpOAuthFlow(params: {
   server: IMcpServer;

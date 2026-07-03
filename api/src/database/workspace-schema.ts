@@ -4931,13 +4931,17 @@ export interface IMcpServer extends Document {
     restrictions: Record<string, McpToolRestriction>;
   };
   /**
-   * OAuth client registration (Dynamic Client Registration) for this server.
-   * Shared across all users connecting to the server; per-user tokens live on
-   * their `mcp_connection_configs` document. `clientInformation` is the
-   * encrypted JSON of the DCR response (client_id, client_secret, ...).
+   * OAuth client registration for this server — shared across all users
+   * connecting to it; per-user tokens live on their `mcp_connection_configs`
+   * document. `clientInformation` is encrypted JSON (client_id,
+   * client_secret, ...): either the Dynamic Client Registration response, or
+   * an admin-provided OAuth app (providers like Close require creating an
+   * OAuth app with our callback URL instead of supporting DCR for custom
+   * clients). `clientSource` records which one it is.
    */
   oauth?: {
     clientInformation?: string;
+    clientSource?: "dcr" | "manual";
   };
   /** Discovered tools from the last successful connect/test. */
   cachedTools: IMcpCachedTool[];
@@ -5025,6 +5029,7 @@ const McpServerSchema = new Schema<IMcpServer>(
       type: new Schema(
         {
           clientInformation: { type: String },
+          clientSource: { type: String, enum: ["dcr", "manual"] },
         },
         { _id: false },
       ),

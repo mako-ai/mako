@@ -34,6 +34,8 @@ import {
 } from "../services/mcp-client.service";
 import {
   completeMcpOAuthFlow,
+  mcpOAuthCallbackUrl,
+  setMcpOAuthClient,
   startMcpOAuthFlow,
 } from "../services/mcp-oauth.service";
 
@@ -203,6 +205,14 @@ function serializeServer(
       riskTier: mcpToolRiskTier(server, t),
       restriction: mcpToolRestriction(server, t),
     })),
+    oauth:
+      server.authType === "oauth"
+        ? {
+            hasClient: !!server.oauth?.clientInformation,
+            clientSource: server.oauth?.clientSource ?? null,
+            callbackUrl: mcpOAuthCallbackUrl(),
+          }
+        : null,
     status: server.status,
     lastError: server.lastError ?? null,
     lastConnectedAt: server.lastConnectedAt ?? null,
@@ -630,6 +640,85 @@ mcpRoutes.openapi(
       logger.error("Error saving MCP credentials", { error });
       return c.json(
         { success: false, error: "Failed to save credentials" },
+        500,
+      );
+    }
+  },
+);
+
+const OAuthClientSchema = z.object({
+  clientId: z.string().min(1).max(200),
+  clientSecret: z.string().max(500).optional(),
+});
+
+// --- Configure the OAuth application for a server (admin) ---
+// Providers like Close require creating an OAuth app (with our callback URL)
+// instead of supporting Dynamic Client Registration for custom clients.
+mcpRoutes.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/oauth-client",
+    tags: ["MCP"],
+    summary: "Set the OAuth application (client ID/secret) for an MCP server",
+    security: AUTH_SECURITY,
+    request: {
+      params: ServerIdParam,
+      body: {
+        required: true,
+        content: { "application/json": { schema: OAuthClientSchema } },
+      },
+    },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId");
+      const id = c.req.param("id");
+      if (!workspaceId || !id) {
+        return c.json({ success: false, error: "Server not found" }, 404);
+      }
+      const adminUserId = await requireAdmin(
+        c as AuthenticatedContext,
+        workspaceId,
+      );
+      if (!adminUserId) {
+        return c.json(
+          { success: false, error: "Workspace admin role required" },
+          403,
+        );
+      }
+      const server = await loadServer(workspaceId, id);
+      if (!server) {
+        return c.json({ success: false, error: "Server not found" }, 404);
+      }
+      if (server.authType !== "oauth") {
+        return c.json(
+          { success: false, error: "This server does not use OAuth" },
+          400,
+        );
+      }
+      const parsed = OAuthClientSchema.safeParse(await c.req.json());
+      if (!parsed.success) {
+        return c.json({ success: false, error: "Invalid request body" }, 400);
+      }
+      await setMcpOAuthClient(
+        server._id,
+        parsed.data.clientId.trim(),
+        parsed.data.clientSecret?.trim() || undefined,
+      );
+      logger.info("MCP OAuth client configured", {
+        workspaceId,
+        serverId: server._id.toString(),
+      });
+      const updated = await loadServer(workspaceId, id);
+      return c.json({
+        success: true,
+        server: updated ? serializeServer(updated) : undefined,
+      });
+    } catch (error) {
+      logger.error("Error setting MCP OAuth client", { error });
+      return c.json(
+        { success: false, error: "Failed to save OAuth application" },
         500,
       );
     }
