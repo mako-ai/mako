@@ -80,6 +80,7 @@ import {
 } from "../services/resumable-stream.service";
 import { hasAttachedClients } from "../services/realtime-presence.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
+import { reportPubSubFailure } from "../services/pubsub.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   buildScreenshotVisionModelMessage,
@@ -1049,13 +1050,18 @@ agentRoutes.openapi(
                   state: "streaming",
                 });
               } catch (error) {
-                // Resumability is best-effort: the direct response stream to the
-                // originating client is unaffected by failures here.
-                logger.warn("Failed to set up resumable stream", {
+                // Resumability is best-effort: the direct response stream to
+                // the originating client is unaffected by failures here. But
+                // it failing means reload/second-device reattach is silently
+                // broken for this turn — log at ERROR so Error Reporting
+                // alerts (the Upstash quota exhaustion hid behind a warn),
+                // and feed the throttled backend-level reporter.
+                logger.error("Failed to set up resumable stream", {
                   error,
                   chatId,
                   streamId,
                 });
+                reportPubSubFailure("resumable-stream-setup", error);
               }
             },
             onFinish: ({ messages: allMessages, isAborted }) => {

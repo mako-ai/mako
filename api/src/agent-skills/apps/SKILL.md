@@ -126,6 +126,26 @@ errors); `open_app` just focuses a UI tab.
    `materialize_binding`. An explicit `materialize_binding` always rebuilds from
    current upstream data (it force-refreshes past the query-definition cache).
 
+   **dbt-linked bindings (environment-agnostic SQL):** when a binding reads
+   tables built by a Mako dbt project, pass `dbtProjectId` (from
+   `read_dbt_project_tree`) to `app_create_data_binding` /
+   `app_update_data_binding` and reference the schema via the
+   `{{ dbt_schema }}` token instead of hardcoding it:
+
+   ```sql
+   SELECT * FROM {{ dbt_schema }}.fct_revenue
+   ```
+
+   The token resolves to the dbt project's PROD-like environment schema for
+   published apps, parquet materialization, and public shares. In the DRAFT
+   preview it can be switched per user with `app_set_preview_environment`
+   (e.g. to a personal `dbt_<user>` schema) to verify an app against
+   freshly-built dev models WITHOUT affecting other editors or viewers —
+   pass `environment: null` to reset to prod. While an override is active,
+   dbt-linked parquet bindings run live (row-capped) in the preview so the
+   prod artifact is never rebuilt from dev data. See the `dbt` skill for the
+   full model-iteration → preview → promote loop.
+
    **Result row cap:** rows delivered to the app are capped per query/binding read
    (default 500,000 — the bridge into the sandboxed iframe). Both hooks return
    `truncated: true` when rows beyond the cap were dropped, and `useDuckDB` also

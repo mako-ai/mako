@@ -3903,6 +3903,13 @@ export interface IMakoAppBindingCache {
 export interface IMakoAppDataBinding {
   id: string;
   name: string;
+  /**
+   * Optional link to a dbt project. When set, the `{{ dbt_schema }}` token in
+   * `code` resolves to a dbt environment's target schema at execution time —
+   * the prod-like environment by default (published apps, materialization,
+   * public shares), or a per-user preview override in the draft preview.
+   */
+  dbtProjectId?: string;
   connectionId: string;
   language: "sql" | "javascript" | "mongodb";
   code: string;
@@ -4003,6 +4010,7 @@ const MakoAppDataBindingSchema = new Schema<IMakoAppDataBinding>(
   {
     id: { type: String, required: true },
     name: { type: String, required: true },
+    dbtProjectId: { type: String },
     connectionId: { type: String, required: true },
     language: {
       type: String,
@@ -4223,6 +4231,14 @@ export interface IDbtEnvironment {
   threads: number;
   /** dbt vars passed as --vars for every command in this environment. */
   vars?: Record<string, unknown>;
+  /**
+   * Personal (per-developer) environment: set to the owning user's id when
+   * this environment was auto-provisioned as that user's private dev target
+   * (dbt Cloud-style development credentials, e.g. schema `dbt_jonas`).
+   * Unset for shared environments (dev/prod). Agent/user actions without an
+   * explicit environment default to the caller's personal environment.
+   */
+  ownerUserId?: string;
 }
 
 /**
@@ -4302,6 +4318,7 @@ const DbtEnvironmentSchema = new Schema<IDbtEnvironment>(
     targetSchema: { type: String, required: true, trim: true },
     threads: { type: Number, default: 4, min: 1, max: 16 },
     vars: { type: Schema.Types.Mixed },
+    ownerUserId: { type: String },
   },
   { _id: false },
 );
@@ -4686,6 +4703,14 @@ export interface IDbtRun extends Document {
    */
   workingTreeUserId?: string;
   /**
+   * Ad-hoc/agent runs only: run with `--defer --state <prod manifest>` so
+   * unselected refs resolve to the last production build instead of
+   * rebuilding the whole upstream DAG in the target schema. Job runs read
+   * the flag from the job (`job.deferToProduction`) and CI runs from the
+   * project CI config, so those leave this unset.
+   */
+  deferToProduction?: boolean;
+  /**
    * Pull-request CI context (trigger === "ci"). Drives the GitHub commit
    * status posted back to the PR head on completion.
    */
@@ -4760,6 +4785,7 @@ const DbtRunSchema = new Schema<IDbtRun>(
     triggeredBy: { type: String, required: true },
     gitBranch: { type: String },
     workingTreeUserId: { type: String },
+    deferToProduction: { type: Boolean },
     ci: {
       type: new Schema(
         {

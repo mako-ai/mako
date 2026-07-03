@@ -41,7 +41,16 @@ import {
   getLatestVersionNumber,
   getUserDisplayName,
 } from "../../services/entity-version.service";
-import { runAdhocDbtCommand } from "../../dbt/dbt-project.service";
+import {
+  loadDbtDeferState,
+  runAdhocDbtCommand,
+} from "../../dbt/dbt-project.service";
+import {
+  ensurePersonalDbtEnvironment,
+  findPersonalEnvironment,
+  resolveEnvironmentNameForUser,
+  resolveProdLikeEnvironmentName,
+} from "../../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
@@ -313,6 +322,43 @@ export const createDbtServerTools = (
     return null;
   };
 
+  type EnvProject = Parameters<typeof resolveEnvironmentNameForUser>[0] & {
+    lastProdManifestKey?: string;
+  };
+
+  /**
+   * Environment an ad-hoc action targets when the agent passed none: the
+   * acting user's personal environment when provisioned, else the project
+   * default. Explicit names always win.
+   */
+  const resolveEnvironment = (
+    project: EnvProject,
+    requested?: string,
+  ): string => resolveEnvironmentNameForUser(project, actingUserId, requested);
+
+  /**
+   * Default defer decision for ad-hoc builds/previews: defer to the last prod
+   * manifest when iterating OUTSIDE the prod-like environment and a prod
+   * build exists — so one model can be rebuilt in a personal schema without
+   * first rebuilding its whole upstream DAG there.
+   */
+  const shouldDeferByDefault = (
+    project: EnvProject,
+    environmentName: string,
+  ): boolean =>
+    Boolean(project.lastProdManifestKey) &&
+    environmentName !== resolveProdLikeEnvironmentName(project);
+
+  const deferField = z
+    .boolean()
+    .optional()
+    .describe(
+      "Run with --defer --state <last prod manifest> so unselected refs " +
+        "resolve to the production build (fast iteration: no need to " +
+        "rebuild upstream models in your schema). Defaults to true when " +
+        "targeting a non-prod environment and a prod manifest exists.",
+    );
+
   // Snapshot a dbt file version (entity-version pattern, mirrors the route).
   const snapshotVersion = async (
     fileId: Types.ObjectId,
@@ -362,6 +408,9 @@ export const createDbtServerTools = (
                   name: env.name,
                   targetSchema: env.targetSchema,
                   connectionId: env.connectionId?.toString(),
+                  ...(env.ownerUserId
+                    ? { personal: true, ownerUserId: env.ownerUserId }
+                    : {}),
                 })),
               })),
             };
@@ -530,11 +579,12 @@ export const createDbtServerTools = (
           if (!isSafeDbtPath(path)) {
             return { success: false, error: "Invalid file path" };
           }
-          const file = await DbtFile.findOne({
-            projectId: project._id,
-            path,
-            is_deleted: { $ne: true },
-          });
+          // Read + write through the working-tree service (same as
+          // modify_dbt_file): repo projects edit the caller's DRAFT overlay
+          // on their checkout branch — never the committed base tree — so
+          // the edit shows up in dbt_git_status / the Version Control UI and
+          // stays invisible to other users until committed.
+          const file = await readWorkingFile(project, actingUserId, path);
           if (!file) {
             return {
               success: false,
@@ -560,11 +610,14 @@ export const createDbtServerTools = (
             newString,
             result.replacements,
           );
-          file.content = result.contents;
-          if (userId) file.updatedBy = userId;
-          await file.save();
+          const { versionEntityId } = await writeWorkingFile(
+            project,
+            actingUserId,
+            path,
+            result.contents,
+          );
           await snapshotVersion(
-            file._id,
+            versionEntityId,
             project.workspaceId,
             path,
             result.contents,
@@ -573,7 +626,9 @@ export const createDbtServerTools = (
             { _id: project._id },
             { $currentDate: { updatedAt: true } },
           );
-          publishFileUpdated(projectId, path);
+          publishFileUpdated(projectId, path, {
+            draft: Boolean(project.repo),
+          });
           return {
             success: true,
             path,
@@ -724,6 +779,55 @@ export const createDbtServerTools = (
       },
     }),
 
+    dbt_ensure_dev_environment: tool({
+      description:
+        "Idempotently provision the acting user's PERSONAL dbt environment " +
+        "on a project (dbt Cloud-style development credentials): same " +
+        "warehouse connection as prod, private schema `dbt_<user>`. Once it " +
+        "exists, dbt_parse / dbt_compile_model / dbt_run_model / dbt_show " +
+        "default to it automatically, so iteration never writes to shared " +
+        "dev/prod schemas. Call this before building models when the user " +
+        "wants to iterate safely (or when read_dbt_project_tree shows no " +
+        "personal environment). Safe to call repeatedly.",
+      inputSchema: z.object({ projectId: projectIdField }),
+      execute: async ({ projectId }) => {
+        try {
+          const project = await assertProject(projectId);
+          if (!userId) {
+            return {
+              success: false,
+              error:
+                "Personal environments require a user session; pick an " +
+                "explicit environment instead.",
+            };
+          }
+          const existing = findPersonalEnvironment(project, userId);
+          const result = existing
+            ? { environment: existing, created: false }
+            : await ensurePersonalDbtEnvironment({
+                workspaceId,
+                projectId,
+                userId,
+              });
+          if (result.created) publishProjectUpdated(projectId);
+          return {
+            success: true,
+            created: result.created,
+            environment: result.environment.name,
+            targetSchema: result.environment.targetSchema,
+            message: result.created
+              ? `Personal environment "${result.environment.name}" created ` +
+                `(schema ${result.environment.targetSchema}). Ad-hoc dbt ` +
+                "tools now default to it."
+              : `Personal environment "${result.environment.name}" already ` +
+                `exists (schema ${result.environment.targetSchema}).`,
+          };
+        } catch (error) {
+          return toolError(error, "Failed to ensure personal environment");
+        }
+      },
+    }),
+
     dbt_parse: tool({
       description:
         "Validate the entire dbt project (dbt parse): catches Jinja errors, " +
@@ -734,15 +838,18 @@ export const createDbtServerTools = (
         environment: z
           .string()
           .optional()
-          .describe("Environment name; defaults to the project default (dev)"),
+          .describe(
+            "Environment name; defaults to your personal environment when " +
+              "provisioned, else the project default",
+          ),
       }),
       execute: async ({ projectId, environment }) => {
         try {
-          await assertProject(projectId);
+          const project = await assertProject(projectId);
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: environment,
+            environmentName: resolveEnvironment(project, environment),
             userId: actingUserId,
             command: "parse",
             timeoutMs: 2 * 60 * 1000,
@@ -775,24 +882,32 @@ export const createDbtServerTools = (
             "Node name (stg_orders) or dbt selector (+stg_orders, tag:nightly)",
           ),
         environment: z.string().optional(),
+        defer: deferField,
       }),
-      execute: async ({ projectId, model, environment }) => {
+      execute: async ({ projectId, model, environment, defer }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
-          await assertProject(projectId);
+          const project = await assertProject(projectId);
+          const environmentName = resolveEnvironment(project, environment);
+          const wantsDefer =
+            defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: environment,
+            environmentName,
             userId: actingUserId,
             command: `compile --select ${model}`,
             select: model,
+            deferState: wantsDefer
+              ? await loadDbtDeferState(project)
+              : undefined,
             timeoutMs: 3 * 60 * 1000,
           });
           return {
             success: result.success,
+            environment: environmentName,
             compiledSql: result.compiledSql,
             logs: summarizeLogs(result.logs),
           };
@@ -825,16 +940,21 @@ export const createDbtServerTools = (
           .string()
           .optional()
           .describe(
-            "Environment name; defaults to the project default (dev). Only " +
-              "use prod when the user explicitly asks.",
+            "Environment name; defaults to your personal environment when " +
+              "provisioned, else the project default (dev). Only use prod " +
+              "when the user explicitly asks.",
           ),
+        defer: deferField,
       }),
-      execute: async ({ projectId, model, environment }) => {
+      execute: async ({ projectId, model, environment, defer }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
+          const environmentName = resolveEnvironment(project, environment);
+          const wantsDefer =
+            defer ?? shouldDeferByDefault(project, environmentName);
           // Dispatch to the async runner instead of blocking the chat turn for
           // the full build. The build executes in the Inngest worker
           // (decoupled from this SSE connection), so it survives proxy idle
@@ -843,13 +963,14 @@ export const createDbtServerTools = (
           const run = await triggerDbtRun({
             workspaceId,
             projectId,
-            environment: environment ?? project.defaultEnvironment,
+            environment: environmentName,
             commands: [`build --select ${model}`],
             trigger: "agent",
             triggeredBy: "agent",
             // Build the acting user's working tree (checkout + drafts) so
             // the run verifies exactly the uncommitted edits just made.
             workingTreeUserId: project.repo ? actingUserId : undefined,
+            deferToProduction: wantsDefer,
           });
           publishRunUpdated(projectId, { runId: run._id.toString() });
           return {
@@ -857,11 +978,16 @@ export const createDbtServerTools = (
             runId: run._id.toString(),
             status: run.status,
             environment: run.environment,
+            defer: wantsDefer,
             commands: run.commands,
             message:
               "Build started in the runner. Poll dbt_get_run with this runId " +
               "(pass waitMs) until status is success/error. The user sees " +
-              "live progress in the run card.",
+              "live progress in the run card." +
+              (wantsDefer
+                ? " Running with --defer: unselected refs resolve to the " +
+                  "last prod build."
+                : ""),
           };
         } catch (error) {
           return toolError(error, "Failed to run model");
@@ -1095,19 +1221,26 @@ export const createDbtServerTools = (
           .default(5)
           .describe("Max rows to preview (default 5)"),
         environment: z.string().optional(),
+        defer: deferField,
       }),
-      execute: async ({ projectId, model, limit, environment }) => {
+      execute: async ({ projectId, model, limit, environment, defer }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
-          await assertProject(projectId);
+          const project = await assertProject(projectId);
+          const environmentName = resolveEnvironment(project, environment);
+          const wantsDefer =
+            defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: environment,
+            environmentName,
             userId: actingUserId,
             command: `show --select ${model} --limit ${limit}`,
+            deferState: wantsDefer
+              ? await loadDbtDeferState(project)
+              : undefined,
             timeoutMs: 3 * 60 * 1000,
           });
           // The preview table arrives as info-level log line(s) (ShowNode);

@@ -119,6 +119,20 @@ export const AppDataBindingSchema = z.object({
     .string()
     .min(1)
     .describe("Binding name referenced from app code, e.g. `revenue`"),
+  /**
+   * Optional link to a dbt project. When set, the `{{ dbt_schema }}` token in
+   * `code` resolves to a dbt environment's target schema at execution time:
+   * the prod-like environment by default (published apps, parquet
+   * materialization, public shares), or the editor's per-user preview
+   * override in the draft preview. Keeps binding SQL environment-agnostic —
+   * never hardcode `dbt_prod.` when linking a binding to dbt.
+   */
+  dbtProjectId: z
+    .string()
+    .optional()
+    .describe(
+      "dbt project id this binding reads from; enables the {{ dbt_schema }} token in code",
+    ),
   connectionId: z
     .string()
     .describe("Workspace DatabaseConnection id to execute the query against"),
@@ -156,6 +170,28 @@ export const AppDefinitionSchema = z.object({
   dataBindings: z.array(AppDataBindingSchema).default([]),
 });
 export type AppDefinition = z.infer<typeof AppDefinitionSchema>;
+
+/**
+ * `{{ dbt_schema }}` token in dbt-linked binding queries. Whitespace inside
+ * the braces is flexible (`{{dbt_schema}}`, `{{ dbt_schema }}`); resolution
+ * substitutes the target schema of the binding's dbt environment.
+ */
+export const DBT_SCHEMA_TOKEN_RE = /\{\{\s*dbt_schema\s*\}\}/g;
+
+/** True when `code` references the `{{ dbt_schema }}` token. */
+export function containsDbtSchemaToken(code: string): boolean {
+  DBT_SCHEMA_TOKEN_RE.lastIndex = 0;
+  return DBT_SCHEMA_TOKEN_RE.test(code);
+}
+
+/**
+ * Substitute every `{{ dbt_schema }}` occurrence with `schema`. Pure string
+ * templating — callers decide which environment's schema applies (prod for
+ * published/materialized/public paths, the preview override for drafts).
+ */
+export function resolveDbtSchemaToken(code: string, schema: string): string {
+  return code.replace(DBT_SCHEMA_TOKEN_RE, schema);
+}
 
 /** Normalize a files array: trim paths, drop empties, de-dupe by path (last wins). */
 export function normalizeAppFiles(files: AppFile[]): AppFile[] {

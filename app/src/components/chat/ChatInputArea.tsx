@@ -32,6 +32,9 @@ interface ChatInputAreaProps {
   paletteMode: "light" | "dark";
   editingPrompt: QueuedPrompt | null;
   onCancelEdit: () => void;
+  /** A submitted plan is awaiting review — sent messages become plan
+   * feedback (Cursor-style), so the placeholder reflects that. */
+  planFeedbackMode?: boolean;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -53,6 +56,7 @@ export const ChatInputArea = React.memo(
     paletteMode: _paletteMode,
     editingPrompt,
     onCancelEdit,
+    planFeedbackMode = false,
   }: ChatInputAreaProps) => {
     const [input, setInput] = useState("");
     const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -328,7 +332,11 @@ export const ChatInputArea = React.memo(
             minRows={1}
             maxRows={24}
             placeholder={
-              editingPrompt ? "Edit queued message..." : "Ask Chat..."
+              editingPrompt
+                ? "Edit queued message..."
+                : planFeedbackMode
+                  ? "Suggest changes to the plan..."
+                  : "Ask Chat..."
             }
             value={input}
             onChange={e => setInput(e.target.value)}

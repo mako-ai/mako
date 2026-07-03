@@ -330,6 +330,14 @@ const Chat: React.FC<ChatProps> = ({
   // pendingInteractiveTool memo); declared here so useQueuedPrompts can close
   // over it.
   const pendingPlanToolCallIdRef = useRef<string | null>(null);
+  // One-shot latch: suppress the SDK auto-send triggered by `addToolOutput`
+  // when plan feedback resolves the tool — the feedback is then sent as a
+  // real user message (visible in the chat), carrying the resolved tool
+  // output and the message in a single request. Consumed by the
+  // `sendAutomaticallyWhen` predicate below; reset in onFinish as a leak
+  // guard (e.g. the SDK skipped the predicate because a request was already
+  // in flight).
+  const suppressNextAutoSendRef = useRef(false);
   workspaceIdRef.current = currentWorkspace?.id;
   modelIdRef.current = selectedModelId;
   chatIdRef.current = chatId;
@@ -340,6 +348,20 @@ const Chat: React.FC<ChatProps> = ({
     }
     return lastAssistantMessageIsCompleteWithToolCalls(options);
   }, []);
+
+  // The predicate handed to useChat. Split from `autoSendWhenComplete` (also
+  // used by the queued-prompt drain as a soft-block mirror) so the one-shot
+  // plan-feedback latch is only ever consumed by the SDK's own check.
+  const sdkAutoSendWhen = useCallback(
+    (options: AutoSendPredicateArgs) => {
+      if (suppressNextAutoSendRef.current) {
+        suppressNextAutoSendRef.current = false;
+        return false;
+      }
+      return autoSendWhenComplete(options);
+    },
+    [autoSendWhenComplete],
+  );
 
   // Create transport once — prepareSendMessagesRequest reads all dynamic
   // values from getState() / refs at request time, so the transport identity
@@ -444,7 +466,7 @@ const Chat: React.FC<ChatProps> = ({
     experimental_throttle: 50,
 
     // Automatically submit when all tool results are available
-    sendAutomaticallyWhen: autoSendWhenComplete,
+    sendAutomaticallyWhen: sdkAutoSendWhen,
 
     // Handle client-side tools (console operations). The implementation
     // lives in useClientToolDispatch (it needs useChat state for its
@@ -467,8 +489,10 @@ const Chat: React.FC<ChatProps> = ({
       // prompts off it. (A force-send drains via the status-transition
       // effect once the interrupted turn settles.)
       if (isAbort) return;
-      // The turn settled cleanly — reset the resume-retry budget.
+      // The turn settled cleanly — reset the resume-retry budget and release
+      // a plan-feedback auto-send latch that was never consumed (leak guard).
       errorResumeRef.current.count = 0;
+      suppressNextAutoSendRef.current = false;
       if (!isExistingChatRef.current) {
         fetchSessionsRef.current?.();
       }
@@ -781,11 +805,12 @@ const Chat: React.FC<ChatProps> = ({
   // routed to the tool output as request_changes feedback instead of a normal
   // user message. Ref (declared above useChat) keeps handleChatSubmit's
   // identity stable (perf rules).
-  pendingPlanToolCallIdRef.current =
+  const isPlanAwaitingFeedback =
     pendingInteractiveTool?.toolName === "submit_plan" &&
-    !pendingInteractiveTool.streaming
-      ? pendingInteractiveTool.toolCallId
-      : null;
+    !pendingInteractiveTool.streaming;
+  pendingPlanToolCallIdRef.current = isPlanAwaitingFeedback
+    ? pendingInteractiveTool.toolCallId
+    : null;
 
   // Pending submit_plan: register the plan + its resolver in planStore and
   // auto-open the main-view plan tab (once per toolCallId, as soon as
@@ -889,6 +914,7 @@ const Chat: React.FC<ChatProps> = ({
     capturedDashboardIdRef,
     activeConsoleIdRef,
     pendingPlanToolCallIdRef,
+    suppressNextAutoSendRef,
     autoSendWhenComplete,
     interruptActiveTurn,
     drainQueuedPromptAfterTurnRef,
@@ -1319,6 +1345,7 @@ const Chat: React.FC<ChatProps> = ({
         paletteMode={paletteMode}
         editingPrompt={editingPrompt}
         onCancelEdit={handleCancelEditQueuedPrompt}
+        planFeedbackMode={isPlanAwaitingFeedback}
       />
 
       {/* Tool Debug Dialog */}

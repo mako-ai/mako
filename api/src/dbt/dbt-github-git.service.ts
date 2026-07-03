@@ -993,26 +993,38 @@ export async function mergeProjectPullRequest(
     let branchDeleted = false;
     let branchDeleteWarning: string | undefined;
     if (params.deleteBranch !== false) {
-      const deleteResult = await tryDeleteBranch(
-        owner,
-        repo,
-        pr.headRef,
-        token,
-      );
-      branchDeleted = deleteResult.deleted;
-      branchDeleteWarning = deleteResult.warning;
-      if (branchDeleted) {
-        await deleteBranchBaseTree(fresh, pr.headRef);
-        await DbtCheckout.updateMany(
-          { projectId: fresh._id, branch: pr.headRef },
-          {
-            $set: {
-              branch: defaultBranch,
-              lastSyncedSha: syncResult.sha,
-              lastSyncedAt: new Date(),
+      if (pr.headRef === fresh.repo.branch) {
+        // Never delete the project's tracked branch (or its base tree) — that
+        // is what deploy/job runs build. A stale tracked pointer (left behind
+        // by the pre-per-user-working-trees model) would otherwise take the
+        // whole committed tree with it and break every scheduled run with
+        // "No dbt_project.yml found". Mirrors closeProjectPullRequest.
+        branchDeleteWarning =
+          `Branch "${pr.headRef}" was not deleted — it is the project's ` +
+          "tracked branch. Change the project's branch in settings first if " +
+          "you want to remove it.";
+      } else {
+        const deleteResult = await tryDeleteBranch(
+          owner,
+          repo,
+          pr.headRef,
+          token,
+        );
+        branchDeleted = deleteResult.deleted;
+        branchDeleteWarning = deleteResult.warning;
+        if (branchDeleted) {
+          await deleteBranchBaseTree(fresh, pr.headRef);
+          await DbtCheckout.updateMany(
+            { projectId: fresh._id, branch: pr.headRef },
+            {
+              $set: {
+                branch: defaultBranch,
+                lastSyncedSha: syncResult.sha,
+                lastSyncedAt: new Date(),
+              },
             },
-          },
-        ).exec();
+          ).exec();
+        }
       }
     }
 

@@ -18,6 +18,25 @@ export interface DbtEnvironment {
   targetSchema: string;
   threads: number;
   vars?: Record<string, unknown>;
+  /**
+   * Personal (per-developer) environment: set to the owning user's id when
+   * auto-provisioned as that user's private dev target (schema `dbt_<user>`).
+   * Selectors hide other users' personal environments.
+   */
+  ownerUserId?: string;
+}
+
+/**
+ * Environments the given user may target: shared environments plus their own
+ * personal environment (other users' personal targets are hidden).
+ */
+export function visibleDbtEnvironments(
+  environments: DbtEnvironment[] | undefined,
+  userId: string | undefined,
+): DbtEnvironment[] {
+  return (environments ?? []).filter(
+    env => !env.ownerUserId || env.ownerUserId === userId,
+  );
 }
 
 export interface DbtRepoBinding {
@@ -346,9 +365,20 @@ interface DbtActions {
       dbtVersion?: string;
       ci?: DbtCiConfig;
       protectedBranches?: string[];
+      /** Tracked branch of the repo binding (what deploy/job runs build). */
+      repoBranch?: string;
     },
   ) => Promise<DbtProjectItem | null>;
   deleteProject: (workspaceId: string, projectId: string) => Promise<boolean>;
+  /**
+   * Idempotently provision the caller's personal (per-developer) environment
+   * on a project (schema `dbt_<user>`, same connection as prod). Returns the
+   * environment or null on failure.
+   */
+  ensurePersonalEnvironment: (
+    workspaceId: string,
+    projectId: string,
+  ) => Promise<DbtEnvironment | null>;
   fetchGitHubStatus: (workspaceId: string) => Promise<GitHubStatus | null>;
   fetchGitHubRepos: (
     workspaceId: string,
@@ -501,6 +531,13 @@ interface DbtActions {
     projectId: string,
     branch: string,
   ) => Promise<void>;
+  /**
+   * Focus/reconnect backstop (same role syncRevisions plays for consoles):
+   * re-pull the working-tree git status for every repo-bound project this
+   * window has loaded, so missed SSE pokes (backgrounded tab, dropped
+   * stream) cannot leave the branch label or change list stale.
+   */
+  reconcileRemoteGitState: (workspaceId: string) => Promise<void>;
 
   fetchJobs: (workspaceId: string, projectId: string) => Promise<void>;
   saveJob: (
@@ -710,6 +747,30 @@ export const useDbtStore = create<DbtStore>()(
       } catch (error) {
         set(state => {
           state.error.projects = errMessage(error, "Failed to update project");
+        });
+        return null;
+      }
+    },
+
+    ensurePersonalEnvironment: async (workspaceId, projectId) => {
+      try {
+        const response = await apiClient.post<{
+          success: boolean;
+          created: boolean;
+          environment: DbtEnvironment;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/environments/personal`,
+          {},
+        );
+        // Refresh the project so selectors pick up the new environment.
+        if (response.created) await get().fetchProjects(workspaceId);
+        return response.environment ?? null;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to create personal environment",
+          );
         });
         return null;
       }
@@ -1335,6 +1396,37 @@ export const useDbtStore = create<DbtStore>()(
       ]);
     },
 
+    reconcileRemoteGitState: async workspaceId => {
+      const state = get();
+      // Only repo-bound projects this window already pulled state for — a
+      // window that never opened the dbt surface has nothing to reconcile
+      // (DbtExplorer fetches fresh state on mount).
+      const projectIds = state.projects
+        .filter(
+          project =>
+            project.repo &&
+            (state.gitStatusByProject[project._id] ||
+              state.filePathsByProject[project._id]),
+        )
+        .map(project => project._id);
+      await Promise.all(
+        projectIds.map(async projectId => {
+          const previousBranch = get().checkoutBranchByProject[projectId];
+          const status = await get().fetchGitStatus(workspaceId, projectId);
+          if (!status) return;
+          if (previousBranch && status.branch !== previousBranch) {
+            // The checkout moved while this window missed the poke (e.g.
+            // branch switched in another window during a dropped stream):
+            // the cached tree/contents belong to the old branch.
+            set(draft => {
+              delete draft.filesByProject[projectId];
+            });
+            await get().fetchFiles(workspaceId, projectId);
+          }
+        }),
+      );
+    },
+
     deleteFile: async (workspaceId, projectId, path) => {
       try {
         await apiClient.delete(
@@ -1364,7 +1456,8 @@ export const useDbtStore = create<DbtStore>()(
       try {
         await apiClient.post(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/files/rename`,
-          { from, to },
+          // clientId lets this tab suppress the echo of its own rename pokes.
+          { from, to, clientId: realtimeClientId },
         );
         set(state => {
           const files = state.filesByProject[projectId];

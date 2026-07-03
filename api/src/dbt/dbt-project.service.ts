@@ -15,7 +15,7 @@ import {
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
-import { loadWorkingTreeContents } from "./dbt-working-tree.service";
+import { loadRunnableWorkingTree } from "./dbt-github-sync.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
 import { parseDbtCommand, type ParsedDbtCommand } from "./commands";
 import {
@@ -93,7 +93,10 @@ export async function loadDbtProjectSnapshot(params: {
 
   const profile = renderDbtProfile(connection, environment);
 
-  const files = await loadWorkingTreeContents(project, {
+  // Self-healing load: re-syncs a missing branch base tree (and re-anchors a
+  // tracked branch that no longer exists on the remote) rather than handing
+  // dbt a tree without dbt_project.yml.
+  const files = await loadRunnableWorkingTree(project, {
     userId: params.userId,
     branch: params.branch,
   });
@@ -102,6 +105,33 @@ export async function loadDbtProjectSnapshot(params: {
   // every command, so callers just forward snapshot.environment.vars.
 
   return { project, environment, files, profile };
+}
+
+/**
+ * Read the project's last production manifest for `--defer --state`, or
+ * `undefined` when no prod build exists yet. Never throws — a missing
+ * manifest just disables defer for this invocation.
+ */
+export async function loadDbtDeferState(project: {
+  lastProdManifestKey?: string;
+}): Promise<Buffer | undefined> {
+  const key = project.lastProdManifestKey;
+  if (!key) return undefined;
+  try {
+    const { getDashboardArtifactStore } = await import(
+      "../services/dashboard-artifact-store.service"
+    );
+    const stream = await getDashboardArtifactStore().openReadStream(key);
+    if (!stream) return undefined;
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  } catch (error) {
+    logger.warn("Failed to load dbt defer state manifest", { error, key });
+    return undefined;
+  }
 }
 
 export interface AdhocDbtResult {

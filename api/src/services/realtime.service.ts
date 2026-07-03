@@ -15,6 +15,7 @@
 import {
   createPubSubPublisher,
   createPubSubSubscriber,
+  reportPubSubFailure,
   type Publisher,
   type Subscriber,
 } from "./pubsub.service";
@@ -178,6 +179,9 @@ export function publishRealtimeEvent(
         workspaceId,
         eventType: event.type,
       });
+      // Escalates to a throttled ERROR: a failing publish means the Redis
+      // backend is down/over quota and realtime + stream resume are degraded.
+      reportPubSubFailure("realtime-publish", error);
     }
   })();
 }

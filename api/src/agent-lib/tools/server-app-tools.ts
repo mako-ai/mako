@@ -50,6 +50,7 @@ import { validateDashboardMaterializationSchedule } from "../../services/dashboa
 import {
   MakoApp,
   DatabaseConnection,
+  DbtProject,
   SavedConsole,
   type IMakoApp,
 } from "../../database/workspace-schema";
@@ -177,6 +178,27 @@ export function createServerAppTools({
     return found > 0
       ? { ok: true }
       : { ok: false, error: "Data binding connection is invalid" };
+  };
+
+  // Validate that a binding's dbt project link belongs to this workspace.
+  const validateDbtProject = async (
+    dbtProjectId: string | undefined | null,
+  ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    if (!dbtProjectId) return { ok: true };
+    if (!Types.ObjectId.isValid(dbtProjectId)) {
+      return { ok: false, error: `Invalid dbtProjectId: ${dbtProjectId}` };
+    }
+    const found = await DbtProject.countDocuments({
+      _id: new Types.ObjectId(dbtProjectId),
+      workspaceId: new Types.ObjectId(workspaceId),
+    });
+    return found > 0
+      ? { ok: true }
+      : {
+          ok: false,
+          error:
+            "dbt project not found in this workspace. Use read_dbt_project_tree to list project IDs.",
+        };
   };
 
   const denied = (appId: string) => ({
@@ -378,6 +400,7 @@ export function createServerAppTools({
             dataBindings: (doc.dataBindings ?? []).map(b => ({
               name: b.name,
               connectionId: b.connectionId,
+              dbtProjectId: b.dbtProjectId,
               language: b.language,
               code: b.code,
               materialization: b.materialization ?? "live",
@@ -726,6 +749,8 @@ export function createServerAppTools({
 
           const connCheck = await validateConnection(connectionId);
           if (!connCheck.ok) return { success: false, error: connCheck.error };
+          const dbtCheck = await validateDbtProject(input.dbtProjectId);
+          if (!dbtCheck.ok) return { success: false, error: dbtCheck.error };
           const materialization =
             input.materialization === "parquet" ? "parquet" : "live";
           // Validate the optional schedule (cron) the same way the HTTP routes
@@ -752,6 +777,7 @@ export function createServerAppTools({
           const created = {
             id: nanoid(10),
             name,
+            dbtProjectId: input.dbtProjectId,
             connectionId,
             language,
             code,
@@ -852,9 +878,20 @@ export function createServerAppTools({
               return { success: false, error: connCheck.error };
             }
           }
+          if (input.dbtProjectId != null) {
+            const dbtCheck = await validateDbtProject(input.dbtProjectId);
+            if (!dbtCheck.ok) {
+              return { success: false, error: dbtCheck.error };
+            }
+          }
 
+          const nextDbtProjectId =
+            input.dbtProjectId === undefined
+              ? binding.dbtProjectId
+              : (input.dbtProjectId ?? undefined);
           const changed =
             nextCode !== (binding.code ?? "") ||
+            nextDbtProjectId !== binding.dbtProjectId ||
             (input.connectionId !== undefined &&
               input.connectionId !== binding.connectionId) ||
             (input.language !== undefined &&
@@ -867,7 +904,7 @@ export function createServerAppTools({
             return {
               success: false,
               error:
-                "Nothing to update — provide code, oldString/newString, or a changed connection/language/database field.",
+                "Nothing to update — provide code, oldString/newString, or a changed connection/language/database/dbtProjectId field.",
             };
           }
 
@@ -875,6 +912,9 @@ export function createServerAppTools({
           // server-owned cache all survive. The definition-hash change is
           // what invalidates the artifact, not a new identity.
           binding.code = nextCode;
+          if (input.dbtProjectId !== undefined) {
+            binding.dbtProjectId = nextDbtProjectId;
+          }
           if (input.connectionId !== undefined) {
             binding.connectionId = input.connectionId;
           }

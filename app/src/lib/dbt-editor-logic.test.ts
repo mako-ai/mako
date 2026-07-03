@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   extractFilePath,
+  isMarkdownDbtPath,
   languageForDbtPath,
   logsToProblems,
   modelNameForPath,
@@ -63,6 +64,15 @@ describe("languageForDbtPath", () => {
     expect(languageForDbtPath("models/schema.yaml")).toBe("yaml");
     expect(languageForDbtPath("README.md")).toBe("markdown");
     expect(languageForDbtPath("Makefile")).toBe("plaintext");
+  });
+});
+
+describe("isMarkdownDbtPath", () => {
+  it("detects markdown files case-insensitively", () => {
+    expect(isMarkdownDbtPath("models/README.md")).toBe(true);
+    expect(isMarkdownDbtPath("docs/overview.MARKDOWN")).toBe(true);
+    expect(isMarkdownDbtPath("models/a.sql")).toBe(false);
+    expect(isMarkdownDbtPath("models/schema.yml")).toBe(false);
   });
 });
 

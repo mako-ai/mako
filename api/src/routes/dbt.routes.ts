@@ -36,6 +36,7 @@ import {
 } from "../integrations/github/config";
 import {
   fileExistsAtRef,
+  getBranchHeadSha,
   getRepoInfo,
   listBranches,
   listDbtProjectSubdirectories,
@@ -84,7 +85,11 @@ import {
   parseDbtCommands,
 } from "../dbt/commands";
 import { buildStarterScaffold } from "../dbt/scaffold";
-import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
+import {
+  loadDbtDeferState,
+  runAdhocDbtCommand,
+} from "../dbt/dbt-project.service";
+import { ensurePersonalDbtEnvironment } from "../dbt/dbt-environments.service";
 import {
   applyJobScheduleChange,
   reconcileStaleQueuedRun,
@@ -213,6 +218,12 @@ const environmentSchema = z.object({
   targetSchema: z.string().min(1).max(128),
   threads: z.number().int().min(1).max(16).default(4),
   vars: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Personal environment owner (auto-provisioned per-developer target).
+   * Round-tripped by settings saves so admin edits never strip ownership;
+   * provisioning happens via POST .../environments/personal, not here.
+   */
+  ownerUserId: z.string().optional(),
 });
 
 const createProjectSchema = z.object({
@@ -278,6 +289,12 @@ const patchProjectSchema = z.object({
     .array(z.string().min(1).max(255))
     .max(20)
     .optional(),
+  /**
+   * Tracked branch of the repo binding — what deploy/job runs build and what
+   * syncs target by default. Must exist on the remote; its base tree is
+   * synced on change.
+   */
+  repoBranch: z.string().min(1).max(255).optional(),
 });
 
 async function validateEnvironments(
@@ -479,7 +496,43 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
       project.protectedBranches = [...new Set(body.protectedBranches)];
       project.markModified("protectedBranches");
     }
+    let trackedBranchChanged = false;
+    if (body.repoBranch) {
+      if (!project.repo) {
+        return badRequest(
+          c,
+          "Changing the tracked branch requires a connected repository",
+        );
+      }
+      if (body.repoBranch !== project.repo.branch) {
+        // The tracked branch is what deploy/job runs build — verify it exists
+        // on the remote before re-pointing the project at it.
+        const token = await resolveRepoToken(project.repo.installationId);
+        try {
+          await getBranchHeadSha(
+            project.repo.owner,
+            project.repo.repo,
+            body.repoBranch,
+            token,
+          );
+        } catch {
+          return badRequest(
+            c,
+            `Branch "${body.repoBranch}" was not found on ` +
+              `${project.repo.owner}/${project.repo.repo}`,
+          );
+        }
+        project.repo.branch = body.repoBranch;
+        project.markModified("repo");
+        trackedBranchChanged = true;
+      }
+    }
     await project.save();
+    if (trackedBranchChanged && project.repo) {
+      // Materialize the new tracked branch's committed base tree so deploy
+      // runs and fresh checkouts have files to build immediately.
+      await syncProjectBranchFromRepo(project, project.repo.branch, getUserId(c));
+    }
     publishDbtEvent(c, {
       type: "dbt.project.updated",
       projectId: project._id.toString(),
@@ -489,6 +542,54 @@ dbtRoutes.patch("/projects/:projectId", async (c: AuthenticatedContext) => {
     return serverError(c, error, "Failed to update dbt project");
   }
 });
+
+// POST /projects/:projectId/environments/personal — idempotently provision
+// the caller's personal (per-developer) environment: same connection as the
+// prod-like environment, private schema `dbt_<user>`. Member+ (not admin-only:
+// unlike shared environment config, this only affects the caller's own
+// iteration target).
+dbtRoutes.post(
+  "/projects/:projectId/environments/personal",
+  async (c: AuthenticatedContext) => {
+    try {
+      const project = await findProject(c);
+      if (!project) {
+        return c.json({ success: false, error: "dbt project not found" }, 404);
+      }
+      const userId = c.get("user")?.id;
+      if (!userId) {
+        return badRequest(
+          c,
+          "Personal environments require a user session (not an API key)",
+        );
+      }
+      const result = await ensurePersonalDbtEnvironment({
+        workspaceId: project.workspaceId.toString(),
+        projectId: project._id.toString(),
+        userId,
+      });
+      if (result.created) {
+        publishDbtEvent(c, {
+          type: "dbt.project.updated",
+          projectId: project._id.toString(),
+        });
+      }
+      return c.json({
+        success: true,
+        created: result.created,
+        environment: {
+          name: result.environment.name,
+          targetSchema: result.environment.targetSchema,
+          connectionId: result.environment.connectionId?.toString(),
+          threads: result.environment.threads,
+          ownerUserId: result.environment.ownerUserId,
+        },
+      });
+    } catch (error) {
+      return serverError(c, error, "Failed to create personal environment");
+    }
+  },
+);
 
 dbtRoutes.delete("/projects/:projectId", async (c: AuthenticatedContext) => {
   try {
@@ -1530,7 +1631,11 @@ dbtRoutes.post(
       if (!project) {
         return c.json({ success: false, error: "dbt project not found" }, 404);
       }
-      const body = (await c.req.json()) as { from?: unknown; to?: unknown };
+      const body = (await c.req.json()) as {
+        from?: unknown;
+        to?: unknown;
+        clientId?: unknown;
+      };
       const from = typeof body.from === "string" ? body.from : "";
       const to = typeof body.to === "string" ? body.to : "";
       if (!isSafeDbtPath(from) || !isSafeDbtPath(to)) {
@@ -1542,6 +1647,31 @@ dbtRoutes.post(
         return c.json({ success: false, error: renameError }, 404);
       }
       if (renameError) return badRequest(c, renameError);
+      // The working tree expresses a rename as delete(from) + add(to) — poke
+      // both paths so the acting user's other windows (and, for blank
+      // projects, the whole workspace) move the file and refresh git status.
+      const clientId =
+        typeof body.clientId === "string" ? body.clientId : undefined;
+      const forUserId = project.repo ? userId : undefined;
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path: from,
+        deleted: true,
+        updatedBy: userId,
+        clientId,
+        origin: "save",
+        forUserId,
+      });
+      publishDbtEvent(c, {
+        type: "dbt.file.updated",
+        projectId: project._id.toString(),
+        path: to,
+        updatedBy: userId,
+        clientId,
+        origin: "save",
+        forUserId,
+      });
       return c.json({ success: true });
     } catch (error) {
       return serverError(c, error, "Failed to rename dbt file");
@@ -1986,29 +2116,9 @@ const commandSchema = z.object({
 
 const SELECT_PATTERN = /^[\w.+@:*\-/]+$/;
 
-/**
- * Read the project's last production manifest for `--defer --state`, or
- * `undefined` when defer is off / no prod build exists yet. Never throws —
- * a missing manifest just disables defer for this invocation.
- */
-async function loadDeferState(project: {
-  lastProdManifestKey?: string;
-}): Promise<Buffer | undefined> {
-  const key = project.lastProdManifestKey;
-  if (!key) return undefined;
-  try {
-    const stream = await getDashboardArtifactStore().openReadStream(key);
-    if (!stream) return undefined;
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return Buffer.concat(chunks);
-  } catch (error) {
-    logger.warn("Failed to load defer state manifest", { error, key });
-    return undefined;
-  }
-}
+// Shared with the agent tools: reads the last prod manifest for
+// `--defer --state` (see dbt-project.service.ts).
+const loadDeferState = loadDbtDeferState;
 
 /**
  * Prepend a warning when defer was requested but no prod manifest exists, so
