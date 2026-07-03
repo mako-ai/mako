@@ -7,6 +7,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
+  useMediaQuery,
+  useTheme,
   Button,
   Chip,
   CircularProgress,
@@ -137,6 +139,8 @@ function AddServerDialog({
 }) {
   const { currentWorkspace } = useWorkspace();
   const createServer = useMcpStore(s => s.createServer);
+  const muiTheme = useTheme();
+  const fullScreenDialog = useMediaQuery(muiTheme.breakpoints.down("sm"));
   const [presetType, setPresetType] = useState("close");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -190,7 +194,13 @@ function AddServerDialog({
     (!preset?.urlEditable || url.trim().startsWith("http"));
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      maxWidth="sm"
+      fullWidth
+      fullScreen={fullScreenDialog}
+    >
       <DialogTitle>Add MCP server</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
@@ -787,7 +797,8 @@ function ServerDetail({
                 direction="row"
                 alignItems="center"
                 spacing={1}
-                sx={{ mb: 1.5, px: 1 }}
+                useFlexGap
+                sx={{ mb: 1.5, px: 1, flexWrap: "wrap", rowGap: 0.5 }}
               >
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="body2">
@@ -833,10 +844,13 @@ function ServerDetail({
                           direction="row"
                           alignItems="center"
                           spacing={1}
+                          useFlexGap
                           sx={{
                             py: 0.5,
                             px: 1,
                             borderRadius: 1,
+                            flexWrap: "wrap",
+                            rowGap: 0.5,
                             "&:hover": { bgcolor: "action.hover" },
                           }}
                         >
@@ -937,10 +951,13 @@ function ServerDetail({
                     direction="row"
                     alignItems="center"
                     spacing={1}
+                    useFlexGap
                     sx={{
                       py: 0.5,
                       px: 1,
                       borderRadius: 1,
+                      flexWrap: "wrap",
+                      rowGap: 0.5,
                       "&:hover": { bgcolor: "action.hover" },
                     }}
                   >
@@ -1099,6 +1116,8 @@ function ConnectionCard({
 
 export function McpServersSection() {
   const { currentWorkspace, loading: workspaceLoading } = useWorkspace();
+  const muiTheme = useTheme();
+  const fullScreenDialog = useMediaQuery(muiTheme.breakpoints.down("sm"));
   const { servers, presets, loading, error, fetchServers, fetchPresets } =
     useMcpStore();
   const [addOpen, setAddOpen] = useState(false);
@@ -1310,13 +1329,20 @@ export function McpServersSection() {
       <Dialog
         open={detailServer !== null}
         onClose={() => setDetailId(null)}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
+        fullScreen={fullScreenDialog}
       >
         {detailServer && (
           <>
             <DialogTitle>
-              <Stack direction="row" spacing={1.5} alignItems="center">
+              <Stack
+                direction="row"
+                spacing={1.5}
+                alignItems="center"
+                useFlexGap
+                sx={{ flexWrap: "wrap", rowGap: 0.5 }}
+              >
                 <ConnectionIcon src={serverIcon(detailServer)} size={28} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography variant="subtitle1" fontWeight={600} noWrap>
