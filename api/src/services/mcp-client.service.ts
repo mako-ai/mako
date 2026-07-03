@@ -21,6 +21,7 @@ import { Types } from "mongoose";
 import {
   type IMcpCachedTool,
   type IMcpServer,
+  type McpToolRestriction,
   McpConnectionConfig,
   McpServer,
   McpToolGrant,
@@ -109,13 +110,29 @@ export function mcpToolRiskTier(
   return "write";
 }
 
-/** Tools the given server's policy exposes to the agent. */
+/**
+ * Admin-set permission ceiling for a tool (Claude-connectors model):
+ * explicit per-tool restriction, else a risk-aware default. Restrictions cap
+ * what users can choose — a user can always pick something stricter.
+ *
+ * Destructive-tier tools default to "ask" (never always-allowable) unless an
+ * admin explicitly relaxes that tool to "always" on this server.
+ */
+export function mcpToolRestriction(
+  server: Pick<IMcpServer, "toolPolicy" | "writeScope">,
+  tool: Pick<IMcpCachedTool, "name" | "annotations">,
+): McpToolRestriction {
+  const explicit = server.toolPolicy?.restrictions?.[tool.name];
+  if (explicit) return explicit;
+  if (mcpToolRiskTier(server, tool) === "destructive") return "ask";
+  return server.toolPolicy?.defaultRestriction ?? "always";
+}
+
+/** Tools the server's restrictions expose to the agent (non-blocked). */
 export function mcpAllowedCachedTools(server: IMcpServer): IMcpCachedTool[] {
-  if (server.toolPolicy.mode === "allowlist") {
-    const allowed = new Set(server.toolPolicy.allowedTools);
-    return server.cachedTools.filter(t => allowed.has(t.name));
-  }
-  return server.cachedTools;
+  return server.cachedTools.filter(
+    t => mcpToolRestriction(server, t) !== "block",
+  );
 }
 
 /**
@@ -279,20 +296,27 @@ async function resolveActiveServers(
 }
 
 /**
- * Approval decision for one tool call, implementing the resolution order:
- * excluded tools never get here (filtered at build time); then
- * always_deny → no prompt (execute refuses); read-tier → auto-run;
- * destructive without admin unlock → always prompt; always_allow → auto-run;
- * otherwise prompt.
+ * Approval decision for one tool call, following the Claude-connectors
+ * model: the admin restriction is a *ceiling*, the user's per-tool choice
+ * (grant) picks a setting up to that ceiling, and the risk tier provides
+ * the default when the user hasn't chosen yet.
+ *
+ * Resolution:
+ *  - blocked tools never get here (filtered at build time)
+ *  - user chose Block (always_deny) → no prompt; execute() refuses
+ *  - ceiling "ask" → always prompt (user's Always allow can't apply)
+ *  - user chose Always allow → auto-run
+ *  - no choice yet: read-tier auto-runs, write/destructive prompt
  */
 async function mcpNeedsApproval(params: {
   server: IMcpServer;
   riskTier: McpRiskTier;
-  toolName: string;
+  tool: IMcpCachedTool;
   userId: string | undefined;
 }): Promise<boolean> {
-  const { server, riskTier, toolName, userId } = params;
-  if (riskTier === "read") return false;
+  const { server, riskTier, tool, userId } = params;
+  const toolName = tool.name;
+  const ceiling = mcpToolRestriction(server, tool);
 
   const grant = userId
     ? await McpToolGrant.findOne({
@@ -306,10 +330,9 @@ async function mcpNeedsApproval(params: {
     // No approval prompt: execute() returns the denial to the model.
     return false;
   }
-  if (riskTier === "destructive" && !server.toolPolicy.allowDestructiveGrants) {
-    return true;
-  }
-  return grant?.decision !== "always_allow";
+  if (ceiling === "ask") return true;
+  if (grant?.decision === "always_allow") return false;
+  return riskTier !== "read";
 }
 
 /**
@@ -361,10 +384,27 @@ export async function buildMcpToolsForChat(params: {
           mcpNeedsApproval({
             server,
             riskTier,
-            toolName: cachedTool.name,
+            tool: cachedTool,
             userId,
           }),
         execute: async input => {
+          // Re-check the admin ceiling at execution time: an admin may have
+          // blocked the tool after this chat's toolset was built (or between
+          // an approval and its continuation).
+          const freshPolicy = await McpServer.findById(server._id)
+            .select("toolPolicy writeScope")
+            .lean();
+          if (
+            freshPolicy &&
+            mcpToolRestriction(freshPolicy, cachedTool) === "block"
+          ) {
+            return {
+              success: false,
+              denied: true,
+              error: `"${cachedTool.name}" on ${server.name} has been blocked by a workspace admin.`,
+            };
+          }
+
           const grant = userId
             ? await McpToolGrant.findOne({
                 serverId: server._id,
@@ -452,10 +492,23 @@ export interface McpToolUiInfo {
   prefixedName: string;
   serverId: string;
   serverName: string;
+  /** Preset logo or the server URL's favicon, for the approval card. */
+  serverIcon: string | null;
   toolName: string;
   riskTier: McpRiskTier;
-  /** False when destructive-tier and the admin has not unlocked grants. */
+  /** False when the admin ceiling for this tool is not "always". */
   canAlwaysAllow: boolean;
+}
+
+function mcpServerIconUrl(server: IMcpServer): string | null {
+  const preset = getMcpPreset(server.connectorType);
+  if (preset.icon) return preset.icon;
+  try {
+    const host = new URL(server.transport.url).hostname;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`;
+  } catch {
+    return null;
+  }
 }
 
 export async function listMcpToolUiInfo(
@@ -471,12 +524,11 @@ export async function listMcpToolUiInfo(
         prefixedName: mcpPrefixedToolName(server.name, cachedTool.name),
         serverId: server._id.toString(),
         serverName: server.name,
+        serverIcon: mcpServerIconUrl(server),
         toolName: cachedTool.name,
         riskTier,
-        canAlwaysAllow:
-          riskTier === "write" ||
-          (riskTier === "destructive" &&
-            server.toolPolicy.allowDestructiveGrants),
+        // "Always allow" is offered only when the admin ceiling permits it.
+        canAlwaysAllow: mcpToolRestriction(server, cachedTool) === "always",
       });
     }
   }

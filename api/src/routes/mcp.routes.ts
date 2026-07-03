@@ -29,6 +29,7 @@ import {
   assertSafeMcpUrl,
   discoverMcpTools,
   listMcpToolUiInfo,
+  mcpToolRestriction,
   mcpToolRiskTier,
 } from "../services/mcp-client.service";
 import {
@@ -191,12 +192,16 @@ function serializeServer(
     authType: server.authType,
     authPerformer: server.authPerformer,
     writeScope: server.writeScope,
-    toolPolicy: server.toolPolicy,
+    toolPolicy: {
+      defaultRestriction: server.toolPolicy?.defaultRestriction ?? "always",
+      restrictions: server.toolPolicy?.restrictions ?? {},
+    },
     cachedTools: (server.cachedTools ?? []).map(t => ({
       name: t.name,
       description: t.description ?? null,
       annotations: t.annotations ?? null,
       riskTier: mcpToolRiskTier(server, t),
+      restriction: mcpToolRestriction(server, t),
     })),
     status: server.status,
     lastError: server.lastError ?? null,
@@ -293,7 +298,6 @@ const CreateServerSchema = z.object({
   connectorType: z.string().min(1).max(50),
   url: z.string().url().optional(),
   authType: z.enum(["none", "api_key", "oauth"]).optional(),
-  authPerformer: z.enum(["workspace", "user"]).optional(),
   writeScope: z.enum(["read", "write_safe", "write_destructive"]).optional(),
 });
 
@@ -364,7 +368,9 @@ mcpRoutes.openapi(
         connectorType: preset.type,
         transport: { type: "http", url },
         authType: body.authType ?? preset.authType,
-        authPerformer: body.authPerformer ?? "workspace",
+        // Claude-connectors model: every user authenticates and signs in
+        // individually. Enabling a connector never grants shared data access.
+        authPerformer: "user",
         writeScope: body.writeScope ?? "read",
         status: "awaiting_auth",
         createdBy: adminUserId,
@@ -388,14 +394,14 @@ const UpdateServerSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
   url: z.string().url().optional(),
-  authPerformer: z.enum(["workspace", "user"]).optional(),
   writeScope: z.enum(["read", "write_safe", "write_destructive"]).optional(),
   isActive: z.boolean().optional(),
   toolPolicy: z
     .object({
-      mode: z.enum(["all", "allowlist"]).optional(),
-      allowedTools: z.array(z.string()).optional(),
-      allowDestructiveGrants: z.boolean().optional(),
+      defaultRestriction: z.enum(["always", "ask", "block"]).optional(),
+      restrictions: z
+        .record(z.string(), z.enum(["always", "ask", "block"]))
+        .optional(),
     })
     .optional(),
 });
@@ -466,21 +472,16 @@ mcpRoutes.openapi(
         }
         server.transport = { type: "http", url: body.url };
       }
-      if (body.authPerformer !== undefined) {
-        server.authPerformer = body.authPerformer;
-      }
       if (body.writeScope !== undefined) server.writeScope = body.writeScope;
       if (body.isActive !== undefined) server.isActive = body.isActive;
       if (body.toolPolicy) {
-        if (body.toolPolicy.mode !== undefined) {
-          server.toolPolicy.mode = body.toolPolicy.mode;
+        if (body.toolPolicy.defaultRestriction !== undefined) {
+          server.toolPolicy.defaultRestriction =
+            body.toolPolicy.defaultRestriction;
         }
-        if (body.toolPolicy.allowedTools !== undefined) {
-          server.toolPolicy.allowedTools = body.toolPolicy.allowedTools;
-        }
-        if (body.toolPolicy.allowDestructiveGrants !== undefined) {
-          server.toolPolicy.allowDestructiveGrants =
-            body.toolPolicy.allowDestructiveGrants;
+        if (body.toolPolicy.restrictions !== undefined) {
+          server.toolPolicy.restrictions = body.toolPolicy.restrictions;
+          server.markModified("toolPolicy.restrictions");
         }
       }
       await server.save();
@@ -927,17 +928,18 @@ mcpRoutes.openapi(
       if (!cachedTool) {
         return c.json({ success: false, error: "Unknown tool" }, 404);
       }
-      const riskTier = mcpToolRiskTier(server, cachedTool);
-      if (
-        decision === "always_allow" &&
-        riskTier === "destructive" &&
-        !server.toolPolicy.allowDestructiveGrants
-      ) {
+      // The admin restriction is a ceiling: users can always choose stricter
+      // (always_deny/Block is always permitted), but "Always allow" requires
+      // an "always" ceiling.
+      const ceiling = mcpToolRestriction(server, cachedTool);
+      if (decision === "always_allow" && ceiling !== "always") {
         return c.json(
           {
             success: false,
             error:
-              "Destructive tools on this server cannot be always-allowed. A workspace admin can unlock this in the server settings.",
+              ceiling === "block"
+                ? "This tool has been blocked by a workspace admin."
+                : "A workspace admin restricted this tool to Ask — it cannot be always-allowed.",
           },
           403,
         );

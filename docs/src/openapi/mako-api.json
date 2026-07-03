@@ -14711,13 +14711,6 @@
                       "oauth"
                     ]
                   },
-                  "authPerformer": {
-                    "type": "string",
-                    "enum": [
-                      "workspace",
-                      "user"
-                    ]
-                  },
                   "writeScope": {
                     "type": "string",
                     "enum": [
@@ -14832,13 +14825,6 @@
                     "type": "string",
                     "format": "uri"
                   },
-                  "authPerformer": {
-                    "type": "string",
-                    "enum": [
-                      "workspace",
-                      "user"
-                    ]
-                  },
                   "writeScope": {
                     "type": "string",
                     "enum": [
@@ -14853,21 +14839,24 @@
                   "toolPolicy": {
                     "type": "object",
                     "properties": {
-                      "mode": {
+                      "defaultRestriction": {
                         "type": "string",
                         "enum": [
-                          "all",
-                          "allowlist"
+                          "always",
+                          "ask",
+                          "block"
                         ]
                       },
-                      "allowedTools": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
+                      "restrictions": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string",
+                          "enum": [
+                            "always",
+                            "ask",
+                            "block"
+                          ]
                         }
-                      },
-                      "allowDestructiveGrants": {
-                        "type": "boolean"
                       }
                     }
                   }

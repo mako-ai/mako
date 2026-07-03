@@ -4864,8 +4864,22 @@ export const DbtRun = mongoose.model<IDbtRun>("DbtRun", DbtRunSchema);
 
 export type McpTransportType = "http";
 export type McpAuthType = "none" | "api_key" | "oauth";
-/** Who supplies credentials: one shared workspace credential, or each user. */
+/**
+ * Who supplies credentials. Following the Claude-connectors model, every
+ * user authenticates individually ("user") — enabling a connector for the
+ * workspace never grants shared data access. "workspace" is retained for
+ * backward compatibility with early servers only.
+ */
 export type McpAuthPerformer = "workspace" | "user";
+
+/**
+ * Admin-set permission ceiling for one tool (Claude-connectors model):
+ *  - "always": users can choose Always allow, Ask, or Block
+ *  - "ask":    users can choose Ask or Block (never Always allow)
+ *  - "block":  the tool is never exposed to the agent
+ * Restrictions set a ceiling — users can always choose a stricter setting.
+ */
+export type McpToolRestriction = "always" | "ask" | "block";
 export type McpWriteScope = "read" | "write_safe" | "write_destructive";
 export type McpServerStatus =
   | "created"
@@ -4908,15 +4922,13 @@ export interface IMcpServer extends Document {
    */
   writeScope: McpWriteScope;
   toolPolicy: {
-    /** "all" exposes every discovered tool; "allowlist" only `allowedTools`. */
-    mode: "all" | "allowlist";
-    allowedTools: string[];
     /**
-     * Admin unlock: when true, destructive-tier tools can be granted
-     * "always allow" like any other write tool. Default false — destructive
-     * tools then always require a fresh per-call approval.
+     * Ceiling applied to tools without a specific restriction below —
+     * including tools the server adds later.
      */
-    allowDestructiveGrants: boolean;
+    defaultRestriction: McpToolRestriction;
+    /** Per-tool ceilings, keyed by the raw MCP tool name. */
+    restrictions: Record<string, McpToolRestriction>;
   };
   /**
    * OAuth client registration (Dynamic Client Registration) for this server.
@@ -4979,22 +4991,20 @@ const McpServerSchema = new Schema<IMcpServer>(
     toolPolicy: {
       type: new Schema(
         {
-          mode: {
+          defaultRestriction: {
             type: String,
-            enum: ["all", "allowlist"],
+            enum: ["always", "ask", "block"],
             required: true,
-            default: "all",
+            default: "always",
           },
-          allowedTools: { type: [String], default: [] },
-          allowDestructiveGrants: { type: Boolean, default: false },
+          restrictions: { type: Schema.Types.Mixed, default: {} },
         },
         { _id: false },
       ),
       required: true,
       default: () => ({
-        mode: "all",
-        allowedTools: [],
-        allowDestructiveGrants: false,
+        defaultRestriction: "always",
+        restrictions: {},
       }),
     },
     cachedTools: {

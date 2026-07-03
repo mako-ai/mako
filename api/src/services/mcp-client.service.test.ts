@@ -22,6 +22,7 @@ import {
   mcpAllowedCachedTools,
   mcpPrefixedToolName,
   mcpServerSlug,
+  mcpToolRestriction,
   mcpToolRiskTier,
 } from "./mcp-client.service";
 import {
@@ -82,29 +83,62 @@ function testRiskTiers() {
 
 function testAllowlistFiltering() {
   const base = {
+    writeScope: "write_safe",
     cachedTools: [{ name: "a" }, { name: "b" }, { name: "c" }],
   };
   const all = {
     ...base,
-    toolPolicy: {
-      mode: "all",
-      allowedTools: [],
-      allowDestructiveGrants: false,
-    },
+    toolPolicy: { defaultRestriction: "always", restrictions: {} },
   } as unknown as IMcpServer;
-  const allowlist = {
+  const blocked = {
     ...base,
     toolPolicy: {
-      mode: "allowlist",
-      allowedTools: ["a", "c"],
-      allowDestructiveGrants: false,
+      defaultRestriction: "always",
+      restrictions: { b: "block" },
+    },
+  } as unknown as IMcpServer;
+  const blockByDefault = {
+    ...base,
+    toolPolicy: {
+      defaultRestriction: "block",
+      restrictions: { a: "always", c: "ask" },
     },
   } as unknown as IMcpServer;
 
   assert.equal(mcpAllowedCachedTools(all).length, 3);
   assert.deepEqual(
-    mcpAllowedCachedTools(allowlist).map(t => t.name),
+    mcpAllowedCachedTools(blocked).map(t => t.name),
     ["a", "c"],
+  );
+  // Default restriction applies to unconfigured tools ("b" here) — including
+  // tools the server adds later.
+  assert.deepEqual(
+    mcpAllowedCachedTools(blockByDefault).map(t => t.name),
+    ["a", "c"],
+  );
+
+  // Ceiling resolution: explicit > destructive-tier default > server default.
+  assert.equal(mcpToolRestriction(all, { name: "a" }), "always");
+  assert.equal(mcpToolRestriction(blocked, { name: "b" }), "block");
+  assert.equal(
+    mcpToolRestriction(all, {
+      name: "z",
+      annotations: { destructiveHint: true },
+    }),
+    "ask",
+  );
+  assert.equal(
+    mcpToolRestriction(
+      {
+        ...all,
+        toolPolicy: {
+          defaultRestriction: "always",
+          restrictions: { z: "always" },
+        },
+      } as unknown as IMcpServer,
+      { name: "z", annotations: { destructiveHint: true } },
+    ),
+    "always",
   );
 }
 
@@ -228,8 +262,8 @@ async function testGrantsAndNeedsApproval() {
     });
     assert.equal(await needsApproval("mcp_close_crm_lead_create"), false);
 
-    // Destructive tool: an always_allow grant is IGNORED while the admin
-    // hasn't unlocked destructive grants.
+    // Destructive tool: defaults to an "ask" ceiling, so an always_allow
+    // grant is IGNORED until an admin explicitly relaxes that tool.
     await McpToolGrant.create({
       workspaceId,
       serverId: server._id,
@@ -239,13 +273,50 @@ async function testGrantsAndNeedsApproval() {
     });
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), true);
 
-    // Admin unlock: the destructive grant now applies.
+    // Admin relaxes the ceiling for lead_delete: the grant now applies.
     await McpServer.updateOne(
       { _id: server._id },
-      { $set: { "toolPolicy.allowDestructiveGrants": true } },
+      { $set: { "toolPolicy.restrictions": { lead_delete: "always" } } },
     );
     chatTools = await loadTools();
     assert.equal(await needsApproval("mcp_close_crm_lead_delete"), false);
+
+    // Admin "ask" restriction caps the user's Always allow on any tool.
+    await McpServer.updateOne(
+      { _id: server._id },
+      {
+        $set: {
+          "toolPolicy.restrictions": {
+            lead_delete: "always",
+            lead_create: "ask",
+          },
+        },
+      },
+    );
+    chatTools = await loadTools();
+    assert.equal(await needsApproval("mcp_close_crm_lead_create"), true);
+
+    // Admin "block" removes the tool from the agent entirely.
+    await McpServer.updateOne(
+      { _id: server._id },
+      {
+        $set: {
+          "toolPolicy.restrictions": {
+            lead_delete: "always",
+            lead_create: "block",
+          },
+        },
+      },
+    );
+    chatTools = await loadTools();
+    assert.equal(chatTools.tools["mcp_close_crm_lead_create"], undefined);
+
+    // Restore an open ceiling for the remaining assertions.
+    await McpServer.updateOne(
+      { _id: server._id },
+      { $set: { "toolPolicy.restrictions": { lead_delete: "always" } } },
+    );
+    chatTools = await loadTools();
 
     // "Always deny": no prompt, and execute refuses without contacting the
     // MCP server.

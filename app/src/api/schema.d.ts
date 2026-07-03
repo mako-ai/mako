@@ -11898,8 +11898,6 @@ export interface operations {
                     /** @enum {string} */
                     authType?: "none" | "api_key" | "oauth";
                     /** @enum {string} */
-                    authPerformer?: "workspace" | "user";
-                    /** @enum {string} */
                     writeScope?: "read" | "write_safe" | "write_destructive";
                 };
             };
@@ -11993,15 +11991,14 @@ export interface operations {
                     /** Format: uri */
                     url?: string;
                     /** @enum {string} */
-                    authPerformer?: "workspace" | "user";
-                    /** @enum {string} */
                     writeScope?: "read" | "write_safe" | "write_destructive";
                     isActive?: boolean;
                     toolPolicy?: {
                         /** @enum {string} */
-                        mode?: "all" | "allowlist";
-                        allowedTools?: string[];
-                        allowDestructiveGrants?: boolean;
+                        defaultRestriction?: "always" | "ask" | "block";
+                        restrictions?: {
+                            [key: string]: "always" | "ask" | "block";
+                        };
                     };
                 };
             };
