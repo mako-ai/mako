@@ -48,6 +48,7 @@ export default defineConfig({
             { label: "Query Runner", slug: "query-runner" },
             { label: "Self-Directive", slug: "self-directive" },
             { label: "Skills", slug: "skills" },
+            { label: "MCP Connectors", slug: "mcp-connectors" },
             { label: "Notifications", slug: "notifications" },
             { label: "Mako Desktop", slug: "desktop" },
           ],
