@@ -144,6 +144,16 @@ interface AppActions {
   createApp: (workspaceId: string, title: string) => Promise<AppEntity | null>;
   deleteApp: (workspaceId: string, appId: string) => Promise<boolean>;
   persistApp: (workspaceId: string, appId: string) => Promise<void>;
+  /**
+   * Ask the server for an AI-suggested commit message for the app's pending
+   * draft changes (diffed against the last saved version). Callers should
+   * `persistApp` first so the server-side draft matches what's on screen.
+   */
+  generateSaveComment: (
+    workspaceId: string,
+    appId: string,
+    signal?: AbortSignal,
+  ) => Promise<{ comment: string | null; diff: string | null }>;
   renameApp: (
     workspaceId: string,
     appId: string,
@@ -455,6 +465,25 @@ export const useAppStore = create<AppStore>()(
             },
           ];
         });
+      }
+    },
+
+    generateSaveComment: async (workspaceId, appId, signal) => {
+      try {
+        const res = unwrapBody(
+          await api.POST(
+            "/api/workspaces/{workspaceId}/apps/{id}/version-comment",
+            {
+              params: { path: { workspaceId, id: appId } },
+              signal,
+            },
+          ),
+        ) as { success: boolean; comment: string | null; diff: string | null };
+        return res.success
+          ? { comment: res.comment ?? null, diff: res.diff ?? null }
+          : { comment: null, diff: null };
+      } catch {
+        return { comment: null, diff: null };
       }
     },
 

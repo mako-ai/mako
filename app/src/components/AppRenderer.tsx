@@ -10,12 +10,6 @@ import {
   Typography,
   Chip,
   Alert,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
-  TextField,
   Snackbar,
 } from "@mui/material";
 import {
@@ -35,7 +29,9 @@ import { useAppStore } from "../store/appStore";
 import { useVersionStore } from "../store/versionStore";
 import { useConsoleStore } from "../store/consoleStore";
 import ShareDialog from "./ShareDialog";
+import { SaveCommentDialog } from "./SaveCommentDialog";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
+import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { buildPreviewHtml, PREVIEW_MESSAGE } from "../app-runtime/preview";
 import { appLocationFromHostSearch } from "../app-runtime/app-location";
 import {
@@ -67,8 +63,8 @@ export default function AppRenderer({
   const [shareOpen, setShareOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
-  const [publishComment, setPublishComment] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const publishSuggestion = useSaveCommentSuggestion();
   const [publishedNotice, setPublishedNotice] = useState<string | null>(null);
   const [rematerializing, setRematerializing] = useState(false);
 
@@ -88,6 +84,7 @@ export default function AppRenderer({
   const runBinding = useAppStore(s => s.runBinding);
   const materializeAllBindings = useAppStore(s => s.materializeAllBindings);
   const persistApp = useAppStore(s => s.persistApp);
+  const generateSaveComment = useAppStore(s => s.generateSaveComment);
   const saveVersion = useVersionStore(s => s.saveVersion);
 
   // dbt preview environment override (per-user view state): only surfaced
@@ -158,34 +155,55 @@ export default function AppRenderer({
     ((appEntity.owner_id ?? appEntity.createdBy) === user?.id ||
       isWorkspaceAdmin);
 
+  // Open the publish dialog and kick off the AI commit-message suggestion.
+  // The draft is flushed first so the server-side diff (draft vs last saved
+  // version) matches what's on screen.
+  const openPublishDialog = useCallback(() => {
+    setPublishOpen(true);
+    if (!workspaceId) return;
+    publishSuggestion.begin(async signal => {
+      await persistApp(workspaceId, appId);
+      if (signal.aborted) return { comment: null, diff: null };
+      return generateSaveComment(workspaceId, appId, signal);
+    });
+  }, [workspaceId, appId, persistApp, generateSaveComment, publishSuggestion]);
+
+  const closePublishDialog = useCallback(() => {
+    publishSuggestion.cancel();
+    setPublishOpen(false);
+  }, [publishSuggestion]);
+
   // Promote the current draft to the published definition that shared links and
   // viewers render. Flush pending edits first so the checkpoint matches the
   // preview, then refresh so the toolbar's published state stops being stale.
-  const handlePublishConfirm = useCallback(async () => {
-    if (!workspaceId) return;
-    setPublishing(true);
-    try {
-      await persistApp(workspaceId, appId);
-      const result = await saveVersion(
-        workspaceId,
-        "app",
-        appId,
-        publishComment.trim(),
-      );
-      await fetchApp(workspaceId, appId);
-      setPublishOpen(false);
-      setPublishComment("");
-      setPublishedNotice(
-        result.success
-          ? result.version
-            ? `Published version ${result.version}`
-            : "Published"
-          : (result.error ?? "Failed to publish"),
-      );
-    } finally {
-      setPublishing(false);
-    }
-  }, [workspaceId, appId, persistApp, saveVersion, publishComment, fetchApp]);
+  const handlePublishConfirm = useCallback(
+    async (comment: string) => {
+      if (!workspaceId) return;
+      setPublishing(true);
+      try {
+        await persistApp(workspaceId, appId);
+        const result = await saveVersion(
+          workspaceId,
+          "app",
+          appId,
+          comment.trim(),
+        );
+        await fetchApp(workspaceId, appId);
+        publishSuggestion.cancel();
+        setPublishOpen(false);
+        setPublishedNotice(
+          result.success
+            ? result.version
+              ? `Published version ${result.version}`
+              : "Published"
+            : (result.error ?? "Failed to publish"),
+        );
+      } finally {
+        setPublishing(false);
+      }
+    },
+    [workspaceId, appId, persistApp, saveVersion, fetchApp, publishSuggestion],
+  );
 
   const hasParquetBindings = !!appEntity?.dataBindings.some(
     b => b.materialization === "parquet",
@@ -544,7 +562,7 @@ export default function AppRenderer({
               size="small"
               variant="contained"
               startIcon={<PublishIcon size={16} strokeWidth={1.5} />}
-              onClick={() => setPublishOpen(true)}
+              onClick={openPublishDialog}
             >
               Publish
             </Button>
@@ -633,44 +651,18 @@ export default function AppRenderer({
         }
       />
 
-      <Dialog
+      <SaveCommentDialog
         open={publishOpen}
-        onClose={() => !publishing && setPublishOpen(false)}
-        maxWidth="sm"
-        fullWidth
-      >
-        <DialogTitle>Publish {appEntity.title}</DialogTitle>
-        <DialogContent>
-          <DialogContentText sx={{ mb: 2 }}>
-            Snapshots the current draft into version history and publishes it as
-            the live version that shared links and viewers see.
-          </DialogContentText>
-          <TextField
-            autoFocus
-            fullWidth
-            size="small"
-            label="Comment (optional)"
-            placeholder="e.g. Add revenue chart"
-            value={publishComment}
-            onChange={e => setPublishComment(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter") void handlePublishConfirm();
-            }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setPublishOpen(false)} disabled={publishing}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handlePublishConfirm}
-            variant="contained"
-            disabled={publishing}
-          >
-            {publishing ? "Publishing..." : "Publish"}
-          </Button>
-        </DialogActions>
-      </Dialog>
+        title={`Publish ${appEntity.title}`}
+        description="Snapshots the current draft into version history and publishes it as the live version that shared links and viewers see."
+        confirmLabel={publishing ? "Publishing..." : "Publish"}
+        busy={publishing}
+        defaultComment={publishSuggestion.comment}
+        loading={publishSuggestion.loading}
+        diff={publishSuggestion.diff}
+        onCancel={closePublishDialog}
+        onSave={comment => void handlePublishConfirm(comment)}
+      />
 
       <Snackbar
         open={!!publishedNotice}

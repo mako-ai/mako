@@ -87,6 +87,7 @@ import ConflictResolutionDialog, {
 } from "./ConflictResolutionDialog";
 import FileExplorerDialog from "./FileExplorerDialog";
 import { SaveCommentDialog } from "./SaveCommentDialog";
+import { useSaveCommentSuggestion } from "../hooks/useSaveCommentSuggestion";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { useConsoleStore, selectConsoleTabs } from "../store/consoleStore";
 import { useShallow } from "zustand/react/shallow";
@@ -457,12 +458,7 @@ function Editor({
 
   // Save comment dialog state (version commit message)
   const [commentDialogOpen, setCommentDialogOpen] = useState(false);
-  const [suggestedComment, setSuggestedComment] = useState<string | undefined>(
-    undefined,
-  );
-  const [suggestedCommentLoading, setSuggestedCommentLoading] = useState(false);
-  const [saveCommentDiff, setSaveCommentDiff] = useState<string | null>(null);
-  const saveCommentAbortRef = useRef<AbortController | null>(null);
+  const saveSuggestion = useSaveCommentSuggestion();
   const [pendingCommentSave, setPendingCommentSave] = useState<{
     tabId: string;
     content: string;
@@ -1479,30 +1475,25 @@ function Editor({
       return false;
     }
 
+    // Comments already attached to recent AI edits win over a fresh
+    // AI-generated suggestion (they carry the user's intent directly).
     const vm = getVersionManager(tabId);
     const aiComments = vm?.getRecentAiComments() ?? [];
     const existingComment =
       aiComments.length > 0 ? aiComments.join("; ") : undefined;
-    setSuggestedComment(existingComment);
 
-    if (!existingComment && currentWorkspace?.id) {
-      saveCommentAbortRef.current?.abort();
-      const controller = new AbortController();
-      saveCommentAbortRef.current = controller;
-      setSuggestedCommentLoading(true);
-      generateSaveComment(
-        currentWorkspace.id,
-        tabId,
-        { newContent: contentToSave, source: "user" },
-        controller.signal,
-      ).then(result => {
-        if (!controller.signal.aborted) {
-          setSuggestedComment(result.comment ?? undefined);
-          setSaveCommentDiff(result.diff);
-          setSuggestedCommentLoading(false);
-        }
-      });
-    }
+    saveSuggestion.begin(
+      currentWorkspace?.id
+        ? signal =>
+            generateSaveComment(
+              currentWorkspace.id,
+              tabId,
+              { newContent: contentToSave, source: "user" },
+              signal,
+            )
+        : undefined,
+      existingComment,
+    );
 
     return new Promise<boolean>(resolve => {
       setPendingCommentSave({
@@ -1517,9 +1508,7 @@ function Editor({
 
   const handleCommentSaveConfirm = async (comment: string) => {
     setCommentDialogOpen(false);
-    saveCommentAbortRef.current?.abort();
-    setSuggestedCommentLoading(false);
-    setSaveCommentDiff(null);
+    saveSuggestion.cancel();
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     if (!pending) return;
@@ -1534,9 +1523,7 @@ function Editor({
 
   const handleCommentSaveCancel = () => {
     setCommentDialogOpen(false);
-    saveCommentAbortRef.current?.abort();
-    setSuggestedCommentLoading(false);
-    setSaveCommentDiff(null);
+    saveSuggestion.cancel();
     const pending = pendingCommentSave;
     setPendingCommentSave(null);
     pending?.resolve(false);
@@ -2989,9 +2976,9 @@ function Editor({
         onSave={handleCommentSaveConfirm}
         onCancel={handleCommentSaveCancel}
         title="Save console version"
-        defaultComment={suggestedComment}
-        loading={suggestedCommentLoading}
-        diff={saveCommentDiff}
+        defaultComment={saveSuggestion.comment}
+        loading={saveSuggestion.loading}
+        diff={saveSuggestion.diff}
       />
 
       {/* Version history panel */}

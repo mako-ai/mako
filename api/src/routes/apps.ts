@@ -17,6 +17,7 @@ import {
   MakoApp,
   DatabaseConnection,
   DbtProject,
+  EntityVersion,
   type IMakoApp,
 } from "../database/workspace-schema";
 import { loggers, enrichContextWithWorkspace } from "../logging";
@@ -48,6 +49,8 @@ import {
   getVersion,
   getUserDisplayName,
 } from "../services/entity-version.service";
+import { generateAppVersionComment } from "../services/version-comment.service";
+import { getEntityChatPrompts } from "../services/entity-version-context.service";
 import { publishRealtimeEvent } from "../services/realtime.service";
 import {
   canReadResource,
@@ -1041,6 +1044,83 @@ app.openapi(
     } catch (error) {
       logger.error("Error saving app version", { error });
       return c.json({ success: false, error: "Failed to save version" }, 500);
+    }
+  },
+);
+
+// POST /{id}/version-comment — AI-suggested commit message for the pending
+// draft. Diffs the current (autosaved) draft against the latest saved version
+// snapshot and folds in any chat prompts that drove the changes. The client
+// should flush pending edits (PUT the draft) before calling this.
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/{id}/version-comment",
+    tags: ["Apps"],
+    summary: "Suggest a version comment for pending app changes",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canManage(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const newSnapshot = buildAppSnapshot(doc) as unknown as Record<
+        string,
+        unknown
+      >;
+
+      const latestVersion = await EntityVersion.findOne(
+        {
+          entityId: doc._id,
+          entityType: "app",
+        },
+        { snapshot: 1, version: 1 },
+      )
+        .sort({ version: -1 })
+        .lean();
+
+      const previousSnapshot =
+        (latestVersion?.snapshot as Record<string, unknown> | undefined) ??
+        (doc.published as Record<string, unknown> | undefined) ??
+        null;
+
+      const chatPrompts = userId
+        ? await getEntityChatPrompts(workspaceId, userId, id, ["appId"])
+        : [];
+
+      const result = await generateAppVersionComment(
+        { previousSnapshot, newSnapshot, chatPrompts },
+        userId
+          ? { workspaceId, userId, userEmail: c.get("user")?.email }
+          : undefined,
+      );
+
+      return c.json({
+        success: true,
+        comment: result.comment,
+        diff: result.diff,
+      });
+    } catch (error) {
+      logger.error("Error generating app version comment", { error });
+      return c.json(
+        { success: false, error: "Failed to generate version comment" },
+        500,
+      );
     }
   },
 );

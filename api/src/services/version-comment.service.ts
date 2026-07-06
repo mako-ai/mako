@@ -272,44 +272,214 @@ export function computeSnapshotDiff(
   return computeDiff(prev, next);
 }
 
-export async function generateDashboardVersionComment(
-  context: DashboardVersionCommentContext,
-  trackingCtx?: VersionCommentTrackingContext,
-): Promise<VersionCommentResult> {
-  const diff = computeSnapshotDiff(
-    context.previousSnapshot,
-    context.newSnapshot,
-  );
+/**
+ * Shared "diff + chat prompts → single commit line" pipeline used by the
+ * dashboard and app version-comment generators. The caller supplies the
+ * entity-appropriate system prompt, precomputed diff and diff label; this
+ * folds in the chat prompts block and calls the utility model.
+ */
+async function generateSnapshotVersionComment(opts: {
+  systemPrompt: string;
+  diff: string | null;
+  diffLabel: string;
+  chatPrompts?: string[];
+  entityLabel: string;
+  trackingCtx?: VersionCommentTrackingContext;
+}): Promise<VersionCommentResult> {
+  const { diff } = opts;
   if (!diff) return { comment: null, diff: null };
 
   const parts: string[] = [];
 
-  const prompts = (context.chatPrompts ?? [])
+  const prompts = (opts.chatPrompts ?? [])
     .map(p => p.trim())
     .filter(Boolean)
     .slice(-6);
   if (prompts.length > 0) {
-    parts.push("Chat prompts that drove these dashboard changes:");
+    parts.push(`Chat prompts that drove these ${opts.entityLabel} changes:`);
     for (const p of prompts) {
       parts.push(`- ${p.substring(0, 300)}`);
     }
     parts.push("");
   }
 
-  parts.push("Dashboard definition diff:");
+  parts.push(`${opts.diffLabel}:`);
   parts.push(diff);
-
-  const prompt = parts.join("\n");
 
   try {
     const comment = await generateCommitMessage(
-      DASHBOARD_VERSION_COMMENT_SYSTEM_PROMPT,
-      prompt,
-      trackingCtx,
+      opts.systemPrompt,
+      parts.join("\n"),
+      opts.trackingCtx,
     );
     return { comment, diff };
   } catch (err) {
-    logger.error("Dashboard version comment generation failed", { error: err });
+    logger.error(`${opts.entityLabel} version comment generation failed`, {
+      error: err,
+    });
     return { comment: null, diff };
   }
+}
+
+export async function generateDashboardVersionComment(
+  context: DashboardVersionCommentContext,
+  trackingCtx?: VersionCommentTrackingContext,
+): Promise<VersionCommentResult> {
+  return generateSnapshotVersionComment({
+    systemPrompt: DASHBOARD_VERSION_COMMENT_SYSTEM_PROMPT,
+    diff: computeSnapshotDiff(context.previousSnapshot, context.newSnapshot),
+    diffLabel: "Dashboard definition diff",
+    chatPrompts: context.chatPrompts,
+    entityLabel: "dashboard",
+    trackingCtx,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// App version comments (multi-file)
+// ---------------------------------------------------------------------------
+
+const APP_VERSION_COMMENT_SYSTEM_PROMPT = `You are to act as an author of a version comment for a saved React app built in a BI tool.
+Your mission is to create a clean, specific commit message that explains WHAT changed in the app and WHY.
+I'll send you per-file diffs of the app's source files (plus a JSON diff of metadata like data bindings and dependencies) and, when available, the chat prompts the user gave the AI that produced the change. You convert this into a single commit message.
+
+Rules:
+- Use present tense, imperative mood (e.g. "Add revenue chart to overview page", "Wire orders table to live query")
+- Summarize the overall intent across all files — do not list file names one by one
+- Be specific: mention component names, features, data bindings, dependencies — not line numbers
+- Prefer the user's intent from the chat prompts when it clarifies the change
+- Maximum 72 characters
+- Do NOT wrap the message in quotes or backticks
+- Do NOT add a trailing period
+- Do NOT add any prefix like "feat:" or "fix:"
+- Do NOT add explanations beyond the single commit line
+- Respond with ONLY the commit message text, nothing else`;
+
+export interface AppVersionCommentContext {
+  previousSnapshot: Record<string, unknown> | null;
+  newSnapshot: Record<string, unknown>;
+  /** User prompts from chat sessions that contributed to the change, if any. */
+  chatPrompts?: string[];
+}
+
+interface SnapshotFileEntry {
+  path: string;
+  contents: string;
+}
+
+function asFileEntries(
+  snapshot: Record<string, unknown> | null,
+): SnapshotFileEntry[] {
+  if (!snapshot || !Array.isArray(snapshot.files)) return [];
+  return (snapshot.files as unknown[]).flatMap(f => {
+    if (!f || typeof f !== "object") return [];
+    const { path, contents } = f as Record<string, unknown>;
+    if (typeof path !== "string") return [];
+    return [{ path, contents: typeof contents === "string" ? contents : "" }];
+  });
+}
+
+function countDiffLines(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) added++;
+    else if (line.startsWith("-") && !line.startsWith("---")) removed++;
+  }
+  return { added, removed };
+}
+
+// Apps diff over many files, so the budget is larger than the single-query
+// console cap but still bounded for the utility model. Files that don't fit
+// degrade to one-line "+N/-M lines" stats instead of being dropped.
+const APP_DIFF_TOTAL_BUDGET = 9000;
+const APP_DIFF_PER_FILE_BUDGET = 1800;
+
+/**
+ * Diff two app snapshots as a git-style multi-file diff: a per-file unified
+ * diff for each added/removed/modified source file plus a JSON diff of the
+ * non-file metadata (title, data bindings, dependencies, ...). Once the total
+ * budget is spent, remaining files are summarized as line-count stats.
+ */
+export function computeAppMultiFileDiff(
+  previousSnapshot: Record<string, unknown> | null,
+  newSnapshot: Record<string, unknown>,
+): string | null {
+  const stripFiles = (s: Record<string, unknown> | null) => {
+    if (!s) return null;
+    const { files: _files, ...rest } = s;
+    return rest;
+  };
+
+  const metaDiff = computeSnapshotDiff(
+    stripFiles(previousSnapshot),
+    stripFiles(newSnapshot) ?? {},
+  );
+
+  const prevMap = new Map(
+    asFileEntries(previousSnapshot).map(f => [f.path, f.contents]),
+  );
+  const nextMap = new Map(
+    asFileEntries(newSnapshot).map(f => [f.path, f.contents]),
+  );
+  const paths = [...new Set([...prevMap.keys(), ...nextMap.keys()])].sort();
+
+  const sections: string[] = [];
+  let used = metaDiff?.length ?? 0;
+
+  for (const path of paths) {
+    const prev = prevMap.get(path);
+    const next = nextMap.get(path);
+    if (prev === next) continue;
+
+    let header: string;
+    let body: string | null;
+    if (prev === undefined) {
+      header = `Added file: ${path}`;
+      body = computeUnifiedDiff("", next ?? "");
+    } else if (next === undefined) {
+      header = `Deleted file: ${path}`;
+      body = null;
+    } else {
+      header = `Modified file: ${path}`;
+      body = computeUnifiedDiff(prev, next);
+      if (!body || !hasRealChanges(body)) continue;
+    }
+
+    let section = header;
+    if (body) {
+      const { added, removed } = countDiffLines(body);
+      const fits =
+        used + body.length <= APP_DIFF_TOTAL_BUDGET &&
+        body.length <= APP_DIFF_PER_FILE_BUDGET;
+      section = fits
+        ? `${header}\n${body}`
+        : `${header} (+${added}/-${removed} lines, diff omitted)`;
+    }
+    used += section.length;
+    sections.push(section);
+  }
+
+  const parts: string[] = [];
+  if (sections.length > 0) parts.push(sections.join("\n\n"));
+  if (metaDiff) parts.push(`App metadata diff (non-file fields):\n${metaDiff}`);
+  if (parts.length === 0) return null;
+  return parts.join("\n\n");
+}
+
+export async function generateAppVersionComment(
+  context: AppVersionCommentContext,
+  trackingCtx?: VersionCommentTrackingContext,
+): Promise<VersionCommentResult> {
+  return generateSnapshotVersionComment({
+    systemPrompt: APP_VERSION_COMMENT_SYSTEM_PROMPT,
+    diff: computeAppMultiFileDiff(
+      context.previousSnapshot,
+      context.newSnapshot,
+    ),
+    diffLabel: "App definition diff",
+    chatPrompts: context.chatPrompts,
+    entityLabel: "app",
+    trackingCtx,
+  });
 }
