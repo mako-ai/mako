@@ -10,6 +10,7 @@ import type { AsyncDuckDB } from "@duckdb/duckdb-wasm";
 import {
   createDuckDBInstance,
   loadParquetTable,
+  loadJsonTable,
   queryDuckDB,
   collectStreamBytes,
   terminateTrackedDuckDBInstance,
@@ -52,6 +53,44 @@ async function getInstance(appId: string): Promise<AppDuckDB> {
 }
 
 /**
+ * Serialize (re)loads of a table and skip the load when the requested
+ * revision already landed. The viewer preloads bindings in an effect at
+ * the same time the booted app issues on-demand reads (and several widgets
+ * can read the same binding at once); without this, two callers would
+ * DROP/CREATE the same table from separate connections concurrently, leaving
+ * it missing mid-rebuild — which surfaces as "data source not ready" until
+ * the user retries. Each load waits for the in-flight one, then re-checks the
+ * revision so it no-ops when the snapshot it needs already landed.
+ */
+function loadTableSerialized(
+  inst: AppDuckDB,
+  table: string,
+  revision: string,
+  load: () => Promise<void>,
+): Promise<boolean> {
+  // Fast path: this exact snapshot is already loaded.
+  if (inst.loaded.get(table) === revision) return Promise.resolve(true);
+
+  const prior = inst.loading.get(table) ?? Promise.resolve();
+  const result = prior.then(async () => {
+    if (inst.loaded.get(table) === revision) return true;
+    await load();
+    inst.loaded.set(table, revision);
+    return true;
+  });
+
+  // Keep the per-table chain alive for the next caller even if this load fails.
+  inst.loading.set(
+    table,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
+/**
  * Ensure a binding's Parquet artifact is loaded into the app's DuckDB instance.
  * Returns false if the binding isn't a ready materialized artifact.
  */
@@ -74,19 +113,7 @@ export async function ensureBindingLoaded(
   const revision = cache.artifactRevision || cache.definitionHash || "";
   const parquetUrl = cache.parquetUrl;
 
-  // Fast path: this exact snapshot is already loaded.
-  if (inst.loaded.get(table) === revision) return true;
-
-  // Serialize loads for a table. The viewer preloads bindings in an effect at
-  // the same time the booted app issues on-demand reads (and several widgets
-  // can read the same binding at once); without this, two callers would
-  // DROP/CREATE the same table from separate connections concurrently, leaving
-  // it missing mid-rebuild — which surfaces as "data source not ready" until
-  // the user retries. Each load waits for the in-flight one, then re-checks the
-  // revision so it no-ops when the snapshot it needs already landed.
-  const prior = inst.loading.get(table) ?? Promise.resolve();
-  const result = prior.then(async () => {
-    if (inst.loaded.get(table) === revision) return true;
+  return loadTableSerialized(inst, table, revision, async () => {
     const response = await fetch(parquetUrl, {
       credentials: "include",
       signal,
@@ -96,19 +123,46 @@ export async function ensureBindingLoaded(
     }
     const buffer = await collectStreamBytes(response.body);
     await loadParquetTable(inst.db, table, buffer);
-    inst.loaded.set(table, revision);
-    return true;
   });
+}
 
-  // Keep the per-table chain alive for the next caller even if this load fails.
-  inst.loading.set(
-    table,
-    result.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  return result;
+/**
+ * Load a binding's table from in-memory rows instead of its Parquet artifact.
+ * Used by the dbt preview-environment override: the caller executes the
+ * binding live against the override schema and swaps the rows in under the
+ * SAME table name, so `useDuckDB` reads the preview data while the prod
+ * artifact stays untouched. `revision` must encode the override (e.g.
+ * `dbt-preview:<env>`) so switching environments — including back to prod —
+ * reloads the table.
+ */
+export async function loadBindingRowsTable(
+  appId: string,
+  binding: AppDataBinding,
+  revision: string,
+  fetchRows: () => Promise<Record<string, unknown>[]>,
+): Promise<boolean> {
+  const inst = await getInstance(appId);
+  const table = bindingTableName(binding.name);
+
+  return loadTableSerialized(inst, table, revision, async () => {
+    const rows = await fetchRows();
+    if (rows.length === 0) {
+      // Zero-row preview result: replace the table with an empty one (single
+      // placeholder column — JSON inference has no schema to work from) so
+      // reads see "no data" instead of silently serving the stale prod rows.
+      const conn = await inst.db.connect();
+      try {
+        await conn.query(`DROP TABLE IF EXISTS "${table}"`);
+        await conn.query(
+          `CREATE TABLE "${table}" AS SELECT NULL AS __empty WHERE false`,
+        );
+      } finally {
+        await conn.close();
+      }
+      return;
+    }
+    await loadJsonTable(inst.db, table, rows);
+  });
 }
 
 /** Run analytical SQL against the app's loaded tables. */

@@ -15,6 +15,7 @@ import {
   queryAppDuckDB,
   bindingTableName,
 } from "../app-runtime/duckdb";
+import { ensureBindingLoadedForPreview } from "../app-runtime/binding-preview";
 import { queryDashboardRuntime } from "../dashboard-runtime/gateway";
 import { previewDashboardQuery } from "../dashboard-runtime/commands";
 import { getCurrentWorkspaceId } from "../app-runtime/shell";
@@ -94,7 +95,11 @@ async function executeAppDataTool(
     let note: string | undefined;
     try {
       if (binding.materialization === "parquet") {
-        const loaded = await ensureBindingLoaded(appId, binding);
+        // Preview-env aware: while a dbt preview override is active the table
+        // holds a live run against the override schema, not the prod artifact.
+        const loaded = workspaceId
+          ? await ensureBindingLoadedForPreview(workspaceId, appId, binding)
+          : await ensureBindingLoaded(appId, binding);
         if (loaded) {
           const result = await queryAppDuckDB(
             appId,
@@ -139,10 +144,16 @@ async function executeAppDataTool(
 
   if (toolName === "query_duckdb") {
     try {
+      // Preview-env aware, matching what the app preview itself reads.
       await Promise.all(
         appEntity.dataBindings
           .filter(b => b.materialization === "parquet")
-          .map(b => ensureBindingLoaded(appId, b).catch(() => false)),
+          .map(b =>
+            (workspaceId
+              ? ensureBindingLoadedForPreview(workspaceId, appId, b)
+              : ensureBindingLoaded(appId, b)
+            ).catch(() => false),
+          ),
       );
       const result = await queryAppDuckDB(appId, input.sql as string);
       return {

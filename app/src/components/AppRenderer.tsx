@@ -43,6 +43,7 @@ import {
   resolveSandboxRowLimit,
   applySandboxRowLimit,
 } from "../app-runtime/duckdb";
+import { ensureBindingLoadedForPreview } from "../app-runtime/binding-preview";
 
 /**
  * Full-screen live preview of a React app. File editing happens in dedicated
@@ -248,16 +249,23 @@ export default function AppRenderer({
   }, [appEntity, workspaceId, appId, fetchApp]);
 
   // Preload materialized (parquet) bindings into the app's DuckDB instance.
+  // Preview-env aware: while a dbt override is active, dbt-linked bindings
+  // load a live (row-capped) run against the override schema instead of the
+  // prod Parquet artifact — re-runs when the effective env changes so the
+  // tables swap in both directions.
   useEffect(() => {
     if (!appEntity) return;
     for (const binding of appEntity.dataBindings) {
       if (binding.materialization === "parquet") {
-        void ensureBindingLoaded(appId, binding).catch(() => {
+        const load = workspaceId
+          ? ensureBindingLoadedForPreview(workspaceId, appId, binding)
+          : ensureBindingLoaded(appId, binding);
+        void load.catch(() => {
           /* surfaced when the app actually queries it */
         });
       }
     }
-  }, [appId, appEntity]);
+  }, [appId, appEntity, workspaceId, effectiveDbtEnv]);
 
   // Dispose the DuckDB instance when the tab unmounts.
   useEffect(() => {
@@ -354,9 +362,14 @@ export default function AppRenderer({
           b => b.materialization === "parquet",
         );
         const rowLimit = resolveSandboxRowLimit(data.rowLimit);
+        // Preview-env aware: dbt-linked tables hold override data while a
+        // preview env is active (see ensureBindingLoadedForPreview).
         void Promise.all(
           parquetBindings.map(b =>
-            ensureBindingLoaded(appId, b).catch(() => false),
+            (workspaceId
+              ? ensureBindingLoadedForPreview(workspaceId, appId, b)
+              : ensureBindingLoaded(appId, b)
+            ).catch(() => false),
           ),
         )
           .then(() => queryAppDuckDB(appId, data.sql))
