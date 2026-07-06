@@ -1,0 +1,190 @@
+---
+title: "SQL Server Window Functions: ROW_NUMBER, RANK, LAG, Running Totals"
+description: "How to use window functions in SQL Server with OVER, PARTITION BY, and frame clauses. Covers ROW_NUMBER, RANK, LAG/LEAD, the RANGE default gotcha, and the 2022 WINDOW clause and IGNORE NULLS."
+database: "mssql"
+category: "sql-how-to"
+tags: ["sql-server", "t-sql", "sql", "window-functions", "analytics"]
+date: "2026-07-06"
+---
+
+# SQL Server Window Functions
+
+Window functions compute values across a set of rows related to the current row, without collapsing those rows into one. They are the standard way to express running totals, rankings, and row-to-row comparisons that would otherwise need self-joins or correlated subqueries.
+
+SQL Server has shipped the full set since SQL Server 2012: ranking functions, offset functions (LAG/LEAD, FIRST_VALUE/LAST_VALUE), and aggregate functions with frame support. SQL Server 2022 added two long-requested pieces: the WINDOW clause and NULL treatment (IGNORE NULLS). Both are covered below.
+
+## Sample Schema
+
+```sql
+CREATE TABLE sales (
+    region     varchar(10)  NOT NULL,
+    sale_date  date         NOT NULL,
+    amount     int          NOT NULL
+);
+
+INSERT INTO sales VALUES
+    ('north', '2026-01-01', 100),
+    ('north', '2026-01-02', 150),
+    ('north', '2026-01-03', 120),
+    ('south', '2026-01-01', 200),
+    ('south', '2026-01-02', 180);
+```
+
+## The Anatomy of a Window Function
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    SUM(amount) OVER (
+        PARTITION BY region       -- split rows into independent windows
+        ORDER BY sale_date        -- order rows within each window
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW  -- the frame
+    ) AS running_total
+FROM sales;
+```
+
+Three parts, all optional individually:
+
+- `PARTITION BY` splits the result set into independent groups. Without it, the whole result set is one window.
+- `ORDER BY` defines row order inside the window. Required for ranking and offset functions.
+- The frame clause (`ROWS`/`RANGE BETWEEN ...`) restricts which rows the function sees. Only aggregate and some analytic functions accept it.
+
+## Ranking: ROW_NUMBER, RANK, DENSE_RANK, NTILE
+
+```sql
+SELECT
+    region,
+    amount,
+    ROW_NUMBER() OVER (PARTITION BY region ORDER BY amount DESC) AS rn,
+    RANK()       OVER (PARTITION BY region ORDER BY amount DESC) AS rnk,
+    DENSE_RANK() OVER (PARTITION BY region ORDER BY amount DESC) AS drnk,
+    NTILE(2)     OVER (PARTITION BY region ORDER BY amount DESC) AS half
+FROM sales;
+```
+
+- `ROW_NUMBER()` numbers rows 1, 2, 3 with no ties -- ties are broken arbitrarily unless your `ORDER BY` is unique.
+- `RANK()` gives tied rows the same rank and skips the next values (1, 1, 3).
+- `DENSE_RANK()` gives tied rows the same rank without gaps (1, 1, 2).
+- `NTILE(n)` deals rows into n buckets as evenly as possible.
+
+The classic use is top-N per group. Window functions cannot appear in `WHERE`, so wrap the query:
+
+```sql
+SELECT region, sale_date, amount
+FROM (
+    SELECT *,
+        ROW_NUMBER() OVER (PARTITION BY region ORDER BY amount DESC) AS rn
+    FROM sales
+) ranked
+WHERE rn <= 2;
+```
+
+A derived table or CTE is required; T-SQL also has no `QUALIFY` clause (Snowflake and BigQuery users will miss it).
+
+## LAG and LEAD: Comparing to Neighboring Rows
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    LAG(amount)  OVER (PARTITION BY region ORDER BY sale_date) AS prev_amount,
+    amount - LAG(amount, 1, 0)
+        OVER (PARTITION BY region ORDER BY sale_date) AS change
+FROM sales;
+```
+
+`LAG(col, offset, default)` reads a previous row; `LEAD` reads a following one. The third argument replaces the NULL you would otherwise get at partition edges -- here `0` instead of NULL for the first row of each region.
+
+## Running Totals and the RANGE Default Gotcha
+
+The single most common window-function bug in SQL Server: when you write `ORDER BY` in an `OVER` clause but no frame, the default frame is `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` -- not `ROWS`.
+
+`RANGE` treats all rows with the same `ORDER BY` value as peers of the current row and includes all of them. If two rows share a date, both get the total *including each other*, so your "running total" jumps in steps instead of row by row. It is also slower: the `RANGE` implementation spools rows to tempdb (an on-disk worktable), while `ROWS` uses an in-memory spool.
+
+Be explicit:
+
+```sql
+SUM(amount) OVER (
+    PARTITION BY region
+    ORDER BY sale_date
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+) AS running_total
+```
+
+For a moving average over the last 3 rows:
+
+```sql
+AVG(amount) OVER (
+    PARTITION BY region
+    ORDER BY sale_date
+    ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+) AS moving_avg_3
+```
+
+Note SQL Server's `RANGE` only supports `UNBOUNDED` and `CURRENT ROW` bounds -- interval-based frames like `RANGE INTERVAL '7' DAY PRECEDING` (PostgreSQL) do not exist in T-SQL.
+
+## FIRST_VALUE, LAST_VALUE, and IGNORE NULLS (2022+)
+
+`LAST_VALUE` with the default frame returns the current row's value, not the partition's last -- the frame ends at `CURRENT ROW`. Extend it:
+
+```sql
+LAST_VALUE(amount) OVER (
+    PARTITION BY region
+    ORDER BY sale_date
+    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+) AS final_amount
+```
+
+SQL Server 2022 added NULL treatment for the offset functions, which makes "carry the last known value forward" expressible without workarounds:
+
+```sql
+LAST_VALUE(reading) IGNORE NULLS OVER (
+    ORDER BY reading_time
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+) AS last_known_reading
+```
+
+`IGNORE NULLS` / `RESPECT NULLS` (the default) work on `FIRST_VALUE`, `LAST_VALUE`, `LAG`, and `LEAD`. On 2019 and earlier you need the two-step "grouping flag" workaround with a running MAX over a CASE expression.
+
+## The WINDOW Clause (2022+)
+
+Repeating the same `OVER (...)` spec across five columns is noisy. SQL Server 2022 (database compatibility level 160) lets you name it once:
+
+```sql
+SELECT
+    region,
+    sale_date,
+    amount,
+    SUM(amount)  OVER w AS running_total,
+    AVG(amount)  OVER w AS running_avg,
+    COUNT(*)     OVER w AS running_count
+FROM sales
+WINDOW w AS (
+    PARTITION BY region
+    ORDER BY sale_date
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+);
+```
+
+Named windows can also be refined per-function: `OVER (w ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)`.
+
+## Common Mistakes
+
+- **Relying on the default frame.** You get `RANGE`, peer-row surprises with ties, and a tempdb worktable. Write `ROWS BETWEEN ... ` explicitly whenever `ORDER BY` is present.
+- **Filtering on a window function in WHERE.** Window functions are evaluated after `WHERE`. Wrap in a CTE or derived table.
+- **`LAST_VALUE` without extending the frame.** Returns the current row. Use `UNBOUNDED FOLLOWING` or flip to `FIRST_VALUE` with `ORDER BY ... DESC`.
+- **Non-deterministic `ROW_NUMBER` ties.** If the `ORDER BY` is not unique, row numbers can change between runs. Add a tiebreaker column.
+- **Expecting `QUALIFY`.** T-SQL does not have it (as of SQL Server 2025 previews it still does not). Derived table it is.
+
+Window functions are also a good fit for exploring data interactively -- Mako's AI autocomplete can draft the `OVER` clause and frame spec from a plain-language description while you iterate on a query.
+
+## Performance Notes
+
+A window function's `PARTITION BY` + `ORDER BY` combination wants a supporting index (`region, sale_date` in the examples above) to avoid a sort. Check the plan for Sort and Window Spool operators; a `ROWS` frame with a covering index is the fast path. Multiple different window specs in one query mean multiple sorts.
+
+---
+
+Mako connects to SQL Server with AI-powered autocomplete. Try it free at [mako.ai](https://mako.ai).
