@@ -15,6 +15,7 @@ import { Readable } from "node:stream";
 import { nanoid } from "nanoid";
 import {
   MakoApp,
+  MakoAppStorageEntry,
   DatabaseConnection,
   DbtProject,
   EntityVersion,
@@ -725,6 +726,9 @@ app.openapi(
       }
 
       await doc.deleteOne();
+      await MakoAppStorageEntry.deleteMany({ appId: doc._id }).catch(
+        () => undefined,
+      );
       return c.json({ success: true });
     } catch (error) {
       logger.error("Error deleting app", { error });
@@ -919,6 +923,263 @@ app.openapi(
     } catch (error) {
       logger.error("Error serving app binding artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
+
+// ── App storage (runtime key-value data) ──
+//
+// Per-app KV store for data the RUNNING app persists (user inputs like
+// per-CSM targets, notes, manual overrides) via the `useStorage` SDK hook.
+// Values live in their own collection (`makoapp_storage`), independent of the
+// app definition — publishing, restoring, or editing the app never touches
+// them. Anyone who can READ the app can read and write storage: storage
+// writes are "using the app" (filling in a form), not "editing the app".
+// Public (anonymous) share viewers get read-only access via /api/share.
+
+/** Storage keys: sane identifier charset, bounded length. */
+const STORAGE_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
+/** Serialized JSON size cap per value (256 KB). */
+const STORAGE_VALUE_MAX_BYTES = 256 * 1024;
+/** Max distinct keys per app. */
+const STORAGE_MAX_KEYS = 500;
+
+const StorageKeyParam = AppIdParam.extend({
+  key: z.string().openapi({ param: { name: "key", in: "path" } }),
+});
+
+// GET /{id}/storage — every entry for the app, as { key: value }
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/storage",
+    tags: ["Apps"],
+    summary: "List app storage entries",
+    security: AUTH_SECURITY,
+    request: { params: AppIdParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const entries = await MakoAppStorageEntry.find({
+        appId: doc._id,
+      }).lean();
+      const values: Record<string, unknown> = {};
+      for (const entry of entries) values[entry.key] = entry.value;
+      return c.json({ success: true, values });
+    } catch (error) {
+      logger.error("Error listing app storage", { error });
+      return c.json({ success: false, error: "Failed to load storage" }, 500);
+    }
+  },
+);
+
+// GET /{id}/storage/{key} — one entry
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{id}/storage/{key}",
+    tags: ["Apps"],
+    summary: "Get an app storage entry",
+    security: AUTH_SECURITY,
+    request: { params: StorageKeyParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const key = c.req.param("key");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const entry = await MakoAppStorageEntry.findOne({
+        appId: doc._id,
+        key,
+      }).lean();
+      return c.json({
+        success: true,
+        key,
+        value: entry ? entry.value : null,
+        exists: !!entry,
+        updatedAt: entry?.updatedAt,
+        updatedBy: entry?.updatedBy,
+      });
+    } catch (error) {
+      logger.error("Error reading app storage entry", { error });
+      return c.json({ success: false, error: "Failed to read storage" }, 500);
+    }
+  },
+);
+
+// PUT /{id}/storage/{key} — upsert one entry ({ value: <json> })
+app.openapi(
+  createRoute({
+    method: "put",
+    path: "/{id}/storage/{key}",
+    tags: ["Apps"],
+    summary: "Set an app storage entry",
+    security: AUTH_SECURITY,
+    request: { params: StorageKeyParam, body: AppBody },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const key = c.req.param("key");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      if (!STORAGE_KEY_RE.test(key)) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Invalid storage key: use letters, digits, '.', '_', ':' or '-' (max 200 chars)",
+          },
+          400,
+        );
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      // Read access is enough: writing storage is USING the app (submitting a
+      // form the app renders), not editing its definition.
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      const body = (await c.req.json().catch(() => null)) as {
+        value?: unknown;
+      } | null;
+      if (!body || !("value" in body)) {
+        return c.json(
+          { success: false, error: "Body must be { value: <json> }" },
+          400,
+        );
+      }
+      const serialized = JSON.stringify(body.value ?? null);
+      if (serialized.length > STORAGE_VALUE_MAX_BYTES) {
+        return c.json(
+          {
+            success: false,
+            error: `Value too large (max ${STORAGE_VALUE_MAX_BYTES / 1024} KB)`,
+          },
+          400,
+        );
+      }
+
+      const existing = await MakoAppStorageEntry.exists({
+        appId: doc._id,
+        key,
+      });
+      if (!existing) {
+        const count = await MakoAppStorageEntry.countDocuments({
+          appId: doc._id,
+        });
+        if (count >= STORAGE_MAX_KEYS) {
+          return c.json(
+            {
+              success: false,
+              error: `Storage limit reached (max ${STORAGE_MAX_KEYS} keys per app)`,
+            },
+            400,
+          );
+        }
+      }
+
+      const entry = await MakoAppStorageEntry.findOneAndUpdate(
+        { appId: doc._id, key },
+        {
+          $set: { value: body.value ?? null, updatedBy: userId },
+          $setOnInsert: { workspaceId: doc.workspaceId },
+        },
+        { new: true, upsert: true },
+      );
+
+      publishRealtimeEvent(workspaceId, {
+        type: "app.storage.updated",
+        appId: doc._id.toString(),
+        key,
+        updatedBy: userId ?? "system",
+      });
+
+      return c.json({
+        success: true,
+        key,
+        value: entry.value,
+        updatedAt: entry.updatedAt,
+      });
+    } catch (error) {
+      logger.error("Error writing app storage entry", { error });
+      return c.json({ success: false, error: "Failed to write storage" }, 500);
+    }
+  },
+);
+
+// DELETE /{id}/storage/{key} — remove one entry
+app.openapi(
+  createRoute({
+    method: "delete",
+    path: "/{id}/storage/{key}",
+    tags: ["Apps"],
+    summary: "Delete an app storage entry",
+    security: AUTH_SECURITY,
+    request: { params: StorageKeyParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const workspaceId = c.req.param("workspaceId") as string;
+      const id = c.req.param("id");
+      const key = c.req.param("key");
+      const userId = c.get("user")?.id;
+      if (!Types.ObjectId.isValid(id)) {
+        return c.json({ success: false, error: "Invalid app ID" }, 400);
+      }
+      const doc = await MakoApp.findOne({
+        _id: new Types.ObjectId(id),
+        workspaceId: new Types.ObjectId(workspaceId),
+      });
+      if (!doc) return c.json({ success: false, error: "App not found" }, 404);
+      if (!canRead(doc, userId, c.get("memberRole"))) {
+        return c.json({ success: false, error: "Access denied" }, 403);
+      }
+
+      await MakoAppStorageEntry.deleteOne({ appId: doc._id, key });
+      return c.json({ success: true, key });
+    } catch (error) {
+      logger.error("Error deleting app storage entry", { error });
+      return c.json({ success: false, error: "Failed to delete storage" }, 500);
     }
   },
 );

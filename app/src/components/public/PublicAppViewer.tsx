@@ -294,6 +294,44 @@ export default function PublicAppViewer({
               error: err instanceof Error ? err.message : "DuckDB query failed",
             }),
           );
+      } else if (data.type === PREVIEW_MESSAGE.storageGet) {
+        // Anonymous viewers read the app's persisted values (targets, notes…)
+        // so the shared view renders complete — but can never write them.
+        void fetch(`/api/share/${token}/storage`, { credentials: "include" })
+          .then(async res => {
+            const json = await res.json().catch(() => null);
+            if (!res.ok || !json?.success) {
+              throw new Error(json?.error || "Failed to load storage");
+            }
+            const values = (json.values ?? {}) as Record<string, unknown>;
+            const key = String(data.key ?? "");
+            post({
+              type: PREVIEW_MESSAGE.storageResult,
+              requestId: data.requestId,
+              success: true,
+              value: key in values ? values[key] : null,
+              exists: key in values,
+              readOnly: true,
+            });
+          })
+          .catch(err =>
+            post({
+              type: PREVIEW_MESSAGE.storageResult,
+              requestId: data.requestId,
+              success: false,
+              error:
+                err instanceof Error ? err.message : "Failed to load storage",
+              readOnly: true,
+            }),
+          );
+      } else if (data.type === PREVIEW_MESSAGE.storageSet) {
+        post({
+          type: PREVIEW_MESSAGE.storageResult,
+          requestId: data.requestId,
+          success: false,
+          error: "Storage is read-only in the shared view",
+          readOnly: true,
+        });
       } else if (data.type === PREVIEW_MESSAGE.navigate) {
         if (typeof data.location === "string") {
           writeAppLocation(data.location, !!data.replace);

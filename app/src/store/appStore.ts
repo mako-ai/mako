@@ -136,6 +136,13 @@ interface AppState {
   previewDbtEnv: Record<string, string | null>;
   /** Cached dbt project environments for binding resolution (by projectId). */
   dbtEnvInfo: Record<string, AppDbtEnvInfo>;
+  /**
+   * Per-app signal that a storage value changed remotely (realtime
+   * `app.storage.updated`). AppRenderer watches it and forwards a
+   * storage-changed message into the booted iframe so `useStorage` hooks
+   * bound to that key refetch.
+   */
+  storageChangeSignal: Record<string, { key: string; nonce: number }>;
 }
 
 interface AppActions {
@@ -207,6 +214,29 @@ interface AppActions {
     appId: string,
     bindingName: string,
   ) => Promise<{ success: boolean; rows?: unknown[]; error?: string }>;
+
+  /** Read one app-storage value (runtime KV persisted by `useStorage`). */
+  getStorageValue: (
+    workspaceId: string,
+    appId: string,
+    key: string,
+  ) => Promise<{
+    success: boolean;
+    value?: unknown;
+    exists?: boolean;
+    error?: string;
+  }>;
+
+  /** Upsert one app-storage value. */
+  setStorageValue: (
+    workspaceId: string,
+    appId: string,
+    key: string,
+    value: unknown,
+  ) => Promise<{ success: boolean; error?: string }>;
+
+  /** Realtime poke: a storage key changed in another window/user session. */
+  signalStorageChange: (appId: string, key: string) => void;
 
   /**
    * Switch which dbt environment the app's draft preview reads (per-user view
@@ -284,6 +314,7 @@ const initialState: AppState = {
   previewErrors: {},
   previewDbtEnv: {},
   dbtEnvInfo: {},
+  storageChangeSignal: {},
 };
 
 function genId(): string {
@@ -795,6 +826,72 @@ export const useAppStore = create<AppStore>()(
         };
       }
     },
+
+    getStorageValue: async (workspaceId, appId, key) => {
+      try {
+        const res = unwrapBody(
+          await api.GET(
+            "/api/workspaces/{workspaceId}/apps/{id}/storage/{key}",
+            {
+              params: { path: { workspaceId, id: appId, key } },
+            },
+          ),
+        ) as {
+          success: boolean;
+          value?: unknown;
+          exists?: boolean;
+          error?: string;
+        };
+        if (!res.success) {
+          return {
+            success: false,
+            error: res.error || "Failed to load storage",
+          };
+        }
+        return { success: true, value: res.value, exists: !!res.exists };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to load storage",
+        };
+      }
+    },
+
+    setStorageValue: async (workspaceId, appId, key, value) => {
+      try {
+        // 400/403 carry a structured error body (validation / permission), so
+        // read the parsed body regardless of HTTP status instead of throwing.
+        const result = await api.PUT(
+          "/api/workspaces/{workspaceId}/apps/{id}/storage/{key}",
+          {
+            params: { path: { workspaceId, id: appId, key } },
+            body: { value },
+          },
+        );
+        const body = (result.data ?? result.error) as {
+          success?: boolean;
+          error?: string;
+        };
+        if (!body?.success) {
+          return { success: false, error: body?.error || "Failed to save" };
+        }
+        return { success: true };
+      } catch (e) {
+        return {
+          success: false,
+          error: e instanceof Error ? e.message : "Failed to save",
+        };
+      }
+    },
+
+    signalStorageChange: (appId, key) =>
+      set(state => {
+        const prev = state.storageChangeSignal[appId];
+        state.storageChangeSignal[appId] = {
+          key,
+          nonce: (prev?.nonce ?? 0) + 1,
+        };
+      }),
 
     materializeBinding: async (workspaceId, appId, bindingId, options) => {
       const signal = options?.signal;

@@ -67,6 +67,12 @@ export type RealtimeEvent =
       origin: "agent" | "save";
     }
   | {
+      type: "app.storage.updated";
+      appId: string;
+      key: string;
+      updatedBy: string;
+    }
+  | {
       type: "dbt.file.updated";
       projectId: string;
       path: string;
@@ -565,6 +571,14 @@ export const useRealtimeStore = create<RealtimeStore>()(
           break;
         case "app.updated":
           handleAppUpdated(event);
+          break;
+        case "app.storage.updated":
+          // Only open apps care; the forwarded poke makes their `useStorage`
+          // hooks refetch the changed key (own writes are already optimistic
+          // and guarded by the in-flight save counter in the SDK).
+          if (useAppStore.getState().openApps[event.appId]) {
+            useAppStore.getState().signalStorageChange(event.appId, event.key);
+          }
           break;
         case "dashboard.updated":
           handleDashboardUpdated(event);

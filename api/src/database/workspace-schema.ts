@@ -4100,6 +4100,54 @@ MakoAppSchema.index({ "publicShare.token": 1 }, { unique: true, sparse: true });
 export const MakoApp = mongoose.model<IMakoApp>("MakoApp", MakoAppSchema);
 
 /**
+ * MakoAppStorageEntry — per-app key-value storage for RUNTIME app data (user
+ * inputs like targets, notes, manual overrides). Written by app code through
+ * the `useStorage` hook in `@mako/app-sdk`; independent of the app definition
+ * and its draft/published split, so values survive publishes and restores.
+ *
+ * Values are arbitrary JSON documents, shared by everyone who uses the app
+ * (workspace-visible data, not per-user preferences).
+ */
+export interface IMakoAppStorageEntry extends Document {
+  _id: Types.ObjectId;
+  workspaceId: Types.ObjectId;
+  appId: Types.ObjectId;
+  key: string;
+  value: unknown;
+  updatedBy?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const MakoAppStorageEntrySchema = new Schema<IMakoAppStorageEntry>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+      index: true,
+    },
+    appId: {
+      type: Schema.Types.ObjectId,
+      ref: "MakoApp",
+      required: true,
+      index: true,
+    },
+    key: { type: String, required: true },
+    value: { type: Schema.Types.Mixed, default: null },
+    updatedBy: { type: String },
+  },
+  { timestamps: true, collection: "makoapp_storage" },
+);
+
+MakoAppStorageEntrySchema.index({ appId: 1, key: 1 }, { unique: true });
+
+export const MakoAppStorageEntry = mongoose.model<IMakoAppStorageEntry>(
+  "MakoAppStorageEntry",
+  MakoAppStorageEntrySchema,
+);
+
+/**
  * Skill — workspace-scoped knowledge + procedure primitive.
  *
  * See GitHub issue #365. A skill is a named, conditional playbook with:

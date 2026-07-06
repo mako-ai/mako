@@ -73,6 +73,14 @@ export type RealtimeEvent =
       clientId?: string;
       origin: "agent" | "save";
     }
+  // A runtime storage value changed (useStorage SDK hook). Open previews of
+  // the same app refetch the key so collaborating editors stay in sync.
+  | {
+      type: "app.storage.updated";
+      appId: string;
+      key: string;
+      updatedBy: string;
+    }
   | {
       type: "dbt.file.updated";
       projectId: string;

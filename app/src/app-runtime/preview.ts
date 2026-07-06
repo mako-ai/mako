@@ -33,6 +33,13 @@ export const PREVIEW_MESSAGE = {
   // parquet snapshots in the parent's DuckDB). The booted app re-runs its data
   // hooks without a srcdoc rebuild, so the view updates while keeping UI state.
   dataRefresh: "mako-app:data-refresh",
+  // iframe -> host: read/write a persistent app storage value (useStorage).
+  storageGet: "mako-app:storage-get",
+  storageSet: "mako-app:storage-set",
+  storageResult: "mako-app:storage-result",
+  // host -> iframe: a storage value changed outside this frame (another user
+  // or window saved). Hooks bound to that key refetch.
+  storageChanged: "mako-app:storage-changed",
   capture: "mako-app:capture",
   captureResult: "mako-app:capture-result",
   setTheme: "mako-app:set-theme",
@@ -384,7 +391,8 @@ window.addEventListener("message", (event) => {
   const data = event.data || {};
   if (
     (data.type === "mako-app:binding-result" ||
-      data.type === "mako-app:duckdb-result") &&
+      data.type === "mako-app:duckdb-result" ||
+      data.type === "mako-app:storage-result") &&
     pending.has(data.requestId)
   ) {
     const resolve = pending.get(data.requestId);
@@ -423,6 +431,34 @@ function runDuckDb(sql, rowLimit) {
     const requestId = "duck_" + ++reqSeq;
     pending.set(requestId, resolve);
     POST({ type: "mako-app:run-duckdb", requestId, sql: sql, rowLimit: rowLimit });
+  });
+}
+
+// --- Storage bridge: useStorage(key) -> parent app-storage API ---
+const storageListeners = new Set();
+window.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "mako-app:storage-changed") return;
+  storageListeners.forEach((listener) => {
+    try {
+      listener(data.key);
+    } catch (_) {
+      /* listener errors must not break other subscribers */
+    }
+  });
+});
+function runStorageGet(key) {
+  return new Promise((resolve) => {
+    const requestId = "sto_" + ++reqSeq;
+    pending.set(requestId, resolve);
+    POST({ type: "mako-app:storage-get", requestId, key: key });
+  });
+}
+function runStorageSet(key, value) {
+  return new Promise((resolve) => {
+    const requestId = "sto_" + ++reqSeq;
+    pending.set(requestId, resolve);
+    POST({ type: "mako-app:storage-set", requestId, key: key, value: value });
   });
 }
 function warnTruncated(source, res) {
@@ -578,6 +614,90 @@ async function main() {
         return () => { active = false; };
       }, [sql, rowLimit, epoch]);
       return state;
+    },
+    // Persistent per-app key-value storage, shared by everyone who uses the
+    // app (server-side, survives reloads and publishes). Use it for values
+    // users EDIT in the app UI — targets, notes, manual overrides. Returns
+    // { value, setValue, loading, saving, error, readOnly }:
+    // - value: the stored JSON value, or defaultValue while missing.
+    // - setValue(next): optimistic write-through; accepts a value or an
+    //   updater function (prev => next). No-op in read-only contexts
+    //   (public share links), where readOnly is true.
+    // Values sync live across users/windows via the host realtime channel.
+    useStorage(key, defaultValue) {
+      const defaultRef = React.useRef(defaultValue);
+      defaultRef.current = defaultValue;
+      const [state, setState] = React.useState({
+        value: defaultValue,
+        loading: true,
+        saving: false,
+        error: null,
+        readOnly: false,
+      });
+      const savingRef = React.useRef(0);
+      const refetch = React.useCallback(() => {
+        runStorageGet(key).then((res) => {
+          // A save is in flight: its optimistic value is newer than this read.
+          if (savingRef.current > 0) return;
+          if (res.success) {
+            setState((prev) => ({
+              ...prev,
+              value: res.exists ? res.value : defaultRef.current,
+              loading: false,
+              error: null,
+              readOnly: !!res.readOnly,
+            }));
+          } else {
+            setState((prev) => ({
+              ...prev,
+              loading: false,
+              error: res.error || "Failed to load storage",
+              readOnly: !!res.readOnly,
+            }));
+          }
+        });
+      }, [key]);
+      React.useEffect(() => {
+        setState((prev) => ({ ...prev, loading: true, error: null }));
+        refetch();
+        const listener = (changedKey) => {
+          if (changedKey === key) refetch();
+        };
+        storageListeners.add(listener);
+        return () => { storageListeners.delete(listener); };
+      }, [key, refetch]);
+      const setValue = React.useCallback((next) => {
+        setState((prev) => {
+          const resolved = typeof next === "function" ? next(prev.value) : next;
+          savingRef.current++;
+          runStorageSet(key, resolved).then((res) => {
+            savingRef.current--;
+            if (res.success) {
+              if (savingRef.current === 0) {
+                setState((cur) => ({ ...cur, saving: false, error: null }));
+              }
+            } else {
+              setState((cur) => ({
+                ...cur,
+                saving: savingRef.current > 0,
+                error: res.error || "Failed to save",
+                readOnly: !!res.readOnly || cur.readOnly,
+              }));
+              // Re-sync with the server after a failed optimistic write.
+              if (savingRef.current === 0) refetch();
+            }
+          });
+          return { ...prev, value: resolved, saving: true };
+        });
+      }, [key, refetch]);
+      return {
+        value: state.value,
+        setValue: setValue,
+        loading: state.loading,
+        saving: state.saving,
+        error: state.error,
+        readOnly: state.readOnly,
+      };
     },
     // Effective color mode: { theme: "light" | "dark" }. Tracks the host app
     // theme when embedded in Mako and the OS preference when standalone. Use

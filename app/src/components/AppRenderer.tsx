@@ -83,6 +83,9 @@ export default function AppRenderer({
   const bumpPreview = useAppStore(s => s.bumpPreview);
   const setPreviewErrors = useAppStore(s => s.setPreviewErrors);
   const runBinding = useAppStore(s => s.runBinding);
+  const getStorageValue = useAppStore(s => s.getStorageValue);
+  const setStorageValue = useAppStore(s => s.setStorageValue);
+  const storageChangeSignal = useAppStore(s => s.storageChangeSignal[appId]);
   const materializeAllBindings = useAppStore(s => s.materializeAllBindings);
   const persistApp = useAppStore(s => s.persistApp);
   const generateSaveComment = useAppStore(s => s.generateSaveComment);
@@ -395,6 +398,32 @@ export default function AppRenderer({
               error: err instanceof Error ? err.message : "DuckDB query failed",
             }),
           );
+      } else if (data.type === PREVIEW_MESSAGE.storageGet && workspaceId) {
+        void getStorageValue(workspaceId, appId, String(data.key ?? "")).then(
+          result =>
+            post({
+              type: PREVIEW_MESSAGE.storageResult,
+              requestId: data.requestId,
+              success: result.success,
+              value: result.value ?? null,
+              exists: result.exists === true,
+              error: result.error,
+            }),
+        );
+      } else if (data.type === PREVIEW_MESSAGE.storageSet && workspaceId) {
+        void setStorageValue(
+          workspaceId,
+          appId,
+          String(data.key ?? ""),
+          data.value,
+        ).then(result =>
+          post({
+            type: PREVIEW_MESSAGE.storageResult,
+            requestId: data.requestId,
+            success: result.success,
+            error: result.error,
+          }),
+        );
       } else if (data.type === PREVIEW_MESSAGE.navigate) {
         if (typeof data.location === "string") applyAppLocation(data.location);
       } else if (data.type === PREVIEW_MESSAGE.error) {
@@ -419,10 +448,25 @@ export default function AppRenderer({
     workspaceId,
     appEntity,
     runBinding,
+    getStorageValue,
+    setStorageValue,
     setPreviewErrors,
     applyAppLocation,
     dbtOverrideActive,
   ]);
+
+  // A storage value changed in another window/user session (realtime poke):
+  // tell the booted iframe so useStorage hooks bound to that key refetch.
+  useEffect(() => {
+    if (!storageChangeSignal) return;
+    iframeRef.current?.contentWindow?.postMessage(
+      {
+        type: PREVIEW_MESSAGE.storageChanged,
+        key: storageChangeSignal.key,
+      },
+      "*",
+    );
+  }, [storageChangeSignal]);
 
   // Browser back/forward changes the host URL without a reload; mirror the new
   // app location into the tab and push it to the (already-booted) iframe.

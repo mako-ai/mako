@@ -23,6 +23,7 @@ import { OPEN_RESPONSES, createRouter } from "../openapi/core";
 import {
   Dashboard,
   MakoApp,
+  MakoAppStorageEntry,
   type IDashboard,
   type IMakoApp,
 } from "../database/workspace-schema";
@@ -519,6 +520,51 @@ app.openapi(
     } catch (error) {
       logger.error("Error streaming share artifact", { error });
       return c.json({ success: false, error: "Failed to serve artifact" }, 500);
+    }
+  },
+);
+
+// GET /:token/storage — read-only app storage (post-unlock).
+// Apps only. Anonymous viewers can READ runtime values the app persisted
+// (targets, notes, …) so the shared view renders complete; writes are only
+// possible for authenticated workspace users via /api/workspaces/.../storage.
+app.openapi(
+  createRoute({
+    method: "get",
+    path: "/{token}/storage",
+    tags: ["Public Shares"],
+    summary: "Read a shared app's storage values",
+    security: [],
+    request: { params: TokenParam },
+    responses: { ...OPEN_RESPONSES },
+  }),
+  async c => {
+    try {
+      const token = c.req.param("token");
+      const resource = await findByToken(token);
+      if (!resource) {
+        return c.json({ success: false, error: "Share link not found" }, 404);
+      }
+      if (resource.type !== "app") {
+        return c.json(
+          { success: false, error: "Storage is only supported for apps" },
+          400,
+        );
+      }
+      const gate = requireUnlock(c, token, resource);
+      if (gate) return gate;
+
+      const entries = await MakoAppStorageEntry.find({
+        appId: resource.doc._id,
+      }).lean();
+      const values: Record<string, unknown> = {};
+      for (const entry of entries) values[entry.key] = entry.value;
+      return c.json({ success: true, values }, 200, {
+        "Cache-Control": "private, no-store",
+      });
+    } catch (error) {
+      logger.error("Error reading public app storage", { error });
+      return c.json({ success: false, error: "Failed to load storage" }, 500);
     }
   },
 );

@@ -1,6 +1,6 @@
 ---
 name: apps
-description: Load when building, editing, or debugging Mako React apps — app files, npm dependencies, data bindings, the @mako/app-sdk hooks (useQuery / useDuckDB / useLocation / useSearchParams / navigate), URL state and shareable deep links, materialized Parquet/DuckDB bindings, and the live preview runtime.
+description: Load when building, editing, or debugging Mako React apps — app files, npm dependencies, data bindings, the @mako/app-sdk hooks (useQuery / useDuckDB / useStorage / useLocation / useSearchParams / navigate), URL state and shareable deep links, persistent app storage for user-editable values (targets, notes, overrides), materialized Parquet/DuckDB bindings, and the live preview runtime.
 entities:
   - app
   - apps
@@ -11,6 +11,10 @@ entities:
   - app-sdk
   - usequery
   - useduckdb
+  - usestorage
+  - storage
+  - targets
+  - edit in place
   - uselocation
   - usesearchparams
   - navigate
@@ -293,6 +297,36 @@ Guidance: reach for this whenever the app has tabs, filters, or master→detail
 navigation a user would expect to bookmark or share. Use distinct **paths** for
 separate views (`/`, `/customers/42`) and **query params** for filters/sort within a
 view. Hashes (`#…`) are not carried across the bridge — keep state in the path/query.
+
+### Persistent app storage (user-editable values)
+
+For values users EDIT in the app UI — per-entity targets, notes, manual
+overrides, checklist state — use the persistent key-value storage hook. Data is
+stored server-side per app (MongoDB, independent of the app definition), shared
+by everyone who uses the app, and survives reloads, publishes, and restores. Do
+NOT use it for view state (URL hooks) or for caching query data (bindings).
+
+```tsx
+import { useStorage } from "@mako/app-sdk";
+
+const { value: targets, setValue, loading, saving, error, readOnly } =
+  useStorage("csm-targets", {} as Record<string, number>);
+
+// Optimistic write-through; functional updates are supported.
+setValue(prev => ({ ...prev, [repId]: newTarget }));
+```
+
+- `value` is the stored JSON (any shape) or `defaultValue` while unset.
+- Writes need workspace access: anyone who can open the app in Mako can edit.
+  Public share viewers (`/share/:token`) get `readOnly: true` and writes fail —
+  hide or disable edit affordances when `readOnly` is set.
+- Values sync live across users and windows (realtime poke → refetch).
+- Prefer ONE key per logical document (e.g. a `{ id → number }` map under
+  `"csm-targets"`) over hundreds of tiny keys; a value can hold up to 256 KB of
+  JSON, max 500 keys per app.
+- Typical edit-in-place pattern: render the stored value; on click swap in an
+  `<input>` seeded with it; on blur/Enter call `setValue`; show a subtle
+  "Saving…" indicator while `saving` is true and surface `error` readably.
 
 ### Constraints
 

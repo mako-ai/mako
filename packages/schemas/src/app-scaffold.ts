@@ -22,6 +22,12 @@ const APP_TSX = `// Read workspace data with the injected SDK once a data bindin
 //   import { useSearchParams, navigate } from "@mako/app-sdk";
 //   const [params, setParams] = useSearchParams();
 //
+// Persist values users EDIT in the app (targets, notes, overrides) with the
+// storage hook — server-side, shared by everyone who uses the app:
+//
+//   import { useStorage } from "@mako/app-sdk";
+//   const { value, setValue, saving, readOnly } = useStorage("my-key", {});
+//
 // Theming: the runtime provides CSS variables (--background, --foreground,
 // --card, --border, --muted-foreground, --primary, --chart-1..5, --radius, …)
 // that switch with light/dark automatically — use var(--token) instead of
@@ -114,6 +120,22 @@ navigate("/customers/42");                            // distinct view / detail 
 
 Use \`{ replace: true }\` for high-frequency updates (filter typing) so
 back/forward isn't flooded; the default pushes a new history entry.
+
+## Persistent storage (user-editable values)
+
+For values users edit in the app UI — targets, notes, manual overrides — use
+the storage hook. Values are stored server-side per app, shared by everyone who
+uses the app, and survive reloads and publishes. Public share viewers get
+read-only access (\`readOnly: true\`).
+
+\`\`\`tsx
+import { useStorage } from "@mako/app-sdk";
+
+const { value, setValue, loading, saving, error, readOnly } =
+  useStorage("csm-targets", {} as Record<string, number>);
+
+setValue(prev => ({ ...prev, [repId]: 25 })); // optimistic write-through
+\`\`\`
 `;
 
 export const DEFAULT_APP_SCAFFOLD_FILES: AppFile[] = [
