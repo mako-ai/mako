@@ -1552,19 +1552,22 @@ export const createDbtServerTools = (
         "committed base tree, the same as the IDE 'Sync/Pull' action. Use this " +
         "when the project is building from a stale checkout — e.g. files were " +
         "merged on the remote (a PR landed on main) but the project hasn't " +
-        "picked them up. ALWAYS SAFE: uncommitted edits live in a per-user " +
-        "draft overlay that a sync never touches. Pass discardLocalChanges:" +
-        "true to ALSO drop the user's uncommitted drafts before pulling (a " +
-        "`git checkout -- .`; only after the user confirms). To pull a " +
-        "DIFFERENT branch, use dbt_switch_branch instead.",
+        "picked them up. ALWAYS SAFE: uncommitted edits live in a per-user, " +
+        "per-branch draft overlay that a sync never touches. Pass " +
+        "discardLocalChanges:true to ALSO drop the user's uncommitted drafts " +
+        "on the current branch before pulling (a `git checkout -- .`; only " +
+        "after the user confirms; drafts stashed on other branches are " +
+        "untouched). To pull a DIFFERENT branch, use dbt_switch_branch " +
+        "instead.",
       inputSchema: z.object({
         projectId: projectIdField,
         discardLocalChanges: z
           .boolean()
           .optional()
           .describe(
-            "Set true to also discard the user's uncommitted draft edits. " +
-              "Default false keeps drafts (they overlay the pulled tree).",
+            "Set true to also discard the user's uncommitted draft edits on " +
+              "the current branch. Default false keeps drafts (they overlay " +
+              "the pulled tree).",
           ),
       }),
       execute: async ({ projectId, discardLocalChanges }) => {
@@ -1660,9 +1663,12 @@ export const createDbtServerTools = (
     dbt_git_status: tool({
       description:
         "Show the working-tree git status of a repo-bound dbt project: which " +
-        "files are added/modified/deleted relative to the tracked branch, " +
-        "and the branch name. Call this before dbt_commit_and_push to confirm " +
-        "what will be committed, and to summarize pending changes for the user.",
+        "files are added/modified/deleted relative to the committed base of " +
+        "the USER's checked-out branch, and that branch's name. Drafts are " +
+        "per-branch, so this only shows the current branch's pending changes " +
+        "— work stashed on other branches does not appear (switch to see it). " +
+        "Call this before dbt_commit_and_push to confirm what will be " +
+        "committed, and to summarize pending changes for the user.",
       inputSchema: z.object({ projectId: projectIdField }),
       execute: async ({ projectId }) => {
         try {
@@ -1851,12 +1857,14 @@ export const createDbtServerTools = (
 
     dbt_create_branch: tool({
       description:
-        "Create a new branch off the project's current branch head and check " +
-        "it out (track it). NOTE: to put pending working-tree changes on a new " +
-        "branch, prefer dbt_commit_to_branch (atomic) — calling this then " +
-        "dbt_commit_and_push separately can race a concurrent commit. Use this " +
-        "only to branch with no pending changes. Branch content is " +
-        "identical to the current branch — no re-sync needed.",
+        "Create a new branch off the user's current branch head and check " +
+        "it out — `git checkout -b`: the user's uncommitted drafts MOVE to " +
+        "the new branch with them (the diff is unchanged since both bases " +
+        "are identical). NOTE: to branch AND commit pending changes in one " +
+        "step, prefer dbt_commit_to_branch (atomic) — calling this then " +
+        "dbt_commit_and_push separately can race a concurrent commit. " +
+        "Branch content is identical to the current branch — no re-sync " +
+        "needed.",
       inputSchema: z.object({
         projectId: projectIdField,
         name: z
@@ -1963,7 +1971,10 @@ export const createDbtServerTools = (
         "a stray/merged feature branch (e.g. after its PR is merged, or an " +
         "abandoned branch from a failed promote). Refuses to delete the branch " +
         "the project currently tracks (switch away first with dbt_switch_branch) " +
-        "and the repo's default branch. Idempotent: deleting an already-gone " +
+        "and the repo's default branch. DESTRUCTIVE for stashed work: any " +
+        "uncommitted drafts saved on that branch are permanently dropped with " +
+        "it — check for pending work there before deleting if in doubt. " +
+        "Idempotent: deleting an already-gone " +
         "branch succeeds. ONLY call after the user confirms the branch name.",
       inputSchema: z.object({
         projectId: projectIdField,
@@ -2030,14 +2041,17 @@ export const createDbtServerTools = (
     dbt_merge_pull_request: tool({
       description:
         "Merge a GitHub pull request that was opened with dbt_open_pull_request, " +
-        "optionally delete its source branch, then switch the project back to " +
-        "the repo's default branch and sync the merged state into the working " +
-        "tree. Use when the user asks to promote/merge a PR — completes the " +
-        "full ship loop without manual GitHub UI steps. Refuses before merging " +
-        "if the working tree has uncommitted changes that must be committed or " +
-        "moved first. Returns the merge " +
-        "commit SHA, whether the branch was deleted, and confirmation the " +
-        "working tree is clean on the default branch.",
+        "optionally delete its source branch, then switch the user's checkout " +
+        "back to the repo's default branch and sync the merged state into its " +
+        "base tree. Use when the user asks to promote/merge a PR — completes " +
+        "the full ship loop without manual GitHub UI steps. Uncommitted drafts " +
+        "on the deleted head branch are NOT lost: they move to the default " +
+        "branch with the user (workingTreeClean:false in the result means such " +
+        "pending changes exist — tell the user). WARNING: the merge itself only " +
+        "includes COMMITTED work; commit pending changes that belong in the PR " +
+        "first (dbt_git_status → dbt_commit_and_push). Returns the merge " +
+        "commit SHA, whether the branch was deleted, and whether the working " +
+        "tree is clean on the default branch.",
       inputSchema: z.object({
         projectId: projectIdField,
         prNumber: z

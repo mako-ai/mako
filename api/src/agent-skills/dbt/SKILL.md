@@ -154,11 +154,26 @@ AND its tests — always add at least `unique` + `not_null` on the primary key.
   - MULTI-USER workspace: each user tests against their OWN environment.
     `dbt_run_model` auto-provisions a personal one (schema `dbt_<user>`) on
     the first build so teammates never build over each other's schemas.
+- **Drafts are per user AND per branch (git-worktree semantics)**:
+  uncommitted edits stay with the branch they were made on. Switching
+  branches (`dbt_switch_branch`) is always safe — each branch's
+  work-in-progress is intact when you switch back, and nothing mixes across
+  branches. This means the user can iterate on several branches in parallel.
+  Consequences to keep straight:
+  - `dbt_git_status` shows ONLY the current branch's pending changes; work
+    stashed on another branch is invisible until you switch to it.
+  - `dbt_create_branch` is `git checkout -b`: the current dirty tree moves to
+    the new branch.
+  - Deleting a branch (`dbt_delete_branch`, or `deleteBranch` on close/merge
+    of a PR) drops the drafts stashed on it — except a PR merge, which moves
+    them to the default branch with the user.
+  - `discardLocalChanges` (on switch/sync) only discards the branch being
+    left / the current branch — never other branches' stashes.
 - **Which git tree a run builds (repo-bound projects)** — never mix these up:
   - Ad-hoc tools (`dbt_parse`, `dbt_compile_model`, `dbt_show`,
     `dbt_run_model`) build YOUR working tree: your checkout branch + your
-    uncommitted drafts. This is the ONLY way to verify uncommitted or
-    feature-branch work.
+    uncommitted drafts on that branch. This is the ONLY way to verify
+    uncommitted or feature-branch work.
   - Jobs (`dbt_run_job`, schedules) build the COMMITTED tracked branch only —
     never your checkout or drafts. Triggering a job to test a draft silently
     runs the OLD code; do not do it, and do not "fix" it by committing — the

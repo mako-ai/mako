@@ -34,8 +34,10 @@ runs execute against the project's warehouse environments (dev/prod).
    \`dbt_commit_and_push\`, which can race a concurrent commit and strand the changes on the wrong
    branch. Then \`dbt_open_pull_request\`; when the user asks to promote/merge, call
    \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the feature branch,
-   and sync the default branch into the working tree; it refuses before merging when there are
-   uncommitted working-tree changes. Use \`dbt_list_pull_requests\` to look up PR numbers and
+   and sync the default branch into the working tree. A merge only ships COMMITTED work —
+   check \`dbt_git_status\` first and commit pending changes that belong in the PR (uncommitted
+   drafts on the merged branch are not lost; they move to the default branch with the user).
+   Use \`dbt_list_pull_requests\` to look up PR numbers and
    status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
    \`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms).
    If a build runs against a stale checkout (fewer models/sources
