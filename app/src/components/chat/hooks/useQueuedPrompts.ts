@@ -101,6 +101,40 @@ export function useQueuedPrompts({
   const drainRecheckScheduledRef = useRef(false);
   const forceDrainPastAutoContinueRef = useRef(false);
 
+  // A submit_plan awaiting review is the one unanswered tool call the queue
+  // can settle itself: the drained prompt resolves the plan as
+  // request_changes feedback (carrying the current draft, so manual edits
+  // made in the plan tab flow back) — the same conversational plan-iteration
+  // path as typing in the composer while the plan is pending. The suppress
+  // latch stops `addToolOutput`'s auto-send; the caller's `sendMessage`
+  // ships the resolved tool output AND the user message in one request.
+  // Returns false (and stays blocked) when no plan is pending or no live
+  // resolver is registered yet.
+  const resolvePendingPlanWithFeedback = (feedback: string): boolean => {
+    const pendingPlanToolCallId = pendingPlanToolCallIdRef.current;
+    if (!pendingPlanToolCallId) return false;
+    const planStore = usePlanStore.getState();
+    if (planStore.plans[pendingPlanToolCallId]?.status !== "pending") {
+      return false;
+    }
+    suppressNextAutoSendRef.current = true;
+    // The latch is consumed (one-shot) inside the SDK's sendAutomaticallyWhen
+    // predicate, normally synchronously via the resolver → addToolOutput →
+    // predicate chain.
+    const resolved = planStore.resolvePlan(
+      pendingPlanToolCallId,
+      "request_changes",
+      feedback.trim() || undefined,
+    );
+    if (!resolved) {
+      // No live resolver — release the unconsumed latch and stay blocked.
+      suppressNextAutoSendRef.current = false;
+      return false;
+    }
+    trackEvent("ai_plan_feedback_sent", { model: modelIdRef.current });
+    return true;
+  };
+
   const tryDrainQueuedPromptRef = useRef<() => void>(() => {});
   tryDrainQueuedPromptRef.current = () => {
     // Force-send (top arrow): the user interrupted the running turn to push
@@ -113,9 +147,15 @@ export function useQueuedPrompts({
       if (!forced) {
         pendingForcePromptIdRef.current = null;
       } else {
+        if (isLoadingRef.current) {
+          return;
+        }
+        // A pending submit_plan is not a hard block: force-sending delivers
+        // the prompt as plan feedback (request_changes), same as typing
+        // while the plan awaits review.
         if (
-          isLoadingRef.current ||
-          hasPendingAssistantToolCalls(messagesRef.current)
+          hasPendingAssistantToolCalls(messagesRef.current) &&
+          !resolvePendingPlanWithFeedback(forced.text)
         ) {
           return;
         }
@@ -153,20 +193,27 @@ export function useQueuedPrompts({
       return;
     }
 
-    // Hard blocks: the agent is genuinely mid-turn (streaming, running a
-    // client tool, or has an unanswered tool call). Sending now would race the
-    // loop or break the SDK's "all tool calls must be settled" invariant.
-    if (
-      isLoadingRef.current ||
-      hasPendingAssistantToolCalls(messagesRef.current)
-    ) {
+    // Hard block: the agent is genuinely mid-turn (streaming or running a
+    // client tool). Sending now would race the loop.
+    if (isLoadingRef.current) {
       forceDrainPastAutoContinueRef.current = false;
       return;
     }
 
-    // Soft block: the turn ended on completed tool calls and the SDK might
-    // auto-continue in a microtask. Give it one macrotask before draining.
-    if (
+    if (hasPendingAssistantToolCalls(messagesRef.current)) {
+      // An unanswered tool call usually hard-blocks the drain (sending would
+      // break the SDK's "all tool calls must be settled" invariant) — except
+      // a submit_plan awaiting review, which the head prompt settles itself
+      // as request_changes feedback. When the plan resolves, fall through to
+      // the send below (skipping the soft block: the feedback message MUST
+      // ship now to carry the resolved tool output back to the agent).
+      if (!resolvePendingPlanWithFeedback(queuedPromptsRef.current[0].text)) {
+        forceDrainPastAutoContinueRef.current = false;
+        return;
+      }
+    } else if (
+      // Soft block: the turn ended on completed tool calls and the SDK might
+      // auto-continue in a microtask. Give it one macrotask before draining.
       autoSendWhenComplete({ messages: messagesRef.current }) &&
       !forceDrainPastAutoContinueRef.current
     ) {
