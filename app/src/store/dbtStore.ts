@@ -474,6 +474,7 @@ interface DbtActions {
     workspaceId: string,
     projectId: string,
     branch: string,
+    opts?: { discardLocalChanges?: boolean },
   ) => Promise<DbtProjectItem | null>;
   openPullRequest: (
     workspaceId: string,
@@ -1151,7 +1152,7 @@ export const useDbtStore = create<DbtStore>()(
       }
     },
 
-    switchBranch: async (workspaceId, projectId, branch) => {
+    switchBranch: async (workspaceId, projectId, branch, opts) => {
       try {
         const response = await apiClient.post<{
           success: boolean;
@@ -1159,7 +1160,10 @@ export const useDbtStore = create<DbtStore>()(
           project: DbtProjectItem;
         }>(
           `/workspaces/${workspaceId}/dbt/projects/${projectId}/git/switch-branch`,
-          { branch },
+          {
+            branch,
+            ...(opts?.discardLocalChanges ? { discardLocalChanges: true } : {}),
+          },
         );
         set(state => {
           state.checkoutBranchByProject[projectId] = response.branch;

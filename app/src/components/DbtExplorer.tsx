@@ -23,7 +23,9 @@ import {
   TextField,
   Button,
   Select,
+  Checkbox,
   FormControl,
+  FormControlLabel,
   InputLabel,
   Menu,
   Chip,
@@ -386,6 +388,7 @@ export function DbtExplorer() {
   const [switchTarget, setSwitchTarget] = useState<string | null>(null);
   const [switchBranches, setSwitchBranches] = useState<string[]>([]);
   const [switchValue, setSwitchValue] = useState("");
+  const [switchDiscard, setSwitchDiscard] = useState(false);
   const [prTarget, setPrTarget] = useState<string | null>(null);
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
@@ -796,6 +799,7 @@ export function DbtExplorer() {
       if (!workspaceId) return;
       setSwitchTarget(projectId);
       setSwitchBranches([]);
+      setSwitchDiscard(false);
       const result = await listBranches(workspaceId, projectId);
       if (result) {
         setSwitchBranches(result.branches);
@@ -808,7 +812,9 @@ export function DbtExplorer() {
   const handleSwitchBranch = useCallback(async () => {
     if (!workspaceId || !switchTarget || !switchValue) return;
     setGitBusy(true);
-    const updated = await switchBranch(workspaceId, switchTarget, switchValue);
+    const updated = await switchBranch(workspaceId, switchTarget, switchValue, {
+      discardLocalChanges: switchDiscard,
+    });
     setGitBusy(false);
     if (updated) {
       await fetchFiles(workspaceId, switchTarget);
@@ -819,6 +825,7 @@ export function DbtExplorer() {
     workspaceId,
     switchTarget,
     switchValue,
+    switchDiscard,
     switchBranch,
     fetchFiles,
     fetchGitStatus,
@@ -2475,8 +2482,31 @@ export function DbtExplorer() {
             sx={{ mt: 1 }}
           >
             Switching pulls the selected branch for you only — teammates keep
-            their own checkout, and your uncommitted changes carry over.
+            their own checkout. Your uncommitted changes stay with the branch
+            they were made on, waiting for you when you switch back.
           </Typography>
+          {switchTarget && gitStatusByProject[switchTarget]?.hasChanges && (
+            <FormControlLabel
+              sx={{ mt: 0.5 }}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={switchDiscard}
+                  onChange={e => setSwitchDiscard(e.target.checked)}
+                />
+              }
+              label={
+                <Typography variant="caption">
+                  Discard my uncommitted changes on{" "}
+                  <strong>
+                    {checkoutBranchByProject[switchTarget] ??
+                      gitStatusByProject[switchTarget]?.branch}
+                  </strong>{" "}
+                  instead of keeping them there
+                </Typography>
+              }
+            />
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSwitchTarget(null)}>Cancel</Button>

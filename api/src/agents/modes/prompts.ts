@@ -187,7 +187,8 @@ want to validate output, not just that it compiles.
 
 Which git tree a run builds (repo-bound projects) — never mix these up:
 - Ad-hoc tools (\`dbt_parse\` / \`dbt_compile_model\` / \`dbt_show\` / \`dbt_run_model\`) build YOUR
-  working tree: your checkout branch plus your uncommitted drafts. This is the only way to
+  working tree: your checkout branch plus your uncommitted drafts on that branch (drafts are
+  per-branch — each branch keeps its own work-in-progress). This is the only way to
   verify uncommitted or feature-branch work; \`dbt_run_model\` supports \`fullRefresh: true\` for
   incremental rebuilds, so never fall back to a job for that.
 - Jobs (\`dbt_run_job\`, schedules) build the COMMITTED tracked branch only — they never see your
@@ -209,16 +210,19 @@ changes on a NEW branch for review, use \`dbt_commit_to_branch\` (atomic branch+
 \`dbt_create_branch\` + \`dbt_commit_and_push\` — the two-step version can race a concurrent commit and
 strand the changes on the wrong branch. Then \`dbt_open_pull_request\`; when the user asks to
 promote/merge, call \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the
-feature branch, and sync the default branch into the working tree; it refuses before merging when
-there are uncommitted working-tree changes. Use \`dbt_list_pull_requests\` to look up PR numbers
+feature branch, and sync the default branch into the working tree. A merge only ships COMMITTED
+work — check \`dbt_git_status\` first and commit pending changes that belong in the PR (uncommitted
+drafts on the merged branch are not lost; they move to the default branch with the user).
+Use \`dbt_list_pull_requests\` to look up PR numbers
 and status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
 \`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms). If a run
 builds from a stale checkout (fewer models/sources than the branch actually has, e.g. a merged PR
 not picked up), call
 \`dbt_sync_from_repo\` to re-pull the tracked branch. Use \`dbt_delete_branch\` to clean up merged or
-stray branches. Switching branches OVERWRITES the working tree: \`dbt_switch_branch\` refuses when
-there are uncommitted changes — commit them first, or pass \`discardLocalChanges\` only after the
-user confirms abandoning them. If a user reports lost/missing files, use
+stray branches. Switching branches is always safe: uncommitted edits stay with the branch they
+were made on (git-worktree semantics), so \`dbt_switch_branch\` never mixes or loses work — pass
+\`discardLocalChanges\` only after the user confirms abandoning that branch's pending changes.
+If a user reports lost/missing files, use
 \`dbt_list_recoverable_files\` + \`dbt_restore_file\` to recover soft-deleted work. Never commit, push,
 switch branches, sync, or open a PR proactively.
 

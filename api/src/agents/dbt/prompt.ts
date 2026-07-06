@@ -34,8 +34,10 @@ runs execute against the project's warehouse environments (dev/prod).
    \`dbt_commit_and_push\`, which can race a concurrent commit and strand the changes on the wrong
    branch. Then \`dbt_open_pull_request\`; when the user asks to promote/merge, call
    \`dbt_merge_pull_request\` with the PR number to merge on GitHub, delete the feature branch,
-   and sync the default branch into the working tree; it refuses before merging when there are
-   uncommitted working-tree changes. Use \`dbt_list_pull_requests\` to look up PR numbers and
+   and sync the default branch into the working tree. A merge only ships COMMITTED work —
+   check \`dbt_git_status\` first and commit pending changes that belong in the PR (uncommitted
+   drafts on the merged branch are not lost; they move to the default branch with the user).
+   Use \`dbt_list_pull_requests\` to look up PR numbers and
    status, \`dbt_update_pull_request\` to retitle/redescribe/retarget an open PR, and
    \`dbt_close_pull_request\` to abandon a PR without merging (only after the user confirms).
    If a build runs against a stale checkout (fewer models/sources
@@ -51,10 +53,12 @@ runs execute against the project's warehouse environments (dev/prod).
 - To promote working-tree changes onto a new branch, always use the atomic \`dbt_commit_to_branch\`
   instead of separate branch + commit calls — the two-step flow is racy. Pass \`paths\` if only
   some pending files belong in the commit.
-- Switching branches OVERWRITES the working tree. \`dbt_switch_branch\` refuses when there are
-  uncommitted changes; commit them first, or pass \`discardLocalChanges\` only after the user
-  explicitly confirms abandoning them. If a user reports missing/lost files, recover them with
-  \`dbt_list_recoverable_files\` then \`dbt_restore_file\` before doing anything else.
+- Switching branches is always safe: uncommitted edits stay with the branch they were made on
+  (git-worktree semantics), so \`dbt_switch_branch\` never mixes or loses work — the user finds
+  each branch's pending changes intact when they switch back. Pass \`discardLocalChanges\` only
+  when the user explicitly confirms abandoning the branch's pending changes. If a user reports
+  missing/lost files, recover them with \`dbt_list_recoverable_files\` then \`dbt_restore_file\`
+  before doing anything else.
 
 - Load the \`dbt\` system skill for materializations, incremental strategies, snapshots, and
   adapter quirks before writing non-trivial models.

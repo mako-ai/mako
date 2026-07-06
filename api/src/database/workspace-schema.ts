@@ -4428,11 +4428,13 @@ DbtFileSchema.index({ workspaceId: 1, projectId: 1, is_deleted: 1 });
 export const DbtFile = mongoose.model<IDbtFile>("DbtFile", DbtFileSchema);
 
 /**
- * Per-user uncommitted edit to a dbt file (the draft overlay). Reads for a
- * user merge draft-over-base: other workspace members never see a draft, so
- * collaborators only observe committed changes — like separate git working
- * trees. Drafts follow the user across branch switches (a dirty git tree
- * carried through `git checkout`) and are cleared when committed.
+ * Per-user, per-branch uncommitted edit to a dbt file (the draft overlay).
+ * Reads for a user merge draft-over-base: other workspace members never see a
+ * draft, so collaborators only observe committed changes — like separate git
+ * working trees. Drafts are keyed to the branch they were made on, so
+ * switching branches leaves each branch's uncommitted work exactly where it
+ * was (git-worktree semantics: no carrying dirty state onto another branch's
+ * base). Drafts are cleared when committed.
  */
 export interface IDbtFileDraft extends Document {
   _id: Types.ObjectId;
@@ -4440,6 +4442,8 @@ export interface IDbtFileDraft extends Document {
   projectId: Types.ObjectId;
   /** Owning user id (or "agent" for agent edits outside a user session). */
   userId: string;
+  /** Branch the draft was made on (drafts only exist for repo projects). */
+  branch: string;
   path: string;
   content: string;
   /** Pending deletion of the base file (a staged `git rm`). */
@@ -4463,6 +4467,7 @@ const DbtFileDraftSchema = new Schema<IDbtFileDraft>(
       required: true,
     },
     userId: { type: String, required: true },
+    branch: { type: String, required: true },
     path: { type: String, required: true, trim: true },
     content: { type: String, default: "" },
     is_deleted: { type: Boolean, default: false },
@@ -4471,11 +4476,15 @@ const DbtFileDraftSchema = new Schema<IDbtFileDraft>(
   { collection: "dbt_file_drafts", timestamps: true },
 );
 
+// One draft per (project, user, branch, path): each branch keeps its own
+// uncommitted overlay per user.
 DbtFileDraftSchema.index(
-  { projectId: 1, userId: 1, path: 1 },
+  { projectId: 1, userId: 1, branch: 1, path: 1 },
   { unique: true },
 );
 DbtFileDraftSchema.index({ workspaceId: 1, projectId: 1, userId: 1 });
+// Branch-wide draft ops (relocate on PR merge, drop on branch delete).
+DbtFileDraftSchema.index({ projectId: 1, branch: 1 });
 
 export const DbtFileDraft = mongoose.model<IDbtFileDraft>(
   "DbtFileDraft",
