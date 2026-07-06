@@ -13,6 +13,7 @@ import {
   type UIMessage,
 } from "ai";
 import { getModel, buildProviderOptions } from "../agent-lib/ai-gateway";
+import { repairStringifiedToolInputs } from "../agent-lib/tool-input-repair";
 import { propagateAttributes } from "@langfuse/tracing";
 import { buildAnthropicThinkingConfig } from "../agent-lib/anthropic-thinking";
 import { withThinkingSelfHeal } from "../agent-lib/thinking-self-heal";
@@ -980,6 +981,11 @@ agentRoutes.openapi(
                 }
               : {}),
             stopWhen: stepCountIs(MAX_STEPS),
+            // Deterministic fix-up for models that emit tool args with nested
+            // values JSON-stringified (e.g. an array param as "[\"...\"]"),
+            // which otherwise fail schema validation and dead-end the tool
+            // call. See agent-lib/tool-input-repair.ts.
+            experimental_repairToolCall: repairStringifiedToolInputs,
             providerOptions,
             abortSignal: turnSignal,
             experimental_telemetry: {
