@@ -366,8 +366,7 @@ dbtRoutes.get("/projects", async (c: AuthenticatedContext) => {
       const preferred = prefByProject.get(project._id.toString());
       // Stale choices (env renamed/removed) are dropped, not surfaced.
       const valid =
-        preferred &&
-        project.environments.some(env => env.name === preferred)
+        preferred && project.environments.some(env => env.name === preferred)
           ? preferred
           : undefined;
       return { ...project, myDevEnvironment: valid };

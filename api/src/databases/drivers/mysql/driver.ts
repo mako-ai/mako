@@ -1,11 +1,25 @@
 import {
+  BatchWriteResult,
+  ColumnDefinition,
   DatabaseDriver,
   DatabaseDriverMetadata,
   DatabaseTreeNode,
+  InsertOptions,
+  UpsertOptions,
 } from "../../driver";
 import { IDatabaseConnection } from "../../../database/workspace-schema";
 import { databaseConnectionService } from "../../../services/database-connection.service";
 import { loggers } from "../../../logging";
+import {
+  buildCreateTableSql,
+  buildDeleteSql,
+  buildInsertSql,
+  buildUniqueIndexSql,
+  buildUpsertSql,
+  escapeIdentifier,
+  escapeSqlLiteral,
+  inferMySqlType,
+} from "./write";
 
 const logger = loggers.db("mysql");
 
@@ -247,5 +261,340 @@ export class MySQLDatabaseDriver implements DatabaseDriver {
     options?: { databaseName?: string; databaseId?: string },
   ) {
     return databaseConnectionService.executeQuery(database, query, options);
+  }
+
+  // ============ Write capabilities (destination sync + CDC adapter) ============
+
+  supportsWrites(): boolean {
+    return true;
+  }
+
+  quoteIdentifier(name: string): string {
+    return escapeIdentifier(name);
+  }
+
+  formatTableRef(schema: string | undefined, table: string): string {
+    return schema
+      ? `${escapeIdentifier(schema)}.${escapeIdentifier(table)}`
+      : escapeIdentifier(table);
+  }
+
+  /** In MySQL a "schema" IS a database — CREATE DATABASE covers both. */
+  async ensureSchema(
+    database: IDatabaseConnection,
+    schemaName: string,
+  ): Promise<{ success: boolean; created?: boolean; error?: string }> {
+    const result = await this.executeQuery(
+      database,
+      `CREATE DATABASE IF NOT EXISTS ${escapeIdentifier(schemaName)}`,
+    );
+    return {
+      success: result.success,
+      created: result.success ? true : undefined,
+      error: result.error,
+    };
+  }
+
+  inferSchema(rows: Record<string, unknown>[]): ColumnDefinition[] {
+    const columns = new Map<string, ColumnDefinition>();
+    for (const row of rows) {
+      for (const [key, value] of Object.entries(row)) {
+        if (!key || key.includes(".")) continue;
+        const existing = columns.get(key);
+        if (!existing || existing.type === "TEXT") {
+          columns.set(key, {
+            name: key,
+            type: inferMySqlType(value),
+            nullable: true,
+          });
+        }
+      }
+    }
+    return Array.from(columns.values());
+  }
+
+  async createTable(
+    database: IDatabaseConnection,
+    tableName: string,
+    columns: ColumnDefinition[],
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const schema = options?.schema || database.connection.database || "";
+    const result = await this.executeQuery(
+      database,
+      buildCreateTableSql(schema, tableName, columns),
+    );
+    return { success: result.success, error: result.error };
+  }
+
+  async tableExists(
+    database: IDatabaseConnection,
+    tableName: string,
+    options?: InsertOptions,
+  ): Promise<boolean> {
+    const schema = options?.schema || database.connection.database || "";
+    const result = await this.executeQuery(
+      database,
+      `SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema = ${escapeSqlLiteral(schema)} AND table_name = ${escapeSqlLiteral(tableName)}`,
+    );
+    if (!result.success || !result.data) return false;
+    const first = result.data[0] as Record<string, unknown> | undefined;
+    return Number(first?.c ?? first?.C ?? 0) > 0;
+  }
+
+  async addMissingColumns(
+    database: IDatabaseConnection,
+    tableName: string,
+    schemaName: string,
+    rows: Record<string, unknown>[],
+  ): Promise<void> {
+    if (rows.length === 0) return;
+
+    const existing = await this.fetchColumnTypes(
+      database,
+      schemaName,
+      tableName,
+    );
+    const allKeys = new Set<string>();
+    for (const row of rows) {
+      Object.keys(row).forEach(key => allKeys.add(key));
+    }
+
+    for (const key of allKeys) {
+      if (!key || key.includes(".")) continue;
+      if (existing.has(key.toLowerCase())) continue;
+      const sampleValue = rows.find(
+        row => row[key] !== null && row[key] !== undefined,
+      )?.[key];
+      // MySQL 8.0 has no ADD COLUMN IF NOT EXISTS — existence checked above.
+      const alter = `ALTER TABLE ${escapeIdentifier(schemaName)}.${escapeIdentifier(tableName)} ADD COLUMN ${escapeIdentifier(key)} ${inferMySqlType(sampleValue)}`;
+      const result = await this.executeQuery(database, alter);
+      if (!result.success) {
+        throw new Error(
+          result.error || `Failed to add missing MySQL column: ${key}`,
+        );
+      }
+    }
+  }
+
+  async insertBatch(
+    database: IDatabaseConnection,
+    tableName: string,
+    rows: Record<string, unknown>[],
+    options?: InsertOptions,
+  ): Promise<BatchWriteResult> {
+    if (rows.length === 0) return { success: true, rowsWritten: 0 };
+    const schema = options?.schema || database.connection.database || "";
+    const columns = this.collectColumns(rows);
+    const result = await this.executeQuery(
+      database,
+      buildInsertSql(schema, tableName, columns, rows),
+    );
+    return {
+      success: result.success,
+      rowsWritten: result.success ? rows.length : 0,
+      error: result.error,
+    };
+  }
+
+  async upsertBatch(
+    database: IDatabaseConnection,
+    tableName: string,
+    rows: Record<string, unknown>[],
+    keyColumns: string[],
+    options?: UpsertOptions,
+  ): Promise<BatchWriteResult> {
+    if (rows.length === 0) return { success: true, rowsWritten: 0 };
+    if (keyColumns.length === 0) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "Key columns required for upsert",
+      };
+    }
+
+    const schema = options?.schema || database.connection.database || "";
+    const columns = this.collectColumns(rows);
+
+    if (options?.conflictStrategy === "ignore") {
+      const result = await this.executeQuery(
+        database,
+        buildInsertSql(schema, tableName, columns, rows, { ignore: true }),
+      );
+      return {
+        success: result.success,
+        rowsWritten: result.success ? rows.length : 0,
+        error: result.error,
+      };
+    }
+
+    await this.ensureUniqueKeyIndex(database, schema, tableName, keyColumns);
+
+    const result = await this.executeQuery(
+      database,
+      buildUpsertSql(schema, tableName, columns, rows, keyColumns),
+    );
+    return {
+      success: result.success,
+      rowsWritten: result.success ? rows.length : 0,
+      error: result.error,
+    };
+  }
+
+  async createStagingTable(
+    database: IDatabaseConnection,
+    originalTableName: string,
+    stagingTableName: string,
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const schema = options?.schema || database.connection.database || "";
+    const drop = await this.executeQuery(
+      database,
+      `DROP TABLE IF EXISTS ${this.formatTableRef(schema, stagingTableName)}`,
+    );
+    if (!drop.success) return { success: false, error: drop.error };
+    const create = await this.executeQuery(
+      database,
+      `CREATE TABLE ${this.formatTableRef(schema, stagingTableName)} LIKE ${this.formatTableRef(schema, originalTableName)}`,
+    );
+    return { success: create.success, error: create.error };
+  }
+
+  async swapStagingTable(
+    database: IDatabaseConnection,
+    originalTableName: string,
+    stagingTableName: string,
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const schema = options?.schema || database.connection.database || "";
+    const backupName = `${originalTableName}_old_${Date.now()}`;
+    // RENAME TABLE is atomic across multiple renames in MySQL.
+    const rename = await this.executeQuery(
+      database,
+      `RENAME TABLE ${this.formatTableRef(schema, originalTableName)} TO ${this.formatTableRef(schema, backupName)}, ${this.formatTableRef(schema, stagingTableName)} TO ${this.formatTableRef(schema, originalTableName)}`,
+    );
+    if (!rename.success) return { success: false, error: rename.error };
+    const drop = await this.executeQuery(
+      database,
+      `DROP TABLE IF EXISTS ${this.formatTableRef(schema, backupName)}`,
+    );
+    return { success: drop.success, error: drop.error };
+  }
+
+  async dropTable(
+    database: IDatabaseConnection,
+    tableName: string,
+    options?: InsertOptions,
+  ): Promise<{ success: boolean; error?: string }> {
+    const schema = options?.schema || database.connection.database || "";
+    const result = await this.executeQuery(
+      database,
+      `DROP TABLE IF EXISTS ${this.formatTableRef(schema, tableName)}`,
+    );
+    return { success: result.success, error: result.error };
+  }
+
+  async deleteBatch(
+    database: IDatabaseConnection,
+    tableName: string,
+    keyFilters: Record<string, unknown>,
+    options?: InsertOptions,
+  ): Promise<BatchWriteResult> {
+    const schema = options?.schema || database.connection.database || "";
+    const filterEntries = Object.entries(keyFilters || {}).filter(
+      ([, value]) => value !== undefined,
+    );
+    if (filterEntries.length === 0) {
+      return {
+        success: false,
+        rowsWritten: 0,
+        error: "deleteBatch requires at least one key filter",
+      };
+    }
+    const result = await this.executeQuery(
+      database,
+      buildDeleteSql(schema, tableName, keyFilters),
+    );
+    return {
+      success: result.success,
+      rowsWritten: result.success ? (result.rowCount ?? 0) : 0,
+      error: result.error,
+    };
+  }
+
+  // ============ Write internals ============
+
+  private collectColumns(rows: Record<string, unknown>[]): string[] {
+    const allColumns = new Set<string>();
+    for (const row of rows) {
+      Object.keys(row).forEach(k => allColumns.add(k));
+    }
+    return Array.from(allColumns);
+  }
+
+  /** Column-name → data-type map (public: the CDC adapter reuses it). */
+  async fetchColumnTypes(
+    database: IDatabaseConnection,
+    schema: string,
+    tableName: string,
+  ): Promise<Map<string, string>> {
+    const result = await this.executeQuery(
+      database,
+      `SELECT column_name AS column_name, data_type AS data_type FROM information_schema.columns WHERE table_schema = ${escapeSqlLiteral(schema)} AND table_name = ${escapeSqlLiteral(tableName)}`,
+    );
+    const map = new Map<string, string>();
+    for (const row of (result.data || []) as Array<Record<string, unknown>>) {
+      const name = String(row.column_name ?? row.COLUMN_NAME ?? "");
+      if (name) {
+        map.set(
+          name.toLowerCase(),
+          String(row.data_type ?? row.DATA_TYPE ?? ""),
+        );
+      }
+    }
+    return map;
+  }
+
+  private async ensureUniqueKeyIndex(
+    database: IDatabaseConnection,
+    schema: string,
+    tableName: string,
+    keyColumns: string[],
+  ): Promise<void> {
+    const existing = await this.executeQuery(
+      database,
+      `SELECT index_name AS index_name, GROUP_CONCAT(column_name ORDER BY seq_in_index) AS cols FROM information_schema.statistics WHERE table_schema = ${escapeSqlLiteral(schema)} AND table_name = ${escapeSqlLiteral(tableName)} AND non_unique = 0 GROUP BY index_name`,
+    );
+    if (existing.success) {
+      const wanted = keyColumns.map(c => c.toLowerCase()).join(",");
+      for (const row of (existing.data || []) as Array<
+        Record<string, unknown>
+      >) {
+        const cols = String(row.cols ?? row.COLS ?? "").toLowerCase();
+        if (cols === wanted) return;
+      }
+    }
+
+    const columnTypes = await this.fetchColumnTypes(
+      database,
+      schema,
+      tableName,
+    );
+    const { sql } = buildUniqueIndexSql(
+      schema,
+      tableName,
+      keyColumns,
+      columnTypes,
+    );
+    const created = await this.executeQuery(database, sql);
+    if (!created.success) {
+      // Racing writers can both attempt creation; duplicates are fine.
+      const message = created.error || "";
+      if (!/duplicate key name/i.test(message)) {
+        throw new Error(
+          message || "Failed to create MySQL unique key index",
+        );
+      }
+    }
   }
 }

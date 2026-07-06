@@ -5,6 +5,8 @@ import {
 } from "../../database/workspace-schema";
 import { createDestinationWriter } from "../../services/destination-writer.service";
 import { databaseRegistry } from "../../databases/registry";
+import { MySQLDatabaseDriver } from "../../databases/drivers/mysql/driver";
+import { buildMySqlLayoutIndexes } from "../../databases/drivers/mysql/write";
 import { loggers } from "../../logging";
 import {
   normalizePayloadKeys,
@@ -15,44 +17,9 @@ import {
 import type { CdcStoredEvent } from "../events";
 import type { CdcDestinationAdapter, CdcEntityLayout } from "./registry";
 
-const log = loggers.sync("cdc.adapter.postgresql");
+const log = loggers.sync("cdc.adapter.mysql");
 
-function pgIdent(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
-
-/**
- * Postgres has no BigQuery-style partition/cluster DDL on plain tables, so the
- * engine-agnostic layout hints map to secondary btree indexes: one on the
- * partition field (time-range scans) and one per cluster field (filter scans).
- * Exported for the destination layout contract tests.
- */
-export function buildPgLayoutIndexStatements(
-  layout: Pick<
-    CdcEntityLayout,
-    "tableName" | "partitioning" | "clustering" | "keyColumns"
-  >,
-  schema: string,
-): string[] {
-  const fields = new Set<string>();
-  if (layout.partitioning?.field) fields.add(layout.partitioning.field);
-  for (const field of layout.clustering?.fields || []) fields.add(field);
-  for (const key of layout.keyColumns || []) fields.delete(key);
-
-  const statements: string[] = [];
-  for (const field of fields) {
-    const indexName = `mako_layout_${layout.tableName}_${field}`
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, "_")
-      .slice(0, 63);
-    statements.push(
-      `CREATE INDEX IF NOT EXISTS ${pgIdent(indexName)} ON ${pgIdent(schema)}.${pgIdent(layout.tableName)} (${pgIdent(field)})`,
-    );
-  }
-  return statements;
-}
-
-interface PostgreSqlAdapterConfig {
+interface MySqlAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
   tableDestination: {
@@ -62,15 +29,21 @@ interface PostgreSqlAdapterConfig {
   };
 }
 
-export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
-  readonly destinationType = "postgresql";
+/**
+ * MySQL CDC destination adapter. Mirrors the PostgreSQL adapter: writes go
+ * through DestinationWriter (which delegates to the MySQL driver's
+ * INSERT ... AS new ON DUPLICATE KEY UPDATE upserts with out-of-order
+ * guards), and the engine-agnostic layout hints map to secondary indexes.
+ */
+export class MySqlDestinationAdapter implements CdcDestinationAdapter {
+  readonly destinationType = "mysql";
   private readonly writerCache = new Map<
     string,
     Awaited<ReturnType<typeof createDestinationWriter>>
   >();
   private readonly layoutIndexesEnsured = new Set<string>();
 
-  constructor(private readonly config: PostgreSqlAdapterConfig) {}
+  constructor(private readonly config: MySqlAdapterConfig) {}
 
   async ensureLiveTable(_layout: CdcEntityLayout): Promise<void> {
     // DestinationWriter creates tables lazily on first write.
@@ -82,61 +55,22 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
       this.config.tableDestination.connectionId,
     );
     if (!destination) return;
-    const driver = databaseRegistry.getDriver(destination.type);
+    const driver = databaseRegistry.getDriver(destination.type) as
+      | MySQLDatabaseDriver
+      | undefined;
     if (!driver) return;
-    const schema = this.config.tableDestination.schema || "public";
+    const schema = this.config.tableDestination.schema;
     const result = await driver.executeQuery(
       destination,
-      `DELETE FROM ${pgIdent(schema)}.${pgIdent(layout.tableName)}`,
-      { databaseName: this.config.destinationDatabaseName },
+      `DELETE FROM ${driver.formatTableRef(schema, layout.tableName)}`,
     );
-    if (!result.success && !/does not exist/i.test(result.error || "")) {
+    if (
+      !result.success &&
+      !/doesn't exist|does not exist/i.test(result.error || "")
+    ) {
       throw new Error(
-        result.error || "Failed to clear PostgreSQL live table for overwrite",
+        result.error || "Failed to clear MySQL live table for overwrite",
       );
-    }
-  }
-
-  /**
-   * Map the engine-agnostic layout hints (partition field + cluster fields)
-   * to Postgres secondary indexes. Idempotent and best-effort: the table may
-   * not exist until the first write, so callers invoke this after writing.
-   */
-  private async ensureLayoutIndexes(layout: CdcEntityLayout): Promise<void> {
-    const statements = buildPgLayoutIndexStatements(
-      layout,
-      this.config.tableDestination.schema || "public",
-    );
-    if (statements.length === 0) return;
-    const cacheKey = `${layout.tableName}:${statements.join(";")}`;
-    if (this.layoutIndexesEnsured.has(cacheKey)) return;
-
-    try {
-      const destination = await DatabaseConnection.findById(
-        this.config.tableDestination.connectionId,
-      );
-      if (!destination) return;
-      const driver = databaseRegistry.getDriver(destination.type);
-      if (!driver) return;
-      for (const statement of statements) {
-        const result = await driver.executeQuery(destination, statement, {
-          databaseName: this.config.destinationDatabaseName,
-        });
-        if (!result.success) {
-          log.warn("Failed to ensure layout index", {
-            table: layout.tableName,
-            statement,
-            error: result.error,
-          });
-          return; // Don't cache failures — retry on the next apply.
-        }
-      }
-      this.layoutIndexesEnsured.add(cacheKey);
-    } catch (err) {
-      log.warn("Layout index creation failed", {
-        table: layout.tableName,
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
   }
 
@@ -188,9 +122,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
             },
       );
       if (!write.success) {
-        throw new Error(
-          write.error || "Failed to apply PostgreSQL CDC upserts",
-        );
+        throw new Error(write.error || "Failed to apply MySQL CDC upserts");
       }
       await this.ensureLayoutIndexes(params.layout);
     }
@@ -230,7 +162,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
         );
         if (!write.success) {
           throw new Error(
-            write.error || "Failed to apply PostgreSQL CDC soft deletes",
+            write.error || "Failed to apply MySQL CDC soft deletes",
           );
         }
       } else {
@@ -245,16 +177,14 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           const remove = await writer.deleteByKeys(keyFilters);
           if (!remove.success) {
             throw new Error(
-              remove.error || "Failed to apply PostgreSQL CDC hard delete",
+              remove.error || "Failed to apply MySQL CDC hard delete",
             );
           }
         }
       }
     }
 
-    return {
-      applied: latest.length,
-    };
+    return { applied: latest.length };
   }
 
   async applyBatch(params: {
@@ -295,21 +225,76 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           },
     );
     if (!write.success) {
-      log.error("PostgreSQL batch apply failed", {
+      log.error("MySQL batch apply failed", {
         table: params.layout.tableName,
         rows: rows.length,
         error: write.error,
       });
-      throw new Error(
-        write.error || "Failed to apply PostgreSQL backfill batch",
-      );
+      throw new Error(write.error || "Failed to apply MySQL backfill batch");
     }
 
     await this.ensureLayoutIndexes(params.layout);
 
-    return {
-      written: write.rowsWritten,
-    };
+    return { written: write.rowsWritten };
+  }
+
+  /** Layout hints → secondary indexes (idempotent, best-effort). */
+  private async ensureLayoutIndexes(layout: CdcEntityLayout): Promise<void> {
+    const schema = this.config.tableDestination.schema;
+    const cacheKey = `${layout.tableName}:${layout.partitioning?.field ?? ""}:${(layout.clustering?.fields || []).join(",")}`;
+    if (this.layoutIndexesEnsured.has(cacheKey)) return;
+
+    try {
+      const destination = await DatabaseConnection.findById(
+        this.config.tableDestination.connectionId,
+      );
+      if (!destination) return;
+      const driver = databaseRegistry.getDriver(destination.type) as
+        | MySQLDatabaseDriver
+        | undefined;
+      if (!driver) return;
+
+      const columnTypes = await driver.fetchColumnTypes(
+        destination,
+        schema,
+        layout.tableName,
+      );
+      const existing = await driver.executeQuery(
+        destination,
+        `SELECT DISTINCT index_name AS index_name FROM information_schema.statistics WHERE table_schema = '${schema.replace(/'/g, "''")}' AND table_name = '${layout.tableName.replace(/'/g, "''")}'`,
+      );
+      const existingNames = new Set(
+        ((existing.data || []) as Array<Record<string, unknown>>).map(row =>
+          String(row.index_name ?? row.INDEX_NAME ?? "").toLowerCase(),
+        ),
+      );
+
+      for (const { indexName, sql } of buildMySqlLayoutIndexes(
+        layout,
+        schema,
+        columnTypes,
+      )) {
+        if (existingNames.has(indexName.toLowerCase())) continue;
+        const result = await driver.executeQuery(destination, sql);
+        if (
+          !result.success &&
+          !/duplicate key name/i.test(result.error || "")
+        ) {
+          log.warn("Failed to ensure MySQL layout index", {
+            table: layout.tableName,
+            indexName,
+            error: result.error,
+          });
+          return; // Retry on the next apply.
+        }
+      }
+      this.layoutIndexesEnsured.add(cacheKey);
+    } catch (err) {
+      log.warn("MySQL layout index creation failed", {
+        table: layout.tableName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private async createWriter(tableName: string) {
@@ -333,7 +318,7 @@ export class PostgreSqlDestinationAdapter implements CdcDestinationAdapter {
           createIfNotExists: true,
         } as any,
       },
-      "cdc-postgresql-adapter",
+      "cdc-mysql-adapter",
     );
 
     this.writerCache.set(tableName, writer);

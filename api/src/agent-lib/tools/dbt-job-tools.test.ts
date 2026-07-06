@@ -332,9 +332,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
       expect.objectContaining({ environment: "dev" }),
     );
     const project = await DbtProject.findById(projectId).lean();
-    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(
-      false,
-    );
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 
   it("a saved per-user dev environment wins and suppresses auto-provisioning", async () => {
@@ -353,9 +351,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
     );
     // Even in a multi-user workspace the explicit choice stops provisioning.
     const project = await DbtProject.findById(projectId).lean();
-    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(
-      false,
-    );
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 
   it("an explicit environment always wins (no auto-provisioning)", async () => {
@@ -371,9 +367,7 @@ describe("dbt_run_model — per-user environment resolution", () => {
       expect.objectContaining({ environment: "dev" }),
     );
     const project = await DbtProject.findById(projectId).lean();
-    expect(
-      project?.environments.some(e => e.ownerUserId === "u1"),
-    ).toBe(false);
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 });
 

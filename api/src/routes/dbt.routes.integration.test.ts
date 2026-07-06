@@ -373,10 +373,12 @@ describe("project CRUD", () => {
     expect((await set.json()).myDevEnvironment).toBe("dev");
 
     const list = await req("GET", "/projects");
-    const listed = ((await list.json()).projects as Array<{
-      _id: string;
-      myDevEnvironment?: string;
-    }>).find(p => p._id === projectId);
+    const listed = (
+      (await list.json()).projects as Array<{
+        _id: string;
+        myDevEnvironment?: string;
+      }>
+    ).find(p => p._id === projectId);
     expect(listed?.myDevEnvironment).toBe("dev");
 
     // "" clears back to Auto.
@@ -387,10 +389,12 @@ describe("project CRUD", () => {
     expect((await cleared.json()).myDevEnvironment).toBeUndefined();
 
     const list2 = await req("GET", "/projects");
-    const listed2 = ((await list2.json()).projects as Array<{
-      _id: string;
-      myDevEnvironment?: string;
-    }>).find(p => p._id === projectId);
+    const listed2 = (
+      (await list2.json()).projects as Array<{
+        _id: string;
+        myDevEnvironment?: string;
+      }>
+    ).find(p => p._id === projectId);
     expect(listed2?.myDevEnvironment).toBeUndefined();
   });
 

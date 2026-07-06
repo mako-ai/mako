@@ -850,12 +850,14 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     const allColumns = Array.from(liveCols);
 
     const keyColumns = layout.keyColumns;
-    const missingKeyInLive = keyColumns.filter(k => !liveCols.has(k));
-    const missingKeyInStaging = keyColumns.filter(k => !stagingCols.has(k));
-    if (missingKeyInLive.length > 0 || missingKeyInStaging.length > 0) {
-      throw new Error(
-        `Missing key columns for MERGE (live: [${missingKeyInLive.join(", ")}], staging: [${missingKeyInStaging.join(", ")}])`,
-      );
+    if ((layout.writeMode || "append_dedup") === "append_dedup") {
+      const missingKeyInLive = keyColumns.filter(k => !liveCols.has(k));
+      const missingKeyInStaging = keyColumns.filter(k => !stagingCols.has(k));
+      if (missingKeyInLive.length > 0 || missingKeyInStaging.length > 0) {
+        throw new Error(
+          `Missing key columns for MERGE (live: [${missingKeyInLive.join(", ")}], staging: [${missingKeyInStaging.join(", ")}])`,
+        );
+      }
     }
 
     const mergeMaxWaitEnv = Number.parseInt(
@@ -869,15 +871,24 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
 
     const stagingRowCount = options?.knownStagingRowCount ?? 0;
 
-    const mergeStmt = buildMergeStatement({
-      fullLive,
-      fullStaging,
-      columns: allColumns,
-      keyColumns,
-      stagingCols,
-      liveTypes,
-      entitySchema,
-    });
+    // Airbyte-style write modes: "append" inserts staging rows as-is
+    // (history accumulates); "overwrite" is handled by truncateLiveTable at
+    // run start, then appends; default dedups via MERGE.
+    const writeMode = layout.writeMode || "append_dedup";
+    const insertCols = allColumns.filter(c => stagingCols.has(c));
+    const insertColList = insertCols.map(escId).join(", ");
+    const mergeStmt =
+      writeMode === "append" || writeMode === "overwrite"
+        ? `INSERT INTO ${fullLive} (${insertColList}) SELECT ${insertColList} FROM ${fullStaging}`
+        : buildMergeStatement({
+            fullLive,
+            fullStaging,
+            columns: allColumns,
+            keyColumns,
+            stagingCols,
+            liveTypes,
+            entitySchema,
+          });
 
     log.info("Starting staging-to-live MERGE", {
       liveTable,
@@ -918,6 +929,26 @@ export class BigQueryDestinationAdapter implements CdcDestinationAdapter {
     });
 
     return { written: stagingRowCount };
+  }
+
+  /** Full Refresh | Overwrite: clear the live table (no-op when absent). */
+  async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
+    const { projectId, dataset, destination, datasetLocation } =
+      await this.resolveBqClient();
+    const fullLive = `${escId(projectId)}.${escId(dataset)}.${escId(layout.tableName)}`;
+    const result = await databaseConnectionService.executeQuery(
+      destination,
+      `DELETE FROM ${fullLive} WHERE TRUE`,
+      { location: datasetLocation },
+    );
+    if (
+      !result.success &&
+      !/not found|does not exist/i.test(result.error || "")
+    ) {
+      throw new Error(
+        result.error || "Failed to clear BigQuery live table for overwrite",
+      );
+    }
   }
 
   async cleanupStaging(

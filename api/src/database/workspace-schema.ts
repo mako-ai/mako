@@ -896,6 +896,17 @@ export interface IFlow extends Document {
   entityFilter?: string[]; // Optional: specific entities to sync (for connector sources)
   queries?: IFlowQuery[]; // Queries for GraphQL/PostHog connectors
   syncMode: "full" | "incremental";
+  /**
+   * Destination write mode (Airbyte-style sync modes; the read mode is
+   * `syncMode`):
+   * - "append_dedup" (default): upsert by key — the destination holds one
+   *   deduplicated row per record.
+   * - "append": insert-only — every fetched record version becomes a new row
+   *   (re-syncs duplicate, by design).
+   * - "overwrite": full-refresh only — the destination is cleared at the
+   *   start of each run, ending up as an exact snapshot.
+   */
+  writeMode?: "append_dedup" | "append" | "overwrite";
   syncEngine: SyncEngine;
   /** @deprecated Use streamState + backfillState.status instead */
   syncState?: SyncState;
@@ -2131,14 +2142,20 @@ const FlowSchema = new Schema<IFlow>(
       },
       cron: {
         type: String,
+        // Requiredness stays keyed to `type` for back-compat: webhook flows
+        // carry the default `schedule.enabled: true` with no cron. Under the
+        // unified trigger model, "cron present when schedule is enabled" is
+        // enforced at the route boundary independent of `type` (see
+        // routes/flows.ts) and a poll trigger only exists when a cron is set
+        // (see services/flow-triggers.service.ts).
         required: function () {
           return this.type === "scheduled" && this.schedule?.enabled;
         },
         validate: {
           validator: function (v: string) {
-            // Skip validation for webhook flows
-            if (this.type === "webhook") return true;
-            if (!this.schedule?.enabled) return true;
+            // Absence is handled by `required`; any present cron must be
+            // well-formed regardless of flow type.
+            if (!v) return true;
             // Basic cron validation - 5 or 6 fields
             const fields = v.split(" ");
             return fields.length === 5 || fields.length === 6;
@@ -2214,6 +2231,11 @@ const FlowSchema = new Schema<IFlow>(
       type: String,
       enum: ["full", "incremental"],
       default: "full",
+    },
+    writeMode: {
+      type: String,
+      enum: ["append_dedup", "append", "overwrite"],
+      default: "append_dedup",
     },
     syncEngine: {
       type: String,

@@ -2677,6 +2677,7 @@ function Editor({
                           | "webhook"
                           | "scheduled"
                           | "db-scheduled"
+                          | "sync"
                           | undefined
                       }
                       onSave={() => {

@@ -1021,8 +1021,17 @@ export async function getMaxTrackingValue(
   }
 
   try {
-    const qualifiedTable = schema ? `${schema}.${tableName}` : tableName;
-    const query = `SELECT MAX(${trackingColumn}) as max_value FROM ${qualifiedTable}`;
+    // Case-folding engines (Postgres family) need quoted identifiers or
+    // camelCase columns like _syncedAt silently break; engines without
+    // quoteIdentifier match bare identifiers case-insensitively.
+    const quote = (name: string) =>
+      driver.quoteIdentifier ? driver.quoteIdentifier(name) : name;
+    const qualifiedTable = driver.formatTableRef
+      ? driver.formatTableRef(schema, tableName)
+      : schema
+        ? `${quote(schema)}.${quote(tableName)}`
+        : quote(tableName);
+    const query = `SELECT MAX(${quote(trackingColumn)}) as max_value FROM ${qualifiedTable}`;
 
     const result = await driver.executeQuery(connection, query, {
       databaseName: database,

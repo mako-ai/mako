@@ -9,12 +9,17 @@ import { BigQueryDestinationAdapter } from "./bigquery";
 import { ClickHouseDestinationAdapter } from "./clickhouse";
 import { MongoDbDestinationAdapter } from "./mongodb";
 import { PostgreSqlDestinationAdapter } from "./postgresql";
+import { MySqlDestinationAdapter } from "./mysql";
+
+/** Airbyte-style destination write mode. Default: "append_dedup" (upsert). */
+export type CdcWriteMode = "append_dedup" | "append" | "overwrite";
 
 export interface CdcEntityLayout {
   entity: string;
   tableName: string;
   keyColumns: string[];
   deleteMode?: "hard" | "soft";
+  writeMode?: CdcWriteMode;
   partitioning?: {
     type?: "time" | "ingestion";
     field: string;
@@ -29,6 +34,11 @@ export interface CdcEntityLayout {
 export interface CdcDestinationAdapter {
   destinationType: string;
   ensureLiveTable(layout: CdcEntityLayout): Promise<void>;
+  /**
+   * Clear the live table at the start of a Full Refresh | Overwrite run.
+   * Must be a no-op when the table does not exist yet.
+   */
+  truncateLiveTable?(layout: CdcEntityLayout): Promise<void>;
   applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
@@ -120,6 +130,14 @@ export function resolveCdcDestinationAdapter(params: {
     });
   }
 
+  if (normalizedType === "mysql") {
+    return new MySqlDestinationAdapter({
+      destinationDatabaseId: params.destinationDatabaseId,
+      destinationDatabaseName: params.destinationDatabaseName,
+      tableDestination: params.tableDestination,
+    });
+  }
+
   if (normalizedType === "mongodb") {
     return new MongoDbDestinationAdapter({
       destinationDatabaseId: params.destinationDatabaseId,
@@ -140,6 +158,7 @@ export function hasCdcDestinationAdapter(destinationType?: string): boolean {
     normalizedType === "bigquery" ||
     normalizedType === "clickhouse" ||
     normalizedType === "postgresql" ||
+    normalizedType === "mysql" ||
     normalizedType === "mongodb"
   );
 }
@@ -211,6 +230,7 @@ export function buildCdcEntityLayout(params: {
   tableName: string;
   keyColumns?: string[];
   deleteMode?: "hard" | "soft";
+  writeMode?: CdcWriteMode;
   partitioning?: CdcEntityLayout["partitioning"];
   clustering?: CdcEntityLayout["clustering"];
 }): CdcEntityLayout {
@@ -222,7 +242,22 @@ export function buildCdcEntityLayout(params: {
         ? params.keyColumns
         : ["id"],
     deleteMode: params.deleteMode,
+    writeMode: params.writeMode,
     partitioning: params.partitioning,
     clustering: params.clustering,
   };
+}
+
+/**
+ * Airbyte-style: destinations declare which write modes they support.
+ * ClickHouse lives on ReplacingMergeTree, which dedups by the ORDER BY key
+ * at merge time — plain "append" / "overwrite" semantics can't be honored.
+ */
+export function supportedCdcWriteModes(
+  destinationType?: string,
+): CdcWriteMode[] {
+  const normalizedType = (destinationType || "").toLowerCase();
+  if (!hasCdcDestinationAdapter(normalizedType)) return [];
+  if (normalizedType === "clickhouse") return ["append_dedup"];
+  return ["append_dedup", "append", "overwrite"];
 }

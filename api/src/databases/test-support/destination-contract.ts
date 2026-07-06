@@ -48,6 +48,9 @@ export interface DestinationContractExpectations {
         projectId?: string;
         expected: string;
       };
+
+  /** `quoteIdentifier(name)` — identifier quoting for case-folding engines. */
+  quoteIdentifier: Absent | { cases: Array<[string, string]> };
 }
 
 /**
@@ -152,5 +155,19 @@ export function runDestinationContract(
     it("returns null for an empty table list", () => {
       expect(driver.buildRowCountBatchQuery?.(schema, [], opts)).toBeNull();
     });
+  });
+
+  describe(`quoteIdentifier`, () => {
+    if (isAbsent(e.quoteIdentifier)) {
+      it("is not implemented (bare identifiers match case-insensitively)", () => {
+        expect(driver.quoteIdentifier).toBeUndefined();
+      });
+      return;
+    }
+    for (const [input, expected] of e.quoteIdentifier.cases) {
+      it(`quotes ${input} -> ${expected}`, () => {
+        expect(driver.quoteIdentifier?.(input)).toBe(expected);
+      });
+    }
   });
 }

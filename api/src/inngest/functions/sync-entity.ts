@@ -38,6 +38,7 @@ export interface SyncBackfillEntityPayload {
   destinationId: string;
   destinationDatabaseName?: string;
   syncMode: string;
+  writeMode?: "append_dedup" | "append" | "overwrite";
   syncEngine?: string;
   tableDestination: Record<string, unknown>;
   deleteMode?: string;
@@ -146,6 +147,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
       destinationId,
       destinationDatabaseName,
       syncMode,
+      writeMode,
       syncEngine,
       tableDestination,
       deleteMode,
@@ -290,6 +292,7 @@ export const syncBackfillEntityFunction = inngest.createFunction(
         isIncremental: syncMode === "incremental",
         tableDestination,
         deleteMode,
+        writeMode,
         entityPartitioning: resolveEntityPartitioning(
           bulkEntityLayout as any,
           (tableDestination as any)?.partitioning,
@@ -416,6 +419,10 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             }
           }
 
+          const chunkEntityLayout = (entityLayouts || []).find(
+            (l: any) =>
+              l.entity === entity || l.entity === entity.split(":")[0],
+          );
           const result = await performSyncChunk({
             dataSourceId,
             destinationId,
@@ -435,6 +442,17 @@ export const syncBackfillEntityFunction = inngest.createFunction(
             queries,
             tableDestination: resolvedTableDest,
             deleteMode,
+            writeMode,
+            // Layout hints flow to the CDC adapter so every destination can
+            // apply its native physical layout (indexes / partitioning).
+            entityPartitioning: resolveEntityPartitioning(
+              chunkEntityLayout as any,
+              (tableDestination as any)?.partitioning,
+            ),
+            entityClustering: resolveEntityClustering(
+              chunkEntityLayout as any,
+              (tableDestination as any)?.clustering,
+            ),
           } as any);
 
           const written = Number.isFinite(result.totalWritten)

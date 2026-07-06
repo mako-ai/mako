@@ -33,6 +33,11 @@ import {
 } from "../../sync-cdc/backfill";
 import { syncBackfillEntityFunction } from "./sync-entity";
 import { emitFlowExecutionTerminalEvent } from "../../services/flow-run-notification.emit";
+import {
+  buildScheduledFlowSelection,
+  hasScheduleTrigger,
+  hasWebhookTrigger,
+} from "../../services/flow-triggers.service";
 
 const flowLogger = loggers.inngest("flow");
 
@@ -625,18 +630,26 @@ export const flowFunction = inngest.createFunction(
         Boolean(flow.tableDestination?.connectionId) &&
         hasCdcDestinationAdapter(destinationType);
 
+      // "Webhook-only" replaces the `type` discriminator: a flow whose sole
+      // freshness source is its webhook has no poll schedule to execute, but
+      // any flow with a poll trigger may run.
+      const isWebhookOnly =
+        hasWebhookTrigger(flow) && !hasScheduleTrigger(flow);
+      // A CDC backfill run is a full reconcile regardless of which trigger
+      // the flow uses day-to-day.
+      const isCdcBackfill = backfill && isCdcEnabled;
+
       const requestedBackfillRunId =
         typeof backfillRunId === "string" && backfillRunId.length > 0
           ? backfillRunId
           : undefined;
-      cdcBackfillRunId =
-        backfill && flow.type === "webhook" && isCdcEnabled
-          ? requestedBackfillRunId || flow.backfillState?.runId
-          : undefined;
+      cdcBackfillRunId = isCdcBackfill
+        ? requestedBackfillRunId || flow.backfillState?.runId
+        : undefined;
 
-      // Webhook flows should not be executed unless it's a backfill
-      if (flow.type === "webhook" && !backfill) {
-        logger.error("CRITICAL: Webhook flow reached flow executor!", {
+      // Webhook-only flows should not be executed unless it's a backfill
+      if (isWebhookOnly && !backfill) {
+        logger.error("CRITICAL: Webhook-only flow reached flow executor!", {
           flowId,
           flowType: flow.type,
           dataSourceId: flow.dataSourceId,
@@ -652,15 +665,15 @@ export const flowFunction = inngest.createFunction(
       // Legacy real-time webhook processing has been decommissioned: webhook
       // flows must run on the CDC engine. A non-CDC webhook backfill can only
       // happen for a flow that was never migrated to a CDC-capable destination.
-      if (backfill && flow.type === "webhook" && !isCdcEnabled) {
+      if (backfill && isWebhookOnly && !isCdcEnabled) {
         throw new Error(
           `Webhook flow ${flowId} is not CDC-enabled. Legacy webhook backfill has been removed — migrate the flow to a CDC-capable destination (syncEngine=cdc with a tableDestination).`,
         );
       }
 
-      if (backfill && flow.type === "webhook" && isCdcEnabled) {
-        (flow as any).syncMode = "full";
-        logger.info("Backfill mode: CDC enabled, no webhook apply gate", {
+      if (isCdcBackfill) {
+        flow.syncMode = "full";
+        logger.info("Backfill mode: CDC enabled, forcing full sync", {
           flowId,
         });
       }
@@ -1173,11 +1186,9 @@ export const flowFunction = inngest.createFunction(
       );
 
       if (supportsChunking) {
+        // Checkpointed backfills apply to any CDC backfill run.
         const checkpointEnabled =
-          Boolean(backfill) &&
-          flow.type === "webhook" &&
-          isCdcEnabled &&
-          Boolean(cdcBackfillRunId);
+          Boolean(backfill) && isCdcEnabled && Boolean(cdcBackfillRunId);
         let checkpointCompletedEntities = new Set<string>();
         if (checkpointEnabled && cdcBackfillRunId) {
           const runId = cdcBackfillRunId;
@@ -1368,6 +1379,7 @@ export const flowFunction = inngest.createFunction(
             destinationId: flow.destinationDatabaseId.toString(),
             destinationDatabaseName: flow.destinationDatabaseName,
             syncMode: flow.syncMode,
+            writeMode: (flow as any).writeMode,
             syncEngine: (flow as any).syncEngine,
             tableDestination: (flow as any).tableDestination,
             deleteMode: (flow as any).deleteMode,
@@ -1555,7 +1567,9 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      if (backfill && flow.type === "webhook" && isCdcEnabled) {
+      // Post-backfill CDC state machine: complete the backfill, drain pending
+      // events, and (re)start the stream. Applies to any CDC backfill run.
+      if (isCdcBackfill) {
         await step.run("mark-cdc-backfill-complete", async () => {
           await markCdcBackfillCompletedForFlow({
             flowId: String(flowId),
@@ -1902,8 +1916,12 @@ export const flowFunction = inngest.createFunction(
         });
       }
 
-      // Safety: ensure webhook backfill gate is not left active after failures.
-      if (backfill && flowRef?.type === "webhook") {
+      // Safety: ensure the CDC backfill gate is not left active after
+      // failures. Mirrors the happy-path gating: any CDC backfill under the
+      // unified model, webhook flows otherwise. Without this, a failed
+      // backfill leaves backfillState.status stuck on "running", which blocks
+      // the reconcile scheduler and the auto-recovery loop forever.
+      if (backfill && flowRef) {
         const destinationType = flowRef.tableDestination?.connectionId
           ? (
               await DatabaseConnection.findById(
@@ -1986,13 +2004,11 @@ export const flowSchedulerFunction = inngest.createFunction(
       timestamp: new Date().toISOString(),
     });
 
-    // Get all scheduled flows with enabled schedules
+    // Get all flows with an enabled poll schedule (trigger-based selection:
+    // any flow with an enabled schedule + cron, including hybrids).
     const flows = (await step.run("fetch-enabled-flows", async () => {
-      const found = await Flow.find({
-        type: "scheduled", // Only get scheduled flows explicitly
-        "schedule.enabled": true,
-      });
-      scheduleLogger.info("Found scheduled flows with enabled schedules", {
+      const found = await Flow.find(buildScheduledFlowSelection());
+      scheduleLogger.info("Found flows with enabled poll schedules", {
         count: found.length,
         // Log flow types for debugging
         flowTypes: found.map(f => ({
@@ -2014,10 +2030,11 @@ export const flowSchedulerFunction = inngest.createFunction(
           const flowDisplayName = await getFlowDisplayName(flow);
           const flowLogger = getSyncLogger(`scheduler.${flow._id}`);
 
-          // Safety check: skip webhook flows (shouldn't happen with our filter, but just in case)
-          if (flow.type === "webhook" || !flow.schedule?.cron) {
+          // Safety check: skip flows without a poll cron (a webhook flow
+          // with an enabled schedule is a valid hybrid and must be polled).
+          if (!flow.schedule?.cron) {
             flowLogger.warn(
-              "CRITICAL: Non-scheduled flow found in scheduler!",
+              "CRITICAL: Flow without poll schedule found in scheduler!",
               {
                 flowId: flow._id.toString(),
                 flowType: flow.type,

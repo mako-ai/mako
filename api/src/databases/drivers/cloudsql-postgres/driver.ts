@@ -63,6 +63,10 @@ export class CloudSQLPostgresDatabaseDriver implements DatabaseDriver {
     )} AND c.relname IN (${inList})`;
   }
 
+  quoteIdentifier(name: string): string {
+    return `"${name.replace(/"/g, '""')}"`;
+  }
+
   async getTreeRoot(
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {

@@ -28,10 +28,7 @@ import {
   type IDbtProject,
 } from "../database/workspace-schema";
 import { getUserDisplayName } from "../services/entity-version.service";
-import {
-  isWarehouseWriteCommand,
-  type ParsedDbtCommand,
-} from "./commands";
+import { isWarehouseWriteCommand, type ParsedDbtCommand } from "./commands";
 
 type ProjectEnvFields = Pick<
   IDbtProject,

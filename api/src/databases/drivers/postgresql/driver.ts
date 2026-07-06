@@ -99,6 +99,10 @@ export class PostgreSQLDatabaseDriver implements DatabaseDriver {
     )} AND c.relname IN (${inList})`;
   }
 
+  quoteIdentifier(name: string): string {
+    return escapeIdentifier(name);
+  }
+
   async getTreeRoot(
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {

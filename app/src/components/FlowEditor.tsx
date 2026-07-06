@@ -1,7 +1,6 @@
 import { useState, type RefObject } from "react";
-import { Alert, Box } from "@mui/material";
-import { ScheduledFlowForm } from "./ScheduledFlowForm";
-import { WebhookFlowForm } from "./WebhookFlowForm";
+import { Alert, Box, Tab, Tabs } from "@mui/material";
+import { SyncFlowForm } from "./SyncFlowForm";
 import { DbFlowForm, type DbFlowFormRef } from "./DbFlowForm";
 import { FlowLogs } from "./FlowLogs";
 import { BackfillPanel } from "./BackfillPanel";
@@ -11,7 +10,13 @@ import { useFlowStore } from "../store/flowStore";
 interface FlowEditorProps {
   flowId?: string;
   isNew?: boolean;
-  flowType?: "scheduled" | "webhook" | "db-scheduled"; // For new flows, specify the type
+  /**
+   * For new flows: "db-scheduled" opens the database-query sync form;
+   * everything else opens the unified Sync builder. Legacy tab metadata
+   * ("scheduled" / "webhook") from previously-opened tabs maps to the
+   * unified builder too.
+   */
+  flowType?: "scheduled" | "webhook" | "db-scheduled" | "sync";
   onSave?: () => void;
   onCancel?: () => void;
   dbFlowFormRef?: RefObject<DbFlowFormRef | null>;
@@ -25,7 +30,7 @@ interface FlowSavedOptions {
 export function FlowEditor({
   flowId,
   isNew = false,
-  flowType = "scheduled",
+  flowType = "sync",
   onSave,
   onCancel,
   dbFlowFormRef,
@@ -35,11 +40,13 @@ export function FlowEditor({
     flowId,
   );
   const [backfillNotice, setBackfillNotice] = useState<string | null>(null);
+  // The Source step of the unified builder can switch to a DB-query sync.
+  const [dbSyncMode, setDbSyncMode] = useState(false);
+  const [viewTab, setViewTab] = useState<"cdc" | "runs">("cdc");
 
   const { currentWorkspace } = useWorkspace();
   const { flows: flowsMap, runFlow } = useFlowStore();
 
-  // Get flow details and derive webhook status
   const flows = currentWorkspace ? flowsMap[currentWorkspace.id] || [] : [];
   const currentFlow = currentFlowId
     ? flows.find(f => f._id === currentFlowId)
@@ -47,30 +54,29 @@ export function FlowEditor({
 
   const isNewMode = Boolean(isNew && !currentFlowId);
 
-  // Determine flow type - for new flows, use the prop; for existing, check the flow
-  const isWebhookFlow =
-    currentFlow?.type === "webhook" || (!currentFlow && flowType === "webhook");
-
-  // Check if this is a database-to-database flow
+  // Database-query sources keep the dedicated DbFlowForm.
   const isDbFlow =
     currentFlow?.sourceType === "database" ||
-    (!currentFlow && flowType === "db-scheduled");
+    (!currentFlow && (flowType === "db-scheduled" || dbSyncMode));
+
+  const isCdcFlow = currentFlow?.syncEngine === "cdc";
+  const hasScheduleTrigger = Boolean(
+    currentFlow?.schedule?.enabled && currentFlow?.schedule?.cron,
+  );
 
   const handleSaved = (newFlowId: string, options?: FlowSavedOptions) => {
     setCurrentFlowId(newFlowId);
     if (options?.showBackfillPanel) {
       setBackfillNotice(options.notice ?? null);
+      setViewTab("cdc");
       setIsEditing(false);
       onSave?.();
       return;
     }
 
     setBackfillNotice(null);
-    // Webhook flows stay in editing mode after first save so the user
-    // can see the generated webhook URL and finish setup in Step 5.
-    if (!isWebhookFlow) {
-      setIsEditing(false);
-    }
+    // The unified builder stays in editing mode after the first save so the
+    // user can finish webhook setup (URL/secret) when that trigger is on.
     onSave?.();
   };
 
@@ -87,12 +93,65 @@ export function FlowEditor({
 
   const handleCancelEdit = () => {
     if (isNewMode) {
-      // For new flows, use the onCancel callback to close the editor
       onCancel?.();
     } else {
-      // For existing flows, just go back to info view
       setIsEditing(false);
     }
+  };
+
+  // Post-save view, keyed on the ENGINE: CDC flows get the pipeline
+  // dashboard (with a Run History tab when a poll schedule exists); legacy
+  // flows get the plain run history.
+  const renderInfoView = () => {
+    if (!currentFlowId) return null;
+
+    if (!isCdcFlow) {
+      return (
+        <FlowLogs
+          flowId={currentFlowId}
+          onRunNow={handleRunNow}
+          onEdit={handleEditClick}
+        />
+      );
+    }
+    if (!currentWorkspace) return null;
+    const showRunsTab = hasScheduleTrigger;
+    return (
+      <>
+        {backfillNotice && (
+          <Alert
+            severity="success"
+            onClose={() => setBackfillNotice(null)}
+            sx={{ m: 2, mb: 0 }}
+          >
+            {backfillNotice}
+          </Alert>
+        )}
+        {showRunsTab && (
+          <Tabs
+            value={viewTab}
+            onChange={(_e, value) => setViewTab(value)}
+            sx={{ borderBottom: 1, borderColor: "divider", minHeight: 36 }}
+          >
+            <Tab label="CDC Pipeline" value="cdc" sx={{ minHeight: 36 }} />
+            <Tab label="Run History" value="runs" sx={{ minHeight: 36 }} />
+          </Tabs>
+        )}
+        {showRunsTab && viewTab === "runs" ? (
+          <FlowLogs
+            flowId={currentFlowId}
+            onRunNow={handleRunNow}
+            onEdit={handleEditClick}
+          />
+        ) : (
+          <BackfillPanel
+            workspaceId={currentWorkspace.id}
+            flowId={currentFlowId}
+            onEdit={handleEditClick}
+          />
+        )}
+      </>
+    );
   };
 
   return (
@@ -103,17 +162,8 @@ export function FlowEditor({
         flexDirection: "column",
       }}
     >
-      {/* Show form when editing or creating new */}
       {isEditing ? (
-        isWebhookFlow ? (
-          <WebhookFlowForm
-            flowId={currentFlowId}
-            isNew={isNewMode}
-            onSave={onSave}
-            onSaved={handleSaved}
-            onCancel={handleCancelEdit}
-          />
-        ) : isDbFlow ? (
+        isDbFlow ? (
           <DbFlowForm
             ref={dbFlowFormRef as React.Ref<DbFlowFormRef>}
             flowId={currentFlowId}
@@ -123,43 +173,17 @@ export function FlowEditor({
             onCancel={handleCancelEdit}
           />
         ) : (
-          <ScheduledFlowForm
+          <SyncFlowForm
             flowId={currentFlowId}
             isNew={isNewMode}
             onSave={onSave}
             onSaved={handleSaved}
             onCancel={handleCancelEdit}
+            onSwitchToDbSync={isNewMode ? () => setDbSyncMode(true) : undefined}
           />
         )
       ) : (
-        /* Show info/logs when not editing */
-        <>
-          {currentFlowId && !isWebhookFlow && (
-            <FlowLogs
-              flowId={currentFlowId}
-              onRunNow={handleRunNow}
-              onEdit={handleEditClick}
-            />
-          )}
-          {currentFlowId && isWebhookFlow && currentWorkspace && (
-            <>
-              {backfillNotice && (
-                <Alert
-                  severity="success"
-                  onClose={() => setBackfillNotice(null)}
-                  sx={{ m: 2, mb: 0 }}
-                >
-                  {backfillNotice}
-                </Alert>
-              )}
-              <BackfillPanel
-                workspaceId={currentWorkspace.id}
-                flowId={currentFlowId}
-                onEdit={handleEditClick}
-              />
-            </>
-          )}
-        </>
+        renderInfoView()
       )}
     </Box>
   );

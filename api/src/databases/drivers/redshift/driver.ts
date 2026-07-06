@@ -35,6 +35,10 @@ export class RedshiftDatabaseDriver implements DatabaseDriver {
     } as any;
   }
 
+  quoteIdentifier(name: string): string {
+    return `"${name.replace(/"/g, '""')}"`;
+  }
+
   async getTreeRoot(
     database: IDatabaseConnection,
   ): Promise<DatabaseTreeNode[]> {

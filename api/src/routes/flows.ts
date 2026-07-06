@@ -30,6 +30,11 @@ import { syncConnectorRegistry } from "../sync/connector-registry";
 import { databaseDataSourceManager } from "../sync/database-data-source-manager";
 import { databaseConnectionService } from "../services/database-connection.service";
 import { mapLogicalTypeToBigQuery } from "../sync-cdc/adapters/bigquery";
+import {
+  hasCdcDestinationAdapter,
+  supportedCdcWriteModes,
+} from "../sync-cdc/adapters/registry";
+import { resolveDefaultSyncEngine } from "../services/flow-triggers.service";
 import { AUTH_SECURITY, OPEN_RESPONSES, createRouter } from "../openapi/core";
 
 const logger = loggers.inngest("flow");
@@ -531,6 +536,41 @@ flowRoutes.openapi(
   },
 );
 
+/**
+ * Validate an Airbyte-style write mode against the read mode, trigger set,
+ * and destination capability. Returns an error string or null.
+ */
+function validateWriteMode(params: {
+  writeMode?: unknown;
+  syncMode: string;
+  destinationType?: string;
+  syncEngine: string;
+  webhookEnabled: boolean;
+}): string | null {
+  const { writeMode } = params;
+  if (writeMode === undefined || writeMode === null) return null;
+  if (
+    writeMode !== "append_dedup" &&
+    writeMode !== "append" &&
+    writeMode !== "overwrite"
+  ) {
+    return "writeMode must be 'append_dedup', 'append', or 'overwrite'";
+  }
+  if (writeMode === "overwrite" && params.syncMode !== "full") {
+    return "writeMode 'overwrite' requires a Full Refresh (syncMode 'full')";
+  }
+  if (writeMode === "overwrite" && params.webhookEnabled) {
+    return "writeMode 'overwrite' cannot be combined with a webhook trigger";
+  }
+  if (params.syncEngine === "cdc" && writeMode !== "append_dedup") {
+    const supported = supportedCdcWriteModes(params.destinationType);
+    if (!supported.includes(writeMode)) {
+      return `writeMode '${writeMode}' is not supported by '${params.destinationType}' destinations (supported: ${supported.join(", ") || "none"})`;
+    }
+  }
+  return null;
+}
+
 // POST /api/workspaces/:workspaceId/flows - Create a new flow
 flowRoutes.openapi(
   createRoute({
@@ -571,12 +611,9 @@ flowRoutes.openapi(
       const flowType = body.type || "scheduled";
       const sourceType = body.sourceType || "connector";
 
-      // Schedule cron required only when schedule is enabled
-      if (
-        flowType === "scheduled" &&
-        body.schedule?.enabled &&
-        !body.schedule?.cron
-      ) {
+      // Schedule cron required whenever a poll schedule is enabled,
+      // regardless of flow type (unified trigger model).
+      if (body.schedule?.enabled && !body.schedule?.cron) {
         return c.json(
           { success: false, error: "schedule.cron is required when enabled" },
           400,
@@ -715,16 +752,26 @@ flowRoutes.openapi(
             : undefined,
         syncMode: body.syncMode || "full",
         // Webhook flows run exclusively on the CDC engine (the legacy real-time
-        // webhook pipeline has been decommissioned). Scheduled batch flows keep
-        // the legacy direct-write engine by default.
-        syncEngine: flowType === "webhook" ? "cdc" : "legacy",
+        // webhook pipeline has been decommissioned). Connector flows targeting
+        // a CDC-capable table destination default to CDC too; everything else
+        // keeps the legacy engine until the full sunset.
+        syncEngine: resolveDefaultSyncEngine({
+          flowType,
+          sourceType,
+          hasTableDestination: Boolean(body.tableDestination?.connectionId),
+          destinationSupportsCdc: hasCdcDestinationAdapter(destinationType),
+        }),
+        writeMode: body.writeMode || "append_dedup",
         syncStateUpdatedAt: new Date(),
         enabled: true,
         createdBy: userId,
       };
 
       // Optional periodic full-backfill cadence (CDC flows only).
-      if (flowType === "webhook" && body.backfillSchedule) {
+      if (
+        (flowType === "webhook" || flowData.syncEngine === "cdc") &&
+        body.backfillSchedule
+      ) {
         const sched = body.backfillSchedule;
         const enabled = Boolean(sched.enabled);
         const cron = typeof sched.cron === "string" ? sched.cron.trim() : "";
@@ -804,7 +851,7 @@ flowRoutes.openapi(
         destinationType ?? "",
       );
       if (
-        flowType === "webhook" &&
+        flowData.syncEngine === "cdc" &&
         destinationDriver?.requiresSoftDeleteForCdc?.()
       ) {
         // Destination's CDC path relies on tombstones for correctness.
@@ -828,6 +875,16 @@ flowRoutes.openapi(
             : undefined,
         };
       } else if (flowType === "webhook") {
+        // Unified trigger model: a webhook flow may also carry a poll
+        // schedule (hybrid trigger set). Persist it so the scheduler's
+        // trigger-based selection picks it up.
+        if (body.schedule?.enabled === true) {
+          flowData.schedule = {
+            enabled: true,
+            cron: body.schedule?.cron,
+            timezone: body.schedule?.timezone || body.timezone || "UTC",
+          };
+        }
         // Generate webhook configuration
         const requestBaseUrl = getRequestBaseUrl(c);
         const webhookEndpoint = generateWebhookEndpoint(
@@ -843,6 +900,17 @@ flowRoutes.openapi(
           secret: webhookSecret,
           enabled: true,
         };
+      }
+
+      const writeModeError = validateWriteMode({
+        writeMode: flowData.writeMode,
+        syncMode: flowData.syncMode,
+        destinationType,
+        syncEngine: flowData.syncEngine,
+        webhookEnabled: flowType === "webhook",
+      });
+      if (writeModeError) {
+        return c.json({ success: false, error: writeModeError }, 400);
       }
 
       const flow = new Flow(flowData);
@@ -1015,8 +1083,9 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      // Update common fields
-      if (flow.type === "scheduled" && body.schedule) {
+      // Update common fields. Under the unified trigger model any flow may
+      // carry a poll schedule (hybrid trigger set), not only type=scheduled.
+      if (body.schedule) {
         const scheduleEnabled = body.schedule.enabled === true;
         flow.schedule = {
           enabled: scheduleEnabled,
@@ -1036,6 +1105,26 @@ flowRoutes.openapi(
             : undefined;
       }
       if (body.syncMode) flow.syncMode = body.syncMode;
+      if (body.writeMode !== undefined) {
+        const destForWriteMode = await DatabaseConnection.findById(
+          flow.tableDestination?.connectionId || flow.destinationDatabaseId,
+        )
+          .select({ type: 1 })
+          .lean();
+        const writeModeError = validateWriteMode({
+          writeMode: body.writeMode,
+          syncMode: flow.syncMode,
+          destinationType: destForWriteMode?.type,
+          syncEngine: flow.syncEngine,
+          webhookEnabled: Boolean(
+            flow.webhookConfig?.enabled && flow.webhookConfig?.endpoint,
+          ),
+        });
+        if (writeModeError) {
+          return c.json({ success: false, error: writeModeError }, 400);
+        }
+        (flow as any).writeMode = body.writeMode;
+      }
 
       // Update connector source specific fields
       if (flow.sourceType !== "database") {
@@ -1172,7 +1261,10 @@ flowRoutes.openapi(
         }
       }
 
-      if (flow.type === "webhook") {
+      // Keyed on the engine (not `type`): any CDC flow writing to a
+      // destination whose CDC MERGE path relies on tombstones must stay on
+      // soft delete, including scheduled CDC flows.
+      if (flow.syncEngine === "cdc") {
         const effectiveDestConnectionId =
           flow.tableDestination?.connectionId || flow.destinationDatabaseId;
         const destination = await DatabaseConnection.findById(
@@ -1371,14 +1463,9 @@ flowRoutes.openapi(
         return c.json({ success: false, error: "Flow not found" }, 404);
       }
 
-      if (flow.type !== "scheduled") {
-        return c.json(
-          { success: false, error: "Only scheduled flows can be toggled" },
-          400,
-        );
-      }
-
-      if (!flow.schedule) {
+      // Unified trigger model: any flow may carry a poll schedule (hybrid
+      // webhook + schedule), so no type gate here.
+      if (!flow.schedule?.cron) {
         flow.schedule = {
           enabled: true,
           cron: "0 * * * *",

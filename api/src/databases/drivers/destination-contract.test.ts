@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { BigQueryDatabaseDriver } from "./bigquery/driver";
 import { PostgreSQLDatabaseDriver } from "./postgresql/driver";
 import { CloudSQLPostgresDatabaseDriver } from "./cloudsql-postgres/driver";
+import { MySQLDatabaseDriver } from "./mysql/driver";
 import { RedshiftDatabaseDriver } from "./redshift/driver";
 import { BIGQUERY_WORKING_DATASET } from "../../utils/bigquery-working-dataset";
 import {
@@ -70,6 +71,7 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         expected:
           "SELECT table_id, row_count FROM `proj`.`ds`.__TABLES__ WHERE table_id IN ('a''b','c')",
       },
+      quoteIdentifier: { absent: true },
     },
   ],
   [
@@ -85,6 +87,12 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         schema: "public",
         tables: ["a'b", "c"],
         expected: PG_ROWCOUNT_EXPECTED,
+      },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", '"_syncedAt"'],
+          ['weird"name', '"weird""name"'],
+        ],
       },
     },
   ],
@@ -102,6 +110,37 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
         tables: ["a'b", "c"],
         expected: PG_ROWCOUNT_EXPECTED,
       },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", '"_syncedAt"'],
+          ['weird"name', '"weird""name"'],
+        ],
+      },
+    },
+  ],
+  [
+    new MySQLDatabaseDriver(),
+    {
+      type: "mysql",
+      stagingSchema: { absent: true },
+      softDeleteForCdc: { absent: true },
+      typedColumns: { absent: true },
+      mapColumnType: { absent: true },
+      formatTableRef: {
+        cases: [
+          { schema: "app", table: "tbl", expected: "`app`.`tbl`" },
+          { schema: undefined, table: "tbl", expected: "`tbl`" },
+        ],
+      },
+      // No cheap metadata row-count path wired up (information_schema
+      // estimates are unreliable for InnoDB) — callers skip counting.
+      rowCountBatchQuery: { absent: true },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", "`_syncedAt`"],
+          ["weird`name", "`weird``name`"],
+        ],
+      },
     },
   ],
   [
@@ -115,6 +154,12 @@ const cases: Array<[DatabaseDriver, DestinationContractExpectations]> = [
       formatTableRef: { absent: true },
       // Redshift has no cheap metadata row-count path → callers skip counting.
       rowCountBatchQuery: { absent: true },
+      quoteIdentifier: {
+        cases: [
+          ["_syncedAt", '"_syncedAt"'],
+          ['weird"name', '"weird""name"'],
+        ],
+      },
     },
   ],
 ];

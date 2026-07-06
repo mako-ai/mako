@@ -116,6 +116,8 @@ export interface SyncChunkOptions {
   /** When set, writes to SQL/BigQuery instead of MongoDB */
   tableDestination?: ITableDestination;
   deleteMode?: "hard" | "soft";
+  /** Airbyte-style destination write mode (default append_dedup). */
+  writeMode?: "append_dedup" | "append" | "overwrite";
   flowId?: string;
   workspaceId?: string;
   syncEngine?: string;
@@ -637,9 +639,19 @@ async function performSyncChunkSql(
     (writer as any).stagingActive = true;
   }
 
-  // Incremental: get last sync date from destination table
+  // Incremental: get last sync date from destination table.
+  //
+  // Historically skipped for CDC because CDC runs were always full webhook
+  // backfills. Under the unified trigger model a scheduled CDC flow polls
+  // with syncMode=incremental, and without an anchor every poll would
+  // re-fetch the entire entity. The CDC live table carries the same
+  // _syncedAt column, so anchor there too. Note: incremental CDC polls are
+  // upsert-only; deletes are reconciled by the periodic full backfill
+  // (backfillSchedule), not by polls.
+  const anchorIncremental =
+    syncMode === "incremental" && options.writeMode !== "overwrite" && !state;
   let lastSyncDate: Date | undefined;
-  if (!isCdcEnabled && syncMode === "incremental" && !state) {
+  if (anchorIncremental) {
     try {
       const { getMaxTrackingValue } = await import(
         "../services/destination-writer.service"
@@ -701,8 +713,28 @@ async function performSyncChunkSql(
         entity,
         tableName: entityTableName,
         keyColumns: entitySchema?.keyColumns,
+        deleteMode: options.deleteMode,
+        writeMode: options.writeMode,
+        partitioning: options.entityPartitioning,
+        clustering: options.entityClustering,
       })
     : undefined;
+
+  // Full Refresh | Overwrite: clear the live table once, before the first
+  // chunk of the run writes (checkpoint resumes carry state and skip this).
+  if (
+    isCdcEnabled &&
+    cdcAdapter?.truncateLiveTable &&
+    cdcLayout &&
+    options.writeMode === "overwrite" &&
+    !state
+  ) {
+    await cdcAdapter.truncateLiveTable(cdcLayout);
+    logger?.log(
+      "info",
+      `Overwrite mode: cleared live table ${entityTableName}`,
+    );
+  }
 
   const useBulkPath =
     isCdcEnabled && Boolean(cdcAdapter?.loadStagingFromParquet);
@@ -1390,7 +1422,16 @@ export async function performPrepareStaging(
   const cdcLayout = buildCdcEntityLayout({
     entity,
     tableName: entityTableName,
+    writeMode: options.writeMode,
   });
+
+  if (options.writeMode === "overwrite" && cdcAdapter.truncateLiveTable) {
+    await cdcAdapter.truncateLiveTable(cdcLayout);
+    orchestratorLogger.info("Overwrite mode: cleared live table", {
+      entity,
+      flowId,
+    });
+  }
 
   orchestratorLogger.info(
     "performPrepareStaging: dropping staging table for fresh load",
@@ -1434,6 +1475,7 @@ export async function performStagingMerge(
     entity,
     tableName: entityTableName,
     keyColumns: entitySchema?.keyColumns,
+    writeMode: options.writeMode,
     partitioning: options.entityPartitioning,
     clustering: options.entityClustering,
   });

@@ -895,7 +895,10 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = await resolveEnvironment(project, environment);
+          const environmentName = await resolveEnvironment(
+            project,
+            environment,
+          );
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
@@ -1323,7 +1326,10 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = await resolveEnvironment(project, environment);
+          const environmentName = await resolveEnvironment(
+            project,
+            environment,
+          );
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({

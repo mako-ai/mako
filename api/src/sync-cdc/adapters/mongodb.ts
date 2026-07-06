@@ -17,6 +17,25 @@ import type { Collection, Db, MongoClient } from "mongodb";
 
 const log = loggers.sync("cdc.adapter.mongodb");
 
+/**
+ * MongoDB's equivalent of the engine-agnostic layout hints is secondary
+ * indexes: one on the partition field (time-range scans) and one per cluster
+ * field. Key columns already get the unique key index. Exported for the
+ * destination layout contract tests.
+ */
+export function buildMongoLayoutIndexSpecs(
+  layout: Pick<CdcEntityLayout, "partitioning" | "clustering" | "keyColumns">,
+): Array<{ field: string; name: string }> {
+  const fields = new Set<string>();
+  if (layout.partitioning?.field) fields.add(layout.partitioning.field);
+  for (const field of layout.clustering?.fields || []) fields.add(field);
+  for (const key of layout.keyColumns || []) fields.delete(key);
+  return [...fields].map(field => ({
+    field,
+    name: `mako_layout_${field}`.slice(0, 63),
+  }));
+}
+
 interface MongoDbAdapterConfig {
   destinationDatabaseId: string;
   destinationDatabaseName?: string;
@@ -100,6 +119,37 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     // MongoDB collections are created on first write
   }
 
+  /** Full Refresh | Overwrite: clear the live collection. */
+  async truncateLiveTable(layout: CdcEntityLayout): Promise<void> {
+    const collection = await this.getCollection(layout.tableName);
+    await collection.deleteMany({});
+  }
+
+  /** Map layout hints (partition/cluster fields) to secondary indexes. */
+  private async ensureLayoutIndexes(
+    collection: Collection,
+    layout: CdcEntityLayout,
+  ): Promise<void> {
+    const specs = buildMongoLayoutIndexSpecs(layout);
+    for (const spec of specs) {
+      const cacheKey = `${collection.collectionName}:layout:${spec.field}`;
+      if (this._indexEnsured.has(cacheKey)) continue;
+      try {
+        await collection.createIndex({ [spec.field]: 1 }, { name: spec.name });
+        this._indexEnsured.add(cacheKey);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("already exists")) {
+          log.warn("Failed to create layout index", {
+            collection: collection.collectionName,
+            field: spec.field,
+            error: msg,
+          });
+        }
+      }
+    }
+  }
+
   async applyEvents(params: {
     events: CdcStoredEvent[];
     layout: CdcEntityLayout;
@@ -108,7 +158,10 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     if (params.events.length === 0) return { applied: 0 };
 
     const collection = await this.getCollection(params.layout.tableName);
-    await this.ensureKeyIndex(collection, params.layout.keyColumns);
+    if (params.layout.writeMode !== "append") {
+      await this.ensureKeyIndex(collection, params.layout.keyColumns);
+    }
+    await this.ensureLayoutIndexes(collection, params.layout);
 
     const latest = selectLatestChangePerRecord(params.events);
     const fallbackDataSourceId = params.flow.dataSourceId
@@ -117,7 +170,9 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     const upserts = latest.filter(e => e.operation === "upsert");
     const deletes = latest.filter(e => e.operation === "delete");
     const deleteMode =
-      params.flow.deleteMode || params.layout.deleteMode || "hard";
+      params.layout.writeMode === "append"
+        ? "soft" // append mode never mutates prior rows; deletions land as tombstone rows
+        : params.flow.deleteMode || params.layout.deleteMode || "hard";
 
     const ops: any[] = [];
 
@@ -138,14 +193,18 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
         deleted_at: null,
       });
 
-      const filter = this.buildKeyFilter(params.layout.keyColumns, row);
-      ops.push({
-        replaceOne: {
-          filter,
-          replacement: row,
-          upsert: true,
-        },
-      });
+      if (params.layout.writeMode === "append") {
+        ops.push({ insertOne: { document: row } });
+      } else {
+        const filter = this.buildKeyFilter(params.layout.keyColumns, row);
+        ops.push({
+          replaceOne: {
+            filter,
+            replacement: row,
+            upsert: true,
+          },
+        });
+      }
     }
 
     if (deleteMode === "soft") {
@@ -167,14 +226,18 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
           deleted_at: deletedAt,
         });
 
-        const filter = this.buildKeyFilter(params.layout.keyColumns, row);
-        ops.push({
-          replaceOne: {
-            filter,
-            replacement: row,
-            upsert: true,
-          },
-        });
+        if (params.layout.writeMode === "append") {
+          ops.push({ insertOne: { document: row } });
+        } else {
+          const filter = this.buildKeyFilter(params.layout.keyColumns, row);
+          ops.push({
+            replaceOne: {
+              filter,
+              replacement: row,
+              upsert: true,
+            },
+          });
+        }
       }
     } else if (deletes.length > 0) {
       for (const event of deletes) {
@@ -212,7 +275,10 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
     if (params.records.length === 0) return { written: 0 };
 
     const collection = await this.getCollection(params.layout.tableName);
-    await this.ensureKeyIndex(collection, params.layout.keyColumns);
+    if (params.layout.writeMode !== "append") {
+      await this.ensureKeyIndex(collection, params.layout.keyColumns);
+    }
+    await this.ensureLayoutIndexes(collection, params.layout);
 
     const fallbackDataSourceId = params.flow.dataSourceId
       ? String(params.flow.dataSourceId)
@@ -230,6 +296,9 @@ export class MongoDbDestinationAdapter implements CdcDestinationAdapter {
             : undefined,
       });
 
+      if (params.layout.writeMode === "append") {
+        return { insertOne: { document: row } };
+      }
       const filter = this.buildKeyFilter(params.layout.keyColumns, row);
       return {
         replaceOne: {
