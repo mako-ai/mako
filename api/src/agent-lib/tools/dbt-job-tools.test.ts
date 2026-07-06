@@ -26,7 +26,11 @@ vi.mock("../../services/realtime.service", () => ({
   publishRealtimeEvent: vi.fn(),
 }));
 vi.mock("../../services/workspace.service", () => ({
-  workspaceService: { isAdmin: vi.fn(async () => true) },
+  workspaceService: {
+    isAdmin: vi.fn(async () => true),
+    // Default: multi-user workspace; solo tests override per-call.
+    getMembers: vi.fn(async () => [{ userId: "u1" }, { userId: "u2" }]),
+  },
 }));
 vi.mock("../../services/entity-version.service", () => ({
   createVersion: vi.fn(async () => ({})),
@@ -61,13 +65,19 @@ vi.mock("../../services/scheduled-query-schedule.service", () => ({
 
 // Imported after the mocks are registered.
 import { createDbtServerTools } from "./dbt-tools";
-import { DbtJob, DbtProject } from "../../database/workspace-schema";
+import {
+  DbtEnvPreference,
+  DbtJob,
+  DbtProject,
+} from "../../database/workspace-schema";
+import { workspaceService } from "../../services/workspace.service";
 import {
   commitAndPush,
   commitToNewBranch,
   getGitStatus,
 } from "../../dbt/dbt-github-git.service";
 import { generateDbtCommitMessage } from "../../dbt/dbt-commit-message.service";
+import { triggerDbtRun } from "../../dbt/dbt-run.service";
 
 let mongo: MongoMemoryServer;
 const WS = new Types.ObjectId().toString();
@@ -190,9 +200,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // vi.clearAllMocks wipes mock implementations' return queues but keeps the
+  // factory defaults; re-assert the multi-user default explicitly.
+  vi.mocked(workspaceService.getMembers).mockResolvedValue([
+    { userId: "u1" },
+    { userId: "u2" },
+  ] as never);
   await Promise.all([
     mongoose.connection.collection("dbt_projects").deleteMany({}),
     mongoose.connection.collection("dbt_jobs").deleteMany({}),
+    mongoose.connection.collection("dbt_env_preferences").deleteMany({}),
   ]);
 });
 
@@ -262,6 +279,95 @@ describe("dbt_delete_job", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not found|access denied/i);
     expect(await DbtJob.countDocuments({ _id: job._id })).toBe(1);
+  });
+});
+
+describe("dbt_run_model — per-user environment resolution", () => {
+  function runModel(input: {
+    projectId: string;
+    model: string;
+    environment?: string;
+  }): Promise<ToolResult & { environment?: string }> {
+    return (
+      tools.dbt_run_model.execute as (
+        i: typeof input,
+      ) => Promise<ToolResult & { environment?: string }>
+    )(input);
+  }
+
+  it("multi-user workspace: provisions the caller's personal environment on the first build", async () => {
+    const projectId = await seedProject();
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(true);
+
+    // Personal env exists now (slug from the mocked display name "Tester").
+    const project = await DbtProject.findById(projectId).lean();
+    const personal = project?.environments.find(e => e.ownerUserId === "u1");
+    expect(personal?.name).toBe("tester");
+    expect(personal?.targetSchema).toBe("dbt_tester");
+
+    // The queued run targets it, not the shared default.
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "tester" }),
+    );
+
+    // Idempotent: a second build reuses it without adding another env.
+    await runModel({ projectId, model: "stg_orders" });
+    const after = await DbtProject.findById(projectId).lean();
+    expect(
+      after?.environments.filter(e => e.ownerUserId === "u1"),
+    ).toHaveLength(1);
+  });
+
+  it("single-user workspace: dev IS the personal target — no auto-provisioning", async () => {
+    vi.mocked(workspaceService.getMembers).mockResolvedValue([
+      { userId: "u1" },
+    ] as never);
+    const projectId = await seedProject();
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev" }),
+    );
+    const project = await DbtProject.findById(projectId).lean();
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
+  });
+
+  it("a saved per-user dev environment wins and suppresses auto-provisioning", async () => {
+    const projectId = await seedProject();
+    await DbtEnvPreference.create({
+      workspaceId: new Types.ObjectId(WS),
+      projectId: new Types.ObjectId(projectId),
+      userId: "u1",
+      environment: "dev",
+    });
+
+    const result = await runModel({ projectId, model: "stg_orders" });
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev" }),
+    );
+    // Even in a multi-user workspace the explicit choice stops provisioning.
+    const project = await DbtProject.findById(projectId).lean();
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
+  });
+
+  it("an explicit environment always wins (no auto-provisioning)", async () => {
+    const projectId = await seedProject();
+
+    const result = await runModel({
+      projectId,
+      model: "stg_orders",
+      environment: "dev",
+    });
+    expect(result.success).toBe(true);
+    expect(vi.mocked(triggerDbtRun)).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: "dev" }),
+    );
+    const project = await DbtProject.findById(projectId).lean();
+    expect(project?.environments.some(e => e.ownerUserId === "u1")).toBe(false);
   });
 });
 

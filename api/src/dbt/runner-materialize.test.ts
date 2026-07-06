@@ -10,7 +10,10 @@ import { access, mkdir, mkdtemp, readFile, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
-import { materializeDbtProject, pruneStaleRunArtifacts } from "./runner.service";
+import {
+  materializeDbtProject,
+  pruneStaleRunArtifacts,
+} from "./runner.service";
 import type { RenderedProfile } from "./adapter-map";
 
 const profile: RenderedProfile = {

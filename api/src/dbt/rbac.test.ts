@@ -70,7 +70,6 @@ describe("resolveDbtAccess", () => {
       { method: "DELETE", path: `${WS}/projects/abc/files/models%2Ffoo.sql` },
       { method: "POST", path: `${WS}/projects/abc/files/rename` },
       { method: "POST", path: `${WS}/projects/abc/compile` },
-      { method: "POST", path: `${WS}/projects/abc/run-select` },
       { method: "POST", path: `${WS}/projects/abc/command` },
       { method: "POST", path: `${WS}/projects/abc/jobs/j1/trigger` },
       { method: "POST", path: `${WS}/projects/abc/runs/r1/cancel` },

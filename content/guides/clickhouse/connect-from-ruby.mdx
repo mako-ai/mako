@@ -1,0 +1,155 @@
+---
+title: "How to Connect to ClickHouse from Ruby"
+description: "Connect to ClickHouse from Ruby over the HTTP interface with click_house, the clickhouse gem, or clickhouse-activerecord for Rails. Covers the 8123-vs-9000 port trap, parameterized queries, batch inserts, and async_insert durability."
+database: "clickhouse"
+category: "how-to"
+tags: ["clickhouse", "ruby", "rails", "click_house", "clickhouse-activerecord", "connection"]
+date: "2026-07-03"
+---
+
+Ruby talks to ClickHouse over the HTTP interface, not a native binary protocol. There is no libpq-style C driver here, so every Ruby option is a wrapper around HTTP requests to the ClickHouse server. That single fact explains the most common connection failure, the way parameters are passed, and why inserts need batching. This guide covers the three libraries worth knowing, the port trap that catches almost everyone, and the settings that matter in production.
+
+## The options
+
+| Library | Layer | When to use it | Version (as of July 2026) |
+|---|---|---|---|
+| `click_house` | HTTP client with type casting | Scripts and services wanting typed results and a clean query API | 2.1.2 |
+| `clickhouse` | HTTP client (bundles a CLI and web UI) | Direct HTTP querying, plus optional tooling | 0.1.10 |
+| `clickhouse-activerecord` | ActiveRecord adapter | Rails apps (Rails >= 7.1, ClickHouse 22.0 LTS and later) | 1.6.7 |
+
+`click_house` (from `github.com/shlima/click_house`) is a focused HTTP client that maps ClickHouse types to Ruby types for you, which is the part you would otherwise write by hand. `clickhouse-activerecord` (from PNixx) lets Rails models, migrations, and queries target ClickHouse, at the cost of the usual ORM abstraction over an analytical database that does not behave like PostgreSQL. GitLab also maintains a `ClickHouse::Client` gem used internally, if you prefer their HTTP wrapper.
+
+Whichever you pick, you are sending SQL over HTTP. The driver-level concerns below apply to all of them.
+
+## Installing the driver
+
+```bash
+gem install click_house
+```
+
+Or in a Gemfile:
+
+```ruby
+gem "click_house", "~> 2.1"
+```
+
+There is no native extension to compile and no ClickHouse client library to install, because everything goes over HTTP. That makes ClickHouse one of the easier databases to reach from Ruby.
+
+## The port trap (read this first)
+
+This is the single most common ClickHouse connection mistake, in every language, and Ruby is no exception.
+
+ClickHouse listens on two different ports for two different protocols:
+
+- **8123** is the HTTP interface. This is what Ruby drivers use.
+- **9000** is the native TCP protocol, used by `clickhouse-client` (the command-line tool) and native drivers in other languages.
+
+If you point a Ruby HTTP client at 9000, the connection either hangs or returns an unreadable error, because you are speaking HTTP to a socket expecting the native binary protocol. Always use **8123** for plaintext HTTP and **8443** for HTTPS (which is what ClickHouse Cloud requires). If a connection "just won't work" and the credentials are right, check the port before anything else.
+
+## Connecting
+
+```ruby
+require "click_house"
+
+client = ClickHouse::Connection.new(
+  ClickHouse::Config.new.tap do |c|
+    c.scheme   = "http"
+    c.host     = "localhost"
+    c.port     = 8123          # HTTP interface, not 9000
+    c.database = "analytics"
+    c.username = "default"
+    c.password = ENV.fetch("CLICKHOUSE_PASSWORD")
+  end
+)
+
+rows = client.select_all("SELECT version()")
+puts rows.to_a
+```
+
+The client does not open a persistent socket the way a PostgreSQL driver does. Each query is an HTTP request, so there is no long-lived connection to keep alive or pool in the traditional sense. Reuse the client object across requests to benefit from keep-alive on the underlying HTTP connection.
+
+For ClickHouse Cloud or any TLS endpoint:
+
+```ruby
+c.scheme = "https"
+c.port   = 8443
+```
+
+## Parameterized queries
+
+ClickHouse supports server-side query parameters using its own `{name:Type}` syntax, where the type is part of the placeholder. This is not the `?` or `$1` style you see in other databases, and getting the type wrong produces a parse error rather than a silent coercion.
+
+```ruby
+rows = client.select_all(
+  "SELECT event, count() AS c
+   FROM events
+   WHERE user_id = {uid:UInt64}
+     AND event_date >= {since:Date}
+   GROUP BY event",
+  params: { uid: 42, since: "2026-01-01" }
+)
+```
+
+Always parameterize values that come from user input. String interpolation into ClickHouse SQL is an injection risk just as it is anywhere else, and it also loses the type checking that the `{name:Type}` form gives you.
+
+## Inserting data: batch, do not drip
+
+ClickHouse is built around large, infrequent inserts. Its MergeTree storage engine creates a new data "part" on disk for every insert statement, and merges parts in the background. If you insert one row at a time in a loop, you generate thousands of tiny parts and quickly hit the `TOO_MANY_PARTS` error, which blocks further inserts until merges catch up.
+
+Insert in batches instead:
+
+```ruby
+rows = [
+  { user_id: 1, event: "click", event_date: "2026-07-03" },
+  { user_id: 2, event: "view",  event_date: "2026-07-03" },
+  # ... thousands more
+]
+
+client.insert("events", columns: %i[user_id event event_date], values: rows.map(&:values))
+```
+
+Aim for batches of thousands to tens of thousands of rows per insert, not single rows. If your data arrives one row at a time, buffer it in the application and flush periodically.
+
+### async_insert for high-frequency writes
+
+If batching in the application is impractical, ClickHouse can buffer small inserts server-side with `async_insert`:
+
+```ruby
+client.execute(
+  "INSERT INTO events (user_id, event, event_date) VALUES",
+  body: payload,
+  settings: { async_insert: 1, wait_for_async_insert: 1 }
+)
+```
+
+`async_insert: 1` lets the server accumulate rows from many small inserts into larger parts. The `wait_for_async_insert` setting is the durability tradeoff: set to `1` and the call waits until the buffer is flushed to disk (safer, slower); set to `0` and the call returns as soon as the row is buffered in memory (faster, but a crash before flush loses the row). Choose based on whether you can tolerate losing recent rows.
+
+## Rails with clickhouse-activerecord
+
+For Rails, `clickhouse-activerecord` adds a `clickhouse` adapter. Configure it in `config/database.yml`:
+
+```yaml
+production:
+  adapter: clickhouse
+  host: <%= ENV["CLICKHOUSE_HOST"] %>
+  port: 8123
+  database: analytics
+  username: default
+  password: <%= ENV["CLICKHOUSE_PASSWORD"] %>
+```
+
+Treat this adapter with realistic expectations. ClickHouse is a columnar analytical database with no row-level updates or deletes in the transactional sense, no foreign keys, and eventual consistency on merges. ActiveRecord conventions that assume an OLTP database (per-row `save`, `update`, associations that fan out into many small queries) map poorly onto it. The adapter works well for defining tables via migrations and running analytical reads through ActiveRecord's query interface. It is not a drop-in replacement for a PostgreSQL model layer, and you should not try to use it as one.
+
+## Common errors
+
+| Error / symptom | Likely cause |
+|---|---|
+| Connection hangs or "unexpected response" | Pointing an HTTP client at port 9000 (native) instead of 8123 |
+| `TOO_MANY_PARTS` | Inserting row-by-row; batch inserts or enable `async_insert` |
+| `Code: 62. Syntax error` on a parameter | Wrong type in `{name:Type}`, or using `?` / `$1` placeholder style |
+| TLS handshake failure against Cloud | Using `http`/8123 instead of `https`/8443 |
+| Slow first query after idle (Cloud) | Idle instance waking up; the request that triggers the wake is slow, retries are fast |
+
+For getting data into ClickHouse in the first place, see our guides on [importing CSV to ClickHouse](/guides/import-csv-to-clickhouse) and [importing JSON to ClickHouse](/guides/import-json-to-clickhouse).
+
+Mako connects to ClickHouse, PostgreSQL, MySQL, and more with AI-powered autocomplete. Try it free at mako.ai.

@@ -24,6 +24,7 @@ import {
   type AgentToolName,
 } from "../../../agent-runtime/client-tool-manifest";
 import {
+  isApprovalPendingState,
   isHumanInTheLoopToolPartType,
   reportStreamInterruption,
   toolNameFromPartType,
@@ -690,6 +691,8 @@ export function useClientToolDispatch({
       if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
       if (isHumanInTheLoopToolPartType(pt)) return false;
       const s = (p as Record<string, unknown>).state as string;
+      // MCP approval flow: the turn intentionally pauses here.
+      if (isApprovalPendingState(s)) return false;
       return s !== "output-available" && s !== "output-error" && s !== "error";
     });
     if (pendingToolParts.length === 0) return;
@@ -776,7 +779,8 @@ export function useClientToolDispatch({
             if (
               s === "output-available" ||
               s === "output-error" ||
-              s === "error"
+              s === "error" ||
+              isApprovalPendingState(s)
             ) {
               return p;
             }

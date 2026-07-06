@@ -62,6 +62,18 @@ export interface DbtProjectItem {
   dbtVersion: string;
   environments: DbtEnvironment[];
   defaultEnvironment: string;
+  /**
+   * Explicit production (defer target) environment. Unset → convention:
+   * the env named "prod" when one exists, else the project default.
+   */
+  prodEnvironment?: string;
+  /**
+   * The CALLER's saved development environment for this project (per-user
+   * setting, persisted by the env pickers). Unset → auto: their personal
+   * environment when provisioned, else the project default. Single player:
+   * the shared dev default IS the personal target; teams: each user's own.
+   */
+  myDevEnvironment?: string;
   updatedAt?: string;
   /** Set when the project is imported/synced from a Git repository. */
   repo?: DbtRepoBinding;
@@ -240,6 +252,14 @@ export interface DbtRunItem {
   stepResults?: DbtStepResult[];
   error?: string;
   createdAt: string;
+  /**
+   * Git branch the run's source tree came from (repo-bound projects).
+   * Combined with `workingTreeUserId` it tells WHAT was built: a user's
+   * working tree (checkout + uncommitted drafts) vs the committed branch.
+   */
+  sourceBranch?: string;
+  /** Set when the run built this user's working tree (drafts included). */
+  workingTreeUserId?: string;
   /** PR context for CI runs (trigger === "ci"). */
   ci?: {
     prNumber: number;
@@ -271,13 +291,6 @@ export interface DbtCompileResult {
   ok: boolean;
   exitCode: number;
   compiledSql?: string;
-  logs: DbtRunLogLine[];
-}
-
-export interface DbtRunModelResult {
-  ok: boolean;
-  exitCode: number;
-  stepResults: DbtStepResult[];
   logs: DbtRunLogLine[];
 }
 
@@ -362,6 +375,8 @@ interface DbtActions {
       name?: string;
       environments?: DbtEnvironment[];
       defaultEnvironment?: string;
+      /** Production/defer env override; "" clears back to the convention. */
+      prodEnvironment?: string;
       dbtVersion?: string;
       ci?: DbtCiConfig;
       protectedBranches?: string[];
@@ -379,6 +394,15 @@ interface DbtActions {
     workspaceId: string,
     projectId: string,
   ) => Promise<DbtEnvironment | null>;
+  /**
+   * Persist the caller's per-user dev environment for a project ("" clears
+   * back to Auto). Updates `myDevEnvironment` on the cached project.
+   */
+  setMyEnvironment: (
+    workspaceId: string,
+    projectId: string,
+    environment: string,
+  ) => Promise<boolean>;
   fetchGitHubStatus: (workspaceId: string) => Promise<GitHubStatus | null>;
   fetchGitHubRepos: (
     workspaceId: string,
@@ -593,13 +617,6 @@ interface DbtActions {
     environment?: string,
     defer?: boolean,
   ) => Promise<DbtCompileResult | null>;
-  runModel: (
-    workspaceId: string,
-    projectId: string,
-    select: string,
-    environment?: string,
-    defer?: boolean,
-  ) => Promise<DbtRunModelResult | null>;
   runCommand: (
     workspaceId: string,
     projectId: string,
@@ -741,7 +758,14 @@ export const useDbtStore = create<DbtStore>()(
         const project = response.project;
         set(state => {
           const idx = state.projects.findIndex(p => p._id === projectId);
-          if (idx >= 0) state.projects[idx] = project;
+          if (idx >= 0) {
+            // PATCH responses don't carry the caller's per-user dev env
+            // (list enrichment does) — keep the cached value.
+            state.projects[idx] = {
+              ...project,
+              myDevEnvironment: state.projects[idx].myDevEnvironment,
+            };
+          }
         });
         return project;
       } catch (error) {
@@ -773,6 +797,33 @@ export const useDbtStore = create<DbtStore>()(
           );
         });
         return null;
+      }
+    },
+
+    setMyEnvironment: async (workspaceId, projectId, environment) => {
+      try {
+        const response = await apiClient.put<{
+          success: boolean;
+          myDevEnvironment?: string;
+        }>(
+          `/workspaces/${workspaceId}/dbt/projects/${projectId}/my-environment`,
+          { environment },
+        );
+        set(state => {
+          const idx = state.projects.findIndex(p => p._id === projectId);
+          if (idx >= 0) {
+            state.projects[idx].myDevEnvironment = response.myDevEnvironment;
+          }
+        });
+        return true;
+      } catch (error) {
+        set(state => {
+          state.error.projects = errMessage(
+            error,
+            "Failed to save your dev environment",
+          );
+        });
+        return false;
       }
     },
 
@@ -1756,33 +1807,6 @@ export const useDbtStore = create<DbtStore>()(
               ts: new Date().toISOString(),
               level: "error",
               line: errMessage(error, "Compile failed"),
-            },
-          ],
-        };
-      }
-    },
-
-    runModel: async (workspaceId, projectId, select, environment, defer) => {
-      try {
-        const response = await apiClient.post<{
-          success: boolean;
-          run: DbtRunModelResult;
-        }>(`/workspaces/${workspaceId}/dbt/projects/${projectId}/run-select`, {
-          select,
-          ...(environment ? { environment } : {}),
-          ...(defer ? { defer } : {}),
-        });
-        return response.run ?? null;
-      } catch (error) {
-        return {
-          ok: false,
-          exitCode: 1,
-          stepResults: [],
-          logs: [
-            {
-              ts: new Date().toISOString(),
-              level: "error",
-              line: errMessage(error, "Run failed"),
             },
           ],
         };

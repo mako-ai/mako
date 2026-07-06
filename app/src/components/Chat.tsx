@@ -31,8 +31,10 @@ import { useChat } from "@ai-sdk/react";
 import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
   DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
   lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
+import { useMcpStore } from "../store/mcpStore";
 import { api } from "../api/client";
 import { useWorkspace } from "../contexts/workspace-context";
 import { useConsoleStore } from "../store/consoleStore";
@@ -346,7 +348,12 @@ const Chat: React.FC<ChatProps> = ({
     if (manualStopRequestedRef.current) {
       return false;
     }
-    return lastAssistantMessageIsCompleteWithToolCalls(options);
+    // Approval responses (MCP allow/deny) resume the turn just like settled
+    // client tool calls do.
+    return (
+      lastAssistantMessageIsCompleteWithToolCalls(options) ||
+      lastAssistantMessageIsCompleteWithApprovalResponses(options)
+    );
   }, []);
 
   // The predicate handed to useChat. Split from `autoSendWhenComplete` (also
@@ -453,6 +460,7 @@ const Chat: React.FC<ChatProps> = ({
     stop,
     setMessages,
     addToolOutput,
+    addToolApprovalResponse,
     resumeStream,
   } = useChat({
     id: chatId, // Reset hook state when chatId changes (fixes stale messages bug)
@@ -888,6 +896,26 @@ const Chat: React.FC<ChatProps> = ({
     setSelectedTool(null);
   };
 
+  // Resolve an MCP tool approval request. Stable identity: reads the live
+  // useChat function via ref so ChatMessageRow memoization holds.
+  const addToolApprovalResponseRef = useRef(addToolApprovalResponse);
+  addToolApprovalResponseRef.current = addToolApprovalResponse;
+  const handleMcpApprovalResponse = useCallback(
+    ({ approvalId, approved }: { approvalId: string; approved: boolean }) => {
+      if (!approvalId) return;
+      addToolApprovalResponseRef.current({ id: approvalId, approved });
+    },
+    [],
+  );
+
+  // Load MCP tool metadata (server names, risk tiers, grantability) so the
+  // approval cards can label tools and offer "Always allow" correctly.
+  useEffect(() => {
+    if (currentWorkspace) {
+      void useMcpStore.getState().fetchToolInfo(currentWorkspace.id);
+    }
+  }, [currentWorkspace]);
+
   // Prompt queue: queue-while-busy, drain-on-settle, in-composer editing,
   // and force-send. Owns handleChatSubmit.
   const {
@@ -1239,6 +1267,7 @@ const Chat: React.FC<ChatProps> = ({
                 isStreaming={status === "streaming"}
                 onToolClick={handleToolClick}
                 onConsoleTitleClick={handleConsoleTitleClick}
+                onMcpApprovalResponse={handleMcpApprovalResponse}
                 connectionIconById={connectionIconById}
                 paletteMode={paletteMode}
               />

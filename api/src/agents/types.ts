@@ -167,6 +167,16 @@ export interface AgentContext {
   /** Request-scoped execution registry for cancellable server tools */
   toolExecutionContext?: AgentToolExecutionContext;
   /**
+   * MCP tools resolved for this request (workspace + user scoped servers),
+   * built by `buildMcpToolsForChat` in agent.routes.ts. Keys are prefixed
+   * (`mcp_<server>_<tool>`); write-tier tools carry `needsApproval`.
+   */
+  mcpTools?: ToolSet;
+  /** Prefixed names of read-tier MCP tools (allowed under the plan gate). */
+  mcpReadOnlyToolNames?: string[];
+  /** All prefixed MCP tool names (added to the mode-runtime allowlist). */
+  mcpToolNames?: string[];
+  /**
    * Actor may attach cron schedules to saved consoles (workspace owner/admin),
    * or API-key requests act as workspace-scoped automation (same as HTTP schedule routes).
    */

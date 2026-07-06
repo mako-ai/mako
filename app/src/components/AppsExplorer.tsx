@@ -17,7 +17,6 @@ import {
 import {
   Plus as AddIcon,
   RefreshCw as RefreshIcon,
-  AppWindow as AppIcon,
   FileCode as CodeFileIcon,
   FileText as TextFileIcon,
   File as PlainFileIcon,
@@ -37,7 +36,10 @@ import {
 } from "lucide-react";
 import { useAuth } from "../contexts/auth-context";
 import { useWorkspace } from "../contexts/workspace-context";
+import { TAB_KIND_ICONS } from "../lib/entity-icons";
 import { useConsoleStore } from "../store/consoleStore";
+
+const AppIcon = TAB_KIND_ICONS.app;
 import { useExplorerStore } from "../store/explorerStore";
 import {
   useExplorerRevealStore,

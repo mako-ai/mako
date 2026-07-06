@@ -52,7 +52,6 @@ import {
   visibleDbtEnvironments,
   type DbtCompileResult,
   type DbtCommandRunResult,
-  type DbtRunModelResult,
   type DbtRunLogLine,
 } from "../store/dbtStore";
 import {
@@ -73,6 +72,7 @@ import {
   modelNamesFromPaths,
   type Problem,
 } from "../lib/dbt-editor-logic";
+import { resolveDevEnvName, resolveProdLikeEnvName } from "../lib/dbt-env";
 import { focusDbtFileTab } from "../dbt-runtime/shell";
 import EntityBreadcrumbs from "./EntityBreadcrumbs";
 import StreamingMarkdown from "./StreamingMarkdown";
@@ -128,7 +128,7 @@ function LogLines({ logs }: { logs: DbtRunLogLine[] }) {
 function StepResultsTable({
   steps,
 }: {
-  steps: DbtRunModelResult["stepResults"];
+  steps: DbtCommandRunResult["stepResults"];
 }) {
   return (
     <Box
@@ -290,10 +290,14 @@ export default function DbtFileEditor({
   const persistFile = useDbtStore(s => s.persistFile);
   const compileModel = useDbtStore(s => s.compileModel);
   const runCommand = useDbtStore(s => s.runCommand);
+  const setMyEnvironment = useDbtStore(s => s.setMyEnvironment);
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [environment, setEnvironment] = useState<string>("");
   const [defer, setDefer] = useState(false);
+  // Run menu builds/runs with --full-refresh (rebuild incremental models
+  // from scratch). Sticky per editor instance, like the Defer checkbox.
+  const [fullRefresh, setFullRefresh] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
   const [panelTab, setPanelTab] = useState<PanelTab>("compiled");
   const [busy, setBusy] = useState<
@@ -312,6 +316,11 @@ export default function DbtFileEditor({
   const [markdownPreview, setMarkdownPreview] = useState(true);
 
   const modelName = useMemo(() => modelNameForPath(path), [path]);
+  // Defer target for display: the project's production-like environment.
+  const prodEnvName = useMemo(
+    () => (project ? (resolveProdLikeEnvName(project) ?? "prod") : "prod"),
+    [project],
+  );
   const isMarkdown = useMemo(() => isMarkdownDbtPath(path), [path]);
   const showMarkdownPreview = isMarkdown && markdownPreview;
 
@@ -346,16 +355,26 @@ export default function DbtFileEditor({
     }
   }, [workspaceId, projectId, path, file?.loaded, readFile]);
 
-  // Default to the user's PERSONAL environment when provisioned (safe fast
-  // iteration in their own schema), else the project default.
+  // Default to the user's saved dev environment (per-user setting), else
+  // their personal environment, else the project default. Single player:
+  // the shared dev default IS the personal target.
   useEffect(() => {
     if (project && !environment) {
-      const personal = project.environments?.find(
-        env => env.ownerUserId && env.ownerUserId === user?.id,
+      setEnvironment(
+        resolveDevEnvName(project, user?.id) ?? project.defaultEnvironment,
       );
-      setEnvironment(personal?.name ?? project.defaultEnvironment);
     }
   }, [project, environment, user?.id]);
+
+  // Picking an environment is a per-user setting: persist it so the console,
+  // the agent's builds, and other windows follow the same choice.
+  const handleEnvironmentChange = useCallback(
+    (name: string) => {
+      setEnvironment(name);
+      if (workspaceId) void setMyEnvironment(workspaceId, projectId, name);
+    },
+    [workspaceId, projectId, setMyEnvironment],
+  );
 
   const handleChange = useCallback(
     (value: string | undefined) => {
@@ -476,7 +495,7 @@ export default function DbtFileEditor({
   const runNodeSelection = useCallback(
     async (verb: DbtRunVerb, scope: DbtSelectScope) => {
       if (!workspaceId || !modelName) return;
-      const cmd = buildDbtNodeCommand(verb, modelName, scope);
+      const cmd = buildDbtNodeCommand(verb, modelName, scope, { fullRefresh });
       if (
         environment === "prod" &&
         !window.confirm(`Run "dbt ${cmd}" against the prod environment?`)
@@ -506,6 +525,7 @@ export default function DbtFileEditor({
       modelName,
       environment,
       defer,
+      fullRefresh,
       runCommand,
       saveNow,
     ],
@@ -863,8 +883,31 @@ export default function DbtFileEditor({
         </Tooltip>
       )}
 
-      {/* Defer / environment */}
-      <Tooltip title="Resolve unselected refs against the last prod build (dbt --defer)">
+      {/* Full refresh / defer / environment */}
+      <Tooltip title="Rebuild incremental models from scratch (dbt --full-refresh) — applies to the Build/Run menu">
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={fullRefresh}
+              onChange={e => setFullRefresh(e.target.checked)}
+              sx={{ p: 0.25 }}
+            />
+          }
+          label={
+            <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
+              Full refresh
+            </Typography>
+          }
+          sx={{ mr: 0, ml: 0.5 }}
+        />
+      </Tooltip>
+      <Tooltip
+        title={
+          `Resolve unselected refs against the last "${prodEnvName}" build ` +
+          "(dbt --defer). Change the defer target in Project settings."
+        }
+      >
         <FormControlLabel
           control={
             <Checkbox
@@ -876,7 +919,7 @@ export default function DbtFileEditor({
           }
           label={
             <Typography variant="caption" sx={{ whiteSpace: "nowrap" }}>
-              Defer to
+              Defer to {prodEnvName}
             </Typography>
           }
           sx={{ mr: 0, ml: 0.5 }}
@@ -887,7 +930,7 @@ export default function DbtFileEditor({
         variant="standard"
         disableUnderline
         value={environment}
-        onChange={e => setEnvironment(e.target.value)}
+        onChange={e => handleEnvironmentChange(e.target.value)}
         sx={{ fontSize: "0.72rem", textTransform: "uppercase" }}
       >
         {visibleDbtEnvironments(project?.environments, user?.id).map(env => (

@@ -117,6 +117,33 @@ function runSourceLabel(
   return commandSummary(run);
 }
 
+/**
+ * Git provenance chip: which source tree the run built. Working-tree runs
+ * (editor / chat ad-hoc) include the caller's uncommitted drafts; everything
+ * else builds a committed branch (jobs, deploys, CI).
+ */
+function runTreeChip(
+  run: Pick<DbtRunItem, "sourceBranch" | "workingTreeUserId" | "ci">,
+): { label: string; tooltip: string; draft: boolean } | null {
+  if (!run.sourceBranch) return null;
+  if (run.workingTreeUserId) {
+    return {
+      label: `${run.sourceBranch} · draft`,
+      tooltip:
+        `Built a working tree: branch "${run.sourceBranch}" plus the ` +
+        "runner's uncommitted drafts at run time.",
+      draft: true,
+    };
+  }
+  return {
+    label: run.sourceBranch,
+    tooltip: `Built the committed "${run.sourceBranch}" branch${
+      run.ci ? ` (PR #${run.ci.prNumber} head)` : ""
+    }.`,
+    draft: false,
+  };
+}
+
 /** Sortable columns of the node-results table. */
 type NodeSortKey =
   | "name"
@@ -466,6 +493,27 @@ export default function DbtRunHistory({
                     />
                   </Tooltip>
                 )}
+                {(() => {
+                  const tree = runTreeChip(run);
+                  if (!tree) return null;
+                  return (
+                    <Tooltip title={tree.tooltip}>
+                      <Chip
+                        label={tree.label}
+                        size="small"
+                        variant="outlined"
+                        color={tree.draft ? "info" : "default"}
+                        sx={{
+                          height: 16,
+                          fontSize: "0.62rem",
+                          flexShrink: 0,
+                          fontFamily: "monospace",
+                          "& .MuiChip-label": { px: 0.5 },
+                        }}
+                      />
+                    </Tooltip>
+                  );
+                })()}
                 {run.durationMs !== undefined && (
                   <Typography variant="caption" color="text.secondary">
                     {formatDuration(run.durationMs)}
@@ -611,6 +659,21 @@ export default function DbtRunHistory({
               />
             </Tooltip>
           )}
+          {(() => {
+            const tree = selectedDetail ? runTreeChip(selectedDetail) : null;
+            if (!tree) return null;
+            return (
+              <Tooltip title={tree.tooltip}>
+                <Chip
+                  label={tree.label}
+                  size="small"
+                  variant="outlined"
+                  color={tree.draft ? "info" : "default"}
+                  sx={{ height: 20, fontFamily: "monospace" }}
+                />
+              </Tooltip>
+            );
+          })()}
           <Typography
             variant="caption"
             color="text.secondary"

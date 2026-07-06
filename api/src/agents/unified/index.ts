@@ -95,6 +95,8 @@ export function unifiedAgentFactory(context: AgentContext): AgentConfig {
       ...dashboardSearchTools,
       ...versionHistoryTools,
       ...webTools,
+      // MCP tools (Close CRM etc.) resolved per request in agent.routes.ts.
+      ...(context.mcpTools ?? {}),
     },
   };
 }

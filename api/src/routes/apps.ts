@@ -544,8 +544,10 @@ app.openapi(
       // Snapshot of bindings before the update, keyed by id — used after save
       // to detect which scheduled parquet bindings changed definition so we
       // can proactively rebuild them (parity with dashboard auto-refresh).
-      let priorBindingsById: Map<string, IMakoApp["dataBindings"][number]> | null =
-        null;
+      let priorBindingsById: Map<
+        string,
+        IMakoApp["dataBindings"][number]
+      > | null = null;
 
       if (typeof body.title === "string" && body.title.trim()) {
         doc.title = body.title.trim();
@@ -660,7 +662,9 @@ app.openapi(
       if (priorBindingsById) {
         for (const binding of doc.dataBindings) {
           if (binding.materialization !== "parquet") continue;
-          if (!isDashboardMaterializationEnabled(binding.materializationSchedule)) {
+          if (
+            !isDashboardMaterializationEnabled(binding.materializationSchedule)
+          ) {
             continue;
           }
           const prior = priorBindingsById.get(binding.id);
@@ -958,7 +962,10 @@ app.openapi(
         return c.json({ success: false, error: "Access denied" }, 403);
       }
 
-      const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 100);
+      const limit = Math.min(
+        parseInt(c.req.query("limit") ?? "50", 10) || 50,
+        100,
+      );
       const offset = parseInt(c.req.query("offset") ?? "0", 10) || 0;
       const result = await listVersions(new Types.ObjectId(id), "app", {
         limit,
@@ -1146,8 +1153,10 @@ app.openapi(
         snapshot: buildAppSnapshot(doc) as unknown as Record<string, unknown>,
         savedBy: userId ?? "system",
         savedByName: displayName,
-        comment:
-          (body.comment ?? `Restored from version ${versionNum}`).slice(0, 500),
+        comment: (body.comment ?? `Restored from version ${versionNum}`).slice(
+          0,
+          500,
+        ),
         restoredFrom: versionNum,
       });
 

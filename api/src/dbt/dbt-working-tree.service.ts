@@ -41,7 +41,7 @@ export function isRepoProject(project: IDbtProject): boolean {
  * blank projects (no git surface).
  */
 export async function getCheckoutBranch(
-  project: IDbtProject,
+  project: Pick<IDbtProject, "_id" | "repo">,
   userId: string | undefined,
 ): Promise<string | undefined> {
   if (!project.repo) return undefined;

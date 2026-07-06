@@ -79,7 +79,9 @@ export function deriveModeState(
     // reset (they accumulate across the conversation).
     if (message.role === "user") {
       const isPlanIterationFeedback =
-        planSubmitted && !planApproved && lastPlanDecision === "request_changes";
+        planSubmitted &&
+        !planApproved &&
+        lastPlanDecision === "request_changes";
       if (!isPlanIterationFeedback) {
         planSubmitted = false;
       }
@@ -155,16 +157,25 @@ function buildModeSystem(
 export function computeActiveTools(
   modeState: ModeState,
   allToolNames: Set<string>,
+  mcp?: { toolNames: string[]; readOnlyToolNames: string[] },
 ): string[] {
   let names = new Set<string>();
   for (const name of toolNamesForModes(modeState.enabledModes)) {
     if (allToolNames.has(name)) names.add(name);
   }
+  // MCP tools are cross-cutting (not tied to an expertise mode): always
+  // active. Their own write gating happens via `needsApproval`, not modes.
+  for (const name of mcp?.toolNames ?? []) {
+    if (allToolNames.has(name)) names.add(name);
+  }
 
   if (isPlanGateActive(modeState)) {
     const gated = new Set<string>();
+    const mcpReadOnly = new Set(mcp?.readOnlyToolNames ?? []);
     for (const name of names) {
-      if (READ_ONLY_TOOL_NAMES.has(name)) gated.add(name);
+      if (READ_ONLY_TOOL_NAMES.has(name) || mcpReadOnly.has(name)) {
+        gated.add(name);
+      }
     }
     for (const allowed of PLAN_GATE_ALLOWED_TOOL_NAMES) {
       if (allToolNames.has(allowed)) gated.add(allowed);
@@ -211,9 +222,13 @@ export function buildUnifiedModeRuntime(params: {
   } as ToolSet;
 
   const allToolNames = new Set<string>(Object.keys(tools));
+  const mcpAllowlist = {
+    toolNames: context.mcpToolNames ?? [],
+    readOnlyToolNames: context.mcpReadOnlyToolNames ?? [],
+  };
 
   const prepareStep = () => ({
-    activeTools: computeActiveTools(modeState, allToolNames),
+    activeTools: computeActiveTools(modeState, allToolNames, mcpAllowlist),
     system: buildModeSystem(context, modeState),
   });
 

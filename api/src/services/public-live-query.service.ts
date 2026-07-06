@@ -127,7 +127,8 @@ function findPublishedBinding(
   app: IMakoApp,
   bindingId: string,
 ): PublishedBinding | null {
-  const def = (app.published as AppSnapshot | undefined) ?? buildAppSnapshot(app);
+  const def =
+    (app.published as AppSnapshot | undefined) ?? buildAppSnapshot(app);
   const list = (def.dataBindings ?? []) as Array<Record<string, unknown>>;
   const binding = list.find(b => b.id === bindingId);
   return binding ? (binding as unknown as PublishedBinding) : null;
@@ -206,7 +207,10 @@ export async function executePublicAppLiveBinding(input: {
     };
   }
 
-  const queryHash = createHash("sha256").update(code).digest("hex").slice(0, 16);
+  const queryHash = createHash("sha256")
+    .update(code)
+    .digest("hex")
+    .slice(0, 16);
   const key = cacheKey(token, bindingId, queryHash);
 
   const cached = resultCache.get(key);
@@ -265,12 +269,16 @@ export async function executePublicAppLiveBinding(input: {
   }, timeoutMs);
   let result;
   try {
-    result = await databaseConnectionService.executeQuery(connection, executable, {
-      databaseId: binding.databaseId,
-      databaseName: binding.databaseName,
-      signal: controller.signal,
-      executionId,
-    });
+    result = await databaseConnectionService.executeQuery(
+      connection,
+      executable,
+      {
+        databaseId: binding.databaseId,
+        databaseName: binding.databaseName,
+        signal: controller.signal,
+        executionId,
+      },
+    );
   } finally {
     clearTimeout(timer);
   }

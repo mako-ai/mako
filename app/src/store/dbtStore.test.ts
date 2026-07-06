@@ -213,21 +213,6 @@ describe("ad-hoc runner passthrough", () => {
     );
   });
 
-  it("runModel posts the select and returns the run result", async () => {
-    api.post.mockResolvedValue({
-      success: true,
-      run: { ok: true, exitCode: 0, stepResults: [], logs: [] },
-    });
-    const res = await useDbtStore
-      .getState()
-      .runModel(WS, "p1", "customers+", "dev", true);
-    expect(res?.ok).toBe(true);
-    expect(api.post).toHaveBeenCalledWith(
-      `/workspaces/${WS}/dbt/projects/p1/run-select`,
-      { select: "customers+", environment: "dev", defer: true },
-    );
-  });
-
   it("fetchLineage returns the lineage payload", async () => {
     api.get.mockResolvedValue({
       success: true,

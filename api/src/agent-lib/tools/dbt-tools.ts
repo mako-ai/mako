@@ -48,7 +48,8 @@ import {
 import {
   ensurePersonalDbtEnvironment,
   findPersonalEnvironment,
-  resolveEnvironmentNameForUser,
+  getUserDevEnvPreference,
+  resolveDevEnvironmentForUser,
   resolveProdLikeEnvironmentName,
 } from "../../dbt/dbt-environments.service";
 import {
@@ -322,19 +323,22 @@ export const createDbtServerTools = (
     return null;
   };
 
-  type EnvProject = Parameters<typeof resolveEnvironmentNameForUser>[0] & {
+  type EnvProject = Parameters<typeof resolveDevEnvironmentForUser>[0] & {
     lastProdManifestKey?: string;
   };
 
   /**
-   * Environment an ad-hoc action targets when the agent passed none: the
-   * acting user's personal environment when provisioned, else the project
-   * default. Explicit names always win.
+   * Environment an ad-hoc action targets when the agent passed none:
+   * explicit > the acting user's saved per-user dev environment > their
+   * personal environment when provisioned > the project default. Single
+   * player: dev IS the personal target; teams: per-user envs/choices keep
+   * builds out of teammates' schemas.
    */
   const resolveEnvironment = (
     project: EnvProject,
     requested?: string,
-  ): string => resolveEnvironmentNameForUser(project, actingUserId, requested);
+  ): Promise<string> =>
+    resolveDevEnvironmentForUser(project, actingUserId, requested);
 
   /**
    * Default defer decision for ad-hoc builds/previews: defer to the last prod
@@ -785,10 +789,11 @@ export const createDbtServerTools = (
         "on a project (dbt Cloud-style development credentials): same " +
         "warehouse connection as prod, private schema `dbt_<user>`. Once it " +
         "exists, dbt_parse / dbt_compile_model / dbt_run_model / dbt_show " +
-        "default to it automatically, so iteration never writes to shared " +
-        "dev/prod schemas. Call this before building models when the user " +
-        "wants to iterate safely (or when read_dbt_project_tree shows no " +
-        "personal environment). Safe to call repeatedly.",
+        "default to it automatically. Intended for MULTI-USER workspaces " +
+        "(dbt_run_model auto-provisions it there on the first build); solo " +
+        "workspaces normally keep building the shared dev environment — only " +
+        "provision explicitly when the user asks for an isolated schema. " +
+        "Safe to call repeatedly.",
       inputSchema: z.object({ projectId: projectIdField }),
       execute: async ({ projectId }) => {
         try {
@@ -849,7 +854,7 @@ export const createDbtServerTools = (
           const result = await runAdhocDbtCommand({
             workspaceId,
             projectId,
-            environmentName: resolveEnvironment(project, environment),
+            environmentName: await resolveEnvironment(project, environment),
             userId: actingUserId,
             command: "parse",
             timeoutMs: 2 * 60 * 1000,
@@ -890,7 +895,10 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = resolveEnvironment(project, environment);
+          const environmentName = await resolveEnvironment(
+            project,
+            environment,
+          );
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
@@ -924,6 +932,11 @@ export const createDbtServerTools = (
         "This WRITES to the warehouse target schema. `model` accepts a node " +
         "name (stg_orders) or a dbt selector with graph operators/methods " +
         "(stg_orders+, +marts.orders, tag:nightly, state:modified+). " +
+        "On repo-connected projects this builds YOUR working tree — your " +
+        "checkout branch plus your uncommitted drafts — so it is the ONLY " +
+        "run tool that verifies uncommitted or feature-branch work (jobs " +
+        "always build the committed tracked branch instead). Pass " +
+        "`fullRefresh: true` to rebuild incremental models from scratch. " +
         "Runs ASYNCHRONOUSLY in the runner and returns a `runId` immediately " +
         "(it does NOT block until the build finishes). Poll `dbt_get_run` " +
         "with that `runId` (pass `waitMs`) to get per-node status, timing, " +
@@ -940,21 +953,81 @@ export const createDbtServerTools = (
           .string()
           .optional()
           .describe(
-            "Environment name; defaults to your personal environment when " +
-              "provisioned, else the project default (dev). Only use prod " +
-              "when the user explicitly asks.",
+            "Environment name. Omit it: builds default to the user's saved " +
+              "dev environment, else their personal environment. Solo " +
+              "workspaces default to the shared dev environment (dev IS the " +
+              "personal target); multi-user workspaces auto-provision a " +
+              "personal environment (schema dbt_<user>) on first build so " +
+              "teammates never build over each other. The prod-like " +
+              "environment refuses ad-hoc builds — deploys go through jobs.",
+          ),
+        fullRefresh: z
+          .boolean()
+          .optional()
+          .describe(
+            "Run with --full-refresh: drop and rebuild the selected " +
+              "incremental models from scratch. Use after changing an " +
+              "incremental model's schema or logic — do NOT trigger a " +
+              "full-refresh JOB for this (jobs build the committed tracked " +
+              "branch, not your working tree).",
           ),
         defer: deferField,
       }),
-      execute: async ({ projectId, model, environment, defer }) => {
+      execute: async ({
+        projectId,
+        model,
+        environment,
+        fullRefresh,
+        defer,
+      }) => {
         try {
           if (!SELECTOR_PATTERN.test(model)) {
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = resolveEnvironment(project, environment);
+          let environmentName = await resolveEnvironment(project, environment);
+          // Smart default, following the single/multi-player model:
+          //  - SINGLE player (sole workspace member): the shared dev default
+          //    IS their personal target — never invent a `dbt_<user>` schema.
+          //  - MULTIPLE players: auto-provision the caller's PERSONAL
+          //    environment on first build so teammates never build over each
+          //    other's schemas.
+          // An explicit `environment` or a saved per-user choice always wins;
+          // best-effort — a provisioning failure falls back to the default.
+          let autoProvisionedEnv: string | undefined;
+          if (
+            !environment &&
+            userId &&
+            project.environments.length > 0 &&
+            !findPersonalEnvironment(project, userId) &&
+            !(await getUserDevEnvPreference(project, userId))
+          ) {
+            try {
+              const members = await workspaceService.getMembers(workspaceId);
+              if (members.length > 1) {
+                const ensured = await ensurePersonalDbtEnvironment({
+                  workspaceId,
+                  projectId,
+                  userId,
+                });
+                environmentName = ensured.environment.name;
+                if (ensured.created) {
+                  autoProvisionedEnv = ensured.environment.targetSchema;
+                  publishProjectUpdated(projectId);
+                }
+              }
+            } catch {
+              /* fall back to the resolved default environment */
+            }
+          }
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
+          // The source tree this run builds: the acting user's checkout
+          // branch + drafts (repo projects) — surfaced in the result so the
+          // agent never has to guess which git state was verified.
+          const sourceBranch = project.repo
+            ? await getCheckoutBranch(project, actingUserId)
+            : undefined;
           // Dispatch to the async runner instead of blocking the chat turn for
           // the full build. The build executes in the Inngest worker
           // (decoupled from this SSE connection), so it survives proxy idle
@@ -964,7 +1037,9 @@ export const createDbtServerTools = (
             workspaceId,
             projectId,
             environment: environmentName,
-            commands: [`build --select ${model}`],
+            commands: [
+              `build --select ${model}${fullRefresh ? " --full-refresh" : ""}`,
+            ],
             trigger: "agent",
             triggeredBy: "agent",
             // Build the acting user's working tree (checkout + drafts) so
@@ -980,10 +1055,20 @@ export const createDbtServerTools = (
             environment: run.environment,
             defer: wantsDefer,
             commands: run.commands,
+            ...(sourceBranch ? { sourceBranch } : {}),
             message:
               "Build started in the runner. Poll dbt_get_run with this runId " +
               "(pass waitMs) until status is success/error. The user sees " +
               "live progress in the run card." +
+              (autoProvisionedEnv
+                ? ` Provisioned your personal environment "${run.environment}" ` +
+                  `(schema ${autoProvisionedEnv}) — ad-hoc builds now default ` +
+                  "to it."
+                : "") +
+              (sourceBranch
+                ? ` Building your working tree on "${sourceBranch}" ` +
+                  "(committed base + your uncommitted drafts)."
+                : "") +
               (wantsDefer
                 ? " Running with --defer: unselected refs resolve to the " +
                   "last prod build."
@@ -998,6 +1083,10 @@ export const createDbtServerTools = (
     dbt_run_job: tool({
       description:
         "Trigger a saved dbt job (full command list, possibly against prod). " +
+        "Jobs ALWAYS build the project's tracked branch as COMMITTED to git " +
+        "— NEVER your checkout branch or uncommitted drafts. Do not use a " +
+        "job to verify draft or feature-branch work (it would silently run " +
+        "the old code); use dbt_run_model (supports fullRefresh) instead. " +
         "Runs asynchronously via the job runner; returns the runId to share " +
         "with the user. Only call after the user explicitly confirms which " +
         "job to run — never trigger prod jobs proactively.",
@@ -1026,14 +1115,22 @@ export const createDbtServerTools = (
             runId: run._id.toString(),
             jobId: job._id.toString(),
           });
+          const trackedBranch = project.repo?.branch;
           return {
             success: true,
             runId: run._id.toString(),
             jobName: job.name,
             environment: job.environment,
             commands: job.commands,
+            ...(trackedBranch ? { sourceBranch: trackedBranch } : {}),
             message:
-              "Run queued. The user can watch live logs in the job tab " +
+              "Run queued. " +
+              (trackedBranch
+                ? `This job builds the COMMITTED "${trackedBranch}" branch — ` +
+                  "your checkout and uncommitted drafts are NOT included. " +
+                  "To verify working-tree changes use dbt_run_model instead. "
+                : "") +
+              "The user can watch live logs in the job tab " +
               "(Transforms → Jobs).",
           };
         } catch (error) {
@@ -1229,7 +1326,10 @@ export const createDbtServerTools = (
             return { success: false, error: "Invalid model selector" };
           }
           const project = await assertProject(projectId);
-          const environmentName = resolveEnvironment(project, environment);
+          const environmentName = await resolveEnvironment(
+            project,
+            environment,
+          );
           const wantsDefer =
             defer ?? shouldDeferByDefault(project, environmentName);
           const result = await runAdhocDbtCommand({
@@ -1962,7 +2062,10 @@ export const createDbtServerTools = (
           const project = await assertRepoProject(projectId);
           // Merging is the only write path into protected branches — gate it
           // on the admin/owner workspace role, mirroring the HTTP route RBAC.
-          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
             return {
               success: false,
               error:
@@ -2068,7 +2171,10 @@ export const createDbtServerTools = (
           const project = await assertRepoProject(projectId);
           // Editing a PR is repo-level administration (like merge/close) —
           // gate on the admin/owner role, mirroring the HTTP route RBAC.
-          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
             return {
               success: false,
               error:
@@ -2107,16 +2213,17 @@ export const createDbtServerTools = (
         deleteBranch: z
           .boolean()
           .optional()
-          .describe(
-            "Also delete the PR's source branch; defaults to false",
-          ),
+          .describe("Also delete the PR's source branch; defaults to false"),
       }),
       execute: async ({ projectId, prNumber, deleteBranch }) => {
         try {
           const project = await assertRepoProject(projectId);
           // Closing a PR is repo-level administration (like merge) — gate on
           // the admin/owner role, mirroring the HTTP route RBAC.
-          if (userId && !(await workspaceService.isAdmin(workspaceId, userId))) {
+          if (
+            userId &&
+            !(await workspaceService.isAdmin(workspaceId, userId))
+          ) {
             return {
               success: false,
               error:

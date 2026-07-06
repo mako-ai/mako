@@ -3,6 +3,7 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import { useRealtimeStore } from "../../../store/realtimeStore";
 import {
+  isApprovalPendingState,
   isHumanInTheLoopToolPartType,
   reportStreamInterruption,
   toolNameFromPartType,
@@ -188,6 +189,7 @@ export function useStreamResume({
               }
               if (isHumanInTheLoopToolPartType(pt)) return false;
               const s = (p as Record<string, unknown>).state as string;
+              if (isApprovalPendingState(s)) return false;
               return s !== "output-available" && s !== "error";
             })
             .map(p => toolNameFromPartType(p.type as string))
@@ -276,6 +278,7 @@ export function useStreamResume({
           if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
           if (isHumanInTheLoopToolPartType(pt)) return false;
           const s = (p as Record<string, unknown>).state as string;
+          if (isApprovalPendingState(s)) return false;
           return s !== "output-available" && s !== "error";
         });
         if (!hasPending) return msg;
@@ -286,6 +289,7 @@ export function useStreamResume({
             if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return p;
             if (isHumanInTheLoopToolPartType(pt)) return p;
             const s = (p as Record<string, unknown>).state as string;
+            if (isApprovalPendingState(s)) return p;
             if (s === "output-available" || s === "error") return p;
             return {
               ...p,
@@ -340,6 +344,7 @@ export function useStreamResume({
         if (!pt?.startsWith("tool-") && pt !== "dynamic-tool") return false;
         if (isHumanInTheLoopToolPartType(pt)) return false;
         const st = (p as Record<string, unknown>).state as string;
+        if (isApprovalPendingState(st)) return false;
         return (
           st !== "output-available" && st !== "output-error" && st !== "error"
         );

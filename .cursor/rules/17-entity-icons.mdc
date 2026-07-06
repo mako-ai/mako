@@ -1,0 +1,46 @@
+---
+globs: app/src/lib/entity-icons.ts,app/src/components/Sidebar.tsx,app/src/components/Editor.tsx,app/src/components/CommandPalette.tsx,app/src/lib/command-palette/*.ts,app/src/components/*Explorer.tsx,app/src/components/ConsoleTree.tsx
+description: Entity icons single source of truth — never pick lucide icons ad hoc for explorers, tab kinds, or settings sections
+---
+
+# Entity icons: single source of truth
+
+Every icon that represents an *entity concept* — an explorer section
+(Consoles, Dashboards, Apps, ...), a tab kind, or a settings section — MUST
+come from [app/src/lib/entity-icons.ts](mdc:app/src/lib/entity-icons.ts):
+
+- `EXPLORER_ICONS: Record<LeftPaneView, LucideIcon>` — sidebar rail, "Go to
+  ..." commands, and anywhere a section is referenced.
+- `TAB_KIND_ICONS: Record<TabKind, LucideIcon>` / `tabKindIcon(kind)` — the
+  Editor tab bar, explorer entity rows, and command-palette results.
+- `SETTINGS_SECTION_ICONS: Record<SettingsSection, LucideIcon>` — the
+  settings explorer and settings commands.
+- `CHAT_ICON` — the chat pane toggle.
+
+Both records are exhaustive (`satisfies Record<...>`), so adding a
+`LeftPaneView`, `TabKind`, or `SettingsSection` without deciding its icon is
+a **compile error** — same regression-guard pattern as `tab-routing.ts`.
+
+## Rules
+
+1. Do NOT import an icon directly from `lucide-react` to represent one of
+   these concepts in a new surface. Import the map and index it. This is how
+   the sidebar and the command palette drifted apart in the first place
+   (three different "console" icons in three files).
+2. When a component needs a local alias for readability, derive it from the
+   map: `const AppIcon = TAB_KIND_ICONS.app;` — never re-pick from lucide.
+3. State-dependent icon *overrides* stay with their owners and are the only
+   exceptions: connector/connection favicon images (`tab.icon`,
+   `connectionIconUrl` in `Editor.tsx`) and flow-editor subtype icons
+   (webhook / paused / scheduled in `Editor.tsx` + `FlowsExplorer.tsx`).
+   The generic kind icon must still come from the map.
+4. Changing what an entity looks like = editing `entity-icons.ts` once. If
+   you find yourself changing an entity icon in a component file, stop and
+   move it to the map.
+
+## Adding a new tab kind or explorer
+
+Follow the checklist in
+[71-tab-entities.mdc](mdc:.cursor/rules/71-tab-entities.mdc); the icon step
+means adding one entry to `TAB_KIND_ICONS` (and `EXPLORER_ICONS` if it gets
+a sidebar rail entry). The compiler will remind you.

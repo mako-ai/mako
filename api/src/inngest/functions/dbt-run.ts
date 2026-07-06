@@ -32,6 +32,7 @@ import {
   finalizeCancelledDbtRun,
   triggerDbtJobRun,
 } from "../../dbt/dbt-run.service";
+import { resolveProdLikeEnvironmentName } from "../../dbt/dbt-environments.service";
 import {
   registerActiveRun,
   unregisterActiveRun,
@@ -609,10 +610,14 @@ export const dbtRunExecutorFunction = inngest.createFunction(
         if (finishedRun?.artifactKeys?.manifest) {
           const project = await DbtProject.findById(
             new Types.ObjectId(data.projectId),
-          ).select("defaultEnvironment");
+          )
+            .select("environments defaultEnvironment prodEnvironment")
+            .lean();
+          // Single source of truth for what counts as production (explicit
+          // prodEnvironment setting > "prod" by name > project default).
           const prodLike =
-            finishedRun.environment === "prod" ||
-            finishedRun.environment === project?.defaultEnvironment;
+            project != null &&
+            finishedRun.environment === resolveProdLikeEnvironmentName(project);
           if (prodLike) {
             await DbtProject.updateOne(
               { _id: new Types.ObjectId(data.projectId) },

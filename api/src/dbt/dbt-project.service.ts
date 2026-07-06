@@ -1,7 +1,7 @@
 /**
  * dbt project snapshot loading + ad-hoc execution helpers.
  *
- * Shared by the routes (compile / run-select endpoints), the Inngest
+ * Shared by the routes (compile / command endpoints), the Inngest
  * executor, and the agent's server-side verification tools so they all go
  * through identical validation: workspace scoping, environment resolution,
  * connection decryption, and command allowlisting.
@@ -17,6 +17,7 @@ import {
 } from "../database/workspace-schema";
 import { loadRunnableWorkingTree } from "./dbt-github-sync.service";
 import { renderDbtProfile, type RenderedProfile } from "./adapter-map";
+import { assertAdhocDbtRunAllowed } from "./dbt-environments.service";
 import { parseDbtCommand, type ParsedDbtCommand } from "./commands";
 import {
   materializeDbtProject,
@@ -198,6 +199,13 @@ export async function runAdhocDbtCommand(params: {
     environmentName: params.environmentName,
     userId: params.userId,
   });
+
+  // Ad-hoc commands build the caller's working tree (checkout + drafts);
+  // refuse warehouse writes into the protected prod-like environment —
+  // deploys there go through jobs/CI, which build a committed tree.
+  assertAdhocDbtRunAllowed(snapshot.project, snapshot.environment.name, [
+    parsed,
+  ]);
 
   // Warm caches so parse/compile/show/build don't re-parse the whole project
   // (and skip `dbt deps` when packages are unchanged). Best-effort. The

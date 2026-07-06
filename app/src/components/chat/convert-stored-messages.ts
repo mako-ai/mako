@@ -7,6 +7,8 @@
  * the history loader and the resume manager's reload-before-replay path.
  */
 
+import { isApprovalPendingState } from "./tool-presentation";
+
 /** Loose UIMessage shape accepted by useChat's setMessages. */
 export interface ConvertedUiMessage {
   id: string;
@@ -108,6 +110,14 @@ function convertStoredPart(
       HUMAN_IN_THE_LOOP_TOOL_PART_TYPES.has(p.type) &&
       toolState === "input-available"
     ) {
+      return {
+        ...p,
+        input: p.input ?? {},
+      };
+    }
+    // A persisted, unanswered MCP approval request: keep it pending so the
+    // approval card re-renders on reload and the user can still allow/deny.
+    if (isApprovalPendingState(toolState)) {
       return {
         ...p,
         input: p.input ?? {},

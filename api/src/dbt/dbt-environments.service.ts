@@ -22,28 +22,83 @@
 import { Types } from "mongoose";
 import { containsDbtSchemaToken, resolveDbtSchemaToken } from "@mako/schemas";
 import {
+  DbtEnvPreference,
   DbtProject,
   type IDbtEnvironment,
   type IDbtProject,
 } from "../database/workspace-schema";
 import { getUserDisplayName } from "../services/entity-version.service";
+import { isWarehouseWriteCommand, type ParsedDbtCommand } from "./commands";
 
 type ProjectEnvFields = Pick<
   IDbtProject,
   "environments" | "defaultEnvironment"
->;
+> & { prodEnvironment?: string };
 
 /**
- * The environment treated as "production" for defer state and app-binding
- * schema resolution: `prod` when it exists, else the project default. Mirrors
- * the executor's `lastProdManifestKey` promotion rule (dbt-run.ts).
+ * The environment treated as "production": the defer-state source
+ * (`lastProdManifestKey` promotion), the `{{ dbt_schema }}` target for
+ * app bindings, and the environment protected from ad-hoc warehouse writes.
+ *
+ * An explicit `project.prodEnvironment` wins (set in project settings, shown
+ * in the UI); a stale value pointing at a removed environment is ignored.
+ * Convention fallback: the environment literally named "prod" when one
+ * exists, else the project default.
  */
 export function resolveProdLikeEnvironmentName(
   project: ProjectEnvFields,
 ): string {
+  if (
+    project.prodEnvironment &&
+    project.environments.some(env => env.name === project.prodEnvironment)
+  ) {
+    return project.prodEnvironment;
+  }
   return project.environments.some(env => env.name === "prod")
     ? "prod"
     : project.defaultEnvironment;
+}
+
+/**
+ * Thrown when an ad-hoc run would write into the protected (prod-like)
+ * environment. Mapped to HTTP 400 by the dbt routes.
+ */
+export class DbtProtectedEnvironmentError extends Error {
+  constructor(environmentName: string, trackedBranch?: string) {
+    super(
+      `Ad-hoc dbt runs build your working tree (checkout branch + ` +
+        `uncommitted drafts) and are not allowed to write to the protected ` +
+        `"${environmentName}" environment. Deploys to "${environmentName}" ` +
+        `must go through a saved job or CI, which build the committed` +
+        `${trackedBranch ? ` "${trackedBranch}"` : ""} branch — merge your ` +
+        `changes first, then trigger the job.`,
+    );
+    this.name = "DbtProtectedEnvironmentError";
+  }
+}
+
+/**
+ * Guard for ad-hoc (working-tree) runs on repo-connected projects: they build
+ * the CALLER's checkout + uncommitted drafts, so letting one write into the
+ * prod-like environment would deploy unreviewed code and bypass the
+ * protected-branch → PR → job pipeline. Jobs and CI are the only paths that
+ * build the prod-like environment (they always build a committed tree).
+ *
+ * Read-only commands (parse / compile / show / test without
+ * --store-failures) stay allowed against any environment, and projects
+ * without a repo binding are exempt (jobs and ad-hoc runs there build the
+ * same shared tree, so there is nothing to bypass).
+ */
+export function assertAdhocDbtRunAllowed(
+  project: ProjectEnvFields & { repo?: { branch?: string } | null },
+  environmentName: string,
+  commands: ParsedDbtCommand[],
+): void {
+  if (!project.repo) return;
+  if (!commands.some(isWarehouseWriteCommand)) return;
+  const prodLike = resolveProdLikeEnvironmentName(project);
+  if (environmentName !== prodLike) return;
+  throw new DbtProtectedEnvironmentError(prodLike, project.repo.branch);
 }
 
 /** The acting user's personal environment on this project, if provisioned. */
@@ -59,6 +114,10 @@ export function findPersonalEnvironment(
  * Environment an agent/user action targets when none is given explicitly:
  * the caller's personal environment when provisioned, else the project
  * default. Explicit names always win (validated downstream).
+ *
+ * Pure fallback used when the per-user preference is unavailable — most
+ * callers should use {@link resolveDevEnvironmentForUser}, which also
+ * consults the persisted per-user choice.
  */
 export function resolveEnvironmentNameForUser(
   project: ProjectEnvFields,
@@ -67,9 +126,78 @@ export function resolveEnvironmentNameForUser(
 ): string {
   if (requested) return requested;
   return (
-    findPersonalEnvironment(project, userId)?.name ??
-    project.defaultEnvironment
+    findPersonalEnvironment(project, userId)?.name ?? project.defaultEnvironment
   );
+}
+
+type ProjectIdEnvFields = ProjectEnvFields & Pick<IDbtProject, "_id">;
+
+/**
+ * The user's saved DEVELOPMENT environment for a project, or undefined when
+ * unset / stale (env no longer exists).
+ */
+export async function getUserDevEnvPreference(
+  project: ProjectIdEnvFields,
+  userId: string | undefined,
+): Promise<string | undefined> {
+  if (!userId) return undefined;
+  const pref = await DbtEnvPreference.findOne({
+    projectId: project._id,
+    userId,
+  })
+    .select("environment")
+    .lean();
+  if (!pref) return undefined;
+  return project.environments.some(env => env.name === pref.environment)
+    ? pref.environment
+    : undefined;
+}
+
+/** Persist (or clear, with null) the user's dev environment for a project. */
+export async function setUserDevEnvPreference(params: {
+  workspaceId: Types.ObjectId | string;
+  projectId: Types.ObjectId | string;
+  userId: string;
+  environment: string | null;
+}): Promise<void> {
+  const projectId = new Types.ObjectId(params.projectId.toString());
+  if (params.environment === null) {
+    await DbtEnvPreference.deleteOne({ projectId, userId: params.userId });
+    return;
+  }
+  await DbtEnvPreference.updateOne(
+    { projectId, userId: params.userId },
+    {
+      $set: {
+        workspaceId: new Types.ObjectId(params.workspaceId.toString()),
+        environment: params.environment,
+      },
+    },
+    { upsert: true },
+  );
+}
+
+/**
+ * THE per-user development-environment resolution — the environment a user's
+ * ad-hoc work (editor runs, agent builds, previews) targets when none is
+ * requested explicitly:
+ *
+ *   explicit request > the user's saved per-user choice > their personal
+ *   environment (when provisioned) > the project default.
+ *
+ * Single player: no choice + no personal env → the shared dev default (dev IS
+ * their personal target). Multiple players: each user's choice / personal
+ * env keeps their work out of teammates' schemas.
+ */
+export async function resolveDevEnvironmentForUser(
+  project: ProjectIdEnvFields,
+  userId: string | undefined,
+  requested?: string,
+): Promise<string> {
+  if (requested) return requested;
+  const preferred = await getUserDevEnvPreference(project, userId);
+  if (preferred) return preferred;
+  return resolveEnvironmentNameForUser(project, userId);
 }
 
 /**
@@ -112,9 +240,7 @@ export async function ensurePersonalDbtEnvironment(params: {
   const existing = findPersonalEnvironment(project, params.userId);
   if (existing) return { environment: existing, created: false };
 
-  const slug = sanitizePersonalSlug(
-    await getUserDisplayName(params.userId),
-  );
+  const slug = sanitizePersonalSlug(await getUserDisplayName(params.userId));
 
   const taken = new Set(project.environments.map(env => env.name));
   let name = slug;
@@ -172,7 +298,7 @@ export async function resolveDbtSchemaForBinding(params: {
     _id: new Types.ObjectId(params.dbtProjectId),
     workspaceId: new Types.ObjectId(params.workspaceId.toString()),
   })
-    .select("environments defaultEnvironment")
+    .select("environments defaultEnvironment prodEnvironment")
     .lean();
   if (!project) return null;
 

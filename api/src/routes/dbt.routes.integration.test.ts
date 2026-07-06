@@ -66,6 +66,9 @@ vi.mock("../dbt/dbt-run.service", () => ({
   triggerDbtRunRetry: vi.fn(async () => ({ _id: new Types.ObjectId() })),
   requestDbtRunCancel: vi.fn(async () => ({ status: "cancelled" })),
   applyJobScheduleChange: vi.fn(async () => undefined),
+  recordCompletedAdhocDbtRun: vi.fn(async () => ({
+    _id: new Types.ObjectId(),
+  })),
   reconcileStaleQueuedRun: vi.fn(async (r: unknown) => r),
   reconcileStaleQueuedRuns: vi.fn(async (r: unknown) => r),
 }));
@@ -124,6 +127,7 @@ import { dbtRoutes } from "./dbt.routes";
 import { DatabaseConnection } from "../database/workspace-schema";
 import { runAdhocDbtCommand } from "../dbt/dbt-project.service";
 import {
+  recordCompletedAdhocDbtRun,
   requestDbtRunCancel,
   triggerDbtRunRetry,
 } from "../dbt/dbt-run.service";
@@ -133,6 +137,9 @@ import { publishRealtimeEvent } from "../services/realtime.service";
 
 const publishMock = publishRealtimeEvent as unknown as ReturnType<typeof vi.fn>;
 const adhocMock = runAdhocDbtCommand as unknown as ReturnType<typeof vi.fn>;
+const recordAdhocMock = recordCompletedAdhocDbtRun as unknown as ReturnType<
+  typeof vi.fn
+>;
 const cancelMock = requestDbtRunCancel as unknown as ReturnType<typeof vi.fn>;
 const retryMock = triggerDbtRunRetry as unknown as ReturnType<typeof vi.fn>;
 const branchHeadMock = getBranchHeadSha as unknown as ReturnType<typeof vi.fn>;
@@ -347,6 +354,73 @@ describe("project CRUD", () => {
     });
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/connected repository/);
+  });
+
+  it("saves, validates, clears, and surfaces the caller's dev environment", async () => {
+    const projectId = await createProjectAsOwner();
+
+    // Unknown env → 400.
+    const bad = await req("PUT", `/projects/${projectId}/my-environment`, {
+      environment: "nope",
+    });
+    expect(bad.status).toBe(400);
+
+    // Save a valid choice → surfaced on the project list for this caller.
+    const set = await req("PUT", `/projects/${projectId}/my-environment`, {
+      environment: "dev",
+    });
+    expect(set.status).toBe(200);
+    expect((await set.json()).myDevEnvironment).toBe("dev");
+
+    const list = await req("GET", "/projects");
+    const listed = (
+      (await list.json()).projects as Array<{
+        _id: string;
+        myDevEnvironment?: string;
+      }>
+    ).find(p => p._id === projectId);
+    expect(listed?.myDevEnvironment).toBe("dev");
+
+    // "" clears back to Auto.
+    const cleared = await req("PUT", `/projects/${projectId}/my-environment`, {
+      environment: "",
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).myDevEnvironment).toBeUndefined();
+
+    const list2 = await req("GET", "/projects");
+    const listed2 = (
+      (await list2.json()).projects as Array<{
+        _id: string;
+        myDevEnvironment?: string;
+      }>
+    ).find(p => p._id === projectId);
+    expect(listed2?.myDevEnvironment).toBeUndefined();
+  });
+
+  it("sets, validates, and clears the production (defer) environment", async () => {
+    const projectId = await createProjectAsOwner();
+
+    // Unknown env name → 400.
+    const bad = await req("PATCH", `/projects/${projectId}`, {
+      prodEnvironment: "release",
+    });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/not in environments/);
+
+    // Valid env → persisted.
+    const set = await req("PATCH", `/projects/${projectId}`, {
+      prodEnvironment: "dev",
+    });
+    expect(set.status).toBe(200);
+    expect((await set.json()).project.prodEnvironment).toBe("dev");
+
+    // Empty string clears the override back to Auto.
+    const cleared = await req("PATCH", `/projects/${projectId}`, {
+      prodEnvironment: "",
+    });
+    expect(cleared.status).toBe(200);
+    expect((await cleared.json()).project.prodEnvironment).toBeUndefined();
   });
 
   it("rejects an environment bound to a non-dbt-compatible connection", async () => {
@@ -603,19 +677,6 @@ describe("ad-hoc runner routes", () => {
     expect(res.status).toBe(400);
   });
 
-  it("run-select requires a select and returns step results", async () => {
-    const projectId = await createProjectAsOwner();
-    expect(
-      (await req("POST", `/projects/${projectId}/run-select`, {})).status,
-    ).toBe(400);
-
-    const res = await req("POST", `/projects/${projectId}/run-select`, {
-      select: "customers+",
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()).run.stepResults).toHaveLength(1);
-  });
-
   it("command validates against the allowlist (strips leading `dbt`)", async () => {
     const projectId = await createProjectAsOwner();
     const ok = await req("POST", `/projects/${projectId}/command`, {
@@ -631,6 +692,28 @@ describe("ad-hoc runner routes", () => {
       command: "clean",
     });
     expect(bad.status).toBe(400);
+  });
+
+  it("records warehouse-writing commands into run history, not read-only ones", async () => {
+    const projectId = await createProjectAsOwner();
+
+    await req("POST", `/projects/${projectId}/command`, {
+      command: "build --select customers --full-refresh",
+    });
+    expect(recordAdhocMock).toHaveBeenCalledTimes(1);
+    expect(recordAdhocMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: "build --select customers --full-refresh",
+        environment: "dev",
+        triggeredBy: "u1",
+      }),
+    );
+
+    recordAdhocMock.mockClear();
+    await req("POST", `/projects/${projectId}/command`, {
+      command: "compile --select customers",
+    });
+    expect(recordAdhocMock).not.toHaveBeenCalled();
   });
 
   it("lineage returns an empty DAG when no manifest exists yet", async () => {

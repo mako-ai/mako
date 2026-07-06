@@ -157,11 +157,18 @@ export function sanitizeMessagesForModel(messages: UIMessage[]): UIMessage[] {
         | string
         | undefined;
 
-      // Match AI SDK UIToolInvocation terminal states (see convert-to-model-messages.ts)
+      // Match AI SDK UIToolInvocation terminal states (see convert-to-model-messages.ts).
+      // `approval-responded` is deliberately kept: an approved-but-unexecuted
+      // tool call (MCP human-in-the-loop) is converted into a
+      // tool-approval-response, which is what makes streamText execute the
+      // tool on the continuation request. Dropping it would make the model
+      // re-issue the call — an endless approval loop. Unanswered
+      // `approval-requested` parts are still dropped (no response exists yet).
       return (
         state === "output-available" ||
         state === "output-error" ||
-        state === "output-denied"
+        state === "output-denied" ||
+        state === "approval-responded"
       );
     });
 

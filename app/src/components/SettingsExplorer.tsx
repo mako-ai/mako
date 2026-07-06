@@ -1,36 +1,13 @@
 import { Box, Typography } from "@mui/material";
-import {
-  Sparkles as ModelsIcon,
-  MessageSquareText as PromptIcon,
-  BookOpen as SkillsIcon,
-  Wallet as BillingIcon,
-  Users as MembersIcon,
-  KeySquare as ApiKeyIcon,
-  Palette as AppearanceIcon,
-  ShieldCheck as AdminIcon,
-} from "lucide-react";
 import ExplorerShell from "./ExplorerShell";
 import { useAuth } from "../contexts/auth-context";
 import {
   selectTabBySettingsSection,
   useConsoleStore,
 } from "../store/consoleStore";
+import { SETTINGS_SECTION_ICONS } from "../lib/entity-icons";
 import type { SettingsSection } from "../store/lib/types";
 import { SECTION_LABELS, SECTION_ORDER } from "../pages/settings/sections";
-
-const SECTION_ICONS: Record<
-  SettingsSection,
-  (props: { size?: number; strokeWidth?: number }) => JSX.Element
-> = {
-  prompt: props => <PromptIcon {...props} />,
-  skills: props => <SkillsIcon {...props} />,
-  models: props => <ModelsIcon {...props} />,
-  billing: props => <BillingIcon {...props} />,
-  members: props => <MembersIcon {...props} />,
-  "api-keys": props => <ApiKeyIcon {...props} />,
-  appearance: props => <AppearanceIcon {...props} />,
-  admin: props => <AdminIcon {...props} />,
-};
 
 export default function SettingsExplorer() {
   const { user } = useAuth();
@@ -63,7 +40,7 @@ export default function SettingsExplorer() {
       {() => (
         <Box sx={{ py: 0.5 }}>
           {sections.map(section => {
-            const Icon = SECTION_ICONS[section];
+            const Icon = SETTINGS_SECTION_ICONS[section];
             const isActive =
               activeTab?.kind === "settings" &&
               activeTab.settingsSection === section;
