@@ -22,6 +22,10 @@ export const queryExecutions = pgTable(
   "query_executions",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    /** The Mongo model's primary timestamp (`executedAt`), not row insert time. */
+    executedAt: timestamp("executed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     userId: uuid("user_id"),
     apiKeyId: uuid("api_key_id"),
     workspaceId: uuid("workspace_id")
@@ -31,6 +35,8 @@ export const queryExecutions = pgTable(
       () => databaseConnections.id,
       { onDelete: "set null" },
     ),
+    /** For multi-database connections (D1, clusters). */
+    databaseName: text("database_name"),
     consoleId: uuid("console_id").references(() => savedConsoles.id, {
       onDelete: "set null",
     }),
@@ -40,18 +46,23 @@ export const queryExecutions = pgTable(
     status: text("status"),
     rowCount: bigint("row_count", { mode: "number" }),
     durationMs: bigint("duration_ms", { mode: "number" }),
-    bytesProcessed: bigint("bytes_processed", { mode: "number" }),
-    error: text("error"),
+    /** BigQuery / ClickHouse report this (was `bytesScanned` in Mongo). */
+    bytesScanned: bigint("bytes_scanned", { mode: "number" }),
+    /** If failed: syntax, connection, timeout, permission (was `errorType`). */
+    errorType: text("error_type"),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   table => [
-    index("query_executions_workspace_idx").on(table.workspaceId),
+    index("query_executions_workspace_idx").on(
+      table.workspaceId,
+      table.executedAt,
+    ),
     index("query_executions_connection_idx").on(table.connectionId),
     index("query_executions_console_idx").on(table.consoleId),
-    index("query_executions_created_at_idx").on(table.createdAt),
+    index("query_executions_executed_at_idx").on(table.executedAt),
   ],
 );
 

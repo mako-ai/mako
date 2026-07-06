@@ -1,8 +1,12 @@
 # Mako Postgres Migration (Drizzle) — Handoff & Runbook
 
 > **Status:** in progress. Mongo (Mongoose) is still the **system of record**.
-> Postgres runs **alongside** it and is kept current by backfill + dual-write.
-> Reads are being cut over **per-domain** behind feature flags. CDC is last.
+> The strategy is a **big-bang cutover per domain**: freeze writes → run the
+> convergent backfill (`db:backfill --prune`) → pass the drift gate
+> (`db:verify`) → flip the domain's persistence flag. There is **no
+> general dual-write layer** (it was removed — see §7); only two narrow
+> transitional mirrors exist for the domains whose reads are already flipped.
+> CDC/sync is migrated last.
 >
 > This is the canonical doc for anyone (human or agent) continuing the work or
 > deploying it. Keep it up to date as domains are cut over.
@@ -29,22 +33,28 @@ and `workspace-schema.ts`, ~37 models). Moving it to Postgres (Drizzle ORM) buys
 - **Operational fit.** Neon serverless Postgres (branching, autoscaling) is the
   target host.
 
-The migration is **gradual and reversible** — no big-bang cutover — so we never
-risk a hard break.
+The migration is executed as a sequence of **per-domain big-bang flips** inside
+short freeze windows. We deliberately do NOT maintain a long-lived dual-write
+phase: keeping every Mongoose write path (`save`, `updateOne`,
+`findOneAndUpdate`, `deleteOne`, transactions…) mirrored to a second store is
+where migrations rot — hooks silently miss paths, and hooks that fire inside
+Mongo transactions before commit can leak rolled-back writes into Postgres.
+Instead the backfill is convergent (upsert + prune) and cheap to re-run, so the
+cutover window is: freeze, converge, verify, flip.
 
 ---
 
 ## 2. Current status
 
-| Domain | PG schema | Repository | Backfill | Dual-write (Mongo→PG) | Reads cut over |
+| Domain | PG schema | Repository | Backfill | Transitional mirror (Mongo→PG) | Reads cut over |
 |---|---|---|---|---|---|
-| **auth – users** | ✅ | ✅ | ✅ | ✅ (post-save hook) | partial: session validation only |
+| **auth – users** | ✅ | ✅ | ✅ | ✅ post-save, only while `AUTH_PERSISTENCE=postgres` | partial: session validation only |
 | **auth – sessions** | ✅ | ✅ | ✅ | n/a (PG-authoritative when flag on) | ✅ (`AUTH_PERSISTENCE=postgres`) |
 | auth – oauth/email-verif | ✅ | partial | ✅ | ❌ (backfill only) | ❌ |
 | auth – desktop codes | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **workspaces + members** | ✅ | ✅ (members only) | ✅ | ✅ (post-save hooks) | ❌ (reads still Mongo) |
+| **workspaces + members** | ✅ | ✅ (members only) | ✅ | ❌ (backfill only — no PG read path needs them live) | ❌ (reads still Mongo) |
 | workspace invites / api keys | ✅ | partial | ✅ | ❌ | ❌ |
-| **connections (`database_connections`)** | ✅ | ✅ | ✅ | ✅ (post-save hook) | ✅ for query execution (`CONNECTIONS_PERSISTENCE=postgres`) |
+| **connections (`database_connections`)** | ✅ | ✅ | ✅ | ✅ post-save + delete-route mirror, only while `CONNECTIONS_PERSISTENCE=postgres` | ✅ for query execution (`CONNECTIONS_PERSISTENCE=postgres`) |
 | connectors | ✅ | ❌ | ✅ | ❌ | ❌ |
 | **consoles (folders + saved_consoles)** | ✅ | ✅ | ✅ | ❌ | ❌ (only `/api/pg` demo) |
 | **chats (+ attachments, llm_usage)** | ✅ | ✅ | ✅ | ❌ | ❌ (only `/api/pg` demo) |
@@ -58,8 +68,9 @@ every step.
 
 ### 2.1 What is cleanly migratable today
 
-Treat a domain as clean only when it has **schema + backfill + dual-write + a live
-read seam/flag**. A table plus a successful backfill is not enough.
+Treat a domain as clean only when it has **schema + convergent backfill + a live
+read seam/flag + (until its writes are native) a mirror covering every Mongo
+write AND delete path**. A table plus a successful backfill is not enough.
 
 The clean first migration unit is:
 
@@ -123,9 +134,9 @@ api/src/db/
   repositories/          typed CRUD per domain (used by stores + /api/pg + backfill)
   migrate.ts             migration runner (creates uuid-ossp + vector, then applies SQL)
   migrations/            drizzle-kit generated SQL + journal  (DO NOT hand-edit applied files)
-  dual-write.ts          Mongo→PG mirror helpers + dualWriteEnabled() gate
-  backfill.ts            one-time/repeatable ETL Mongo→PG (db:backfill)
-  verify.ts              Mongo↔PG drift report / cutover gate (db:verify)
+  dual-write.ts          TWO transitional mirrors only (users, connections) — no blanket dual-write
+  backfill.ts            convergent ETL Mongo→PG: upsert + optional --prune (db:backfill)
+  verify.ts              Mongo↔PG drift gate: random sample + count drift (db:verify)
   connection-store.ts    read seam for connections (Mongo|Postgres) used by query execution
   repositories.test.ts / persistence.routes.test.ts   integration + OpenAPI e2e (test:pg)
 
@@ -139,8 +150,17 @@ api/src/routes/
 api/drizzle.config.ts    drizzle-kit config (schema, out dir, dbCredentials)
 ```
 
-Mongoose post-save hooks that dual-write live in `database/schema.ts` (User) and
-`database/workspace-schema.ts` (Workspace, WorkspaceMember, DatabaseConnection).
+Transitional mirror hooks live in `database/schema.ts` (User post-save, active
+only under `AUTH_PERSISTENCE=postgres`) and `database/workspace-schema.ts`
+(DatabaseConnection post-save, active only under
+`CONNECTIONS_PERSISTENCE=postgres`; the delete route mirrors deletes
+explicitly). They exist because those domains' READS are flipped while their
+WRITES still land in Mongo, and they are deleted the moment each domain's
+writes move natively to Postgres.
+
+`api/src/inngest/functions/pg-ttl-cleanup.ts` replaces the Mongo TTL indexes
+(sessions, email verifications, desktop auth codes, 90-day query executions)
+with a half-hourly cron; it no-ops unless a Postgres persistence flag is set.
 
 ---
 
@@ -157,9 +177,8 @@ Mongoose post-save hooks that dual-write live in `database/schema.ts` (User) and
 | `NEON_DATABASE_NAME` | `neondb` | Database name for generated connection URIs |
 | `NEON_ROLE_NAME` | `neondb_owner` | Role name for generated connection URIs |
 | `NEON_POOLED` | `true` | Generate pooled Neon connection URIs |
-| `POSTGRES_DUAL_WRITE` | unset | `true` → mirror all dual-written domains to PG |
-| `AUTH_PERSISTENCE` | `mongo` | `postgres` → sessions read/write from PG (implies users dual-write) + startup ping |
-| `CONNECTIONS_PERSISTENCE` | `mongo` | `postgres` → query execution resolves connections from PG |
+| `AUTH_PERSISTENCE` | `mongo` | `postgres` → sessions read/write from PG (enables the user mirror) + startup ping |
+| `CONNECTIONS_PERSISTENCE` | `mongo` | `postgres` → query execution resolves connections from PG (enables the connection mirror) + startup ping |
 | `BACKFILL_MONGO_URL` | falls back to `DEV_DATABASE_URL`/`DATABASE_URL` | source Mongo for `db:backfill` / `db:verify` |
 | `ENCRYPTION_KEY` | (required) | shared AES key; must match between Mongo and PG so credentials decrypt |
 
@@ -183,19 +202,24 @@ pnpm --filter api run test:pg       # ids + repositories + OpenAPI e2e tests (ne
 ```
 
 `db:backfill` accepts `--domains=auth,workspaces,connections,consoles,chats,queries`
-(default = all, in dependency order). `db:verify` accepts `--sample=N`.
+(default = all, in dependency order) and `--prune`. `db:verify` accepts
+`--sample=N`.
 
-Backfill semantics:
+Backfill semantics (convergent — this is the big-bang cutover tool):
 
-- `db:backfill` is idempotent in the **insert-only** sense. Rows are inserted
-  with `onConflictDoNothing`, so rerunning it will not duplicate data.
-- It does **not** refresh existing PG rows. If Mongo changed after the first
-  backfill, rerunning the current script only catches newly missing rows; it
-  will not update edited rows or propagate deletes.
-- Therefore, backfill is not a substitute for dual-write. For mutable domains
-  (consoles, chats, connectors, usage, query history, invites, API keys), add
-  dual-write or an upsert/reconciliation mode before treating a backfill as a
-  real cutover step.
+- Every row is **upserted** (`onConflictDoUpdate` on the primary key, or the
+  natural key for `workspace_members`): re-running the backfill overwrites
+  stale Postgres rows with the current Mongo values, so drift accumulated
+  since the previous run is repaired, not skipped.
+- With `--prune`, rows whose Mongo source document no longer exists are
+  **deleted** from Postgres (FK `cascade`/`set null` rules handle dependents),
+  making the run a full reconciliation. Use `--prune` for the authoritative
+  freeze-window run; note that pruning a parent domain (e.g. `workspaces`)
+  cascades to children, so prefer full-domain runs when pruning.
+- `db:verify` fails (non-zero exit) on any sampled mismatch/missing row **or on
+  a total row-count divergence** (sessions exempt from the count gate — they
+  are ephemeral and by design live only in the flag-selected store). Samples
+  are drawn randomly (`$sample`), not first-N.
 
 ---
 
@@ -215,8 +239,8 @@ pnpm --filter api run db:migrate
 
 # 3. (Optional) backfill cutover-ready data from the dev Mongo, then verify
 export BACKFILL_MONGO_URL="$DEV_DATABASE_URL"
-pnpm --filter api run db:backfill -- --domains=auth,workspaces,connections
-pnpm --filter api run db:verify --sample=100   # expect 0 mismatch / 0 missing
+pnpm --filter api run db:backfill -- --prune
+pnpm --filter api run db:verify -- --sample=100   # must exit 0
 
 # 4. Run the app against PG-backed auth + connections
 export DATABASE_URL="$DEV_DATABASE_URL"        # Mongo (still the record of truth)
@@ -249,94 +273,121 @@ The generated `.env.neon.local` is ignored by git. Override the branch name with
 
 ---
 
-## 7. Per-domain cutover playbook
+## 7. Per-domain big-bang cutover playbook
 
 Repeat this loop for each domain. Never skip the verify step.
 
-1. **Seam** — route the domain's reads/writes through a store/repository so call
-   sites stop importing the Mongoose model directly. (Done for sessions +
-   connections; the pattern is `*-store.ts`.)
-2. **Dual-write** — add a Mongoose `post('save')` hook in `dual-write.ts` so
-   writes hit both stores. Gated by `dualWriteEnabled()`.
-3. **Backfill** — `db:backfill --domains=<domain>` to copy history.
-4. **Verify** — `db:verify` until 0 mismatch / 0 missing for the domain.
-5. **Flip reads** — behind a per-domain flag (add one like the existing
-   `AUTH_PERSISTENCE` / `CONNECTIONS_PERSISTENCE`). Shadow-read first if risky.
-6. **Decommission** — once stable, stop the Mongo write and drop the collection.
+1. **Seam** — route ALL of the domain's reads **and writes** through a
+   store/repository so call sites stop importing the Mongoose model directly
+   (pattern: `*-store.ts`). The seam must cover every mutation path —
+   `updateOne`, `findOneAndUpdate`, deletes, transactional writes — not just
+   `save()`.
+2. **Freeze** — short maintenance window (or accept losing the tail for
+   low-value domains like query history).
+3. **Converge** — `db:backfill --domains=<domain> --prune`.
+4. **Verify** — `db:verify` must exit 0 (random-sample parity AND count
+   parity). This is the go/no-go gate.
+5. **Flip** — set the domain flag to `postgres` and deploy. From this moment
+   the domain's reads AND writes are Postgres-only; Mongo stops receiving
+   writes for it.
+6. **Decommission** — after a soak period, drop the Mongoose model usages and
+   the Mongo collection.
 
-Rollback at any point = flip the flag back to `mongo` (instant; dual-write keeps
-both stores in sync).
+**Rollback caveat (the price of big-bang):** after the flip, Mongo goes stale
+immediately. Rolling back = reverse-syncing whatever was written to Postgres
+during the soak, or accepting that window's loss. That is why step 4 is a hard
+gate and why flips are per-domain rather than all-at-once.
+
+**Why the general dual-write layer was removed:** the original
+`POSTGRES_DUAL_WRITE` implementation hooked only `post('save')` — it silently
+missed every `updateOne`/`findOneAndUpdate`/`deleteOne`/`bulkWrite` path (most
+workspace mutations, member role changes, all deletes) and fired inside Mongo
+transactions **before commit**, so an aborted transaction could leave phantom
+rows in Postgres. A mirror that is only mostly right is worse than none: it
+makes `db:verify` lie. The two remaining mirrors (users under
+`AUTH_PERSISTENCE=postgres`, connections under
+`CONNECTIONS_PERSISTENCE=postgres`) exist only because those domains' reads
+are already flipped while their writes are still Mongo-native, their write
+surfaces are narrow enough to cover completely (auth user writes all go
+through `save()`/`create()`; connections have one delete route, mirrored
+explicitly), and they are deleted when the domains' writes go native.
 
 ---
 
 ## 8. Roadmap
 
 - **Phase 1 (done):** schema + migrations + id mapping + repositories +
-  backfill + verify; session store read/write seam; users/workspaces/members/
-  connections dual-write; connection resolution read seam for query execution;
-  `/api/pg` read API; Neon branch automation.
+  convergent backfill (upsert/prune) + hardened verify gate; session store
+  read/write seam; connection resolution read seam for query execution; the two
+  transitional mirrors; TTL-replacement cron; `/api/pg` read API; Neon branch
+  automation (create/reset/delete per PR).
 - **Phase 2 (safe foundation cutover):** enable and harden only the domains that
   are already dependency-complete: `AUTH_PERSISTENCE=postgres` for sessions and
   `CONNECTIONS_PERSISTENCE=postgres` for query execution. Route remaining
   non-CDC `DatabaseConnection.findById` reads through `connection-store`.
-- **Phase 3 (complete auth + tenancy):** add repositories/read seams/dual-write
-  for OAuth accounts, email verifications, desktop auth codes, workspace invites,
-  and normalized workspace API keys. Decouple API-key auth from embedded
-  `Workspace.apiKeys`.
-- **Phase 4 (consoles + versions):** add SQL `entity_versions`, backfill it, add
-  dual-write for `ConsoleFolder`, `SavedConsole`, and `EntityVersion`, preserve
-  `version` + `draftRevision` write guards, and only then cut over console reads
-  and writes. Backfill `description_embedding` before semantic search cutover.
-- **Phase 5 (chats + usage + query history):** add dual-write/read seams for
-  chats, chat attachments, LLM usage, and query executions. Fix field parity for
-  usage/query analytics and wire Postgres retention crons.
+- **Phase 3 (complete auth + tenancy):** write-seams for users/OAuth/email
+  verifications/desktop codes and workspaces/members/invites/API keys, then
+  freeze → converge → verify → flip those domains; decouple API-key auth from
+  embedded `Workspace.apiKeys`; port the Mongo transactions in
+  `workspace.service.ts` to Drizzle transactions. Deleting the user mirror is
+  the exit criterion for auth.
+- **Phase 4 (consoles + versions):** add SQL `entity_versions`, preserve
+  `version` + `draftRevision` write guards, backfill `description_embedding`,
+  then flip consoles (reads AND writes) in one window.
+- **Phase 5 (chats + usage + query history):** write-seams, then flip. Query
+  history can flip without a freeze (append-only audit data; losing seconds of
+  tail is acceptable).
 - **Phase 6:** model + migrate the long tail (dashboards, apps, skills, dbt,
   notifications, realtime presence, model catalog).
-- **Phase 7 (last):** sync/CDC (`cdc_*`, webhook events, flow executions).
+- **Phase 7 (last):** sync/CDC (`cdc_*`, webhook events, flow executions) — the
+  bulk of the write volume; needs a partition/retention design first.
 
 ---
 
 ## 9. TODO (actionable, what remains)
 
+- [x] Convergent backfill (upsert on PK/natural key) + `--prune` reconciliation.
+- [x] Hardened `db:verify`: random sampling, count-drift gate, tenant-mapping
+      + extended field-parity checks.
+- [x] Field-parity fixes: `query_executions.executed_at`/`database_name`/
+      `bytes_scanned`/`error_type`; `llm_usage.model_id`/`cache_read_tokens`/
+      `cache_write_tokens`/numeric `cost_usd` (migration `0001`).
+- [x] TTL replacement cron (`pg-ttl-cleanup`): sessions, email verifications,
+      desktop auth codes, 90-day query executions.
+- [x] Startup fail-fast pings PG when **any** persistence flag is set (was
+      auth-only).
+- [x] Connection delete mirrored to PG (was a stale-credential hole under
+      `CONNECTIONS_PERSISTENCE=postgres`).
 - [ ] **Next:** route all remaining non-CDC `DatabaseConnection.find*` reads
-      through `connection-store`, then verify `CONNECTIONS_PERSISTENCE=postgres`
-      covers every normal app query path.
+      through `connection-store` (dbt, dashboards, apps, flows — **excluding**
+      sync/CDC), then verify `CONNECTIONS_PERSISTENCE=postgres` covers every
+      normal app query path.
 - [ ] Add a focused CI/staging drift gate for the clean foundation domains:
       `auth,workspaces,connections`.
-- [ ] Harden `AUTH_PERSISTENCE=postgres` with a session expiry cron using
-      `sessionsRepository.deleteExpired()`.
-- [ ] Complete API key migration before broader workspace cutover: repository,
-      dual-write for create/revoke/last-used updates, and API-key auth reads from
+- [ ] Complete API key migration before broader workspace cutover: repository +
+      write seam for create/revoke/last-used, and API-key auth reads from
       `workspace_api_keys` instead of embedded Mongo `Workspace.apiKeys`.
-- [ ] Start console cutover only after the foundation/API-key work: design SQL
-      `entity_versions` first, then console dual-write and route parity.
-- [ ] Dual-write hooks for: `Connector`, `SavedConsole`, `ConsoleFolder`, `Chat`,
-      `ChatAttachment`, `LlmUsage`, `QueryExecution`, `OAuthAccount`,
-      `WorkspaceInvite`, `Workspace.apiKeys`. (Only User/Workspace/Member/
-      DatabaseConnection dual-write today.)
+- [ ] Write seams for consoles, chats, queries; then flip the live routes
+      (`routes/consoles.ts`, `routes/chats.ts`, `agent-thread.service.ts`,
+      `query-execution.service.ts`) per the §7 playbook.
+- [ ] Add PG `entity_versions` before any console version/history cutover.
 - [ ] Backfill + repository + read seam for `desktop_auth_codes`.
 - [ ] Repositories for `Connector`, oauth/email-verification/invites/api-keys
       (CRUD).
-- [ ] Read seams + flags for consoles, chats, queries; then cut over the live
-      routes (`routes/consoles.ts`, `routes/chats.ts`, `agent-thread.service.ts`,
-      `query-execution.service.ts`).
-- [ ] Add PG `entity_versions` before any console version/history cutover.
-- [ ] Route remaining `DatabaseConnection.findById` reads through
-      `connection-store` (dbt, dashboards, apps, flows — **excluding** sync/CDC).
-- [ ] TTL replacement: Inngest cron calling `sessionsRepository.deleteExpired()`
-      and `queriesRepository.deleteOlderThan()` (+ email/desktop codes). Mongo
-      TTL indexes have no Postgres equivalent.
 - [ ] Embeddings: backfill `saved_consoles.description_embedding` (skipped today)
       and move console semantic search to pgvector `<=>`.
 - [ ] Drizzle transactions for the multi-table writes currently using Mongo
       transactions (workspace create + member + session in `workspace.service.ts`).
 - [ ] Fuller auth cutover: read users from PG in `AuthService.login`/OAuth (today
-      the password check still reads the Mongo user; sessions + user mirror are PG).
+      the password check still reads the Mongo user; sessions + user mirror are
+      PG). Exit criterion: delete `mirrorUser`.
 - [ ] Consolidate the `databaseConnectionService.getMainConnection()` native-Mongo
       bypass sites (migrations, embeddings, some sync) as their domains migrate.
 - [ ] CI: add `drizzle-kit check` drift gate and run `db:verify` in a staging job
       before flipping prod flags.
-- [ ] Long tail + CDC schema/migration (phases 6–7).
+- [ ] Long tail + CDC schema/migration (phases 6–7); CDC needs a
+      partition/retention design first (`cdc_change_events`, `webhookevents`,
+      `flow_executions` dominate write volume).
 - [ ] Polymorphic refs (notification rules, entity versions) need a
       discriminator column design when those tables are added.
 
@@ -380,8 +431,11 @@ Optional GitHub vars:
 - `NEON_DATABASE_NAME` (defaults to `neondb`)
 - `NEON_ROLE_NAME` (defaults to `neondb_owner`)
 - `NEON_POOLED` (defaults to `true`)
-- `POSTGRES_DUAL_WRITE`, `AUTH_PERSISTENCE`, `CONNECTIONS_PERSISTENCE`
-  (default off / Mongo-backed reads)
+- `AUTH_PERSISTENCE`, `CONNECTIONS_PERSISTENCE` (default Mongo-backed)
+
+> The `NEON_*` secrets must be visible to the per-PR `pr-<number>` GitHub
+> environments — set them as **repository-level** secrets (per-PR environments
+> are created dynamically and cannot each hold a copy).
 
 `ENCRYPTION_KEY` already exists and **must be identical** to the one Mongo uses
 (connection credentials are encrypted with it).
@@ -392,44 +446,50 @@ The real deploy path is `.github/workflows/deploy-app.yml` (not `deploy.sh`):
 
 - PR previews run `node scripts/neon.mjs create-pr`, creating/reusing a
   `pr-<number>` Neon branch with a read-write compute and a generated pooled
-  `POSTGRES_URL`.
+  `POSTGRES_URL`. A manual `workflow_dispatch` with `rebuild_db=true` runs
+  `reset-pr` instead, restoring the branch from the Neon default branch (schema
+  AND data) — the Postgres analog of the Mongo ephemeral-DB rebuild.
 - PR previews run `pnpm --filter api run db:migrate` against that branch before
   Cloud Run deploy.
 - Production deploys on `master` resolve the Neon default branch connection with
   `node scripts/neon.mjs default-connection` and run Drizzle migrations before
   Cloud Run deploy.
-- Cloud Run receives `POSTGRES_URL`, `POSTGRES_DUAL_WRITE`, `AUTH_PERSISTENCE`,
-  and `CONNECTIONS_PERSISTENCE`.
+- Cloud Run receives `POSTGRES_URL`, `AUTH_PERSISTENCE`, and
+  `CONNECTIONS_PERSISTENCE`.
 - `.github/workflows/cleanup-preview.yml` deletes `pr-<number>` when the PR is
-  closed/merged.
+  closed/merged and reports the real delete outcome in the cleanup comment;
+  branches also carry a 30-day `expires_at` as a safety net for failed
+  cleanups.
 
 > Backfill is **not** part of the deploy step — it's a one-time/periodic data
 > operation you run deliberately (§10.4), not on every push.
 
-### 10.4 Safe rollout sequence (zero-downtime, reversible)
+### 10.4 Big-bang rollout sequence (freeze → converge → verify → flip)
 
-Do this when first introducing Postgres to an environment. Only backfill domains
-that are cutover-ready; a successful full backfill is useful for schema
-validation, but not production migration progress for domains without dual-write
-and feature parity.
+Do this when first introducing Postgres to an environment. Only flip domains
+that are cutover-ready (§2.1); a successful full backfill is useful for schema
+validation, but not production migration progress for domains without complete
+seams.
 
 1. **Deploy code with all flags OFF.** Nothing changes at runtime. Confirm
    `GET /api/pg/health` returns `{ ok: true }` (proves connectivity).
-2. **Run migrations:** `POSTGRES_URL=… pnpm --filter api run db:migrate`.
-3. **Turn on dual-write for the domains that have it:** set
-   `POSTGRES_DUAL_WRITE=true` and redeploy. Today this mirrors users,
-   workspaces, workspace members, and database connections only.
-4. **Backfill the clean foundation domains:**
-   `BACKFILL_MONGO_URL=<source> POSTGRES_URL=<target> pnpm --filter api run db:backfill -- --domains=auth,workspaces,connections`.
-   Prefer a Mongo **read replica**/snapshot as the source for prod.
-5. **Verify parity:** `pnpm --filter api run db:verify --sample=200` → must be
-   **0 mismatch / 0 missing** for the domains being flipped. Do not treat
-   console/chat/query verification as a cutover gate until those domains have
-   dual-write and read/write parity.
-6. **Flip reads, one domain at a time:** set `AUTH_PERSISTENCE=postgres`, redeploy,
-   watch; then `CONNECTIONS_PERSISTENCE=postgres`, redeploy, watch.
-7. **Rollback** = set the flag back to `mongo` and redeploy (instant; both stores
-   are in sync via dual-write).
+2. **Run migrations:** `POSTGRES_URL=… pnpm --filter api run db:migrate`
+   (CI already does this on every deploy).
+3. **Freeze writes** for the domains being flipped (maintenance window — for
+   auth+connections this is minutes, not hours).
+4. **Converge:**
+   `BACKFILL_MONGO_URL=<source> POSTGRES_URL=<target> pnpm --filter api run db:backfill -- --prune`.
+   Re-runnable; each run upserts changes and prunes deletes.
+5. **Verify parity:** `pnpm --filter api run db:verify -- --sample=200` →
+   **must exit 0** (sampled parity AND count parity). This is the go/no-go gate.
+6. **Flip:** set `AUTH_PERSISTENCE=postgres` and
+   `CONNECTIONS_PERSISTENCE=postgres`, redeploy, unfreeze, watch. The
+   transitional mirrors keep PG current for these two domains' Mongo-native
+   writes.
+7. **Rollback window:** while the mirrors are in place, Mongo remains current
+   for these two domains (sessions excepted — users re-login), so flipping the
+   flags back is still safe. Once a domain's writes go native (mirror deleted),
+   rollback requires a reverse sync — that's the accepted big-bang trade-off.
 
 Do **not** cut over consoles, chats, usage, query history, connectors, OAuth,
 invites, or API keys from the current implementation. Those domains need the
@@ -455,15 +515,14 @@ AUTH_PERSISTENCE=postgres CONNECTIONS_PERSISTENCE=postgres POSTGRES_DUAL_WRITE=t
 ### 10.6 "Won't break anything" checklist
 
 - ✅ Flags default to Mongo; unset = no behavior change.
-- ✅ App boots without `POSTGRES_URL` unless `AUTH_PERSISTENCE=postgres` (then it
-  pings PG at startup and fails fast — so a misconfig is caught immediately, not
-  silently).
-- ✅ Dual-write is **best-effort** (logs, never throws) — a PG hiccup can't break a
-  Mongo write. For cutover domains, repair drift with domain-specific upsert/
-  reconciliation plus `db:verify`; the current insert-only backfill only fills
-  missing rows.
-- ✅ `db:migrate` and `db:backfill` are idempotent.
-- ✅ Cutover is per-domain and instantly reversible via flags.
+- ✅ App boots without `POSTGRES_URL` unless a persistence flag is `postgres`
+  (then it pings PG at startup and fails fast — so a misconfig is caught
+  immediately, not silently).
+- ✅ The transitional mirrors are **best-effort** (logs, never throws) — a PG
+  hiccup can't break a Mongo write; `db:backfill --prune` converges any drift.
+- ✅ `db:migrate` is idempotent; `db:backfill` is convergent (safe to re-run,
+  repairs drift).
+- ✅ Cutover is per-domain; reversible while the domain's mirror is in place.
 - ⚠️ `ENCRYPTION_KEY` must match across stores or connection credentials won't
   decrypt after cutover.
 - ⚠️ Never point `db:backfill`/app `DATABASE_URL` writes at a prod target you

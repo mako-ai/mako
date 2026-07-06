@@ -75,9 +75,10 @@ async function neonFetch(path, options = {}) {
   return response.json();
 }
 
-async function listBranches() {
+async function listBranches(search) {
   const { projectId } = neonConfig();
-  const data = await neonFetch(`/projects/${projectId}/branches`);
+  const params = search ? `?${new URLSearchParams({ search })}` : "";
+  const data = await neonFetch(`/projects/${projectId}/branches${params}`);
   return data.branches || [];
 }
 
@@ -93,7 +94,9 @@ async function getDefaultBranch() {
 }
 
 async function findBranchByName(name) {
-  const branches = await listBranches();
+  // `search` filters server-side, so lookups stay correct even when the
+  // project has more branches than one unfiltered page returns.
+  const branches = await listBranches(name);
   return branches.find(branch => branch.name === name) || null;
 }
 
@@ -144,8 +147,18 @@ async function createBranch(name, { parentId, expiresAt } = {}) {
 async function ensureBranch(name, options = {}) {
   const existing = await findBranchByName(name);
   if (existing) return { branch: existing, created: false };
-  const branch = await createBranch(name, options);
-  return { branch, created: true };
+  try {
+    const branch = await createBranch(name, options);
+    return { branch, created: true };
+  } catch (error) {
+    // Concurrent runs (rerun races) can both attempt the create; treat a
+    // duplicate-name conflict as "already exists" and re-fetch.
+    if (/\b409\b|already exists/i.test(String(error?.message))) {
+      const branch = await findBranchByName(name);
+      if (branch) return { branch, created: false };
+    }
+    throw error;
+  }
 }
 
 async function deleteBranchByName(name) {
@@ -294,7 +307,20 @@ async function main() {
 
   if (command === "delete-pr") {
     const deleted = await deleteBranchByName(prBranchName());
+    writeGithubOutput({ deleted: String(deleted) });
     console.log(JSON.stringify({ deleted }, null, 2));
+    return;
+  }
+
+  if (command === "reset-pr") {
+    // Recreate the PR branch from the current default/prod branch (schema AND
+    // data), e.g. on manual `rebuild_db` redeploys.
+    const branchName = prBranchName();
+    const { branch, created } = await ensureBranch(branchName, {
+      expiresAt: expiresInDays(Number(process.env.NEON_PR_EXPIRES_DAYS || 30)),
+    });
+    if (!created) await restoreBranchFromDefault(branch.id);
+    await outputBranch({ branch, branchName, created });
     return;
   }
 
@@ -321,6 +347,7 @@ async function main() {
 
   console.error(`Usage:
   node scripts/neon.mjs create-pr
+  node scripts/neon.mjs reset-pr
   node scripts/neon.mjs delete-pr
   node scripts/neon.mjs local
   node scripts/neon.mjs reset-local

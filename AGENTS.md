@@ -69,21 +69,23 @@ account manually, flip `emailVerified` in the DB to log in.
 
 ### Postgres metadata store (Drizzle) — in-progress Mongo → Postgres migration
 
-A Drizzle ORM persistence layer (`api/src/db/`) is being introduced as the
-migration target for Mako's own metadata (auth, workspaces, connections,
-consoles, chats, queries). It runs **alongside** Mongo; both stores coexist
-during the gradual cutover.
+A Drizzle ORM persistence layer (`api/src/db/`) is the migration target for
+Mako's own metadata (auth, workspaces, connections, consoles, chats, queries).
+The strategy is a **big-bang cutover per domain** (freeze → `db:backfill
+--prune` → `db:verify` gate → flip flag); there is no general dual-write layer.
 
 > **Full handoff doc & deploy runbook:** [`api/src/db/README.md`](api/src/db/README.md)
-> — motivation, status table, per-domain cutover playbook, TODO, and the safe
-> rollout/rollback sequence. Read it before continuing the migration or deploying.
+> — motivation, status table, the big-bang cutover playbook, TODO, and the
+> rollout sequence. Read it before continuing the migration or deploying.
 
-- **Local Postgres** is not preinstalled on the VM. Install + start a cluster:
+- **Local Postgres on this VM:** the system PostgreSQL 16 cluster is used (same
+  one that serves the Chinook demo DB). Create the metadata DB once:
   ```bash
-  sudo apt-get install -y postgresql postgresql-contrib postgresql-16-pgvector
-  initdb -D "$HOME/pgdata" -U postgres --auth=trust   # /usr/lib/postgresql/16/bin
-  pg_ctl -D "$HOME/pgdata" -o "-p 5432 -c unix_socket_directories=/tmp" start
-  createdb -h 127.0.0.1 -U postgres mako_dev
+  sudo pg_ctlcluster 16 main start        # every boot (see above)
+  sudo apt-get install -y postgresql-16-pgvector   # once
+  sudo -u postgres psql -c "CREATE DATABASE mako_dev"
+  sudo -u postgres psql -c "ALTER ROLE postgres WITH PASSWORD 'postgres'"
+  # .env: POSTGRES_URL=postgres://postgres:postgres@127.0.0.1:5432/mako_dev
   ```
 - **Connection string:** `POSTGRES_URL` (falls back to `PG_DATABASE_URL`, then a
   local default `postgres://postgres@127.0.0.1:5432/mako_dev`). TLS auto-enables
@@ -93,19 +95,22 @@ during the gradual cutover.
 - **Neon secrets:** `NEON_API_KEY`, `NEON_ORG_ID`, and `NEON_PROJECT_ID` are
   backed up with `pnpm neon:secrets:push` and restored with
   `pnpm neon:secrets:pull`. CI creates `pr-<number>` Neon branches for previews,
-  migrates them, and deletes them on PR cleanup.
+  migrates them, resets them on `rebuild_db` dispatches (`reset-pr`), and
+  deletes them on PR cleanup.
 - **Migrations (drizzle-kit):**
   ```bash
   pnpm --filter api run db:generate   # after editing src/db/schema/*
   pnpm --filter api run db:migrate    # apply (creates uuid-ossp + vector exts)
   ```
-- **Backfill from Mongo:** `BACKFILL_MONGO_URL=$DEV_DATABASE_URL POSTGRES_URL=...
-  pnpm --filter api exec tsx src/db/backfill.ts` (idempotent; dependency-ordered).
+- **Backfill from Mongo:** `pnpm --filter api run db:backfill -- --prune`
+  (convergent: upserts changes, prunes deletes; reads root `.env` for
+  `DATABASE_URL`/`POSTGRES_URL`). Gate with
+  `pnpm --filter api run db:verify` (non-zero exit on any drift).
 - **ID mapping:** ObjectIds map to reversible padded uuids; legacy nanoids /
   sentinels (`system`/`agent`) hash via UUIDv5 (`api/src/db/ids.ts`).
-- **Auth/session cutover flag:** `AUTH_PERSISTENCE=postgres` switches the session
-  store to Postgres (default `mongo`). Run the backfill first so users/sessions
-  exist in PG.
+- **Cutover flags:** `AUTH_PERSISTENCE=postgres` (sessions + user mirror),
+  `CONNECTIONS_PERSISTENCE=postgres` (query-execution connection resolution +
+  connection mirror). Run the backfill first so the rows exist in PG.
 - **PG-backed read API:** mounted at `/api/pg` (`/api/pg/health` is public).
 - **PG tests:** `pnpm --filter api run test:pg` (needs a running Postgres).
 

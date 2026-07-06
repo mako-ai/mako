@@ -1,37 +1,43 @@
 import type { IUser } from "../database/schema";
 import { loggers } from "../logging";
 import { toPgId, toPgIdOrNull } from "./ids";
-import {
-  connectionsRepository,
-  usersRepository,
-  workspacesRepository,
-} from "./repositories";
+import { connectionsRepository, usersRepository } from "./repositories";
 
 const log = loggers.db();
 
 /**
- * Mongo -> Postgres dual-write.
+ * Transitional Mongo -> Postgres mirrors for the two domains whose READS have
+ * been cut over to Postgres while their WRITES still land in Mongo:
  *
- * During the gradual migration, Mongo remains the system of record while these
- * helpers mirror writes into Postgres so the PG store stays current beyond the
- * point-in-time backfill. They are wired as Mongoose `post('save')` hooks on the
- * source models and are best-effort: failures are logged, never thrown (the
- * backfill reconciles any drift). Flip to a hard-fail / PG-authoritative policy
- * per domain once its reads have been cut over.
+ *   - users:       `AUTH_PERSISTENCE=postgres` joins sessions to `users` in PG,
+ *                  so every Mongo user write must be mirrored or new/updated
+ *                  users can't log in.
+ *   - connections: `CONNECTIONS_PERSISTENCE=postgres` resolves connections
+ *                  (incl. decrypted credentials) from PG for query execution,
+ *                  so creates/updates AND deletes must be mirrored — a stale
+ *                  PG row after a Mongo delete would keep dead credentials
+ *                  usable.
  *
- * Enabled when either:
- *   - `POSTGRES_DUAL_WRITE=true` (mirror all migrated domains), or
- *   - `AUTH_PERSISTENCE=postgres` (auth reads from PG, so users MUST be mirrored)
+ * These are NOT a general dual-write layer (the old `POSTGRES_DUAL_WRITE`
+ * blanket flag is gone — it silently missed `updateOne`/`findOneAndUpdate`/
+ * delete paths and fired inside Mongo transactions before commit). Each mirror
+ * is enabled only by the read-cutover flag that requires it, and both
+ * disappear once the domain's writes move natively to Postgres in the big-bang
+ * cutover (see `api/src/db/README.md`).
+ *
+ * Mirrors are best-effort: failures are logged, never thrown; the upsert
+ * backfill (`db:backfill`) converges any drift.
  */
-export function dualWriteEnabled(): boolean {
-  return (
-    process.env.POSTGRES_DUAL_WRITE === "true" ||
-    process.env.AUTH_PERSISTENCE === "postgres"
-  );
+function authOnPostgres(): boolean {
+  return process.env.AUTH_PERSISTENCE === "postgres";
+}
+
+function connectionsOnPostgres(): boolean {
+  return process.env.CONNECTIONS_PERSISTENCE === "postgres";
 }
 
 export async function mirrorUser(user: IUser): Promise<void> {
-  if (!dualWriteEnabled()) return;
+  if (!authOnPostgres()) return;
   try {
     await usersRepository.upsert({
       id: toPgId(String(user._id)),
@@ -41,60 +47,9 @@ export async function mirrorUser(user: IUser): Promise<void> {
       onboarding: (user.onboarding as never) ?? null,
     });
   } catch (error) {
-    log.error("dual-write user -> postgres failed", {
+    log.error("mirror user -> postgres failed", {
       error,
       userId: String(user._id),
-    });
-  }
-}
-
-export async function mirrorWorkspace(ws: {
-  _id: unknown;
-  name: string;
-  slug: string;
-  createdBy: string;
-  settings?: unknown;
-  billing?: unknown;
-  selfDirective?: string;
-}): Promise<void> {
-  if (!dualWriteEnabled()) return;
-  try {
-    await workspacesRepository.upsert({
-      id: toPgId(String(ws._id)),
-      name: ws.name,
-      slug: String(ws.slug).toLowerCase(),
-      createdBy: toPgId(String(ws.createdBy)),
-      settings: (ws.settings as never) ?? null,
-      billing: (ws.billing as never) ?? null,
-      selfDirective: ws.selfDirective ?? "",
-    });
-  } catch (error) {
-    log.error("dual-write workspace -> postgres failed", {
-      error,
-      workspaceId: String(ws._id),
-    });
-  }
-}
-
-export async function mirrorWorkspaceMember(m: {
-  workspaceId: unknown;
-  userId: string;
-  role: string;
-  isDefaultMembership?: boolean;
-}): Promise<void> {
-  if (!dualWriteEnabled()) return;
-  try {
-    await workspacesRepository.addMember({
-      workspaceId: toPgId(String(m.workspaceId)),
-      userId: toPgId(String(m.userId)),
-      role: m.role as "owner" | "admin" | "member" | "viewer",
-      isDefaultMembership: m.isDefaultMembership ?? null,
-    });
-  } catch (error) {
-    log.error("dual-write workspace_member -> postgres failed", {
-      error,
-      workspaceId: String(m.workspaceId),
-      userId: String(m.userId),
     });
   }
 }
@@ -111,7 +66,7 @@ export async function mirrorDatabaseConnection(conn: {
   createdBy: string;
   lastConnectedAt?: Date | null;
 }): Promise<void> {
-  if (!dualWriteEnabled()) return;
+  if (!connectionsOnPostgres()) return;
   try {
     await connectionsRepository.upsert({
       id: toPgId(String(conn._id)),
@@ -124,9 +79,28 @@ export async function mirrorDatabaseConnection(conn: {
       lastConnectedAt: conn.lastConnectedAt ?? null,
     });
   } catch (error) {
-    log.error("dual-write database_connection -> postgres failed", {
+    log.error("mirror database_connection -> postgres failed", {
       error,
       connectionId: String(conn._id),
+    });
+  }
+}
+
+/**
+ * Mirror a Mongo connection delete. Unlike the save mirror this is awaited by
+ * the delete route and never swallowed silently into a stale-credential hole:
+ * on failure we log loudly; the next `db:backfill --prune` reconciles.
+ */
+export async function mirrorDatabaseConnectionDelete(
+  connectionId: string,
+): Promise<void> {
+  if (!connectionsOnPostgres()) return;
+  try {
+    await connectionsRepository.delete(toPgId(connectionId));
+  } catch (error) {
+    log.error("mirror database_connection delete -> postgres failed", {
+      error,
+      connectionId,
     });
   }
 }

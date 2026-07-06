@@ -873,6 +873,13 @@ workspaceDatabaseRoutes.openapi(
         return c.json({ success: false, error: "Database not found" }, 404);
       }
 
+      // Mirror the delete to Postgres when connection reads are served from
+      // it — otherwise the deleted credentials would stay resolvable there.
+      const { mirrorDatabaseConnectionDelete } = await import(
+        "../db/dual-write"
+      );
+      await mirrorDatabaseConnectionDelete(databaseId);
+
       // Close any open connections
       await databaseConnectionService.closeConnection(databaseId);
 

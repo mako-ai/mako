@@ -41,6 +41,7 @@ jobs:
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.pr_number != '')
     outputs:
       migrations_changed: ${{ steps.check.outputs.migrations_changed }}
+      pg_migrations_changed: ${{ steps.check.outputs.pg_migrations_changed }}
       rebuild_ephemeral_db: ${{ steps.check.outputs.rebuild_ephemeral_db }}
       app_changed: ${{ steps.check.outputs.app_changed }}
       pr_number: ${{ steps.check.outputs.pr_number }}
@@ -90,6 +91,16 @@ jobs:
           else
             echo "migrations_changed=false" >> $GITHUB_OUTPUT
             MIGRATIONS_CHANGED="false"
+          fi
+
+          # Postgres (Drizzle) migration changes — surfaced in the PR comment;
+          # drizzle migrations are applied to the PR's Neon branch on every deploy.
+          PG_MIGRATION_CHANGES=$(git diff origin/master...HEAD --name-only -- 'api/src/db/migrations/**' | wc -l | tr -d ' ')
+          echo "Found $PG_MIGRATION_CHANGES Postgres migration file(s) changed"
+          if [ "$PG_MIGRATION_CHANGES" -gt 0 ]; then
+            echo "pg_migrations_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "pg_migrations_changed=false" >> $GITHUB_OUTPUT
           fi
 
           # Determine if we should rebuild the ephemeral database
@@ -166,7 +177,6 @@ jobs:
       NEON_DATABASE_NAME: ${{ vars.NEON_DATABASE_NAME || 'neondb' }}
       NEON_ROLE_NAME: ${{ vars.NEON_ROLE_NAME || 'neondb_owner' }}
       NEON_POOLED: ${{ vars.NEON_POOLED || 'true' }}
-      POSTGRES_DUAL_WRITE: ${{ vars.POSTGRES_DUAL_WRITE || 'false' }}
       AUTH_PERSISTENCE: ${{ vars.AUTH_PERSISTENCE || 'mongo' }}
       CONNECTIONS_PERSISTENCE: ${{ vars.CONNECTIONS_PERSISTENCE || 'mongo' }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
@@ -554,7 +564,14 @@ jobs:
 
       - name: Create Neon branch
         id: neon
-        run: node scripts/neon.mjs create-pr
+        # A manual rebuild_db dispatch resets the branch from the Neon default
+        # branch (schema AND data), mirroring the Mongo ephemeral-DB rebuild.
+        run: |
+          if [ "${{ needs.detect-changes.outputs.rebuild_ephemeral_db }}" == "true" ] && [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            node scripts/neon.mjs reset-pr
+          else
+            node scripts/neon.mjs create-pr
+          fi
 
       - name: Run Postgres migrations
         env:
@@ -586,7 +603,6 @@ jobs:
             --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${{ steps.db-url.outputs.db_url }} \
             --set-env-vars "POSTGRES_URL=${POSTGRES_URL}" \
-            --set-env-vars POSTGRES_DUAL_WRITE=${POSTGRES_DUAL_WRITE} \
             --set-env-vars AUTH_PERSISTENCE=${AUTH_PERSISTENCE} \
             --set-env-vars CONNECTIONS_PERSISTENCE=${CONNECTIONS_PERSISTENCE} \
             --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \
@@ -828,7 +844,6 @@ jobs:
       NEON_DATABASE_NAME: ${{ vars.NEON_DATABASE_NAME || 'neondb' }}
       NEON_ROLE_NAME: ${{ vars.NEON_ROLE_NAME || 'neondb_owner' }}
       NEON_POOLED: ${{ vars.NEON_POOLED || 'true' }}
-      POSTGRES_DUAL_WRITE: ${{ vars.POSTGRES_DUAL_WRITE || 'false' }}
       AUTH_PERSISTENCE: ${{ vars.AUTH_PERSISTENCE || 'mongo' }}
       CONNECTIONS_PERSISTENCE: ${{ vars.CONNECTIONS_PERSISTENCE || 'mongo' }}
       ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
@@ -997,7 +1012,6 @@ jobs:
             --set-env-vars DASHBOARD_ARTIFACT_STORE=gcs \
             --set-env-vars DATABASE_URL=${DATABASE_URL} \
             --set-env-vars "POSTGRES_URL=${POSTGRES_URL}" \
-            --set-env-vars POSTGRES_DUAL_WRITE=${POSTGRES_DUAL_WRITE} \
             --set-env-vars AUTH_PERSISTENCE=${AUTH_PERSISTENCE} \
             --set-env-vars CONNECTIONS_PERSISTENCE=${CONNECTIONS_PERSISTENCE} \
             --set-env-vars GCS_DASHBOARD_BUCKET=${GCS_DASHBOARD_BUCKET} \

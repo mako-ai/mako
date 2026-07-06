@@ -51,7 +51,7 @@ export const queriesRepository = {
       .select()
       .from(queryExecutions)
       .where(eq(queryExecutions.workspaceId, workspaceId))
-      .orderBy(desc(queryExecutions.createdAt))
+      .orderBy(desc(queryExecutions.executedAt))
       .limit(limit);
   },
 
@@ -59,7 +59,7 @@ export const queriesRepository = {
   async deleteOlderThan(cutoff: Date): Promise<number> {
     const result = await getDb()
       .delete(queryExecutions)
-      .where(lt(queryExecutions.createdAt, cutoff))
+      .where(lt(queryExecutions.executedAt, cutoff))
       .returning({ id: queryExecutions.id });
     return result.length;
   },

@@ -39,6 +39,7 @@ import {
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
 } from "./functions/dbt-run";
+import { pgTtlCleanupFunction } from "./functions/pg-ttl-cleanup";
 import { loggers } from "../logging";
 
 const baseFunctions = [
@@ -59,6 +60,7 @@ const baseFunctions = [
   dbtRunExecutorFunction,
   dbtRunCancelFunction,
   dbtRunSweeperFunction,
+  pgTtlCleanupFunction,
 ];
 
 const allWebhookFunctions = [
@@ -151,4 +153,5 @@ export {
   dbtRunCancelFunction,
   dbtSchedulerFunction,
   dbtRunSweeperFunction,
+  pgTtlCleanupFunction,
 };

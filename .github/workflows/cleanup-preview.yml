@@ -91,6 +91,7 @@ jobs:
             --fail-with-body || echo "KV entry not found or already deleted"
 
       - name: Delete Neon branch
+        id: neon-delete
         continue-on-error: true
         run: node scripts/neon.mjs delete-pr
 
@@ -134,6 +135,12 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const wasMerged = context.payload.pull_request.merged;
             const hadEphemeralDb = '${{ steps.check-migrations.outputs.has_ephemeral_db }}' === 'true';
+            // Report the real outcome — the step is continue-on-error, so a
+            // failed delete must not be reported as "Deleted" (Neon branches
+            // still expire via expires_at as a safety net).
+            const neonOutcome = '${{ steps.neon-delete.outcome }}' === 'success'
+              ? ('${{ steps.neon-delete.outputs.deleted }}' === 'false' ? 'Not found (already deleted)' : 'Deleted')
+              : '⚠️ Delete failed — will auto-expire';
 
             const status = wasMerged ? '✅ Merged' : '❌ Closed';
 
@@ -144,7 +151,7 @@ jobs:
             | Cloud Run Service | Deleted |
             | Docker Images | Deleted |
             | Cloudflare KV Entry | Removed |
-            | Neon Branch | Deleted |
+            | Neon Branch | ${neonOutcome} |
             ${hadEphemeralDb ? '| Ephemeral Database | Dropped |' : ''}
 
             PR was ${status.toLowerCase()}.

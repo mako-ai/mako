@@ -286,7 +286,10 @@ async function main(): Promise<void> {
   }
 
   // Verify the Postgres metadata store when it backs any domain (fail fast).
-  if (process.env.AUTH_PERSISTENCE === "postgres") {
+  if (
+    process.env.AUTH_PERSISTENCE === "postgres" ||
+    process.env.CONNECTIONS_PERSISTENCE === "postgres"
+  ) {
     try {
       await pingPostgres();
       logger.info("Connected to Postgres metadata store", {
