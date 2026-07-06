@@ -244,13 +244,17 @@ function AddServerDialog({
               helperText="Streamable HTTP endpoint of the MCP server"
             />
           ) : (
-            <TextField
-              label="Server URL"
-              size="small"
-              fullWidth
-              value={preset?.url ?? ""}
-              disabled
-            />
+            // Fixed-URL presets: a disabled input reads like an empty
+            // required field, so show the endpoint as plain info instead.
+            preset?.url && (
+              <Typography variant="caption" color="text.secondary">
+                Connects to{" "}
+                <Box component="code" sx={{ fontFamily: "monospace" }}>
+                  {preset.url}
+                </Box>{" "}
+                — the official {preset.label} MCP endpoint (not editable).
+              </Typography>
+            )
           )}
           {authOptions.length > 1 && (
             <FormControl fullWidth size="small">
